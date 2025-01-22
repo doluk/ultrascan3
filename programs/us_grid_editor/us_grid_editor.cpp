@@ -491,7 +491,7 @@ void US_Grid_Editor::save( void )
       if ( indexx < 1 )  { indexx = xvals.size() + 1; xvals << xval; }
       if ( indexy < 1 )  { indexy = yvals.size() + 1; yvals << yval; }
       if ( indexz < 1 )  { indexz = zvals.size() + 1; zvals << zval; }
-      sc.name     = QString().sprintf( "X%3.3dY%3.3dZ%2.2d",
+      sc.name     = QString::asprintf( "X%3.3dY%3.3dZ%2.2d",
                                        indexx, indexy, indexz );
       sc.signal_concentration = gridinc * (double)indexsg;
       if ( (++indexsg) > subGrids )  indexsg = 1;

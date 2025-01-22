@@ -30,7 +30,7 @@ class US_Astfem_Sim : public US_Widgets
    public:
       //! \param p - Parent widget, normally not specified
       //! \param f - Window flags, normally not specified
-      US_Astfem_Sim( QWidget* = 0, Qt::WindowFlags = 0 );
+      US_Astfem_Sim( QWidget* = 0, Qt::WindowFlags = Qt::WindowFlags() );
 
       // Write a timestate file based on auc data
       int  writetimestate( const QString&,  US_DataIO::RawData& );

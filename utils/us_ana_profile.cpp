@@ -709,7 +709,7 @@ bool US_AnaProfile::AnaProf2DSA::fromXml( QXmlStreamReader& xmli )
          else if ( ename == "job_2dsa_fm" )
          {
             QXmlStreamAttributes attr = xmli.attributes();
-	    QStringRef attr_ref;
+	    QStringView attr_ref;
 	    
             //job1run        = US_Util::bool_flag( attr.value( "run" ).toString() );
 	    job2run        = US_Util::bool_flag( attr.value( "run" ).toString() );      // ALEXEY; shouldn't it be job2run ?

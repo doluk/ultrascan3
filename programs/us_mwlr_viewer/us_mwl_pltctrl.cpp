@@ -106,9 +106,9 @@ void US_MwlPlotControl::do_3dplot()
 }
 
 // Public slot to return a pointer to the 3D plot data widget
-QGLWidget* US_MwlPlotControl::data_3dplot( void )
+QOpenGLWidget* US_MwlPlotControl::data_3dplot( void )
 {
-   QGLWidget* widgP = (QGLWidget*)0;
+   QOpenGLWidget* widgP = (QOpenGLWidget*)0;
    widgP            = ( plot3d_w != 0 ) ? plot3d_w->dataWidgetP() : widgP;
 
    return widgP;

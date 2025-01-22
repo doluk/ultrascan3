@@ -187,7 +187,7 @@ int US_ExtinctFitter::calc_model(double *guess_par)
       }
    }
    function_evaluations++;
-   le_evaluations->setText(str.sprintf(" %d", function_evaluations));
+   le_evaluations->setText(QString::asprintf(" %d", function_evaluations));
    qApp->processEvents();
    if (aborted)
    {
@@ -382,17 +382,17 @@ void US_ExtinctFitter::plot_overlays()
       if (datasets - firstScan == 0)
       {
          numScans = 1;
-         s1.sprintf((tr("Overlays for fitted Scan %ld")).toLatin1().data(), firstScan);
+         s1.asprintf((tr("Overlays for fitted Scan %ld")).toLatin1().data(), firstScan);
       }
       else if (datasets - firstScan < 5)
       {
          numScans = datasets - firstScan + 1;
-         s1.sprintf((tr("Overlays for fitted Scans %ld - %ld")).toLatin1().data(), firstScan, firstScan + numScans - 1);
+         s1.asprintf((tr("Overlays for fitted Scans %ld - %ld")).toLatin1().data(), firstScan, firstScan + numScans - 1);
       }
       else
       {
          numScans = 5;
-         s1.sprintf((tr("Overlays for fitted Scans %ld - %ld")).toLatin1().data(),  firstScan, firstScan+4);
+         s1.asprintf((tr("Overlays for fitted Scans %ld - %ld")).toLatin1().data(),  firstScan, firstScan+4);
       }
    }
    else
@@ -550,17 +550,17 @@ void US_ExtinctFitter::plot_residuals()
       if (datasets - firstScan == 0)
       {
          numScans = 1;
-         s1.sprintf((tr("Residuals from fitted Scan %ld")).toLatin1().data(), firstScan);
+         s1.asprintf((tr("Residuals from fitted Scan %ld")).toLatin1().data(), firstScan);
      }
       else if (datasets - firstScan < 5)
       {
          numScans = datasets - firstScan + 1;
-         s1.sprintf((tr("Residuals from fitted Scans %ld - %ld")).toLatin1().data(), firstScan, firstScan + numScans - 1);
+         s1.asprintf((tr("Residuals from fitted Scans %ld - %ld")).toLatin1().data(), firstScan, firstScan + numScans - 1);
       }
       else
       {
          numScans = 5;
-         s1.sprintf((tr("Residuals from fitted Scans %ld - %ld")).toLatin1().data(),  firstScan, firstScan+4);
+         s1.asprintf((tr("Residuals from fitted Scans %ld - %ld")).toLatin1().data(),  firstScan, firstScan+4);
       }
    }
    else

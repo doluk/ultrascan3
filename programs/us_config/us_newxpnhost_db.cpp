@@ -543,7 +543,7 @@ void US_NewXpnHostDB::readingChromoArrayFile( const QString &fileName )
 
 	      //qDebug() << str1;
 	      
-	      strl = str1.split(QRegExp("[\r\n\t ,]+"));
+	      strl = str1.split(QRegularExpression("[\r\n\t ,]+"));
 	      temp_x = strl.at(0).trimmed().toFloat();
 	      temp_y = strl.at(1).trimmed().toFloat();
 
@@ -551,14 +551,14 @@ void US_NewXpnHostDB::readingChromoArrayFile( const QString &fileName )
 
 	      corr_lambda.push_back( double(temp_x) );
 	      corr_value.push_back( double(temp_y) );
-	      
+
 	      i++;
 	    }
 
-	  
+
 	  if (i != 801)
 	    {
-	      corr_lambda.clear(); 
+	      corr_lambda.clear();
 	      corr_value.clear();
 	      corr_lambda = corr_lambda_current;
 	      corr_value = corr_value_current;
@@ -567,24 +567,24 @@ void US_NewXpnHostDB::readingChromoArrayFile( const QString &fileName )
 				    tr( "The wavelength correction file\n"
 					"is incorrectly formatted or contains invalid data.\n"
 					"DB entry for chromatic aberration is not changed." ) );
-	      
+
 	    }
 	}
     }
-  
+
   qDebug() << "Upload Finished, corr_lambda.size(), corr_lambda_current.size(): "  <<  corr_lambda.size() << ", " << corr_lambda_current.size();
 }
 
-//Read Existing Chromatic Aberration Array from DB 
+//Read Existing Chromatic Aberration Array from DB
 void US_NewXpnHostDB::readingChromoArrayDB( )
 {
   corr_lambda.clear();
   corr_value.clear();
-  
+
   QString chromoArrayString;
   QStringList strl;
   chromoArrayString = instrumentedit["chromoab"].trimmed();
-  strl = chromoArrayString.split(QRegExp("[\r\n\t ]+"));
+  strl = chromoArrayString.split(QRegularExpression("[\r\n\t ]+"));
 
   foreach (QString str, strl)
     {
@@ -593,7 +593,7 @@ void US_NewXpnHostDB::readingChromoArrayDB( )
 
       corr_lambda.push_back( double( str.split(",")[0].trimmed().toFloat() ) );
       corr_value.push_back( double( str.split(",")[1].trimmed().toFloat() ) );
-      
+
       qDebug() << str.split(",")[0].trimmed() << " " << str.split(",")[1].trimmed();
     }
 
@@ -615,7 +615,7 @@ void US_NewXpnHostDB::shiftChromoArray( double val )
       ChromoArrayList += " (" + QString::number( corr_lambda[i] ) + "," + QString::number( corr_value[i] ) + ") ";
     }
 
-  // //If no data from file was uploaded, generate zero array  -------> DO we need this ?? 
+  // //If no data from file was uploaded, generate zero array  -------> DO we need this ??
   // if( ChromoArrayList.isEmpty() )
   //   {
   //     for ( int i=190; i<801; ++i )
@@ -628,10 +628,10 @@ void US_NewXpnHostDB::fillGui( void )
 {
   if ( !instrumentedit["name"].isEmpty()  )
     le_description->setText( instrumentedit["name"] );
-  
+
   if ( !instrumentedit["serial"].isEmpty()  )
     le_serialNumber->setText( instrumentedit["serial"] );
-  
+
   if ( !instrumentedit["host"].isEmpty()  )
     le_host->setText( instrumentedit["host"] );
 
@@ -650,14 +650,14 @@ void US_NewXpnHostDB::fillGui( void )
   if ( !instrumentedit["dbpassw"].isEmpty()  )
     le_pasw->setText( instrumentedit["dbpassw"] );
 
-  
+
   cb_os1->setCurrentIndex( cb_os1->findText( instrumentedit[ "os1" ] ) );
   cb_os2->setCurrentIndex( cb_os2->findText( instrumentedit[ "os2" ] ) );
   cb_os3->setCurrentIndex( cb_os3->findText( instrumentedit[ "os3" ] ) );
 
   if ( !instrumentedit["radcalwvl"].isEmpty()  )
     ct_radcalwvl->setValue( double(instrumentedit["radcalwvl"].toFloat()) );
-  
+
   if ( !instrumentedit["chromoab"].isEmpty()  )
     {
       le_chromofile->setText( "Uploaded" );
@@ -675,7 +675,7 @@ void US_NewXpnHostDB::fillGui( void )
 
       msgPort   ->setVisible( false );
       le_msgPort->setVisible( false );
-      
+
       name->setVisible( false );
       le_name->setVisible( false );
       user   ->setVisible( false );
@@ -688,7 +688,7 @@ void US_NewXpnHostDB::fillGui( void )
       ct_radcalwvl->setVisible( false );
       le_chromofile->setVisible( false );
     }
-  
+
 }
 
 
@@ -728,17 +728,17 @@ void US_NewXpnHostDB::save_new( void )
 	  return;
 	}
     }
-  
+
 
   qDebug() << "Optima Msg Port : " <<  le_msgPort->text();
-  
+
   //RegEx for Optima name:
-  QRegExp rx_desc("^(Optima)\\s[1-9]\\d*$");  // e.g. 'Optima 9'
+  QRegularExpression rx_desc("^(Optima)\\s[1-9]\\d*$");  // e.g. 'Optima 9'
   
   
   if ( !nonOptima_selected )
     {
-      if( !rx_desc.exactMatch(le_description->text() ) )
+      if( !rx_desc.match(le_description->text() ).hasMatch() )
 	{
 	  QString mtitle_error    = tr( "Error" );
 	  QString message_error   = tr( "Syntax error for Optima Host Description!\n\nThe description template is the following:\n  'Optima #' (Optima|space|number)" );

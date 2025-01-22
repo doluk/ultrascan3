@@ -509,7 +509,7 @@ DbgLv(1) << "loadDB: before search";
     for ( int ii = 0; ii < descriptions.size(); ii++ )
     {  // get list of filtered-description + index strings
        if ( descriptions[ ii ].contains(
-          QRegExp( ".*" + text + ".*", Qt::CaseInsensitive ) )  &&
+          QRegularExpression( ".*" + text + ".*", QRegularExpression::CaseInsensitiveOption ) )  &&
           ! descriptions[ ii].isEmpty() )
        {
           sortdesc << descriptions[ ii ] + sep + QString::number( ii );
@@ -717,11 +717,11 @@ void US_SolutionMgrSelect::upload_solution( void )
 {
 DbgLv(1) << "UplSol: IN upload_solution";
    int status     = US_DB2::OK;
-   QRegExp rx( "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" );
+   QRegularExpression rx( "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" );
    QString solutionGUID  = solution->solutionGUID;
 DbgLv(1) << "UplSol: solutionGUID" << solutionGUID;
    solutionGUID   = ( !solutionGUID.isEmpty()  &&
-                      rx.exactMatch( solutionGUID ) ) ?
+                      rx.match( solutionGUID ).hasMatch() ) ?
                     solutionGUID : "";
 DbgLv(1) << "UplSol: solutionGUID" << solutionGUID;
 
@@ -784,7 +784,7 @@ DbgLv(1) << "UplSol: solutionGUID" << solutionGUID;
       QMessageBox::critical( this,
          tr( "Solution Upload Error" ),
          tr( "The solution upload encountered an error:\n" )
-            + db.lastError() + " " + status );
+            + db.lastError() + " " + QString::number(status) );
    }
 }
 
@@ -1735,7 +1735,7 @@ US_SolutionGui::US_SolutionGui(
       int   select_db_disk,
       const US_Solution dataIn,
       bool  auto_save
-      ) : US_WidgetsDialog( 0, 0 ), experimentID( expID ), channelID( chID ),
+      ) : US_WidgetsDialog( 0, Qt::WindowFlags() ), experimentID( expID ), channelID( chID ),
         signal( signal_wanted )
 
 {

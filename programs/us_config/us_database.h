@@ -16,7 +16,7 @@ class US_Database : public US_Widgets
   public:
     
     //!  Construct the window to manage database parameters.
-    US_Database( QWidget* w = 0, Qt::WindowFlags flags = 0 );
+    US_Database( QWidget* w = 0, Qt::WindowFlags flags = Qt::WindowFlags() );
     
   private:
     QList<QStringList> dblist;

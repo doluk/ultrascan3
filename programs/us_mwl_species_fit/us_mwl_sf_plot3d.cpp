@@ -524,7 +524,7 @@ US_MWL_SF_PLOT3D::US_MWL_SF_PLOT3D(QWidget* w, const SFData& spFitData): US_Widg
 
     QWidget* tab1 = new QWidget();
     QVBoxLayout* tab1_lyt = new QVBoxLayout(tab1);
-    tab1_lyt->setMargin(0);
+    tab1_lyt->setContentsMargins( 0, 0, 0, 0 );
     tab1_lyt->setSpacing(1);
     tab1_lyt->addLayout(us_dataPlot, 1);
     tab1_lyt->addLayout(us_devPlot, 1);
@@ -574,13 +574,13 @@ US_MWL_SF_PLOT3D::US_MWL_SF_PLOT3D(QWidget* w, const SFData& spFitData): US_Widg
     left_lyt->addSpacing(1);
     left_lyt->addLayout(close_lyt);
     left_lyt->setSpacing(1);
-    left_lyt->setMargin(1);
+    left_lyt->setContentsMargins( 1, 1, 1, 1 );
 
     QHBoxLayout* main_lyt = new QHBoxLayout();
     main_lyt->addLayout(left_lyt, 0);
     main_lyt->addWidget(tabs, 1);
     main_lyt->setSpacing(2);
-    main_lyt->setMargin(1);
+    main_lyt->setContentsMargins( 1, 1, 1, 1 );
 //    main_lyt->setSizeConstraint(QLayout::SetFixedSize);
 
     this->setLayout(main_lyt);

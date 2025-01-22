@@ -20,8 +20,8 @@ class US_NewXpnHostDB : public US_Widgets
  public:
   
   //!  Construct the window to manage database parameters.
-  /* US_NewXpnHostDB( QWidget* w = 0, Qt::WindowFlags flags = 0 ); */
-  /* US_NewXpnHostDB( QWidget* w = 0, Qt::WindowFlags flags = 0, QMap<QString, QString> ); */
+  /* US_NewXpnHostDB( QWidget* w = 0, Qt::WindowFlags flags = Qt::WindowFlags() ); */
+  /* US_NewXpnHostDB( QWidget* w = 0, Qt::WindowFlags flags = Qt::WindowFlags(), QMap<QString, QString> ); */
   US_NewXpnHostDB();
   US_NewXpnHostDB( QMap<QString, QString> instrument );
 		  

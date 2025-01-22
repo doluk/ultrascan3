@@ -59,7 +59,7 @@ US_Color::US_Color( QWidget* w, Qt::WindowFlags flags )
   
   for ( int i = 1; i <= 15; i++ )   //set margin range from 2 to 30
   {  
-    s.sprintf( "%d  pixels", i * 2 );
+    s.asprintf( "%d  pixels", i * 2 );
     cmbb_margin->insertItem( i - 1, s );
   }
 
@@ -1261,7 +1261,7 @@ void US_Color::apply( void )
 void US_Color::save_as( void )
 {
   // Remove blanks from name
-  QString custom = le_save_as->text().replace( QRegExp( "[ \t/]" ), "" );
+  QString custom = le_save_as->text().replace( QRegularExpression( "[ \t/]" ), "" );
 
   if ( custom.size() == 0 )
   {

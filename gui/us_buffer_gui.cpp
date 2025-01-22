@@ -341,7 +341,7 @@ void US_BufferGuiSelect::search( QString const& text )
    for ( int ii = 0; ii < descriptions.size(); ii++ )
    {  // get list of filtered-description + index strings
       if ( descriptions[ ii ].contains(
-         QRegExp( ".*" + text + ".*", Qt::CaseInsensitive ) )  &&
+         QRegularExpression( ".*" + text + ".*", QRegularExpression::CaseInsensitiveOption ) )  &&
          ! descriptions[ ii].isEmpty() )
       {
          sortdesc << descriptions[ ii ] + sep + QString::number( ii );
@@ -511,7 +511,7 @@ DbgLv(1) << "BufS-info:  ii" << ii << "waveln extinc" << waveln << extinc;
    }
 
    // Build and show the buffer details dialog
-   int iwid     = fmet.width( big_line ) + 40;
+   int iwid     = fmet.horizontalAdvance( big_line ) + 40;
    int ihgt     = fmet.lineSpacing() * qMin( 22, nlines ) + 80;
 
    US_Editor* buf_info = new US_Editor( US_Editor::DEFAULT, true,
@@ -991,7 +991,7 @@ US_BufferGuiNew::US_BufferGuiNew( int *invID, int *select_db_disk,
 
 
    QStringList keys = component_list.keys();
-   qSort( keys );
+   std::sort( keys.begin(), keys.end() );
 
 
    connect( le_descrip,  SIGNAL( editingFinished() ),
@@ -1063,7 +1063,7 @@ void US_BufferGuiNew::init_buffer( void )
    // US_BufferComponent::getAllFromHD( component_list );
 DbgLv(1) << "BufN:SL: init_buffer  comps" << component_list.size();
    QStringList keys = component_list.keys();
-   qSort( keys );
+   std::sort( keys.begin(), keys.end() );
    lw_allcomps->clear();
 
    for ( int ii = 0; ii < keys.size(); ii++ )
@@ -1996,7 +1996,7 @@ DbgLv(1) << "setB:synchc   synch complete:  components:"
 
 // Main Buffer window with panels
 US_BufferGui::US_BufferGui( bool signal_wanted, const US_Buffer& buf,
-      int select_db_disk) : US_WidgetsDialog( 0, 0 ),
+      int select_db_disk) : US_WidgetsDialog( 0, Qt::WindowFlags() ),
       signal( signal_wanted ), buffer( buf )
 {
    personID    = US_Settings::us_inv_ID();
@@ -2135,7 +2135,7 @@ void US_BufferGui::bufferRejected( void )
    reject();
 }
 
-US_BufferComponentRequerster::US_BufferComponentRequerster(US_BufferComponent* comp_, QMap<QString,US_BufferComponent>& list_) : US_WidgetsDialog(nullptr, nullptr),
+US_BufferComponentRequerster::US_BufferComponentRequerster(US_BufferComponent* comp_, QMap<QString,US_BufferComponent>& list_) : US_WidgetsDialog(nullptr, Qt::WindowFlags()),
                                                                                    comp(comp_), component_list(list_) {
    setWindowTitle(tr("Buffer component creator"));
    setPalette(US_GuiSettings::frameColor());
@@ -2265,7 +2265,7 @@ void US_BufferComponentRequerster::cancelled(void) {
 void US_BufferComponentRequerster::accept(void) {
    comp->name = le_name->text();
    comp->unit = le_unit->text();
-   comp->range = QString::number(le_lrange->text().toDouble(),'f',3)+'-'+QString::number(le_urange->text().toDouble(),'f',3)+' M';
+   comp->range = QString::number(le_lrange->text().toDouble(),'f',3)+'-'+QString::number(le_urange->text().toDouble(),'f',3) + " M";
    comp->dens_coeff[0] = le_density0->text().toDouble();
    comp->dens_coeff[1] = le_density1->text().toDouble();
    comp->dens_coeff[2] = le_density2->text().toDouble();

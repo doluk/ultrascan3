@@ -306,7 +306,7 @@ DbgLv(0) << "CGui: dbg_level" << dbg_level;
    // Plot layout for the right side of window
    QBoxLayout* plot = new US_Plot( data_plot,
                                    tr( "Ramp Data" ),
-                                   tr( "w²t (/ s¯¹)" ), 
+                                   tr( "wï¿½t (/ sï¿½ï¿½)" ), 
                                    tr( "Intensity (/AU)" ) );
 
    data_plot->setMinimumSize( 500, 300 );
@@ -963,7 +963,7 @@ void US_RampGui::loadUS3Disk( QString dir )
    qApp->processEvents();
 
    // Check the runID
-   QStringList components =  dir.split( "/", QString::SkipEmptyParts );  
+   QStringList components =  dir.split( "/", Qt::SkipEmptyParts );
    QString new_runID = components.last();
       
    QRegExp rx( "^[A-Za-z0-9_-]{1,80}$" );

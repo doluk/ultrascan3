@@ -23,7 +23,7 @@
 
 /*  Class US_SequenceEditor */
 US_SequenceEditor::US_SequenceEditor( const QString& sequence ) 
-   : US_WidgetsDialog( 0, 0 )
+   : US_WidgetsDialog( 0, Qt::WindowFlags() )
 {
    setWindowTitle( tr( "Sequence Management" ) );
    setPalette( US_GuiSettings::frameColor() );
@@ -50,7 +50,7 @@ US_SequenceEditor::US_SequenceEditor( const QString& sequence )
    connect( pb_accept, SIGNAL( clicked() ), SLOT( accept() ) );
 
    QFontMetrics fm( font );
-   resize( fm.width( 'W' ) * 80, fm.height() * 20 );
+   resize( fm.horizontalAdvance( 'W' ) * 80, fm.height() * 20 );
 }
 
 void US_SequenceEditor::accept( void ) 
@@ -497,7 +497,7 @@ DbgLv(1) << "agS: search : text" << text;
    for ( int ii = 0; ii < dsize; ii++ )
    {  // get list of filtered-description + index strings
       if ( descriptions[ ii ].contains(
-         QRegExp( ".*" + text + ".*", Qt::CaseInsensitive ) )  &&
+         QRegularExpression( ".*" + text + ".*", QRegularExpression::CaseInsensitiveOption ) )  &&
          ! descriptions[ ii].isEmpty() )
       {
          sortdesc << descriptions[ ii ] + sep + QString::number( ii );
@@ -567,7 +567,7 @@ void US_AnalyteMgrSelect::sequence( void )
   big_line += QString( 70, ' ' );
 
   // Build and show the analyte sequence
-   int iwid     = fmet.width( big_line ) + 40;
+   int iwid     = fmet.horizontalAdvance( big_line ) + 40;
    int ihgt     = fmet.lineSpacing() * qMin( 22, nlines ) + 80;
 
    US_Editor* ana_info = new US_Editor( US_Editor::DEFAULT, true,
@@ -614,17 +614,17 @@ DbgLv(1) << "Tot AAs: " << all_abs;
      {
        absorbing_residues = "";
        if ( cys > 0)
-	 absorbing_residues += QString().sprintf( "%d", cys ) + " " + "Cys"  + ", ";
+	 absorbing_residues += QString::asprintf( "%d", cys ) + " " + "Cys"  + ", ";
        if ( hao > 0)
-	 absorbing_residues += QString().sprintf( "%d", hao ) + " " + "Hao"  + ", ";
+	 absorbing_residues += QString::asprintf( "%d", hao ) + " " + "Hao"  + ", ";
        if ( orn > 0)
-	 absorbing_residues += QString().sprintf( "%d", orn ) + " " + "Orn"  + ", ";
+	 absorbing_residues += QString::asprintf( "%d", orn ) + " " + "Orn"  + ", ";
        if ( trp > 0)
-	 absorbing_residues += QString().sprintf( "%d", trp ) + " " + "Trp"  + ", ";
+	 absorbing_residues += QString::asprintf( "%d", trp ) + " " + "Trp"  + ", ";
        if ( tyr > 0)
-	 absorbing_residues += QString().sprintf( "%d", tyr ) + " " + "Tyr"  + ", ";
+	 absorbing_residues += QString::asprintf( "%d", tyr ) + " " + "Tyr"  + ", ";
 
-       absorbing_residues += QString().sprintf( "%d", all_abs ) + " tot";
+       absorbing_residues += QString::asprintf( "%d", all_abs ) + " tot";
      }
    
 
@@ -652,7 +652,7 @@ DbgLv(1) << "Tot AAs: " << all_abs;
    else
    {
       seqsmry         = seqsmry.toLower()
-                               .remove( QRegExp( "[\\s0-9]" ) );
+                               .remove( QRegularExpression( "[\\s0-9]" ) );
       seqlen          = seqsmry.length();
       if ( seqlen > 25 )
       {
@@ -668,12 +668,12 @@ DbgLv(1) << "Tot AAs: " << all_abs;
          total          += lcount;
          if ( lcount > 0 )
          {
-            seqsmry     += QString().sprintf( "%d", lcount )
+            seqsmry     += QString::asprintf( "%d", lcount )
                            + " " + letter.toUpper() + ", ";
 	    //seqsmry          += "\n  ";
          }
       }
-      seqsmry     += QString().sprintf( "%d", total ) + " tot";
+      seqsmry     += QString::asprintf( "%d", total ) + " tot";
    }
 
    // Compose analyte information lines
@@ -744,7 +744,7 @@ DbgLv(1) << "Tot AAs: " << all_abs;
    }
 
    // Build and show the analyte details dialog
-   int iwid     = fmet.width( big_line ) + 40;
+   int iwid     = fmet.horizontalAdvance( big_line ) + 40;
    int ihgt     = fmet.lineSpacing() * qMin( 22, nlines ) + 80;
 
    US_Editor* ana_info = new US_Editor( US_Editor::DEFAULT, true,
@@ -1245,17 +1245,17 @@ DbgLv(1) << "Tot AAs: " << all_abs;
      {
        absorbing_residues = "";
        if ( cys > 0)
-	 absorbing_residues += QString().sprintf( "%d", cys ) + " " + "Cys"  + ", ";
+	 absorbing_residues += QString::asprintf( "%d", cys ) + " " + "Cys"  + ", ";
        if ( hao > 0)
-	 absorbing_residues += QString().sprintf( "%d", hao ) + " " + "Hao"  + ", ";
+	 absorbing_residues += QString::asprintf( "%d", hao ) + " " + "Hao"  + ", ";
        if ( orn > 0)
-	 absorbing_residues += QString().sprintf( "%d", orn ) + " " + "Orn"  + ", ";
+	 absorbing_residues += QString::asprintf( "%d", orn ) + " " + "Orn"  + ", ";
        if ( trp > 0)
-	 absorbing_residues += QString().sprintf( "%d", trp ) + " " + "Trp"  + ", ";
+	 absorbing_residues += QString::asprintf( "%d", trp ) + " " + "Trp"  + ", ";
        if ( tyr > 0)
-	 absorbing_residues += QString().sprintf( "%d", tyr ) + " " + "Tyr"  + ", ";
+	 absorbing_residues += QString::asprintf( "%d", tyr ) + " " + "Tyr"  + ", ";
 
-       absorbing_residues += QString().sprintf( "%d", all_abs ) + " tot";
+       absorbing_residues += QString::asprintf( "%d", all_abs ) + " tot";
      }
    
 DbgLv(1) << "AA absorbibg String: " << absorbing_residues;
@@ -1270,7 +1270,7 @@ DbgLv(1) << "AA absorbibg String: " << absorbing_residues;
    else
    {
       seqsmry         = seqsmry.toLower()
-                               .remove( QRegExp( "[\\s0-9]" ) );
+                               .remove( QRegularExpression( "[\\s0-9]" ) );
       seqlen          = seqsmry.length();
       if ( seqlen > 25 )
       {
@@ -1286,11 +1286,11 @@ DbgLv(1) << "AA absorbibg String: " << absorbing_residues;
          total          += lcount;
          if ( lcount > 0 )
          {
-            seqsmry     += QString().sprintf( "%d", lcount )
+            seqsmry     += QString::asprintf( "%d", lcount )
                            + " " + letter.toUpper() + ", ";
          }
       }
-      seqsmry     += QString().sprintf( "%d", total ) + " tot";
+      seqsmry     += QString::asprintf( "%d", total ) + " tot";
    }
 
    qDebug() << "In Summary 3: analyte->extinciton: " <<  ana->extinction;
@@ -1735,7 +1735,7 @@ void US_AnalyteMgrNew::manage_sequence( void )
 
 void US_AnalyteMgrNew::update_sequence( QString seq )
 {
-   seq = seq.toLower().remove( QRegExp( "[\\s0-9]" ) );
+   seq = seq.toLower().remove( QRegularExpression( "[\\s0-9]" ) );
    QString check = seq;
 
    if ( seq == analyte->sequence ) return;
@@ -1743,15 +1743,15 @@ void US_AnalyteMgrNew::update_sequence( QString seq )
    switch ( analyte->type )
    {
       case US_Analyte::PROTEIN:
-         seq.remove( QRegExp( "[^a-z\\+\\?\\@]" ) );
+         seq.remove( QRegularExpression( "[^a-z\\+\\?\\@]" ) );
          break;
 
       case US_Analyte::DNA:
-         seq.remove( QRegExp( "[^acgt]" ) );
+         seq.remove( QRegularExpression( "[^acgt]" ) );
          break;
 
       case US_Analyte::RNA:
-         seq.remove( QRegExp( "[^acgu]" ) );
+         seq.remove( QRegularExpression( "[^acgu]" ) );
          break;
 
       case US_Analyte::CARBOHYDRATE:
@@ -1784,7 +1784,7 @@ void US_AnalyteMgrNew::update_sequence( QString seq )
       QString t;
 
       if ( i % lsize == 0 )
-         s += t.sprintf( "%04i ", i * gsize + 1 );
+         s += t.asprintf( "%04i ", i * gsize + 1 );
      
       s += seq.mid( p, gsize );
       p += gsize;
@@ -2030,12 +2030,12 @@ void US_AnalyteMgrNew::update_nucleotide( void )
 
    if ( analyte->doubleStranded )
    {
-      s.sprintf(" %2.5e kD (%d A, %d G, %d C, %d U, %d T, %d bp)",
+      s.asprintf(" %2.5e kD (%d A, %d G, %d C, %d U, %d T, %d bp)",
             MW / 1000.0, A, G, C, U, T, total / 2);
    }
    else
    {
-     s.sprintf(" %2.5e kD (%d A, %d G, %d C, %d U, %d T, %d bases)",
+     s.asprintf(" %2.5e kD (%d A, %d G, %d C, %d U, %d T, %d bases)",
             MW / 1000.0, A, G, C, U, T, total );
    }
    
@@ -2123,7 +2123,7 @@ void US_AnalyteMgrNew::reset()
        
        update_nucleotide();
        le_nucle_vbar->setText("0.5500");
-       mw = le_nucle_mw->text().split( " ", QString::SkipEmptyParts );
+       mw = le_nucle_mw->text().split( " ", Qt::SkipEmptyParts );
        analyte->description = le_descrip->text();
        analyte->mw          = mw[ 0 ].toDouble() * 1000.0;
        analyte->vbar20      = le_nucle_vbar->text().toDouble();
@@ -2147,7 +2147,7 @@ void US_AnalyteMgrNew::reset()
 
        update_nucleotide();
        le_nucle_vbar->setText("0.5500");
-       mw = le_nucle_mw->text().split( " ", QString::SkipEmptyParts );
+       mw = le_nucle_mw->text().split( " ", Qt::SkipEmptyParts );
        analyte->description = le_descrip->text();
        analyte->mw          = mw[ 0 ].toDouble() * 1000.0;
        analyte->vbar20      = le_nucle_vbar->text().toDouble();
@@ -2534,7 +2534,7 @@ DbgLv(1) << "AnaN: Analyte Type: " << analyte->type;
         analyte->type == US_Analyte::RNA  )
    {
       // Strip trailing items from the mw text box.
-      QStringList mw = le_nucle_mw->text().split( " ", QString::SkipEmptyParts );
+      QStringList mw = le_nucle_mw->text().split( " ", Qt::SkipEmptyParts );
 
       if ( mw.empty() )
       {
@@ -3037,7 +3037,7 @@ US_AnalyteGui::US_AnalyteGui( bool           signal,
                               const QString& GUID,
                               int            accessf, 
                               double         temper ) 
-   : US_WidgetsDialog( 0, 0 ),
+   : US_WidgetsDialog( 0, Qt::WindowFlags() ),
      signal( signal ), guid( GUID ), temperature( temper )
 {
    personID     = US_Settings::us_inv_ID();

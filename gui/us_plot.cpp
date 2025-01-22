@@ -254,7 +254,7 @@ void US_Plot::zoom( bool on )
 #endif
       
       panner = new QwtPlotPanner( plot->canvas() );
-      panner->setMouseButton( Qt::MidButton );
+      panner->setMouseButton( Qt::MiddleButton );
 
 #if QT_VERSION > 0x050000
       picker = new QwtPlotPicker( QwtPlot::xBottom, QwtPlot::yLeft,
@@ -368,12 +368,12 @@ void US_Plot::print( void )
    
    if ( ! docName.isEmpty() )
    {
-       docName.replace ( QRegExp( QString::fromLatin1( "\n" ) ), tr ( " -- " ) );
+       docName.replace ( QRegularExpression( QString::fromLatin1( "\n" ) ), tr ( " -- " ) );
        printer.setDocName( docName );
    }
 
    printer.setCreator( "UltraScan" );
-   printer.setOrientation( QPrinter::Landscape );
+   printer.setPageOrientation( QPageLayout::Landscape );
 
    QPrintDialog dialog( &printer );
 
@@ -422,7 +422,7 @@ qDebug() << "UP:CM: colorMap chosen";
 
    cmfpath        = QFileDialog::getOpenFileName( (QWidget*)plot,
       tr( "Load Color Map File" ),
-      US_Settings::etcDir(), filter, 0, 0 );
+      US_Settings::etcDir(), filter, 0, QFileDialog::Options() );
 qDebug() << "UP:CM: post-dialog cmfpath" << cmfpath;
 
    // Get the color gradient from the file
@@ -443,7 +443,7 @@ qDebug() << "UP:CM: cmfpath" << cmfpath << "nmcols" << nmcols;
    int nmcurv    = 0;
    int mcolx     = 0;
    bool tmatch   = ! cmapMatch.isEmpty();    // Curve type filter
-   QRegExp cmMatch( cmapMatch );             // Curve title match
+   QRegularExpression cmMatch( cmapMatch );             // Curve title match
 qDebug() << "UP:CM: cmapMatch" << cmapMatch << "tmatch" << tmatch;
    QwtPlotItemList list = plot->itemList();  // All plot items
 
@@ -838,7 +838,7 @@ void US_PlotConfig::updateTitleFont( void )
    bool ok;
    QFont currentFont = plot->title().font();
    QFont newFont     = QFontDialog::getFont( &ok, currentFont, this,
-                          tr( "Set Title Font" ), 0 );
+                          tr( "Set Title Font" ), QFontDialog::FontDialogOptions() );
 
    if ( ok )
    {
@@ -984,7 +984,7 @@ void US_PlotConfig::updateLegendFont( void )
 
    bool ok;
    QFont newFont = QFontDialog::getFont( &ok, font, this,
-                       tr( "Set Legend Font" ), 0 );
+                       tr( "Set Legend Font" ), QFontDialog::FontDialogOptions() );
 
    if ( ok )
    {
@@ -1748,7 +1748,7 @@ US_PlotCurveConfig::US_PlotCurveConfig( QwtPlot* currentPlot,
    
    // Remove passed '(number) '
    QString firstSelectedText = selected[ 0 ];
-   firstSelectedText.replace( QRegExp( "^\\(\\d+\\) " ), "" );
+   firstSelectedText.replace( QRegularExpression( "^\\(\\d+\\) " ), "" );
    
    firstSelectedCurve = NULL;
 
@@ -2021,7 +2021,7 @@ void US_PlotCurveConfig::symbolStyleChanged( int index )
 {
    int style  = cmbb_symbolStyle->itemData( index ).toInt();
 
-   qDebug() << "Curve's SymbolStyle " << cmbb_symbolStyle->itemData( index ) << ", Type: " << cmbb_symbolStyle->itemData( index ).typeName();
+   qDebug() << "Curve's SymbolStyle " << cmbb_symbolStyle->itemData( index ).toString() << ", Type: " << cmbb_symbolStyle->itemData( index ).typeName();
    qDebug() << "Curve's SymbolStyle (int): index, style -- " << index << ", " << style; 
    symbolStyle = static_cast< QwtSymbol::Style > ( style );
    lb_sample2->update(); 
@@ -2110,7 +2110,7 @@ void US_PlotCurveConfig::apply( void )
    {
       // Remove Numbering from passed titles
       QString title = selectedItems[ i ];
-      title.replace( QRegExp( "^\\(\\d+\\) " ), "" );
+      title.replace( QRegularExpression( "^\\(\\d+\\) " ), "" );
 
       qDebug() << "Plot Curve Config: for selectItem -- " << title;
 
@@ -2531,7 +2531,7 @@ void US_PlotAxisConfig::selectTitleFont( void )
    bool ok;
    QFont currentFont = plot->axisTitle( axis ).font();
    QFont newFont     = QFontDialog::getFont( &ok, currentFont, this,
-                          tr( "Set Axis Title Font" ), 0 );
+                          tr( "Set Axis Title Font" ), QFontDialog::FontDialogOptions() );
 
    if ( ok )
    {
@@ -2560,7 +2560,7 @@ void US_PlotAxisConfig::selectScaleFont( void )
    bool ok;
    QFont currentFont = plot->axisFont( axis );
    QFont newFont     = QFontDialog::getFont( &ok, currentFont, this,
-                          tr( "Set Axis Scale Font" ), 0 );
+                          tr( "Set Axis Scale Font" ), QFontDialog::FontDialogOptions() );
 
    if ( ok )
    {
@@ -2970,9 +2970,9 @@ US_PlotPicker::US_PlotPicker( QwtPlot* plot )
 void US_PlotPicker::widgetMousePressEvent( QMouseEvent* e )
 {
    // Prevent spurious clicks
-   static QTime last_click;
+   static QElapsedTimer last_click;
 
-   if ( last_click.isNull() || last_click.elapsed() > 300 )
+   if ( !last_click.isValid() || last_click.elapsed() > 300 )
    {
       last_click.start();
       if ( e->button() == Qt::LeftButton ) 
@@ -2989,9 +2989,9 @@ void US_PlotPicker::widgetMousePressEvent( QMouseEvent* e )
 
 void US_PlotPicker::widgetMouseReleaseEvent( QMouseEvent* e )
 {
-   static QTime last_click;
+   static QElapsedTimer last_click;
 
-   if ( last_click.isNull() || last_click.elapsed() > 300 ) 
+   if ( last_click.isValid() || last_click.elapsed() > 300 )
    {
       last_click.start();
       if ( e->button() == Qt::LeftButton )
@@ -3006,10 +3006,10 @@ void US_PlotPicker::widgetMouseReleaseEvent( QMouseEvent* e )
 
 void US_PlotPicker::widgetMouseMoveEvent( QMouseEvent* e )
 {
-   static QTime last_click;
+   static QElapsedTimer last_click;
 
    // Slow things down a bit
-   if ( last_click.isNull() || last_click.elapsed() > 100 )
+   if ( !last_click.isValid() || last_click.elapsed() > 100 )
    {
       last_click.start();
       if ( e->button() == Qt::LeftButton )

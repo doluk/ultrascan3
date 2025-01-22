@@ -3657,7 +3657,7 @@ void US_ConvertGui::loadUS3Disk( QString dir )
    qApp->processEvents();
 
    // Check the runID
-   QStringList components =  dir.split( "/", QString::SkipEmptyParts );
+   QStringList components =  dir.split( "/", Qt::SkipEmptyParts );
    QString new_runID      = components.last();
 
    QRegExp rx( "^[A-Za-z0-9_-]{1,80}$" );
@@ -7400,7 +7400,7 @@ DbgLv(1) << "nspeeds=" << nspeeds << "nripro=" << nripro;
       {
          int ispeed        = speeds[ spx ];
 DbgLv(1) << "us_convert: ispeed=" << ispeed << "spx=" << spx << "nspeeds=" << nspeeds;
-         runID             = runIDbase + QString().sprintf( "%05d", ispeed );
+         runID             = runIDbase + QString::asprintf( "%05d", ispeed );
          double speed      = (double)ispeed;
          ExpData.runID     = runID;
          ExpData.expGUID.clear();

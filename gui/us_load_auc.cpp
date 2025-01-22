@@ -10,7 +10,7 @@
 
 
 US_LoadAUC::US_LoadAUC( bool local, QString auto_mode, QVector< US_DataIO::RawData >& rData,
-   QStringList& trips, QString& wdir ) : US_WidgetsDialog( 0, 0 ),
+   QStringList& trips, QString& wdir ) : US_WidgetsDialog( 0, Qt::WindowFlags() ),
    rawList( rData ), triples( trips ), workingDir( wdir )
 {
    int ddstate;
@@ -137,7 +137,7 @@ US_LoadAUC::US_LoadAUC( bool local, QString auto_mode, QVector< US_DataIO::RawDa
 
 
 US_LoadAUC::US_LoadAUC( bool local, QVector< US_DataIO::RawData >& rData,
-   QStringList& trips, QString& wdir ) : US_WidgetsDialog( 0, 0 ),
+   QStringList& trips, QString& wdir ) : US_WidgetsDialog( 0, Qt::WindowFlags() ),
    rawList( rData ), triples( trips ), workingDir( wdir )
 {
    int ddstate;
@@ -580,7 +580,7 @@ qDebug() << "Ed:Ptree: sel_run" << sel_run;
       QStringList topItem;
       topItem << ddesc.runID
               << QString( ddesc.date ).section( " ", 0, 0 )
-              << QString().sprintf( "%6d", ddesc.DB_id )
+              << QString::asprintf( "%6d", ddesc.DB_id )
               << ddesc.label;
 
       if ( ! runIDs.contains( ddesc.runID ) )

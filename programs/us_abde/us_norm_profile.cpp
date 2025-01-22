@@ -125,19 +125,19 @@ US_Norm_Profile::US_Norm_Profile(): US_Widgets()
     right_lyt->addLayout(intg_lyt);
     right_lyt->addLayout(usplot);
 
-    left_lyt->setMargin(1);
+    left_lyt->setContentsMargins( 1, 1, 1, 1 );
     left_lyt->setSpacing(1);
-    right_lyt->setMargin(1);
+    right_lyt->setContentsMargins( 1, 1, 1, 1 );
     right_lyt->setSpacing(1);
 
     body_lyt->addLayout(left_lyt, 1);
     body_lyt->addLayout(right_lyt, 3);
-    body_lyt->setMargin(1);
+    body_lyt->setContentsMargins( 1, 1, 1, 1 );
     body_lyt->setSpacing(0);
 
     main_lyt->addLayout(runinfo_lyt);
     main_lyt->addLayout(body_lyt);
-    main_lyt->setMargin(0);
+    main_lyt->setContentsMargins( 0, 0, 0, 0 );
     main_lyt->setSpacing(0);
     this->setLayout(main_lyt);
 

@@ -98,7 +98,7 @@ QString US_Settings::etcDir( void )
 // Base to application directory
 QString US_Settings::appBaseDir( void )
 {
-   QString base = qApp->applicationDirPath().remove( QRegExp( "/bin$" ) );
+   QString base = qApp->applicationDirPath().remove( QRegularExpression( "/bin$" ) );
 
    if ( base.contains( ".app/Contents" ) )
    {  // For Mac, move up path to where ./bin exists
@@ -497,7 +497,7 @@ bool US_Settings::get_DA_status( const QString& da_type )
 {
   QSettings settings( US3, "UltraScan" );
 
-  int status; 
+  int status = 0;
   if ( da_type == "COM" )
     status = settings.value( "daComOpened", QString() ).toInt();
 

@@ -11,7 +11,7 @@
 
 US_SimParamsGui::US_SimParamsGui(
       US_SimulationParameters& params )
-   : US_WidgetsDialog( 0, 0 ), simparams( params )
+   : US_WidgetsDialog( 0, Qt::WindowFlags() ), simparams( params )
 {
    setWindowTitle( "Set Simulation Parameters" );
    setPalette    ( US_GuiSettings::frameColor() );

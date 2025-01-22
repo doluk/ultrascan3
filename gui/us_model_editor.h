@@ -17,7 +17,7 @@ class US_ModelEditor : public US_WidgetsDialog
       //! \param p             - Parent widget, normally not specified
       //! \param f             - Window flags, normally not specified
 		US_ModelEditor( ModelSystem&, QWidget* = 0, 
-            Qt::WindowFlags = 0 );
+            Qt::WindowFlags = Qt::WindowFlags() );
 
    private:
       US_Help       showhelp;

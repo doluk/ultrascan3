@@ -35,7 +35,7 @@ US_Sassoc::US_Sassoc( double eq0, double eq1, double stoich1, double stoich2,
    
    QLabel* lb_header= us_banner( tr( "Species Distribution in\n"
                             "Self-Associating System" ), -2 );
-   lb_header->setMargin( 10 );
+   lb_header->setContentsMargins( 10 , 10 , 10 , 10  );
    controls->addWidget( lb_header );
 
    QLabel* lb_stoich= us_banner( tr( "Stoichiometries:" ), -2 );
@@ -402,7 +402,7 @@ void US_Sassoc::save( void )
          ts << x       [ i ] << "\t"
             << species1[ i ] << "\t"
             << species2[ i ] << "\t"
-            << species3[ i ] << endl;
+            << species3[ i ] << Qt::endl;
       }
    }
 

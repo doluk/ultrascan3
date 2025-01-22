@@ -38,7 +38,7 @@ class US_GUI_EXTERN US_Sassoc : public US_Widgets
       */
       US_Sassoc( double, double, double, double, 
                  const QString&, int, bool, 
-                 bool = true, QWidget* = 0, Qt::WindowFlags = 0 );
+                 bool = true, QWidget* = 0, Qt::WindowFlags = Qt::WindowFlags() );
       
    private:
       double         eq    [ 2 ];

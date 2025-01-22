@@ -100,7 +100,7 @@ double US_Math2::box_muller( double m, double s )
 //  such that 0.0 <= R < 1.0
 double US_Math2::ranf( void )
 {
-   return  (double)qrand() / ( (double)RAND_MAX + 1.0 );
+   return  QRandomGenerator::global()->generateDouble();
 }
 
 
@@ -812,7 +812,7 @@ uint US_Math2::randomize( void )
    seed -= getpid();
 #endif
 
-   qsrand( seed );
+   QRandomGenerator::global()->seed( seed );
    return seed;
 }
 
@@ -821,7 +821,7 @@ uint US_Math2::randomize( uint seed )
    if ( seed == 0 ) 
       seed = randomize();
    else
-      qsrand( seed );
+      QRandomGenerator::global()->seed( seed );
 
    return seed;
 }

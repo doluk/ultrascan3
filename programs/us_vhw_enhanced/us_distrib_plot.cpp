@@ -691,12 +691,12 @@ DbgLv(1) << "SaveDat: file" << data2File << "nhpts nepts" << nhpts << nepts;
    {
       QString line;
       if ( ii < nhpts )
-         line = QString().sprintf(
+         line = QString::asprintf(
                    "\"%.6f\",\"%.6f\",\"%.6f\",\"%9.2f\",\"%9.4e\"\n",
                    eseds[ ii ], efrqs[ ii ], hseds[ ii ], hfrqs[ ii ],
                    tconc );
       else
-         line = QString().sprintf(
+         line = QString::asprintf(
                    "\"%.6f\",\"%.6f\",\"\",\"\",\"\"\n",
                    eseds[ ii ], efrqs[ ii ] );
 

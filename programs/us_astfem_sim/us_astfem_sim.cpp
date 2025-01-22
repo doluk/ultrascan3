@@ -1133,7 +1133,7 @@ DbgLv(1) << "ASIM:svscn: m-speed  have_tmst" << have_tmst;
             {
 // x  x  x  x  x  x  x
                int ispeed          = simparams.speed_step[ jd ].rotorspeed;
-               QString spsufx      = QString().sprintf( "-%05d", ispeed );
+               QString spsufx      = QString::asprintf( "-%05d", ispeed );
                QString run_id1     =  run_id + spsufx;
                QString odir1       =  odir   + spsufx;
                QString tmst_fpath1 =  odir1 + "/" + run_id1 + ".time_state.tmst";
@@ -1154,7 +1154,7 @@ DbgLv(1) << "ASIM:svscn: m-speed  have_tmst" << have_tmst;
             //  copy them to the other each speed's subdirectory,
             //  and save AUC data in all
             int ispeed          = simparams.speed_step[ 0 ].rotorspeed;
-            QString spsufx      = QString().sprintf( "-%05d", ispeed );
+            QString spsufx      = QString::asprintf( "-%05d", ispeed );
             QString run_id1     =  run_id + spsufx;
             QString odir1       =  odir   + spsufx;
             QString tmst_fpath1 =  odir1 + "/" + run_id1 + ".time_state.tmst";
@@ -1166,7 +1166,7 @@ DbgLv(1) << "ASIM:svscn: m-speed  have_tmst" << have_tmst;
             for ( int jd = 0; jd < nstep; jd++ )
             {
                ispeed              = simparams.speed_step[ jd ].rotorspeed;
-               spsufx              = QString().sprintf( "-%05d", ispeed );
+               spsufx              = QString::asprintf( "-%05d", ispeed );
                QString run_id2     =  run_id + spsufx;
                QString odir2       =  odir   + spsufx;
                QDir().mkpath( odir2 );
@@ -1585,7 +1585,7 @@ void US_Astfem_Sim::update_movie_plot( QVector< double >* x, double* c )
    {
       QPixmap pmap;
       image_count++;
-      imageName = imagedir + QString().sprintf( "frame%05d.png", image_count );
+      imageName = imagedir + QString::asprintf( "frame%05d.png", image_count );
       US_GuiUtil::save_png( imageName, moviePlot );
    }
 

@@ -14,8 +14,7 @@ QStringList US_Crypto::encrypt( const QString& plain_text, const QString& pw )
    {
       QTime time = QTime::currentTime();
       // Not a great amount of entropy, but probably good enough for us
-
-      qsrand( (uint)time.msec() );
+      QRandomGenerator::global()->seed( time.msec() );
       seed = true;
    }
 
@@ -23,7 +22,7 @@ QStringList US_Crypto::encrypt( const QString& plain_text, const QString& pw )
    QByteArray iv_ba( 16, '0' );
 
    for ( int i = 0; i < 16; i++ )
-      iv_ba[ i ] = qrand() % 256;
+      iv_ba[ i ] = QRandomGenerator::global()->generate() % 256;
 
    uchar* iv_ptr = (uchar*)iv_ba.data();
 

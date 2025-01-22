@@ -21,6 +21,9 @@
 #include <qwt_plot_zoomer.h>
 #include <qwt_plot_panner.h>
 #include <qwt_plot_layout.h>
+#include <qwt_matrix_raster_data.h>
+#include <qwt_raster_data.h>
+#include <qwt_interval.h>
 
 #define DbgLv(a) if(dbg_level>=a)qDebug()  //!< debug-level-conditioned qDebug()
 
@@ -39,7 +42,7 @@ typedef struct solute_s
 } S_Solute;
 
 //! \brief Class derived from QwtRasterData to supply QwtPlotSpectrogram data
-class US_GUI_EXTERN US_SpectrogramData : public QwtRasterData
+class US_GUI_EXTERN US_SpectrogramData : public QwtMatrixRasterData
 {
 public:
 
@@ -50,7 +53,7 @@ public:
 
 #if QT_VERSION < 0x050000
    //! \brief Return a copy of SpectroGram Data
-   virtual QwtRasterData *copy() const;
+   virtual QwtMatrixRasterData *copy() const;
 
    //! \brief Return the Z range (minimum,maximum pair)
    virtual QwtDoubleInterval range() const;

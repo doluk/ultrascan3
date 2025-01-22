@@ -11,7 +11,7 @@
 */
 
 US_Investigator::US_Investigator( bool signal, int inv )
-   : US_WidgetsDialog( 0, 0 )
+   : US_WidgetsDialog( 0, Qt::WindowFlags() )
 {
   us_inv_auto_mode = false;
    signal_wanted = signal;
@@ -213,7 +213,7 @@ US_Investigator::US_Investigator( bool signal, int inv )
 
 //Alternative Constructor for GMP:1.EXP.
 US_Investigator::US_Investigator( QString auto_mode, bool signal, int inv )
-   : US_WidgetsDialog( 0, 0 )
+   : US_WidgetsDialog( 0, Qt::WindowFlags() )
 {
   us_inv_auto_mode = true;
    
@@ -567,9 +567,9 @@ void US_Investigator::limit_names( const QString& s )
    for ( int i = 0; i < investigators.size(); i++ )
    {
       if ( investigators[ i ].lastName.contains( 
-               QRegExp( ".*" + s + ".*", Qt::CaseInsensitive ) ) ||
+               QRegularExpression( ".*" + s + ".*", QRegularExpression::CaseInsensitiveOption ) ) ||
            investigators[ i ].firstName.contains(
-                              QRegExp( ".*" + s + ".*", Qt::CaseInsensitive ) ) )
+                              QRegularExpression( ".*" + s + ".*", QRegularExpression::CaseInsensitiveOption ) ) )
          lw_names->addItem( new QListWidgetItem(
             "InvID: (" + QString::number( investigators[ i ].invID ) + "), " +
             investigators[ i ].lastName + ", " + 
@@ -702,7 +702,7 @@ void US_Investigator::reset( void )
 bool US_Investigator::check_fields( void )
 {
    QString missing = "";
-   QRegExp strip( "^\\s*(.*)\\s*$" );
+   QRegularExpression strip( "^\\s*(.*)\\s*$" );
 
    if ( le_lname->text().replace( strip, "\\1" ).isEmpty() )
       missing += tr( "\nLast Name" );

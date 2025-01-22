@@ -1015,11 +1015,11 @@ void US_ReportGui::verify_text( const QString& text )
   // else if ( oname == "av_intensity" )
   //   curr_widget = le_av_intensity;
 
-  QRegExp rx_double("\\d*\\.?\\d+");
+  QRegularExpression rx_double("\\d*\\.?\\d+");
 
   if ( curr_widget != NULL )
     {      
-      if ( !rx_double.exactMatch( text ) )
+      if ( !rx_double.match( text ).hasMatch() )
 	{
 	  QPalette *palette = new QPalette();
 	  palette->setColor(QPalette::Text,Qt::white);

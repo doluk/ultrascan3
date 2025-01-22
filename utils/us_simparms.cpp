@@ -8,10 +8,18 @@
 #include "us_math2.h"
 
 //!< level-conditioned debug print
+#ifndef DbgLv
 #define DbgLv(a) if(dbg_level>=a)qDebug()
+#endif
+#ifndef DSS_RESO
 #define DSS_RESO   100   // default SetSpeedResolution
+#endif
+#ifndef DSS_LO_RPM
 #define DSS_LO_RPM 1500  // default SetSpeedLowRpm
+#endif
+#ifndef DSS_LO_SEC
 #define DSS_LO_SEC 20    // default SpeedStepLowSec
+#endif
 
 US_SimulationParameters::US_SimulationParameters()
 {
@@ -850,7 +858,7 @@ int US_SimulationParameters::save_simparms( QString fname )
 
       if ( rotorcoeffs[ 0 ] != 0.0 )
       {
-         xml.writeAttribute   ( "rotorcoeffs", QString().sprintf( "%.3e %.3e",
+         xml.writeAttribute   ( "rotorcoeffs", QString::asprintf( "%.3e %.3e",
             rotorcoeffs[ 0 ], rotorcoeffs[ 1 ] ) );
       }
 
@@ -870,7 +878,7 @@ int US_SimulationParameters::save_simparms( QString fname )
          {
             xml.writeStartElement( "usermesh" );
             xml.writeAttribute( "radius",
-               QString().sprintf( "%11.5e", mesh_radius[ ii ] ).simplified() );
+               QString::asprintf( "%11.5e", mesh_radius[ ii ] ).simplified() );
             xml.writeEndElement();
          }
       }

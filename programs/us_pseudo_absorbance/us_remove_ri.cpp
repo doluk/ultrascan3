@@ -203,7 +203,7 @@ US_RemoveRI::US_RemoveRI() : US_Widgets()
 //    main_lyt->addStretch(1);
     main_lyt->addLayout(right_lyt, 1);
     main_lyt->setSpacing(1);
-    main_lyt->setMargin(1);
+    main_lyt->setContentsMargins( 1, 1, 1, 1 );
     setLayout(main_lyt);
 
     picker = new US_PlotPicker(qwtplot_data);

@@ -199,7 +199,7 @@ US_ConvertScan::US_ConvertScan() : US_Widgets()
     left_lyt->addLayout(status_lyt);
     left_lyt->addLayout(close_lyt);
     left_lyt->setSpacing(1);
-    left_lyt->setMargin(0);
+    left_lyt->setContentsMargins( 0, 0, 0, 0 );
 
     QFrame* frm_left = new QFrame();
     frm_left->setLayout(left_lyt);
@@ -249,7 +249,7 @@ US_ConvertScan::US_ConvertScan() : US_Widgets()
     main_lyt->addWidget(frm_left, 0);
     main_lyt->addLayout(right_lyt, 1);
     main_lyt->setSpacing(1);
-    main_lyt->setMargin(1);
+    main_lyt->setContentsMargins( 1, 1, 1, 1 );
     setLayout(main_lyt);
 
     picker_abs = new US_PlotPicker(qwtplot_abs);
@@ -894,9 +894,9 @@ bool US_ConvertScan::set_abs_runid(QString& runid) {
     lyt2->addLayout(lyt1);
     lyt2->addStretch(1);
     lyt2->addWidget(buttons);
-    lyt2->setMargin(1);
+    lyt2->setContentsMargins( 1, 1, 1, 1 );
     lyt2->setSpacing(2);
-    lyt2->setMargin(2);
+    lyt2->setContentsMargins( 2, 2, 2, 2 );
     dialog->setLayout(lyt2);
     dialog->setMinimumWidth(600);
     dialog->setFixedHeight(75);

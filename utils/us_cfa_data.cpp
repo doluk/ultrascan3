@@ -90,7 +90,7 @@ DbgLv(1) << "CfDa: sctype" << sctype << "is_absorb" << is_absorb;
    runID        = cur_dir.section( "/", -2, -2 );
    QString old_runID  = runID;
 
-   runID.replace( QRegExp( "![A-Za-z0-9_-]" ), "_" );
+   runID.replace( QRegularExpression( "![A-Za-z0-9_-]" ), "_" );
 
    if ( runID != old_runID )
    {
@@ -553,7 +553,7 @@ int US_CfaData::export_auc( QVector< US_DataIO::RawData >& allData )
       US_DataIO::RawData* rdata = &allData[ ii ];
       QString trnode    = QString::number( rdata->cell ) + "." +
                           QString( rdata->channel ) + "." +
-                          QString().sprintf( "%03d",
+                          QString::asprintf( "%03d",
                                 qRound( rdata->scanData[ 0 ].wavelength ) );
       QString fname     = fbase + trnode + ".auc";
       QString fpath     = cur_dir + fname;
@@ -796,7 +796,7 @@ DbgLv(1) << "CfDa:scn: ii" << ii << "cnames" << cnames;
       if ( dbtab.startsWith( "sqlite_stat" ) )
          continue;
 
-      sqry          = dbcfa.exec( "SELECT count(*) from " + dbtab );
+      sqry.exec( "SELECT count(*) from " + dbtab );
 DbgLv(1) << "CfDa:scn: ii" << ii << "  sqry exec for" << dbtab;
       sqry.next();
       int rows      = sqry.value( 0 ).toInt();
@@ -847,7 +847,7 @@ DbgLv(1) << "CfDa:scn: ii" << ii << "  qtxt" << qtxt;
       }
 
 
-      sqry          = dbcfa.exec( qtxt );
+      sqry.exec( qtxt );
       int row       = 0;
 DbgLv(1) << "CfDa:scn: ii" << ii << "dbtab" << dbtab << "rows" << rows
  << "cols" << cols << "qtxt" << qtxt;
@@ -886,7 +886,7 @@ DbgLv(1) << "CfDa:scn: ii" << ii << "dbtab" << dbtab << "rows" << rows
             datrow.wavelen   = sqry.value( jwvl ).toInt();
             datrow.scanNbr   = sqry.value( jscn ).toInt();
             datrow.triple    = QString::number( datrow.cell ) + "/"
-                             + QString( 'A' + datrow.channel ) + "/"
+                             + QString( 'A' + QChar(datrow.channel) ) + "/"
                              + QString::number( datrow.wavelen );
 //if(row<15)
 DbgLv(1) << "CfDa:scn: scanID" << datrow.scanId << "scNbr" << datrow.scanNbr
@@ -1060,7 +1060,7 @@ DbgLv(1) << "CfDa:scn: TIMEMS total scan " << time00.msecsTo(time20);
       int scnid     = tsmetas[ ii ].scanId;
       int scnnbr    = tsmetas[ ii ].scanNbr;
       QString scell = QString::number( icell );
-      QString schan = QString( 'A' + ichan );
+      QString schan = QString( 'A' + QChar(ichan) );
       QString swavl = QString::number( iwavl );
       QString cechn = scell + " / " + schan;
       QString tripl = cechn + " / " + swavl;
@@ -1291,7 +1291,7 @@ DbgLv(1) << "CfDa:grd: frec lrec" << frec << lrec;
                             " ID >= %1 and ID <= %2" )
                            .arg( frec ).arg( lrec );
 
-   sqry          = dbcfa.exec( qtxt );
+   sqry.exec( qtxt );
    qrec          = dbcfa.record( "Scans" );
    int cols      = qrec.count();
    QStringList cnames;

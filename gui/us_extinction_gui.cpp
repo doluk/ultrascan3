@@ -1,6 +1,9 @@
 //! \file us_extinction_gui.cpp
 //
 #include "us_extinction_gui.h"
+
+#include <qwt_text.h>
+
 #include "us_license_t.h"
 #include "us_license.h"
 #include "us_settings.h"

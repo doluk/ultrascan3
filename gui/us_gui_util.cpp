@@ -46,8 +46,8 @@ int US_GuiUtil::save_svg( const QString& filename, const QwtPlot* plot )
       QString fnsvg   = QString( filename ).section( ".", 0, -2 ) + ".svg";
 
       // Set resolution to screen resolution
-      double px  = (double)qApp->desktop()->width();
-      double in  = (double)qApp->desktop()->widthMM() / 25.4;
+      double px  = QGuiApplication::primaryScreen()->availableSize().width();
+      double in  = ((double)QGuiApplication::primaryScreen()->physicalSize().width()) / 25.4;
       int    res = qRound( px / in );
 
       // Generate the SVG file

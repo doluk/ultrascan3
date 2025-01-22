@@ -74,7 +74,7 @@ void CSVTableView::delete_columns() {
 }
 
 US_CSV_Loader::US_CSV_Loader(const QString& filePath, const QString& note,
-                             bool editable,QWidget* parent) : US_WidgetsDialog(parent, 0)
+                             bool editable,QWidget* parent) : US_WidgetsDialog(parent, Qt::WindowFlags())
 {
     QApplication::setOverrideCursor(Qt::WaitCursor);
     if (! parse_file(filePath)) {
@@ -136,16 +136,16 @@ void US_CSV_Loader::set_UI() {
     le_other->setMinimumWidth(10);
     le_other->setFrame(false);
 
-    QHBoxLayout* lyt_delimiter = new QHBoxLayout();
-    lyt_delimiter->setSpacing(0);
-    lyt_delimiter->setMargin(0);
-    lyt_delimiter->addLayout(lyt_tab);
-    lyt_delimiter->addLayout(lyt_comma);
-    lyt_delimiter->addLayout(lyt_semicolon);
-    lyt_delimiter->addLayout(lyt_space);
-    lyt_delimiter->addLayout(lyt_other);
-    lyt_delimiter->addSpacing(2);
-    lyt_delimiter->addWidget(le_other);
+   QHBoxLayout* lyt_delimiter = new QHBoxLayout();
+   lyt_delimiter->setSpacing(0);
+   lyt_delimiter->setContentsMargins( 0, 0, 0, 0 );
+   lyt_delimiter->addLayout(lyt_tab);
+   lyt_delimiter->addLayout(lyt_comma);
+   lyt_delimiter->addLayout(lyt_semicolon);
+   lyt_delimiter->addLayout(lyt_space);
+   lyt_delimiter->addLayout(lyt_other);
+   lyt_delimiter->addSpacing(2);
+   lyt_delimiter->addWidget(le_other);
 
     pb_add_header = us_pushbutton("Add Header");
     pb_cancel = us_pushbutton("Cancel");
@@ -229,19 +229,19 @@ void US_CSV_Loader::set_UI() {
     le_msg = us_lineedit("Note: ", 0, true);
     le_msg->setFrame(false);
 
-    QGridLayout* top_lyt = new QGridLayout();
-    top_lyt->addWidget(le_filename,       0, 0, 1, 3);
-    top_lyt->addLayout(lyt_delimiter,     1, 0, 1, 3);
-    top_lyt->addWidget(pb_reset,          2, 0, 1, 1);
-    top_lyt->addWidget(pb_show_red,       2, 1, 1, 1);
-    top_lyt->addWidget(pb_add_header,     2, 2, 1, 1);
-    top_lyt->addWidget(pb_save_csv,       3, 0, 1, 1);
-    top_lyt->addWidget(pb_cancel,         3, 1, 1, 1);
-    top_lyt->addWidget(pb_ok,             3, 2, 1, 1);
-    top_lyt->addWidget(le_msg,            4, 0, 1, 3);
-    top_lyt->setMargin(0);
-    top_lyt->setHorizontalSpacing(2);
-    top_lyt->setVerticalSpacing(2);
+   QGridLayout* top_lyt = new QGridLayout();
+   top_lyt->addWidget(le_filename,       0, 0, 1, 3);
+   top_lyt->addLayout(lyt_delimiter,     1, 0, 1, 3);
+   top_lyt->addWidget(pb_reset,          2, 0, 1, 1);
+   top_lyt->addWidget(pb_show_red,       2, 1, 1, 1);
+   top_lyt->addWidget(pb_add_header,     2, 2, 1, 1);
+   top_lyt->addWidget(pb_save_csv,       3, 0, 1, 1);
+   top_lyt->addWidget(pb_cancel,         3, 1, 1, 1);
+   top_lyt->addWidget(pb_ok,             3, 2, 1, 1);
+   top_lyt->addWidget(le_msg,            4, 0, 1, 3);
+   top_lyt->setContentsMargins( 0, 0, 0, 0 );
+   top_lyt->setHorizontalSpacing(2);
+   top_lyt->setVerticalSpacing(2);
 
     QFrame* top_frm = new QFrame();
     top_frm->setLayout(top_lyt);
@@ -251,11 +251,11 @@ void US_CSV_Loader::set_UI() {
     top_frm->setMinimumWidth(550);
     top_frm->setMaximumWidth(650);
 
-    QVBoxLayout* main_lyt = new QVBoxLayout();
-    main_lyt->addWidget(top_frm, 0, Qt::AlignCenter);
-    main_lyt->addWidget(tv_data, 1);
-    main_lyt->setMargin(2);
-    main_lyt->setSpacing(1);
+   QVBoxLayout* main_lyt = new QVBoxLayout();
+   main_lyt->addWidget(top_frm, 0, Qt::AlignCenter);
+   main_lyt->addWidget(tv_data, 1);
+   main_lyt->setContentsMargins( 2, 2, 2, 2 );
+   main_lyt->setSpacing(1);
 
     setLayout(main_lyt);
 

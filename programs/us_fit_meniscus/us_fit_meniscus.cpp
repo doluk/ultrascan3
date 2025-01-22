@@ -636,7 +636,7 @@ void US_FitMeniscus::load_data()
    QString contents  = te_data->e->toPlainText();
    contents.replace( QRegExp( "[^0-9eE\\.\\n\\+\\-]+" ), " " );
 
-   QStringList lines = contents.split( "\n", QString::SkipEmptyParts );
+   QStringList lines = contents.split( "\n", Qt::SkipEmptyParts );
    QStringList parsed;
    v_meni.clear();
    v_bott.clear();
@@ -646,7 +646,7 @@ DbgLv(1) << "LD:  bott_fit" << bott_fit << "fname_load" << fname_load;
 
    for ( int ii = 0; ii < lines.size(); ii++ )
    {
-      QStringList values = lines[ ii ].split( ' ', QString::SkipEmptyParts );
+      QStringList values = lines[ ii ].split( ' ', Qt::SkipEmptyParts );
 
       int valsize        = values.size();
 DbgLv(1) << "LD:  ii" << ii << "valsize" << valsize;
@@ -674,7 +674,7 @@ DbgLv(1) << "LD:  ii" << ii << "valsize" << valsize;
          v_bott << rbott;
          v_rmsd << rmsdv;
 
-         parsed << QString().sprintf( "%3d : ", count ) +
+         parsed << QString::asprintf( "%3d : ", count ) +
                    QString::number( rmeni, 'f', 5 ) + ", " +
                    QString::number( rbott, 'f', 5 ) + ", " +
                    QString::number( rmsdv, 'f', 8 ); 
@@ -686,7 +686,7 @@ DbgLv(1) << "LD:  ii" << ii << "valsize" << valsize;
          v_meni << rmeni;
          v_rmsd << rmsdv;
 
-         parsed << QString().sprintf( "%3d : ", count ) +
+         parsed << QString::asprintf( "%3d : ", count ) +
                    QString::number( rmeni, 'f', 5 ) + ", " +
                    QString::number( rmsdv, 'f', 8 ); 
       }
@@ -1470,8 +1470,8 @@ DbgLv(1) << " eupd:  fn" << fn;
       botnew         = le_men_sel->text().toDouble();
    }
 
-   QString s_meni = QString().sprintf( "%.5f", mennew );
-   QString s_bott = QString().sprintf( "%.5f", botnew );
+   QString s_meni = QString::asprintf( "%.5f", mennew );
+   QString s_bott = QString::asprintf( "%.5f", botnew );
 DbgLv(1) << " eupd:  s_meni s_bott" << s_meni << s_bott;
    QString mmsg   = "";
    QString mhdr   = "";

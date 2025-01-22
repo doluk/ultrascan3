@@ -22,7 +22,7 @@ US_DataLoader::US_DataLoader(
       QStringList&                      trips,
       QString&                          desc,
       QString                           tfilt )
- : US_WidgetsDialog( 0, 0 ),
+ : US_WidgetsDialog( 0, Qt::WindowFlags() ),
    latest     ( late ),
    rawData    ( rData ),
    editedData ( eData ),
@@ -630,7 +630,7 @@ void US_DataLoader::list_data()
       QString  cdescr  = dlabels.at( ii );
       DataDesc ddesc   = ddescrs.at( ii );
       QString  dbID    = fromDB
-                         ? QString().sprintf( "%6d", ddesc.DB_id )
+                         ? QString::asprintf( "%6d", ddesc.DB_id )
                          : QString( "" );
       crlabels.clear();
       crlabels << ddesc.runID

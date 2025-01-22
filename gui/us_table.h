@@ -25,7 +25,7 @@ class US_GUI_EXTERN US_Table : public US_WidgetsDialog
       //!                 normally not specified.
 
 		US_Table( QMap< double, double >&, const QString&, bool&, 
-            QWidget* = 0, Qt::WindowFlags = 0 );
+            QWidget* = 0, Qt::WindowFlags = Qt::WindowFlags() );
 
    private:
       QMap< double, double >& values;

@@ -1,22 +1,31 @@
 //! \file us_spectrodata.cpp
 
 #include "us_spectrodata.h"
+
+#include <qwt_matrix_raster_data.h>
+#include <qwt_raster_data.h>
+#include <qwt_interval.h>
+
 #include "us_defines.h"
 #include "us_settings.h"
 
 #define LO_DTERM 0.2500    // low decay-term point (1/4)
 
 // Provides raster data for QwtSpectrogram
-US_SpectrogramData::US_SpectrogramData() : QwtRasterData()
-{
+US_SpectrogramData::US_SpectrogramData() : QwtMatrixRasterData(), xmin(0), xmax(0), xrng(0), xinc(0), ymin(0), ymax(0),
+                                           yrng(0),
+                                           yinc(0),
+                                           zmin(0),
+                                           zmax(0),
+                                           zminr(0) {
    rdata.clear();
-   xreso    = 300.0;
-   yreso    = 300.0;
-   resol    = 90.0;
-   zfloor   = 100.0;
-   nxpsc    = qRound( xreso );
-   nyscn    = qRound( yreso );
-   nxypt    = nxpsc * nyscn;
+   xreso = 300.0;
+   yreso = 300.0;
+   resol = 90.0;
+   zfloor = 100.0;
+   nxpsc = qRound(xreso);
+   nyscn = qRound(yreso);
+   nxypt = nxpsc * nyscn;
    dbg_level = US_Settings::us_debug();
 }
 

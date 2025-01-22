@@ -11,7 +11,7 @@
 #include "us_associations_gui.h"
 
 US_ModelGui::US_ModelGui( US_Model& current_model )
-   : US_WidgetsDialog( 0, 0 ), model( current_model )
+   : US_WidgetsDialog( 0, Qt::WindowFlags() ), model( current_model )
 {
    setWindowTitle   ( "UltraScan Model Editor" );
    setPalette       ( US_GuiSettings::frameColor() );
@@ -149,7 +149,7 @@ US_ModelGui::US_ModelGui( US_Model& current_model )
    {  // if re-loading a previous model, list that model
       ModelDesc desc;
       desc.description = model.description;
-      desc.DB_id       = -1;
+      desc.DB_id       = QString::number( -1 );
       desc.filename .clear();
       desc.modelGUID   = model.modelGUID;
       desc.editGUID    = model.editGUID;
@@ -214,7 +214,9 @@ void US_ModelGui::show_model_desc( void )
    QString mfilt    = le_mlfilt->text();
    bool    listdesc = !mfilt.isEmpty();
 qDebug() << "ShMDsc: mfilt listdesc" << mfilt << listdesc;
-   QRegExp mpart    = QRegExp( ".*" + mfilt + ".*", Qt::CaseInsensitive );
+   QRegularExpression mpart = QRegularExpression(
+      QRegularExpression::wildcardToRegularExpression(".*" + mfilt + ".*"),
+       QRegularExpression::CaseInsensitiveOption );
    QApplication::setOverrideCursor( QCursor( Qt::WaitCursor ) );
 
    for ( int ii = 0; ii < model_descriptions.size(); ii++ )
@@ -900,7 +902,7 @@ qDebug() << "LsMdl: path" << path;
                      md.modelGUID   = a.value( "modelGUID"   ).toString();
                      md.editGUID    = a.value( "editGUID"    ).toString();
                      md.filename    = path + "/" + f_names[ ii ];
-                     md.DB_id       = -1;
+                     md.DB_id       = QString::number( -1 );
                      model_descriptions << md;
                      break;
                   }

@@ -35,9 +35,9 @@ class US_GUI_EXTERN US_Widgets : public QFrame
     //! The constructor connects to global memory and moves the screen to
     //! the point saved there. It adjusts the location point by QPoint( 30, 30).
 #ifndef Q_OS_WIN
-    US_Widgets( bool = true, QWidget* p = 0, Qt::WindowFlags f = 0 );
+    US_Widgets( bool = true, QWidget* p = 0, Qt::WindowFlags f = Qt::WindowFlags() );
 #else
-    US_Widgets( bool = false, QWidget* p = 0, Qt::WindowFlags f = 0 );
+    US_Widgets( bool = false, QWidget* p = 0, Qt::WindowFlags f = Qt::WindowFlags() );
 #endif
 
     //! The destructor readjusts the location point in global memory to
@@ -311,7 +311,7 @@ public:
     US_LineEdit_RE(const QString& = 0, int = -1, bool = false);
     void setMaxChars(int);
     void setDefault(void);
-    QRegExp re;
+    QRegularExpression re;
 
 signals:
     void textUpdated(void);

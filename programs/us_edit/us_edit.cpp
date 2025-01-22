@@ -2657,7 +2657,7 @@ DbgLv(1) << "IS-MWL:  expi_wvlns size" << expi_wvlns.size() << nwaveln;
 //       for ( int ii = 0; ii < nrpoint; ii++ )
 //       {  // Update the list of radii that may be plotted
 //          expd_radii << data.xvalues[ ii ];
-//          expc_radii << QString().sprintf( "%.3f", data.xvalues[ ii ] );
+//          expc_radii << QString::asprintf( "%.3f", data.xvalues[ ii ] );
 //       }
 // DbgLv(1) << "IS-MWL:  expd_radii size" << expd_radii.size() << nrpoint;
 
@@ -4576,7 +4576,7 @@ DbgLv(1) << "IS-MWL:  expi_wvlns size" << expi_wvlns.size() << nwaveln;
 //       for ( int ii = 0; ii < nrpoint; ii++ )
 //       {  // Update the list of radii that may be plotted
 //          expd_radii << data.xvalues[ ii ];
-//          expc_radii << QString().sprintf( "%.3f", data.xvalues[ ii ] );
+//          expc_radii << QString::asprintf( "%.3f", data.xvalues[ ii ] );
 //       }
 // DbgLv(1) << "IS-MWL:  expd_radii size" << expd_radii.size() << nrpoint;
 
@@ -5193,7 +5193,7 @@ DbgLv(1) << "IS-MWL:  expi_wvlns size" << expi_wvlns.size() << nwaveln;
 //       for ( int ii = 0; ii < nrpoint; ii++ )
 //       {  // Update the list of radii that may be plotted
 //          expd_radii << data.xvalues[ ii ];
-//          expc_radii << QString().sprintf( "%.3f", data.xvalues[ ii ] );
+//          expc_radii << QString::asprintf( "%.3f", data.xvalues[ ii ] );
 //       }
 // DbgLv(1) << "IS-MWL:  expd_radii size" << expd_radii.size() << nrpoint;
 

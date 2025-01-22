@@ -25,7 +25,7 @@ class US_LongMessageBox : public US_WidgetsDialog
       //! \param parent  Parent widget
       //! \param f       Window flags
 		US_LongMessageBox( const QString&, const QString&,
-            QWidget* = 0, Qt::WindowFlags = 0 );
+            QWidget* = 0, Qt::WindowFlags = Qt::WindowFlags() );
 
       //! \brief Set or Reset the dialog title
       //! \param title   Dialog title string

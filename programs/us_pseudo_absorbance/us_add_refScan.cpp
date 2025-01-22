@@ -229,7 +229,7 @@ US_AddRefScan::US_AddRefScan() : US_Widgets()
     tab0_lyt->addLayout(tab0_usplotR,  1, 1, 1, 1);
     tab0_lyt->addLayout(tab0_devplotL, 2, 0, 1, 1);
     tab0_lyt->addLayout(tab0_devplotR, 2, 1, 1, 1);
-    tab0_lyt->setMargin(0);
+    tab0_lyt->setContentsMargins( 0, 0, 0, 0 );
     tab0_lyt->setSpacing(1);
 
 
@@ -313,7 +313,7 @@ US_AddRefScan::US_AddRefScan() : US_Widgets()
     tab1_lyt->addLayout(tab1_plt_lyt2, 0);
     tab1_lyt->addLayout(tab1_plt_lyt3, 1);
     tab1_lyt->addLayout(tab1_plt_lyt4);
-    tab1_lyt->setMargin(0);
+    tab1_lyt->setContentsMargins( 0, 0, 0, 0 );
     tab1_lyt->setSpacing(1);
 
     //**//
@@ -333,7 +333,7 @@ US_AddRefScan::US_AddRefScan() : US_Widgets()
     main_lyt->addLayout(left_lyt, 0);
     main_lyt->addWidget(tabs, 1);
     main_lyt->setSpacing(1);
-    main_lyt->setMargin(1);
+    main_lyt->setContentsMargins( 1, 1, 1, 1 );
     setLayout(main_lyt);
 
     slt_reset();
