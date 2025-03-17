@@ -15,11 +15,13 @@ on:
   push:
     branches: 
      - master
+     - main
      - aaron-dev-test
   pull_request:
     # The branches below must be a subset of the branches above
     branches: 
      - master
+     - main
      - aaron-dev-test
   schedule:
     - cron: '20 18 * * 1'
@@ -82,7 +84,7 @@ jobs:
     # Specify the container in which actions will run
     container:
       image: ehb1/us3comp:latest
-      options: --cpus 2
+      options: --cpus 8
 
     steps:
       - name: Checkout repository
@@ -101,20 +103,20 @@ jobs:
           (cd programs/us && sh revision.sh)
           cd qwtplot3d
           qmake
-          make -j4
+          make -j8
           cd ..
           cd utils
           qmake
-          make -j4
+          make -j8
           cd ..
           cd gui
           qmake
-          make -j4
+          make -j8
           cd ..
           for d in `find programs -type d -name "us*" | grep -v 'us_mpi_analysis'`
           do
           echo "*** compiling in $d ***"
-          ( cd $d && qmake && make -j4 )
+          ( cd $d && qmake && make -j8 )
           done
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
@@ -134,7 +136,7 @@ jobs:
     # Specify the container in which actions will run
     container:
       image: ehb1/us3comp:latest
-      options: --cpus 2
+      options: --cpus 4
 
     steps:
       - name: Checkout repository
