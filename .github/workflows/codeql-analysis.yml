@@ -27,7 +27,7 @@ on:
 jobs:
   analyze-mpi:
     name: Analyze mpi
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2204
     permissions:
       security-events: write
       actions: read
@@ -69,7 +69,7 @@ jobs:
 
   analyze-gui:
     name: Analyze gui
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-8vcpu-ubuntu-2204
     permissions:
       security-events: write
       actions: read
@@ -121,7 +121,7 @@ jobs:
 
   analyze-somo:
     name: Analyze somo
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2204
     permissions:
       security-events: write
       actions: read
@@ -163,7 +163,7 @@ jobs:
         uses: github/codeql-action/analyze@v3
   unit-testing:
     name: Unit Testing
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2204
     permissions:
       security-events: write
       actions: read
