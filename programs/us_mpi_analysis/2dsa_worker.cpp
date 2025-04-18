@@ -40,6 +40,7 @@ DbgLv(1) << "w:" << my_rank << ": job_recvd  length" << job.length
       meniscus_value     = job.meniscus_value;
       bottom_value       = job.bottom_value;
       int offset         = job.dataset_offset;
+      int bfg_offset     = job.bfg_offset;
       int dataset_count  = job.dataset_count;
       int job_length     = job.length;
       int noisflag       = ( parameters[ "tinoise_option" ].toInt() > 0 ?  1 : 0 )
@@ -47,7 +48,7 @@ DbgLv(1) << "w:" << my_rank << ": job_recvd  length" << job.length
 DbgLv(1) << "w:" << my_rank << ": offs cnt" << offset << dataset_count;
 
       data_sets[ offset ]->run_data.meniscus  = meniscus_value;
-      data_sets[ offset ]->run_data.bottom    = bottom_value;
+      data_sets[ offset ]->run_data.bottom   = bottom_value;
       data_sets[ offset ]->simparams.meniscus = meniscus_value;
       data_sets[ offset ]->simparams.bottom   = bottom_value;
 
@@ -94,7 +95,7 @@ DbgLv(1) << "w:" << my_rank << ": sols size" << job.length;
 }
 //*DEBUG*
 
-               calc_residuals( offset, dataset_count, simulation_values );
+               calc_residuals( offset, dataset_count, simulation_values, bfg_offset );
 
                // Tell master we are sending back results
                int size[ 4 ] = { simulation_values.solutes.size(),

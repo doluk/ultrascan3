@@ -205,9 +205,11 @@ void US_2dsa::analysis_done( int updflag )
       le_rmsd->setText( QString::number( rmsd ) );
 DbgLv(0) << "Analysis Done VARI" << vari << "model,noise counts"
  << models.count() << (ti_noises.count()+ri_noises.count())
- << "menisc bott"
+      << mdesc
+ << "menisc bott angle"
  << mdesc.mid( mdesc.indexOf( "MENISCUS=" ) + 9 ).section( " ", 0, 0 )
- << mdesc.mid( mdesc.indexOf( "BOTTOM=" ) + 7 ).section( " ", 0, 0 );
+ << mdesc.mid( mdesc.indexOf( "BOTTOM=" ) + 7 ).section( " ", 0, 0 )
+       << mdesc.mid( mdesc.indexOf( "ANGLE=" ) + 6 ).section( " ", 0, 0 );
 
       qApp->processEvents();
       return;
@@ -245,12 +247,14 @@ DbgLv(1) << "  edat0 sdat0 rdat0 tnoi0"
 
    // For multiple models (e.g., Fit-Meniscus) report on best
    int nmodels     = models.count();
-   bool fitMeni    = ( model.global == US_Model::MENISCUS );
+   bool fitMeni    = ( model.global == US_Model::MENISCUS || model.global == US_Model::BOTTOM ||
+   model.global == US_Model::MENIBOTT || model.global == US_Model::ANGEL || model.global == US_Model::MENIANGEL);
    if ( nmodels > 1  &&  fitMeni )
    {
       double b_rmsd   = 1.0e+99;
       double b_meni   = 0.0;
       double b_bott   = 0.0;
+      double b_angle  = 0.0;
 
       for ( int ii = 0; ii < nmodels; ii++ )
       {
@@ -267,12 +271,14 @@ DbgLv(2) << "FitMens Done:  ii desc" << ii << mdesc;
                             .section( " ", 0, 0 ).toDouble();
             b_bott        = mdesc.mid( mdesc.indexOf( "BOTTOM=" ) + 7 )
                             .section( " ", 0, 0 ).toDouble();
-DbgLv(1) << "FitMens Done:    b_ rmsd,meni,bott" << b_rmsd << b_meni << b_bott
+            b_angle        = mdesc.mid( mdesc.indexOf( "ANGLE=" ) + 6 )
+                            .section( " ", 0, 0 ).toDouble();
+DbgLv(1) << "FitMens Done:    b_ rmsd,meni,bott,angle" << b_rmsd << b_meni << b_bott << b_angle
  << "  ix" << (ii+1);
          }
       }
-DbgLv(1) << "FitMens Done: BEST rmsd,meniscus,bottom"
- << b_rmsd << b_meni << b_bott;
+DbgLv(1) << "FitMens Done: BEST rmsd,meniscus,bottom,angle"
+ << b_rmsd << b_meni << b_bott << b_angle;
 
    }
 }
@@ -555,6 +561,7 @@ void US_2dsa::view( void )
 
    te_results->e->setHtml( rtext );
    te_results->show();
+   te_results->setFocus();
 }
 
 // Save data (model,noise), report, and PNG image files
@@ -574,11 +581,13 @@ DbgLv(1) << "2DSA:SV: cusGrid" << cusGrid << "desc" << model.description;
    bool    fitMeni      = ( model.global == US_Model::MENISCUS );
    bool    fitBott      = ( model.global == US_Model::BOTTOM );
    bool    fitMeBo      = ( model.global == US_Model::MENIBOTT );
+   bool    fitAngle     = ( model.global == US_Model::ANGEL );
+   bool    fitMeAngle   = ( model.global == US_Model::MENIANGEL );
    bool    montCar      = model.monteCarlo;
    QString analysisType = QString( cusGrid ? "2DSA-CG" : "2DSA" )
                         + QString( fitMeni ? "-FM" : "" )
-                        + QString( fitBott ? "-FB" : "" )
-                        + QString( fitMeBo ? "-FMB" : "" )
+                        + QString( (fitBott || fitAngle) ? "-FB" : "" )
+                        + QString( (fitMeBo || fitMeAngle) ? "-FMB" : "" )
                         + QString( refIter ? "-IT" : "" )
                         + QString( montCar ? "-MC" : "" );
    QString requestID    = "local";
@@ -598,6 +607,7 @@ DbgLv(1) << "2DSA:SV: cusGrid" << cusGrid << "desc" << model.description;
    int     nnoises  = nmodels * knois;           // number of noises to save
    double  meniscus = edata->meniscus;
    double  bottom   = edata->bottom;
+   double  angle    = dset.simparams.cp_angle;
    double  dwavelen = edata->wavelength.toDouble();
    QApplication::setOverrideCursor( QCursor( Qt::WaitCursor ) );
 
@@ -679,6 +689,8 @@ DbgLv(1) << "2DSA:SV: cusGrid" << cusGrid << "desc" << model.description;
       QString mdesc     = model.description;    // description from processor
       double  variance  = mdesc.mid( mdesc.indexOf( "VARI=" ) + 5 )
                           .section( ' ', 0, 0 ).toDouble();
+      angle  = mdesc.mid( mdesc.indexOf( "ANGLE=" ) + 6 )
+                          .section( ' ', 0, 0 ).toDouble();
       // create the iteration part of model description:
       // e.g.,"i01" normally; "i03-m60190" for meniscus; "mc017" for monte carlo
       QString iterID    = "i01";
@@ -705,6 +717,24 @@ DbgLv(1) << "2DSA:SV: cusGrid" << cusGrid << "desc" << model.description;
                              .section( ' ', 0, 0 ).toDouble();
          iterID.sprintf( "i%02d-b%05d", iterNum, qRound( bottom * 10000 ) );
       }
+      else if ( fitMeAngle )
+      {
+         meniscus          = mdesc.mid( mdesc.indexOf( "MENISCUS=" ) + 9 )
+                             .section( ' ', 0, 0 ).toDouble();
+         bottom            = mdesc.mid( mdesc.indexOf( "ANGLE=" ) + 6 )
+                             .section( ' ', 0, 0 ).toDouble();
+         if ( bottom > 0.0 )
+            iterID.sprintf( "i%02d-m%05da%05d", iterNum, qRound( meniscus * 10000 ),
+                            qRound( bottom * 10000 ) );
+         else
+            iterID.sprintf( "i%02d-m%05d", iterNum, qRound( meniscus * 10000 ) );
+      }
+      else if ( fitAngle )
+      {
+         bottom            = mdesc.mid( mdesc.indexOf( "ANGLE=" ) + 6 )
+                             .section( ' ', 0, 0 ).toDouble();
+         iterID.sprintf( "i%02d-a%05d", iterNum, qRound( bottom * 10000 ) );
+      }
 
       // fill in actual model parameters needed for output
       model.description = descbase + iterID + ".model";
@@ -720,7 +750,7 @@ DbgLv(1) << "2DSA:SV: cusGrid" << cusGrid << "desc" << model.description;
       model.meniscus    = meniscus;
       model.bottom      = bottom;
       model.wavelength  = dwavelen;
-      model.dataDescrip = edata->description;
+      model.dataDescrip = edata->description + QString("Angle %1").arg(angle);
 
       for ( int cc = 0; cc < model.components.size(); cc++ )
          model.components[ cc ].name = QString().sprintf( "SC%04d", cc + 1 );
@@ -812,30 +842,55 @@ DbgLv(1) << "2DSA:SV: cusGrid" << cusGrid << "desc" << model.description;
          US_Model model2 = model;
          qDebug() << "::::: nmodel=" << model.components.size() << " nmodel2=" << model2.components.size();
          double avtemp  = dset.temperature;
-         for ( int ii = 0; ii < model2.components.size(); ii++ )
+         for (auto & ii : model2.components)
          {
-            US_Model::SimulationComponent* component = &model2.components[ ii ];
+            US_Model::SimulationComponent* component = &ii;
 
-            US_Math2::SolutionData  sd;
+            US_Math2::SolutionData  sd{};
             sd.viscosity   = dset.viscosity;
             sd.density     = dset.density;
             sd.manual      = dset.manual;
-            sd.vbar20      = model2.components[ ii ].vbar20;
+            sd.vbar20      = ii.vbar20;
             sd.vbar        = US_Math2::adjust_vbar20( sd.vbar20, avtemp );
             US_Math2::data_correction( avtemp, sd );
             double scorr   = sd.s20w_correction;
             double dcorr   = sd.D20w_correction;
-            component->s  /= scorr;
-            component->D  /= dcorr;
+            if (dset.simparams.meshType != US_SimulationParameters::ASTFVM)
+            {
+               component->s  /= scorr;
+               component->D  /= dcorr;
+            }
             if ( component->extinction > 0.0 )
+            {
                component->molar_concentration = component->signal_concentration / component->extinction;
+            }
          }
 
          SIMPARAMS simparms = dset.simparams;
          int drow = lw_triples->currentRow();
          US_AstfemMath::initSimData( sdata, dataList[ drow ], 0.0 );
-         US_Astfem_RSA* astfem_rsa = new US_Astfem_RSA( model2, simparms );
-         astfem_rsa->calculate( sdata );
+         if (dset.simparams.meshType == US_SimulationParameters::ASTFVM)
+         {
+            US_LammAstfvm* lamm = new US_LammAstfvm(model2, simparms);
+            delete bfg;
+            bfg = new US_Math_BF::Band_Forming_Gradient(simparms.meniscus,simparms.bottom,
+                                                        simparms.band_volume,
+                                                        dsets[0]->solution_rec.buffer.cosed_component,
+                                                        simparms.cp_pathlen,simparms.cp_angle);
+            bfg->get_eigenvalues();
+            bfg->calculate_gradient(simparms, &sdata);
+            lamm->set_buffer( dset.solution_rec.buffer, bfg, nullptr );
+            lamm->calculate(sdata);
+            delete lamm;
+         }
+         else
+         {
+            US_Astfem_RSA* astfem_rsa = new US_Astfem_RSA( model2, simparms );
+            astfem_rsa->set_debug_flag( dbg_level) ;
+            astfem_rsa->calculate( sdata );
+            delete astfem_rsa;
+         }
+
 
          int kpts = 0;
          double variance = 0.0;
@@ -878,14 +933,21 @@ DbgLv(1) << "2DSA:SV: cusGrid" << cusGrid << "desc" << model.description;
    QString analybase = fitMeni ? "2DSA-FM" : ( montCar ? "2DSA-MC" : "2DSA" );
    analybase         = fitBott ? "2DSA-FB" : analybase;
    analybase         = fitMeBo ? "2DSA-FMB" : analybase;
+   analybase         = fitAngle ? "2DSA-FA" : analybase;
+   analybase         = fitMeAngle ? "2DSA-FMA" : analybase;
    QString analynode = "/" + analybase + ".";
-   QString filebase  = reppath  + analybase + dext + ".";
+   QString maDesc("");
+    if ( model.description.startsWith( runID ) )
+    {  // Saved model:  get analysis description from model description
+        maDesc            = model.description.section( ".", -2, -2 ).section( "_", 1, -1 );
+    }
+   QString filebase  = reppath  + analybase + dext + "."+ maDesc + ".";
    QString htmlFile  = filebase + "report.html";
    QString plot1File = filebase + "velocity.svgz";
    QString plot2File = filebase + "residuals.png";
    QString plot3File = filebase + "rbitmap.png";
    QString plot4File = filebase + "velocity_nc.svgz";
-   QString fitFile   = filebase + ( fitBott ?
+   QString fitFile   = filebase + ( (fitBott||fitAngle) ?
                                     "fitbot.dat" :
                                     "fitmen.dat" );
    QString fresFile  = respath  + QString( fitFile )
@@ -975,7 +1037,7 @@ DbgLv(1) << "2DSA:SV: cusGrid" << cusGrid << "desc" << model.description;
    update_filelist( repfiles, plot4File );
 
    // Add fit files if fit-meniscus or fit-bottom
-   if ( fitMeni  ||  fitBott )
+   if ( fitMeni  ||  fitBott || fitAngle )
    {
       QString fitstr = fit_meniscus_data();
 
@@ -1097,6 +1159,7 @@ DbgLv(0) << "2DSA d_corr v vW vT d dW dT" << sd.viscosity << sd.viscosity_wt
    // Skip adding speed steps if this is multi-speed, initially,
    // but set speed steps to the experiment vector.
    dset.simparams.initFromData( dbP, dataList[ drow ], !exp_steps );
+   if (dataLoaded){dset.solution_rec = solution_rec;}
    edata->bottom   = ( edata->bottom > 0.0 ) ?
                      edata->bottom :
                      0.0;
@@ -1204,6 +1267,7 @@ DbgLv(1)<<"2dsa : ssck: rspeed accel1 tf_aend tf_scan"
    dset.s20w_correction    = sd.s20w_correction;
    dset.D20w_correction    = sd.D20w_correction;
    dset.manual             = manual;
+
 DbgLv(1) << "Bottom" << dset.simparams.bottom << "rotorcoeffs"
  << dset.simparams.rotorcoeffs[0] << dset.simparams.rotorcoeffs[1];
 DbgLv(1) << "SimulationParameter --";
@@ -1254,12 +1318,16 @@ QString US_2dsa::distrib_info()
       bool    fitMeni   = ( model.global == US_Model::MENISCUS );
       bool    fitBott   = ( model.global == US_Model::BOTTOM );
       bool    fitMeBo   = ( model.global == US_Model::MENIBOTT );
+      bool    fitAngle   = ( model.global == US_Model::ANGEL );
+      bool    fitMeAngle   = ( model.global == US_Model::MENIANGEL );
       bool    montCar   = model.monteCarlo;
 DbgLv(1) << "2DSA:SV: cusGrid" << cusGrid << "desc" << model.description;
       QString anType    = QString( cusGrid ? "2DSA-CG" : "2DSA" )
                         + QString( fitMeni ? "-FM" : "" )
                         + QString( fitBott ? "-FB" : "" )
                         + QString( fitMeBo ? "-FMB" : "" )
+                        + QString( fitBott ? "-FA" : "" )
+                        + QString( fitMeBo ? "-FMA" : "" )
                         + QString( refIter ? "-IT" : "" )
                         + QString( montCar ? "-MC" : "" );
       maDesc            = adate + "_" + anType + "_local_i01";
@@ -1271,14 +1339,43 @@ DbgLv(1) << "2DSA:SV: cusGrid" << cusGrid << "desc" << model.description;
 
    mstr += table_row( tr( "Model Analysis:" ),
                       maDesc );
+    mstr += table_row( tr( "Solution:" ),
+                       QString( dset.solution_rec.solutionDesc ) + " " + dset.solution_rec.solutionGUID );
    mstr += table_row( tr( "Number of Components:" ),
                       QString::number( ncomp ) );
    mstr += table_row( tr( "Residual RMS Deviation:" ),
                       QString::number( rmsd )  );
+   mstr += table_row( tr( "s20w correction:" ),
+                      QString::number( dset.s20w_correction )  );
+   mstr += table_row( tr( "D20w correction:" ),
+                      QString::number( dset.D20w_correction )  );
+   QStringList meshType;
+   meshType <<"ASTFEM"<< "CLAVERIE"<< "MOVING_HAT"<< "USER"<< "ASTFVM";
+   mstr += table_row( tr( "Mesh Type:" ),
+                      meshType[dset.simparams.meshType] );
+   QStringList gridType;
+   gridType << "FIXED" << "MOVING";
+   mstr += table_row( tr( "Grid Type:" ),
+                      gridType[dset.simparams.gridType] );
+   mstr += table_row( tr( "Simulation points:" ),
+                      QString::number( dset.simparams.simpoints )  );
+    mstr += table_row( tr( "Radial Resolution:" ),
+                       QString::number( dset.simparams.radial_resolution )  );
+    mstr += table_row( tr( "Band forming:" ),
+                       QString( dset.simparams.band_forming?(QString("Yes") + " "+ QString::number(dset.simparams.band_volume) + " mL"):"No" ));
+    mstr += table_row( tr( "Channel angle:" ),
+                       QString::number( dset.simparams.cp_angle )  );
+    mstr += table_row( tr( "Mensicus:" ),
+                       QString::number( dset.simparams.meniscus )  + " cm");
+    mstr += table_row( tr( "Bottom:" ),
+                       QString::number( dset.simparams.bottom )  );
+    mstr += table_row( tr( "Bottom Position" ),
+                       QString::number( dset.simparams.bottom_position )  + " cm");
 
    double sum_mw  = 0.0;
    double sum_s   = 0.0;
    double sum_D   = 0.0;
+   double sum_ff0 = 0.0;
    double sum_c   = 0.0;
    double mink    = 1e+99;
    double maxk    = -1e+99;
@@ -1292,6 +1389,7 @@ DbgLv(1) << "2DSA:SV: cusGrid" << cusGrid << "desc" << model.description;
       sum_mw     += model.components[ ii ].mw * conc;
       sum_s      += model.components[ ii ].s  * conc;
       sum_D      += model.components[ ii ].D  * conc;
+      sum_ff0    += model.components[ ii ].f_f0 * conc;
       mink        = qMin( mink, model.components[ ii ].f_f0   );
       maxk        = qMax( maxk, model.components[ ii ].f_f0   );
       minv        = qMin( minv, model.components[ ii ].vbar20 );
@@ -1307,6 +1405,8 @@ DbgLv(1) << "2DSA:SV: cusGrid" << cusGrid << "desc" << model.description;
                       QString().sprintf( "%6.4e", ( sum_D  / sum_c ) ) );
    mstr += table_row( tr( "W.A. Molecular Weight:" ),
                       QString().sprintf( "%6.4e", ( sum_mw / sum_c ) ) );
+    mstr += table_row( tr( "W.A. frictional ration:" ),
+                       QString().sprintf( "%6.4e", ( sum_ff0 / sum_c ) ) );
    mstr += table_row( tr( "Total Concentration:" ),
                       QString().sprintf( "%6.4e", sum_c ) );
 
@@ -1392,7 +1492,8 @@ QString US_2dsa::iteration_info()
       return "";
 
    model            = models[ nmodels - 1 ];
-   bool    fitMeni  = ( model.global == US_Model::MENISCUS );
+   bool fitMeni    = ( model.global == US_Model::MENISCUS || model.global == US_Model::BOTTOM ||
+model.global == US_Model::MENIBOTT || model.global == US_Model::ANGEL || model.global == US_Model::MENIANGEL);
    bool    montCar  = model.monteCarlo;
    QString anType   = montCar ? "Monte Carlo" : "Fit Meniscus";
 
@@ -1430,15 +1531,25 @@ QString US_2dsa::iteration_info()
       + indent( 4 ) + "<table>\n";
 
    if ( montCar )
+   {
       mstr += table_row( tr( "Iteration" ),
                          tr( "Iteration ID" ),
                          tr( "RMSD" ) );
-
+   }
+   else if ( model.global == US_Model::ANGEL || model.global == US_Model::MENIANGEL )
+   {
+      mstr += table_row( tr( "Iteration" ),
+                         tr( "Meniscus" ),
+                         tr( "Angle" ),
+                         tr( "RMSD" ) );
+   }
    else
+   {
       mstr += table_row( tr( "Iteration" ),
                          tr( "Meniscus" ),
                          tr( "Bottom" ),
                          tr( "RMSD" ) );
+   }
 
    for ( int ii = 0; ii < nmodels; ii++ )
    {
@@ -1453,7 +1564,14 @@ QString US_2dsa::iteration_info()
          QString itID  = QString().sprintf( "i%04i", ii + 1 );
          mstr         += table_row( itnum, itID, armsd );
       }
-
+      else if ( model.global == US_Model::ANGEL || model.global == US_Model::MENIANGEL )
+      {
+         QString ameni = mdesc.mid( mdesc.indexOf( "MENISCUS=" ) + 9 )
+                .section( " ", 0, 0 );
+         QString abott = mdesc.mid( mdesc.indexOf( "ANGLE=" ) + 6 )
+                         .section( " ", 0, 0 );
+         mstr         += table_row( itnum, ameni, abott, armsd );
+      }
       else
       {
          QString ameni = mdesc.mid( mdesc.indexOf( "MENISCUS=" ) + 9 )
@@ -1563,12 +1681,16 @@ QString US_2dsa::fit_meniscus_data()
    int nmodels   = models.size();
    
    if ( nmodels < 2 )
+   {
       return mstr;
+   }
 
-    bool usemen  = ( QString( models[ 0 ].description )
+   bool usemen  = ( QString( models[ 0 ].description )
                      .indexOf( "MENISCUS=" ) > 0 );
     bool usebot  = ( QString( models[ 0 ].description )
                      .indexOf( "BOTTOM=" ) > 0 );
+   bool useangle = ( QString( models[ 0 ].description )
+                     .indexOf( "ANGLE=" ) > 0 );
 
    for ( int ii = 0; ii < nmodels; ii++ )
    {
@@ -1602,6 +1724,23 @@ DbgLv(1) << "fitmdat:  ii" << ii << "meni rmsd"
          mstr         += ( abott + " " + armsd + "\n" );
 DbgLv(1) << "fitbdat:  ii" << ii << "bott rmsd"
  << abott << armsd;
+      }
+      else if ( usemen && useangle )
+      {
+         QString ameni = mdesc.mid( mdesc.indexOf( "MENISCUS=" ) + 9 )
+                         .section( " ", 0, 0 );
+         QString aangle = mdesc.mid( mdesc.indexOf( "ANGLE=" ) + 6 )
+                         .section( " ", 0, 0 );
+         mstr         += ( ameni + " " + aangle + " " + armsd + "\n" );
+         DbgLv(1) << "fitmdat:  ii" << ii << "meni angle rmsd"
+          << ameni << aangle << armsd;
+      }
+      else if ( useangle )
+      {
+         QString aangle = mdesc.mid( mdesc.indexOf( "ANGLE=" ) + 6 )
+                         .section( " ", 0, 0 );
+         mstr         += ( aangle + " " + armsd + "\n" );
+         DbgLv(1) << "fitmdat:  ii" << ii << " angle rmsd" << aangle << armsd;
       }
    }
    
