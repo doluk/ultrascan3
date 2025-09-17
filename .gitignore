@@ -1,6 +1,7 @@
 local.pri
 .*
 !/.gitignore
+!/.github/
 *.o
 tmp/
 moc/
@@ -17,3 +18,9 @@ gui/qrc_images.cpp
 *.pro.user
 *object_script*
 
+
+# MSIX packaging artifacts
+*.msix
+*.appx
+msix-package/
+C:/dist/
