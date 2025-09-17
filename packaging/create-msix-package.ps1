@@ -57,6 +57,9 @@ if (Test-Path $EtcDir) {
     }
     if (Test-Path "$EtcDir\us3-icon-128x128.png") {
         Copy-Item "$EtcDir\us3-icon-128x128.png" "$AssetsDir\Square150x150Logo.png"
+        # Create additional required sizes from the 128x128 source
+        Copy-Item "$EtcDir\us3-icon-128x128.png" "$AssetsDir\Wide310x150Logo.png"
+        Copy-Item "$EtcDir\us3-icon-128x128.png" "$AssetsDir\SplashScreen.png"
     }
     # Create additional required assets if they don't exist
     if (-not (Test-Path "$AssetsDir\StoreLogo.png")) {
@@ -64,11 +67,31 @@ if (Test-Path $EtcDir) {
     }
 }
 
+Write-ColorOutput Cyan "Verifying all executables are present..."
+$BinDir = Join-Path $AppDir "bin"
+if (Test-Path $BinDir) {
+    $Executables = Get-ChildItem "$BinDir\*.exe" -ErrorAction SilentlyContinue
+    Write-ColorOutput White "Found $($Executables.Count) executables:"
+    foreach ($exe in $Executables) {
+        Write-ColorOutput White "  - $($exe.Name)"
+    }
+} else {
+    Write-ColorOutput Red "No bin directory found in package!"
+}
+
 Write-ColorOutput Yellow "Creating Package.appxmanifest..."
 
-# Create the manifest file
+# Create the manifest file from template or generate new one
 $ManifestPath = Join-Path $PackageDir "Package.appxmanifest"
-$Manifest = @"
+$TemplatePath = "packaging\Package.appxmanifest.template"
+
+if (Test-Path $TemplatePath) {
+    Write-ColorOutput Cyan "Using manifest template..."
+    $Manifest = Get-Content $TemplatePath -Raw
+    $Manifest = $Manifest -replace "3\.6\.0\.0", $Version
+} else {
+    Write-ColorOutput Yellow "Creating manifest from scratch..."
+    $Manifest = @"
 <?xml version="1.0" encoding="utf-8"?>
 <Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
          xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
@@ -80,7 +103,7 @@ $Manifest = @"
     <DisplayName>UltraScan3</DisplayName>
     <PublisherDisplayName>UltraScan3 Project</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
-    <Description>UltraScan3 - Analytical Ultracentrifugation Data Analysis Software</Description>
+    <Description>UltraScan3 - Analytical Ultracentrifugation Data Analysis Software Suite</Description>
   </Properties>
   <Dependencies>
     <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.22621.0" />
@@ -93,13 +116,27 @@ $Manifest = @"
       <uap:VisualElements DisplayName="UltraScan3"
                           Square150x150Logo="Assets\Square150x150Logo.png"
                           Square44x44Logo="Assets\Square44x44Logo.png"
-                          Description="UltraScan3 - Analytical Ultracentrifugation Data Analysis Software"
+                          Description="UltraScan3 - Complete Analytical Ultracentrifugation Analysis Suite"
                           BackgroundColor="transparent">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
+        <uap:SplashScreen Image="Assets\SplashScreen.png" />
       </uap:VisualElements>
+      <Extensions>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="ultrascan3-data">
+            <uap:SupportedFileTypes>
+              <uap:FileType>.auc</uap:FileType>
+              <uap:FileType>.us3</uap:FileType>
+              <uap:FileType>.xml</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+      </Extensions>
     </Application>
   </Applications>
 </Package>
 "@
+}
 
 $Manifest | Out-File -FilePath $ManifestPath -Encoding UTF8
 
