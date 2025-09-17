@@ -17,3 +17,9 @@ gui/qrc_images.cpp
 *.pro.user
 *object_script*
 
+
+# MSIX packaging artifacts
+*.msix
+*.appx
+msix-package/
+C:/dist/
