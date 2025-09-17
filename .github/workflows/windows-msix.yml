@@ -1,0 +1,91 @@
+name: "Windows MSIX Package"
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-msix:
+    name: Build Windows MSIX Package
+    runs-on: windows-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Setup Qt
+        uses: jurplel/install-qt-action@v3
+        with:
+          version: '5.15.2'
+          host: 'windows'
+          target: 'desktop'
+          arch: 'win64_msvc2019_64'
+          modules: 'qtcharts qtdatavis3d'
+          
+      - name: Setup MSVC
+        uses: microsoft/setup-msbuild@v1
+        
+      - name: Setup Windows SDK
+        uses: GuillaumeFalourd/setup-windows10-sdk-action@v1.11
+        with:
+          sdk-version: 22621
+          
+      - name: Create local.pri configuration
+        run: |
+          Copy-Item "local.pri.template" "local.pri"
+          # Configure local.pri for Windows build
+          (Get-Content local.pri) -replace '#DEBUGORRELEASE', 'DEBUGORRELEASE' | Set-Content local.pri
+          (Get-Content local.pri) -replace 'release', 'release' | Set-Content local.pri
+        shell: powershell
+        
+      - name: Build UltraScan3 components
+        run: |
+          # Use existing build script which handles the complete build process
+          call buildwin.cmd
+        shell: cmd
+        
+      - name: Copy files for packaging
+        run: |
+          # Use the existing copypkg-win.sh script if available, otherwise manual copy
+          if (Test-Path "copypkg-win.sh") {
+            Write-Host "Using existing packaging script..."
+            bash copypkg-win.sh
+          } else {
+            Write-Host "Manual file copying..."
+            # Create distribution directory
+            New-Item -ItemType Directory -Force -Path "C:\dist"
+            New-Item -ItemType Directory -Force -Path "C:\dist\bin"
+            New-Item -ItemType Directory -Force -Path "C:\dist\etc"
+            
+            # Copy binaries and libraries
+            Copy-Item -Recurse -Force "bin\*" "C:\dist\bin\" -ErrorAction SilentlyContinue
+            Copy-Item -Recurse -Force "etc\*" "C:\dist\etc\" -ErrorAction SilentlyContinue
+            Copy-Item -Force "LICENSE.txt" "C:\dist\" -ErrorAction SilentlyContinue
+          }
+          
+          # Deploy Qt dependencies for the main executable
+          if (Test-Path "C:\dist\bin\us.exe") {
+            windeployqt "C:\dist\bin\us.exe" --dir "C:\dist\bin" --no-translations --no-system-d3d-compiler --no-opengl-sw
+          }
+        shell: powershell
+        
+      - name: Create MSIX package
+        run: |
+          ./packaging/create-msix-package.ps1
+        shell: powershell
+        
+      - name: Validate MSIX package
+        run: |
+          ./packaging/validate-msix-package.ps1
+        shell: powershell
+        
+      - name: Upload MSIX artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: ultrascan3-msix
+          path: "*.msix"
+          retention-days: 30
