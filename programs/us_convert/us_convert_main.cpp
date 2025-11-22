@@ -10,7 +10,7 @@ int main( int argc, char* argv[] )
 
    #include "main1.inc"
 
-   // License is OK.  Start up!
+   // License is OK.  Start up!!!
 
    //US_ConvertGui w("AUTO");
    US_ConvertGui w;
