@@ -27,10 +27,10 @@ void US_MPI_Analysis::_2dsa_master( void )
    bottom_run          = 0;
    if ( fit_mb_select == 0 )
    {
-      menibott_count      = 1;
+      menibott_count      = 1
       meniscus_points     = 1;
       bottom_points       = 1;
-   }
+   
    else if ( fit_menbot )
    {
       menibott_count      = meniscus_points * bottom_points;
