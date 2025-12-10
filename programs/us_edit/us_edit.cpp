@@ -25,22 +25,12 @@
 #include "us_report.h"
 #include "us_protocol_util.h"
 
-//#include "json.hpp"
-
-#if QT_VERSION < 0x050000
-#define setSamples(a,b,c)  setData(a,b,c)
-#define setMinimum(a)      setMinValue(a)
-#define setMaximum(a)      setMaxValue(a)
-#define setSymbol(a)       setSymbol(*a)
-#endif
-
 #ifndef DbgLv
 #define DbgLv(a) if(dbg_level>=a)qDebug()
 #endif
 
 #define _RNGLEFT_OFFSET_ 0.03
 #define _PLATEAU_OFFSET_ 0.1
-
 
 // Alt. Constructor
 US_Edit::US_Edit( QString auto_mode ) : US_Widgets()
@@ -2976,7 +2966,8 @@ void US_Edit::load_auto( QMap < QString, QString > & details_at_editing )
       le_bll_slope        -> setVisible( false );
       le_bll_intercept    -> setVisible( false );
     }
-   
+
+  qApp->processEvents();
 
 }
 
@@ -3959,6 +3950,7 @@ DbgLv(1) << "IS-MWL: celchns size" << celchns.size();
    if ( us_edit_auto_mode )
      pick-> disconnect();
 
+   qApp->processEvents();
 }
 
 void US_Edit::reset_editdata_panel( void )
@@ -6872,11 +6864,7 @@ void US_Edit::onMouseMoved(const QPointF& mousePos)
       line_to_mouse = NULL;
     }
 
-  #if QT_VERSION < 0x050000
-   QwtScaleDiv* y_axis = data_plot->axisScaleDiv( QwtPlot::yLeft );
-#else
    QwtScaleDiv* y_axis = (QwtScaleDiv*)&data_plot->axisScaleDiv( QwtPlot::yLeft );
-#endif
 
    QVector<double> x, y;
    x.push_back(fixedPoint.x());
@@ -6899,11 +6887,7 @@ void US_Edit::draw_vline( double radius )
    r[ 0 ] = radius;
    r[ 1 ] = radius;
 
-#if QT_VERSION < 0x050000
-   QwtScaleDiv* y_axis = data_plot->axisScaleDiv( QwtPlot::yLeft );
-#else
    QwtScaleDiv* y_axis = (QwtScaleDiv*)&data_plot->axisScaleDiv( QwtPlot::yLeft );
-#endif
 
    double padding = ( y_axis->upperBound() - y_axis->lowerBound() ) / 30.0;
 
@@ -9185,6 +9169,8 @@ DbgLv(1) << "EDT:NewTr: DONE";
  qDebug() << "Includes: " << includes;
  if ( us_edit_auto_mode )
    pick -> disconnect();
+
+ qApp->processEvents();
 
 }
 

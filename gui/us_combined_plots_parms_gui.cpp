@@ -8,13 +8,6 @@
 #include "us_investigator.h"
 #include "us_images.h"
 
-
-#if QT_VERSION < 0x050000
-#define setSymbol(a)      setSymbol(*a)
-#define setSamples(a,b,c) setData(a,b,c)
-#define QRegularExpression(a)  QRegExp(a)
-#endif
-
 US_CombPlotsGui::US_CombPlotsGui( QString combPlotsMask, QStringList type_method_list ) : US_Widgets()
 {
   this->combPlotsMask    = combPlotsMask;
@@ -208,6 +201,11 @@ void US_CombPlotsGui::build_layout ( void )
 	  le_xmin   -> setVisible( false );
 	  le_xmax   -> setVisible( false );
 	}
+
+      //hide x_min/max
+      le_xmin   -> setVisible( false );
+      le_xmax   -> setVisible( false );
+	
     }
   
   int ihgt        = le_type->height();
@@ -250,6 +248,11 @@ void US_CombPlotsGui::build_layout ( void )
   lower_buttons->addWidget( pb_accept );
    
   main->addLayout( lower_buttons );
+
+  //hide x_min/max labels
+  lb_xmin   -> hide();
+  lb_xmax   -> hide();
+  
 
   setMinimumSize( 850, 450 );
   
