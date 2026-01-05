@@ -15,6 +15,7 @@
 #include <QHBoxLayout>
 #include <QGridLayout>
 #include <QGroupBox>
+#include <QRegularExpression>
 
 #include "us_data_publication.h"
 #include "us_settings.h"
@@ -27,6 +28,14 @@
 
 // Bundle format version
 static const QString BUNDLE_VERSION = "1.0";
+
+//! \brief Helper function to remove surrounding quotes from a string
+static QString removeQuotes(const QString& str) {
+    QString result = str;
+    if (result.startsWith('"')) result = result.mid(1);
+    if (result.endsWith('"')) result.chop(1);
+    return result;
+}
 
 //! \brief Convert entity type to string
 static QString entityTypeToString(US_DataPubEntityType type) {
@@ -174,7 +183,7 @@ bool US_DataPubManifest::readFromFile(const QString& filepath) {
             } else if (trimmed.startsWith("created:")) {
                 createdAt = trimmed.mid(8).trimmed();
             } else if (trimmed.startsWith("description:")) {
-                description = trimmed.mid(12).trimmed().remove(QRegExp("^\"|\"$"));
+                description = removeQuotes(trimmed.mid(12).trimmed());
             } else if (trimmed.endsWith(":")) {
                 currentSection = trimmed.left(trimmed.length() - 1);
             }
@@ -189,17 +198,18 @@ bool US_DataPubManifest::readFromFile(const QString& filepath) {
             inDependencies = false;
         } else if (inEntry) {
             if (trimmed.startsWith("guid:")) {
-                currentEntry.guid = trimmed.mid(5).trimmed().remove(QRegExp("^\"|\"$"));
+                currentEntry.guid = removeQuotes(trimmed.mid(5).trimmed());
             } else if (trimmed.startsWith("name:")) {
-                currentEntry.name = trimmed.mid(5).trimmed().remove(QRegExp("^\"|\"$"));
+                currentEntry.name = removeQuotes(trimmed.mid(5).trimmed());
             } else if (trimmed.startsWith("propertyHash:")) {
-                currentEntry.propertyHash = trimmed.mid(13).trimmed().remove(QRegExp("^\"|\"$"));
+                currentEntry.propertyHash = removeQuotes(trimmed.mid(13).trimmed());
             } else if (trimmed.startsWith("payloadPath:")) {
-                currentEntry.payloadPath = trimmed.mid(12).trimmed().remove(QRegExp("^\"|\"$"));
+                currentEntry.payloadPath = removeQuotes(trimmed.mid(12).trimmed());
             } else if (trimmed.startsWith("dependencies:")) {
                 inDependencies = true;
             } else if (inDependencies && trimmed.startsWith("- \"")) {
-                QString dep = trimmed.mid(3).remove(QRegExp("\"$"));
+                QString dep = trimmed.mid(3);
+                if (dep.endsWith('"')) dep.chop(1);
                 currentEntry.dependencyGuids.append(dep);
             }
         }
@@ -1085,15 +1095,52 @@ QString US_DataPubImport::generateUniqueName(const QString& baseName,
     QString newName = baseName;
     int suffix = 1;
     
-    // Keep appending suffix until unique
-    while (true) {
-        // Check if name exists - would query database
-        // For now, just add suffix
-        newName = QString("%1_%2").arg(baseName).arg(suffix++);
-        if (suffix > 100) break; // Safety limit
+    // Check if the base name itself is already unique
+    bool nameExists = false;
+    
+    if (target == US_DataPublication::TargetDatabase && db != nullptr) {
+        // Query database to check if name exists
+        QString tableName;
+        QString columnName = "description";  // Most tables use 'description'
+        
+        switch (type) {
+            case EntityProject:   tableName = "project"; break;
+            case EntityBuffer:    tableName = "buffer"; break;
+            case EntityAnalyte:   tableName = "analyte"; break;
+            case EntitySolution:  tableName = "solution"; break;
+            case EntityModel:     tableName = "model"; break;
+            case EntityNoise:     tableName = "noise"; break;
+            default:              return newName;  // Return original for unsupported types
+        }
+        
+        // Check if base name exists
+        QStringList queries;
+        queries << QString("SELECT COUNT(*) FROM %1 WHERE %2 = '%3'")
+                   .arg(tableName).arg(columnName).arg(newName);
+        
+        for (const QString& q : queries) {
+            db->query(q);
+            if (db->next() && db->value(0).toInt() > 0) {
+                nameExists = true;
+                break;
+            }
+        }
+        
+        // If name exists, find a unique suffix
+        while (nameExists && suffix <= 100) {
+            newName = QString("%1_%2").arg(baseName).arg(suffix);
+            db->query(QString("SELECT COUNT(*) FROM %1 WHERE %2 = '%3'")
+                     .arg(tableName).arg(columnName).arg(newName));
+            if (db->next() && db->value(0).toInt() == 0) {
+                nameExists = false;  // Found unique name
+            }
+            suffix++;
+        }
+    } else {
+        // For disk target, just add suffix
+        newName = QString("%1_%2").arg(baseName).arg(suffix);
     }
     
-    Q_UNUSED(type)
     return newName;
 }
 
