@@ -9,7 +9,60 @@ The tool supports:
 - **Import**: Load data bundles into an UltraScan3 database or local disk storage
 - Both **CLI** and **GUI** interfaces
 
+## GUI Interface
+
+The GUI is organized into two tabs: **Export** and **Import**.
+
+### Export Tab
+
+1. **Data Source**: Select whether to export from Database or Local Disk using the radio buttons at the top.
+
+2. **Project Selection** (optional): Click "Select Project..." to open the project selection dialog. Only one project can be selected at a time.
+
+3. **Experiment Selection**: Click "Select Runs..." to open the run selection dialog. You can select multiple experiments/runs. If a project was selected, you can prefilter by that project.
+
+4. **Data Tree**: After selecting experiments, a tree view displays:
+   - Experiments at the top level
+   - Raw Data as children of experiments
+   - Edits as children of raw data
+   
+   Each item has a checkbox for selection.
+
+5. **Bulk Actions for Data**:
+   - **Select All Raw**: Selects all raw data entries
+   - **Deselect All Raw**: Deselects all raw data entries
+   - **Latest Edits**: For each selected raw data, selects only the latest edit
+   - **All Edits**: Selects all edits for selected raw data
+   - **No Edits**: Deselects all edits
+
+6. **Model Selection**: Click "Select Models..." to open the model selection dialog (filtered by selected runs). Selected models appear in a separate tree view.
+
+7. **Dependency Handling**: When selecting models, the tool checks if required edits are selected. If not, it prompts you to either:
+   - Auto-select the required edit, or
+   - Deselect the model
+
+8. **Summary**: Shows counts of selected raw data, edits, and models. Use "Preview Manifest..." to see a YAML preview of the bundle contents.
+
+9. **Export**: Specify the output file path and click "Export Bundle" to create the bundle.
+
+### Import Tab
+
+1. **Target**: Select whether to import to Database or Local Disk.
+
+2. **Bundle File**: Browse to select a `.tar.gz` bundle file to import.
+
+3. **Conflict Policy**:
+   - **Reuse if properties match**: If an entity with matching properties exists, reuse it
+   - **Always rename**: Create new entities with unique names
+   - **Fail**: Stop on any conflict
+
+4. **Preview**: Shows the contents of the selected bundle.
+
+5. **Import**: Click "Import Bundle" to start the import process.
+
 ## Supported Entity Types
+
+Data bundles can include the following entity types, organized by their dependency hierarchy:
 
 Data bundles can include the following entity types, organized by their dependency hierarchy:
 
