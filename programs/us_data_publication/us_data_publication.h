@@ -7,6 +7,9 @@
 #include <QWizard>
 #include <QWizardPage>
 #include <QProgressBar>
+#include <QTreeWidget>
+#include <QTreeWidgetItem>
+#include <QTabWidget>
 
 #include "us_widgets.h"
 #include "us_project.h"
@@ -19,6 +22,7 @@
 #include "us_rotor.h"
 #include "us_dataIO.h"
 #include "us_db2.h"
+#include "us_help.h"
 
 // Forward declarations
 class US_DataPubExport;
@@ -100,6 +104,32 @@ struct US_DataPubConflictResult {
     QString suggestedName;
 };
 
+//! \brief Information about a raw data entry for selection
+struct US_DataPubRawDataInfo {
+    QString runID;           //!< Run identifier
+    QString rawGUID;         //!< Raw data GUID
+    QString description;     //!< Description
+    int     rawID;           //!< Database ID
+    int     expID;           //!< Experiment ID
+    bool    selected;        //!< Selection state
+    QList<int> editIDs;      //!< Associated edit IDs
+    QStringList editGUIDs;   //!< Associated edit GUIDs
+    QStringList editNames;   //!< Associated edit names
+    QList<bool> editSelected; //!< Edit selection states
+};
+
+//! \brief Information about a model for selection
+struct US_DataPubModelInfo {
+    QString modelGUID;       //!< Model GUID
+    QString description;     //!< Description
+    int     modelID;         //!< Database ID
+    QString editGUID;        //!< Parent edit GUID
+    QString rawGUID;         //!< Parent raw data GUID
+    bool    selected;        //!< Selection state
+    QString noiseGUID_ti;    //!< TI noise GUID (if any)
+    QString noiseGUID_ri;    //!< RI noise GUID (if any)
+};
+
 //! \brief Main Data Publication class - handles both CLI and GUI operations
 class US_DataPublication : public US_Widgets {
     Q_OBJECT
@@ -128,54 +158,118 @@ public:
     static int runCli(int argc, char* argv[]);
 
 private slots:
-    void selectExportMode();
-    void selectImportMode();
+    // Export tab slots
+    void exportSourceChanged(bool db);
     void selectProject();
-    void selectExperiment();
-    void browseOutputFile();
-    void browseInputFile();
+    void projectSelected(US_Project& project);
+    void selectExperiments();
+    void selectModels();
+    void selectAllRawData();
+    void deselectAllRawData();
+    void selectLatestEdits();
+    void selectAllEdits();
+    void deselectAllEdits();
+    void dataTreeItemChanged(QTreeWidgetItem* item, int column);
+    void modelTreeItemChanged(QTreeWidgetItem* item, int column);
+    void browseExportFile();
     void startExport();
+    void showManifestPreview();
+    
+    // Import tab slots
+    void importSourceChanged(bool db);
+    void browseImportFile();
     void startImport();
+    
+    // Common slots
     void updateProgress(int value, const QString& message);
     void exportComplete(bool success, const QString& message);
     void importComplete(bool success, const QString& message);
+    void updateSummary();
     void help();
 
 private:
-    // GUI elements
-    QRadioButton*  rb_export;
-    QRadioButton*  rb_import;
-    QPushButton*   pb_project;
-    QPushButton*   pb_experiment;
-    QPushButton*   pb_browse;
-    QPushButton*   pb_start;
+    // Main tab widget
+    QTabWidget*    tabWidget;
+    
+    // Export tab GUI elements
+    QWidget*       exportTab;
+    US_Disk_DB_Controls* exportDiskDB;
+    QPushButton*   pb_selectProject;
+    QPushButton*   pb_selectExperiments;
+    QPushButton*   pb_selectModels;
+    QPushButton*   pb_selectAllRaw;
+    QPushButton*   pb_deselectAllRaw;
+    QPushButton*   pb_selectLatestEdits;
+    QPushButton*   pb_selectAllEdits;
+    QPushButton*   pb_deselectAllEdits;
+    QPushButton*   pb_browseExport;
+    QPushButton*   pb_startExport;
+    QPushButton*   pb_manifestPreview;
+    QLineEdit*     le_project;
+    QLineEdit*     le_experiments;
+    QLineEdit*     le_exportFile;
+    QTreeWidget*   tw_dataTree;       //!< Tree: experiments->rawData->edits
+    QTreeWidget*   tw_modelTree;      //!< Tree: experiments->rawData->edits->models
+    QLabel*        lb_summaryExport;
+    QProgressBar*  progressExport;
+    QTextEdit*     te_statusExport;
+    
+    // Import tab GUI elements
+    QWidget*       importTab;
+    US_Disk_DB_Controls* importDiskDB;
+    QPushButton*   pb_browseImport;
+    QPushButton*   pb_startImport;
+    QLineEdit*     le_importFile;
+    QComboBox*     cb_conflict;
+    QTreeWidget*   tw_importPreview;
+    QLabel*        lb_summaryImport;
+    QProgressBar*  progressImport;
+    QTextEdit*     te_statusImport;
+    
+    // Common buttons
     QPushButton*   pb_help;
     QPushButton*   pb_close;
-    QLineEdit*     le_project;
-    QLineEdit*     le_experiment;
-    QLineEdit*     le_file;
-    QComboBox*     cb_scope;
-    QComboBox*     cb_target;
-    QComboBox*     cb_conflict;
-    QProgressBar*  progress;
-    QTextEdit*     te_status;
     
-    // Data
+    // Export data
     US_Project     currentProject;
     int            projectId;
-    int            experimentId;
-    QString        bundlePath;
-    ExportScope    exportScope;
-    ImportTarget   importTarget;
+    QStringList    selectedRunIDs;
+    QList<int>     selectedExpIDs;
+    QString        exportBundlePath;
+    QList<US_DataPubRawDataInfo> rawDataList;
+    QList<US_DataPubModelInfo>   modelList;
+    
+    // Import data
+    QString        importBundlePath;
     US_DataPubConflictPolicy conflictPolicy;
     
     // Database connection
     US_DB2*        db;
+    bool           useDB;
+    
+    // Help
+    US_Help        showHelp;
     
     // Setup functions
     void setupGui();
-    void updateGuiState();
+    void setupExportTab();
+    void setupImportTab();
+    void buildDataTree();
+    void buildModelTree();
+    void updateExportButtonStates();
+    void updateImportButtonStates();
     bool connectToDatabase();
+    
+    // Data loading helpers
+    void loadRawDataForExperiments();
+    void loadEditsForRawData();
+    void checkModelDependencies();
+    
+    // Summary/manifest generation
+    QString generateManifestPreview();
+    int countSelectedRawData();
+    int countSelectedEdits();
+    int countSelectedModels();
     
     // Static CLI helpers
     static void printUsage();

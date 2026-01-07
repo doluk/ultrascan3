@@ -16,6 +16,8 @@
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QRegularExpression>
+#include <QSplitter>
+#include <QHeaderView>
 
 #include "us_data_publication.h"
 #include "us_settings.h"
@@ -25,6 +27,11 @@
 #include "us_gzip.h"
 #include "us_archive.h"
 #include "us_util.h"
+#include "us_project_gui.h"
+#include "us_select_runs.h"
+#include "us_data_loader.h"
+#include "us_model_loader.h"
+#include "us_noise_loader.h"
 
 // Bundle format version
 static const QString BUNDLE_VERSION = "1.0";
@@ -232,14 +239,13 @@ US_DataPublication::US_DataPublication() : US_Widgets() {
     setPalette(US_GuiSettings::frameColor());
     
     projectId = -1;
-    experimentId = -1;
-    exportScope = ScopeAll;
-    importTarget = TargetDatabase;
     conflictPolicy = ConflictReuse;
     db = nullptr;
+    useDB = true;
 
     setupGui();
-    updateGuiState();
+    updateExportButtonStates();
+    updateImportButtonStates();
 }
 
 US_DataPublication::~US_DataPublication() {
@@ -254,133 +260,280 @@ void US_DataPublication::setupGui() {
     main->setSpacing(2);
     main->setContentsMargins(2, 2, 2, 2);
 
-    // Mode selection
-    QGroupBox* modeBox = new QGroupBox(tr("Operation Mode"));
-    QHBoxLayout* modeLayout = new QHBoxLayout(modeBox);
-    rb_export = new QRadioButton(tr("Export"));
-    rb_import = new QRadioButton(tr("Import"));
-    rb_export->setChecked(true);
-    modeLayout->addWidget(rb_export);
-    modeLayout->addWidget(rb_import);
-    main->addWidget(modeBox);
+    // Banner
+    QLabel* lb_banner = us_banner(tr("UltraScan Data Publication"));
+    main->addWidget(lb_banner);
 
-    connect(rb_export, &QRadioButton::toggled, this, &US_DataPublication::selectExportMode);
-    connect(rb_import, &QRadioButton::toggled, this, &US_DataPublication::selectImportMode);
+    // Create tab widget
+    tabWidget = us_tabwidget();
+    
+    // Setup Export and Import tabs
+    setupExportTab();
+    setupImportTab();
+    
+    tabWidget->addTab(exportTab, tr("Export"));
+    tabWidget->addTab(importTab, tr("Import"));
+    main->addWidget(tabWidget);
 
-    // Export options
-    QGroupBox* exportBox = new QGroupBox(tr("Export Settings"));
-    QGridLayout* exportLayout = new QGridLayout(exportBox);
-    int row = 0;
-
-    QLabel* lbl_project = us_label(tr("Project:"));
-    le_project = us_lineedit("", -1, true);
-    pb_project = us_pushbutton(tr("Select"));
-    exportLayout->addWidget(lbl_project, row, 0);
-    exportLayout->addWidget(le_project, row, 1, 1, 2);
-    exportLayout->addWidget(pb_project, row++, 3);
-
-    QLabel* lbl_experiment = us_label(tr("Experiment:"));
-    le_experiment = us_lineedit("", -1, true);
-    pb_experiment = us_pushbutton(tr("Select"));
-    exportLayout->addWidget(lbl_experiment, row, 0);
-    exportLayout->addWidget(le_experiment, row, 1, 1, 2);
-    exportLayout->addWidget(pb_experiment, row++, 3);
-
-    QLabel* lbl_scope = us_label(tr("Export Scope:"));
-    cb_scope = us_comboBox();
-    cb_scope->addItem(tr("Project Only"), ScopeProject);
-    cb_scope->addItem(tr("Experiments"), ScopeExperiment);
-    cb_scope->addItem(tr("Raw Data"), ScopeRawData);
-    cb_scope->addItem(tr("Edits"), ScopeEdits);
-    cb_scope->addItem(tr("Models & Noise"), ScopeModels);
-    cb_scope->addItem(tr("Everything"), ScopeAll);
-    cb_scope->setCurrentIndex(5);
-    exportLayout->addWidget(lbl_scope, row, 0);
-    exportLayout->addWidget(cb_scope, row++, 1, 1, 3);
-
-    main->addWidget(exportBox);
-
-    connect(pb_project, &QPushButton::clicked, this, &US_DataPublication::selectProject);
-    connect(pb_experiment, &QPushButton::clicked, this, &US_DataPublication::selectExperiment);
-
-    // Import options
-    QGroupBox* importBox = new QGroupBox(tr("Import Settings"));
-    QGridLayout* importLayout = new QGridLayout(importBox);
-    row = 0;
-
-    QLabel* lbl_target = us_label(tr("Target:"));
-    cb_target = us_comboBox();
-    cb_target->addItem(tr("Database"), TargetDatabase);
-    cb_target->addItem(tr("Disk"), TargetDisk);
-    importLayout->addWidget(lbl_target, row, 0);
-    importLayout->addWidget(cb_target, row++, 1, 1, 3);
-
-    QLabel* lbl_conflict = us_label(tr("On Conflict:"));
-    cb_conflict = us_comboBox();
-    cb_conflict->addItem(tr("Reuse if properties match"), ConflictReuse);
-    cb_conflict->addItem(tr("Always rename"), ConflictRename);
-    cb_conflict->addItem(tr("Fail"), ConflictFail);
-    importLayout->addWidget(lbl_conflict, row, 0);
-    importLayout->addWidget(cb_conflict, row++, 1, 1, 3);
-
-    main->addWidget(importBox);
-
-    // File selection
-    QGroupBox* fileBox = new QGroupBox(tr("Bundle File"));
-    QHBoxLayout* fileLayout = new QHBoxLayout(fileBox);
-    le_file = us_lineedit("");
-    pb_browse = us_pushbutton(tr("Browse..."));
-    fileLayout->addWidget(le_file);
-    fileLayout->addWidget(pb_browse);
-    main->addWidget(fileBox);
-
-    connect(pb_browse, &QPushButton::clicked, this, &US_DataPublication::browseOutputFile);
-
-    // Progress
-    progress = new QProgressBar();
-    progress->setRange(0, 100);
-    progress->setValue(0);
-    main->addWidget(progress);
-
-    // Status
-    te_status = us_textedit();
-    te_status->setMaximumHeight(150);
-    main->addWidget(te_status);
-
-    // Buttons
+    // Common buttons at bottom
     QHBoxLayout* buttons = new QHBoxLayout();
-    pb_start = us_pushbutton(tr("Start"));
     pb_help = us_pushbutton(tr("Help"));
     pb_close = us_pushbutton(tr("Close"));
-    buttons->addWidget(pb_start);
+    buttons->addStretch();
     buttons->addWidget(pb_help);
     buttons->addWidget(pb_close);
     main->addLayout(buttons);
 
-    connect(pb_start, &QPushButton::clicked, this, [this]() {
-        if (rb_export->isChecked()) startExport();
-        else startImport();
-    });
     connect(pb_help, &QPushButton::clicked, this, &US_DataPublication::help);
     connect(pb_close, &QPushButton::clicked, this, &US_DataPublication::close);
-}
-
-void US_DataPublication::updateGuiState() {
-    bool isExport = rb_export->isChecked();
     
-    pb_project->setEnabled(isExport);
-    pb_experiment->setEnabled(isExport);
-    cb_scope->setEnabled(isExport);
-    cb_target->setEnabled(!isExport);
-    cb_conflict->setEnabled(!isExport);
+    // Set minimum size
+    setMinimumSize(800, 700);
 }
 
-void US_DataPublication::selectExportMode() {
-    updateGuiState();
+void US_DataPublication::setupExportTab() {
+    exportTab = new QWidget();
+    QVBoxLayout* layout = new QVBoxLayout(exportTab);
+    layout->setSpacing(2);
+    layout->setContentsMargins(4, 4, 4, 4);
+
+    // Disk/DB controls at top
+    exportDiskDB = new US_Disk_DB_Controls(US_Disk_DB_Controls::Default);
+    layout->addLayout(exportDiskDB);
+    connect(exportDiskDB, &US_Disk_DB_Controls::changed, this, &US_DataPublication::exportSourceChanged);
+
+    // Selection section
+    QGroupBox* selectionBox = new QGroupBox(tr("Data Selection"));
+    QGridLayout* selLayout = new QGridLayout(selectionBox);
+    int row = 0;
+
+    // Project selection
+    QLabel* lb_project = us_label(tr("Project (optional):"));
+    le_project = us_lineedit("", -1, true);
+    pb_selectProject = us_pushbutton(tr("Select Project..."));
+    selLayout->addWidget(lb_project, row, 0);
+    selLayout->addWidget(le_project, row, 1, 1, 2);
+    selLayout->addWidget(pb_selectProject, row++, 3);
+    connect(pb_selectProject, &QPushButton::clicked, this, &US_DataPublication::selectProject);
+
+    // Experiment selection
+    QLabel* lb_experiments = us_label(tr("Experiments:"));
+    le_experiments = us_lineedit("", -1, true);
+    pb_selectExperiments = us_pushbutton(tr("Select Runs..."));
+    selLayout->addWidget(lb_experiments, row, 0);
+    selLayout->addWidget(le_experiments, row, 1, 1, 2);
+    selLayout->addWidget(pb_selectExperiments, row++, 3);
+    connect(pb_selectExperiments, &QPushButton::clicked, this, &US_DataPublication::selectExperiments);
+
+    layout->addWidget(selectionBox);
+
+    // Data tree section with buttons
+    QGroupBox* dataBox = new QGroupBox(tr("Raw Data and Edits"));
+    QVBoxLayout* dataLayout = new QVBoxLayout(dataBox);
+    
+    // Bulk action buttons for raw data/edits
+    QHBoxLayout* dataButtons = new QHBoxLayout();
+    pb_selectAllRaw = us_pushbutton(tr("Select All Raw"), false);
+    pb_deselectAllRaw = us_pushbutton(tr("Deselect All Raw"), false);
+    pb_selectLatestEdits = us_pushbutton(tr("Latest Edits"), false);
+    pb_selectAllEdits = us_pushbutton(tr("All Edits"), false);
+    pb_deselectAllEdits = us_pushbutton(tr("No Edits"), false);
+    dataButtons->addWidget(pb_selectAllRaw);
+    dataButtons->addWidget(pb_deselectAllRaw);
+    dataButtons->addStretch();
+    dataButtons->addWidget(pb_selectLatestEdits);
+    dataButtons->addWidget(pb_selectAllEdits);
+    dataButtons->addWidget(pb_deselectAllEdits);
+    dataLayout->addLayout(dataButtons);
+    
+    connect(pb_selectAllRaw, &QPushButton::clicked, this, &US_DataPublication::selectAllRawData);
+    connect(pb_deselectAllRaw, &QPushButton::clicked, this, &US_DataPublication::deselectAllRawData);
+    connect(pb_selectLatestEdits, &QPushButton::clicked, this, &US_DataPublication::selectLatestEdits);
+    connect(pb_selectAllEdits, &QPushButton::clicked, this, &US_DataPublication::selectAllEdits);
+    connect(pb_deselectAllEdits, &QPushButton::clicked, this, &US_DataPublication::deselectAllEdits);
+
+    // Data tree widget
+    tw_dataTree = new QTreeWidget();
+    tw_dataTree->setHeaderLabels(QStringList() << tr("Name") << tr("Type") << tr("Description"));
+    tw_dataTree->setColumnCount(3);
+    tw_dataTree->header()->setStretchLastSection(true);
+    tw_dataTree->setSelectionMode(QAbstractItemView::NoSelection);
+    dataLayout->addWidget(tw_dataTree);
+    connect(tw_dataTree, &QTreeWidget::itemChanged, this, &US_DataPublication::dataTreeItemChanged);
+    
+    layout->addWidget(dataBox);
+
+    // Model selection section
+    QGroupBox* modelBox = new QGroupBox(tr("Models"));
+    QVBoxLayout* modelLayout = new QVBoxLayout(modelBox);
+    
+    QHBoxLayout* modelButtons = new QHBoxLayout();
+    pb_selectModels = us_pushbutton(tr("Select Models..."), false);
+    modelButtons->addWidget(pb_selectModels);
+    modelButtons->addStretch();
+    modelLayout->addLayout(modelButtons);
+    connect(pb_selectModels, &QPushButton::clicked, this, &US_DataPublication::selectModels);
+
+    // Model tree widget
+    tw_modelTree = new QTreeWidget();
+    tw_modelTree->setHeaderLabels(QStringList() << tr("Name") << tr("Type") << tr("Edit") << tr("Noise"));
+    tw_modelTree->setColumnCount(4);
+    tw_modelTree->header()->setStretchLastSection(true);
+    tw_modelTree->setSelectionMode(QAbstractItemView::NoSelection);
+    modelLayout->addWidget(tw_modelTree);
+    connect(tw_modelTree, &QTreeWidget::itemChanged, this, &US_DataPublication::modelTreeItemChanged);
+    
+    layout->addWidget(modelBox);
+
+    // Output file and summary
+    QGroupBox* outputBox = new QGroupBox(tr("Output"));
+    QGridLayout* outLayout = new QGridLayout(outputBox);
+    row = 0;
+
+    QLabel* lb_file = us_label(tr("Bundle File:"));
+    le_exportFile = us_lineedit("");
+    pb_browseExport = us_pushbutton(tr("Browse..."));
+    outLayout->addWidget(lb_file, row, 0);
+    outLayout->addWidget(le_exportFile, row, 1, 1, 2);
+    outLayout->addWidget(pb_browseExport, row++, 3);
+    connect(pb_browseExport, &QPushButton::clicked, this, &US_DataPublication::browseExportFile);
+
+    // Summary
+    lb_summaryExport = us_label(tr("Summary: No data selected"));
+    pb_manifestPreview = us_pushbutton(tr("Preview Manifest..."), false);
+    outLayout->addWidget(lb_summaryExport, row, 0, 1, 3);
+    outLayout->addWidget(pb_manifestPreview, row++, 3);
+    connect(pb_manifestPreview, &QPushButton::clicked, this, &US_DataPublication::showManifestPreview);
+
+    layout->addWidget(outputBox);
+
+    // Progress and status
+    progressExport = new QProgressBar();
+    progressExport->setRange(0, 100);
+    progressExport->setValue(0);
+    layout->addWidget(progressExport);
+
+    te_statusExport = us_textedit();
+    te_statusExport->setMaximumHeight(100);
+    layout->addWidget(te_statusExport);
+
+    // Export button
+    QHBoxLayout* exportButtons = new QHBoxLayout();
+    pb_startExport = us_pushbutton(tr("Export Bundle"), false);
+    exportButtons->addStretch();
+    exportButtons->addWidget(pb_startExport);
+    layout->addLayout(exportButtons);
+    connect(pb_startExport, &QPushButton::clicked, this, &US_DataPublication::startExport);
 }
 
-void US_DataPublication::selectImportMode() {
-    updateGuiState();
+void US_DataPublication::setupImportTab() {
+    importTab = new QWidget();
+    QVBoxLayout* layout = new QVBoxLayout(importTab);
+    layout->setSpacing(2);
+    layout->setContentsMargins(4, 4, 4, 4);
+
+    // Disk/DB controls at top
+    importDiskDB = new US_Disk_DB_Controls(US_Disk_DB_Controls::Default);
+    layout->addLayout(importDiskDB);
+    connect(importDiskDB, &US_Disk_DB_Controls::changed, this, &US_DataPublication::importSourceChanged);
+
+    // File selection
+    QGroupBox* fileBox = new QGroupBox(tr("Bundle File"));
+    QHBoxLayout* fileLayout = new QHBoxLayout(fileBox);
+    le_importFile = us_lineedit("");
+    pb_browseImport = us_pushbutton(tr("Browse..."));
+    fileLayout->addWidget(le_importFile);
+    fileLayout->addWidget(pb_browseImport);
+    layout->addWidget(fileBox);
+    connect(pb_browseImport, &QPushButton::clicked, this, &US_DataPublication::browseImportFile);
+
+    // Import options
+    QGroupBox* optionsBox = new QGroupBox(tr("Import Options"));
+    QGridLayout* optLayout = new QGridLayout(optionsBox);
+    int row = 0;
+
+    QLabel* lb_conflict = us_label(tr("On Conflict:"));
+    cb_conflict = us_comboBox();
+    cb_conflict->addItem(tr("Reuse if properties match"), ConflictReuse);
+    cb_conflict->addItem(tr("Always rename"), ConflictRename);
+    cb_conflict->addItem(tr("Fail"), ConflictFail);
+    optLayout->addWidget(lb_conflict, row, 0);
+    optLayout->addWidget(cb_conflict, row++, 1, 1, 2);
+    
+    layout->addWidget(optionsBox);
+
+    // Preview tree
+    QGroupBox* previewBox = new QGroupBox(tr("Bundle Contents Preview"));
+    QVBoxLayout* prevLayout = new QVBoxLayout(previewBox);
+    tw_importPreview = new QTreeWidget();
+    tw_importPreview->setHeaderLabels(QStringList() << tr("Name") << tr("Type") << tr("GUID"));
+    tw_importPreview->setColumnCount(3);
+    tw_importPreview->header()->setStretchLastSection(true);
+    prevLayout->addWidget(tw_importPreview);
+    layout->addWidget(previewBox);
+
+    // Summary
+    lb_summaryImport = us_label(tr("Summary: No bundle loaded"));
+    layout->addWidget(lb_summaryImport);
+
+    // Progress and status
+    progressImport = new QProgressBar();
+    progressImport->setRange(0, 100);
+    progressImport->setValue(0);
+    layout->addWidget(progressImport);
+
+    te_statusImport = us_textedit();
+    te_statusImport->setMaximumHeight(100);
+    layout->addWidget(te_statusImport);
+
+    // Import button
+    QHBoxLayout* importButtons = new QHBoxLayout();
+    pb_startImport = us_pushbutton(tr("Import Bundle"), false);
+    importButtons->addStretch();
+    importButtons->addWidget(pb_startImport);
+    layout->addLayout(importButtons);
+    connect(pb_startImport, &QPushButton::clicked, this, &US_DataPublication::startImport);
+}
+
+void US_DataPublication::exportSourceChanged(bool db) {
+    useDB = db;
+    // Clear selections when source changes
+    projectId = -1;
+    le_project->clear();
+    le_experiments->clear();
+    selectedRunIDs.clear();
+    selectedExpIDs.clear();
+    rawDataList.clear();
+    modelList.clear();
+    tw_dataTree->clear();
+    tw_modelTree->clear();
+    updateExportButtonStates();
+    updateSummary();
+}
+
+void US_DataPublication::importSourceChanged(bool db) {
+    Q_UNUSED(db)
+    updateImportButtonStates();
+}
+
+void US_DataPublication::updateExportButtonStates() {
+    bool hasExperiments = !selectedRunIDs.isEmpty();
+    bool hasRawData = !rawDataList.isEmpty();
+    bool hasModels = !modelList.isEmpty();
+    
+    pb_selectAllRaw->setEnabled(hasRawData);
+    pb_deselectAllRaw->setEnabled(hasRawData);
+    pb_selectLatestEdits->setEnabled(hasRawData);
+    pb_selectAllEdits->setEnabled(hasRawData);
+    pb_deselectAllEdits->setEnabled(hasRawData);
+    pb_selectModels->setEnabled(hasExperiments);
+    pb_manifestPreview->setEnabled(countSelectedRawData() > 0 || countSelectedModels() > 0);
+    pb_startExport->setEnabled(!le_exportFile->text().isEmpty() && 
+                                (countSelectedRawData() > 0 || countSelectedEdits() > 0 || countSelectedModels() > 0));
+}
+
+void US_DataPublication::updateImportButtonStates() {
+    pb_startImport->setEnabled(!le_importFile->text().isEmpty());
 }
 
 bool US_DataPublication::connectToDatabase() {
@@ -403,156 +556,589 @@ bool US_DataPublication::connectToDatabase() {
 }
 
 void US_DataPublication::selectProject() {
-    if (!connectToDatabase()) return;
+    // Use US_ProjectGui for project selection
+    int diskDB = exportDiskDB->db() ? US_Disk_DB_Controls::DB : US_Disk_DB_Controls::Disk;
     
-    // For now, use a simple input dialog
-    // In a full implementation, this would open a project selection dialog
-    bool ok;
-    QString idStr = QInputDialog::getText(this, tr("Select Project"),
-        tr("Enter Project ID:"), QLineEdit::Normal, "", &ok);
+    US_ProjectGui* projDialog = new US_ProjectGui(true, diskDB, currentProject);
     
-    if (ok && !idStr.isEmpty()) {
-        projectId = idStr.toInt();
-        currentProject.readFromDB(projectId, db);
-        le_project->setText(QString("%1: %2").arg(projectId).arg(currentProject.projectDesc));
-    }
+    connect(projDialog, &US_ProjectGui::updateProjectGuiSelection, 
+            this, &US_DataPublication::projectSelected);
+    
+    projDialog->exec();
+    delete projDialog;
 }
 
-void US_DataPublication::selectExperiment() {
-    if (!connectToDatabase()) return;
+void US_DataPublication::projectSelected(US_Project& project) {
+    currentProject = project;
+    projectId = project.projectID;
+    le_project->setText(QString("%1: %2").arg(projectId).arg(project.projectDesc));
     
-    bool ok;
-    QString idStr = QInputDialog::getText(this, tr("Select Experiment"),
-        tr("Enter Experiment ID:"), QLineEdit::Normal, "", &ok);
+    // Clear experiment selection since project changed
+    selectedRunIDs.clear();
+    selectedExpIDs.clear();
+    le_experiments->clear();
+    rawDataList.clear();
+    modelList.clear();
+    tw_dataTree->clear();
+    tw_modelTree->clear();
     
-    if (ok && !idStr.isEmpty()) {
-        experimentId = idStr.toInt();
-        le_experiment->setText(QString("Experiment %1").arg(experimentId));
-    }
+    updateExportButtonStates();
+    updateSummary();
 }
 
-void US_DataPublication::browseOutputFile() {
+void US_DataPublication::selectExperiments() {
+    // Use US_SelectRuns for experiment selection
+    bool fromDB = exportDiskDB->db();
+    
+    US_SelectRuns* runsDialog = new US_SelectRuns(fromDB, selectedRunIDs);
+    
+    if (runsDialog->exec() == QDialog::Accepted && !selectedRunIDs.isEmpty()) {
+        le_experiments->setText(tr("%1 run(s) selected").arg(selectedRunIDs.size()));
+        
+        // Load raw data and edits for selected experiments
+        loadRawDataForExperiments();
+        buildDataTree();
+    }
+    
+    delete runsDialog;
+    updateExportButtonStates();
+    updateSummary();
+}
+
+void US_DataPublication::selectModels() {
+    if (selectedRunIDs.isEmpty()) {
+        QMessageBox::warning(this, tr("No Experiments"), 
+            tr("Please select experiments first before selecting models."));
+        return;
+    }
+    
+    bool fromDB = exportDiskDB->db();
+    QString searchFilter;
+    QList<US_Model> selectedModels;
+    QStringList modelDescrs;
+    
+    // Use US_ModelLoader for model selection
+    US_ModelLoader* modelLoader = new US_ModelLoader(fromDB, searchFilter, 
+                                                      selectedModels, modelDescrs, 
+                                                      selectedRunIDs);
+    
+    if (modelLoader->exec() == QDialog::Accepted && !selectedModels.isEmpty()) {
+        // Process selected models
+        modelList.clear();
+        for (int i = 0; i < selectedModels.size(); ++i) {
+            US_DataPubModelInfo info;
+            info.modelGUID = selectedModels[i].modelGUID;
+            info.description = selectedModels[i].description;
+            info.editGUID = selectedModels[i].editGUID;
+            info.selected = true;
+            modelList.append(info);
+        }
+        
+        // Check if model dependencies require additional edits to be selected
+        checkModelDependencies();
+        buildModelTree();
+    }
+    
+    delete modelLoader;
+    updateExportButtonStates();
+    updateSummary();
+}
+
+void US_DataPublication::selectAllRawData() {
+    tw_dataTree->blockSignals(true);
+    for (int i = 0; i < rawDataList.size(); ++i) {
+        rawDataList[i].selected = true;
+    }
+    buildDataTree();
+    tw_dataTree->blockSignals(false);
+    updateExportButtonStates();
+    updateSummary();
+}
+
+void US_DataPublication::deselectAllRawData() {
+    tw_dataTree->blockSignals(true);
+    for (int i = 0; i < rawDataList.size(); ++i) {
+        rawDataList[i].selected = false;
+    }
+    buildDataTree();
+    tw_dataTree->blockSignals(false);
+    updateExportButtonStates();
+    updateSummary();
+}
+
+void US_DataPublication::selectLatestEdits() {
+    tw_dataTree->blockSignals(true);
+    for (int i = 0; i < rawDataList.size(); ++i) {
+        if (rawDataList[i].selected && !rawDataList[i].editSelected.isEmpty()) {
+            // Deselect all, then select only the last (latest) edit
+            for (int j = 0; j < rawDataList[i].editSelected.size(); ++j) {
+                rawDataList[i].editSelected[j] = false;
+            }
+            rawDataList[i].editSelected[rawDataList[i].editSelected.size() - 1] = true;
+        }
+    }
+    buildDataTree();
+    tw_dataTree->blockSignals(false);
+    updateExportButtonStates();
+    updateSummary();
+}
+
+void US_DataPublication::selectAllEdits() {
+    tw_dataTree->blockSignals(true);
+    for (int i = 0; i < rawDataList.size(); ++i) {
+        if (rawDataList[i].selected) {
+            for (int j = 0; j < rawDataList[i].editSelected.size(); ++j) {
+                rawDataList[i].editSelected[j] = true;
+            }
+        }
+    }
+    buildDataTree();
+    tw_dataTree->blockSignals(false);
+    updateExportButtonStates();
+    updateSummary();
+}
+
+void US_DataPublication::deselectAllEdits() {
+    tw_dataTree->blockSignals(true);
+    for (int i = 0; i < rawDataList.size(); ++i) {
+        for (int j = 0; j < rawDataList[i].editSelected.size(); ++j) {
+            rawDataList[i].editSelected[j] = false;
+        }
+    }
+    buildDataTree();
+    tw_dataTree->blockSignals(false);
+    updateExportButtonStates();
+    updateSummary();
+}
+
+void US_DataPublication::dataTreeItemChanged(QTreeWidgetItem* item, int column) {
+    if (column != 0) return;
+    
+    QString itemType = item->data(0, Qt::UserRole).toString();
+    int index = item->data(0, Qt::UserRole + 1).toInt();
+    bool checked = (item->checkState(0) == Qt::Checked);
+    
+    if (itemType == "rawdata" && index >= 0 && index < rawDataList.size()) {
+        rawDataList[index].selected = checked;
+        // If deselecting raw data, check if any models depend on it
+        if (!checked) {
+            checkModelDependencies();
+        }
+    } else if (itemType == "edit") {
+        int rawIndex = item->data(0, Qt::UserRole + 2).toInt();
+        if (rawIndex >= 0 && rawIndex < rawDataList.size() &&
+            index >= 0 && index < rawDataList[rawIndex].editSelected.size()) {
+            rawDataList[rawIndex].editSelected[index] = checked;
+            // If deselecting edit, check if any models depend on it
+            if (!checked) {
+                checkModelDependencies();
+            }
+        }
+    }
+    
+    updateExportButtonStates();
+    updateSummary();
+}
+
+void US_DataPublication::modelTreeItemChanged(QTreeWidgetItem* item, int column) {
+    if (column != 0) return;
+    
+    int index = item->data(0, Qt::UserRole).toInt();
+    bool checked = (item->checkState(0) == Qt::Checked);
+    
+    if (index >= 0 && index < modelList.size()) {
+        modelList[index].selected = checked;
+        
+        // If selecting a model, ensure its dependent edit is also selected
+        if (checked) {
+            checkModelDependencies();
+        }
+    }
+    
+    updateExportButtonStates();
+    updateSummary();
+}
+
+void US_DataPublication::browseExportFile() {
     QString filter = tr("Data Publication Bundle (*.tar.gz)");
-    QString path;
-    
-    if (rb_export->isChecked()) {
-        path = QFileDialog::getSaveFileName(this, tr("Save Bundle"), 
-            US_Settings::dataDir(), filter);
-    } else {
-        path = QFileDialog::getOpenFileName(this, tr("Open Bundle"),
-            US_Settings::dataDir(), filter);
-    }
+    QString path = QFileDialog::getSaveFileName(this, tr("Save Bundle"), 
+        US_Settings::dataDir(), filter);
     
     if (!path.isEmpty()) {
-        le_file->setText(path);
-        bundlePath = path;
+        if (!path.endsWith(".tar.gz")) {
+            path += ".tar.gz";
+        }
+        le_exportFile->setText(path);
+        exportBundlePath = path;
     }
+    updateExportButtonStates();
 }
 
-void US_DataPublication::browseInputFile() {
-    browseOutputFile();
+void US_DataPublication::browseImportFile() {
+    QString filter = tr("Data Publication Bundle (*.tar.gz)");
+    QString path = QFileDialog::getOpenFileName(this, tr("Open Bundle"),
+        US_Settings::dataDir(), filter);
+    
+    if (!path.isEmpty()) {
+        le_importFile->setText(path);
+        importBundlePath = path;
+        
+        // TODO: Load and preview bundle contents
+        lb_summaryImport->setText(tr("Bundle: %1").arg(QFileInfo(path).fileName()));
+    }
+    updateImportButtonStates();
 }
 
 void US_DataPublication::startExport() {
-    if (bundlePath.isEmpty()) {
+    if (exportBundlePath.isEmpty()) {
         QMessageBox::warning(this, tr("Error"), tr("Please select an output file."));
         return;
     }
     
-    if (projectId < 0) {
-        QMessageBox::warning(this, tr("Error"), tr("Please select a project."));
+    if (countSelectedRawData() == 0 && countSelectedEdits() == 0 && countSelectedModels() == 0) {
+        QMessageBox::warning(this, tr("Error"), tr("Please select at least some data to export."));
         return;
     }
     
-    if (!connectToDatabase()) return;
+    if (exportDiskDB->db() && !connectToDatabase()) return;
     
-    exportScope = static_cast<ExportScope>(cb_scope->currentData().toInt());
-    
-    te_status->append(tr("Starting export..."));
-    progress->setValue(0);
+    te_statusExport->append(tr("Starting export..."));
+    progressExport->setValue(0);
     
     US_DataPubExport exporter(db);
     connect(&exporter, &US_DataPubExport::progress, this, &US_DataPublication::updateProgress);
     connect(&exporter, &US_DataPubExport::completed, this, &US_DataPublication::exportComplete);
     
-    bool success = exporter.exportBundle(bundlePath, projectId, experimentId, exportScope);
+    bool success = exporter.exportBundle(exportBundlePath, projectId, -1, ScopeAll);
     
     if (!success) {
-        te_status->append(tr("Export failed: %1").arg(exporter.errorMessage()));
+        te_statusExport->append(tr("Export failed: %1").arg(exporter.errorMessage()));
     }
 }
 
 void US_DataPublication::startImport() {
-    if (bundlePath.isEmpty()) {
+    if (importBundlePath.isEmpty()) {
         QMessageBox::warning(this, tr("Error"), tr("Please select a bundle file."));
         return;
     }
     
-    importTarget = static_cast<ImportTarget>(cb_target->currentData().toInt());
     conflictPolicy = static_cast<US_DataPubConflictPolicy>(cb_conflict->currentData().toInt());
     
-    if (importTarget == TargetDatabase && !connectToDatabase()) return;
+    ImportTarget target = importDiskDB->db() ? TargetDatabase : TargetDisk;
+    if (target == TargetDatabase && !connectToDatabase()) return;
     
-    te_status->append(tr("Starting import..."));
-    progress->setValue(0);
+    te_statusImport->append(tr("Starting import..."));
+    progressImport->setValue(0);
     
     US_DataPubImport importer(db);
     connect(&importer, &US_DataPubImport::progress, this, &US_DataPublication::updateProgress);
     connect(&importer, &US_DataPubImport::completed, this, &US_DataPublication::importComplete);
     
-    bool success = importer.importBundle(bundlePath, importTarget, 
+    bool success = importer.importBundle(importBundlePath, target, 
                                           US_Settings::dataDir(), conflictPolicy);
     
     if (!success) {
-        te_status->append(tr("Import failed: %1").arg(importer.errorMessage()));
+        te_statusImport->append(tr("Import failed: %1").arg(importer.errorMessage()));
     }
 }
 
+void US_DataPublication::showManifestPreview() {
+    QString preview = generateManifestPreview();
+    
+    QDialog* dialog = new QDialog(this);
+    dialog->setWindowTitle(tr("Manifest Preview"));
+    dialog->setMinimumSize(600, 400);
+    
+    QVBoxLayout* layout = new QVBoxLayout(dialog);
+    QTextEdit* te = new QTextEdit();
+    te->setPlainText(preview);
+    te->setReadOnly(true);
+    te->setFont(QFont("Courier", 10));
+    layout->addWidget(te);
+    
+    QPushButton* pb_close = new QPushButton(tr("Close"));
+    connect(pb_close, &QPushButton::clicked, dialog, &QDialog::accept);
+    layout->addWidget(pb_close);
+    
+    dialog->exec();
+    delete dialog;
+}
+
 void US_DataPublication::updateProgress(int value, const QString& message) {
-    progress->setValue(value);
-    te_status->append(message);
+    // Update whichever tab is active
+    if (tabWidget->currentIndex() == 0) {
+        progressExport->setValue(value);
+        te_statusExport->append(message);
+    } else {
+        progressImport->setValue(value);
+        te_statusImport->append(message);
+    }
 }
 
 void US_DataPublication::exportComplete(bool success, const QString& message) {
-    progress->setValue(100);
+    progressExport->setValue(100);
     if (success) {
-        te_status->append(tr("Export completed successfully."));
+        te_statusExport->append(tr("Export completed successfully."));
         QMessageBox::information(this, tr("Export Complete"), message);
     } else {
-        te_status->append(tr("Export failed: %1").arg(message));
+        te_statusExport->append(tr("Export failed: %1").arg(message));
         QMessageBox::warning(this, tr("Export Failed"), message);
     }
 }
 
 void US_DataPublication::importComplete(bool success, const QString& message) {
-    progress->setValue(100);
+    progressImport->setValue(100);
     if (success) {
-        te_status->append(tr("Import completed successfully."));
+        te_statusImport->append(tr("Import completed successfully."));
         QMessageBox::information(this, tr("Import Complete"), message);
     } else {
-        te_status->append(tr("Import failed: %1").arg(message));
+        te_statusImport->append(tr("Import failed: %1").arg(message));
         QMessageBox::warning(this, tr("Import Failed"), message);
     }
 }
 
-void US_DataPublication::help() {
-    QString helpText = tr(
-        "<h2>UltraScan Data Publication</h2>"
-        "<p>This tool allows you to export and import data publication bundles.</p>"
-        "<h3>Export Mode</h3>"
-        "<p>Select a project and optionally an experiment, then choose the scope "
-        "of data to export. The bundle will include all necessary dependencies.</p>"
-        "<h3>Import Mode</h3>"
-        "<p>Select a bundle file and choose whether to import to the database "
-        "or disk. Configure how conflicts should be handled:</p>"
-        "<ul>"
-        "<li><b>Reuse</b>: If an entity with matching properties exists, reuse it</li>"
-        "<li><b>Rename</b>: Always create new entities with unique names</li>"
-        "<li><b>Fail</b>: Stop on any conflict</li>"
-        "</ul>"
-    );
+void US_DataPublication::updateSummary() {
+    int rawCount = countSelectedRawData();
+    int editCount = countSelectedEdits();
+    int modelCount = countSelectedModels();
     
-    QMessageBox::information(this, tr("Help"), helpText);
+    QString summary = tr("Summary: %1 raw data, %2 edits, %3 models selected")
+        .arg(rawCount).arg(editCount).arg(modelCount);
+    
+    if (projectId > 0) {
+        summary = tr("Project: %1 | ").arg(currentProject.projectDesc) + summary;
+    }
+    
+    lb_summaryExport->setText(summary);
+}
+
+void US_DataPublication::help() {
+    showHelp.show_help("manual/us_data_publication.html");
+}
+
+void US_DataPublication::loadRawDataForExperiments() {
+    rawDataList.clear();
+    
+    // This would query the database/disk for raw data associated with selected experiments
+    // For now, create placeholder implementation
+    // In a full implementation, this would use US_DataIO to load raw data info
+    
+    te_statusExport->append(tr("Loading raw data for %1 experiments...").arg(selectedRunIDs.size()));
+}
+
+void US_DataPublication::loadEditsForRawData() {
+    // This would load edit information for the raw data
+    // In a full implementation, this would query for edit profiles
+}
+
+void US_DataPublication::buildDataTree() {
+    tw_dataTree->clear();
+    tw_dataTree->blockSignals(true);
+    
+    // Group by experiment/run
+    QMap<QString, QList<int>> runGroups;
+    for (int i = 0; i < rawDataList.size(); ++i) {
+        runGroups[rawDataList[i].runID].append(i);
+    }
+    
+    for (auto it = runGroups.begin(); it != runGroups.end(); ++it) {
+        // Create run/experiment node
+        QTreeWidgetItem* runItem = new QTreeWidgetItem(tw_dataTree);
+        runItem->setText(0, it.key());
+        runItem->setText(1, tr("Experiment"));
+        runItem->setFlags(runItem->flags() & ~Qt::ItemIsUserCheckable);
+        
+        // Add raw data items
+        for (int idx : it.value()) {
+            const US_DataPubRawDataInfo& raw = rawDataList[idx];
+            
+            QTreeWidgetItem* rawItem = new QTreeWidgetItem(runItem);
+            rawItem->setText(0, raw.description);
+            rawItem->setText(1, tr("Raw Data"));
+            rawItem->setText(2, raw.rawGUID);
+            rawItem->setFlags(rawItem->flags() | Qt::ItemIsUserCheckable);
+            rawItem->setCheckState(0, raw.selected ? Qt::Checked : Qt::Unchecked);
+            rawItem->setData(0, Qt::UserRole, "rawdata");
+            rawItem->setData(0, Qt::UserRole + 1, idx);
+            
+            // Add edit items
+            for (int j = 0; j < raw.editIDs.size(); ++j) {
+                QTreeWidgetItem* editItem = new QTreeWidgetItem(rawItem);
+                editItem->setText(0, raw.editNames.value(j, tr("Edit %1").arg(j + 1)));
+                editItem->setText(1, tr("Edit"));
+                editItem->setText(2, raw.editGUIDs.value(j));
+                editItem->setFlags(editItem->flags() | Qt::ItemIsUserCheckable);
+                editItem->setCheckState(0, raw.editSelected.value(j, false) ? Qt::Checked : Qt::Unchecked);
+                editItem->setData(0, Qt::UserRole, "edit");
+                editItem->setData(0, Qt::UserRole + 1, j);
+                editItem->setData(0, Qt::UserRole + 2, idx);
+            }
+        }
+        
+        runItem->setExpanded(true);
+    }
+    
+    tw_dataTree->blockSignals(false);
+}
+
+void US_DataPublication::buildModelTree() {
+    tw_modelTree->clear();
+    tw_modelTree->blockSignals(true);
+    
+    for (int i = 0; i < modelList.size(); ++i) {
+        const US_DataPubModelInfo& model = modelList[i];
+        
+        QTreeWidgetItem* item = new QTreeWidgetItem(tw_modelTree);
+        item->setText(0, model.description);
+        item->setText(1, tr("Model"));
+        item->setText(2, model.editGUID);
+        item->setText(3, model.noiseGUID_ti.isEmpty() && model.noiseGUID_ri.isEmpty() ? 
+                      tr("None") : tr("Yes"));
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(0, model.selected ? Qt::Checked : Qt::Unchecked);
+        item->setData(0, Qt::UserRole, i);
+    }
+    
+    tw_modelTree->blockSignals(false);
+}
+
+void US_DataPublication::checkModelDependencies() {
+    // Check if any selected models depend on deselected edits/raw data
+    // If so, prompt the user to either select the dependencies or deselect the models
+    
+    for (int i = 0; i < modelList.size(); ++i) {
+        if (!modelList[i].selected) continue;
+        
+        QString editGUID = modelList[i].editGUID;
+        bool editSelected = false;
+        
+        // Check if the model's edit is selected
+        for (int j = 0; j < rawDataList.size(); ++j) {
+            for (int k = 0; k < rawDataList[j].editGUIDs.size(); ++k) {
+                if (rawDataList[j].editGUIDs[k] == editGUID) {
+                    if (rawDataList[j].selected && rawDataList[j].editSelected.value(k, false)) {
+                        editSelected = true;
+                    }
+                    break;
+                }
+            }
+        }
+        
+        if (!editSelected) {
+            // The model depends on an edit that is not selected
+            QMessageBox::StandardButton reply = QMessageBox::question(this,
+                tr("Dependency Required"),
+                tr("Model '%1' depends on an edit that is not selected.\n"
+                   "Do you want to automatically select the required edit?")
+                   .arg(modelList[i].description),
+                QMessageBox::Yes | QMessageBox::No);
+            
+            if (reply == QMessageBox::Yes) {
+                // Select the required edit
+                for (int j = 0; j < rawDataList.size(); ++j) {
+                    for (int k = 0; k < rawDataList[j].editGUIDs.size(); ++k) {
+                        if (rawDataList[j].editGUIDs[k] == editGUID) {
+                            rawDataList[j].selected = true;
+                            rawDataList[j].editSelected[k] = true;
+                            break;
+                        }
+                    }
+                }
+                buildDataTree();
+            } else {
+                // Deselect the model
+                modelList[i].selected = false;
+                buildModelTree();
+            }
+        }
+    }
+}
+
+QString US_DataPublication::generateManifestPreview() {
+    QString preview;
+    QTextStream out(&preview);
+    
+    out << "# UltraScan3 Data Publication Bundle Manifest Preview\n";
+    out << "version: " << BUNDLE_VERSION << "\n";
+    out << "created: " << QDateTime::currentDateTime().toString(Qt::ISODate) << "\n\n";
+    
+    if (projectId > 0) {
+        out << "project:\n";
+        out << "  - name: \"" << currentProject.projectDesc << "\"\n";
+        out << "    guid: \"" << currentProject.projectGUID << "\"\n\n";
+    }
+    
+    int rawCount = countSelectedRawData();
+    int editCount = countSelectedEdits();
+    int modelCount = countSelectedModels();
+    
+    out << "# Selected items summary:\n";
+    out << "# Raw Data: " << rawCount << "\n";
+    out << "# Edits: " << editCount << "\n";
+    out << "# Models: " << modelCount << "\n\n";
+    
+    if (rawCount > 0) {
+        out << "rawData:\n";
+        for (const auto& raw : rawDataList) {
+            if (raw.selected) {
+                out << "  - name: \"" << raw.description << "\"\n";
+                out << "    guid: \"" << raw.rawGUID << "\"\n";
+            }
+        }
+        out << "\n";
+    }
+    
+    if (editCount > 0) {
+        out << "edits:\n";
+        for (const auto& raw : rawDataList) {
+            for (int j = 0; j < raw.editSelected.size(); ++j) {
+                if (raw.editSelected[j]) {
+                    out << "  - name: \"" << raw.editNames.value(j) << "\"\n";
+                    out << "    guid: \"" << raw.editGUIDs.value(j) << "\"\n";
+                }
+            }
+        }
+        out << "\n";
+    }
+    
+    if (modelCount > 0) {
+        out << "models:\n";
+        for (const auto& model : modelList) {
+            if (model.selected) {
+                out << "  - name: \"" << model.description << "\"\n";
+                out << "    guid: \"" << model.modelGUID << "\"\n";
+            }
+        }
+        out << "\n";
+    }
+    
+    return preview;
+}
+
+int US_DataPublication::countSelectedRawData() {
+    int count = 0;
+    for (const auto& raw : rawDataList) {
+        if (raw.selected) ++count;
+    }
+    return count;
+}
+
+int US_DataPublication::countSelectedEdits() {
+    int count = 0;
+    for (const auto& raw : rawDataList) {
+        for (bool sel : raw.editSelected) {
+            if (sel) ++count;
+        }
+    }
+    return count;
+}
+
+int US_DataPublication::countSelectedModels() {
+    int count = 0;
+    for (const auto& model : modelList) {
+        if (model.selected) ++count;
+    }
+    return count;
 }
 
 // ============================================================================
