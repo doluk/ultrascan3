@@ -1,6 +1,7 @@
 //! \file us_lamm_astfvm.cpp
 
 #include <QtWidgets/QFileDialog>
+#include <vector>
 #include "us_lamm_astfvm.h"
 #include "us_math2.h"
 #include "us_constants.h"
@@ -1861,12 +1862,12 @@ void
                                      double* __restrict u1, const int* scan_hint ) const
 {
    const int Ng        = 2 * M1; // number of x_star points
-   int*      ke        = new int[Ng];
-   auto*     MemDouble = new double[12 * Ng + 15];
+   std::vector<int> ke( Ng );
+   std::vector<double> MemDouble( 12 * Ng + 15 );
    double*   flux_p[3];
 
    const double dt2    = dt_ * 0.5;
-   double*      xt     = MemDouble;
+   double*      xt     = MemDouble.data();
    double*      xi     = xt + Ng;
    double*      xg0    = xi + Ng;
    double*      xg1    = xg0 + Ng;
@@ -1975,7 +1976,7 @@ void
 
    // calculate Sv, Dv at (xg0, t)
 
-   LocateStar( M0 + 1, x0, Ng, xg0, ke, xi ); // position of xg0 on mesh x0
+   LocateStar( M0 + 1, x0, Ng, xg0, ke.data(), xi ); // position of xg0 on mesh x0
 
    for ( int j = 0; j < Ng; j++ )
    {
@@ -1992,7 +1993,7 @@ void
    // calculate Flux(u0,t) at all xg0
    // (i) Compute ux at nodes as average of Du from left and right
 
-   auto* ux = new double[M0 + 1]; // D_x(u0) at all x0
+   std::vector<double> ux( M0 + 1 ); // D_x(u0) at all x0
 
    for ( int j = 1; j < M0; j++ )
    {
@@ -2035,16 +2036,14 @@ void
       }
    }
 
-   delete[] ux;
-
    // -- Assemble the linear system --
-   auto** Mtx = new double*[Ng + 1];
-   auto*  rhs = new double[Ng + 1];
-   // Instead of allocating each row separately, consider allocating one block if sizes are small.
+   std::vector<double> matrix_storage( ( Ng + 1 ) * 5 );
+   std::vector<double*> Mtx( Ng + 1 );
    for ( int i = 0; i <= Ng; i++ )
    {
-      Mtx[i] = new double[5];
+      Mtx[ i ] = matrix_storage.data() + ( 5 * i );
    }
+   std::vector<double> rhs( Ng + 1 );
 
    // Assemble matrix coefficients for internal nodes.
    for ( int i = 1; i < Ng; i += 2 )
@@ -2098,17 +2097,7 @@ void
    }
 
    // Solve the 5-diagonal linear system (solver routine remains unchanged)
-   LsSolver53( Ng, Mtx, rhs, u1 );
-
-   // Cleanup allocated memory
-   for ( int i = 0; i <= Ng; i++ )
-   {
-      delete[] Mtx[i];
-   }
-   delete[] Mtx;
-   delete[] rhs;
-   delete[] ke;
-   delete[] MemDouble;
+   LsSolver53( Ng, Mtx.data(), rhs.data(), u1 );
    DbgLv( 2 ) << " Diff_C times 1-8" << k_time1 << k_time2 << k_time3 << k_time4 << k_time5 << k_time6 << k_time7 <<
  k_time8;
 }
