@@ -1,7 +1,7 @@
 //! \file us_lamm_astfvm.cpp
 
 #include <QtWidgets/QFileDialog>
-#include <vector>
+#include <QVector>
 #include "us_lamm_astfvm.h"
 #include "us_math2.h"
 #include "us_constants.h"
@@ -1862,8 +1862,8 @@ void
                                      double* __restrict u1, const int* scan_hint ) const
 {
    const int Ng        = 2 * M1; // number of x_star points
-   std::vector<int> ke( Ng );
-   std::vector<double> MemDouble( 12 * Ng + 15 );
+   QVector<int>    ke( Ng );
+   QVector<double> MemDouble( 12 * Ng + 15 );
    double*   flux_p[3];
 
    const double dt2    = dt_ * 0.5;
@@ -1993,7 +1993,7 @@ void
    // calculate Flux(u0,t) at all xg0
    // (i) Compute ux at nodes as average of Du from left and right
 
-   std::vector<double> ux( M0 + 1 ); // D_x(u0) at all x0
+   QVector<double> ux( M0 + 1 ); // D_x(u0) at all x0
 
    for ( int j = 1; j < M0; j++ )
    {
@@ -2037,13 +2037,13 @@ void
    }
 
    // -- Assemble the linear system --
-   std::vector<double> matrix_storage( ( Ng + 1 ) * 5 );
-   std::vector<double*> Mtx( Ng + 1 );
+   QVector<double>  matrix_storage( ( Ng + 1 ) * 5 );
+   QVector<double*> Mtx( Ng + 1 );
    for ( int i = 0; i <= Ng; i++ )
    {
       Mtx[ i ] = matrix_storage.data() + ( 5 * i );
    }
-   std::vector<double> rhs( Ng + 1 );
+   QVector<double> rhs( Ng + 1 );
 
    // Assemble matrix coefficients for internal nodes.
    for ( int i = 1; i < Ng; i += 2 )
