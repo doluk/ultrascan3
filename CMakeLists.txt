@@ -1,6 +1,27 @@
 cmake_minimum_required(VERSION 3.21)
 
 # =============================================================================
+# VCPKG TRIPLET AUTO-DETECTION
+# =============================================================================
+# Auto-detect vcpkg triplet for macOS (only if not explicitly set)
+if(NOT DEFINED VCPKG_TARGET_TRIPLET)
+    if(APPLE)
+        execute_process(
+                COMMAND uname -m
+                OUTPUT_VARIABLE DETECTED_ARCH
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+        )
+        if(DETECTED_ARCH STREQUAL "arm64")
+            set(VCPKG_TARGET_TRIPLET "arm64-osx-dynamic")
+            message(STATUS "Auto-detected Apple Silicon (arm64) - using triplet: ${VCPKG_TARGET_TRIPLET}")
+        else()
+            set(VCPKG_TARGET_TRIPLET "x64-osx-dynamic")
+            message(STATUS "Auto-detected Intel Mac (x86_64) - using triplet: ${VCPKG_TARGET_TRIPLET}")
+        endif()
+    endif()
+endif()
+
+# =============================================================================
 # VERSION EXTRACTION FROM us_defines.h
 # =============================================================================
 # Extract version before project() call
@@ -24,18 +45,27 @@ message(STATUS "UltraScan3 description: ${US3_DESCRIPTION}")
 # =============================================================================
 # VERSION HEADER GENERATION
 # =============================================================================
-# Generate us/us_version.h and us/us_revision.h on *every* build
-add_custom_target(us_version_headers ALL
-        COMMAND ${CMAKE_COMMAND}
-        -DPROJECT_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
-        -DPROJECT_VERSION_MINOR=${PROJECT_VERSION_MINOR}
-        -DPROJECT_VERSION_PATCH=${PROJECT_VERSION_PATCH}
-        -DUS3_VERSION=${US3_VERSION}
-        -DUS3_SOURCE_DIR=${CMAKE_SOURCE_DIR}
-        -DUS3_BINARY_DIR=${CMAKE_BINARY_DIR}
-        -P ${CMAKE_SOURCE_DIR}/admin/cmake/GenerateVersion.cmake
-        COMMENT "Regenerating UltraScan3 version headers (us_revision.h)"
-        )
+# Generate us/us_revision.h only when Git state changes (not on every build)
+set(REVISION_HEADER "${CMAKE_SOURCE_DIR}/programs/us/us_revision.h")
+
+find_package(Git)
+if(GIT_FOUND AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
+    add_custom_target(us_version_headers ALL
+            COMMAND ${CMAKE_COMMAND}
+            -DPROJECT_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
+            -DPROJECT_VERSION_MINOR=${PROJECT_VERSION_MINOR}
+            -DPROJECT_VERSION_PATCH=${PROJECT_VERSION_PATCH}
+            -DUS3_VERSION=${US3_VERSION}
+            -DUS3_SOURCE_DIR=${CMAKE_SOURCE_DIR}
+            -DUS3_BINARY_DIR=${CMAKE_BINARY_DIR}
+            -P ${CMAKE_SOURCE_DIR}/admin/cmake/GenerateVersion.cmake
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            COMMENT "Updating us_revision.h"
+            VERBATIM
+    )
+else()
+    add_custom_target(us_version_headers)
+endif()
 
 include_directories(${CMAKE_BINARY_DIR})
 
@@ -93,6 +123,22 @@ endif()
 # Platform-specific compiler flags
 if(UNIX AND NOT APPLE)
     add_compile_options(-Wno-unused-local-typedefs)
+    # Match qmake flags for better compatibility
+    add_compile_options(-pipe -Wall -Wextra)
+    add_compile_definitions(_REENTRANT)
+
+    # Optional: Enable LTO for Release builds (matches qmake)
+    # Note: LTO can cause longer build times and may need to be disabled for debugging
+    if(CMAKE_BUILD_TYPE STREQUAL "Release")
+        include(CheckIPOSupported)
+        check_ipo_supported(RESULT IPO_SUPPORTED OUTPUT IPO_ERROR)
+        if(IPO_SUPPORTED)
+            message(STATUS "Enabling Link-Time Optimization (LTO)")
+            set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+        else()
+            message(STATUS "LTO not supported: ${IPO_ERROR}")
+        endif()
+    endif()
 endif()
 
 # Enable Qt's MOC, RCC, and UIC
@@ -311,6 +357,13 @@ add_dependencies(us3_resources us3_validate_qrc)
 target_link_libraries(us3_resources PRIVATE Qt5::Core Qt5::Gui)
 add_library(UltraScan3::Resources ALIAS us3_resources)
 
+# Create symbolic link from source etc to build etc
+set(US3_BUILD_ETC_DIR "${CMAKE_BINARY_DIR}/etc")
+if (NOT EXISTS "${US3_BUILD_ETC_DIR}")
+    file(CREATE_LINK "${US3_ETC_DIR}" "${US3_BUILD_ETC_DIR}" SYMBOLIC)
+    message(STATUS "Created symbolic link: ${US3_BUILD_ETC_DIR} -> ${US3_ETC_DIR}")
+endif ()
+
 # Install editable trees/files we excluded from the QRC
 foreach(d IN LISTS US3_ETC_EXCLUDE_DIRS)
     if(EXISTS "${US3_ETC_DIR}/${d}")
@@ -381,10 +434,12 @@ else()
         if(QWT_INCLUDE_DIRS)
             set_target_properties(unofficial_qwt_qwt PROPERTIES
                     INTERFACE_INCLUDE_DIRECTORIES "${QWT_INCLUDE_DIRS}"
+                    INTERFACE_LINK_DIRECTORIES "${QWT_LIBRARY_DIRS}"
                     INTERFACE_LINK_LIBRARIES "${QWT_LIBRARIES}")
         else()
             set_target_properties(unofficial_qwt_qwt PROPERTIES
                     INTERFACE_INCLUDE_DIRECTORIES "${QWT_INCLUDE_DIR}"
+                    INTERFACE_LINK_DIRECTORIES "${QWT_LIBRARY_DIR}"
                     INTERFACE_LINK_LIBRARIES "${QWT_LIBRARY}")
         endif()
 
@@ -646,6 +701,6 @@ message(STATUS "  Qwt version: ${QWT_VERSION}")
 if(NOT US3_NO_DB)
     message(STATUS "  MySQL found: ${MYSQL_FOUND}")
 endif()
-message(STATUS "  LibArchive found: ${LIBARCHIVE_FOUND}")
+message(STATUS "  LibArchive found: ${LibArchive_VERSION}")
 message(STATUS "  OpenSSL  found: ${OPENSSL_FOUND} (${OPENSSL_VERSION})")
 message(STATUS "")

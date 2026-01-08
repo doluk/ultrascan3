@@ -24,7 +24,6 @@
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_OSX_DEPLOYMENT_TARGET": "11.0",
         "VCPKG_BUILD_TYPE": "release",
-        "VCPKG_TARGET_TRIPLET": "x64-osx-dynamic",
         "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/admin/cmake/triplets"
       },
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" }
@@ -37,7 +36,8 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_POSITION_INDEPENDENT_CODE": "ON",
-        "VCPKG_BUILD_TYPE": "release"
+        "VCPKG_BUILD_TYPE": "release",
+        "VCPKG_TARGET_TRIPLET": "x64-linux-dynamic"
       },
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
     },
