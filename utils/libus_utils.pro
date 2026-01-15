@@ -70,6 +70,7 @@ HEADERS      = us_ana_profile.h   \
                us_solution.h      \
                us_solution_vals.h \
                us_solve_sim.h     \
+               us_stats_engine.h  \
                us_stiffbase.h     \
                us_tar.h           \
                us_time_state.h    \
@@ -127,6 +128,7 @@ SOURCES      = us_ana_profile.cpp   \
                us_solution.cpp      \
                us_solution_vals.cpp \
                us_solve_sim.cpp     \
+               us_stats_engine.cpp  \
                us_stiffbase.cpp     \
                us_tar.cpp           \
                us_time_state.cpp    \
