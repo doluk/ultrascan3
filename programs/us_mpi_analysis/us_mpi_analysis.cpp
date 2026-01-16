@@ -2567,8 +2567,10 @@ DbgLv(0) << my_rank << ":       model2.description" << model2.description;
                   << ";meniscus_value=" << model2.meniscus
                   << ";MC_iteration="   << mc_iterations
                   << ";variance="       << model2.variance
-                  << ";run="            << runstring << "\n";
-            model2.write( cmfname );
+                  << ";run="            << runstring
+                  << ";desc="           << model2.description
+                  << "\n";
+            //model2.write( cmfname );
             tfiles << cmfname;
 
             if ( analysis_type.contains( "PCSA" ) )
