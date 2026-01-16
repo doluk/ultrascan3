@@ -84,6 +84,7 @@ US_SolveSim::Simulation::Simulation() {
    dbg_level = 0;
    dbg_timing = false;
    noisflag = 0;
+   global_metrics = US_StatsEngine::GlobalMetrics();
 }
 
 // Static function to check the grid size implied by data and model
@@ -1410,14 +1411,14 @@ DbgLv(1) << "CR: sdat:"
       int nscans = edata->scanCount();
       int kntcs = 0;
       double varidset = 0.0;
-
+      QVector<double> flat_residuals (nscans * npoints);
       for (int ss = 0; ss < nscans; ss++, scnx++) {  // Create residuals dset:  exp - sim - noise(s)
 
          for (int rr = 0; rr < npoints; rr++) {
 
             double resval = edata->value(ss, rr) - sdata->value(scnx, rr) - tinvec[rr + tinoffs] - rinvec[ss + rinoffs];
             resid->setValue(scnx, rr, resval);
-
+            flat_residuals[kntcs] = resval;
             double r2 = sq(resval);
             variance += r2;
             varidset += r2;
@@ -1431,6 +1432,7 @@ DbgLv(1) << "CR: sdat:"
       tinoffs += npoints;
       rinoffs += nscans;
       DbgLv(1) << "CR: kdsx variance" << kdsx << varidset << variance;
+      sim_vals.global_metrics = US_StatsEngine::calculateGlobalMetrics(flat_residuals);
    }
 
    sim_vals.variances.resize(dataset_count);

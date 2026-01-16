@@ -16,6 +16,7 @@
 #include "us_astfem_rsa.h"
 #include "us_math_bf.h"
 #include "us_lamm_astfvm.h"
+#include "us_stats_engine.h"
 
 #define SIMPARAMS US_SimulationParameters
 
@@ -85,6 +86,7 @@ class US_UTIL_EXTERN US_SolveSim : public QObject
          QVector< double >     a_cached;
          QVector< double >     b_cached;
          QVector< double >     n_cached;
+        US_StatsEngine::GlobalMetrics global_metrics;
     };
 
     //! Constructor for the SolveSim class
