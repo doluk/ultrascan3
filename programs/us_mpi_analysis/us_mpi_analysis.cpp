@@ -15,8 +15,7 @@
 #include <mpi.h>
 #include <sys/user.h>
 
-
-
+#include "us_stats_engine.h"
 
 
 #define ELAPSED_SECS (startTime.msecsTo(QDateTime::currentDateTime())/1000.0)
@@ -2132,6 +2131,18 @@ DbgLv(1) << "wrMo:  mc mciter mGUID" << model.monteCarlo << mc_iter
       }
 
    }
+
+   // Attach global_metrics to model.dataDescrip
+   if ( sim.global_metrics.valid )
+   {
+      QString stats = "";
+      stats += QString( " HMETRIC=%1" ).arg( sim.global_metrics.hMetric );
+      stats += QString( " DW=%1" ).arg( sim.global_metrics.durbin_watson );
+      stats += QString( " KS=%1" ).arg( sim.global_metrics.ksStatistic );
+      stats += QString( " EXCKURT=%1" ).arg( sim.global_metrics.excessKurtosis );
+      model.dataDescrip += stats;
+   }
+
    //model.optics      = ???  How to get this?  Is is needed?
    model.analysis    = type;
    QString runID     = edata->runID;
@@ -2557,7 +2568,7 @@ DbgLv(0) << my_rank << ":       model2.description" << model2.description;
                   << ";MC_iteration="   << mc_iterations
                   << ";variance="       << model2.variance
                   << ";run="            << runstring << "\n";
-
+            model2.write( cmfname );
             tfiles << cmfname;
 
             if ( analysis_type.contains( "PCSA" ) )
@@ -2645,6 +2656,9 @@ double US_MPI_Analysis::rmsd_combined_mc_models( US_Model& model )
    bool   fit_ti   = ti_noise.size() > 0;
    bool   fit_ri   = ri_noise.size() > 0;
    int    kpts     = 0;
+   QVector<double > residuals;
+   // allocate space for residuals
+   residuals.resize(nscans*npoints);
 DbgLv(1) << "Combined MC Model: nscans:" << nscans << "npoints:" << npoints
          << "fit_ti:" << fit_ti << "fit_ri:" << fit_ri << "size ti_noise:" << ti_noise.size()
          << "size ri_noise:" << ri_noise.size();
@@ -2655,12 +2669,21 @@ DbgLv(1) << "Combined MC Model: nscans:" << nscans << "npoints:" << npoints
       { // Calculate the residuals and the RMSD
          double tin  = fit_ti ? ti_noise.at( jj ) : 0.0;
          double diff = edata.value( ii, jj ) - sdata.value( ii, jj ) - rin - tin;
+         residuals[kpts++] = diff;
          variance += sq( diff );
          kpts++;
       }
    }
 
    variance  /= static_cast<double>( kpts );
+   US_StatsEngine::GlobalMetrics global_metrics = US_StatsEngine::calculateGlobalMetrics(residuals);
+   // construct string out of global_metrics by formating ATTRIBUTE=VALUE
+   QString stats = "";
+   stats += QString(" %1=%2").arg("HMETRIC").arg(global_metrics.hMetric);
+   stats += QString(" %1=%2").arg("DW").arg(global_metrics.durbin_watson);
+   stats += QString(" %1=%2").arg("KS").arg(global_metrics.ksStatistic);
+   stats += QString(" %1=%2").arg("EXCKURT").arg(global_metrics.excessKurtosis);
+   model.dataDescrip += stats;
    return variance;
 
 }

@@ -1202,6 +1202,23 @@ void US_MPI_Analysis::process_results( int        worker,
              my_communicator,
              &status );
 
+   // Receive global_metrics (4 doubles + 1 for valid flag)
+   double global_metrics_data[5];
+   MPI_Recv( global_metrics_data,
+             5,
+             MPI_DOUBLE,
+             worker,
+             MPI_Job::TAG0,
+             my_communicator,
+             &status );
+
+   // Store global_metrics into simulation_values
+   simulation_values.global_metrics.excessKurtosis = global_metrics_data[0];
+   simulation_values.global_metrics.ksStatistic    = global_metrics_data[1];
+   simulation_values.global_metrics.hMetric        = global_metrics_data[2];
+   simulation_values.global_metrics.durbin_watson  = global_metrics_data[3];
+   simulation_values.global_metrics.valid          = (global_metrics_data[4] > 0.5);
+
    worker_status[ worker ] = INIT;
    int depth       = worker_depth[ worker ];
 

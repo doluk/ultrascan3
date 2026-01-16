@@ -178,6 +178,21 @@ DbgLv(1) << "w:" << my_rank << ":   result sols size" << size[0]
                          MPI_Job::MASTER,
                          MPI_Job::TAG0,
                          my_communicator );
+
+               // Send global_metrics (4 doubles + 1 int for valid flag)
+               double global_metrics_data[5];
+               global_metrics_data[0] = simulation_values.global_metrics.excessKurtosis;
+               global_metrics_data[1] = simulation_values.global_metrics.ksStatistic;
+               global_metrics_data[2] = simulation_values.global_metrics.hMetric;
+               global_metrics_data[3] = simulation_values.global_metrics.durbin_watson;
+               global_metrics_data[4] = simulation_values.global_metrics.valid ? 1.0 : 0.0;
+
+               MPI_Send( global_metrics_data,
+                         5,
+                         MPI_DOUBLE,
+                         MPI_Job::MASTER,
+                         MPI_Job::TAG0,
+                         my_communicator );
             }
 
             break;
