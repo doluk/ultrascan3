@@ -2684,6 +2684,7 @@ DbgLv(1) << "Combined MC Model: nscans:" << nscans << "npoints:" << npoints
    stats += QString(" %1=%2").arg("KS").arg(global_metrics.ksStatistic);
    stats += QString(" %1=%2").arg("EXCKURT").arg(global_metrics.excessKurtosis);
    model.dataDescrip += stats;
+   qDebug() << "RMSD:" << sqrt(variance) << model.description << model.dataDescrip;
    return variance;
 
 }
