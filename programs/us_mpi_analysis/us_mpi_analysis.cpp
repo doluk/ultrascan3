@@ -2563,14 +2563,14 @@ DbgLv(0) << my_rank << ":       model2.description" << model2.description;
             QString runstring = "Run: " + QString::number( ii + 1 )
                                 + " " + tripleID;
             model2.variance = rmsd_combined_mc_models( model2 );
+            qDebug() << "rmsd_combined_mc_models" << model2.variance;
             tsout << cmfname 
                   << ";meniscus_value=" << model2.meniscus
                   << ";MC_iteration="   << mc_iterations
                   << ";variance="       << model2.variance
                   << ";run="            << runstring
-                  << ";desc="           << model2.description
                   << "\n";
-            //model2.write( cmfname );
+            qDebug() << cmfname << " added to tfiles";
             tfiles << cmfname;
 
             if ( analysis_type.contains( "PCSA" ) )
