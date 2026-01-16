@@ -2678,13 +2678,13 @@ DbgLv(1) << "Combined MC Model: nscans:" << nscans << "npoints:" << npoints
    }
 
    variance  /= static_cast<double>( kpts );
-   US_StatsEngine::GlobalMetrics global_metrics = US_StatsEngine::calculateGlobalMetrics(residuals);
-   // construct string out of global_metrics by formating ATTRIBUTE=VALUE
-   QString stats = "";
-   stats += QString(" %1=%2").arg("HMETRIC").arg(global_metrics.hMetric);
-   stats += QString(" %1=%2").arg("DW").arg(global_metrics.durbin_watson);
-   stats += QString(" %1=%2").arg("KS").arg(global_metrics.ksStatistic);
-   stats += QString(" %1=%2").arg("EXCKURT").arg(global_metrics.excessKurtosis);
+   // US_StatsEngine::GlobalMetrics global_metrics = US_StatsEngine::calculateGlobalMetrics(residuals);
+   // // construct string out of global_metrics by formating ATTRIBUTE=VALUE
+   // QString stats = "";
+   // stats += QString(" %1=%2").arg("HMETRIC").arg(global_metrics.hMetric);
+   // stats += QString(" %1=%2").arg("DW").arg(global_metrics.durbin_watson);
+   // stats += QString(" %1=%2").arg("KS").arg(global_metrics.ksStatistic);
+   // stats += QString(" %1=%2").arg("EXCKURT").arg(global_metrics.excessKurtosis);
 
    return variance;
 
