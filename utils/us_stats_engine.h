@@ -15,9 +15,12 @@ class US_UTIL_EXTERN US_StatsEngine
       //! \brief Global scalar metrics ("Health Check")
       struct US_UTIL_EXTERN GlobalMetrics
       {
+         GlobalMetrics();
+
          double excessKurtosis;     //!< Excess kurtosis
          double ksStatistic;        //!< Kolmogorov-Smirnov statistic
          double hMetric;            //!< H metric (normalized sum of square differences from normal)
+         double durbin_watson;      //!< Durbin-Watson
          bool   valid;              //!< Whether metrics are valid
          QString errorMessage;      //!< Error message if invalid
       };

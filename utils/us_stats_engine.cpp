@@ -260,13 +260,19 @@ double US_StatsEngine::calculateHMetric( const QVector<double>& data, const doub
    return ( h_den > 0.0 ) ? ( h_num / h_den ) : 0.0;
 }
 
+US_StatsEngine::GlobalMetrics::GlobalMetrics() {
+   excessKurtosis = NAN;
+   ksStatistic    = NAN;
+   hMetric        = NAN;
+   durbin_watson  = NAN;
+   valid          = false;
+   errorMessage   = "";
+}
+
 US_StatsEngine::GlobalMetrics US_StatsEngine::calculateGlobalMetrics( const QVector<double>& data_flat )
 {
-   GlobalMetrics metrics;
-   metrics.excessKurtosis = NAN;
-   metrics.ksStatistic    = NAN;
-   metrics.hMetric        = NAN;
-   metrics.valid          = false;
+   GlobalMetrics metrics = GlobalMetrics();
+
 
    // Filter non-finite values
    QVector<double> filtered = filterFiniteValues( data_flat );
@@ -306,6 +312,7 @@ US_StatsEngine::GlobalMetrics US_StatsEngine::calculateGlobalMetrics( const QVec
    metrics.excessKurtosis = calculateExcessKurtosis( filtered, mean, stddev );
    metrics.ksStatistic    = calculateKSStatistic( filtered, mean, stddev );
    metrics.hMetric        = calculateHMetric( filtered, stddev );
+   metrics.durbin_watson  = calculateDurbinWatson( filtered );
    metrics.valid          = true;
 
    return metrics;
