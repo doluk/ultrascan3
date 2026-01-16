@@ -2131,11 +2131,10 @@ DbgLv(1) << "wrMo:  mc mciter mGUID" << model.monteCarlo << mc_iter
       }
 
    }
-
+   QString stats = "";
    // Attach global_metrics to model.dataDescrip
    if ( sim.global_metrics.valid )
    {
-      QString stats = "";
       stats += QString( " HMETRIC=%1" ).arg( sim.global_metrics.hMetric );
       stats += QString( " DW=%1" ).arg( sim.global_metrics.durbin_watson );
       stats += QString( " KS=%1" ).arg( sim.global_metrics.ksStatistic );
@@ -2307,7 +2306,7 @@ DbgLv(1) << "wrMo: stype" << stype << QString::asprintf( "0%o",stype )
                << ";MC_iteration="   << mc_iter
                << ";variance="       << sim.variance
                << ";run="            << runstring
-   << ";"<< fitType[secondaryFit] << "=" << bottom_value
+   << ";"<< fitType[secondaryFit] << "=" << bottom_value << stats.replace(" ", ";")
                << "\n";
    fileo.close();
 }
@@ -2564,11 +2563,12 @@ DbgLv(0) << my_rank << ":       model2.description" << model2.description;
                                 + " " + tripleID;
             model2.variance = rmsd_combined_mc_models( model2 );
             qDebug() << "rmsd_combined_mc_models" << model2.variance;
-            tsout << cmfname 
+            tsout << cmfname
                   << ";meniscus_value=" << model2.meniscus
                   << ";MC_iteration="   << mc_iterations
                   << ";variance="       << model2.variance
                   << ";run="            << runstring
+                  << model2.description.replace( " ", ";" )
                   << "\n";
             qDebug() << cmfname << " added to tfiles";
             tfiles << cmfname;
@@ -2685,7 +2685,7 @@ DbgLv(1) << "Combined MC Model: nscans:" << nscans << "npoints:" << npoints
    stats += QString(" %1=%2").arg("DW").arg(global_metrics.durbin_watson);
    stats += QString(" %1=%2").arg("KS").arg(global_metrics.ksStatistic);
    stats += QString(" %1=%2").arg("EXCKURT").arg(global_metrics.excessKurtosis);
-
+   model.description = stats;
    return variance;
 
 }
