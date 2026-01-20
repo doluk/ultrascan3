@@ -111,6 +111,8 @@ void US_MPI_Analysis::_2dsa_master( void )
          }
          progress     += "; RMSD: "
             + QString::number( sqrt( simulation_values.variance ) );
+         progress     += "; HMetric: "
+            + QString::number( simulation_values.global_metrics.hMetric * 100.0) + "%";
 
          send_udp( progress );
 
@@ -911,6 +913,7 @@ void US_MPI_Analysis::iterate( void )
          simulation_values.variances = previous_values.variances;
          simulation_values.ti_noise  = previous_values.ti_noise;
          simulation_values.ri_noise  = previous_values.ri_noise;
+         simulation_values.global_metrics = previous_values.global_metrics;
          qDebug() << "++ Refinement iteration degrading" << diff
                   << ". Reverting to iteration" << iterations;
          return;
@@ -966,6 +969,7 @@ void US_MPI_Analysis::iterate( void )
    previous_values.variances = simulation_values.variances;
    previous_values.ti_noise  = simulation_values.ti_noise;
    previous_values.ri_noise  = simulation_values.ri_noise;
+   previous_values.global_metrics = simulation_values.global_metrics;
     int bfg_offset = -1;
     int csd_offset = -1;
     if (!data_sets[current_dataset]->solution_rec.buffer.cosed_component.isEmpty()) {
