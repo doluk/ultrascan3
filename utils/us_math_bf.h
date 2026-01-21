@@ -18,6 +18,7 @@
 #include "us_dataIO.h"
 #include "us_extern.h"
 #include "us_simparms.h"
+#include <array>
 
 
 #ifndef DbgLv
@@ -123,7 +124,7 @@ class US_UTIL_EXTERN US_Math_BF  : public QObject {
             bool save_data(const QString& folder, const QString& key, IUS_DB2* db);
 
             //! \brief Check if the band forming gradient is suitable for the simulation
-            //! \param n_menisicus The double value representing the new meniscus
+            //! \param n_meniscus The double value representing the new meniscus
             //! \param n_bottom The double value representing the new bottom
             //! \param n_overlay_volume The double value representing the new overlay volume
             //! \param n_cp_pathlen The double value representing the new path length of the cell
@@ -131,7 +132,7 @@ class US_UTIL_EXTERN US_Math_BF  : public QObject {
             //! \param n_cosed_component The new cosedimenting components
             //! \param n_maxTime The maximum time for the simulation
             //! \return A boolean if the band forming gradient is suitable
-            bool is_suitable(double n_menisicus,
+            bool is_suitable(double n_meniscus,
                              double n_bottom,
                              double n_overlay_volume,
                              double n_cp_pathlen,
