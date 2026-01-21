@@ -1,6 +1,8 @@
 //! \file us_lamm_astfvm.cpp
 
 #include <QtWidgets/QFileDialog>
+#include <cstring>
+#include <cmath>
 #include "us_lamm_astfvm.h"
 #include "us_math2.h"
 #include "us_constants.h"
@@ -70,34 +72,38 @@ US_LammAstfvm::Mesh::~Mesh()
 //
 /////////////////////////
 void US_LammAstfvm::Mesh::ComputeMeshDen_D3( const double *u0, const double *u1 ) const {
-   int i;
-   int i2;
-   double h;
+   // Use thread-local static buffers to avoid repeated allocations
+   thread_local static QVector<double> D20_buf, D21_buf, D30_buf, D31_buf;
+   D20_buf.resize( Ne );
+   D21_buf.resize( Ne );
+   D30_buf.resize( Nv );
+   D31_buf.resize( Nv );
+   double* __restrict D20 = D20_buf.data();
+   double* __restrict D21 = D21_buf.data();
+   double* __restrict D30 = D30_buf.data();
+   double* __restrict D31 = D31_buf.data();
 
-   auto *D20 = new double[Ne];
-   auto *D21 = new double[Ne];
-   auto *D30 = new double[Nv];
-   auto *D31 = new double[Nv];
-   // 2nd derivative on elems
-   for ( i = 0; i < Ne; i++ ) {
-      h = ( x[ i + 1 ] - x[ i ] ) / 2;
-      i2 = i * 2;
-      D20[ i ] = ( u0[ i2 + 2 ] - 2 * u0[ i2 + 1 ] + u0[ i2 ] ) / ( h * h );
-      D21[ i ] = ( u1[ i2 + 2 ] - 2 * u1[ i2 + 1 ] + u1[ i2 ] ) / ( h * h );
+   // 2nd derivative on elems - unroll where possible
+   for ( int i = 0; i < Ne; i++ ) {
+      const double h = ( x[ i + 1 ] - x[ i ] ) * 0.5;
+      const double inv_h2 = 1.0 / ( h * h );
+      const int i2 = i * 2;
+      D20[ i ] = ( u0[ i2 + 2 ] - 2.0 * u0[ i2 + 1 ] + u0[ i2 ] ) * inv_h2;
+      D21[ i ] = ( u1[ i2 + 2 ] - 2.0 * u1[ i2 + 1 ] + u1[ i2 ] ) * inv_h2;
    }
 
    // 3rd derivative at nodes
-   for ( i = 1; i < Nv - 1; i++ ) {
-      h = ( x[ i + 1 ] - x[ i - 1 ] ) / 2;
-      D30[ i ] = ( D20[ i ] - D20[ i - 1 ] ) / h;
-      D31[ i ] = ( D21[ i ] - D21[ i - 1 ] ) / h;
+   for ( int i = 1; i < Nv - 1; i++ ) {
+      const double inv_h = 2.0 / ( x[ i + 1 ] - x[ i - 1 ] );
+      D30[ i ] = ( D20[ i ] - D20[ i - 1 ] ) * inv_h;
+      D31[ i ] = ( D21[ i ] - D21[ i - 1 ] ) * inv_h;
    }
 
    // 3rd derivative on elems = average D3u at nodes
    // here use D2 to store 3rd order derivatives
-   for ( i = 1; i < Ne - 1; i++ ) {
-      D20[ i ] = ( D30[ i + 1 ] + D30[ i ] ) / 2;
-      D21[ i ] = ( D31[ i + 1 ] + D31[ i ] ) / 2;
+   for ( int i = 1; i < Ne - 1; i++ ) {
+      D20[ i ] = ( D30[ i + 1 ] + D30[ i ] ) * 0.5;
+      D21[ i ] = ( D31[ i + 1 ] + D31[ i ] ) * 0.5;
    }
 
    D20[ 0 ] = D20[ 1 ];    // Extrapolate 3rd derivative to end pts
@@ -105,22 +111,13 @@ void US_LammAstfvm::Mesh::ComputeMeshDen_D3( const double *u0, const double *u1 
    D20[ Ne - 1 ] = D20[ Ne - 2 ];
    D21[ Ne - 1 ] = D21[ Ne - 2 ];
 
-   // level-off and smoothing
-   for ( i = 0; i < Ne; i++ ) {
-      MeshDen[ i ] = pow( 1 + MonScale * ( fabs( D20[ i ] ) + fabs( D21[ i ] ) ), 0.33333 );
-
-      if ( MeshDen[ i ] > MonCutoff )
-      {
-         MeshDen[ i ] = MonCutoff;
-      }
+   // level-off and smoothing - use cbrt instead of pow(x, 0.33333)
+   for ( int i = 0; i < Ne; i++ ) {
+      const double val = 1.0 + MonScale * ( fabs( D20[ i ] ) + fabs( D21[ i ] ) );
+      MeshDen[ i ] = qMin( cbrt( val ), MonCutoff );
    }
 
    Smoothing( Ne, MeshDen, SmoothingWt, SmoothingCyl );
-
-   delete[] D20;
-   delete[] D21;
-   delete[] D30;
-   delete[] D31;
 }
 
 
@@ -131,29 +128,47 @@ void US_LammAstfvm::Mesh::ComputeMeshDen_D3( const double *u0, const double *u1 
 // Smoothing:         Wt       * y2 +   // for y1,y2,y3 unsmoothed points
 //                    (1-Wt)/2 * y3;    //  around y[i]
 ////////////////////////////////////////////////////////////////////////////
-void US_LammAstfvm::Mesh::Smoothing( const int n, double* y, const double Wt, const int Cycle )
+void US_LammAstfvm::Mesh::Smoothing( const int n, double* __restrict y, const double Wt, const int Cycle )
 {
-   int          s   = 0;
-   int          i   = 1;
-   const double Wt1 = 1. - Wt;   // sum of outside pt. weights
-   const double Wt2 = Wt1 * 0.5; // weight, each outside pt.
+   if ( n < 2 )
+   {
+      return;
+   }
 
-   for ( s = 0; s < Cycle; s++ ) {
+   const double Wt1 = 1.0 - Wt;   // sum of outside pt. weights
+   const double Wt2 = Wt1 * 0.5; // weight, each outside pt.
+   const int    nm1 = n - 1;
+
+   for ( int s = 0; s < Cycle; s++ ) {
       double y1;
       double y2 = y[ 0 ];
       double y3 = y[ 1 ];
 
       y[ 0 ] = Wt * y3 + Wt1 * y2;              // 1st smoothed point
 
-      for ( i = 1; i < n - 1; i++ ) {  // smooth all points except first and last
-         y1 = y2;                           // cycle the 3 points
-         y2 = y3;                           //  around the current one
+      // Unroll the main loop by 2 for better performance
+      int i = 1;
+      for ( ; i < nm1 - 1; i += 2 ) {
+         y1 = y2;
+         y2 = y3;
          y3 = y[ i + 1 ];
+         y[ i ] = Wt * y2 + Wt2 * ( y1 + y3 );
 
-         y[ i ] = Wt * y2 + Wt2 * ( y1 + y3 );  // smoothed point
+         y1 = y2;
+         y2 = y3;
+         y3 = y[ i + 2 ];
+         y[ i + 1 ] = Wt * y2 + Wt2 * ( y1 + y3 );
+      }
+
+      // Handle the remaining element if odd count
+      for ( ; i < nm1; i++ ) {
+         y1 = y2;
+         y2 = y3;
+         y3 = y[ i + 1 ];
+         y[ i ] = Wt * y2 + Wt2 * ( y1 + y3 );
       }
     
-      y[ n - 1 ] = Wt * y2 + Wt1 * y3;              // last smoothed point
+      y[ nm1 ] = Wt * y2 + Wt1 * y3;              // last smoothed point
    }
 }
 
@@ -162,23 +177,21 @@ void US_LammAstfvm::Mesh::Smoothing( const int n, double* y, const double Wt, co
 // Unrefine
 //
 /////////////////////////
-void US_LammAstfvm::Mesh::Unrefine( double alpha ) {
-   int i;
-   int i1;
-   int Nv1;
-   int Ne1;
-   double *x1;
-   int *Eid1;          // elem id
-   int *RefLev1;       // refinement level of an elem
-   double *MeshDen1;      // desired mesh density
+void US_LammAstfvm::Mesh::Unrefine( const double alpha ) {
+   // Use temporary vectors to avoid repeated heap allocations
+   thread_local static QVector<double> x1_buf, MeshDen1_buf;
+   thread_local static QVector<int> Eid1_buf, RefLev1_buf;
 
    while ( true ) {
       // set unref mark on each elem
-      for ( i = 0; i < Ne; i++ ) Mark[ i ] = 0;
+      for ( int i = 0; i < Ne; i++ )
+      {
+         Mark[ i ] = 0;
+      }
 
-      Ne1 = Ne;
+      int Ne1 = Ne;
 
-      for ( i = 0; i < Ne - 1; i++ ) {
+      for ( int i = 0; i < Ne - 1; i++ ) {
          if ( RefLev[ i ] == RefLev[ i + 1 ] && ( Eid[ i ] / 2 ) == ( Eid[ i + 1 ] / 2 ) &&
               ( x[ i + 1 ] - x[ i ] ) * MeshDen[ i ] < alpha && ( x[ i + 2 ] - x[ i + 1 ] ) * MeshDen[ i + 1 ] < alpha ) {
             Mark[ i ] = 1;
@@ -188,25 +201,33 @@ void US_LammAstfvm::Mesh::Unrefine( double alpha ) {
          }
       }
 
-      if ( Ne1 == Ne ) return;     // no more unrefine
+      if ( Ne1 == Ne )
+      {
+         return; // no more unrefine
+      }
 
-      // reallocate memory for the new mesh
-      Nv1 = Ne1 + 1;
-      Eid1 = new int[ Ne1 ];
-      RefLev1 = new int[ Ne1 ];
-      MeshDen1 = new double[ Ne1 ];
-      x1 = new double[ Nv1 ];
+      // reallocate memory for the new mesh using vectors
+      const int Nv1 = Ne1 + 1;
+      Eid1_buf.resize( Ne1 );
+      RefLev1_buf.resize( Ne1 );
+      MeshDen1_buf.resize( Ne1 );
+      x1_buf.resize( Nv1 );
+
+      int*    Eid1     = Eid1_buf.data();
+      int*    RefLev1  = RefLev1_buf.data();
+      double* MeshDen1 = MeshDen1_buf.data();
+      double* x1       = x1_buf.data();
 
       // loop to combine eligible elem pairs
       x1[ 0 ] = x[ 0 ];
-      i1 = 0;
+      int i1 = 0;
 
-      for ( i = 0; i < Ne; i++ ) {
+      for ( int i = 0; i < Ne; i++ ) {
          if ( Mark[ i ] == 1 && Mark[ i + 1 ] == 1 ) {  // combine two elems
             x1[ i1 + 1 ] = x[ i + 2 ];
             Eid1[ i1 ] = Eid[ i ] / 2;
             RefLev1[ i1 ] = RefLev[ i ] - 1;
-            MeshDen1[ i1 ] = ( MeshDen[ i ] + MeshDen[ i + 1 ] ) / 2;
+            MeshDen1[ i1 ] = ( MeshDen[ i ] + MeshDen[ i + 1 ] ) * 0.5;
             i1++;
             i++;
          } else {  // no change
@@ -225,13 +246,19 @@ void US_LammAstfvm::Mesh::Unrefine( double alpha ) {
       delete[] MeshDen;
       delete[] Mark;
 
+      // Allocate new arrays and copy data
       Ne = Ne1;
       Nv = Nv1;
-      x = x1;
-      Eid = Eid1;
-      MeshDen = MeshDen1;
-      RefLev = RefLev1;
+      x = new double[Nv1];
+      Eid = new int[Ne1];
+      RefLev = new int[Ne1];
+      MeshDen = new double[Ne1];
       Mark = new int[ Ne1 ];
+
+      memcpy( x, x1, Nv1 * sizeof(double) );
+      memcpy( Eid, Eid1, Ne1 * sizeof(int) );
+      memcpy( RefLev, RefLev1, Ne1 * sizeof(int) );
+      memcpy( MeshDen, MeshDen1, Ne1 * sizeof(double) );
 
    } // while
 
@@ -243,53 +270,36 @@ void US_LammAstfvm::Mesh::Unrefine( double alpha ) {
 // Refine
 //
 /////////////////////////
-void US_LammAstfvm::Mesh::Refine( double beta ) {
-   int k;
-   int ke;
-   int Nv1;
-   int Ne1;           // number of elements
-   int *Eid1;          // element id
-   int *RefLev1;       // refinement level of an element
-   double *MeshDen1;      // desired mesh density
-   double *x1;
+void US_LammAstfvm::Mesh::Refine( const double beta ) {
+   // Use thread-local buffers to avoid repeated heap allocations
+   thread_local static QVector<double> x1_buf, MeshDen1_buf;
+   thread_local static QVector<int> Eid1_buf, RefLev1_buf;
 
    while ( true ) {
 
       // set marker for elements that need to be refined
-      for ( k = 0; k < Ne; k++ ) {
-         if ((x[ k + 1 ] - x[ k ]) * MeshDen[ k ] > beta && RefLev[ k ] < MaxRefLev )
-         {
-            Mark[ k ] = 1;
-         }
-
-         else
-         {
-            Mark[ k ] = 0;
-         }
+      for ( int k = 0; k < Ne; k++ ) {
+         Mark[ k ] = ((x[ k + 1 ] - x[ k ]) * MeshDen[ k ] > beta && RefLev[ k ] < MaxRefLev ) ? 1 : 0;
       }
 
-      for ( k = 0; k < Ne - 1; k++ ) {    // RefLev differs at most 2 for nabos
-         int rldiff = RefLev[ k ] - RefLev[ k + 1 ];
+      for ( int k = 0; k < Ne - 1; k++ ) {    // RefLev differs at most 2 for nabos
+         const int rldiff = RefLev[ k ] - RefLev[ k + 1 ];
 
          if ( rldiff < (-1))
          {
             Mark[ k ] = 1;
          }
-
          else if ( rldiff > 1 )
          {
             Mark[ k + 1 ] = 1;
          }
       }
 
-      Ne1 = Ne;
+      int Ne1 = Ne;
 
-      for ( k = 0; k < Ne; k++ )
+      for ( int k = 0; k < Ne; k++ )
       {
-         if ( Mark[ k ] == 1 )
-         {
-            Ne1++;
-         }
+         Ne1 += Mark[ k ];
       }
 
       if ( Ne1 == Ne )
@@ -297,17 +307,22 @@ void US_LammAstfvm::Mesh::Refine( double beta ) {
          return; // no more elements need refine
       }
 
-      // allocate memory for new mesh
-      Nv1 = Ne1 + 1;
-      x1 = new double[Nv1];
-      Eid1 = new int[Ne1];
-      RefLev1 = new int[Ne1];
-      MeshDen1 = new double[Ne1];
+      // allocate memory for new mesh using vectors
+      const int Nv1 = Ne1 + 1;
+      x1_buf.resize( Nv1 );
+      Eid1_buf.resize( Ne1 );
+      RefLev1_buf.resize( Ne1 );
+      MeshDen1_buf.resize( Ne1 );
 
-      ke = 0;
+      double* x1       = x1_buf.data();
+      int*    Eid1     = Eid1_buf.data();
+      int*    RefLev1  = RefLev1_buf.data();
+      double* MeshDen1 = MeshDen1_buf.data();
+
+      int ke = 0;
       x1[ 0 ] = x[ 0 ];
 
-      for ( k = 0; k < Ne; k++ ) {
+      for ( int k = 0; k < Ne; k++ ) {
          if ( Mark[ k ] == 0 ) {     // no refine on elem-k
             x1[ ke + 1 ] = x[ k + 1 ];
             Eid1[ ke ] = Eid[ k ];
@@ -315,7 +330,8 @@ void US_LammAstfvm::Mesh::Refine( double beta ) {
             MeshDen1[ ke ] = MeshDen[ k ];
             ke++;
          } else {      // refine k-th elem
-            x1[ ke + 1 ] = (x[ k ] + x[ k + 1 ]) / 2;
+            const double mid = (x[ k ] + x[ k + 1 ]) * 0.5;
+            x1[ ke + 1 ] = mid;
             Eid1[ ke ] = Eid[ k ] * 2;
             RefLev1[ ke ] = RefLev[ k ] + 1;
             MeshDen1[ ke ] = MeshDen[ k ];
@@ -334,13 +350,19 @@ void US_LammAstfvm::Mesh::Refine( double beta ) {
       delete[] Mark;
       delete[] MeshDen;
 
+      // Allocate new arrays and copy
       Ne = Ne1;
       Nv = Nv1;
-      x = x1;
-      Eid = Eid1;
-      RefLev = RefLev1;
-      MeshDen = MeshDen1;
+      x = new double[Nv1];
+      Eid = new int[Ne1];
+      RefLev = new int[Ne1];
+      MeshDen = new double[Ne1];
       Mark = new int[Ne1];
+
+      memcpy( x, x1, Nv1 * sizeof(double) );
+      memcpy( Eid, Eid1, Ne1 * sizeof(int) );
+      memcpy( RefLev, RefLev1, Ne1 * sizeof(int) );
+      memcpy( MeshDen, MeshDen1, Ne1 * sizeof(double) );
    } // while
 }
 
@@ -349,17 +371,16 @@ void US_LammAstfvm::Mesh::Refine( double beta ) {
 // RefineMesh
 //
 /////////////////////////
-void US_LammAstfvm::Mesh::RefineMesh(double *u0, double *u1, double ErrTol) {
-   const double sqrt3 = sqrt(3.0);
-   constexpr double onethird = 1.0 / 3.0;
+void US_LammAstfvm::Mesh::RefineMesh( const double *u0, const double *u1, const double ErrTol) {
+   // Precomputed constants
+   static const double sqrt3 = sqrt(3.0);
+   static const double inv_sqrt3 = 1.0 / sqrt3;
+
    // refinement threshold: h*|D_3u|^(1/3) > beta
-   //double beta  = pow( ErrTol * 6 / ( 2 * sqrt( 3 ) / 72 ), 1. / 3. );
-   // Simplify the above:
-   double beta = 6.0 * pow(ErrTol / sqrt3, onethird);
+   const double beta = 6.0 * cbrt(ErrTol * inv_sqrt3);
 
    // coarsening threshold: h*|D_3u|^(1/3) < alpha
-   double alpha = beta / 4;
-//DbgLv(3) << "RefMesh: beta alpha" << beta << alpha;
+   const double alpha = beta * 0.25;
 
    ComputeMeshDen_D3(u0, u1);
    Smoothing(Ne, MeshDen, SmoothingWt, SmoothingCyl);
@@ -372,36 +393,28 @@ void US_LammAstfvm::Mesh::RefineMesh(double *u0, double *u1, double ErrTol) {
 // InitMesh
 //
 /////////////////////////
-void US_LammAstfvm::Mesh::InitMesh(double s, double D, double w2) {
+void US_LammAstfvm::Mesh::InitMesh( const double s, const double D, const double w2) {
    int j;
-   double D0;
-   double nu0;
-   double nu1;
-   double nu;
    double t = 1.0;
-   double m2;
-   double b2;
    double x2;
-   double *u0;
-   double *u1;
 
-   D0 = 1.e-4;
-   nu0 = s * w2 / D0;
-   nu1 = s * w2 / D;
+   constexpr double D0 = 1.e-4;
+   double nu0 = s * w2 / D0;
+   const double nu1 = s * w2 / D;
 
-   m2 = x[ 0 ] * x[ 0 ];
-   b2 = x[ Ne ] * x[ Ne ];
+   const double m2 = x[0] * x[0];
+   const double b2 = x[Ne] * x[Ne];
 
    // FILE *fout;
    // fout = fopen("ti.tmp", "w");
 
    //for ( int i = 9; i < 10; i++ ) {
       //t += 0.1;
-      u0 = new double[2 * Nv - 1];
-      u1 = new double[2 * Nv - 1];
+      double* u0 = new double[2 * Nv - 1];
+      double* u1 = new double[2 * Nv - 1];
 
-      //nu = pow(nu1, t) * pow(nu0, 1 - t);
-      nu = nu1;
+      // nu = pow(nu1, t) * pow(nu0, 1 - t);
+      const double nu = nu1;
       for ( j = 0; j < Nv; j++ ) {
          x2 = x[ j ] * x[ j ];
          u0[ 2 * j ] = exp(nu * (m2 - x2)) * (nu * nu * m2);
@@ -584,8 +597,8 @@ radius( Nx - 2 )
 
 void US_LammAstfvm::CosedData::initCosed( double* Cs0, double* Cs1, double* xs )
 {
-   double t0 = sa_data.scanData[0].seconds; // times of 1st 2 salt scans
-   double t1 = sa_data.scanData[1].seconds;
+   const double t0 = sa_data.scanData[0].seconds; // times of 1st 2 salt scans
+   const double t1 = sa_data.scanData[1].seconds;
 
    Nt = sa_data.scanCount() - 2; // scan count less two used here
 
@@ -768,9 +781,9 @@ US_LammAstfvm::US_LammAstfvm( US_Model& rmodel, US_SimulationParameters& rsimpar
    dbg_level       = US_Settings::us_debug();
    stopFlag        = false;
    movieFlag       = true;
-   double  speed   = simparams.speed_step[0].rotorspeed;
-   double* coefs   = simparams.rotorcoeffs;
-   double  stretch = coefs[0] * speed + coefs[1] * sq( speed );
+   const double  speed   = simparams.speed_step[0].rotorspeed;
+   const double* coefs   = simparams.rotorcoeffs;
+   const double  stretch = coefs[0] * speed + coefs[1] * sq( speed );
    param_m         = simparams.meniscus;
    param_b         = simparams.bottom;
    param_w2        = sq( speed * M_PI / 30.0 );
@@ -841,13 +854,13 @@ int US_LammAstfvm::calculate( US_DataIO::RawData& sim_data )
       param_s = model.components.first().s != 0.0 ? model.components.first().s : 1e-14;
       param_D = model.components.first().D;
       dt      = log( param_b / param_m ) / ( param_w2 * param_s * 5000 );
-      for ( US_Model::SimulationComponent& comp : model.components )
+      for ( const US_Model::SimulationComponent& comp : model.components )
       {
          double dt_temp;
          param_s            = comp.s != 0.0 ? comp.s : 1e-14;
          param_D            = comp.D;
          dt_temp            = log( param_b / param_m ) / ( param_w2 * param_s * 5000 );
-         int    nts         = af_data.scan.size(); // nbr. output times (scans)
+         const int    nts         = af_data.scan.size(); // nbr. output times (scans)
          double true_dt_min = dt_temp;
          for ( int i = 1; i < nts; i++ )
          {
@@ -867,7 +880,7 @@ int US_LammAstfvm::calculate( US_DataIO::RawData& sim_data )
    rpm_timestate.clear();
    w2t_timestate.clear();
    sim_speed_prof_idx_timestate.clear();
-   int timestate_size = simparams.sim_speed_prof.last().time_e_step;
+   const int timestate_size = simparams.sim_speed_prof.last().time_e_step;
    rpm_timestate.reserve( timestate_size );
    w2t_timestate.reserve( timestate_size );
    sim_speed_prof_idx_timestate.reserve( timestate_size );
@@ -894,7 +907,7 @@ int US_LammAstfvm::calculate( US_DataIO::RawData& sim_data )
    // update concentrations for each model component
    for ( int ii = 0; ii < model.components.size(); ii++ )
    {
-      int rc = solve_component( ii );
+      const int rc = solve_component( ii );
 
       if ( rc != 0 )
       {
@@ -947,13 +960,19 @@ int US_LammAstfvm::solve_component( int compx )
    param_D    = param_D20w / sol_data.D20w_correction;
    double  t0 = 0.;
    double  t1 = 100.;
+   // Use QVector instead of raw pointers to avoid repeated heap allocations
+   QVector<double> x0_vec;
+   QVector<double> u0_vec;
+   QVector<double> x1_vec;
+   QVector<double> u1_vec;
+   QVector<double> u1p0_vec;
+   QVector<double> u1p_vec;
    double* x0;
    double* u0;
    double* x1;
    double* u1;
    double* u1p0;
    double* u1p;
-   double* d_tmp;
    double  total_t = ( param_b - param_m ) * 2.0 / ( param_s * param_w2 * param_m );
    dt              = log( param_b / param_m ) / ( param_w2 * param_s * simparams.simpoints ) / 2.5;
    int ntcc = static_cast<int>(total_t / dt) + 1; // nbr. times in calculations
@@ -1070,12 +1089,16 @@ int US_LammAstfvm::solve_component( int compx )
    // initialization
    N0                             = msh->Nv;         // number of radial positions
    N0u                            = N0 + N0 - 1;     // number of concentration*radius values (including mid-points)
-   x0                             = new double[N0];  // radius values
-   u0                             = new double[N0u]; // concentration*radius values
+   x0_vec.resize( N0 );
+   x0                             = x0_vec.data();   // radius values
+   u0_vec.resize( N0u );
+   u0                             = u0_vec.data();   // concentration*radius values
    N1                             = N0;
    N1u                            = N0u;
-   x1                             = new double[N1];
-   u1                             = new double[N1u];
+   x1_vec.resize( N1 );
+   x1                             = x1_vec.data();
+   u1_vec.resize( N1u );
+   u1                             = u1_vec.data();
    double conc_profile_startpoint = simparams.meniscus;
    double conc_profile_endpoint   = simparams.bottom;
    if ( simparams.band_forming )
@@ -1304,7 +1327,8 @@ int US_LammAstfvm::solve_component( int compx )
       }
       ktime1 += static_cast<int>(timer.restart());
 
-      u1p0 = new double[N0u];
+      u1p0_vec.resize( N0u );
+      u1p0 = u1p0_vec.data();
       LammStepSedDiff_P( t0, dt, N0 - 1, x0, u0, u1p0, p_scan_hint );
       //      for (int i = 0; i < N0u; i++){
       //          double v = u1p0[i];
@@ -1321,10 +1345,11 @@ int US_LammAstfvm::solve_component( int compx )
 
          N1  = msh->Nv;
          N1u = N1 + N1 - 1;
-         u1p = new double[N1u];
+         u1p_vec.resize( N1u );
+         u1p = u1p_vec.data();
 
-         delete[] x1;
-         x1 = new double[N1];
+         x1_vec.resize( N1 );
+         x1 = x1_vec.data();
 
          for ( int jj = 0; jj < N1; jj++ )
          {
@@ -1338,13 +1363,11 @@ int US_LammAstfvm::solve_component( int compx )
          //                  u1p[i] = 0.0;
          //              }
          //          }
-         delete[] u1;
-         u1 = new double[N1u];
+         u1_vec.resize( N1u );
+         u1 = u1_vec.data();
 
          ktime4 += static_cast<int>(timer.restart());
          LammStepSedDiff_C( t0, dt, N0 - 1, x0, u0, N1 - 1, x1, u1p, u1, p_scan_hint );
-
-         delete[] u1p;
       }
       else
       {
@@ -1448,8 +1471,6 @@ int US_LammAstfvm::solve_component( int compx )
          DbgLv( 2 ) << "kt not updated";
       }
 
-      delete[] u1p0;
-
       if ( kt >= nts )
       {
          break; // if all scans updated, we are done
@@ -1460,15 +1481,15 @@ int US_LammAstfvm::solve_component( int compx )
       {
          break;
       }
-      // switch x,u arrays for next iteration
+      // switch x,u arrays for next iteration using QVector swap (efficient, no data copy)
       N0    = N1;
       N0u   = N1u;
-      d_tmp = x0;
-      x0    = x1;
-      x1    = d_tmp;
-      d_tmp = u0;
-      u0    = u1;
-      u1    = d_tmp;
+      x0_vec.swap( x1_vec );
+      x0 = x0_vec.data();
+      x1 = x1_vec.data();
+      u0_vec.swap( u1_vec );
+      u0 = u0_vec.data();
+      u1 = u1_vec.data();
    } // end main time loop
 
    if ( dbg_level > 0 )
@@ -1511,10 +1532,7 @@ int US_LammAstfvm::solve_component( int compx )
       DbgLv( 1 ) << "  ( range of" << c_diff << "=" << c_diff_percent << " percent of mean )";
    }
 
-   delete[] x0; // clean up
-   delete[] u0;
-   delete[] x1;
-   delete[] u1;
+   // QVectors (x0_vec, u0_vec, x1_vec, u1_vec) clean up automatically
    delete msh;
    ktime6 += static_cast<int>(timer.elapsed());
    DbgLv( 2 ) << "compx" << comp_x << "times 1-6" << ktime1 << ktime2 << ktime3 << ktime4 << ktime5 << ktime6;
@@ -1619,7 +1637,7 @@ void US_LammAstfvm::set_buffer( US_Buffer buffer, US_Math_BF::Band_Forming_Gradi
    }
 }
 
-void US_LammAstfvm::SetNonIdealCase_1( double sigma_k, double delta_k )
+void US_LammAstfvm::SetNonIdealCase_1( const double sigma_k, const double delta_k )
 {
    sigma = sigma_k; // for concentration dependency
    delta = delta_k;
@@ -1809,12 +1827,12 @@ void US_LammAstfvm::SetNonIdealCase_4()
    }
 }
 
-void US_LammAstfvm::SetMeshSpeedFactor( double speed )
+void US_LammAstfvm::SetMeshSpeedFactor( const double speed )
 {
    MeshSpeedFactor = speed;
 }
 
-void US_LammAstfvm::SetMeshRefineOpt( int Opt )
+void US_LammAstfvm::SetMeshRefineOpt( const int Opt )
 {
    MeshRefineOpt = Opt;
 }
@@ -1861,8 +1879,10 @@ void
                                      double* __restrict u1, const int* scan_hint ) const
 {
    const int Ng        = 2 * M1; // number of x_star points
-   int*      ke        = new int[Ng];
-   auto*     MemDouble = new double[12 * Ng + 15];
+   _ke.resize( Ng );
+   int*      ke        = _ke.data();
+   _MemDouble.resize( 12 * Ng + 15 );
+   double*   MemDouble = _MemDouble.data();
    double*   flux_p[3];
 
    const double dt2    = dt_ * 0.5;
@@ -1914,7 +1934,7 @@ void
    for ( int j = 0; j < Ng; j++ )
    {
       const double sw2 = Sv[j] * param_w2_t0dt;
-      double       tmp = exp( -std::abs( sw2 ) * dt_ * 0.5 );
+      const double       tmp = exp( -std::abs( sw2 ) * dt_ * 0.5 );
       xg0[j]           = xg1[j] - dt_ * MeshSpeedFactor * sw2 * xg1[j] * tmp;
       xg0[j]           = qMin( qMax(xg0[j], param_m), param_b );
       xt[j]            = ( xg1[j] - xg0[j] ) / dt_;
@@ -1992,7 +2012,8 @@ void
    // calculate Flux(u0,t) at all xg0
    // (i) Compute ux at nodes as average of Du from left and right
 
-   auto* ux = new double[M0 + 1]; // D_x(u0) at all x0
+   _ux.resize( M0 + 1 ); // D_x(u0) at all x0
+   double* ux = _ux.data();
 
    for ( int j = 1; j < M0; j++ )
    {
@@ -2035,15 +2056,17 @@ void
       }
    }
 
-   delete[] ux;
-
    // -- Assemble the linear system --
-   auto** Mtx = new double*[Ng + 1];
-   auto*  rhs = new double[Ng + 1];
-   // Instead of allocating each row separately, consider allocating one block if sizes are small.
+   _Mtx_data.resize( ( Ng + 1 ) * 5 );
+   _Mtx.resize( Ng + 1 );
+   _rhs.resize( Ng + 1 );
+   double*  Mtx_data = _Mtx_data.data();
+   double** Mtx      = _Mtx.data();
+   double*  rhs      = _rhs.data();
+
    for ( int i = 0; i <= Ng; i++ )
    {
-      Mtx[i] = new double[5];
+      Mtx[ i ] = &Mtx_data[ i * 5 ];
    }
 
    // Assemble matrix coefficients for internal nodes.
@@ -2100,15 +2123,6 @@ void
    // Solve the 5-diagonal linear system (solver routine remains unchanged)
    LsSolver53( Ng, Mtx, rhs, u1 );
 
-   // Cleanup allocated memory
-   for ( int i = 0; i <= Ng; i++ )
-   {
-      delete[] Mtx[i];
-   }
-   delete[] Mtx;
-   delete[] rhs;
-   delete[] ke;
-   delete[] MemDouble;
    DbgLv( 2 ) << " Diff_C times 1-8" << k_time1 << k_time2 << k_time3 << k_time4 << k_time5 << k_time6 << k_time7 <<
  k_time8;
 }
@@ -2125,19 +2139,23 @@ void
 //
 ////////////////////////////////////////////////////////////
 
-void US_LammAstfvm::LocateStar( const int N0, const double* x0, const int Ns, const double* xs, int* ke, double* xi )
+void US_LammAstfvm::LocateStar( const int N0, const double* __restrict x0, const int Ns, const double* __restrict xs, int* __restrict ke, double* __restrict xi )
 {
    int eix = 1;
+   const int N0m1 = N0 - 1;
 
    for ( int j = 0; j < Ns; j++ )
    {
-      while ( xs[j] > x0[eix] && eix < ( N0 - 1 ) )
+      const double xsj = xs[j];
+      while ( xsj > x0[eix] && eix < N0m1 )
       {
          eix++;
       }
 
       ke[j] = eix - 1;
-      xi[j] = ( xs[j] - x0[eix - 1] ) / ( x0[eix] - x0[eix - 1] ) * 2. - 1.;
+      const double x0_lo = x0[eix - 1];
+      const double x0_hi = x0[eix];
+      xi[j] = ( xsj - x0_lo ) / ( x0_hi - x0_lo ) * 2.0 - 1.0;
    }
 }
 
@@ -2148,10 +2166,9 @@ void US_LammAstfvm::LocateStar( const int N0, const double* x0, const int Ns, co
 //  (note: the input is u=r*C)
 //
 ///////////////////////////////////////////////////////////////
-void US_LammAstfvm::AdjustSD( const double t, const int      Nv, const double* x, const double* u, double* s_adj,
-                              double*      D_adj, const int* scan_hint = nullptr ) const
+void US_LammAstfvm::AdjustSD( const double t, const int      Nv, const double* __restrict x, const double* __restrict u, double* __restrict s_adj,
+                              double* __restrict D_adj, const int* scan_hint = nullptr ) const
 {
-   int           jj;
    const double  vbar = model.components[comp_x].vbar20;
    QElapsedTimer timer;
    static int    kst1                 = 0;
@@ -2163,48 +2180,89 @@ void US_LammAstfvm::AdjustSD( const double t, const int      Nv, const double* x
    switch ( NonIdealCaseNo )
    {
       case 0: // ideal, s=s_0, D=D_0
-
-         for ( jj = 0; jj < Nv; jj++ )
          {
-            s_adj[jj] = param_s;
-            D_adj[jj] = param_D;
+            // Use vectorized fill for better performance
+            const double s_val = param_s;
+            const double D_val = param_D;
+            for ( int jj = 0; jj < Nv; jj++ )
+            {
+               s_adj[jj] = s_val;
+               D_adj[jj] = D_val;
+            }
          }
          break;
 
       case 1: // concentration dependent
-         for ( jj = 0; jj < Nv; jj++ )
          {
-            if (sigma > 0.0)
+            // Precompute sigma and delta handling
+            const bool sigma_pos = sigma > 0.0;
+            const bool sigma_neg = sigma < 0.0;
+            const bool delta_pos = delta > 0.0;
+            const bool delta_neg = delta < 0.0;
+
+            if ( sigma_pos )
             {
-               s_adj[jj] = param_s / ( 1. + sigma * u[jj] / x[jj] );
+               for ( int jj = 0; jj < Nv; jj++ )
+               {
+                  const double conc = u[ jj ] / x[ jj ];
+                  s_adj[ jj ] = param_s / ( 1.0 + sigma * conc );
+               }
             }
-            else if (sigma < 0.0)
+            else if ( sigma_neg )
             {
-               s_adj[jj] = param_s * ( 1. + sigma * u[jj] / x[jj] );
+               for ( int jj = 0; jj < Nv; jj++ )
+               {
+                  const double conc = u[ jj ] / x[ jj ];
+                  s_adj[ jj ] = param_s * ( 1.0 + sigma * conc );
+               }
             }
-            if (delta > 0.0)
+            else
             {
-               D_adj[jj] = param_D / ( 1. + delta * u[jj] / x[jj] );
+               const double s_val = param_s;
+               for ( int jj = 0; jj < Nv; jj++ )
+               {
+                  s_adj[jj] = s_val;
+               }
             }
-            else if (delta < 0.0)
+
+            if ( delta_pos )
             {
-               D_adj[jj] = param_D * ( 1. + delta * u[jj] / x[jj] );
+               for ( int jj = 0; jj < Nv; jj++ )
+               {
+                  const double conc = u[ jj ] / x[ jj ];
+                  D_adj[ jj ] = param_D / ( 1.0 + delta * conc );
+               }
+            }
+            else if ( delta_neg )
+            {
+               for ( int jj = 0; jj < Nv; jj++ )
+               {
+                  const double conc = u[ jj ] / x[ jj ];
+                  D_adj[ jj ] = param_D * ( 1.0 + delta * conc );
+               }
+            }
+            else
+            {
+               const double D_val = param_D;
+               for ( int jj = 0; jj < Nv; jj++ )
+               {
+                  D_adj[jj] = D_val;
+               }
             }
          }
          break;
 
       case 2: // co-sedimenting
-         {//** salt-protein
-         #ifdef DEBUG
+         { //** salt-protein
+#ifdef DEBUG
             timer.start();
-         #endif
+#endif
+            _ViscVec.resize( Nv );
+            _DensVec.resize( Nv );
+            double* __restrict Visc = _ViscVec.data();
+            double* __restrict Dens = _DensVec.data();
 
-         // Allocate temporary vectors
-         QVector<double> ViscVec( Nv ), DensVec( Nv );
-         double* Visc = ViscVec.data();
-         double* Dens = DensVec.data();
-
-      // Initialize density and viscosity arrays with constant values
+         // Initialize density and viscosity arrays with constant values
          const double constDensity   = density;
          const double constViscosity = viscosity;
          for ( int j = 0; j < Nv; j++ )
@@ -2263,32 +2321,41 @@ void US_LammAstfvm::AdjustSD( const double t, const int      Nv, const double* x
             }
             kst1 += (int) timer.restart();
          #endif
+         // Precompute constant values outside the loop
          const double sigmas = qFuzzyIsNull(model.components[comp_x].sigma)?0.0:model.components[comp_x].sigma;
          const double deltas = qFuzzyIsNull(model.components[comp_x].delta)?0.0:model.components[comp_x].delta;
-         for ( jj = 0; jj < Nv; jj++ )
+         const bool sigma_pos = sigmas > 0.0;
+         const bool sigma_neg = sigmas < 0.0;
+         const bool delta_pos = deltas > 0.0;
+         const bool delta_neg = deltas < 0.0;
+
+         for ( int jj = 0; jj < Nv; jj++ )
          {
             const double curVisc = Visc[jj];
+            const double inv_curVisc = 1.0 / curVisc;
             const double curConc = u[jj] / x[jj];
+            const double curDens = Dens[jj];
+
             double sigma_corr = 1.0;
             double delta_corr = 1.0;
-            if (sigma > 0.0)
+            if (sigma_pos)
             {
-               sigma_corr = 1. / ( 1. + sigmas * curConc );
+               sigma_corr = 1.0 / ( 1.0 + sigmas * curConc );
             }
-            else if (sigma < 0.0)
+            else if (sigma_neg)
             {
-               sigma_corr = ( 1. + sigmas * curConc );
+               sigma_corr = ( 1.0 + sigmas * curConc );
             }
-            if (delta > 0.0)
+            if (delta_pos)
             {
-               delta_corr = 1. / ( 1. + deltas * curConc );
+               delta_corr = 1.0 / ( 1.0 + deltas * curConc );
             }
-            else if (delta < 0.0)
+            else if (delta_neg)
             {
-               delta_corr = ( 1. + deltas * curConc );
+               delta_corr = ( 1.0 + deltas * curConc );
             }
-            s_adj[jj]            = s20w_correction_stem / curVisc * ( 1.0 - vbar * Dens[jj] ) * sigma_corr;
-            D_adj[jj]            = D20w_correction_stem / curVisc * delta_corr;
+            s_adj[jj] = s20w_correction_stem * inv_curVisc * ( 1.0 - vbar * curDens ) * sigma_corr;
+            D_adj[jj] = D20w_correction_stem * inv_curVisc * delta_corr;
          }
          #ifdef DEBUG
             if (dbg_level > 3){
@@ -2326,17 +2393,21 @@ void US_LammAstfvm::AdjustSD( const double t, const int      Nv, const double* x
 
             constexpr double rho_w = DENS_20W;
             const double     phip  = vbar; // apparent specific volume
-            const double     factn = 0.5 * density * sq(rpm_t0 * M_PI / 30.0) * compressib;
+            const double     rpm_rad = rpm_t0 * M_PI / 30.0;
+            const double     factn = 0.5 * density * (rpm_rad * rpm_rad) * compressib;
             const double     msq   = param_m * param_m;
             const double     sA    = 1.0 - vbar * rho_w;
+            const double     inv_sA = 1.0 / sA;
 
-            for ( jj = 0; jj < Nv; jj++ )
+            const double s_base = param_s20w * inv_sA;
+            const double D_base = param_D20w;
+            for ( int jj = 0; jj < Nv; jj++ )
             {
-               constexpr double alpha = 1.0;
-               const double     rho   = density / ( 1.0 - factn * ( x[jj] * x[jj] - msq ) );
-               const double     beta  = ( 1.0 - phip * rho ) / sA;
-               s_adj[jj]              = param_s20w * alpha * beta;
-               D_adj[jj]              = param_D20w * alpha;
+               const double xsq = x[jj] * x[jj];
+               const double denom = 1.0 - factn * ( xsq - msq );
+               const double rho = density / denom;
+               s_adj[jj] = s_base * ( 1.0 - phip * rho );
+               D_adj[jj] = D_base;
             }
             DbgLv( 3 ) << "AdjSD: compr dens" << compressib << density;
             DbgLv( 3 ) << "AdjSD:    factn msq sa" << factn << msq << sA;
@@ -2349,7 +2420,7 @@ void US_LammAstfvm::AdjustSD( const double t, const int      Nv, const double* x
             timer.start();
             DbgLv( 2 ) << "NonIdeal4";
             kst1 += static_cast<int>(timer.restart());
-            for ( jj = 0; jj < Nv; jj++ )
+            for ( int jj = 0; jj < Nv; jj++ )
             {
                double adj_s = param_s;
                double adj_d = param_D;
@@ -2480,14 +2551,16 @@ void US_LammAstfvm::ProjectQ( const int M0, const double* __restrict
                               x0, const double* __restrict
                               u0, const int M1, const double* __restrict
                               x1, double* __restrict
-                              u1 )
+                              u1 ) const
 {
    // Project piecewise quadratic u0 on mesh x0 onto piecewise quadratic mesh x1.
    double integral = 0.0;
    double phi[3];
    // Allocate arrays for element indices and local coordinates
-   int*  ke = new int[M1 + 1];
-   auto* xi = new double[M1 + 1];
+   _ke.resize( M1 + 1 );
+   int*  ke = _ke.data();
+   _xi.resize( M1 + 1 );
+   double* xi = _xi.data();
 
    LocateStar( M0 + 1, x0, M1 + 1, x1, ke, xi );
 
@@ -2507,9 +2580,6 @@ void US_LammAstfvm::ProjectQ( const int M0, const double* __restrict
       const double dx = x1[j + 1] - x1[j];
       u1[j2 + 1]      = 1.5 * integral / dx - 0.25 * ( u1[j2] + u1[j2 + 2] );
    }
-
-   delete[] ke;
-   delete[] xi;
 }
 
 
@@ -2521,27 +2591,36 @@ void US_LammAstfvm::ProjectQ( const int M0, const double* __restrict
 // m must be even
 //
 ///////////////////////////////////////////////////////
-void US_LammAstfvm::LsSolver53( const int m, double** A, double* b, double* x )
+void US_LammAstfvm::LsSolver53( const int m, double** __restrict A, double* __restrict b, double* __restrict x )
 {
+   // Forward elimination
    for ( int j = 0; j < m - 1; j += 2 )
    {
       const int j1 = j + 1;
       const int j2 = j + 2;
-      // Precompute reciprocal for A[j][2]
-      const double invA0 = 1.0 / A[j][2];
 
-      double multi = -A[j1][1] * invA0;
-      A[j1][2] += multi * A[j][3];
-      A[j1][3] += multi * A[j][4];
+      const double* __restrict Aj  = A[j];
+      double* __restrict Aj1 = A[j1];
+      double* __restrict Aj2 = A[j2];
+
+      // Precompute reciprocal for A[j][2]
+      const double invA0 = 1.0 / Aj[2];
+      const double Aj3 = Aj[3];
+      const double Aj4 = Aj[4];
+
+      double multi = -Aj1[1] * invA0;
+      Aj1[2] += multi * Aj3;
+      Aj1[3] += multi * Aj4;
       b[j1] += multi * b[j];
 
-      multi = -A[j2][0] * invA0;
-      A[j2][1] += multi * A[j][3];
-      A[j2][2] += multi * A[j][4];
+      multi = -Aj2[0] * invA0;
+      Aj2[1] += multi * Aj3;
+      Aj2[2] += multi * Aj4;
       b[j2] += multi * b[j];
 
-      multi = -A[j2][1] / A[j1][2];
-      A[j2][2] += multi * A[j1][3];
+      const double invA1 = 1.0 / Aj1[2];
+      multi = -Aj2[1] * invA1;
+      Aj2[2] += multi * Aj1[3];
       b[j2] += multi * b[j1];
    }
 
@@ -2553,9 +2632,12 @@ void US_LammAstfvm::LsSolver53( const int m, double** A, double* b, double* x )
       const int jm = j - 1;
       const int jp = j + 1;
 
-      x[j] = ( b[j] - A[j][3] * x[jp] ) / A[j][2];
+      const double* __restrict Aj  = A[j];
+      const double* __restrict Ajm = A[jm];
+      const double xjp = x[jp];
 
-      x[jm] = ( b[jm] - A[jm][3] * x[j] - A[jm][4] * x[jp] ) / A[jm][2];
+      x[j] = ( b[j] - Aj[3] * xjp ) / Aj[2];
+      x[jm] = ( b[jm] - Ajm[3] * x[j] - Ajm[4] * xjp ) / Ajm[2];
    }
 }
 
@@ -2569,7 +2651,7 @@ int US_LammAstfvm::nonIdealCaseNo()
 
    NonIdealCaseNo = 0; // ideal
 
-   US_Model::SimulationComponent* sc = &model.components[comp_x];
+   const US_Model::SimulationComponent* sc = &model.components[comp_x];
 
    if ( sc->sigma != 0.0 || sc->delta != 0.0 )
    {
@@ -2603,13 +2685,19 @@ int US_LammAstfvm::nonIdealCaseNo()
 }
 
 // perform quadratic interpolation to fill out the full concentration vector
-void US_LammAstfvm::quadInterpolate( const double*    x0, const double* u0, const int N0, QVector<double>& x_out,
+void US_LammAstfvm::quadInterpolate( const double* __restrict x0, const double* __restrict u0, const int N0,
+                                     const QVector<double>& x_out,
                                      QVector<double>& cout )
 {
    const int n_out = x_out.size(); // output concentrations count
-   int       kk    = 0;            // initial output index
-   double    xv    = x_out[0];     // first output X
-   // output Y
+   if ( n_out == 0 || N0 < 2 )
+   {
+      return;
+   }
+
+   cout.resize( n_out );
+   double* __restrict c_out = cout.data();
+   const double* __restrict x_in = x_out.constData();
 
    int    ii = 2;                 // next x0 index to x3
    int    jj = 3;                 // next u0 index to y2
@@ -2620,12 +2708,18 @@ void US_LammAstfvm::quadInterpolate( const double*    x0, const double* u0, cons
    double y2 = u0[1];             // initial mid-point Y
    double y3 = u0[2];             // initial end Y
 
-   cout.resize( n_out );
+   // Precompute reciprocals for interpolation denominators
+   double inv_x1 = 1.0 / x1;
+   double inv_x2 = 1.0 / x2;
+   double inv_x3 = 1.0 / x3;
+   double denom12 = 1.0 / (( x1 - x2 ) * ( x1 - x3 ));
+   double denom21 = 1.0 / (( x2 - x1 ) * ( x2 - x3 ));
+   double denom31 = 1.0 / (( x3 - x1 ) * ( x3 - x2 ));
 
-   while ( kk < n_out )
+   for ( int kk = 0; kk < n_out; kk++ )
    {
       // loop to output interpolated concentrations
-      xv = x_out[kk]; // X, for which we need a Y
+      const double xv = x_in[kk]; // X, for which we need a Y
 
       while ( xv > x3 && ii < N0 )
       {
@@ -2635,34 +2729,36 @@ void US_LammAstfvm::quadInterpolate( const double*    x0, const double* u0, cons
          y1 = y3;       // y at the start x
          y2 = u0[jj++]; // y at the mid-point
          y3 = u0[jj++]; // y at the end (next) x
+
+         x2 = ( x1 + x3 ) * 0.5; // mid-point x
+         // Update precomputed values
+         inv_x1 = 1.0 / x1;
+         inv_x2 = 1.0 / x2;
+         inv_x3 = 1.0 / x3;
+         denom12 = 1.0 / (( x1 - x2 ) * ( x1 - x3 ));
+         denom21 = 1.0 / (( x2 - x1 ) * ( x2 - x3 ));
+         denom31 = 1.0 / (( x3 - x1 ) * ( x3 - x2 ));
       }
-      x2 = ( x1 + x3 ) * 0.5; // mid-point x
-      //y1 /= x1;
-      //y2 /= x2;
-      //y3 /= x3;
 
       // do the quadratic interpolation of this Y (C*r)
-      const double yv1 =
-         ( ( ( xv - x2 ) * ( xv - x3 ) ) / ( ( x1 - x2 ) * ( x1 - x3 ) ) ) * y1 / x1 +
-         ( ( ( xv - x1 ) * ( xv - x3 ) ) / ( ( x2 - x1 ) * ( x2 - x3 ) ) ) * y2 / x2 +
-         ( ( ( xv - x1 ) * ( xv - x2 ) ) / ( ( x3 - x1 ) * ( x3 - x2 ) ) ) * y3 / x3;
-      //y1 *= x1;
-      //y2 *= x2;
-      //y3 *= x3;
+      const double dx1 = xv - x1;
+      const double dx2 = xv - x2;
+      const double dx3 = xv - x3;
 
-      // output interpolated concentration with the r factor removed (C = (C*r)/r)
-      cout[kk++] = yv1;
-      //cout[ kk++ ] = yv;
+      c_out[kk] = ( dx2 * dx3 ) * denom12 * y1 * inv_x1 +
+                  ( dx1 * dx3 ) * denom21 * y2 * inv_x2 +
+                  ( dx1 * dx2 ) * denom31 * y3 * inv_x3;
    }
 }
 
 // load MfemData object used internally from caller's RawData object
-void US_LammAstfvm::load_mfem_data( US_DataIO::RawData& edata, US_AstfemMath::MfemData& fdata, bool zeroout ) const
+void US_LammAstfvm::load_mfem_data( US_DataIO::RawData& edata, US_AstfemMath::MfemData& fdata,
+                                    const bool zeroout ) const
 {
-   int nscan = edata.scanData.size(); // scan count
+   const int nscan = edata.scanData.size(); // scan count
 
    //   int  nconc  = edata.x.size();         // the concentrations count
-   int nconc = edata.xvalues.size(); // the concentrations count
+   const int nconc = edata.xvalues.size(); // the concentrations count
    DbgLv( 2 ) << "Lamm:ldMFEM: nscan edata.scanCount() nconc edata.pointCount()" << nscan << edata.scanCount() << nconc
             << edata.pointCount();
    fdata.id   = edata.description;
@@ -2759,14 +2855,14 @@ void US_LammAstfvm::store_mfem_data( US_DataIO::RawData& edata, US_AstfemMath::M
    DbgLv( 2 ) << "Lamm:o-e sc0 temp" << edata.scanData[0].temperature;
 }
 
-void US_LammAstfvm::setStopFlag( bool flag )
+void US_LammAstfvm::setStopFlag( const bool flag )
 {
    stopFlag = flag;
    qApp->processEvents();
    DbgLv( 2 ) << "setStopFlag" << stopFlag;
 }
 
-void US_LammAstfvm::setMovieFlag( bool flag )
+void US_LammAstfvm::setMovieFlag( const bool flag )
 {
    movieFlag = flag;
    qApp->processEvents();

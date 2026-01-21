@@ -48,7 +48,7 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
             //! \param u0     Current concentration array
             //! \param u1     Next concentration array
             //! \param ErrTol Error tolerance
-            void RefineMesh( double*, double*, double );
+            void RefineMesh( const double*, const double*, double );
 
             int     Nv;       //!< Number of grids
             int     Ne;       //!< Number of elements
@@ -302,14 +302,13 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
                               const double *u1p, double *u1, const int* scan_hint = nullptr) const;
 
       // Project piecewise quadratic solution onto mesh
-      static void   ProjectQ(   int, const double*, const double*, int, const double*, double* );
+      void   ProjectQ(   int, const double*, const double*, int, const double*, double* ) const;
 
       // Integrate piecewise quadratic function defined on mesh
       static double IntQs( const double*, const double*, int, double, int, double );
 
       // Perform quadratic interpolation to fill out radius,conc. vectors
-      static void   quadInterpolate( const double*, const double*, int,
-                              QVector< double >&, QVector< double >& );
+      static void   quadInterpolate( const double*, const double*, int, const QVector< double >&, QVector< double >& );
 
       static void   LocateStar( int, const double*, int, const double*, int*, double* );
 
@@ -333,5 +332,15 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
 
       // store internal data to caller's raw data
       void store_mfem_data( US_DataIO::RawData&, US_AstfemMath::MfemData& ) const;
+
+      mutable QVector< int >    _ke;
+      mutable QVector< double > _MemDouble;
+      mutable QVector< double > _rhs;
+      mutable QVector< double > _Mtx_data;
+      mutable QVector< double* > _Mtx;
+      mutable QVector< double > _ux;
+      mutable QVector< double > _xi;
+      mutable QVector< double > _ViscVec;
+      mutable QVector< double > _DensVec;
 };
 #endif
