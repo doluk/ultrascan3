@@ -27,7 +27,7 @@
 
 //! \brief A collection of mathematical routines related to the band forming experiment & simulation.
 //! all function are static
-class US_UTIL_EXTERN US_Math_BF  : public QObject {
+class US_UTIL_EXTERN US_Math_BF final : public QObject {
    Q_OBJECT
    public:
       //! \brief Class to represent a solver using the secant method.
@@ -113,15 +113,15 @@ class US_UTIL_EXTERN US_Math_BF  : public QObject {
             Band_Forming_Gradient( const US_Math_BF::Band_Forming_Gradient &bfg );
             Band_Forming_Gradient();
 
-            bool operator== (const US_Math_BF::Band_Forming_Gradient&) const;
+            bool operator== (const Band_Forming_Gradient&) const;
 
-            inline bool operator!= (const US_Math_BF::Band_Forming_Gradient& bfg) const {return !operator==(bfg);};
+            inline bool operator!= (const Band_Forming_Gradient& bfg) const {return !operator==(bfg);};
             //! \brief Calculate the eigenvalues
             bool get_eigenvalues( );
 
             void load_data( const US_DataIO::RawData* dens, const US_DataIO::RawData* visc, const US_DataIO::RawData* conc);
 
-            bool save_data(const QString& folder, const QString& key, IUS_DB2* db);
+            bool save_data(const QString& folder, const QString& file_key, IUS_DB2* db);
 
             //! \brief Check if the band forming gradient is suitable for the simulation
             //! \param n_meniscus The double value representing the new meniscus
