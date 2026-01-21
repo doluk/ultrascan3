@@ -167,7 +167,6 @@ void US_LammAstfvm::Mesh::Smoothing( const int n, double* __restrict y, const do
          y3 = y[ i + 1 ];
          y[ i ] = Wt * y2 + Wt2 * ( y1 + y3 );
       }
-    
       y[ nm1 ] = Wt * y2 + Wt1 * y3;              // last smoothed point
    }
 }
@@ -193,7 +192,8 @@ void US_LammAstfvm::Mesh::Unrefine( const double alpha ) {
 
       for ( int i = 0; i < Ne - 1; i++ ) {
          if ( RefLev[ i ] == RefLev[ i + 1 ] && ( Eid[ i ] / 2 ) == ( Eid[ i + 1 ] / 2 ) &&
-              ( x[ i + 1 ] - x[ i ] ) * MeshDen[ i ] < alpha && ( x[ i + 2 ] - x[ i + 1 ] ) * MeshDen[ i + 1 ] < alpha ) {
+              ( x[ i + 1 ] - x[ i ] ) * MeshDen[ i ] < alpha &&
+              ( x[ i + 2 ] - x[ i + 1 ] ) * MeshDen[ i + 1 ] < alpha ) {
             Mark[ i ] = 1;
             Mark[ i + 1 ] = 1;
             Ne1--;
@@ -304,7 +304,7 @@ void US_LammAstfvm::Mesh::Refine( const double beta ) {
 
       if ( Ne1 == Ne )
       {
-         return; // no more elements need refine
+         return; // no more elements need refinement
       }
 
       // allocate memory for new mesh using vectors
@@ -395,44 +395,33 @@ void US_LammAstfvm::Mesh::RefineMesh( const double *u0, const double *u1, const 
 /////////////////////////
 void US_LammAstfvm::Mesh::InitMesh( const double s, const double D, const double w2) {
    int j;
-   double t = 1.0;
    double x2;
-
-   constexpr double D0 = 1.e-4;
-   double nu0 = s * w2 / D0;
    const double nu1 = s * w2 / D;
 
    const double m2 = x[0] * x[0];
    const double b2 = x[Ne] * x[Ne];
 
-   // FILE *fout;
-   // fout = fopen("ti.tmp", "w");
+   double* u0 = new double[2 * Nv - 1];
+   double* u1 = new double[2 * Nv - 1];
 
-   //for ( int i = 9; i < 10; i++ ) {
-      //t += 0.1;
-      double* u0 = new double[2 * Nv - 1];
-      double* u1 = new double[2 * Nv - 1];
+   const double nu = nu1;
+   for ( j = 0; j < Nv; j++ ) {
+      x2 = x[ j ] * x[ j ];
+      u0[ 2 * j ] = exp(nu * (m2 - x2)) * (nu * nu * m2);
+      u1[ 2 * j ] = exp(nu * (x2 - b2)) * (nu * nu * b2);
+   }
 
-      // nu = pow(nu1, t) * pow(nu0, 1 - t);
-      const double nu = nu1;
-      for ( j = 0; j < Nv; j++ ) {
-         x2 = x[ j ] * x[ j ];
-         u0[ 2 * j ] = exp(nu * (m2 - x2)) * (nu * nu * m2);
-         u1[ 2 * j ] = exp(nu * (x2 - b2)) * (nu * nu * b2);
-      }
+   for ( j = 0; j < Ne; j++ ) {
+      x2 = (x[ j ] + x[ j + 1 ]) / 2;
+      x2 = x2 * x2;
+      u0[ 2 * j + 1 ] = exp(nu * (m2 - x2)) * (nu * nu * m2);
+      u1[ 2 * j + 1 ] = exp(nu * (x2 - b2)) * (nu * nu * b2);
+   }
 
-      for ( j = 0; j < Ne; j++ ) {
-         x2 = (x[ j ] + x[ j + 1 ]) / 2;
-         x2 = x2 * x2;
-         u0[ 2 * j + 1 ] = exp(nu * (m2 - x2)) * (nu * nu * m2);
-         u1[ 2 * j + 1 ] = exp(nu * (x2 - b2)) * (nu * nu * b2);
-      }
+   RefineMesh(u0, u1, 1.e-4);
 
-      RefineMesh(u0, u1, 1.e-4);
-
-      delete[] u0;
-      delete[] u1;
-   //}
+   delete[] u0;
+   delete[] u1;
 }
 
 // create the salt data set by solving ideal astfem equations
@@ -526,14 +515,14 @@ radius( Nx - 2 )
    DbgLv( 2 ) << "SaltD: Nt Nx" << Nt << Nx << "temp" << sa_data.scanData[0].temperature;
    DbgLv( 2 ) << "SaltD: sa sc0 sec omg" << sa_data.scanData[0].seconds << sa_data.scanData[0].omega2t;
    // Limit salt amplitudes to reasonable values
-   constexpr double max_salt    = 1e100;
-   constexpr double min_salt    = -9e99;
-   constexpr double min_sala    = 1e-100;
-   int              nan_entries = 0;
+   int nan_entries = 0;
    for ( int ii = 0; ii < Nt; ii++ )
    {
       for ( int jj = 0; jj < Nx; jj++ )
       {
+         constexpr double max_salt      = 1e100;
+         constexpr double min_salt      = -9e99;
+         constexpr double min_sala      = 1e-100;
          double salt_value    = sa_data.value( ii, jj );
          double salt_absolute = qAbs( salt_value );
          if ( ii < 2 && ( jj + 3 ) > Nx )
@@ -573,10 +562,6 @@ radius( Nx - 2 )
       }
    }
    DbgLv( 2 ) << "SaltD:  salt ampl limit changes" << nan_entries;
-
-   //xs         = new double [ Nx ];
-   //Cs0        = new double [ Nx ];
-   //Cs1        = new double [ Nx ];
 
    if ( dbg_level > 2 )
    {
@@ -1481,7 +1466,7 @@ int US_LammAstfvm::solve_component( int compx )
       {
          break;
       }
-      // switch x,u arrays for next iteration using QVector swap (efficient, no data copy)
+      // switch x,u arrays for the next iteration using QVector swap (efficient, no data copy)
       N0    = N1;
       N0u   = N1u;
       x0_vec.swap( x1_vec );
@@ -1840,7 +1825,7 @@ void US_LammAstfvm::SetMeshRefineOpt( const int Opt )
 ///////////////////////////////////////////////////////////////
 //
 // LammStepSedDiff_P:
-//  prediction step of solving Lamm equation (sedimentation-diffusion only)
+// prediction step of solving Lamm equation (sedimentation-diffusion only)
 //
 // Given the solution (x0, u0) at t, to find the solution (x1, u1) at time t+dt
 // use u1p = u0
@@ -1863,7 +1848,7 @@ void US_LammAstfvm::LammStepSedDiff_P( const double  t, const double dt_, const 
 //  Correction step of solving Lamm equation (sedimentation-diffusion only)
 //
 // Given the solution (x0, u0) at t, and estimate (x0, u_est) of
-// the solution at t+dt, and mesh x1, to find solution (x1, u1)
+// the solution at t+dt, and mesh x1, to find the solution (x1, u1)
 // at time t+dt
 //
 // M0, M1 = number of elems in x0, x1
@@ -2139,7 +2124,9 @@ void
 //
 ////////////////////////////////////////////////////////////
 
-void US_LammAstfvm::LocateStar( const int N0, const double* __restrict x0, const int Ns, const double* __restrict xs, int* __restrict ke, double* __restrict xi )
+void US_LammAstfvm::LocateStar(
+   const int N0, const double* __restrict x0, const int Ns,
+   const double* __restrict xs, int* __restrict ke, double* __restrict xi )
 {
    int eix = 1;
    const int N0m1 = N0 - 1;
@@ -2166,8 +2153,9 @@ void US_LammAstfvm::LocateStar( const int N0, const double* __restrict x0, const
 //  (note: the input is u=r*C)
 //
 ///////////////////////////////////////////////////////////////
-void US_LammAstfvm::AdjustSD( const double t, const int      Nv, const double* __restrict x, const double* __restrict u, double* __restrict s_adj,
-                              double* __restrict D_adj, const int* scan_hint = nullptr ) const
+void US_LammAstfvm::AdjustSD(
+   const double t, const int Nv, const double* __restrict x, const double* __restrict u,
+   double* __restrict s_adj, double* __restrict D_adj, const int* scan_hint = nullptr ) const
 {
    const double  vbar = model.components[comp_x].vbar20;
    QElapsedTimer timer;
@@ -2645,9 +2633,6 @@ void US_LammAstfvm::LsSolver53( const int m, double** __restrict A, double* __re
 int US_LammAstfvm::nonIdealCaseNo()
 {
    int rc = 0;
-
-   //   if ( comp_x > 0 )
-   //      return rc;
 
    NonIdealCaseNo = 0; // ideal
 
