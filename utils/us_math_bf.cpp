@@ -59,7 +59,8 @@ US_Math_BF::Band_Forming_Gradient::Band_Forming_Gradient(const double m, const d
                upper_cosed[j.name] = j;
                continue;
             } else if (fabs(j.conc - i.conc) < GSL_ROOT5_DBL_EPSILON) {
-               // the concentration of both components is roughly equal, remove the component from the upper and lower part
+               // the concentration of both components is roughly equal,
+               // remove the component from the upper and lower part
                upper_cosed.remove(j.name);
                i.concentration_offset = i.conc;
                continue;
@@ -85,7 +86,8 @@ US_Math_BF::Band_Forming_Gradient::Band_Forming_Gradient(const double m, const d
                lower_cosed[j.name] = j;
                continue;
             } else if (fabs(j.conc - i.conc) < GSL_ROOT5_DBL_EPSILON) {
-               // the concentration of both components is roughly equal, remove the component from the upper and lower part
+               // the concentration of both components is roughly equal,
+               // remove the component from the upper and lower part
                lower_cosed.remove(j.name);
                i.concentration_offset = i.conc;
                continue;
@@ -226,7 +228,8 @@ US_Math_BF::Band_Forming_Gradient::Band_Forming_Gradient(const US_SimulationPara
                upper_cosed[j.name] = j;
                continue;
             } else if (fabs(j.conc - i.conc) < GSL_ROOT5_DBL_EPSILON) {
-               // the concentration of both components is roughly equal, remove the component from the upper and lower part
+               // the concentration of both components is roughly equal,
+               // remove the component from the upper and lower part
                upper_cosed.remove(j.name);
                i.concentration_offset = i.conc;
                continue;
@@ -252,7 +255,8 @@ US_Math_BF::Band_Forming_Gradient::Band_Forming_Gradient(const US_SimulationPara
                lower_cosed[j.name] = j;
                continue;
             } else if (fabs(j.conc - i.conc) < GSL_ROOT5_DBL_EPSILON) {
-               // the concentration of both components is roughly equal, remove the component from the upper and lower part
+               // the concentration of both components is roughly equal,
+               // remove the component from the upper and lower part
                lower_cosed.remove(j.name);
                i.concentration_offset = i.conc;
                continue;
@@ -541,7 +545,8 @@ double US_Math_BF::Band_Forming_Gradient::calc_comp_conc(const double &x, const 
    return eq_conc + decay * cosed_conc;
 }
 
-bool US_Math_BF::Band_Forming_Gradient::calc_dens_visc(const int N, const double* x, const double &t, const double &T, double* Dens, double* Visc) {
+bool US_Math_BF::Band_Forming_Gradient::calc_dens_visc(
+   const int N, const double* x, const double &t, const double &T, double* Dens, double* Visc) {
    // check if eigenvalues exist already
    if ( eigenvalues.isEmpty()) {
       return false;
@@ -568,21 +573,15 @@ bool US_Math_BF::Band_Forming_Gradient::calc_dens_visc(const int N, const double
          // Use const reference to avoid copies
          for ( const US_CosedComponent &cosed_comp: upper_comps ) {
             const double c1 = calc_comp_conc(x_c, t, temp, cosed_comp);
-            // Calculate powers incrementally
-            const double c2 = c1 * c1;      // c1^2
-            const double c3 = c2 * c1;      // c1^3
-            const double c4 = c3 * c1;      // c1^4
             const double sqrt_c1 = sqrt(fabs(c1));
             // Cache coefficient array pointers for better performance
             const double* dens_coeff = cosed_comp.dens_coeff;
             const double* visc_coeff = cosed_comp.visc_coeff;
+            tmp_d += (dens_coeff[1] * sqrt_c1 + c1 * (dens_coeff[2] + c1 * (
+                      dens_coeff[3] + c1 * ( dens_coeff[4] + c1 * dens_coeff[5]))));
 
-            tmp_d += (dens_coeff[ 1 ] * sqrt_c1 + dens_coeff[ 2 ] * c1 +
-                      dens_coeff[ 3 ] * c2 + dens_coeff[ 4 ] * c3 +
-                      dens_coeff[ 5 ] * c4);
-            tmp_v += (visc_coeff[ 1 ] * sqrt_c1 + visc_coeff[ 2 ] * c1 +
-                      visc_coeff[ 3 ] * c2 + visc_coeff[ 4 ] * c3 +
-                      visc_coeff[ 5 ] * c4);
+            tmp_v += (visc_coeff[1] * sqrt_c1 + c1 * (visc_coeff[2] + c1 * (
+                      visc_coeff[3] + c1 * ( visc_coeff[4] + c1 * visc_coeff[5]))));
             tmp_c += c1;
 
          }
@@ -603,8 +602,8 @@ bool US_Math_BF::Band_Forming_Gradient::calc_dens_visc(const int N, const double
    return true;
 }
 
-bool US_Math_BF::Band_Forming_Gradient::adjust_sd(const double &x, const double &t, double &s, double &d, const double &T,
-                                                  const double &vbar) {
+bool US_Math_BF::Band_Forming_Gradient::adjust_sd(
+   const double &x, const double &t, double &s, double &d, const double &T, const double &vbar) {
    // check if eigenvalues exist already
    if (eigenvalues.isEmpty()) {
       return false;
@@ -667,7 +666,8 @@ bool US_Math_BF::Band_Forming_Gradient::adjust_sd(const double &x, const double 
 
 
 
-bool US_Math_BF::Band_Forming_Gradient::calc_dens_visc(const double &x, const double &t, const double& T, double &dens, double &visc, double& conc) {
+bool US_Math_BF::Band_Forming_Gradient::calc_dens_visc(
+   const double &x, const double &t, const double& T, double &dens, double &visc, double& conc) {
    // check if eigenvalues exist already
    if (eigenvalues.isEmpty()) {
       return false;
@@ -695,21 +695,16 @@ bool US_Math_BF::Band_Forming_Gradient::calc_dens_visc(const double &x, const do
          const double c1 = calc_comp_conc(x, t, temp, cosed_comp);
          concentration += c1;
          // Calculate powers incrementally
-         const double c2 = c1 * c1;      // c1^2
-         const double c3 = c2 * c1;      // c1^3
-         const double c4 = c3 * c1;      // c1^4
          const double sqrt_c1 = sqrt(fabs(c1));
          // Cache coefficient array pointers for better performance
          const double* dens_coeff = cosed_comp.dens_coeff;
          const double* visc_coeff = cosed_comp.visc_coeff;
 
-         density += (dens_coeff[1] * sqrt_c1 + dens_coeff[2] * c1 +
-                     dens_coeff[3] * c2 + dens_coeff[4] * c3 +
-                     dens_coeff[5] * c4);
+         density += (dens_coeff[1] * sqrt_c1 + c1 * (dens_coeff[2] + c1 * (
+                     dens_coeff[3] + c1 * ( dens_coeff[4] + c1 * dens_coeff[5]))));
 
-         viscosity += (visc_coeff[1] * sqrt_c1 + visc_coeff[2] * c1 +
-                       visc_coeff[3] * c2 + visc_coeff[4] * c3 +
-                       visc_coeff[5] * c4);
+         viscosity += (visc_coeff[1] * sqrt_c1 + c1 * (visc_coeff[2] + c1 * (
+                       visc_coeff[3] + c1 * ( visc_coeff[4] + c1 * visc_coeff[5]))));
       }
       // cache the value
       const std::array<double,3> tmp{density,viscosity,concentration};
@@ -731,7 +726,8 @@ bool US_Math_BF::Band_Forming_Gradient::calc_dens_visc(const double &x, const do
 }
 
 bool
-US_Math_BF::Band_Forming_Gradient::calculate_gradient(US_SimulationParameters sim_params,US_DataIO::RawData* editedData) {
+US_Math_BF::Band_Forming_Gradient::calculate_gradient(
+   US_SimulationParameters sim_params,US_DataIO::RawData* editedData) {
 
    simparms = std::move(sim_params);
    int bfg_idx = 1;
@@ -750,7 +746,6 @@ US_Math_BF::Band_Forming_Gradient::calculate_gradient(US_SimulationParameters si
    conc_bfg_data.xvalues.detach();
    Nx = visc_bfg_data.pointCount();
    double duration = editedData->scanData.last().seconds;
-   DbgLv(2) << duration << simparms.radial_resolution << ( visc_bfg_data.radius( Nx - 1 ) - visc_bfg_data.radius( 0 ) ) / static_cast<double>(Nx - 1);
    simparms.radial_resolution =
       ( visc_bfg_data.radius( Nx - 1 ) - visc_bfg_data.radius( 0 ) ) / static_cast<double>(Nx - 1);
    // Calculate dt
@@ -867,8 +862,8 @@ US_Math_BF::Band_Forming_Gradient::calculate_gradient(US_SimulationParameters si
       }else if (runtime > 300){
          dt_scaling += dt*0.05;
       }
-      DbgLv(3) << "BFG:CG: scan dt dt_scaling runtime" << scan_count << dt << dt_scaling << runtime << bessel_cache.size()
-               << "eigenfunction cache " << eigenfunction_cache.size();
+      DbgLv(3) << "BFG:CG: scan dt dt_scaling runtime" << scan_count << dt << dt_scaling << runtime
+                  << bessel_cache.size() << "eigenfunction cache " << eigenfunction_cache.size();
       runtime += (dt + dt_scaling);
       scan_count++;
    }
@@ -912,7 +907,8 @@ US_Math_BF::Band_Forming_Gradient::calculate_gradient(US_SimulationParameters si
 }
 
 void
-US_Math_BF::Band_Forming_Gradient::interpolateCCodiff( const int N, const double *x, const double t, const double temp, double *DensCosed, double *ViscCosed) {
+US_Math_BF::Band_Forming_Gradient::interpolateCCodiff(
+   const int N, const double *x, const double t, const double temp, double *DensCosed, double *ViscCosed) {
    // check if the Gradient is properly initialized
    if ( is_empty || cosed_component.isEmpty() )
    {
@@ -994,7 +990,9 @@ US_Math_BF::Band_Forming_Gradient::interpolateCCodiff( const int N, const double
 }
 
 void
-US_Math_BF::Band_Forming_Gradient::interpolateCCodiff( const int N, const double *x, const double t, const double temp, double *DensCosed, double *ViscCosed, double *ConcCosed) {
+US_Math_BF::Band_Forming_Gradient::interpolateCCodiff(
+   const int N, const double *x, const double t, const double temp,
+   double *DensCosed, double *ViscCosed, double *ConcCosed) {
    // check if the Gradient is properly initialized
    if ( is_empty || cosed_component.isEmpty() )
    {
@@ -1308,7 +1306,7 @@ bool US_Math_BF::Band_Forming_Gradient::is_suitable( const double n_meniscus, co
 double US_Math_BF::Band_Forming_Gradient::bessel( const QString& bessel_type, const double x ) {
    double result = 0.0;
    const int b_key = bessel_types.indexOf(bessel_type);
-   const auto x_key = (unsigned int)(x*1024);
+   const auto x_key = static_cast<unsigned int>( x * 1024 );
    if (bessel_cache.contains(b_key) && bessel_cache.value(b_key).contains(x_key)) {
       result = bessel_cache[b_key][x_key];
    }
@@ -1341,9 +1339,8 @@ US_Math_BF::Secant_Solver::Secant_Solver(const double &i_min_, const double &i_m
                                          std::function<double(const double &)> foo_ = [](const double &a) {
                                             return US_Math_BF::transcendental_equation(a, 1, 2);
                                          }, const double &grid_res_ = 0.01, const double &epsilon_ = 0.000001,
-                                         const int &iter_max_ = 20) : func(std::move(foo_)), i_min(i_min_), i_max(i_max_),
-                                                                      iter_max(iter_max_), grid_res(grid_res_),
-                                                                      epsilon(epsilon_) {
+                                         const int &iter_max_ = 20) :
+func(std::move(foo_)), i_min(i_min_), i_max(i_max_), iter_max(iter_max_), grid_res(grid_res_), epsilon(epsilon_) {
    solutions.clear();
    dbg_level = US_Settings::us_debug();
 }
@@ -1739,7 +1736,8 @@ double US_Math_BF::bessel_Y0(const double &x) {
 double US_Math_BF::bessel_Y1(const double &x) {
    double           result;
    constexpr double two_over_pi = 2.0 / M_PI;                 // = 0.6366198
-   constexpr double xmin        = 1.571 * GSL_DBL_MIN;        /*exp ( amax1(alog(r1mach(1)), -alog(r1mach(2)))+.01)  = 3.495591E-308*/
+   constexpr double xmin        = 1.571 * GSL_DBL_MIN;        /*exp ( amax1(alog(r1mach(1)), -alog(r1mach(2)))+.01)
+   = 3.495591E-308*/
    constexpr double x_small     = 2.0 * GSL_SQRT_DBL_EPSILON; // = 2.980232E-8
    constexpr double xmax        = 1.0 / GSL_DBL_EPSILON;      // = 4.5036E15
 
