@@ -2253,11 +2253,9 @@ void US_LammAstfvm::AdjustSD(
          // Initialize density and viscosity arrays with constant values
          const double constDensity   = density;
          const double constViscosity = viscosity;
-         for ( int j = 0; j < Nv; j++ )
-         {
-            Dens[j] = constDensity;
-            Visc[j] = constViscosity;
-         }
+         // Use std::fill for better performance
+         std::fill(Dens, Dens + Nv, constDensity);
+         std::fill(Visc, Visc + Nv, constViscosity);
 
          DbgLv( 2 ) << "NonIdeal2: ntrp Salt";
          if ( cosed_needed )
