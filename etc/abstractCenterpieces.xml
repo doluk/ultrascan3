@@ -272,6 +272,21 @@
       <channel name="B" bottom="7.2" shape="band forming" pathlen="1.2" angle="2.474" width="0" />
    </abstractCenterpiece>
    <abstractCenterpiece
+           id="22"
+           guid="08cbd35f-151c-4814-8457-6ef8dd523a25"
+           name="Simulation 1-channel BF"
+           materialName="Simulated"
+           channels="1"
+           shape="band forming"
+           maxRPM="60000"
+           angle="2.5"
+           width="0" >
+      <row pathlen="1.2" bottom="7.2" />
+      <channel name="A" bottom="7.2" shape="band forming" pathlen="1.2" angle="2.5" width="0" />
+      <channel name="B" bottom="7.2" shape="band forming" pathlen="1.2" angle="2.5" width="0" />
+      <channel name="S" bottom="7.2" shape="band forming" pathlen="1.2" angle="2.5" width="0" />
+   </abstractCenterpiece>
+   <abstractCenterpiece
            id="23"
            guid="e6b6d27b-83cc-4d36-8ff7-92c59aa7b8e7"
            name="ULETH 331359 14U0099"
@@ -294,7 +309,7 @@
            maxRPM="60000"
            angle="1.70"
            width="0" >
-      <channel name="A" bottom="7.2" shape="band forming" pathlen="1.2" angle="2.515" width="0" />
+      <channel name="A" bottom="7.2" shape="band forming" pathlen="1.2" angle="2.51429" width="0" />
       <channel name="B" bottom="7.2" shape="band forming" pathlen="1.2" angle="2.4" width="0" />
    </abstractCenterpiece>
    <abstractCenterpiece
@@ -307,7 +322,7 @@
            maxRPM="60000"
            angle="1.70"
            width="0" >
-      <channel name="A" bottom="7.2" shape="band forming" pathlen="1.2" angle="2.5" width="0" />
+      <channel name="A" bottom="7.2" shape="band forming" pathlen="1.2" angle="2.4665" width="0" />
       <channel name="B" bottom="7.2" shape="band forming" pathlen="1.2" angle="2.5" width="0" />
    </abstractCenterpiece>
    <abstractCenterpiece
