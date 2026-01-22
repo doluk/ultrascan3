@@ -1523,11 +1523,11 @@ DbgLv(1) << " eupd:  fn" << fn;
       mennew         = le_men_fit->text().toDouble();
       botnew         = le_bot_fit->text().toDouble();
    }
-   else if ( !bott_fit )
+   else if ( x_axis_type == "Meniscus" )
    {  // Fit is meniscus only
       mennew         = le_men_sel->text().toDouble();
    }
-   else
+   else if ( x_axis_type == "Bottom" )
    {  // Fit is bottom only
       botnew         = le_men_sel->text().toDouble();
    }
