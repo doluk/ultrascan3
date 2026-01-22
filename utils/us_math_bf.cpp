@@ -474,37 +474,15 @@ double US_Math_BF::Band_Forming_Gradient::norm(const double &beta) {
            (sq(bessel("J1",(beta * meniscus))) - sq(bessel("J1",(beta * bottom)))));
 }
 
-void US_Math_BF::Band_Forming_Gradient::reserve_cache_capacity(int mesh_points) {
-   if (eigenvalues.isEmpty() || mesh_points <= 0) {
-      return;
-   }
-
-   const int eigenvalue_count = eigenvalues.size();
-
-   // Estimate eigenfunction cache size: mesh_points * eigenvalue_count * 1.2 safety margin
-   const size_t estimated_eigenfunction_entries = static_cast<size_t>(mesh_points * eigenvalue_count * 1.2);
-   eigenfunction_cache.reserve(estimated_eigenfunction_entries);
-
-   // Estimate bessel cache: 4 bessel types (J0, J1, Y0, Y1) * 4 calls per eigenfunction
-   // Flattened structure now has single level, so reserve total entries directly
-   const size_t estimated_bessel_entries = static_cast<size_t>(estimated_eigenfunction_entries * 4);
-   bessel_cache.reserve(estimated_bessel_entries);
-
-   DbgLv(2) << "Cache pre-allocation: eigenfunction=" << estimated_eigenfunction_entries
-            << " bessel=" << estimated_bessel_entries
-            << " (mesh=" << mesh_points << " eigenvalues=" << eigenvalue_count << ")";
-}
-
 double US_Math_BF::Band_Forming_Gradient::eigenfunction(const int &beta, const double &x) {
    // Optimize cache key generation: use bit shifting instead of expensive multiplication
    // This combines beta in lower bits and x-derived value in upper bits
    const unsigned int x_component = static_cast<unsigned int>(x * 16384.0);
    const unsigned int cache_key = static_cast<unsigned int>(beta) + (x_component << 14);
 
-   auto it = eigenfunction_cache.find(cache_key);
-   if (it != eigenfunction_cache.end()) {
+   if (eigenfunction_cache.contains(cache_key)) {
       eigenfunction_cache_used++;
-      return it->second;
+      return eigenfunction_cache.value(cache_key, 0.0);
    }
    else {
       const double ev = eigenvalues[beta];
@@ -517,7 +495,7 @@ double US_Math_BF::Band_Forming_Gradient::eigenfunction(const int &beta, const d
       const double bessel_J1_ev_bottom = bessel("J1", ev_bottom);
 
       const double result = (bessel_J0_ev_x * bessel_Y1_ev_bottom - bessel_Y0_ev_x * bessel_J1_ev_bottom);
-      eigenfunction_cache.insert({cache_key, result});
+      eigenfunction_cache.insert(cache_key, result);
       return result;
    }
 }
@@ -580,17 +558,13 @@ bool US_Math_BF::Band_Forming_Gradient::calc_dens_visc(
    for ( int i = 0; i < N; i++ ) {
       const double x_c = x[i];
       const int x_key = static_cast<int>(x[i] * 1024);
-      auto it_x = value_cache.find(x_key);
-      if (it_x != value_cache.end()) {
-         auto it_t = it_x->second.find(t_key);
-         if (it_t != it_x->second.end()) {
-            const std::array<double,3>& tmp = it_t->second;
-            Dens[i] += tmp[0];
-            Visc[i] += tmp[1];
-            continue;
-         }
-      }
+      if (value_cache.contains(x_key) && value_cache.value(x_key).contains(t_key))
       {
+         const std::array<double,3> tmp = value_cache.value(x_key).value(t_key);
+         Dens[i] += tmp[ 0 ];
+         Visc[i] += tmp[ 1 ];
+      }
+      else {
          // loop over all cosedimenting stuff and determine the current concentration
          // -> for now iterate only over upper_cosed
          double tmp_d = 0.0;
@@ -613,9 +587,16 @@ bool US_Math_BF::Band_Forming_Gradient::calc_dens_visc(
          }
          // cache the value
          const std::array<double,3> tmp{tmp_d, tmp_v, tmp_c};
-         value_cache[x_key][t_key] = tmp;
-         Dens[i] += tmp_d;
-         Visc[i] += tmp_v;
+         if (value_cache.contains(x_key))
+         {
+            value_cache.find(x_key).value().insert(t_key, tmp);
+         }
+         else
+         {
+            QHash<const int,std::array<double,3>> tmp_map;
+            tmp_map.insert(t_key,tmp);
+            value_cache.insert(x_key, tmp_map);
+         }
       }
    }
    return true;
@@ -635,21 +616,15 @@ bool US_Math_BF::Band_Forming_Gradient::adjust_sd(
    // Cache temperature calculation outside the loop
    const double temp = (T>260)?T:T+K0;
 
-   auto it_x = value_cache.find(x_key);
-   if (it_x != value_cache.end()) {
-      auto it_t = it_x->second.find(t_key);
-      if (it_t != it_x->second.end()) {
-         const std::array<double,3>& tmp = it_t->second;
-         density = tmp[0];
-         viscosity = tmp[1];
-         concentration = tmp[2];
-      } else {
-         goto compute_values;
-      }
+   if (value_cache.contains(x_key) && value_cache.value(x_key).contains(t_key))
+   {
+      const std::array<double,3> tmp = value_cache.value(x_key).value(t_key);
+      density = tmp[0];
+      viscosity = tmp[1];
+      concentration = tmp[2];
    }
    else
    {
-compute_values:
       // loop over all cosedimenting stuff and determine the current concentration
       // -> for now iterate only over upper_cosed
       for (const US_CosedComponent &cosed_comp: upper_comps) {
@@ -672,7 +647,17 @@ compute_values:
          concentration += c1;
       }
       // cache the value
-      value_cache[x_key][t_key] = {density, viscosity, concentration};
+      const std::array<double,3> tmp{density,viscosity,concentration};
+      if (value_cache.contains(x_key))
+      {
+         value_cache.find(x_key).value().insert(t_key, tmp);
+      }
+      else
+      {
+         QHash<const int,std::array<double,3>> tmp_map;
+         tmp_map.insert(t_key,tmp);
+         value_cache.insert(x_key, tmp_map);
+      }
    }
    s = s * VISC_20W * (1 - vbar * density) / (1.0 - vbar * DENS_20W) / viscosity;
    d = d * VISC_20W / viscosity * temp / K20;
@@ -695,21 +680,15 @@ bool US_Math_BF::Band_Forming_Gradient::calc_dens_visc(
    // Cache temperature calculation outside the loop
    const double temp = (T>260)?T:T+K0;
 
-   auto it_x = value_cache.find(x_key);
-   if (it_x != value_cache.end()) {
-      auto it_t = it_x->second.find(t_key);
-      if (it_t != it_x->second.end()) {
-         const std::array<double,3>& tmp = it_t->second;
-         density = tmp[0];
-         viscosity = tmp[1];
-         concentration = tmp[2];
-      } else {
-         goto compute_values2;
-      }
+   if (value_cache.contains(x_key) && value_cache.value(x_key).contains(t_key))
+   {
+      const std::array<double,3> tmp = value_cache.value(x_key).value(t_key);
+      density = tmp[0];
+      viscosity = tmp[1];
+      concentration = tmp[2];
    }
    else
    {
-compute_values2:
       // loop over all cosedimenting stuff and determine the current concentration
       // -> for now iterate only over upper_cosed
       for (const US_CosedComponent &cosed_comp: upper_comps) {
@@ -728,7 +707,17 @@ compute_values2:
                        visc_coeff[3] + c1 * ( visc_coeff[4] + c1 * visc_coeff[5]))));
       }
       // cache the value
-      value_cache[x_key][t_key] = {density, viscosity, concentration};
+      const std::array<double,3> tmp{density,viscosity,concentration};
+      if (value_cache.contains(x_key))
+      {
+         value_cache.find(x_key).value().insert(t_key, tmp);
+      }
+      else
+      {
+         QHash<const int,std::array<double,3>> tmp_map;
+         tmp_map.insert(t_key,tmp);
+         value_cache.insert(x_key, tmp_map);
+      }
    }
    dens = density;
    visc = viscosity;
@@ -1315,28 +1304,33 @@ bool US_Math_BF::Band_Forming_Gradient::is_suitable( const double n_meniscus, co
 }
 
 double US_Math_BF::Band_Forming_Gradient::bessel( const QString& bessel_type, const double x ) {
+   double result = 0.0;
    const int b_key = bessel_types.indexOf(bessel_type);
    const auto x_key = static_cast<unsigned int>( x * 1024 );
-
-   // Use flattened cache with composite key for single lookup
-   const us_math_bf_detail::BesselKey cache_key{b_key, x_key};
-   auto it = bessel_cache.find(cache_key);
-   if (it != bessel_cache.end()) {
-      return it->second;
+   if (bessel_cache.contains(b_key) && bessel_cache.value(b_key).contains(x_key)) {
+      result = bessel_cache[b_key][x_key];
    }
-
-   double result = 0.0;
-   if (b_key == 0) {          // J0
-      result = bessel_J0(x);
-   } else if (b_key == 1) {   // J1
-      result = bessel_J1(x);
-   } else if (b_key == 2) {   // Y0
-      result = bessel_Y0(x);
-   } else if (b_key == 3) {   // Y1
-      result = bessel_Y1(x);
+   else
+   {
+      if (b_key == 0) {          // J0
+         result = bessel_J0(x);
+      } else if (b_key == 1) {   // J1
+         result = bessel_J1(x);
+      } else if (b_key == 2) {   // Y0
+         result = bessel_Y0(x);
+      } else if (b_key == 3) {   // Y1
+         result = bessel_Y1(x);
+      }
+      // create outer hash if not present
+      if (!bessel_cache.contains(b_key)) {
+         bessel_cache.insert(b_key, QHash<const unsigned int, double>());
+      }
+      // insert result into cache
+      if (bessel_cache.contains(b_key))
+      {
+         bessel_cache.find(b_key).value().insert(x_key, result);
+      }
    }
-
-   bessel_cache.insert({cache_key, result});
    return result;
 }
 
