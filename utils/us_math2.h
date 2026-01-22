@@ -2,7 +2,6 @@
 #ifndef US_MATH_H
 #define US_MATH_H
 
-#include <unordered_map>
 #include <QtCore>
 #include "us_extern.h"
 #include "us_dataIO.h"
