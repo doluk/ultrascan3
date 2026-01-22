@@ -730,6 +730,18 @@ DbgLv(1) << "LD:  ii" << ii << "valsize" << valsize;
 DbgLv(1) << "LD:  was3val have3val" << was3val << have3val
  << "v_rmsd size" << v_rmsd.size() << "parsed length"
  << parsed.length();
+   if ( !have3val && x_axis_type != "Bottom")
+   {
+      bott_fit = false;
+   }
+   else if ( !have3val && x_axis_type == "Bottom" )
+   {
+      bott_fit = true;
+   }
+   else if ( have3val && (x_axis_type == "Bottom" || y_axis_type == "Bottom") )
+   {
+      bott_fit = true;
+   }
 
    if ( ( have3val && !was3val )  || 
         ( !have3val && was3val ) )
