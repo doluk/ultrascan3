@@ -19,11 +19,43 @@
 #include "us_extern.h"
 #include "us_simparms.h"
 #include <array>
+#include <unordered_map>
 
 
 #ifndef DbgLv
 #define DbgLv(a) if(dbg_level>=a)qDebug() //!< debug-level-conditioned qDebug()
 #endif
+
+namespace us_math_bf_detail {
+   //! \brief Custom hash function for better distribution with bit-shifted keys
+   struct EigenfunctionHash {
+      inline size_t operator()(unsigned int key) const noexcept {
+         // FNV-1a inspired hash for better distribution
+         key = ((key >> 16) ^ key) * 0x45d9f3b;
+         key = ((key >> 16) ^ key) * 0x45d9f3b;
+         key = (key >> 16) ^ key;
+         return key;
+      }
+   };
+
+   //! \brief Composite key for flattened bessel cache
+   struct BesselKey {
+      int type;           // J0, J1, Y0, Y1
+      unsigned int value;
+
+      inline bool operator==(const BesselKey& other) const noexcept {
+         return type == other.type && value == other.value;
+      }
+   };
+
+   //! \brief Hash function for BesselKey
+   struct BesselKeyHash {
+      inline size_t operator()(const BesselKey& k) const noexcept {
+         // Combine type and value into single hash with bit shifting
+         return std::hash<unsigned long long>()((static_cast<unsigned long long>(k.type) << 32) | k.value);
+      }
+   };
+}
 
 //! \brief A collection of mathematical routines related to the band forming experiment & simulation.
 //! all function are static
@@ -119,6 +151,10 @@ class US_UTIL_EXTERN US_Math_BF final : public QObject {
             //! \brief Calculate the eigenvalues
             bool get_eigenvalues( );
 
+            //! \brief Pre-allocate cache capacity based on simulation parameters to reduce rehashing overhead
+            //! \param mesh_points Expected number of mesh points in the simulation
+            void reserve_cache_capacity(int mesh_points);
+
             void load_data( const US_DataIO::RawData* dens, const US_DataIO::RawData* visc, const US_DataIO::RawData* conc);
 
             bool save_data(const QString& folder, const QString& file_key, IUS_DB2* db);
@@ -149,6 +185,7 @@ class US_UTIL_EXTERN US_Math_BF final : public QObject {
             //! the external radius bottom
             //! \param beta The double value representing the eigenvalue
             double norm(const double &beta);
+            double norm(const double &beta, const double &j1_m, const double &j1_b);
 
             //! \brief Calculate the eigenfunction for a given eigenvalue beta, external radius bottom and position x
             //! (x<= bottom)
@@ -216,13 +253,20 @@ class US_UTIL_EXTERN US_Math_BF final : public QObject {
 
             double dt;
          private:
-            QHash<const int, QHash<const int,std::array<double,3>>> value_cache;
-            QHash<const int, QHash<const unsigned int, double>> bessel_cache;
-            QHash<const unsigned int, double> eigenfunction_cache;
+            std::unordered_map<int, std::unordered_map<int, std::array<double,3>>> value_cache;
+            std::unordered_map<us_math_bf_detail::BesselKey, double, us_math_bf_detail::BesselKeyHash> bessel_cache;
+            std::unordered_map<unsigned int, double, us_math_bf_detail::EigenfunctionHash> eigenfunction_cache;
             unsigned long bessel_cache_used;
             unsigned long eigenfunction_cache_used;
             double total_volume;
             double lower_volume;
+            QVector<double> j1_m_vals;
+            QVector<double> j1_b_vals;
+            QVector<double> y1_b_vals;
+            QVector<double> dens_t;
+            QVector<double> visc_t;
+            QVector<double> conc_t;
+
             //! \brief calculate a bessel function of a given type for the input x
             //! \param bessel_type The string representing the type of the bessel function J0, J1, Y0, Y1
             //! \param x The double value representing the input value for the bessel function
