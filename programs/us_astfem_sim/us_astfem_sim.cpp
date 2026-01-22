@@ -1691,7 +1691,21 @@ for(int ss=0; ss<kscn; ss++ )
    }  // End:  output directory specified
    if ( !supress_dialog )
    {
-      return true;
+      // query user if they want to save the edit, analyte, buffer, solution ...
+      QMessageBox msgBox;
+      msgBox.setIcon( QMessageBox::Question );
+      msgBox.setText( "Do you want to save an edit for this simulation?" );
+      msgBox.setInformativeText( "Saving the edit will automatically create an edit and solution for this dataset.\n"
+                                 "This allows you to directly analyze the data." );
+      msgBox.addButton( QMessageBox::Yes );
+      msgBox.addButton( QMessageBox::No );
+      msgBox.setDefaultButton( QMessageBox::No );
+      msgBox.setWindowTitle( "Save edit?" );
+      auto ret = msgBox.exec();
+      if ( ret != QMessageBox::Yes )
+      {
+         return true;
+      }
    }
    // write experiment file
    QRegularExpression rx( "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" );
@@ -2241,7 +2255,7 @@ void US_Astfem_Sim::plot( int step )
    // Set plot scale for band-forming
    if ( simparams.band_forming )
    {
-      min_y_axis = total_conc;
+      max_y_axis = total_conc;
    }
    // adjust the plotting for the baseline offset if defined
    if ( simparams.baseline != 0.0)
