@@ -30,8 +30,8 @@ US_FitMeniscus::US_FitMeniscus( QMap<QString, QString> triple_info_map ) : US_Wi
   auto_mode = true;
   no_fm_data = false;
   bad_men_vals = false;
-  x_axis_type = "Meniscus";
-  y_axis_type = "Bottom";
+  x_axis_type = "MENISCUS";
+  y_axis_type = "BOTTOM";
   z_axis_type = "Offset Reciprocal RMSD";
   
   setWindowTitle( tr( "Fit Meniscus from 2DSA Data: ") + triple_information[ "triple_name" ] );
@@ -333,8 +333,8 @@ US_FitMeniscus::US_FitMeniscus() : US_Widgets()
    no_fm_data = false;
    bad_men_vals = false;
 
-   x_axis_type = "Meniscus";
-   y_axis_type = "Bottom";
+   x_axis_type = "MENISCUS";
+   y_axis_type = "BOTTOM";
    z_axis_type = "Offset Reciprocal RMSD";
    
    setWindowTitle( tr( "Fit Meniscus from 2DSA Data" ) );
@@ -591,8 +591,8 @@ DbgLv(1) << "Main: BB";
 // Clear the plot, m-r table text, and other elements
 void US_FitMeniscus::reset( void )
 {
-   x_axis_type = "Meniscus";
-   y_axis_type = "Bottom";
+   x_axis_type = "MENISCUS";
+   y_axis_type = "BOTTOM";
    z_axis_type = "Offset Reciprocal RMSD";
 
 //   dataPlotClear( meniscus_plot );
@@ -730,15 +730,15 @@ DbgLv(1) << "LD:  ii" << ii << "valsize" << valsize;
 DbgLv(1) << "LD:  was3val have3val" << was3val << have3val
  << "v_rmsd size" << v_rmsd.size() << "parsed length"
  << parsed.length();
-   if ( !have3val && x_axis_type != "Bottom")
+   if ( !have3val && x_axis_type != "BOTTOM")
    {
       bott_fit = false;
    }
-   else if ( !have3val && x_axis_type == "Bottom" )
+   else if ( !have3val && x_axis_type == "BOTTOM" )
    {
       bott_fit = true;
    }
-   else if ( have3val && (x_axis_type == "Bottom" || y_axis_type == "Bottom") )
+   else if ( have3val && (x_axis_type == "BOTTOM" || y_axis_type == "BOTTOM") )
    {
       bott_fit = true;
    }
@@ -1016,7 +1016,7 @@ DbgLv(1) << "pl3d:    cblack" << cblack << "cwhite" << cwhite;
 
 void US_FitMeniscus::plot_2d( void )
 {
-   if ( x_axis_type == "Meniscus" )
+   if ( x_axis_type == "MENISCUS" )
    {
      if ( auto_mode )
       meniscus_plot->setTitle    ( tr( qPrintable( x_axis_type + " Fit" ) )  + ": " + triple_information[ "triple_name" ] );
@@ -1523,11 +1523,11 @@ DbgLv(1) << " eupd:  fn" << fn;
       mennew         = le_men_fit->text().toDouble();
       botnew         = le_bot_fit->text().toDouble();
    }
-   else if ( x_axis_type == "Meniscus" )
+   else if ( x_axis_type == "MENISCUS" )
    {  // Fit is meniscus only
       mennew         = le_men_sel->text().toDouble();
    }
-   else if ( x_axis_type == "Bottom" )
+   else if ( x_axis_type == "BOTTOM" )
    {  // Fit is bottom only
       botnew         = le_men_sel->text().toDouble();
    }
@@ -1701,7 +1701,7 @@ DbgLv(1) << " eupd:  s_meni s_bott" << s_meni << s_bott;
             ncbval        = s_bott.length();
          }
       }
-      else if ( x_axis_type == "Meniscus" )
+      else if ( x_axis_type == "MENISCUS" )
       {  // Replace meniscus value in edit
          edtext.replace( ixmval, ncmval, s_meni );
          ncmval       += demval;
@@ -1757,7 +1757,7 @@ DbgLv(1) << " eupd:  s_meni s_bott" << s_meni << s_bott;
                     + "\n    " + edtext.mid( ixmlin, ncmlin )
                     + "\n    " + edtext.mid( ixblin, ncblin );
       }
-      else if ( x_axis_type == "Meniscus" )
+      else if ( x_axis_type == "MENISCUS" )
       {  // Report on Meniscus mods
          mmsg     = mmsg + tr( "has been modified with the line:" )
                     + "\n    " + edtext.mid( ixmlin, ncmlin );
@@ -1927,7 +1927,7 @@ DbgLv(1) << " eupd:       edtext len" << edtext.length();
             }
 DbgLv(1) << " eupd:       3DVL replace";
          }
-         else if ( x_axis_type == "Meniscus" )
+         else if ( x_axis_type == "MENISCUS" )
          {  // Replace meniscus value in edit
             edtext.replace( ixmval, ncmval, s_meni );
             ncmval       += demval;
@@ -2002,7 +2002,7 @@ DbgLv(1) << " eupd:       idEdit" << idEdit;
                     + "\n    " + edtext.mid( ixmlin, ncmlin )
                     + "\n    " + edtext.mid( ixblin, ncblin );
       }
-      else if ( x_axis_type == "Meniscus" )
+      else if ( x_axis_type == "MENISCUS" )
       {  // Report on Meniscus mods
          mmsg     = mmsg + tr( "has been modified with the line:" )
                     + "\n    " + edtext.mid( ixmlin, ncmlin );
@@ -2060,7 +2060,7 @@ DbgLv(1) << " call Remove Models";
 	 {  // Fit is meniscus + bottom
 	  
 	 }
-       else if ( x_axis_type == "Meniscus" )
+       else if ( x_axis_type == "MENISCUS" )
 	 {  // Fit is meniscus only
 	   if ( mennew != Meniscus_fitted_2d_val )
 	     triple_information[ "FMB_changed" ] = QString("YES");
@@ -3357,7 +3357,7 @@ DbgLv(1) << "updDbEd: nedtfs" << nedtfs << "applymwl" << ck_applymwl->isChecked(
          msg += tr( "\n\nThe meniscus and bottom values were"
                     " also updated for the corresponding edit"
                     " record in the database." );
-      else if ( x_axis_type == "Meniscus" )
+      else if ( x_axis_type == "MENISCUS" )
          msg += tr( "\n\nThe meniscus value was also updated for the"
                     " corresponding edit record in the database." );
       else
@@ -3376,7 +3376,7 @@ DbgLv(1) << "updDbEd: fn" << fn << "lstfx" << lstfx;
             msg += tr( "\n\nThe meniscus and bottom values were"
                        " also updated for the corresponding edit"
                        " records in the database." );
-         else if ( x_axis_type == "Meniscus" )
+         else if ( x_axis_type == "MENISCUS" )
             msg += tr( "\n\nThe meniscus value was also updated for the"
                        " corresponding edit records in the database." );
          else
