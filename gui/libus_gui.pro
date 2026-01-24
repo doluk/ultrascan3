@@ -34,6 +34,7 @@ HEADERS      = \
                us_combined_plots_parms_gui.h \
                us_convert_gui.h         \
                us_csv_loader.h \
+               us_cosed_dialog.h        \
                us_data_loader.h         \
                us_edit_spectrum.h       \
                us_editor.h              \
@@ -95,6 +96,7 @@ SOURCES      = \
                us_combined_plots_parms_gui.cpp \
                us_convert_gui.cpp         \
                us_csv_loader.cpp \
+               us_cosed_dialog.cpp        \
                us_data_loader.cpp         \
                us_edit_spectrum.cpp       \
                us_editor.cpp              \
