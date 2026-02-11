@@ -534,7 +534,7 @@ qDebug() << "SelMdl:  index modlx" << index << modlx << "mdesc" << mdesc;
    qDebug() << "Selected ModelID: " << model_descriptions[ modlx ].DB_id;
 
    //Check if the model was generated via autoflow framework
-   if ( is_modelIDs_from_autoflow( model_descriptions[ modlx ].DB_id  ) )
+   if ( dkdb_cntrls->db() && is_modelIDs_from_autoflow( model_descriptions[ modlx ].DB_id  ) )
      {
        qDebug() << "Select:: Model GMP/autolfow-generated!";
 
