@@ -30,7 +30,7 @@ class US_UTIL_EXTERN US_Util
       //! \param s         String to search
       //! \param separator Delimiter to use for parsing
       //! \returns         Next token in the string (substring before delimiter)
-      static QString getToken( QString&, const QString& );
+      static QString getToken( QString& s, const QString& separator);
 
 
       //! \brief Generates and returns a new Global Identifier (guid)
@@ -50,7 +50,7 @@ class US_UTIL_EXTERN US_Util
       //!
       //! \param filename  Pull path name of file for md5 hash and size
       //! \returns         A string in the form of "hash size" for the file
-      static QString md5sum_file( QString );
+      static QString md5sum_file( QString filename);
 
       //! \brief Converts a DateTime string to unambiguous UTC form
       //!
