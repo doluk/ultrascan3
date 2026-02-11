@@ -3197,7 +3197,9 @@ DbgLv(1) << "C_ni:  Nx" << Nx << "rA0 rAn" << rA[0] << rA[Nx-1];
    const double z_toler_factor = 1.0e-10;
    double z_tolerance          = tot_conc * z_toler_factor;
    if  ( simparams.band_forming )
-      z_tolerance        = 0.0;
+   {
+      z_tolerance = -0.1;
+   }
 
    if ( ! is_zero )
    {  // If not already into virtual-zero scans, test this one
