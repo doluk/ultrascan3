@@ -211,9 +211,9 @@ bool US_AbstractCenterpiece::read_centerpieces( IUS_DB2* db,
 
       std::sort( cpids.begin(), cpids.end() );
 
-      for ( int ii = 0; ii < cpids.size(); ii++ )
+      for (int ii : cpids)
       {
-         cp.serial_number = cpids[ii ];
+         cp.serial_number = ii;
          QString cpid     = QString::number( cp.serial_number );
          query.clear();
          query << "get_abstractCenterpiece_info" << cpid;
@@ -259,8 +259,10 @@ bool US_AbstractCenterpiece::read_centerpieces( IUS_DB2* db,
                cp.channels << channel;
             }
          }
-         if (!cp.channels.isEmpty())
+         if (!cp.channels.isEmpty() )
+         {
             cp.count_channels = cp.channels.count() / 2;
+         }
          centerpieces << cp;       // Add centerpiece entry
       }
 
