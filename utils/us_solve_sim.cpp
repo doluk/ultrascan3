@@ -318,9 +318,13 @@ US_Settings::set_us_debug( dbg_level );
    int stype     = data_sets[ offset ]->solute_type;
 
    if ( use_zsol )
-       std::sort(sim_vals.zsolutes.begin(), sim_vals.zsolutes.end());
+   {
+      std::sort( sim_vals.zsolutes.begin(), sim_vals.zsolutes.end() );
+   }
    else
-       std::sort(sim_vals.solutes.begin(), sim_vals.solutes.end());
+   {
+      std::sort( sim_vals.solutes.begin(), sim_vals.solutes.end() );
+   }
 
    int count_cut = 0;         // Count of A columns cut by norm tolerance
    int ksolutes = nsolutes;  // Saved original number of solutes (columns)
@@ -1389,19 +1393,18 @@ DbgLv(1) << "CR: sdat:"
          }
       }
    }
-
-   double rmsds[dataset_count];
-   int kntva[dataset_count];
-   double variance = 0.0;
-   int tinoffs = 0;
-   int rinoffs = 0;
-   int ktotal = 0;
-   int scnx = 0;
-   int kdsx = 0;
-   US_DataIO::RawData *sdata = &sim_vals.sim_data;
-   US_DataIO::RawData *resid = &sim_vals.residuals;
-   sim_vals.residuals = sim_vals.sim_data;
-   DbgLv(2) << "   CR:301  rss now" << US_Memory::rss_now() << "thrn" << thrnrank;
+   QVector<double> rmsds( dataset_count );
+   QVector<int> kntva( dataset_count );
+   double variance   = 0.0;
+   int    tinoffs    = 0;
+   int    rinoffs    = 0;
+   int    ktotal     = 0;
+   int    scnx       = 0;
+   int    kdsx       = 0;
+   US_DataIO::RawData*     sdata = &sim_vals.sim_data;
+   US_DataIO::RawData*     resid = &sim_vals.residuals;
+   sim_vals.residuals            =  sim_vals.sim_data;
+DbgLv(2) << "   CR:301  rss now" << US_Memory::rss_now() << "thrn" << thrnrank;
 
    // Calculate residuals and rmsd values
    for (int ee = offset; ee < lim_offs; ee++, kdsx++) {
@@ -1686,24 +1689,26 @@ US_SolveSim::ri_small_a_and_b(int nsolutes, int ntotal, int nrinois, QVector<dou
    DebugTime("BEG:ri_smab");
    US_DataIO::EditedData *edata = &data_sets[d_offs]->run_data;
    int npoints = edata->pointCount();
-   int nscans = edata->scanCount();
-   int kstodo = sq(nsolutes) / 10;   // progress steps to report
-   int incprg = nsolutes / 20;         // increment between reports
-   incprg = max(incprg, 1);
-   incprg = min(incprg, 10);
-   int jsols = qMax(1, nsolutes);
-   int jstprg = (kstodo * incprg) / jsols;     // steps for each report
-   int kstep = 0;                               // progress counter
+   int nscans  = edata->scanCount();
+   int kstodo  = sq( nsolutes ) / 10;   // progress steps to report
+   int incprg  = nsolutes / 20;         // increment between reports
+   incprg      = qMax( incprg,  1 );
+   incprg      = qMin( incprg, 10 );
+   int jsols   = qMax( 1, nsolutes );
+   int jstprg  = ( kstodo * incprg ) / jsols;     // steps for each report
+   int kstep   = 0;                               // progress counter
 
-   for (int cc = 0; cc < nsolutes; cc++) {
-      int jsa2 = cc * ntotal;
-      int jst2 = cc * nrinois;
-      int jjna = jsa2;
-      int jjnb = 0;
-      int jjlt = jst2;
-      double sum_b = small_b[cc];
+   for ( int cc = 0; cc < nsolutes; cc++ )
+   {
+      int    jsa2  = cc * ntotal;
+      int    jst2  = cc * nrinois;
+      int    jjna  = jsa2;
+      int    jjnb  = 0;
+      int    jjlt  = jst2;
+      double sum_b = small_b[ cc ];
 
-      for (int ss = 0; ss < nscans; ss++) {
+      for ( int ss = 0; ss < nscans; ss++ )
+      {
          // small_b[ cc ] +=
          //    ( edata->value( ss, rr ) - a_tilde[ ss ] )
          //    *
@@ -1771,11 +1776,11 @@ US_SolveSim::ti_small_a_and_b(int nsolutes, int ntotal, int ntinois, QVector<dou
    DebugTime("BEG:ti-smab");
    US_DataIO::EditedData *edata = &data_sets[d_offs]->run_data;
    int npoints = edata->pointCount();
-   int nscans = edata->scanCount();
-   int kstodo = sq(nsolutes) / 10;   // progress steps to report
-   int incprg = nsolutes / 20;         // increment between reports
-   incprg = max(incprg, 1);
-   incprg = min(incprg, 10);
+   int nscans  = edata->scanCount();
+   int kstodo  = sq( nsolutes ) / 10;   // progress steps to report
+   int incprg  = nsolutes / 20;         // increment between reports
+   incprg      = qMax( incprg,  1 );
+   incprg      = qMin( incprg, 10 );
 
    DbgLv(1) << "ti_small_a_and_b: nsolutes=" << nsolutes;
 
