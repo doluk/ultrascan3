@@ -30,6 +30,7 @@ class US_UTIL_EXTERN US_StatsEngine
       {
          QVector< double > meanPerScan;      //!< Mean residual per scan (time series)
          QVector< double > rmsdPerScan;      //!< RMSD per scan (time series)
+         QVector< double > stddevPerScan;    //!< Stddev per scan (time series)
          QVector< double > fftMagnitude;     //!< FFT magnitude spectrum (DC removed)
          QVector< double > fftMagnitudeRaw;  //!< FFT magnitude spectrum (with DC)
          QVector< double > fftFrequency;     //!< FFT frequency bins
@@ -43,6 +44,7 @@ class US_UTIL_EXTERN US_StatsEngine
       {
          QVector< double > meanPerPosition;  //!< Mean residual per spatial position
          QVector< double > stddevPerPosition;//!< Stddev per spatial position
+         QVector< double > rmsdPerPosition;  //!< RMSD per spatial position
          double spatialVariance;             //!< Variance of spatial means
          bool   valid;                       //!< Whether metrics are valid
       };

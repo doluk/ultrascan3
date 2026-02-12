@@ -341,6 +341,7 @@ US_StatsEngine::TemporalMetrics
    // Calculate row-wise statistics (collapse spatial dimension)
    metrics.meanPerScan.resize( nScans );
    metrics.rmsdPerScan.resize( nScans );
+   metrics.stddevPerScan.resize( nScans );
 
    for ( int t = 0; t < nScans; t++ )
    {
@@ -361,13 +362,27 @@ US_StatsEngine::TemporalMetrics
 
       if ( count > 0 )
       {
-         metrics.meanPerScan[t] = sum / count;
+         const double mean = sum / count;
+         metrics.meanPerScan[t] = mean;
          metrics.rmsdPerScan[t] = std::sqrt( sum_sq / count );
+         // Second pass: calculate stddev
+         double var_sum = 0.0;
+         for ( int s = 0; s < nPositions; s++ )
+         {
+            const double val = residual_matrix[t][s];
+            if ( std::isfinite( val ) )
+            {
+               const double diff = val - mean;
+               var_sum += diff * diff;
+            }
+         }
+         metrics.stddevPerScan[t] = ( count > 1 ) ? std::sqrt( var_sum / ( count - 1 ) ) : 0.0;
       }
       else
       {
          metrics.meanPerScan[t] = 0.0;
          metrics.rmsdPerScan[t] = 0.0;
+         metrics.stddevPerScan[t] = 0.0;
       }
    }
 
@@ -412,10 +427,12 @@ US_StatsEngine::SpatialMetrics
    // Calculate column-wise statistics (collapse temporal dimension)
    metrics.meanPerPosition.resize( nPositions );
    metrics.stddevPerPosition.resize( nPositions );
+   metrics.rmsdPerPosition.resize( nPositions );
 
    for ( int s = 0; s < nPositions; s++ )
    {
       double sum   = 0.0;
+      double sum_sq = 0.0;
       int    count = 0;
 
       // First pass: calculate mean
@@ -425,12 +442,14 @@ US_StatsEngine::SpatialMetrics
          if ( std::isfinite( val ) )
          {
             sum += val;
+            sum_sq += val * val;
             count++;
          }
       }
 
       const double mean          = ( count > 0 ) ? ( sum / count ) : 0.0;
       metrics.meanPerPosition[s] = mean;
+      metrics.rmsdPerPosition[s] = ( count > 0 ) ? std::sqrt( sum_sq / count ) : 0.0;
 
       // Second pass: calculate stddev
       double var_sum = 0.0;

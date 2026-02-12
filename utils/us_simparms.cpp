@@ -40,6 +40,7 @@ US_SimulationParameters::US_SimulationParameters()
    lrnoise                     = 0.0;
    tinoise                     = 0.0;
    rinoise                     = 0.0;
+   baseline          = 0.0;
    temperature                 = NORMAL_TEMP;
    rotorCalID                  = "0";
    band_forming                = false;
@@ -610,7 +611,7 @@ DbgLv(1) << "Sim parms:        cp_id" << cp_id << "sv" << cpIDsv;
    }
 
    // Set rotor coefficients, channel bottom position from hardware files
-   setHardware( db, rotorCalID, -cp_id, ch );
+   setHardware( db, rotorCalID, -cp_id, iechan - 1 );
 
    // Calculate bottom using RPM, start bottom, and rotor coefficients
    bottom    = US_AstfemMath::calc_bottom( rpm, bottom_position, rotorcoeffs );
@@ -857,7 +858,7 @@ DbgLv(1) << "sH: cp ch cp_id" << cp << ch << cp_id;
       QStringList shapes;
       shapes << "sector" << "standard" << "rectangular" << "band forming"
              << "meniscus matching" << "circular" << "synthetic";
-      US_AbstractCenterpiece centerpiece = cp_list[ cp ];
+      const US_AbstractCenterpiece& centerpiece = cp_list[ cp ];
       bool found = false;
       if (!centerpiece.channels.isEmpty() && ch < centerpiece.channels.count()){
             US_AbstractChannel channel = centerpiece.channels[ch];

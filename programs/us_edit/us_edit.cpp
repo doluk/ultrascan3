@@ -8240,7 +8240,7 @@ void US_Edit::update_scan( QList< QPointF > changes )
    QString         seconds = " " + QString::number( s->seconds );
    bool            found   = false;
 
-   QwtPlotCurve* c;
+   QwtPlotCurve* c = nullptr;
    for ( int i = 0; i < items.size(); i++ )
    {
       if ( items[ i ]->rtti() == QwtPlotItem::Rtti_PlotCurve )
@@ -8254,15 +8254,16 @@ void US_Edit::update_scan( QList< QPointF > changes )
       }
    }
 
-   if ( found )
+   if ( found && c != nullptr )
    {
       // Update the curve
       c->setSamples( r, v, count );
       data_plot->replot();
    }
    else
+   {
       qDebug() << "Can't find curve!";
-
+   }
 }
 
 // Handle include profile
