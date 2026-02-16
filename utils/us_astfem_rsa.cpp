@@ -439,7 +439,7 @@ DbgLv(2)<< "s_n_D_values are" << sc->s << sc->D  << cc ;
          for ( int jj = 0; jj < af_data.radius.size(); jj++ )
          {
             scan1.radius        << af_data.radius[ jj ];
-            scan1.concentration << max(scan0->conc   [ jj ], 0.0);
+            scan1.concentration << qMax(scan0->conc   [ jj ], 0.0);
          }
          US_AstfemMath::interpolate_C0( scan1, af_c0 );
       }

@@ -1108,7 +1108,7 @@ DbgLv(1) << "CR: sdat:"
 
 
    int kstodo = nsolutes / 50;          // Set steps count for NNLS
-   kstodo = max(kstodo, 2);
+   kstodo = qMax(kstodo, 2);
    DbgLv(1) << "   CR:200  rss now" << US_Memory::rss_now() << "thrn" << thrnrank;
 //DebugTime("BEG:clcr-cn");
 //------------------------------------------

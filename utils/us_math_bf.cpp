@@ -751,11 +751,11 @@ US_Math_BF::Band_Forming_Gradient::calculate_gradient(
    // Calculate dt
    double max_D = 0.0;
    for (US_CosedComponent &cosed_comp: upper_comps) {
-      max_D = max(max_D,cosed_comp.d_coeff);
+      max_D = qMax(max_D,cosed_comp.d_coeff);
    }
 
    // Declares the scan structure and set the lower limit for dt to keep workload reasonable
-   dt = max(simparms.radial_resolution*simparms.radial_resolution / 6 / max_D, 5.0);
+   dt = qMax(simparms.radial_resolution*simparms.radial_resolution / 6 / max_D, 5.0);
    DbgLv(2) << "max D " << max_D << "; dt " << dt << "; bessel_cache " << bessel_cache.size()
             << "eigenfunction cache " << eigenfunction_cache.size();
    dens_bfg_data.scanData.clear();
@@ -1418,7 +1418,7 @@ bool US_Math_BF::Secant_Solver::solve_wrapper() {
          }
          DbgLv(3) << "found grid solution x1=" << x1 << " f1=" << f1;
       }
-      n = max(n + 1, int(floor(x1 - i_min / grid_res) + 1));
+      n = qMax(n + 1, int(floor(x1 - i_min / grid_res) + 1));
       x0 = i_min + n * grid_res;
       x1 = i_min + (n + 1) * grid_res;
    } while (x1 < i_max);

@@ -29,7 +29,7 @@
 #include "us_colorgradIO.h"
 #include <QFileInfo>
 
-#define MIN_NTC   25
+#define MIN_NTC   5
 
 // US_FeMatch class constructor
 US_FeMatch::US_FeMatch() : US_Widgets()
@@ -790,21 +790,21 @@ DbgLv(1) << "Fem:Upd: (0)svbar" << svbar;
    pb_plot3d   ->setEnabled( false );
    pb_plotres  ->setEnabled( false );
    pb_distrib  ->setText   ( tr( "s20,W Distribution" ) );
-   if ( eplotcd != 0 )
+   if ( eplotcd  )
    {
       epd_pos  = eplotcd->pos();
       eplotcd->close();
-      eplotcd  = 0;
+      eplotcd.clear();
    }
 
-   if ( resplotd != 0 )
+   if ( resplotd  )
    {
       rpd_pos  = resplotd->pos();
       resplotd->close();
-      resplotd = 0;
+      resplotd.clear();
    }
 
-   if ( rbmapd != 0 )
+   if ( rbmapd  )
    {
       bmd_pos  = rbmapd->pos();
       rbmapd->close();

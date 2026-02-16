@@ -136,6 +136,17 @@ endif()
 
 if(WIN32)
     target_compile_definitions(us_program_common INTERFACE QWT_DLL QT_DLL)
+    # Force GUI subsystem (no console) for Release builds using linker flags.
+    # This avoids using WIN32_EXECUTABLE which triggers a dependency on qtmain.lib,
+    # often causing configuration issues (like looking for DEBUG versions in Release).
+    if(CMAKE_BUILD_TYPE STREQUAL "Release")
+        if(MINGW)
+            target_link_options(us_program_common INTERFACE "-mwindows")
+        elseif(MSVC)
+            # /ENTRY:mainCRTStartup is needed because we are skipping qtmain's WinMain
+            target_link_options(us_program_common INTERFACE "/SUBSYSTEM:WINDOWS" "/ENTRY:mainCRTStartup")
+        endif()
+    endif()
 endif()
 
 # --------------------------------------------------------------------------

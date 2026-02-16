@@ -849,14 +849,14 @@ int US_LammAstfvm::calculate( US_DataIO::RawData& sim_data )
          double true_dt_min = dt_temp;
          for ( int i = 1; i < nts; i++ )
          {
-            true_dt_min = min( true_dt_min, af_data.scan[ i ].time - af_data.scan[ i - 1 ].time );
+            true_dt_min = qMin( true_dt_min, af_data.scan[ i ].time - af_data.scan[ i - 1 ].time );
          }
          if ( true_dt_min < dt_temp )
          {
             DbgLv( 1 ) << "dt Problem dt=" << dt_temp << " true_dt_min=" << true_dt_min << dt;
             dt_temp = true_dt_min / 1.5;
          }
-         dt = min( dt, dt_temp );
+         dt = qMin( dt, dt_temp );
       }
       validate_bfg();
       validate_csd();
@@ -974,7 +974,7 @@ int US_LammAstfvm::solve_component( int compx )
    double true_dt_min = af_data.scan[0].time;
    for ( int i = 1; i < nts; i++ )
    {
-      true_dt_min = min( true_dt_min, af_data.scan[ i ].time - af_data.scan[ i - 1 ].time );
+      true_dt_min = qMin( true_dt_min, af_data.scan[ i ].time - af_data.scan[ i - 1 ].time );
    }
    if ( true_dt_min < dt )
    {
@@ -1033,11 +1033,11 @@ int US_LammAstfvm::solve_component( int compx )
       double gradient_dt = 200.0;
       if (bandFormingGradient != nullptr && !bandFormingGradient->is_empty)
       {
-         gradient_dt = min(gradient_dt, bandFormingGradient->dt);
+         gradient_dt = qMin(gradient_dt, bandFormingGradient->dt);
       }
 
 
-      dt      = min( gradient_dt, dt );
+      dt      = qMin( gradient_dt, dt );
       solut_t = af_data.scan[nts - 1].time; // true total time
       ntc     = static_cast<int>(solut_t / dt) + 1;
    }
