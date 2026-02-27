@@ -18,6 +18,7 @@
 #include <QRegularExpression>
 #include <QSplitter>
 #include <QHeaderView>
+#include <QSet>
 
 #include "us_data_publication.h"
 #include "us_settings.h"
@@ -32,6 +33,7 @@
 #include "us_data_loader.h"
 #include "us_model_loader.h"
 #include "us_noise_loader.h"
+#include "us_investigator.h"
 
 // Bundle format version
 static const QString BUNDLE_VERSION = "1.0";
@@ -628,11 +630,35 @@ void US_DataPublication::selectModels() {
         for (int i = 0; i < selectedModels.size(); ++i) {
             US_DataPubModelInfo info;
             info.modelGUID = selectedModels[i].modelGUID;
+            info.modelID = -1;  // Will be set when loaded
             info.description = selectedModels[i].description;
             info.editGUID = selectedModels[i].editGUID;
             info.selected = true;
+            
+            // Try to load noise information for this model
+            if (fromDB && connectToDatabase()) {
+                // Query for noise associated with this model
+                QStringList query;
+                query << "get_noise_desc_by_modelID" << QString::number(US_Settings::us_inv_ID()) 
+                      << info.modelGUID;
+                db->query(query);
+                
+                while (db->next()) {
+                    QString noiseGUID = db->value(1).toString();
+                    QString noiseType = db->value(3).toString();
+                    
+                    if (noiseType.contains("ti", Qt::CaseInsensitive)) {
+                        info.noiseGUID_ti = noiseGUID;
+                    } else if (noiseType.contains("ri", Qt::CaseInsensitive)) {
+                        info.noiseGUID_ri = noiseGUID;
+                    }
+                }
+            }
+            
             modelList.append(info);
         }
+        
+        te_statusExport->append(tr("Loaded %1 models.").arg(modelList.size()));
         
         // Check if model dependencies require additional edits to be selected
         checkModelDependencies();
@@ -809,7 +835,8 @@ void US_DataPublication::startExport() {
     connect(&exporter, &US_DataPubExport::progress, this, &US_DataPublication::updateProgress);
     connect(&exporter, &US_DataPubExport::completed, this, &US_DataPublication::exportComplete);
     
-    bool success = exporter.exportBundle(exportBundlePath, projectId, -1, ScopeAll);
+    // Use the new method that accepts selected data
+    bool success = exporter.exportSelectedData(exportBundlePath, currentProject, rawDataList, modelList);
     
     if (!success) {
         te_statusExport->append(tr("Export failed: %1").arg(exporter.errorMessage()));
@@ -919,16 +946,177 @@ void US_DataPublication::help() {
 void US_DataPublication::loadRawDataForExperiments() {
     rawDataList.clear();
     
-    // This would query the database/disk for raw data associated with selected experiments
-    // For now, create placeholder implementation
-    // In a full implementation, this would use US_DataIO to load raw data info
+    if (selectedRunIDs.isEmpty()) {
+        te_statusExport->append(tr("No experiments selected."));
+        return;
+    }
     
     te_statusExport->append(tr("Loading raw data for %1 experiments...").arg(selectedRunIDs.size()));
+    
+    if (useDB && connectToDatabase()) {
+        // Load from database
+        for (const QString& runID : selectedRunIDs) {
+            // Get experiment ID for this runID
+            QStringList query;
+            query << "get_experiment_info_by_runID" << runID 
+                  << QString::number(US_Settings::us_inv_ID());
+            db->query(query);
+            
+            if (!db->next()) continue;
+            
+            QString expID = db->value(1).toString();
+            
+            // Get raw data for this experiment
+            query.clear();
+            query << "get_rawDataIDs" << expID;
+            db->query(query);
+            
+            while (db->next()) {
+                US_DataPubRawDataInfo rawInfo;
+                rawInfo.rawID = db->value(0).toInt();
+                rawInfo.rawGUID = db->value(1).toString();
+                QString filename = db->value(2).toString().replace("\\", "/");
+                rawInfo.description = filename.section("/", -1, -1);
+                rawInfo.runID = runID;
+                rawInfo.expID = expID.toInt();
+                rawInfo.selected = true;  // Select by default
+                
+                rawDataList.append(rawInfo);
+            }
+        }
+        
+        // Now load edits for all raw data
+        loadEditsForRawData();
+        
+        te_statusExport->append(tr("Loaded %1 raw data files.").arg(rawDataList.size()));
+    } else {
+        // Load from disk
+        for (const QString& runID : selectedRunIDs) {
+            QString aucDir = US_Settings::resultDir() + "/" + runID + "/";
+            QDir dir(aucDir);
+            
+            if (!dir.exists()) continue;
+            
+            QStringList filters;
+            filters << "*.auc";
+            QStringList aucFiles = dir.entryList(filters, QDir::Files, QDir::Name);
+            
+            for (const QString& aucFile : aucFiles) {
+                US_DataPubRawDataInfo rawInfo;
+                rawInfo.description = aucFile;
+                rawInfo.runID = runID;
+                rawInfo.selected = true;
+                
+                // Try to get GUID from XML file
+                QString xmlPath = aucDir + aucFile.left(aucFile.length() - 4) + ".xml";
+                if (QFile::exists(xmlPath)) {
+                    QFile xmlFile(xmlPath);
+                    if (xmlFile.open(QIODevice::ReadOnly)) {
+                        QXmlStreamReader xml(&xmlFile);
+                        while (!xml.atEnd() && !xml.hasError()) {
+                            xml.readNext();
+                            if (xml.isStartElement() && xml.name() == QString("rawDataGUID")) {
+                                rawInfo.rawGUID = xml.readElementText();
+                                break;
+                            }
+                        }
+                        xmlFile.close();
+                    }
+                }
+                
+                rawDataList.append(rawInfo);
+            }
+        }
+        
+        // Load edits for all raw data
+        loadEditsForRawData();
+        
+        te_statusExport->append(tr("Loaded %1 raw data files from disk.").arg(rawDataList.size()));
+    }
+    
+    updateExportButtonStates();
 }
 
 void US_DataPublication::loadEditsForRawData() {
-    // This would load edit information for the raw data
-    // In a full implementation, this would query for edit profiles
+    // Load edit information for the raw data
+    
+    if (useDB && db != nullptr && db->isConnected()) {
+        // Load from database
+        for (int i = 0; i < rawDataList.size(); ++i) {
+            US_DataPubRawDataInfo& rawInfo = rawDataList[i];
+            rawInfo.editIDs.clear();
+            rawInfo.editGUIDs.clear();
+            rawInfo.editNames.clear();
+            rawInfo.editSelected.clear();
+            
+            QStringList query;
+            query << "get_editedDataIDs" << QString::number(rawInfo.rawID);
+            db->query(query);
+            
+            while (db->next()) {
+                int editID = db->value(0).toInt();
+                QString editGUID = db->value(1).toString();
+                QString filename = db->value(2).toString().replace("\\", "/");
+                QString editName = filename.section("/", -1, -1);
+                
+                rawInfo.editIDs.append(editID);
+                rawInfo.editGUIDs.append(editGUID);
+                rawInfo.editNames.append(editName);
+                rawInfo.editSelected.append(true);  // Select by default
+            }
+        }
+    } else {
+        // Load from disk
+        for (int i = 0; i < rawDataList.size(); ++i) {
+            US_DataPubRawDataInfo& rawInfo = rawDataList[i];
+            rawInfo.editIDs.clear();
+            rawInfo.editGUIDs.clear();
+            rawInfo.editNames.clear();
+            rawInfo.editSelected.clear();
+            
+            QString editDir = US_Settings::resultDir() + "/" + rawInfo.runID + "/";
+            QDir dir(editDir);
+            
+            if (!dir.exists()) continue;
+            
+            // Look for edit files that match this raw data
+            QString rawBase = rawInfo.description;
+            if (rawBase.endsWith(".auc")) {
+                rawBase = rawBase.left(rawBase.length() - 4);
+            }
+            
+            QStringList filters;
+            filters << rawBase + ".*.xml";
+            QStringList editFiles = dir.entryList(filters, QDir::Files, QDir::Name);
+            
+            for (const QString& editFile : editFiles) {
+                // Skip the raw data XML file itself
+                if (!editFile.contains(".edit")) continue;
+                
+                rawInfo.editNames.append(editFile);
+                rawInfo.editSelected.append(true);
+                
+                // Try to get GUID from the edit file
+                QString editPath = editDir + editFile;
+                QFile xmlFile(editPath);
+                if (xmlFile.open(QIODevice::ReadOnly)) {
+                    QXmlStreamReader xml(&xmlFile);
+                    while (!xml.atEnd() && !xml.hasError()) {
+                        xml.readNext();
+                        if (xml.isStartElement() && xml.name() == QString("editGUID")) {
+                            rawInfo.editGUIDs.append(xml.readElementText());
+                            break;
+                        }
+                    }
+                    xmlFile.close();
+                }
+                
+                if (rawInfo.editGUIDs.size() < rawInfo.editNames.size()) {
+                    rawInfo.editGUIDs.append(QString());  // Empty GUID if not found
+                }
+            }
+        }
+    }
 }
 
 void US_DataPublication::buildDataTree() {
@@ -961,8 +1149,9 @@ void US_DataPublication::buildDataTree() {
             rawItem->setData(0, Qt::UserRole, "rawdata");
             rawItem->setData(0, Qt::UserRole + 1, idx);
             
-            // Add edit items
-            for (int j = 0; j < raw.editIDs.size(); ++j) {
+            // Add edit items - use editNames.size() as the authoritative count
+            int editCount = raw.editNames.size();
+            for (int j = 0; j < editCount; ++j) {
                 QTreeWidgetItem* editItem = new QTreeWidgetItem(rawItem);
                 editItem->setText(0, raw.editNames.value(j, tr("Edit %1").arg(j + 1)));
                 editItem->setText(1, tr("Edit"));
@@ -1011,40 +1200,58 @@ void US_DataPublication::checkModelDependencies() {
         
         QString editGUID = modelList[i].editGUID;
         bool editSelected = false;
+        bool editFound = false;
+        int foundRawIdx = -1;
+        int foundEditIdx = -1;
         
         // Check if the model's edit is selected
         for (int j = 0; j < rawDataList.size(); ++j) {
             for (int k = 0; k < rawDataList[j].editGUIDs.size(); ++k) {
                 if (rawDataList[j].editGUIDs[k] == editGUID) {
+                    editFound = true;
+                    foundRawIdx = j;
+                    foundEditIdx = k;
                     if (rawDataList[j].selected && rawDataList[j].editSelected.value(k, false)) {
                         editSelected = true;
                     }
                     break;
                 }
             }
+            if (editFound) break;
         }
         
         if (!editSelected) {
             // The model depends on an edit that is not selected
+            QString message;
+            if (editFound) {
+                message = tr("Model '%1' depends on an edit that is not selected.\n"
+                            "Do you want to automatically select the required edit?")
+                            .arg(modelList[i].description);
+            } else {
+                message = tr("Model '%1' depends on an edit (GUID: %2) that is not in the loaded data.\n"
+                            "The model will be exported without its edit dependency.\n"
+                            "Do you want to continue?")
+                            .arg(modelList[i].description)
+                            .arg(editGUID);
+            }
+            
             QMessageBox::StandardButton reply = QMessageBox::question(this,
                 tr("Dependency Required"),
-                tr("Model '%1' depends on an edit that is not selected.\n"
-                   "Do you want to automatically select the required edit?")
-                   .arg(modelList[i].description),
+                message,
                 QMessageBox::Yes | QMessageBox::No);
             
             if (reply == QMessageBox::Yes) {
-                // Select the required edit
-                for (int j = 0; j < rawDataList.size(); ++j) {
-                    for (int k = 0; k < rawDataList[j].editGUIDs.size(); ++k) {
-                        if (rawDataList[j].editGUIDs[k] == editGUID) {
-                            rawDataList[j].selected = true;
-                            rawDataList[j].editSelected[k] = true;
-                            break;
-                        }
+                if (editFound && foundRawIdx >= 0 && foundEditIdx >= 0) {
+                    // Select the required edit
+                    rawDataList[foundRawIdx].selected = true;
+                    // Ensure editSelected list is large enough
+                    while (rawDataList[foundRawIdx].editSelected.size() <= foundEditIdx) {
+                        rawDataList[foundRawIdx].editSelected.append(false);
                     }
+                    rawDataList[foundRawIdx].editSelected[foundEditIdx] = true;
+                    buildDataTree();
                 }
-                buildDataTree();
+                // If edit not found, we just continue with the export
             } else {
                 // Deselect the model
                 modelList[i].selected = false;
@@ -1426,6 +1633,127 @@ bool US_DataPubExport::exportBundle(const QString& bundlePath, int projectId,
     return true;
 }
 
+bool US_DataPubExport::exportSelectedData(const QString& bundlePath,
+                                          const US_Project& project,
+                                          const QList<US_DataPubRawDataInfo>& rawDataList,
+                                          const QList<US_DataPubModelInfo>& modelList) {
+    // Create temporary directory
+    QTemporaryDir tempDirObj;
+    if (!tempDirObj.isValid()) {
+        lastError = "Failed to create temporary directory";
+        return false;
+    }
+    this->tempDir = tempDirObj.path();
+    
+    manifest.clear();
+    exportedSolutions.clear();
+    manifest.description = QString("Data publication bundle created %1")
+        .arg(QDateTime::currentDateTime().toString());
+    
+    emit progress(5, tr("Creating payload directories..."));
+    
+    // Create payload directories
+    for (int t = 0; t < EntityTypeCount; ++t) {
+        QString typeName = entityTypeToString(static_cast<US_DataPubEntityType>(t));
+        QDir(tempDir).mkdir(typeName);
+    }
+    
+    int totalItems = 0;
+    int processedItems = 0;
+    
+    // Count total items to process
+    for (const auto& raw : rawDataList) {
+        if (raw.selected) totalItems++;
+        for (bool sel : raw.editSelected) {
+            if (sel) totalItems++;
+        }
+    }
+    for (const auto& model : modelList) {
+        if (model.selected) totalItems++;
+    }
+    
+    // Export project if available
+    if (project.projectID > 0) {
+        emit progress(10, tr("Exporting project..."));
+        if (!exportProject(project)) {
+            return false;
+        }
+    }
+    
+    // Export raw data and edits
+    emit progress(15, tr("Exporting raw data and edits..."));
+    for (const auto& raw : rawDataList) {
+        if (raw.selected) {
+            if (!exportRawDataFile(raw)) {
+                return false;
+            }
+            processedItems++;
+            int pct = 15 + (processedItems * 50 / (totalItems > 0 ? totalItems : 1));
+            emit progress(pct, tr("Exported raw data: %1").arg(raw.description));
+        }
+        
+        // Export selected edits for this raw data
+        for (int j = 0; j < raw.editSelected.size(); ++j) {
+            if (raw.editSelected[j]) {
+                if (!exportEditData(raw, j)) {
+                    return false;
+                }
+                processedItems++;
+                int pct = 15 + (processedItems * 50 / (totalItems > 0 ? totalItems : 1));
+                emit progress(pct, tr("Exported edit: %1").arg(raw.editNames.value(j)));
+            }
+        }
+    }
+    
+    // Export models and their noise
+    emit progress(65, tr("Exporting models..."));
+    for (const auto& model : modelList) {
+        if (model.selected) {
+            if (!exportModel(model)) {
+                return false;
+            }
+            processedItems++;
+            int pct = 65 + (processedItems * 20 / (totalItems > 0 ? totalItems : 1));
+            emit progress(pct, tr("Exported model: %1").arg(model.description));
+            
+            // Export associated noise
+            if (!model.noiseGUID_ti.isEmpty()) {
+                exportNoise(model.noiseGUID_ti);
+            }
+            if (!model.noiseGUID_ri.isEmpty()) {
+                exportNoise(model.noiseGUID_ri);
+            }
+        }
+    }
+    
+    emit progress(85, tr("Writing manifest..."));
+    
+    // Write manifest
+    QString manifestPath = tempDir + "/manifest.yaml";
+    if (!manifest.writeToFile(manifestPath)) {
+        lastError = "Failed to write manifest";
+        return false;
+    }
+    
+    emit progress(90, tr("Creating archive..."));
+    
+    // Create tar.gz archive
+    US_Archive archive;
+    QStringList sources;
+    sources << tempDir;
+    
+    QString archivePath = bundlePath;
+    if (!archive.compress(sources, archivePath)) {
+        lastError = "Failed to create archive: " + archive.getError();
+        return false;
+    }
+    
+    emit progress(100, tr("Export complete"));
+    emit completed(true, tr("Bundle created successfully at %1").arg(bundlePath));
+    
+    return true;
+}
+
 void US_DataPubExport::gatherDependencies(int projectId, int experimentId,
                                            US_DataPublication::ExportScope scope) {
     // This would gather all entities based on scope
@@ -1493,33 +1821,355 @@ bool US_DataPubExport::exportExperiment(int expId) {
     return true;
 }
 
-bool US_DataPubExport::exportRawData(const QString& rawGuid) {
+bool US_DataPubExport::exportRawData(const QString& rawGuid, int rawID) {
     Q_UNUSED(rawGuid)
+    Q_UNUSED(rawID)
+    return true;
+}
+
+bool US_DataPubExport::exportRawDataFile(const US_DataPubRawDataInfo& rawInfo) {
+    // Create manifest entry
+    US_DataPubManifestEntry entry;
+    entry.id = rawInfo.rawID;
+    entry.guid = rawInfo.rawGUID;
+    entry.name = rawInfo.description;
+    entry.type = EntityRawData;
+    entry.payloadPath = QString("rawData/%1.auc").arg(rawInfo.rawGUID.isEmpty() ? 
+                        rawInfo.description : rawInfo.rawGUID);
+    
+    // Compute property hash
+    QVariantMap props;
+    props["description"] = rawInfo.description;
+    props["runID"] = rawInfo.runID;
+    entry.propertyHash = computePropertyHash(props);
+    
+    // Copy the AUC file
+    QString srcPath;
+    if (db != nullptr && db->isConnected()) {
+        // From database - download file
+        QStringList query;
+        query << "get_rawData" << QString::number(rawInfo.rawID);
+        db->query(query);
+        if (db->next()) {
+            QString dbPath = db->value(2).toString();  // filename column
+            // For DB, we need to get the raw data and write it
+            srcPath = US_Settings::resultDir() + "/" + rawInfo.runID + "/" + rawInfo.description;
+        }
+    } else {
+        // From local disk
+        srcPath = US_Settings::resultDir() + "/" + rawInfo.runID + "/" + rawInfo.description;
+    }
+    
+    QString destPath = tempDir + "/" + entry.payloadPath;
+    QDir().mkpath(QFileInfo(destPath).path());
+    
+    if (QFile::exists(srcPath)) {
+        QFile::copy(srcPath, destPath);
+    }
+    
+    // Also export the solution for this raw data if we have it
+    if (db != nullptr && db->isConnected()) {
+        QStringList query;
+        query << "get_rawData" << QString::number(rawInfo.rawID);
+        db->query(query);
+        if (db->next()) {
+            int solutionID = db->value(5).toInt();  // solutionID column
+            if (solutionID > 0) {
+                exportSolutionByID(solutionID);
+            }
+        }
+    }
+    
+    manifest.addEntry(entry);
+    return true;
+}
+
+bool US_DataPubExport::exportEditData(const US_DataPubRawDataInfo& rawInfo, int editIndex) {
+    if (editIndex < 0 || editIndex >= rawInfo.editGUIDs.size()) {
+        return false;
+    }
+    
+    // Create manifest entry
+    US_DataPubManifestEntry entry;
+    entry.id = rawInfo.editIDs.value(editIndex, -1);
+    entry.guid = rawInfo.editGUIDs.value(editIndex);
+    entry.name = rawInfo.editNames.value(editIndex);
+    entry.type = EntityEdit;
+    entry.payloadPath = QString("edit/%1.xml").arg(entry.guid.isEmpty() ? 
+                        entry.name : entry.guid);
+    
+    // Add dependency on raw data
+    if (!rawInfo.rawGUID.isEmpty()) {
+        entry.dependencyGuids.append(rawInfo.rawGUID);
+    }
+    
+    // Compute property hash
+    QVariantMap props;
+    props["name"] = entry.name;
+    props["rawGUID"] = rawInfo.rawGUID;
+    entry.propertyHash = computePropertyHash(props);
+    
+    // Copy the edit file
+    QString srcPath = US_Settings::resultDir() + "/" + rawInfo.runID + "/" + entry.name;
+    QString destPath = tempDir + "/" + entry.payloadPath;
+    QDir().mkpath(QFileInfo(destPath).path());
+    
+    if (QFile::exists(srcPath)) {
+        QFile::copy(srcPath, destPath);
+    }
+    
+    manifest.addEntry(entry);
     return true;
 }
 
 bool US_DataPubExport::exportBuffer(const US_Buffer& buffer) {
-    Q_UNUSED(buffer)
+    // Create manifest entry
+    US_DataPubManifestEntry entry;
+    entry.id = buffer.bufferID;
+    entry.guid = buffer.GUID;
+    entry.name = buffer.description;
+    entry.type = EntityBuffer;
+    entry.payloadPath = QString("buffer/%1.xml").arg(buffer.GUID);
+    
+    // Compute property hash
+    QVariantMap props;
+    props["description"] = buffer.description;
+    props["pH"] = buffer.pH;
+    props["density"] = buffer.density;
+    props["viscosity"] = buffer.viscosity;
+    entry.propertyHash = computePropertyHash(props);
+    
+    // Write buffer XML
+    QString filePath = tempDir + "/" + entry.payloadPath;
+    QDir().mkpath(QFileInfo(filePath).path());
+    
+    QFile file(filePath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        lastError = "Failed to write buffer file";
+        return false;
+    }
+    
+    QXmlStreamWriter xml(&file);
+    xml.setAutoFormatting(true);
+    xml.writeStartDocument();
+    xml.writeStartElement("Buffer");
+    xml.writeTextElement("bufferID", QString::number(buffer.bufferID));
+    xml.writeTextElement("GUID", buffer.GUID);
+    xml.writeTextElement("description", buffer.description);
+    xml.writeTextElement("pH", QString::number(buffer.pH));
+    xml.writeTextElement("density", QString::number(buffer.density));
+    xml.writeTextElement("viscosity", QString::number(buffer.viscosity));
+    xml.writeTextElement("compressibility", QString::number(buffer.compressibility));
+    xml.writeEndElement();
+    xml.writeEndDocument();
+    file.close();
+    
+    manifest.addEntry(entry);
     return true;
 }
 
 bool US_DataPubExport::exportAnalyte(const US_Analyte& analyte) {
-    Q_UNUSED(analyte)
+    // Create manifest entry
+    US_DataPubManifestEntry entry;
+    entry.id = -1;  // Analytes don't have simple IDs
+    entry.guid = analyte.analyteGUID;
+    entry.name = analyte.description;
+    entry.type = EntityAnalyte;
+    entry.payloadPath = QString("analyte/%1.xml").arg(analyte.analyteGUID);
+    
+    // Compute property hash
+    QVariantMap props;
+    props["description"] = analyte.description;
+    props["mw"] = analyte.mw;
+    props["vbar20"] = analyte.vbar20;
+    entry.propertyHash = computePropertyHash(props);
+    
+    // Write analyte XML
+    QString filePath = tempDir + "/" + entry.payloadPath;
+    QDir().mkpath(QFileInfo(filePath).path());
+    
+    QFile file(filePath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        lastError = "Failed to write analyte file";
+        return false;
+    }
+    
+    QXmlStreamWriter xml(&file);
+    xml.setAutoFormatting(true);
+    xml.writeStartDocument();
+    xml.writeStartElement("Analyte");
+    xml.writeTextElement("analyteGUID", analyte.analyteGUID);
+    xml.writeTextElement("description", analyte.description);
+    xml.writeTextElement("mw", QString::number(analyte.mw));
+    xml.writeTextElement("vbar20", QString::number(analyte.vbar20));
+    xml.writeTextElement("type", QString::number(analyte.type));
+    xml.writeEndElement();
+    xml.writeEndDocument();
+    file.close();
+    
+    manifest.addEntry(entry);
     return true;
 }
 
 bool US_DataPubExport::exportSolution(const US_Solution& solution) {
-    Q_UNUSED(solution)
+    // Check if already exported
+    if (exportedSolutions.contains(solution.solutionGUID)) {
+        return true;
+    }
+    exportedSolutions.insert(solution.solutionGUID);
+    
+    // Create manifest entry
+    US_DataPubManifestEntry entry;
+    entry.id = solution.solutionID;
+    entry.guid = solution.solutionGUID;
+    entry.name = solution.solutionDesc;
+    entry.type = EntitySolution;
+    entry.payloadPath = QString("solution/%1.xml").arg(solution.solutionGUID);
+    
+    // Add dependency on buffer
+    if (!solution.buffer.GUID.isEmpty()) {
+        entry.dependencyGuids.append(solution.buffer.GUID);
+    }
+    
+    // Compute property hash
+    QVariantMap props;
+    props["description"] = solution.solutionDesc;
+    props["bufferGUID"] = solution.buffer.GUID;
+    entry.propertyHash = computePropertyHash(props);
+    
+    // Write solution XML
+    QString filePath = tempDir + "/" + entry.payloadPath;
+    QDir().mkpath(QFileInfo(filePath).path());
+    
+    QFile file(filePath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        lastError = "Failed to write solution file";
+        return false;
+    }
+    
+    QXmlStreamWriter xml(&file);
+    xml.setAutoFormatting(true);
+    xml.writeStartDocument();
+    xml.writeStartElement("Solution");
+    xml.writeTextElement("solutionID", QString::number(solution.solutionID));
+    xml.writeTextElement("solutionGUID", solution.solutionGUID);
+    xml.writeTextElement("description", solution.solutionDesc);
+    xml.writeTextElement("bufferGUID", solution.buffer.GUID);
+    xml.writeTextElement("commonVbar20", QString::number(solution.commonVbar20));
+    xml.writeTextElement("storageTemp", QString::number(solution.storageTemp));
+    xml.writeEndElement();
+    xml.writeEndDocument();
+    file.close();
+    
+    // Export the buffer
+    if (solution.buffer.bufferID > 0 || !solution.buffer.GUID.isEmpty()) {
+        exportBuffer(solution.buffer);
+    }
+    
+    // Export analytes
+    for (const auto& analyte : solution.analyteInfo) {
+        exportAnalyte(analyte.analyte);
+    }
+    
+    manifest.addEntry(entry);
     return true;
 }
 
-bool US_DataPubExport::exportModel(const QString& modelGuid) {
-    Q_UNUSED(modelGuid)
+bool US_DataPubExport::exportSolutionByID(int solutionID) {
+    if (solutionID <= 0 || db == nullptr) {
+        return false;
+    }
+    
+    US_Solution solution;
+    int status = solution.readFromDB(solutionID, db);
+    if (status == US_DB2::OK) {
+        return exportSolution(solution);
+    }
+    return false;
+}
+
+bool US_DataPubExport::exportModel(const US_DataPubModelInfo& modelInfo) {
+    // Create manifest entry
+    US_DataPubManifestEntry entry;
+    entry.id = modelInfo.modelID;
+    entry.guid = modelInfo.modelGUID;
+    entry.name = modelInfo.description;
+    entry.type = EntityModel;
+    entry.payloadPath = QString("model/%1.xml").arg(modelInfo.modelGUID);
+    
+    // Add dependency on edit
+    if (!modelInfo.editGUID.isEmpty()) {
+        entry.dependencyGuids.append(modelInfo.editGUID);
+    }
+    
+    // Compute property hash
+    QVariantMap props;
+    props["description"] = modelInfo.description;
+    props["editGUID"] = modelInfo.editGUID;
+    entry.propertyHash = computePropertyHash(props);
+    
+    // Load and export the model
+    if (db != nullptr && db->isConnected()) {
+        US_Model model;
+        int status = model.load(modelInfo.modelGUID, db);
+        if (status == US_DB2::OK) {
+            QString filePath = tempDir + "/" + entry.payloadPath;
+            QDir().mkpath(QFileInfo(filePath).path());
+            model.write(filePath);
+        }
+    } else {
+        // From local disk - find the model file
+        QString modelPath = US_Settings::dataDir() + "/models/" + modelInfo.modelGUID + ".model.xml";
+        if (QFile::exists(modelPath)) {
+            QString destPath = tempDir + "/" + entry.payloadPath;
+            QDir().mkpath(QFileInfo(destPath).path());
+            QFile::copy(modelPath, destPath);
+        }
+    }
+    
+    manifest.addEntry(entry);
     return true;
 }
 
 bool US_DataPubExport::exportNoise(const QString& noiseGuid) {
-    Q_UNUSED(noiseGuid)
+    if (noiseGuid.isEmpty()) {
+        return false;
+    }
+    
+    // Create manifest entry
+    US_DataPubManifestEntry entry;
+    entry.guid = noiseGuid;
+    entry.type = EntityNoise;
+    entry.payloadPath = QString("noise/%1.xml").arg(noiseGuid);
+    
+    // Load and export the noise
+    if (db != nullptr && db->isConnected()) {
+        US_Noise noise;
+        int status = noise.load(noiseGuid, db);
+        if (status == US_DB2::OK) {
+            entry.id = noise.noiseID;
+            entry.name = noise.description;
+            
+            // Add dependency on model
+            if (!noise.modelGUID.isEmpty()) {
+                entry.dependencyGuids.append(noise.modelGUID);
+            }
+            
+            // Compute property hash
+            QVariantMap props;
+            props["description"] = noise.description;
+            props["modelGUID"] = noise.modelGUID;
+            props["type"] = static_cast<int>(noise.type);
+            entry.propertyHash = computePropertyHash(props);
+            
+            QString filePath = tempDir + "/" + entry.payloadPath;
+            QDir().mkpath(QFileInfo(filePath).path());
+            noise.write(filePath);
+            
+            manifest.addEntry(entry);
+        }
+    }
+    
     return true;
 }
 

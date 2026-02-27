@@ -293,6 +293,12 @@ public:
                       int experimentId = -1, 
                       US_DataPublication::ExportScope scope = US_DataPublication::ScopeAll);
 
+    //! \brief Export selected data to a bundle
+    bool exportSelectedData(const QString& bundlePath,
+                           const US_Project& project,
+                           const QList<US_DataPubRawDataInfo>& rawDataList,
+                           const QList<US_DataPubModelInfo>& modelList);
+
     //! \brief Get error message
     QString errorMessage() const { return lastError; }
 
@@ -305,21 +311,26 @@ private:
     QString lastError;
     QString tempDir;
     US_DataPubManifest manifest;
+    QSet<QString> exportedSolutions;  //!< Track exported solutions to avoid duplicates
 
     // Export helpers
     bool exportProject(const US_Project& project);
     bool exportExperiment(int expId);
-    bool exportRawData(const QString& rawGuid);
+    bool exportRawData(const QString& rawGuid, int rawID);
+    bool exportRawDataFile(const US_DataPubRawDataInfo& rawInfo);
+    bool exportEditData(const US_DataPubRawDataInfo& rawInfo, int editIndex);
     bool exportBuffer(const US_Buffer& buffer);
     bool exportAnalyte(const US_Analyte& analyte);
     bool exportSolution(const US_Solution& solution);
-    bool exportModel(const QString& modelGuid);
+    bool exportSolutionByID(int solutionID);
+    bool exportModel(const US_DataPubModelInfo& modelInfo);
     bool exportNoise(const QString& noiseGuid);
     bool exportRotorCalibration(int calibrationId);
     
     QString computePropertyHash(const QVariantMap& properties);
     void gatherDependencies(int projectId, int experimentId, 
                             US_DataPublication::ExportScope scope);
+};
 };
 
 //! \brief Import handler class  
