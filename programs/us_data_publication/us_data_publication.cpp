@@ -653,7 +653,9 @@ void US_DataPublication::selectModels() {
                           << editID;
                     db->query(query);
                     
-                    // Columns: 0=noiseID, 1=noiseGUID, 2=editID, 3=?, 4=noiseType, 5=modelGUID
+                    // Columns from get_noise_desc_by_editID:
+                    // 0=noiseID, 1=noiseGUID, 2=editID, 3=unknown, 4=noiseType, 5=modelGUID
+                    // (based on usage in gui/us_loadable_noise.cpp)
                     while (db->next()) {
                         QString modelGUID = db->value(5).toString();
                         // Only include noise that belongs to this model
@@ -1870,13 +1872,16 @@ bool US_DataPubExport::exportRawDataFile(const US_DataPubRawDataInfo& rawInfo) {
     }
     
     // Also export the solution for this raw data if we have it
-    if (db != nullptr && db->isConnected()) {
+    // Solutions are associated with experiments, so query through expID
+    if (db != nullptr && db->isConnected() && rawInfo.expID > 0) {
         QStringList query;
-        // Query columns: 0=rawDataID, 1=label, 2=filename, 3=comment, 4=experimentID, 5=solutionID
-        query << "get_rawData" << QString::number(rawInfo.rawID);
+        // Query for solutions associated with this experiment
+        query << "get_solutionIDs" << QString::number(rawInfo.expID);
         db->query(query);
-        if (db->next()) {
-            int solutionID = db->value(5).toInt();  // Column 5 is solutionID
+        
+        // Export all solutions for this experiment (typically there's one per channel)
+        while (db->next()) {
+            int solutionID = db->value(0).toInt();
             if (solutionID > 0) {
                 exportSolutionByID(solutionID);
             }
