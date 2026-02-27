@@ -635,22 +635,38 @@ void US_DataPublication::selectModels() {
             info.editGUID = selectedModels[i].editGUID;
             info.selected = true;
             
-            // Try to load noise information for this model
-            if (fromDB && connectToDatabase()) {
-                // Query for noise associated with this model
+            // Try to load noise information for this model by querying noises for the edit
+            // and then filtering by model GUID
+            if (fromDB && connectToDatabase() && !info.editGUID.isEmpty()) {
+                // First get the editID from the editGUID
                 QStringList query;
-                query << "get_noise_desc_by_modelID" << QString::number(US_Settings::us_inv_ID()) 
-                      << info.modelGUID;
+                query << "get_editedDataID_from_GUID" << info.editGUID;
                 db->query(query);
                 
-                while (db->next()) {
-                    QString noiseGUID = db->value(1).toString();
-                    QString noiseType = db->value(3).toString();
+                if (db->next()) {
+                    QString editID = db->value(0).toString();
                     
-                    if (noiseType.contains("ti", Qt::CaseInsensitive)) {
-                        info.noiseGUID_ti = noiseGUID;
-                    } else if (noiseType.contains("ri", Qt::CaseInsensitive)) {
-                        info.noiseGUID_ri = noiseGUID;
+                    // Query for noise associated with this edit
+                    query.clear();
+                    query << "get_noise_desc_by_editID" 
+                          << QString::number(US_Settings::us_inv_ID()) 
+                          << editID;
+                    db->query(query);
+                    
+                    // Columns: 0=noiseID, 1=noiseGUID, 2=editID, 3=?, 4=noiseType, 5=modelGUID
+                    while (db->next()) {
+                        QString modelGUID = db->value(5).toString();
+                        // Only include noise that belongs to this model
+                        if (modelGUID == info.modelGUID) {
+                            QString noiseGUID = db->value(1).toString();
+                            QString noiseType = db->value(4).toString();
+                            
+                            if (noiseType.contains("ti", Qt::CaseInsensitive)) {
+                                info.noiseGUID_ti = noiseGUID;
+                            } else if (noiseType.contains("ri", Qt::CaseInsensitive)) {
+                                info.noiseGUID_ri = noiseGUID;
+                            }
+                        }
                     }
                 }
             }
@@ -1015,7 +1031,7 @@ void US_DataPublication::loadRawDataForExperiments() {
                         QXmlStreamReader xml(&xmlFile);
                         while (!xml.atEnd() && !xml.hasError()) {
                             xml.readNext();
-                            if (xml.isStartElement() && xml.name() == QString("rawDataGUID")) {
+                            if (xml.isStartElement() && xml.name() == QLatin1String("rawDataGUID")) {
                                 rawInfo.rawGUID = xml.readElementText();
                                 break;
                             }
@@ -1103,7 +1119,7 @@ void US_DataPublication::loadEditsForRawData() {
                     QXmlStreamReader xml(&xmlFile);
                     while (!xml.atEnd() && !xml.hasError()) {
                         xml.readNext();
-                        if (xml.isStartElement() && xml.name() == QString("editGUID")) {
+                        if (xml.isStartElement() && xml.name() == QLatin1String("editGUID")) {
                             rawInfo.editGUIDs.append(xml.readElementText());
                             break;
                         }
@@ -1844,21 +1860,7 @@ bool US_DataPubExport::exportRawDataFile(const US_DataPubRawDataInfo& rawInfo) {
     entry.propertyHash = computePropertyHash(props);
     
     // Copy the AUC file
-    QString srcPath;
-    if (db != nullptr && db->isConnected()) {
-        // From database - download file
-        QStringList query;
-        query << "get_rawData" << QString::number(rawInfo.rawID);
-        db->query(query);
-        if (db->next()) {
-            QString dbPath = db->value(2).toString();  // filename column
-            // For DB, we need to get the raw data and write it
-            srcPath = US_Settings::resultDir() + "/" + rawInfo.runID + "/" + rawInfo.description;
-        }
-    } else {
-        // From local disk
-        srcPath = US_Settings::resultDir() + "/" + rawInfo.runID + "/" + rawInfo.description;
-    }
+    QString srcPath = US_Settings::resultDir() + "/" + rawInfo.runID + "/" + rawInfo.description;
     
     QString destPath = tempDir + "/" + entry.payloadPath;
     QDir().mkpath(QFileInfo(destPath).path());
@@ -1870,10 +1872,11 @@ bool US_DataPubExport::exportRawDataFile(const US_DataPubRawDataInfo& rawInfo) {
     // Also export the solution for this raw data if we have it
     if (db != nullptr && db->isConnected()) {
         QStringList query;
+        // Query columns: 0=rawDataID, 1=label, 2=filename, 3=comment, 4=experimentID, 5=solutionID
         query << "get_rawData" << QString::number(rawInfo.rawID);
         db->query(query);
         if (db->next()) {
-            int solutionID = db->value(5).toInt();  // solutionID column
+            int solutionID = db->value(5).toInt();  // Column 5 is solutionID
             if (solutionID > 0) {
                 exportSolutionByID(solutionID);
             }
