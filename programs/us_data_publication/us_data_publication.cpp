@@ -630,7 +630,7 @@ void US_DataPublication::selectModels() {
         for (int i = 0; i < selectedModels.size(); ++i) {
             US_DataPubModelInfo info;
             info.modelGUID = selectedModels[i].modelGUID;
-            info.modelID = -1;  // Will be set when loaded
+            info.modelID = -1;  // Not needed for export - using GUID instead
             info.description = selectedModels[i].description;
             info.editGUID = selectedModels[i].editGUID;
             info.selected = true;
@@ -1979,7 +1979,7 @@ bool US_DataPubExport::exportBuffer(const US_Buffer& buffer) {
 bool US_DataPubExport::exportAnalyte(const US_Analyte& analyte) {
     // Create manifest entry
     US_DataPubManifestEntry entry;
-    entry.id = -1;  // Analytes don't have simple IDs
+    entry.id = -1;  // Analytes use GUID as primary identifier in the DB
     entry.guid = analyte.analyteGUID;
     entry.name = analyte.description;
     entry.type = EntityAnalyte;
