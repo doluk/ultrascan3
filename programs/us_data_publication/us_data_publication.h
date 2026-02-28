@@ -23,6 +23,7 @@
 #include "us_dataIO.h"
 #include "us_db2.h"
 #include "us_help.h"
+#include "us_time_state.h"
 
 // Forward declarations
 class US_DataPubExport;
@@ -41,6 +42,7 @@ enum US_DataPubEntityType {
     EntityEdit,
     EntityModel,
     EntityNoise,
+    EntityTimeState,      //!< Experiment time-state (.tmst + .xml)
     EntityTypeCount
 };
 
@@ -311,7 +313,8 @@ private:
     QString lastError;
     QString tempDir;
     US_DataPubManifest manifest;
-    QSet<QString> exportedSolutions;  //!< Track exported solutions to avoid duplicates
+    QSet<QString> exportedSolutions;   //!< Track exported solutions to avoid duplicates
+    QSet<QString> exportedTimestates;  //!< Track exported timestates to avoid duplicates
 
     // Export helpers
     bool exportProject(const US_Project& project);
@@ -326,6 +329,7 @@ private:
     bool exportModel(const US_DataPubModelInfo& modelInfo);
     bool exportNoise(const QString& noiseGuid);
     bool exportRotorCalibration(int calibrationId);
+    bool exportTimeState(const QString& runID, int expID);
     
     QString computePropertyHash(const QVariantMap& properties);
     void gatherDependencies(int projectId, int experimentId, 

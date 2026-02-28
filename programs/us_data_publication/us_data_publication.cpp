@@ -51,7 +51,7 @@ static QString entityTypeToString(US_DataPubEntityType type) {
     static const char* names[] = {
         "project", "experiment", "rawData", "rotorCalibration",
         "centerpiece", "buffer", "analyte", "solution",
-        "edit", "model", "noise"
+        "edit", "model", "noise", "timestate"
     };
     return (type >= 0 && type < EntityTypeCount) ? names[type] : "unknown";
 }
@@ -72,6 +72,7 @@ static US_DataPubEntityType stringToEntityType(const QString& str) {
         map["edit"]              = EntityEdit;
         map["model"]             = EntityModel;
         map["noise"]             = EntityNoise;
+        map["timestate"]         = EntityTimeState;
     }
     return map.value(str.toLower(), EntityProject);
 }
@@ -955,8 +956,16 @@ void US_DataPublication::updateSummary() {
     int editCount = countSelectedEdits();
     int modelCount = countSelectedModels();
     
-    QString summary = tr("Summary: %1 raw data, %2 edits, %3 models selected")
-        .arg(rawCount).arg(editCount).arg(modelCount);
+    // Count unique runs with selected raw data (one timestate file per run)
+    QSet<QString> uniqueRuns;
+    for (const auto& raw : rawDataList) {
+        if (raw.selected && !raw.runID.isEmpty())
+            uniqueRuns.insert(raw.runID);
+    }
+    int tsCount = uniqueRuns.size();
+    
+    QString summary = tr("Summary: %1 raw data, %2 edits, %3 models, %4 timestate(s) selected")
+        .arg(rawCount).arg(editCount).arg(modelCount).arg(tsCount);
     
     if (projectId > 0) {
         summary = tr("Project: %1 | ").arg(currentProject.projectDesc) + summary;
@@ -1305,10 +1314,19 @@ QString US_DataPublication::generateManifestPreview() {
     int editCount = countSelectedEdits();
     int modelCount = countSelectedModels();
     
+    // Count unique runs (one timestate per run)
+    QSet<QString> uniqueRuns;
+    for (const auto& raw : rawDataList) {
+        if (raw.selected && !raw.runID.isEmpty())
+            uniqueRuns.insert(raw.runID);
+    }
+    int tsCount = uniqueRuns.size();
+    
     out << "# Selected items summary:\n";
     out << "# Raw Data: " << rawCount << "\n";
     out << "# Edits: " << editCount << "\n";
-    out << "# Models: " << modelCount << "\n\n";
+    out << "# Models: " << modelCount << "\n";
+    out << "# Timestates: " << tsCount << "\n\n";
     
     if (rawCount > 0) {
         out << "rawData:\n";
@@ -1341,6 +1359,15 @@ QString US_DataPublication::generateManifestPreview() {
                 out << "  - name: \"" << model.description << "\"\n";
                 out << "    guid: \"" << model.modelGUID << "\"\n";
             }
+        }
+        out << "\n";
+    }
+    
+    if (tsCount > 0) {
+        out << "timestate:\n";
+        for (const QString& runID : uniqueRuns) {
+            out << "  - name: \"" << runID << ".time_state.tmst\"\n";
+            out << "    runID: \"" << runID << "\"\n";
         }
         out << "\n";
     }
@@ -1678,6 +1705,7 @@ bool US_DataPubExport::exportSelectedData(const QString& bundlePath,
     
     manifest.clear();
     exportedSolutions.clear();
+    exportedTimestates.clear();
     manifest.description = QString("Data publication bundle created %1")
         .arg(QDateTime::currentDateTime().toString());
     
@@ -1711,7 +1739,7 @@ bool US_DataPubExport::exportSelectedData(const QString& bundlePath,
         }
     }
     
-    // Export raw data and edits
+    // Export raw data, edits, and timestate
     emit progress(15, tr("Exporting raw data and edits..."));
     for (const auto& raw : rawDataList) {
         if (raw.selected) {
@@ -1721,6 +1749,12 @@ bool US_DataPubExport::exportSelectedData(const QString& bundlePath,
             processedItems++;
             int pct = 15 + (processedItems * 50 / (totalItems > 0 ? totalItems : 1));
             emit progress(pct, tr("Exported raw data: %1").arg(raw.description));
+            
+            // Export timestate once per unique run (it covers all raw data in the run)
+            if (!raw.runID.isEmpty() && !exportedTimestates.contains(raw.runID)) {
+                exportTimeState(raw.runID, raw.expID);
+                exportedTimestates.insert(raw.runID);
+            }
             
             // Export selected edits only when their parent raw data is selected
             for (int j = 0; j < raw.editSelected.size(); ++j) {
@@ -2214,6 +2248,77 @@ bool US_DataPubExport::exportNoise(const QString& noiseGuid) {
 
 bool US_DataPubExport::exportRotorCalibration(int calibrationId) {
     Q_UNUSED(calibrationId)
+    return true;
+}
+
+bool US_DataPubExport::exportTimeState(const QString& runID, int expID) {
+    if (runID.isEmpty()) {
+        return false;
+    }
+
+    // Payload: two files — the binary .tmst and its XML definitions sidecar
+    QString tmstFilename = runID + ".time_state.tmst";
+    QString xmlFilename  = runID + ".time_state.xml";
+
+    US_DataPubManifestEntry entry;
+    entry.type        = EntityTimeState;
+    entry.name        = tmstFilename;
+    entry.guid        = runID;           // runID uniquely identifies the timestate
+    entry.payloadPath = QString("timestate/%1").arg(tmstFilename);
+
+    QString destTmst = tempDir + "/" + entry.payloadPath;
+    QString destXml  = tempDir + "/timestate/" + xmlFilename;
+    QDir().mkpath(QFileInfo(destTmst).path());
+
+    bool gotFile = false;
+
+    if (db != nullptr && db->isConnected() && expID > 0) {
+        // Fetch timestate from DB
+        int    tmstID = 0;
+        QString xdefs;
+        int status = US_TimeState::dbExamine(db, &tmstID, &expID, nullptr,
+                                              &xdefs, nullptr, nullptr);
+        if (status == US_DB2::OK && tmstID > 0) {
+            status = US_TimeState::dbDownload(db, tmstID, destTmst);
+            if (status == US_DB2::OK) {
+                // Write sibling XML definitions file
+                if (!xdefs.isEmpty()) {
+                    QFile xmlFile(destXml);
+                    if (xmlFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
+                        QTextStream ts(&xmlFile);
+                        ts << xdefs;
+                    }
+                }
+                gotFile = true;
+            }
+        }
+    }
+
+    if (!gotFile) {
+        // Fall back to local disk copy
+        QString srcTmst = US_Settings::resultDir() + "/" + runID + "/" + tmstFilename;
+        QString srcXml  = US_Settings::resultDir() + "/" + runID + "/" + xmlFilename;
+        if (QFile::exists(srcTmst)) {
+            if (QFile::copy(srcTmst, destTmst)) {
+                gotFile = true;
+                if (QFile::exists(srcXml)) {
+                    QFile::copy(srcXml, destXml);
+                }
+            }
+        }
+    }
+
+    if (!gotFile) {
+        // Timestate is not mandatory for all runs; log but do not fail the export
+        return true;
+    }
+
+    // Compute property hash from runID so the importer can detect duplicates
+    QVariantMap props;
+    props["runID"] = runID;
+    entry.propertyHash = computePropertyHash(props);
+
+    manifest.addEntry(entry);
     return true;
 }
 
