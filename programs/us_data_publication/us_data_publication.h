@@ -315,6 +315,7 @@ private:
     US_DataPubManifest manifest;
     QSet<QString> exportedSolutions;   //!< Track exported solutions to avoid duplicates
     QSet<QString> exportedTimestates;  //!< Track exported timestates to avoid duplicates
+    QSet<QString> exportedNoises;      //!< Track exported noises to avoid duplicates
 
     // Export helpers
     bool exportProject(const US_Project& project);

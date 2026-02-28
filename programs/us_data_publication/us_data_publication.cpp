@@ -46,6 +46,13 @@ static QString removeQuotes(const QString& str) {
     return result;
 }
 
+//! \brief Helper function to unescape quotes in a string
+static QString unescapeQuotes(const QString& str) {
+    QString result = str;
+    result.replace("\\\"", "\"");
+    return result;
+}
+
 //! \brief Convert entity type to string
 static QString entityTypeToString(US_DataPubEntityType type) {
     static const char* names[] = {
@@ -203,7 +210,7 @@ bool US_DataPubManifest::readFromFile(const QString& filepath) {
             } else if (trimmed.startsWith("created:")) {
                 createdAt = trimmed.mid(8).trimmed();
             } else if (trimmed.startsWith("description:")) {
-                description = removeQuotes(trimmed.mid(12).trimmed());
+                description = unescapeQuotes(removeQuotes(trimmed.mid(12).trimmed()));
             } else if (trimmed.endsWith(":")) {
                 currentSection = trimmed.left(trimmed.length() - 1);
             }
@@ -234,7 +241,7 @@ bool US_DataPubManifest::readFromFile(const QString& filepath) {
                 // id is now an optional sub-field (emitted only when > 0)
                 currentEntry.id = trimmed.mid(3).trimmed().toInt();
             } else if (trimmed.startsWith("name:")) {
-                currentEntry.name = removeQuotes(trimmed.mid(5).trimmed());
+                currentEntry.name = unescapeQuotes(removeQuotes(trimmed.mid(5).trimmed()));
             } else if (trimmed.startsWith("propertyHash:")) {
                 currentEntry.propertyHash = removeQuotes(trimmed.mid(13).trimmed());
             } else if (trimmed.startsWith("payloadPath:")) {
@@ -786,15 +793,22 @@ void US_DataPublication::deselectAllEdits() {
 
 void US_DataPublication::dataTreeItemChanged(QTreeWidgetItem* item, int column) {
     if (column != 0) return;
-    
+
     QString itemType = item->data(0, Qt::UserRole).toString();
     int index = item->data(0, Qt::UserRole + 1).toInt();
     bool checked = (item->checkState(0) == Qt::Checked);
-    
+
     if (itemType == "rawdata" && index >= 0 && index < rawDataList.size()) {
         rawDataList[index].selected = checked;
-        // If deselecting raw data, check if any models depend on it
+        // If deselecting raw data, deselect all its edits
         if (!checked) {
+            // Deselect all edits for this raw data
+            for (int j = 0; j < rawDataList[index].editSelected.size(); ++j) {
+                rawDataList[index].editSelected[j] = false;
+            }
+            // Update the tree UI to reflect deselected edits
+            buildDataTree();
+            // Check if any models depend on this raw data or its edits
             checkModelDependencies();
         }
     } else if (itemType == "edit") {
@@ -808,7 +822,7 @@ void US_DataPublication::dataTreeItemChanged(QTreeWidgetItem* item, int column) 
             }
         }
     }
-    
+
     updateExportButtonStates();
     updateSummary();
 }
@@ -1364,12 +1378,15 @@ QString US_DataPublication::generateManifestPreview() {
     if (editCount > 0) {
         out << "edit:\n";
         for (const auto& raw : rawDataList) {
-            for (int j = 0; j < raw.editSelected.size(); ++j) {
-                if (raw.editSelected[j]) {
-                    out << "  - guid: \"" << raw.editGUIDs.value(j) << "\"\n";
-                    if (raw.editIDs.value(j, -1) > 0)
-                        out << "    id: " << raw.editIDs.value(j) << "\n";
-                    out << "    name: \"" << raw.editNames.value(j) << "\"\n";
+            // Only include edits when their parent raw data is selected
+            if (raw.selected) {
+                for (int j = 0; j < raw.editSelected.size(); ++j) {
+                    if (raw.editSelected[j]) {
+                        out << "  - guid: \"" << raw.editGUIDs.value(j) << "\"\n";
+                        if (raw.editIDs.value(j, -1) > 0)
+                            out << "    id: " << raw.editIDs.value(j) << "\n";
+                        out << "    name: \"" << raw.editNames.value(j) << "\"\n";
+                    }
                 }
             }
         }
@@ -1420,8 +1437,11 @@ int US_DataPublication::countSelectedRawData() {
 int US_DataPublication::countSelectedEdits() {
     int count = 0;
     for (const auto& raw : rawDataList) {
-        for (bool sel : raw.editSelected) {
-            if (sel) ++count;
+        // Only count edits whose parent raw data is selected
+        if (raw.selected) {
+            for (bool sel : raw.editSelected) {
+                if (sel) ++count;
+            }
         }
     }
     return count;
@@ -1740,6 +1760,7 @@ bool US_DataPubExport::exportSelectedData(const QString& bundlePath,
     manifest.clear();
     exportedSolutions.clear();
     exportedTimestates.clear();
+    exportedNoises.clear();
     manifest.description = QString("Data publication bundle created %1")
         .arg(QDateTime::currentDateTime().toString());
     
@@ -1938,8 +1959,13 @@ bool US_DataPubExport::exportRawDataFile(const US_DataPubRawDataInfo& rawInfo) {
     entry.guid = rawInfo.rawGUID;
     entry.name = rawInfo.description;
     entry.type = EntityRawData;
-    entry.payloadPath = QString("rawData/%1.auc").arg(rawInfo.rawGUID.isEmpty() ? 
-                        rawInfo.description : rawInfo.rawGUID);
+
+    // Build payload path - strip .auc extension if already present in description
+    QString baseName = rawInfo.rawGUID.isEmpty() ? rawInfo.description : rawInfo.rawGUID;
+    if (baseName.endsWith(".auc", Qt::CaseInsensitive)) {
+        baseName.chop(4);
+    }
+    entry.payloadPath = QString("rawData/%1.auc").arg(baseName);
     
     // Compute property hash
     QVariantMap props;
@@ -1988,15 +2014,20 @@ bool US_DataPubExport::exportEditData(const US_DataPubRawDataInfo& rawInfo, int 
     if (editIndex < 0 || editIndex >= rawInfo.editNames.size()) {
         return false;
     }
-    
+
     // Create manifest entry
     US_DataPubManifestEntry entry;
     entry.id = rawInfo.editIDs.value(editIndex, -1);
     entry.guid = rawInfo.editGUIDs.value(editIndex);
     entry.name = rawInfo.editNames.value(editIndex);
     entry.type = EntityEdit;
-    entry.payloadPath = QString("edit/%1.xml").arg(entry.guid.isEmpty() ? 
-                        entry.name : entry.guid);
+
+    // Build payload path - strip .xml extension if already present in name
+    QString baseName = entry.guid.isEmpty() ? entry.name : entry.guid;
+    if (baseName.endsWith(".xml", Qt::CaseInsensitive)) {
+        baseName.chop(4);
+    }
+    entry.payloadPath = QString("edit/%1.xml").arg(baseName);
     
     // Add dependency on raw data
     if (!rawInfo.rawGUID.isEmpty()) {
@@ -2202,26 +2233,36 @@ bool US_DataPubExport::exportModel(const US_DataPubModelInfo& modelInfo) {
     entry.name = modelInfo.description;
     entry.type = EntityModel;
     entry.payloadPath = QString("model/%1.xml").arg(modelInfo.modelGUID);
-    
+
     // Add dependency on edit
     if (!modelInfo.editGUID.isEmpty()) {
         entry.dependencyGuids.append(modelInfo.editGUID);
     }
-    
+
     // Compute property hash
     QVariantMap props;
     props["description"] = modelInfo.description;
     props["editGUID"] = modelInfo.editGUID;
     entry.propertyHash = computePropertyHash(props);
-    
+
     // Load and export the model
+    bool loadSuccess = false;
     if (db != nullptr && db->isConnected()) {
         US_Model model;
         int status = model.load(modelInfo.modelGUID, db);
         if (status == US_DB2::OK) {
             QString filePath = tempDir + "/" + entry.payloadPath;
             QDir().mkpath(QFileInfo(filePath).path());
-            model.write(filePath);
+            if (model.write(filePath)) {
+                loadSuccess = true;
+            } else {
+                lastError = QString("Failed to write model file: %1").arg(filePath);
+                return false;
+            }
+        } else {
+            lastError = QString("Failed to load model from database: %1 (status: %2)")
+                .arg(modelInfo.modelGUID).arg(status);
+            return false;
         }
     } else {
         // From local disk - use US_Model::load(false, guid, nullptr) which scans M*.xml files
@@ -2230,53 +2271,120 @@ bool US_DataPubExport::exportModel(const US_DataPubModelInfo& modelInfo) {
         if (status == US_DB2::OK) {
             QString destPath = tempDir + "/" + entry.payloadPath;
             QDir().mkpath(QFileInfo(destPath).path());
-            model.write(destPath);
+            if (model.write(destPath)) {
+                loadSuccess = true;
+            } else {
+                lastError = QString("Failed to write model file: %1").arg(destPath);
+                return false;
+            }
+        } else {
+            lastError = QString("Failed to load model from disk: %1 (status: %2)")
+                .arg(modelInfo.modelGUID).arg(status);
+            return false;
         }
     }
-    
+
+    if (!loadSuccess) {
+        lastError = QString("Failed to export model: %1").arg(modelInfo.modelGUID);
+        return false;
+    }
+
     manifest.addEntry(entry);
     return true;
 }
 
 bool US_DataPubExport::exportNoise(const QString& noiseGuid) {
     if (noiseGuid.isEmpty()) {
-        return false;
+        return true;  // Empty GUID is not an error - just skip
     }
-    
+
+    // Skip if already exported
+    if (exportedNoises.contains(noiseGuid)) {
+        return true;
+    }
+
     // Create manifest entry
     US_DataPubManifestEntry entry;
     entry.guid = noiseGuid;
     entry.type = EntityNoise;
     entry.payloadPath = QString("noise/%1.xml").arg(noiseGuid);
-    
+
     // Load and export the noise
+    bool loadSuccess = false;
     if (db != nullptr && db->isConnected()) {
         US_Noise noise;
         int status = noise.load(noiseGuid, db);
         if (status == US_DB2::OK) {
             entry.id = noise.noiseID;
             entry.name = noise.description;
-            
+
             // Add dependency on model
             if (!noise.modelGUID.isEmpty()) {
                 entry.dependencyGuids.append(noise.modelGUID);
             }
-            
+
             // Compute property hash
             QVariantMap props;
             props["description"] = noise.description;
             props["modelGUID"] = noise.modelGUID;
             props["type"] = static_cast<int>(noise.type);
             entry.propertyHash = computePropertyHash(props);
-            
+
             QString filePath = tempDir + "/" + entry.payloadPath;
             QDir().mkpath(QFileInfo(filePath).path());
-            noise.write(filePath);
-            
-            manifest.addEntry(entry);
+            if (noise.write(filePath)) {
+                loadSuccess = true;
+            } else {
+                lastError = QString("Failed to write noise file: %1").arg(filePath);
+                return false;
+            }
+        } else {
+            lastError = QString("Failed to load noise from database: %1 (status: %2)")
+                .arg(noiseGuid).arg(status);
+            return false;
+        }
+    } else {
+        // From local disk - load noise from disk
+        US_Noise noise;
+        int status = noise.load(false, noiseGuid, nullptr);
+        if (status == US_DB2::OK) {
+            entry.id = -1;  // No DB ID for disk-only noise
+            entry.name = noise.description;
+
+            // Add dependency on model
+            if (!noise.modelGUID.isEmpty()) {
+                entry.dependencyGuids.append(noise.modelGUID);
+            }
+
+            // Compute property hash
+            QVariantMap props;
+            props["description"] = noise.description;
+            props["modelGUID"] = noise.modelGUID;
+            props["type"] = static_cast<int>(noise.type);
+            entry.propertyHash = computePropertyHash(props);
+
+            QString destPath = tempDir + "/" + entry.payloadPath;
+            QDir().mkpath(QFileInfo(destPath).path());
+            if (noise.write(destPath)) {
+                loadSuccess = true;
+            } else {
+                lastError = QString("Failed to write noise file: %1").arg(destPath);
+                return false;
+            }
+        } else {
+            lastError = QString("Failed to load noise from disk: %1 (status: %2)")
+                .arg(noiseGuid).arg(status);
+            return false;
         }
     }
-    
+
+    if (!loadSuccess) {
+        lastError = QString("Failed to export noise: %1").arg(noiseGuid);
+        return false;
+    }
+
+    manifest.addEntry(entry);
+    exportedNoises.insert(noiseGuid);
     return true;
 }
 
@@ -2441,56 +2549,61 @@ bool US_DataPubImport::importBundle(const QString& bundlePath,
         
         if (conflict.hasConflict) {
             emit conflictDetected(entry, conflict);
-            
+
             if (conflict.propertiesMatch && policy == ConflictReuse) {
                 // Reuse existing entity
                 guidMap[entry.guid] = conflict.existingGuid;
-                emit progress(30 + (current * 70 / total), 
+                emit progress(30 + (current * 70 / total),
                     tr("Reusing existing %1").arg(entry.name));
+                // Continue to next entry since we're reusing
+                continue;
             } else if (policy == ConflictRename) {
-                // Create with new name - would be implemented per entity type
+                // Treat unimplemented rename policy as an error to avoid inconsistent state
+                lastError = QString("Conflict detected for %1 (rename policy not implemented)")
+                                .arg(entry.name);
+                return false;
             } else if (policy == ConflictFail) {
                 lastError = QString("Conflict detected for %1").arg(entry.name);
                 return false;
             }
-        } else {
-            // Import the entity
-            bool success = false;
-            switch (entry.type) {
-                case EntityProject:
-                    success = importProject(entry);
-                    break;
-                case EntityExperiment:
-                    success = importExperiment(entry);
-                    break;
-                case EntityBuffer:
-                    success = importBuffer(entry);
-                    break;
-                case EntityAnalyte:
-                    success = importAnalyte(entry);
-                    break;
-                case EntitySolution:
-                    success = importSolution(entry);
-                    break;
-                case EntityModel:
-                    success = importModel(entry);
-                    break;
-                case EntityNoise:
-                    success = importNoise(entry);
-                    break;
-                case EntityRotorCalibration:
-                    success = importRotorCalibration(entry);
-                    break;
-                default:
-                    success = true;
-                    break;
-            }
-            
-            if (!success) {
-                return false;
-            }
         }
-        
+
+        // Import the entity (only if no conflict or conflict wasn't handled by reuse)
+        bool success = false;
+        switch (entry.type) {
+            case EntityProject:
+                success = importProject(entry);
+                break;
+            case EntityExperiment:
+                success = importExperiment(entry);
+                break;
+            case EntityBuffer:
+                success = importBuffer(entry);
+                break;
+            case EntityAnalyte:
+                success = importAnalyte(entry);
+                break;
+            case EntitySolution:
+                success = importSolution(entry);
+                break;
+            case EntityModel:
+                success = importModel(entry);
+                break;
+            case EntityNoise:
+                success = importNoise(entry);
+                break;
+            case EntityRotorCalibration:
+                success = importRotorCalibration(entry);
+                break;
+            default:
+                success = true;
+                break;
+        }
+
+        if (!success) {
+            return false;
+        }
+
         ++current;
         emit progress(30 + (current * 70 / total), 
             tr("Imported %1").arg(entry.name));
