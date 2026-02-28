@@ -336,7 +336,6 @@ private:
     void gatherDependencies(int projectId, int experimentId, 
                             US_DataPublication::ExportScope scope);
 };
-};
 
 //! \brief Import handler class  
 class US_DataPubImport : public QObject {

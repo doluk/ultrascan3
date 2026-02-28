@@ -1037,13 +1037,13 @@ void US_DataPublication::loadRawDataForExperiments() {
             
             // Get raw data for this experiment
             query.clear();
-            query << "get_rawDataIDs" << expID;
+            query << "get_raw_desc_by_runID" << QString::number(US_Settings::us_inv_ID()) << runID;
             db->query(query);
             
             while (db->next()) {
                 US_DataPubRawDataInfo rawInfo;
                 rawInfo.rawID = db->value(0).toInt();
-                rawInfo.rawGUID = db->value(1).toString();
+                rawInfo.rawGUID = db->value(7).toString();
                 QString filename = db->value(2).toString().replace("\\", "/");
                 rawInfo.description = filename.section("/", -1, -1);
                 rawInfo.runID = runID;
@@ -1121,17 +1121,28 @@ void US_DataPublication::loadEditsForRawData() {
             QStringList query;
             query << "get_editedDataIDs" << QString::number(rawInfo.rawID);
             db->query(query);
-            
+            QStringList editIDs;
+            editIDs.clear();
             while (db->next()) {
-                int editID = db->value(0).toInt();
-                QString editGUID = db->value(1).toString();
-                QString filename = db->value(2).toString().replace("\\", "/");
-                QString editName = filename.section("/", -1, -1);
-                
-                rawInfo.editIDs.append(editID);
-                rawInfo.editGUIDs.append(editGUID);
-                rawInfo.editNames.append(editName);
-                rawInfo.editSelected.append(true);  // Select by default
+                editIDs.append(db->value(0).toString());
+            }
+
+            for (QString editID: editIDs ) {
+                int edit_it = editID.toInt();
+                QStringList edit_query;
+                edit_query << "get_editedData" << editID;
+                db->query(edit_query);
+                while (db->next()) {
+                    QString editGUID = db->value(1).toString();
+                    QString filename = db->value(3).toString().replace("\\", "/");
+                    QString editName = filename.section("/", -1, -1);
+
+                    rawInfo.editIDs.append(edit_it);
+                    rawInfo.editGUIDs.append(editGUID);
+                    rawInfo.editNames.append(editName);
+                    rawInfo.editSelected.append(true);  // Select by default
+                }
+
             }
         }
     } else {
@@ -2062,7 +2073,7 @@ bool US_DataPubExport::exportEditData(const US_DataPubRawDataInfo& rawInfo, int 
 bool US_DataPubExport::exportBuffer(const US_Buffer& buffer) {
     // Create manifest entry
     US_DataPubManifestEntry entry;
-    entry.id = buffer.bufferID;
+    entry.id = buffer.bufferID.toInt();
     entry.guid = buffer.GUID;
     entry.name = buffer.description;
     entry.type = EntityBuffer;
@@ -2090,7 +2101,7 @@ bool US_DataPubExport::exportBuffer(const US_Buffer& buffer) {
     xml.setAutoFormatting(true);
     xml.writeStartDocument();
     xml.writeStartElement("Buffer");
-    xml.writeTextElement("bufferID", QString::number(buffer.bufferID));
+    xml.writeTextElement("bufferID", buffer.bufferID);
     xml.writeTextElement("GUID", buffer.GUID);
     xml.writeTextElement("description", buffer.description);
     xml.writeTextElement("pH", QString::number(buffer.pH));
@@ -2249,7 +2260,7 @@ bool US_DataPubExport::exportModel(const US_DataPubModelInfo& modelInfo) {
     bool loadSuccess = false;
     if (db != nullptr && db->isConnected()) {
         US_Model model;
-        int status = model.load(modelInfo.modelGUID, db);
+        int status = model.load(true, modelInfo.modelGUID, db);
         if (status == US_DB2::OK) {
             QString filePath = tempDir + "/" + entry.payloadPath;
             QDir().mkpath(QFileInfo(filePath).path());
@@ -2315,7 +2326,7 @@ bool US_DataPubExport::exportNoise(const QString& noiseGuid) {
         US_Noise noise;
         int status = noise.load(noiseGuid, db);
         if (status == US_DB2::OK) {
-            entry.id = noise.noiseID;
+            entry.id = 0;
             entry.name = noise.description;
 
             // Add dependency on model
