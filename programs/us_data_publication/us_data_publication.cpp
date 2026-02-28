@@ -1731,7 +1731,7 @@ QString US_DataPubExport::computePropertyHash(const QVariantMap& properties) {
 }
 
 //! \brief Compute SHA-256 hash of a file's contents for use as propertyHash.
-//! Falls back to an empty string if the file cannot be opened.
+//! Returns an empty string if the file cannot be opened.
 static QString hashFile(const QString& filePath) {
     QFile f(filePath);
     if (!f.open(QIODevice::ReadOnly)) return QString();
@@ -2378,9 +2378,8 @@ bool US_DataPubExport::exportNoise(const QString& noiseGuid) {
     bool loadSuccess = false;
     if (db != nullptr && db->isConnected()) {
         // Use the GUID-based overload: load(bool db_access, const QString& guid, IUS_DB2*)
-        // This calls get_noiseID to convert GUID → numeric ID, then fetches the blob.
         // The simple load(const QString& id, IUS_DB2*) overload takes a NUMERIC DB id,
-        // not a GUID — using it with a GUID string would silently load nothing.
+        // not a GUID — using it with a GUID string would silently fail to load anything.
         int status = noise.load(true, noiseGuid, db);
         if (status == US_DB2::OK) {
             entry.id = 0;  // DB id not critical for export; GUID is primary

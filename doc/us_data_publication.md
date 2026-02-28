@@ -113,7 +113,7 @@ bundle.tar.gz
 
 ### Manifest Format (YAML)
 
-`guid:` is the primary entry marker. The `id:` sub-field (numeric DB id) is omitted for disk-only data. `propertyHash` is a SHA-256 hash of the **exported payload file's contents** (prefixed with `sha256:`), not a hash of metadata properties — this allows the importer to verify data integrity.
+`guid:` is the primary entry marker. The optional `id:` sub-field contains the numeric DB id (omitted for disk-only data). The `propertyHash` field is a SHA-256 hash of the exported payload file's contents (prefixed with `sha256:`), enabling integrity verification by the importer.
 
 ```yaml
 # UltraScan3 Data Publication Bundle Manifest
