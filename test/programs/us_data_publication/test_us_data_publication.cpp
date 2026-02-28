@@ -1,7 +1,12 @@
 // test_us_data_publication.cpp
 #include <gtest/gtest.h>
-#include <QTemporaryDir>
+#include <QCoreApplication>
+#include <QDir>
 #include <QFile>
+#include <QMap>
+#include <QSet>
+#include <QStringList>
+#include <QTemporaryDir>
 #include <QTextStream>
 
 // Include the data publication header

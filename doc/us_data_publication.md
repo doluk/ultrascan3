@@ -64,8 +64,6 @@ The GUI is organized into two tabs: **Export** and **Import**.
 
 Data bundles can include the following entity types, organized by their dependency hierarchy:
 
-Data bundles can include the following entity types, organized by their dependency hierarchy:
-
 1. **Project** - Top-level container for related experiments
 2. **Experiment** - Individual experimental runs
 3. **RawData** - Original AUC data files
@@ -208,23 +206,32 @@ Launch the GUI by running `us_data_publication` without any arguments:
 us_data_publication
 ```
 
-### Export Wizard
+### Export Workflow (GUI)
 
-1. Select **Export** mode
-2. Click **Select** to choose a project
-3. Optionally select a specific experiment
-4. Choose the export scope from the dropdown
-5. Click **Browse** to select the output file location
-6. Click **Start** to begin export
+1. Open the **Export** tab.
+2. Choose the **Data Source** (Database or Local Disk) using the radio buttons at the top.
+3. (Optional) Click **Select Project...** to choose a single project to prefilter available experiments.
+4. Click **Select Runs...** to pick one or more experiments/runs to include.
+5. Review the **Data Tree** (experiments → raw data → edits) with checkboxes for individual selection.
+6. Use the **Bulk Actions** to quickly manage selection:
+   - **Select/Deselect All Raw**: Toggle all raw data entries.
+   - **Latest Edits / All Edits / No Edits**: Set edit selection for all selected raw data.
+7. Click **Select Models...** to choose analysis models for the selected runs.
+   - If a selected model depends on an unselected edit, you will be prompted to auto-select the required edit.
+8. Review the counts and click **Preview Manifest...** to inspect the bundle before exporting.
+9. Click **Browse...** to choose the output `.tar.gz` file path.
+10. Click **Export Bundle** to create the data publication bundle.
 
-### Import Wizard
+### Import Workflow (GUI)
 
-1. Select **Import** mode
-2. Choose the target (Database or Disk)
-3. Select conflict resolution policy
-4. Click **Browse** to select the bundle file
-5. Click **Start** to begin import
-6. Review any conflicts in the dialog and choose resolution
+1. Open the **Import** tab.
+2. Choose the **Target** (Database or Local Disk) using the radio buttons at the top.
+3. Click **Browse...** to select the input `.tar.gz` bundle file.
+4. Choose the **Conflict Policy** from the dropdown:
+   - **Reuse if properties match**: Reuse existing entity when property hashes match; otherwise rename.
+   - **Always rename**: Always create new entities with a unique name suffix.
+   - **Fail on conflict**: Abort the import on any name conflict.
+5. Click **Import Bundle** to start the import and monitor progress in the status area.
 
 ## Conflict Handling
 

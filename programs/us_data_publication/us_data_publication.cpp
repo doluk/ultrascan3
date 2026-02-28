@@ -60,17 +60,18 @@ static QString entityTypeToString(US_DataPubEntityType type) {
 static US_DataPubEntityType stringToEntityType(const QString& str) {
     static QMap<QString, US_DataPubEntityType> map;
     if (map.isEmpty()) {
-        map["project"] = EntityProject;
-        map["experiment"] = EntityExperiment;
-        map["rawData"] = EntityRawData;
-        map["rotorCalibration"] = EntityRotorCalibration;
-        map["centerpiece"] = EntityCenterpiece;
-        map["buffer"] = EntityBuffer;
-        map["analyte"] = EntityAnalyte;
-        map["solution"] = EntitySolution;
-        map["edit"] = EntityEdit;
-        map["model"] = EntityModel;
-        map["noise"] = EntityNoise;
+        // Keys must be lowercase to match the .toLower() lookup below
+        map["project"]           = EntityProject;
+        map["experiment"]        = EntityExperiment;
+        map["rawdata"]           = EntityRawData;
+        map["rotorcalibration"]  = EntityRotorCalibration;
+        map["centerpiece"]       = EntityCenterpiece;
+        map["buffer"]            = EntityBuffer;
+        map["analyte"]           = EntityAnalyte;
+        map["solution"]          = EntitySolution;
+        map["edit"]              = EntityEdit;
+        map["model"]             = EntityModel;
+        map["noise"]             = EntityNoise;
     }
     return map.value(str.toLower(), EntityProject);
 }
@@ -127,7 +128,10 @@ bool US_DataPubManifest::writeToFile(const QString& filepath) {
     out << "# UltraScan3 Data Publication Bundle Manifest\n";
     out << "version: " << bundleVersion << "\n";
     out << "created: " << createdAt << "\n";
-    out << "description: \"" << description.replace("\"", "\\\"") << "\"\n";
+    // Use a local escaped copy to avoid mutating the stored description
+    QString escapedDescription = description;
+    escapedDescription.replace("\"", "\\\"");
+    out << "description: \"" << escapedDescription << "\"\n";
     out << "\n";
 
     // Group entries by type
@@ -497,8 +501,8 @@ void US_DataPublication::setupImportTab() {
     connect(pb_startImport, &QPushButton::clicked, this, &US_DataPublication::startImport);
 }
 
-void US_DataPublication::exportSourceChanged(bool db) {
-    useDB = db;
+void US_DataPublication::exportSourceChanged(bool fromDb) {
+    useDB = fromDb;
     // Clear selections when source changes
     projectId = -1;
     le_project->clear();
@@ -542,6 +546,10 @@ bool US_DataPublication::connectToDatabase() {
     if (db != nullptr && db->isConnected()) {
         return true;
     }
+    
+    // Delete any previously allocated (but not connected) instance to avoid memory leak
+    delete db;
+    db = nullptr;
     
     US_Passwd pw;
     db = new US_DB2(pw.getPasswd());
@@ -1314,7 +1322,7 @@ QString US_DataPublication::generateManifestPreview() {
     }
     
     if (editCount > 0) {
-        out << "edits:\n";
+        out << "edit:\n";
         for (const auto& raw : rawDataList) {
             for (int j = 0; j < raw.editSelected.size(); ++j) {
                 if (raw.editSelected[j]) {
@@ -1327,7 +1335,7 @@ QString US_DataPublication::generateManifestPreview() {
     }
     
     if (modelCount > 0) {
-        out << "models:\n";
+        out << "model:\n";
         for (const auto& model : modelList) {
             if (model.selected) {
                 out << "  - name: \"" << model.description << "\"\n";
@@ -1634,10 +1642,15 @@ bool US_DataPubExport::exportBundle(const QString& bundlePath, int projectId,
     
     emit progress(70, tr("Creating archive..."));
     
-    // Create tar.gz archive
+    // Create tar.gz archive - compress individual entries so manifest.yaml
+    // appears at the archive root (not under a random temp dir name)
     US_Archive archive;
     QStringList sources;
-    sources << tempDir.path();
+    QDir tdir(tempDir.path());
+    QStringList tdirEntries = tdir.entryList(QDir::NoDotAndDotDot | QDir::AllEntries);
+    for (const QString& tdirEntry : tdirEntries) {
+        sources << tdir.absoluteFilePath(tdirEntry);
+    }
     
     QString archivePath = bundlePath;
     if (!archive.compress(sources, archivePath)) {
@@ -1708,17 +1721,17 @@ bool US_DataPubExport::exportSelectedData(const QString& bundlePath,
             processedItems++;
             int pct = 15 + (processedItems * 50 / (totalItems > 0 ? totalItems : 1));
             emit progress(pct, tr("Exported raw data: %1").arg(raw.description));
-        }
-        
-        // Export selected edits for this raw data
-        for (int j = 0; j < raw.editSelected.size(); ++j) {
-            if (raw.editSelected[j]) {
-                if (!exportEditData(raw, j)) {
-                    return false;
+            
+            // Export selected edits only when their parent raw data is selected
+            for (int j = 0; j < raw.editSelected.size(); ++j) {
+                if (raw.editSelected[j]) {
+                    if (!exportEditData(raw, j)) {
+                        return false;
+                    }
+                    processedItems++;
+                    int epct = 15 + (processedItems * 50 / (totalItems > 0 ? totalItems : 1));
+                    emit progress(epct, tr("Exported edit: %1").arg(raw.editNames.value(j)));
                 }
-                processedItems++;
-                int pct = 15 + (processedItems * 50 / (totalItems > 0 ? totalItems : 1));
-                emit progress(pct, tr("Exported edit: %1").arg(raw.editNames.value(j)));
             }
         }
     }
@@ -1755,10 +1768,15 @@ bool US_DataPubExport::exportSelectedData(const QString& bundlePath,
     
     emit progress(90, tr("Creating archive..."));
     
-    // Create tar.gz archive
+    // Create tar.gz archive - compress individual entries so manifest.yaml
+    // appears at the archive root (not under a random temp dir name)
     US_Archive archive;
     QStringList sources;
-    sources << tempDir;
+    QDir td(tempDir);
+    QStringList tdEntries = td.entryList(QDir::NoDotAndDotDot | QDir::AllEntries);
+    for (const QString& tdEntry : tdEntries) {
+        sources << td.absoluteFilePath(tdEntry);
+    }
     
     QString archivePath = bundlePath;
     if (!archive.compress(sources, archivePath)) {
@@ -1867,8 +1885,14 @@ bool US_DataPubExport::exportRawDataFile(const US_DataPubRawDataInfo& rawInfo) {
     QString destPath = tempDir + "/" + entry.payloadPath;
     QDir().mkpath(QFileInfo(destPath).path());
     
-    if (QFile::exists(srcPath)) {
-        QFile::copy(srcPath, destPath);
+    if (!QFile::exists(srcPath)) {
+        lastError = QString("Raw data file not found: %1").arg(srcPath);
+        return false;
+    }
+    
+    if (!QFile::copy(srcPath, destPath)) {
+        lastError = QString("Failed to copy raw data file from %1 to %2").arg(srcPath, destPath);
+        return false;
     }
     
     // Also export the solution for this raw data if we have it
@@ -1893,7 +1917,7 @@ bool US_DataPubExport::exportRawDataFile(const US_DataPubRawDataInfo& rawInfo) {
 }
 
 bool US_DataPubExport::exportEditData(const US_DataPubRawDataInfo& rawInfo, int editIndex) {
-    if (editIndex < 0 || editIndex >= rawInfo.editGUIDs.size()) {
+    if (editIndex < 0 || editIndex >= rawInfo.editNames.size()) {
         return false;
     }
     
@@ -1922,8 +1946,14 @@ bool US_DataPubExport::exportEditData(const US_DataPubRawDataInfo& rawInfo, int 
     QString destPath = tempDir + "/" + entry.payloadPath;
     QDir().mkpath(QFileInfo(destPath).path());
     
-    if (QFile::exists(srcPath)) {
-        QFile::copy(srcPath, destPath);
+    if (!QFile::exists(srcPath)) {
+        lastError = QString("Edit file not found: %1").arg(srcPath);
+        return false;
+    }
+    
+    if (!QFile::copy(srcPath, destPath)) {
+        lastError = QString("Failed to copy edit file from %1 to %2").arg(srcPath, destPath);
+        return false;
     }
     
     manifest.addEntry(entry);
@@ -2126,12 +2156,13 @@ bool US_DataPubExport::exportModel(const US_DataPubModelInfo& modelInfo) {
             model.write(filePath);
         }
     } else {
-        // From local disk - find the model file
-        QString modelPath = US_Settings::dataDir() + "/models/" + modelInfo.modelGUID + ".model.xml";
-        if (QFile::exists(modelPath)) {
+        // From local disk - use US_Model::load(false, guid, nullptr) which scans M*.xml files
+        US_Model model;
+        int status = model.load(false, modelInfo.modelGUID, nullptr);
+        if (status == US_DB2::OK) {
             QString destPath = tempDir + "/" + entry.payloadPath;
             QDir().mkpath(QFileInfo(destPath).path());
-            QFile::copy(modelPath, destPath);
+            model.write(destPath);
         }
     }
     
@@ -2339,46 +2370,44 @@ QString US_DataPubImport::generateUniqueName(const QString& baseName,
     QString newName = baseName;
     int suffix = 1;
     
-    // Check if the base name itself is already unique
-    bool nameExists = false;
-    
     if (target == US_DataPublication::TargetDatabase && db != nullptr) {
-        // Query database to check if name exists
-        QString tableName;
-        QString columnName = "description";  // Most tables use 'description'
+        // Use stored procedures to fetch existing names (avoids SQL injection risk
+        // that comes with embedding user-supplied strings directly into SQL).
+        QString invID = QString::number(US_Settings::us_inv_ID());
+        QStringList existingNames;
+        QStringList query;
         
+        // Each type has a stored procedure that lists descriptions
         switch (type) {
-            case EntityProject:   tableName = "project"; break;
-            case EntityBuffer:    tableName = "buffer"; break;
-            case EntityAnalyte:   tableName = "analyte"; break;
-            case EntitySolution:  tableName = "solution"; break;
-            case EntityModel:     tableName = "model"; break;
-            case EntityNoise:     tableName = "noise"; break;
-            default:              return newName;  // Return original for unsupported types
-        }
-        
-        // Check if base name exists
-        QStringList queries;
-        queries << QString("SELECT COUNT(*) FROM %1 WHERE %2 = '%3'")
-                   .arg(tableName).arg(columnName).arg(newName);
-        
-        for (const QString& q : queries) {
-            db->query(q);
-            if (db->next() && db->value(0).toInt() > 0) {
-                nameExists = true;
+            case EntityBuffer: {
+                query << "get_buffer_desc" << invID;
+                db->query(query);
+                while (db->next())
+                    existingNames << db->value(1).toString();  // description column
                 break;
             }
+            case EntityModel: {
+                query << "get_model_desc" << invID;
+                db->query(query);
+                while (db->next())
+                    existingNames << db->value(2).toString();  // description column
+                break;
+            }
+            case EntityNoise: {
+                query << "get_noise_desc" << invID;
+                db->query(query);
+                while (db->next())
+                    existingNames << db->value(1).toString();  // description column
+                break;
+            }
+            default:
+                // For types without a list stored procedure, just add a suffix
+                return QString("%1_%2").arg(baseName).arg(suffix);
         }
         
-        // If name exists, find a unique suffix
-        while (nameExists && suffix <= 100) {
-            newName = QString("%1_%2").arg(baseName).arg(suffix);
-            db->query(QString("SELECT COUNT(*) FROM %1 WHERE %2 = '%3'")
-                     .arg(tableName).arg(columnName).arg(newName));
-            if (db->next() && db->value(0).toInt() == 0) {
-                nameExists = false;  // Found unique name
-            }
-            suffix++;
+        // Check if base name exists, then increment suffix until unique
+        while (existingNames.contains(newName) && suffix <= 100) {
+            newName = QString("%1_%2").arg(baseName).arg(suffix++);
         }
     } else {
         // For disk target, just add suffix
