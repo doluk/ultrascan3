@@ -62,19 +62,23 @@ The GUI is organized into two tabs: **Export** and **Import**.
 
 ## Supported Entity Types
 
-Data bundles can include the following entity types, organized by their dependency hierarchy:
+The following entity types are **fully supported** for export from DB and disk sources:
 
 1. **Project** - Top-level container for related experiments
-2. **Experiment** - Individual experimental runs
-3. **RawData** - Original AUC data files
-4. **RotorCalibration** - Rotor calibration profiles
-5. **Centerpiece** - Centerpiece definitions
-6. **Buffer** - Buffer compositions
-7. **Analyte** - Analyte definitions (proteins, DNA, RNA, etc.)
-8. **Solution** - Solution compositions (buffer + analytes)
-9. **Edit** - Data edit profiles
-10. **Model** - Analysis models
-11. **Noise** - Noise vectors (TI and RI)
+2. **Experiment** - Individual experimental runs (included automatically with raw data)
+3. **RawData** - Original AUC data files (downloaded from DB blob or copied from disk)
+4. **Edit** - Data edit profiles (downloaded from DB blob or copied from disk)
+5. **Model** - Analysis models (loaded via `US_Model::load`)
+6. **Noise** - Noise vectors (TI and RI; loaded via `US_Noise::load`)
+7. **Solution** - Solution compositions (auto-included with raw data)
+8. **Buffer** - Buffer compositions (auto-included with solutions)
+9. **Analyte** - Analyte definitions (auto-included with solutions)
+10. **TimeState** - Experiment time-state files (`.tmst` + `.xml` sidecar)
+
+The following types are **recognized in the manifest format** but export/import support is currently limited (placeholders):
+
+- **RotorCalibration** - Rotor calibration profiles
+- **Centerpiece** - Centerpiece definitions
 
 ## Bundle Format
 
@@ -109,6 +113,8 @@ bundle.tar.gz
 
 ### Manifest Format (YAML)
 
+`guid:` is the primary entry marker. The `id:` sub-field (numeric DB id) is omitted for disk-only data. `propertyHash` is a SHA-256 hash of the **exported payload file's contents** (prefixed with `sha256:`), not a hash of metadata properties — this allows the importer to verify data integrity.
+
 ```yaml
 # UltraScan3 Data Publication Bundle Manifest
 version: "1.0"
@@ -116,24 +122,23 @@ created: "2024-01-15T10:30:00"
 description: "Example research data bundle"
 
 project:
-  - id: 123
-    guid: "a1b2c3d4-e5f6-..."
+  - guid: "a1b2c3d4-e5f6-..."
+    id: 123                     # omitted when no DB id (disk-only data)
     name: "My Research Project"
-    propertyHash: "sha256:..."
+    propertyHash: "sha256:abcd1234..."   # SHA-256 of the XML file contents
     payloadPath: "project/a1b2c3d4-e5f6-....xml"
 
-experiment:
-  - id: 456
-    guid: "b2c3d4e5-f6a7-..."
-    name: "Experiment 1"
+rawData:
+  - guid: "b2c3d4e5-f6a7-..."
+    id: 456
+    name: "run001.RI.1.A1.auc"
     propertyHash: "sha256:..."
-    payloadPath: "experiment/b2c3d4e5-f6a7-....xml"
+    payloadPath: "rawData/b2c3d4e5-f6a7-....auc"
     dependencies:
-      - "a1b2c3d4-e5f6-..."  # project GUID
+      - "a1b2c3d4-e5f6-..."  # project/experiment GUID
 
 buffer:
-  - id: 789
-    guid: "c3d4e5f6-a7b8-..."
+  - guid: "c3d4e5f6-a7b8-..."
     name: "PBS Buffer"
     propertyHash: "sha256:..."
     payloadPath: "buffer/c3d4e5f6-a7b8-....xml"

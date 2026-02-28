@@ -802,12 +802,17 @@ void US_DataPublication::dataTreeItemChanged(QTreeWidgetItem* item, int column) 
         rawDataList[index].selected = checked;
         // If deselecting raw data, deselect all its edits
         if (!checked) {
-            // Deselect all edits for this raw data
+            // Update data model
             for (int j = 0; j < rawDataList[index].editSelected.size(); ++j) {
                 rawDataList[index].editSelected[j] = false;
             }
-            // Update the tree UI to reflect deselected edits
-            buildDataTree();
+            // Directly update child edit checkboxes without rebuilding the whole tree
+            // (rebuilding tree inside a signal handler destroys/recreates items unsafely)
+            tw_dataTree->blockSignals(true);
+            for (int j = 0; j < item->childCount(); ++j) {
+                item->child(j)->setCheckState(0, Qt::Unchecked);
+            }
+            tw_dataTree->blockSignals(false);
             // Check if any models depend on this raw data or its edits
             checkModelDependencies();
         }
@@ -870,8 +875,50 @@ void US_DataPublication::browseImportFile() {
         le_importFile->setText(path);
         importBundlePath = path;
         
-        // TODO: Load and preview bundle contents
-        lb_summaryImport->setText(tr("Bundle: %1").arg(QFileInfo(path).fileName()));
+        // Extract bundle into a temp dir and read the manifest to populate the preview
+        tw_importPreview->clear();
+        QTemporaryDir tmp;
+        if (tmp.isValid()) {
+            US_Archive archive;
+            if (archive.extract(path, tmp.path())) {
+                // Manifest may be at root or inside a single subdirectory
+                QString manifestPath = tmp.path() + "/manifest.yaml";
+                if (!QFile::exists(manifestPath)) {
+                    QDir d(tmp.path());
+                    QStringList subdirs = d.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+                    if (!subdirs.isEmpty())
+                        manifestPath = tmp.path() + "/" + subdirs.first() + "/manifest.yaml";
+                }
+                US_DataPubManifest previewManifest;
+                if (previewManifest.readFromFile(manifestPath)) {
+                    QMap<US_DataPubEntityType, QTreeWidgetItem*> typeNodes;
+                    for (const auto& entry : previewManifest.allEntries()) {
+                        QString typeName = entityTypeToString(entry.type);
+                        if (!typeNodes.contains(entry.type)) {
+                            QTreeWidgetItem* typeItem = new QTreeWidgetItem(tw_importPreview);
+                            typeItem->setText(0, typeName);
+                            typeItem->setExpanded(true);
+                            typeNodes[entry.type] = typeItem;
+                        }
+                        QTreeWidgetItem* child = new QTreeWidgetItem(typeNodes[entry.type]);
+                        child->setText(0, entry.name);
+                        child->setText(1, typeName);
+                        child->setText(2, entry.guid);
+                    }
+                    int total = previewManifest.allEntries().size();
+                    lb_summaryImport->setText(tr("Bundle: %1 (%2 entities)")
+                        .arg(QFileInfo(path).fileName()).arg(total));
+                } else {
+                    lb_summaryImport->setText(tr("Bundle: %1 (manifest unreadable)")
+                        .arg(QFileInfo(path).fileName()));
+                }
+            } else {
+                lb_summaryImport->setText(tr("Bundle: %1 (failed to extract)")
+                    .arg(QFileInfo(path).fileName()));
+            }
+        } else {
+            lb_summaryImport->setText(tr("Bundle: %1").arg(QFileInfo(path).fileName()));
+        }
     }
     updateImportButtonStates();
 }
@@ -1683,6 +1730,16 @@ QString US_DataPubExport::computePropertyHash(const QVariantMap& properties) {
     return QCryptographicHash::hash(data, QCryptographicHash::Sha256).toHex();
 }
 
+//! \brief Compute SHA-256 hash of a file's contents for use as propertyHash.
+//! Falls back to an empty string if the file cannot be opened.
+static QString hashFile(const QString& filePath) {
+    QFile f(filePath);
+    if (!f.open(QIODevice::ReadOnly)) return QString();
+    QCryptographicHash hasher(QCryptographicHash::Sha256);
+    hasher.addData(&f);
+    return QString("sha256:") + hasher.result().toHex();
+}
+
 bool US_DataPubExport::exportBundle(const QString& bundlePath, int projectId,
                                      int experimentId, 
                                      US_DataPublication::ExportScope scope) {
@@ -1908,14 +1965,7 @@ bool US_DataPubExport::exportProject(const US_Project& project) {
     entry.type = EntityProject;
     entry.payloadPath = QString("project/%1.xml").arg(project.projectGUID);
     
-    // Compute property hash
-    QVariantMap props;
-    props["desc"] = project.projectDesc;
-    props["goals"] = project.goals;
-    props["molecules"] = project.molecules;
-    entry.propertyHash = computePropertyHash(props);
-    
-    // Write project XML
+    // Write project XML first, then hash the file
     QString filePath = tempDir + "/" + entry.payloadPath;
     QDir().mkpath(QFileInfo(filePath).path());
     
@@ -1946,6 +1996,9 @@ bool US_DataPubExport::exportProject(const US_Project& project) {
     xml.writeEndElement();
     xml.writeEndDocument();
     file.close();
+    
+    // Hash the exported file so the importer can verify integrity
+    entry.propertyHash = hashFile(filePath);
     
     manifest.addEntry(entry);
     return true;
@@ -1978,27 +2031,35 @@ bool US_DataPubExport::exportRawDataFile(const US_DataPubRawDataInfo& rawInfo) {
     }
     entry.payloadPath = QString("rawData/%1.auc").arg(baseName);
     
-    // Compute property hash
-    QVariantMap props;
-    props["description"] = rawInfo.description;
-    props["runID"] = rawInfo.runID;
-    entry.propertyHash = computePropertyHash(props);
-    
-    // Copy the AUC file
-    QString srcPath = US_Settings::resultDir() + "/" + rawInfo.runID + "/" + rawInfo.description;
-    
     QString destPath = tempDir + "/" + entry.payloadPath;
     QDir().mkpath(QFileInfo(destPath).path());
     
-    if (!QFile::exists(srcPath)) {
-        lastError = QString("Raw data file not found: %1").arg(srcPath);
-        return false;
+    bool gotFile = false;
+    
+    // When a database connection is available, download the AUC blob directly from DB
+    if (db != nullptr && db->isConnected() && rawInfo.rawID > 0) {
+        int status = db->readBlobFromDB(destPath, "download_aucData", rawInfo.rawID);
+        if (status == US_DB2::OK) {
+            gotFile = true;
+        }
     }
     
-    if (!QFile::copy(srcPath, destPath)) {
-        lastError = QString("Failed to copy raw data file from %1 to %2").arg(srcPath, destPath);
-        return false;
+    if (!gotFile) {
+        // Fall back to disk copy
+        QString srcPath = US_Settings::resultDir() + "/" + rawInfo.runID + "/" + rawInfo.description;
+        if (!QFile::exists(srcPath)) {
+            lastError = QString("Raw data file not found: %1").arg(srcPath);
+            return false;
+        }
+        if (!QFile::copy(srcPath, destPath)) {
+            lastError = QString("Failed to copy raw data file from %1 to %2").arg(srcPath, destPath);
+            return false;
+        }
+        gotFile = true;
     }
+    
+    // Hash the exported file
+    entry.propertyHash = hashFile(destPath);
     
     // Also export the solution for this raw data if we have it
     // Solutions are associated with experiments, so query through expID
@@ -2045,26 +2106,36 @@ bool US_DataPubExport::exportEditData(const US_DataPubRawDataInfo& rawInfo, int 
         entry.dependencyGuids.append(rawInfo.rawGUID);
     }
     
-    // Compute property hash
-    QVariantMap props;
-    props["name"] = entry.name;
-    props["rawGUID"] = rawInfo.rawGUID;
-    entry.propertyHash = computePropertyHash(props);
-    
-    // Copy the edit file
-    QString srcPath = US_Settings::resultDir() + "/" + rawInfo.runID + "/" + entry.name;
     QString destPath = tempDir + "/" + entry.payloadPath;
     QDir().mkpath(QFileInfo(destPath).path());
     
-    if (!QFile::exists(srcPath)) {
-        lastError = QString("Edit file not found: %1").arg(srcPath);
-        return false;
+    bool gotFile = false;
+    
+    // When a database connection is available, download the edit blob directly from DB
+    int editID = entry.id;
+    if (db != nullptr && db->isConnected() && editID > 0) {
+        int status = db->readBlobFromDB(destPath, "download_editData", editID);
+        if (status == US_DB2::OK) {
+            gotFile = true;
+        }
     }
     
-    if (!QFile::copy(srcPath, destPath)) {
-        lastError = QString("Failed to copy edit file from %1 to %2").arg(srcPath, destPath);
-        return false;
+    if (!gotFile) {
+        // Fall back to disk copy
+        QString srcPath = US_Settings::resultDir() + "/" + rawInfo.runID + "/" + entry.name;
+        if (!QFile::exists(srcPath)) {
+            lastError = QString("Edit file not found: %1").arg(srcPath);
+            return false;
+        }
+        if (!QFile::copy(srcPath, destPath)) {
+            lastError = QString("Failed to copy edit file from %1 to %2").arg(srcPath, destPath);
+            return false;
+        }
+        gotFile = true;
     }
+    
+    // Hash the exported file
+    entry.propertyHash = hashFile(destPath);
     
     manifest.addEntry(entry);
     return true;
@@ -2079,15 +2150,7 @@ bool US_DataPubExport::exportBuffer(const US_Buffer& buffer) {
     entry.type = EntityBuffer;
     entry.payloadPath = QString("buffer/%1.xml").arg(buffer.GUID);
     
-    // Compute property hash
-    QVariantMap props;
-    props["description"] = buffer.description;
-    props["pH"] = buffer.pH;
-    props["density"] = buffer.density;
-    props["viscosity"] = buffer.viscosity;
-    entry.propertyHash = computePropertyHash(props);
-    
-    // Write buffer XML
+    // Write buffer XML first, then hash the file
     QString filePath = tempDir + "/" + entry.payloadPath;
     QDir().mkpath(QFileInfo(filePath).path());
     
@@ -2112,6 +2175,7 @@ bool US_DataPubExport::exportBuffer(const US_Buffer& buffer) {
     xml.writeEndDocument();
     file.close();
     
+    entry.propertyHash = hashFile(filePath);
     manifest.addEntry(entry);
     return true;
 }
@@ -2125,14 +2189,7 @@ bool US_DataPubExport::exportAnalyte(const US_Analyte& analyte) {
     entry.type = EntityAnalyte;
     entry.payloadPath = QString("analyte/%1.xml").arg(analyte.analyteGUID);
     
-    // Compute property hash
-    QVariantMap props;
-    props["description"] = analyte.description;
-    props["mw"] = analyte.mw;
-    props["vbar20"] = analyte.vbar20;
-    entry.propertyHash = computePropertyHash(props);
-    
-    // Write analyte XML
+    // Write analyte XML first, then hash the file
     QString filePath = tempDir + "/" + entry.payloadPath;
     QDir().mkpath(QFileInfo(filePath).path());
     
@@ -2155,6 +2212,7 @@ bool US_DataPubExport::exportAnalyte(const US_Analyte& analyte) {
     xml.writeEndDocument();
     file.close();
     
+    entry.propertyHash = hashFile(filePath);
     manifest.addEntry(entry);
     return true;
 }
@@ -2179,13 +2237,7 @@ bool US_DataPubExport::exportSolution(const US_Solution& solution) {
         entry.dependencyGuids.append(solution.buffer.GUID);
     }
     
-    // Compute property hash
-    QVariantMap props;
-    props["description"] = solution.solutionDesc;
-    props["bufferGUID"] = solution.buffer.GUID;
-    entry.propertyHash = computePropertyHash(props);
-    
-    // Write solution XML
+    // Write solution XML first, then hash the file
     QString filePath = tempDir + "/" + entry.payloadPath;
     QDir().mkpath(QFileInfo(filePath).path());
     
@@ -2208,6 +2260,8 @@ bool US_DataPubExport::exportSolution(const US_Solution& solution) {
     xml.writeEndElement();
     xml.writeEndDocument();
     file.close();
+    
+    entry.propertyHash = hashFile(filePath);
     
     // Export the buffer
     if (solution.buffer.bufferID > 0 || !solution.buffer.GUID.isEmpty()) {
@@ -2250,24 +2304,18 @@ bool US_DataPubExport::exportModel(const US_DataPubModelInfo& modelInfo) {
         entry.dependencyGuids.append(modelInfo.editGUID);
     }
 
-    // Compute property hash
-    QVariantMap props;
-    props["description"] = modelInfo.description;
-    props["editGUID"] = modelInfo.editGUID;
-    entry.propertyHash = computePropertyHash(props);
-
-    // Load and export the model
+    // Load and export the model; hash the written file
     bool loadSuccess = false;
+    QString destPath = tempDir + "/" + entry.payloadPath;
     if (db != nullptr && db->isConnected()) {
         US_Model model;
         int status = model.load(true, modelInfo.modelGUID, db);
         if (status == US_DB2::OK) {
-            QString filePath = tempDir + "/" + entry.payloadPath;
-            QDir().mkpath(QFileInfo(filePath).path());
-            if (model.write(filePath)) {
+            QDir().mkpath(QFileInfo(destPath).path());
+            if (model.write(destPath)) {
                 loadSuccess = true;
             } else {
-                lastError = QString("Failed to write model file: %1").arg(filePath);
+                lastError = QString("Failed to write model file: %1").arg(destPath);
                 return false;
             }
         } else {
@@ -2280,7 +2328,6 @@ bool US_DataPubExport::exportModel(const US_DataPubModelInfo& modelInfo) {
         US_Model model;
         int status = model.load(false, modelInfo.modelGUID, nullptr);
         if (status == US_DB2::OK) {
-            QString destPath = tempDir + "/" + entry.payloadPath;
             QDir().mkpath(QFileInfo(destPath).path());
             if (model.write(destPath)) {
                 loadSuccess = true;
@@ -2299,6 +2346,9 @@ bool US_DataPubExport::exportModel(const US_DataPubModelInfo& modelInfo) {
         lastError = QString("Failed to export model: %1").arg(modelInfo.modelGUID);
         return false;
     }
+
+    // Hash the exported file
+    entry.propertyHash = hashFile(destPath);
 
     manifest.addEntry(entry);
     return true;
@@ -2320,13 +2370,20 @@ bool US_DataPubExport::exportNoise(const QString& noiseGuid) {
     entry.type = EntityNoise;
     entry.payloadPath = QString("noise/%1.xml").arg(noiseGuid);
 
+    US_Noise noise;
+    QString destPath = tempDir + "/" + entry.payloadPath;
+    QDir().mkpath(QFileInfo(destPath).path());
+
     // Load and export the noise
     bool loadSuccess = false;
     if (db != nullptr && db->isConnected()) {
-        US_Noise noise;
-        int status = noise.load(noiseGuid, db);
+        // Use the GUID-based overload: load(bool db_access, const QString& guid, IUS_DB2*)
+        // This calls get_noiseID to convert GUID → numeric ID, then fetches the blob.
+        // The simple load(const QString& id, IUS_DB2*) overload takes a NUMERIC DB id,
+        // not a GUID — using it with a GUID string would silently load nothing.
+        int status = noise.load(true, noiseGuid, db);
         if (status == US_DB2::OK) {
-            entry.id = 0;
+            entry.id = 0;  // DB id not critical for export; GUID is primary
             entry.name = noise.description;
 
             // Add dependency on model
@@ -2334,19 +2391,10 @@ bool US_DataPubExport::exportNoise(const QString& noiseGuid) {
                 entry.dependencyGuids.append(noise.modelGUID);
             }
 
-            // Compute property hash
-            QVariantMap props;
-            props["description"] = noise.description;
-            props["modelGUID"] = noise.modelGUID;
-            props["type"] = static_cast<int>(noise.type);
-            entry.propertyHash = computePropertyHash(props);
-
-            QString filePath = tempDir + "/" + entry.payloadPath;
-            QDir().mkpath(QFileInfo(filePath).path());
-            if (noise.write(filePath)) {
+            if (noise.write(destPath)) {
                 loadSuccess = true;
             } else {
-                lastError = QString("Failed to write noise file: %1").arg(filePath);
+                lastError = QString("Failed to write noise file: %1").arg(destPath);
                 return false;
             }
         } else {
@@ -2356,7 +2404,6 @@ bool US_DataPubExport::exportNoise(const QString& noiseGuid) {
         }
     } else {
         // From local disk - load noise from disk
-        US_Noise noise;
         int status = noise.load(false, noiseGuid, nullptr);
         if (status == US_DB2::OK) {
             entry.id = -1;  // No DB ID for disk-only noise
@@ -2367,15 +2414,6 @@ bool US_DataPubExport::exportNoise(const QString& noiseGuid) {
                 entry.dependencyGuids.append(noise.modelGUID);
             }
 
-            // Compute property hash
-            QVariantMap props;
-            props["description"] = noise.description;
-            props["modelGUID"] = noise.modelGUID;
-            props["type"] = static_cast<int>(noise.type);
-            entry.propertyHash = computePropertyHash(props);
-
-            QString destPath = tempDir + "/" + entry.payloadPath;
-            QDir().mkpath(QFileInfo(destPath).path());
             if (noise.write(destPath)) {
                 loadSuccess = true;
             } else {
@@ -2393,6 +2431,9 @@ bool US_DataPubExport::exportNoise(const QString& noiseGuid) {
         lastError = QString("Failed to export noise: %1").arg(noiseGuid);
         return false;
     }
+
+    // Hash the exported file
+    entry.propertyHash = hashFile(destPath);
 
     manifest.addEntry(entry);
     exportedNoises.insert(noiseGuid);
@@ -2478,10 +2519,8 @@ bool US_DataPubExport::exportTimeState(const QString& runID, int expID) {
         return true;
     }
 
-    // Compute property hash from runID so the importer can detect duplicates
-    QVariantMap props;
-    props["runID"] = runID;
-    entry.propertyHash = computePropertyHash(props);
+    // Hash the exported .tmst file so the importer can verify integrity
+    entry.propertyHash = hashFile(destTmst);
 
     manifest.addEntry(entry);
     return true;
