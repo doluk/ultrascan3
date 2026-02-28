@@ -144,9 +144,15 @@ bool US_DataPubManifest::writeToFile(const QString& filepath) {
 
         out << entityTypeToString(type) << ":\n";
         for (const auto& entry : typeEntries) {
-            out << "  - id: " << entry.id << "\n";
-            out << "    guid: \"" << entry.guid << "\"\n";
-            out << "    name: \"" << entry.name.replace("\"", "\\\"") << "\"\n";
+            // GUID is the primary stable identifier; numeric DB id is optional
+            // (disk-only data has no DB id, so id may be 0 or -1)
+            out << "  - guid: \"" << entry.guid << "\"\n";
+            if (entry.id > 0)
+                out << "    id: " << entry.id << "\n";
+            // Use a local escaped copy to avoid mutating the stored name
+            QString escapedName = entry.name;
+            escapedName.replace("\"", "\\\"");
+            out << "    name: \"" << escapedName << "\"\n";
             out << "    propertyHash: \"" << entry.propertyHash << "\"\n";
             out << "    payloadPath: \"" << entry.payloadPath << "\"\n";
             if (!entry.dependencyGuids.isEmpty()) {
@@ -201,7 +207,18 @@ bool US_DataPubManifest::readFromFile(const QString& filepath) {
             } else if (trimmed.endsWith(":")) {
                 currentSection = trimmed.left(trimmed.length() - 1);
             }
+        } else if (trimmed.startsWith("- guid:")) {
+            // Current format: entries start with their GUID (primary stable identifier)
+            if (inEntry) {
+                entries.append(currentEntry);
+            }
+            currentEntry = US_DataPubManifestEntry();
+            currentEntry.type = stringToEntityType(currentSection);
+            currentEntry.guid = removeQuotes(trimmed.mid(7).trimmed());
+            inEntry = true;
+            inDependencies = false;
         } else if (trimmed.startsWith("- id:")) {
+            // Legacy format: entries started with their numeric DB id
             if (inEntry) {
                 entries.append(currentEntry);
             }
@@ -213,6 +230,9 @@ bool US_DataPubManifest::readFromFile(const QString& filepath) {
         } else if (inEntry) {
             if (trimmed.startsWith("guid:")) {
                 currentEntry.guid = removeQuotes(trimmed.mid(5).trimmed());
+            } else if (trimmed.startsWith("id:")) {
+                // id is now an optional sub-field (emitted only when > 0)
+                currentEntry.id = trimmed.mid(3).trimmed().toInt();
             } else if (trimmed.startsWith("name:")) {
                 currentEntry.name = removeQuotes(trimmed.mid(5).trimmed());
             } else if (trimmed.startsWith("propertyHash:")) {
@@ -1306,8 +1326,8 @@ QString US_DataPublication::generateManifestPreview() {
     
     if (projectId > 0) {
         out << "project:\n";
-        out << "  - name: \"" << currentProject.projectDesc << "\"\n";
-        out << "    guid: \"" << currentProject.projectGUID << "\"\n\n";
+        out << "  - guid: \"" << currentProject.projectGUID << "\"\n";
+        out << "    name: \"" << currentProject.projectDesc << "\"\n\n";
     }
     
     int rawCount = countSelectedRawData();
@@ -1332,8 +1352,10 @@ QString US_DataPublication::generateManifestPreview() {
         out << "rawData:\n";
         for (const auto& raw : rawDataList) {
             if (raw.selected) {
-                out << "  - name: \"" << raw.description << "\"\n";
-                out << "    guid: \"" << raw.rawGUID << "\"\n";
+                out << "  - guid: \"" << raw.rawGUID << "\"\n";
+                if (raw.rawID > 0)
+                    out << "    id: " << raw.rawID << "\n";
+                out << "    name: \"" << raw.description << "\"\n";
             }
         }
         out << "\n";
@@ -1344,8 +1366,10 @@ QString US_DataPublication::generateManifestPreview() {
         for (const auto& raw : rawDataList) {
             for (int j = 0; j < raw.editSelected.size(); ++j) {
                 if (raw.editSelected[j]) {
-                    out << "  - name: \"" << raw.editNames.value(j) << "\"\n";
-                    out << "    guid: \"" << raw.editGUIDs.value(j) << "\"\n";
+                    out << "  - guid: \"" << raw.editGUIDs.value(j) << "\"\n";
+                    if (raw.editIDs.value(j, -1) > 0)
+                        out << "    id: " << raw.editIDs.value(j) << "\n";
+                    out << "    name: \"" << raw.editNames.value(j) << "\"\n";
                 }
             }
         }
@@ -1356,8 +1380,10 @@ QString US_DataPublication::generateManifestPreview() {
         out << "model:\n";
         for (const auto& model : modelList) {
             if (model.selected) {
-                out << "  - name: \"" << model.description << "\"\n";
-                out << "    guid: \"" << model.modelGUID << "\"\n";
+                out << "  - guid: \"" << model.modelGUID << "\"\n";
+                if (model.modelID > 0)
+                    out << "    id: " << model.modelID << "\n";
+                out << "    name: \"" << model.description << "\"\n";
             }
         }
         out << "\n";
@@ -1366,8 +1392,16 @@ QString US_DataPublication::generateManifestPreview() {
     if (tsCount > 0) {
         out << "timestate:\n";
         for (const QString& runID : uniqueRuns) {
-            out << "  - name: \"" << runID << ".time_state.tmst\"\n";
-            out << "    runID: \"" << runID << "\"\n";
+            // Derive the same deterministic GUID used by exportTimeState()
+            QByteArray hash = QCryptographicHash::hash(runID.toUtf8(),
+                                                       QCryptographicHash::Md5);
+            QString h = QString::fromLatin1(hash.toHex());
+            QString tsGuid = QString("%1-%2-%3-%4-%5")
+                             .arg(h.left(8)).arg(h.mid(8,4))
+                             .arg(h.mid(12,4)).arg(h.mid(16,4))
+                             .arg(h.mid(20));
+            out << "  - guid: \"" << tsGuid << "\"\n";
+            out << "    name: \"" << runID << ".time_state.tmst\"\n";
         }
         out << "\n";
     }
@@ -2262,8 +2296,20 @@ bool US_DataPubExport::exportTimeState(const QString& runID, int expID) {
 
     US_DataPubManifestEntry entry;
     entry.type        = EntityTimeState;
-    entry.name        = tmstFilename;
-    entry.guid        = runID;           // runID uniquely identifies the timestate
+    entry.name        = tmstFilename;     // human-readable: "<runID>.time_state.tmst"
+    // runID is the experiment name (not a GUID). Derive a deterministic UUID-like
+    // identifier from the runID via MD5 so the GUID is stable and reproducible.
+    {
+        QByteArray hash = QCryptographicHash::hash(runID.toUtf8(),
+                                                   QCryptographicHash::Md5);
+        QString h = QString::fromLatin1(hash.toHex());
+        entry.guid = QString("%1-%2-%3-%4-%5")
+                     .arg(h.left(8))
+                     .arg(h.mid(8,  4))
+                     .arg(h.mid(12, 4))
+                     .arg(h.mid(16, 4))
+                     .arg(h.mid(20));
+    }
     entry.payloadPath = QString("timestate/%1").arg(tmstFilename);
 
     QString destTmst = tempDir + "/" + entry.payloadPath;
