@@ -520,12 +520,15 @@ void US_DataPublication::setupImportTab() {
     te_statusImport->setMaximumHeight(100);
     layout->addWidget(te_statusImport);
 
-    // Import button
+    // Import buttons
     QHBoxLayout* importButtons = new QHBoxLayout();
+    pb_dryRunImport = us_pushbutton(tr("Dry Run"), false);
     pb_startImport = us_pushbutton(tr("Import Bundle"), false);
     importButtons->addStretch();
+    importButtons->addWidget(pb_dryRunImport);
     importButtons->addWidget(pb_startImport);
     layout->addLayout(importButtons);
+    connect(pb_dryRunImport, &QPushButton::clicked, this, &US_DataPublication::dryRunImport);
     connect(pb_startImport, &QPushButton::clicked, this, &US_DataPublication::startImport);
 }
 
@@ -567,7 +570,9 @@ void US_DataPublication::updateExportButtonStates() {
 }
 
 void US_DataPublication::updateImportButtonStates() {
-    pb_startImport->setEnabled(!le_importFile->text().isEmpty());
+    bool hasFile = !le_importFile->text().isEmpty();
+    pb_dryRunImport->setEnabled(hasFile);
+    pb_startImport->setEnabled(hasFile);
 }
 
 bool US_DataPublication::connectToDatabase() {
@@ -1030,6 +1035,72 @@ void US_DataPublication::importComplete(bool success, const QString& message) {
         te_statusImport->append(tr("Import failed: %1").arg(message));
         QMessageBox::warning(this, tr("Import Failed"), message);
     }
+}
+
+void US_DataPublication::dryRunImport() {
+    if (importBundlePath.isEmpty()) {
+        QMessageBox::warning(this, tr("Error"), tr("Please select a bundle file."));
+        return;
+    }
+
+    conflictPolicy = static_cast<US_DataPubConflictPolicy>(cb_conflict->currentData().toInt());
+
+    ImportTarget target = importDiskDB->db() ? TargetDatabase : TargetDisk;
+    if (target == TargetDatabase && !connectToDatabase()) return;
+
+    te_statusImport->append(tr("Starting dry run conflict check..."));
+    progressImport->setValue(0);
+
+    US_DataPubImport importer(db);
+    connect(&importer, &US_DataPubImport::progress, this, &US_DataPublication::updateProgress);
+
+    // Track conflicts to highlight them
+    QSet<QString> conflictingGuids;
+    connect(&importer, &US_DataPubImport::conflictDetected,
+        [&conflictingGuids](const US_DataPubManifestEntry& entry, const US_DataPubConflictResult& conflict) {
+            if (conflict.hasConflict) {
+                conflictingGuids.insert(entry.guid);
+            }
+        });
+
+    bool success = importer.importBundle(importBundlePath, target,
+                                          US_Settings::dataDir(), conflictPolicy, true);
+
+    if (success) {
+        te_statusImport->append(tr("Dry run completed."));
+
+        // Highlight conflicts in the tree
+        for (int i = 0; i < tw_importPreview->topLevelItemCount(); ++i) {
+            QTreeWidgetItem* item = tw_importPreview->topLevelItem(i);
+            QString guid = item->data(0, Qt::UserRole).toString();
+            if (conflictingGuids.contains(guid)) {
+                item->setBackground(0, Qt::yellow);
+                item->setBackground(1, Qt::yellow);
+                item->setBackground(2, Qt::yellow);
+                item->setToolTip(0, tr("Conflict detected with existing data"));
+            } else {
+                item->setBackground(0, Qt::transparent);
+                item->setBackground(1, Qt::transparent);
+                item->setBackground(2, Qt::transparent);
+                item->setToolTip(0, "");
+            }
+        }
+
+        if (conflictingGuids.isEmpty()) {
+            QMessageBox::information(this, tr("Dry Run"), tr("No conflicts detected."));
+        } else {
+            QMessageBox::warning(this, tr("Dry Run"),
+                tr("%1 conflicts detected. They are highlighted in yellow in the preview.").arg(conflictingGuids.size()));
+        }
+    } else {
+        te_statusImport->append(tr("Dry run failed: %1").arg(importer.errorMessage()));
+    }
+    progressImport->setValue(100);
+}
+
+void US_DataPublication::buildImportTree() {
+    // This is now handled in browseImportFile for simplicity,
+    // but we can keep it here if we want to refresh it.
 }
 
 void US_DataPublication::updateSummary() {
@@ -1999,7 +2070,7 @@ bool US_DataPubExport::exportProject(const US_Project& project) {
     
     // Hash the exported file so the importer can verify integrity
     entry.propertyHash = hashFile(filePath);
-    
+
     manifest.addEntry(entry);
     return true;
 }
@@ -2030,12 +2101,12 @@ bool US_DataPubExport::exportRawDataFile(const US_DataPubRawDataInfo& rawInfo) {
         baseName.chop(4);
     }
     entry.payloadPath = QString("rawData/%1.auc").arg(baseName);
-    
+
     QString destPath = tempDir + "/" + entry.payloadPath;
     QDir().mkpath(QFileInfo(destPath).path());
     
     bool gotFile = false;
-    
+
     // When a database connection is available, download the AUC blob directly from DB
     if (db != nullptr && db->isConnected() && rawInfo.rawID > 0) {
         int status = db->readBlobFromDB(destPath, "download_aucData", rawInfo.rawID);
@@ -2043,7 +2114,7 @@ bool US_DataPubExport::exportRawDataFile(const US_DataPubRawDataInfo& rawInfo) {
             gotFile = true;
         }
     }
-    
+
     if (!gotFile) {
         // Fall back to disk copy
         QString srcPath = US_Settings::resultDir() + "/" + rawInfo.runID + "/" + rawInfo.description;
@@ -2057,10 +2128,10 @@ bool US_DataPubExport::exportRawDataFile(const US_DataPubRawDataInfo& rawInfo) {
         }
         gotFile = true;
     }
-    
+
     // Hash the exported file
     entry.propertyHash = hashFile(destPath);
-    
+
     // Also export the solution for this raw data if we have it
     // Solutions are associated with experiments, so query through expID
     if (db != nullptr && db->isConnected() && rawInfo.expID > 0) {
@@ -2105,12 +2176,12 @@ bool US_DataPubExport::exportEditData(const US_DataPubRawDataInfo& rawInfo, int 
     if (!rawInfo.rawGUID.isEmpty()) {
         entry.dependencyGuids.append(rawInfo.rawGUID);
     }
-    
+
     QString destPath = tempDir + "/" + entry.payloadPath;
     QDir().mkpath(QFileInfo(destPath).path());
     
     bool gotFile = false;
-    
+
     // When a database connection is available, download the edit blob directly from DB
     int editID = entry.id;
     if (db != nullptr && db->isConnected() && editID > 0) {
@@ -2119,7 +2190,7 @@ bool US_DataPubExport::exportEditData(const US_DataPubRawDataInfo& rawInfo, int 
             gotFile = true;
         }
     }
-    
+
     if (!gotFile) {
         // Fall back to disk copy
         QString srcPath = US_Settings::resultDir() + "/" + rawInfo.runID + "/" + entry.name;
@@ -2133,10 +2204,10 @@ bool US_DataPubExport::exportEditData(const US_DataPubRawDataInfo& rawInfo, int 
         }
         gotFile = true;
     }
-    
+
     // Hash the exported file
     entry.propertyHash = hashFile(destPath);
-    
+
     manifest.addEntry(entry);
     return true;
 }
@@ -2262,7 +2333,7 @@ bool US_DataPubExport::exportSolution(const US_Solution& solution) {
     file.close();
     
     entry.propertyHash = hashFile(filePath);
-    
+
     // Export the buffer
     if (solution.buffer.bufferID > 0 || !solution.buffer.GUID.isEmpty()) {
         exportBuffer(solution.buffer);
@@ -2539,7 +2610,8 @@ US_DataPubImport::~US_DataPubImport() {
 bool US_DataPubImport::importBundle(const QString& bundlePath,
                                      US_DataPublication::ImportTarget importTarget,
                                      const QString& outDir,
-                                     US_DataPubConflictPolicy conflictPolicy) {
+                                     US_DataPubConflictPolicy conflictPolicy,
+                                     bool dryRun) {
     target = importTarget;
     outputDir = outDir;
     policy = conflictPolicy;
@@ -2579,7 +2651,11 @@ bool US_DataPubImport::importBundle(const QString& bundlePath,
         return false;
     }
     
-    emit progress(30, tr("Validating dependencies..."));
+    if (dryRun) {
+        emit progress(50, tr("Performing dry run conflict check..."));
+    } else {
+        emit progress(30, tr("Validating dependencies..."));
+    }
     
     // Import entities in dependency order
     QList<US_DataPubManifestEntry> entries = manifest.allEntries();
@@ -2588,7 +2664,7 @@ bool US_DataPubImport::importBundle(const QString& bundlePath,
     
     for (const auto& entry : entries) {
         // Verify dependencies
-        if (!verifyDependencies(entry)) {
+        if (!dryRun && !verifyDependencies(entry)) {
             lastError = QString("Missing dependency for %1").arg(entry.name);
             return false;
         }
@@ -2608,13 +2684,22 @@ bool US_DataPubImport::importBundle(const QString& bundlePath,
                 continue;
             } else if (policy == ConflictRename) {
                 // Treat unimplemented rename policy as an error to avoid inconsistent state
-                lastError = QString("Conflict detected for %1 (rename policy not implemented)")
-                                .arg(entry.name);
-                return false;
+                if (!dryRun) {
+                    lastError = QString("Conflict detected for %1 (rename policy not implemented)")
+                                    .arg(entry.name);
+                    return false;
+                }
             } else if (policy == ConflictFail) {
-                lastError = QString("Conflict detected for %1").arg(entry.name);
-                return false;
+                if (!dryRun) {
+                    lastError = QString("Conflict detected for %1").arg(entry.name);
+                    return false;
+                }
             }
+        }
+
+        if (dryRun) {
+            current++;
+            continue;
         }
 
         // Import the entity (only if no conflict or conflict wasn't handled by reuse)
@@ -2800,7 +2885,7 @@ bool US_DataPubImport::importProject(const US_DataPubManifestEntry& entry) {
         
         // Map old GUID to new
         guidMap[entry.guid] = project.projectGUID;
-        idMap[entry.guid] = project.projectID;
+        idMap[QString::number(entry.id)] = project.projectID;
     } else {
         // Save to disk
         project.saveToDisk();

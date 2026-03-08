@@ -159,7 +159,7 @@ public:
     //! \brief Run CLI mode with given arguments
     static int runCli(int argc, char* argv[]);
 
-private slots:
+protected slots:
     // Export tab slots
     void exportSourceChanged(bool db);
     void selectProject();
@@ -181,6 +181,7 @@ private slots:
     void importSourceChanged(bool db);
     void browseImportFile();
     void startImport();
+    void dryRunImport();
     
     // Common slots
     void updateProgress(int value, const QString& message);
@@ -206,6 +207,7 @@ private:
     QPushButton*   pb_deselectAllEdits;
     QPushButton*   pb_browseExport;
     QPushButton*   pb_startExport;
+    QPushButton*   pb_dryRunImport;
     QPushButton*   pb_manifestPreview;
     QLineEdit*     le_project;
     QLineEdit*     le_experiments;
@@ -260,6 +262,7 @@ private:
     void buildModelTree();
     void updateExportButtonStates();
     void updateImportButtonStates();
+    void buildImportTree();
     bool connectToDatabase();
     
     // Data loading helpers
@@ -349,7 +352,10 @@ public:
     bool importBundle(const QString& bundlePath, 
                       US_DataPublication::ImportTarget target,
                       const QString& outputDir = QString(),
-                      US_DataPubConflictPolicy policy = ConflictReuse);
+                      US_DataPubConflictPolicy policy = ConflictReuse,
+                      bool dryRun = false);
+
+    const US_DataPubManifest& getManifest() const { return manifest; }
 
     //! \brief Get error message
     QString errorMessage() const { return lastError; }
