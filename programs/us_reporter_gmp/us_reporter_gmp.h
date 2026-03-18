@@ -240,6 +240,7 @@ class US_ReporterGMP : public US_Widgets
         QString html_analysis_profile;       //!< Analysis profile HTML string
         QString html_analysis_profile_2dsa;  //!< 2DSA analysis profile HTML string
         QString html_analysis_profile_pcsa;  //!< PCSA analysis profile HTML string
+        QString typst_assembled;             //!< Assembled Typst string
 
         US_Help showHelp;                    //!< Help display object
 
@@ -678,8 +679,8 @@ class US_ReporterGMP : public US_Widgets
         void load_typst_settings(void); //!< Load Typst settings
         void save_typst_settings(void); //!< Save Typst settings
         QString default_typst_template(void) const; //!< Default Typst template
-        QString html_to_typst_text(const QString&) const; //!< Convert HTML to Typst text
         QString typst_escape_text(const QString&) const; //!< Escape Typst text
+        void assemble_typst_report(const QString&); //!< Assemble report in Typst
         bool write_typst_pdf(const QString&, const QString&, const QString&); //!< Write PDF through Typst
 
         /**
