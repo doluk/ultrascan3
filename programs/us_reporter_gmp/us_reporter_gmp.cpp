@@ -22,7 +22,9 @@
 #include "../us/us_revision.h"
 
 #define MIN_NTC   25
+// Allow enough time for large report documents with many embedded figures.
 static const int TYPST_COMPILATION_TIMEOUT_MS = 300000;
+// Grace period for process termination escalation.
 static const int PROCESS_KILL_TIMEOUT_MS      = 5000;
 
 // Macro stringification helpers
@@ -3425,13 +3427,17 @@ QString US_ReporterGMP::default_typst_template( void ) const
 
 QString US_ReporterGMP::typst_escape_text( const QString& text ) const
 {
-  QString escaped = text;
-  escaped.replace( "\\", "\\\\" );
-  escaped.replace( "#", "\\#" );
-  escaped.replace( "[", "\\[" );
-  escaped.replace( "]", "\\]" );
-  escaped.replace( "{", "\\{" );
-  escaped.replace( "}", "\\}" );
+  QString escaped;
+  escaped.reserve( text.size() * 2 );
+
+  for ( int ii = 0; ii < text.size(); ++ii )
+    {
+      const QChar ch = text.at( ii );
+      if ( ch == '\\' || ch == '#' || ch == '[' || ch == ']' || ch == '{' || ch == '}' )
+        escaped += '\\';
+      escaped += ch;
+    }
+
   return escaped;
 }
 
@@ -3439,32 +3445,110 @@ void US_ReporterGMP::assemble_typst_report( const QString& report_dir )
 {
   typst_assembled.clear();
 
-  auto bullet = [&]( const QString& key, const QString& value )
+  auto cell_text = [&]( const QString& value ) -> QString
   {
     QString v = value.isEmpty() ? tr( "N/A" ) : value;
-    typst_assembled += "- *" + typst_escape_text( key ) + ":* "
-                       + typst_escape_text( v ) + "\n";
+    v.replace( "\r\n", "\n" );
+    v.replace( "\r", "\n" );
+    v.replace( "\n", "; " );
+    return typst_escape_text( v );
+  };
+
+  auto string_text = [&]( const QString& value ) -> QString
+  {
+    QString escaped;
+    escaped.reserve( value.size() * 2 );
+
+    for ( int ii = 0; ii < value.size(); ++ii )
+      {
+        const QChar ch = value.at( ii );
+        if ( ch == '\\' || ch == '"' )
+          escaped += '\\';
+        escaped += ch;
+      }
+
+    return escaped;
+  };
+
+  auto append_table = [&]( const QString& caption,
+                           const QVector< QPair< QString, QString > >& rows )
+  {
+    if ( rows.isEmpty() )
+      return;
+
+    typst_assembled += "#figure(\n";
+    typst_assembled += "  table(\n";
+    typst_assembled += "    columns: 2,\n";
+    typst_assembled += "    inset: 6pt,\n";
+    typst_assembled += "    stroke: .35pt,\n";
+    typst_assembled += "    table.header([Field], [Value]),\n";
+
+    for ( int ii = 0; ii < rows.size(); ++ii )
+      {
+        typst_assembled += "    [" + cell_text( rows[ ii ].first ) + "], ["
+                           + cell_text( rows[ ii ].second ) + "],\n";
+      }
+
+    typst_assembled += "  ),\n";
+    typst_assembled += "  caption: [" + typst_escape_text( caption ) + "],\n";
+    typst_assembled += ")\n\n";
+  };
+
+  auto append_list_table = [&]( const QString& caption, const QStringList& values,
+                                const QString& header )
+  {
+    QVector< QPair< QString, QString > > rows;
+    if ( values.isEmpty() )
+      {
+        rows << qMakePair( tr( "1" ), tr( "N/A" ) );
+      }
+    else
+      {
+        for ( int ii = 0; ii < values.size(); ++ii )
+          rows << qMakePair( QString::number( ii + 1 ), values[ ii ] );
+      }
+
+    typst_assembled += "#figure(\n";
+    typst_assembled += "  table(\n";
+    typst_assembled += "    columns: 2,\n";
+    typst_assembled += "    inset: 6pt,\n";
+    typst_assembled += "    stroke: .35pt,\n";
+    typst_assembled += "    table.header([#], [" + typst_escape_text( header ) + "]),\n";
+
+    for ( int ii = 0; ii < rows.size(); ++ii )
+      {
+        typst_assembled += "    [" + cell_text( rows[ ii ].first ) + "], ["
+                           + cell_text( rows[ ii ].second ) + "],\n";
+      }
+
+    typst_assembled += "  ),\n";
+    typst_assembled += "  caption: [" + typst_escape_text( caption ) + "],\n";
+    typst_assembled += ")\n\n";
   };
 
   QString report_type = GMP_report ? "GMP" : "Non-GMP";
 
   typst_assembled += "= " + typst_escape_text( report_type + " Report Overview" ) + "\n";
-  bullet( "Run", runName );
-  bullet( "Run ID", runID );
-  bullet( "Created", current_date );
-  bullet( "Protocol", currProto.protoname );
-  bullet( "Investigator", currProto.investigator );
-  bullet( "Project", currProto.project );
-  bullet( "Experiment Type", expType );
+  QVector< QPair< QString, QString > > overview_rows;
+  overview_rows << qMakePair( tr( "Run" ), runName )
+                << qMakePair( tr( "Run ID" ), runID )
+                << qMakePair( tr( "Created" ), current_date )
+                << qMakePair( tr( "Protocol" ), currProto.protoname )
+                << qMakePair( tr( "Investigator" ), currProto.investigator )
+                << qMakePair( tr( "Project" ), currProto.project )
+                << qMakePair( tr( "Experiment Type" ), expType );
+  append_table( tr( "Report Overview" ), overview_rows );
   typst_assembled += "\n";
 
   typst_assembled += "== General Settings\n";
-  bullet( "Run Temperature (deg C)", QString::number( currProto.temperature ) );
-  bullet( "Temperature-Equilibration Delay (mins)",
-          QString::number( currProto.temeq_delay ) );
-  bullet( "Laboratory", currProto.rpRotor.laboratory );
-  bullet( "Rotor", currProto.rpRotor.rotor );
-  bullet( "Calibration Date", currProto.rpRotor.calibration );
+  QVector< QPair< QString, QString > > general_rows;
+  general_rows << qMakePair( tr( "Run Temperature (deg C)" ), QString::number( currProto.temperature ) )
+               << qMakePair( tr( "Temperature-Equilibration Delay (mins)" ),
+                             QString::number( currProto.temeq_delay ) )
+               << qMakePair( tr( "Laboratory" ), currProto.rpRotor.laboratory )
+               << qMakePair( tr( "Rotor" ), currProto.rpRotor.rotor )
+               << qMakePair( tr( "Calibration Date" ), currProto.rpRotor.calibration );
+  append_table( tr( "General Settings" ), general_rows );
   typst_assembled += "\n";
 
   typst_assembled += "== Operator and Review Setup\n";
@@ -3474,59 +3558,75 @@ void US_ReporterGMP::assemble_typst_report( const QString& report_dir )
   QString opers_a = get_assigned_oper_revs( jsonDocOperList );
   QString revs_a  = get_assigned_oper_revs( jsonDocRevList );
   QString apprs_a = get_assigned_oper_revs( jsonDocApprList );
-  bullet( "Operator(s)", opers_a );
-  bullet( "Reviewer(s)", revs_a );
-  bullet( "Approver(s)", apprs_a );
+  QVector< QPair< QString, QString > > sign_rows;
+  sign_rows << qMakePair( tr( "Operator(s)" ), opers_a )
+            << qMakePair( tr( "Reviewer(s)" ), revs_a )
+            << qMakePair( tr( "Approver(s)" ), apprs_a );
+  append_table( tr( "Operator, Reviewer, and Approver Assignments" ), sign_rows );
   typst_assembled += "\n";
 
   typst_assembled += "== Stage Parameters\n";
-  bullet( "Duration", duration_str );
-  bullet( "Delay Stage", delay_stage_str );
-  bullet( "Total Time", total_time_str );
-  bullet( "UV/Vis Delay", delay_uvvis_str );
-  bullet( "UV/Vis Scan Interval", scanint_uvvis_str );
-  bullet( "Intensity Delay", delay_int_str );
-  bullet( "Intensity Scan Interval", scanint_int_str );
+  QVector< QPair< QString, QString > > stage_rows;
+  stage_rows << qMakePair( tr( "Duration" ), duration_str )
+             << qMakePair( tr( "Delay Stage" ), delay_stage_str )
+             << qMakePair( tr( "Total Time" ), total_time_str )
+             << qMakePair( tr( "UV/Vis Delay" ), delay_uvvis_str )
+             << qMakePair( tr( "UV/Vis Scan Interval" ), scanint_uvvis_str )
+             << qMakePair( tr( "Intensity Delay" ), delay_int_str )
+             << qMakePair( tr( "Intensity Scan Interval" ), scanint_int_str );
+  append_table( tr( "Stage Parameters" ), stage_rows );
   typst_assembled += "\n";
 
-  if ( !droppedTriplesList.isEmpty() )
-    {
-      typst_assembled += "== Dropped Triples\n";
-      for ( int ii = 0; ii < droppedTriplesList.size(); ++ii )
-        typst_assembled += "- " + typst_escape_text( droppedTriplesList[ ii ] ) + "\n";
-      typst_assembled += "\n";
-    }
+  typst_assembled += "== Dropped Triples\n";
+  append_list_table( tr( "Dropped Triple List" ), droppedTriplesList, tr( "Dropped Triple" ) );
+  typst_assembled += "\n";
 
+  typst_assembled += "== Missing Models\n";
   QString missing_msg = missing_models_msg();
+  QStringList missing_lines;
   if ( !missing_msg.isEmpty() )
-    {
-      typst_assembled += "== Missing Models\n";
-      typst_assembled += typst_escape_text( missing_msg ) + "\n\n";
-    }
+    missing_lines = missing_msg.split( "\n", Qt::SkipEmptyParts );
+  append_list_table( tr( "Missing Models Summary" ), missing_lines, tr( "Details" ) );
+  typst_assembled += "\n";
 
-  typst_assembled += "== Generated Report Artifacts\n";
+  typst_assembled += "== Plots and Figures\n";
   QDir rpt_dir( report_dir );
-  QStringList masks;
-  masks << "*.pdf" << "*.png" << "*.svgz";
-  QStringList files = rpt_dir.entryList( masks, QDir::Files, QDir::Name );
-  if ( files.isEmpty() )
+  QStringList fig_masks;
+  fig_masks << "*.png" << "*.jpg" << "*.jpeg" << "*.svg";
+  QStringList fig_files = rpt_dir.entryList( fig_masks, QDir::Files, QDir::Name );
+  if ( fig_files.isEmpty() )
     {
-      typst_assembled += "- " + typst_escape_text( tr( "No artifacts found." ) ) + "\n";
+      typst_assembled += typst_escape_text( tr( "No plot images were found in the report directory." ) ) + "\n\n";
     }
   else
     {
-      for ( int ii = 0; ii < files.size(); ++ii )
-        typst_assembled += "- " + typst_escape_text( files[ ii ] ) + "\n";
+      for ( int ii = 0; ii < fig_files.size(); ++ii )
+        {
+          QString fname = fig_files[ ii ];
+          QString cap   = tr( "Plot: %1" ).arg( fname );
+          QString alt   = tr( "Generated report plot image for %1" ).arg( fname );
+          typst_assembled += "#figure(\n";
+          typst_assembled += "  image(\"" + string_text( fname )
+                             + "\", width: 92%, alt: [" + typst_escape_text( alt ) + "]),\n";
+          typst_assembled += "  caption: [" + typst_escape_text( cap ) + "],\n";
+          typst_assembled += ")\n\n";
+        }
     }
+
+  typst_assembled += "== Generated Report Artifacts\n";
+  QStringList masks;
+  masks << "*.pdf" << "*.png" << "*.svgz" << "*.svg" << "*.typ";
+  QStringList files = rpt_dir.entryList( masks, QDir::Files, QDir::Name );
+  append_list_table( tr( "Generated Artifact Files" ), files, tr( "Artifact Filename" ) );
   typst_assembled += "\n";
 
   typst_assembled += "== Notes\n";
-  typst_assembled += "- "
-      + typst_escape_text(
-          tr( "This report was generated through the Typst CLI backend." ) ) + "\n";
-  typst_assembled += "- "
-      + typst_escape_text(
-          tr( "Detailed analysis visualizations are included as generated artifacts." ) ) + "\n";
+  QVector< QPair< QString, QString > > notes_rows;
+  notes_rows << qMakePair( tr( "Generation Backend" ),
+                           tr( "This report was generated through the Typst CLI backend." ) )
+             << qMakePair( tr( "Figures and Tables" ),
+                           tr( "Plots are emitted as Typst figures with alt text and tables are captioned for numbering." ) );
+  append_table( tr( "Report Notes" ), notes_rows );
 }
 
 bool US_ReporterGMP::write_typst_pdf( const QString& report_dir, const QString& pdf_path, const QString& report_title )
@@ -3606,7 +3706,11 @@ bool US_ReporterGMP::write_typst_pdf( const QString& report_dir, const QString& 
       if ( !process.waitForFinished( PROCESS_KILL_TIMEOUT_MS ) )
         {
           process.kill();
-          process.waitForFinished( PROCESS_KILL_TIMEOUT_MS );
+          if ( !process.waitForFinished( PROCESS_KILL_TIMEOUT_MS ) )
+            {
+              QMessageBox::warning( this, tr( "Typst Process Error" ),
+                                    tr( "Typst process did not exit after termination and kill requests." ) );
+            }
         }
       QMessageBox::warning( this, tr( "Typst Compilation Timed Out" ),
                             tr( "Timed out while generating report PDF with Typst." ) );
