@@ -259,6 +259,8 @@ class US_ReporterGMP : public US_Widgets
 
         QTextEdit* te_fpath_info;            //!< File path info text edit
         QTextEdit* te_fpath_info_db;         //!< File path info DB text edit
+        QLineEdit* le_typst_bin_path { nullptr };        //!< Typst binary path
+        QLineEdit* le_typst_template_path { nullptr };   //!< Typst template path
 
         QString AProfileGUID;                //!< Analysis profile GUID
         QString ProtocolName_auto;           //!< Auto protocol name
@@ -270,6 +272,8 @@ class US_ReporterGMP : public US_Widgets
         QString filePath;                    //!< File path
         QString filePath_db;                 //!< File path for DB
         QString FileName;                    //!< File name
+        QString typst_bin_path;              //!< Selected Typst binary path
+        QString typst_template_path;         //!< Selected Typst template path
         QString intensityID;                 //!< Intensity ID
         QString analysisIDs;                 //!< Analysis IDs
         QString autoflowStatusID;            //!< Autoflow status ID
@@ -584,6 +588,8 @@ class US_ReporterGMP : public US_Widgets
         void load_gmp_report_db(void); //!< Load GMP report from DB
         void load_gmp_run(void); //!< Load GMP run
         void generate_report(void); //!< Generate report
+        void select_typst_bin_path(void); //!< Select Typst binary path
+        void select_typst_template_path(void); //!< Select Typst template path
         void changedItem(QTreeWidgetItem*, int); //!< Handle item change
         void select_all(void); //!< Select all items
         void unselect_all(void); //!< Unselect all items
@@ -669,6 +675,12 @@ class US_ReporterGMP : public US_Widgets
          * @return True if the directory was created, false otherwise
          */
         bool mkdir(const QString& dirPath, const QString& dirName);
+        void load_typst_settings(void); //!< Load Typst settings
+        void save_typst_settings(void); //!< Save Typst settings
+        QString default_typst_template(void) const; //!< Default Typst template
+        QString html_to_typst_text(const QString&) const; //!< Convert HTML to Typst text
+        QString typst_escape_text(const QString&) const; //!< Escape Typst text
+        bool write_typst_pdf(const QString&, const QString&, const QString&); //!< Write PDF through Typst
 
         /**
          * @brief Plot stick distribution.
