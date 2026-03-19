@@ -153,9 +153,9 @@ endif()
 # 4) Add all per-program subdirectories
 # --------------------------------------------------------------------------
 if(NOT ENABLE_MPI)
-    set(EXCLUDED_PROGRAMS us_mpi_analysis CMakeFiles generated)
+    set(EXCLUDED_PROGRAMS windowflags testing us_buoyancy_auto us_esigner_gmp_aux us_export us_mwl_db_query us_rasmol_control us_mpi_analysis)
 else()
-    set(EXCLUDED_PROGRAMS CMakeFiles generated)
+    set(EXCLUDED_PROGRAMS windowflags testing us_buoyancy_auto us_esigner_gmp_aux us_export us_mwl_db_query us_rasmol_control)
 endif()
 
 file(GLOB program_dirs LIST_DIRECTORIES true RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} "*")

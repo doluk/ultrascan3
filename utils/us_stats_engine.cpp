@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <qmath.h>
+#include <complex>
 
 
 // Utility functions

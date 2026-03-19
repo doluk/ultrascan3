@@ -1133,22 +1133,22 @@ dset->simparams.debug();
         astfvm2.set_buffer( dset->solution_rec.buffer, bfg, csD );
         astfvm2.calculate( swdat );
     }
-bool have_ti=((noisflag&1)!=0);
-bool have_ri=((noisflag&2)!=0);
-for (int ss=0; ss<nscans; ss++)
-{
- double rnoi=have_ri?ri_noise.values[ss]:0.0;
- for (int rr=0; rr<npoints; rr++)
- {
-  double tnoi=have_ti?ti_noise.values[rr]:0.0;
-  double edvl=edata->value(ss,rr);
-  double sval=swdat.value(ss,rr);
-  double rval=edvl-sval-tnoi-rnoi;
-  rwdat.setValue(ss,rr,rval);
-  vari2 += sq( rval );
- }
-}
-vari2 /= (double)( nscans * npoints );
+   bool have_ti=((noisflag&1)!=0);
+   bool have_ri=((noisflag&2)!=0);
+   for (int ss=0; ss<nscans; ss++)
+   {
+    double rnoi=have_ri?ri_noise.values[ss]:0.0;
+    for (int rr=0; rr<npoints; rr++)
+    {
+     double tnoi=have_ti?ti_noise.values[rr]:0.0;
+     double edvl=edata->value(ss,rr);
+     double sval=swdat.value(ss,rr);
+     double rval=edvl-sval-tnoi-rnoi;
+     rwdat.setValue(ss,rr,rval);
+     vari2 += sq( rval );
+    }
+   }
+   vari2 /= (double)( nscans * npoints );
 }
 //*DEBUG*
 int mms=nscans/2;

@@ -2343,22 +2343,6 @@ void US_LammAstfvm::AdjustSD(
             s_adj[jj] = s20w_correction_stem * inv_curVisc * ( 1.0 - vbar * curDens ) * sigma_corr;
             D_adj[jj] = D20w_correction_stem * inv_curVisc * delta_corr;
          }
-         #ifdef DEBUG
-            if (dbg_level > 3){
-               DbgLv(2) << "AdjSD:  s or D negative: t" << t << param_s << param_D << Nv << param_s20w << param_D20w;
-               DbgLv(2) << "AdjSD:  smin smax sneg_in r(sneg_in)" << smin << smax << sneg_in << x[sneg_in];
-               DbgLv(2) << "AdjSD:  dmin dmax dneg_in r(dneg_in)" << dmin << dmax << dneg_in << x[dneg_in];
-               log_need = true;
-            }
-            if (log_need){
-            DbgLv(2) << "AdjSD:    sadj 0 m n" << s_adj[ 0 ] << s_adj[ Nv / 2 ] << s_adj[ Nv - 1 ];
-            DbgLv(2) << "AdjSD:    Dadj 0 m n" << D_adj[ 0 ] << D_adj[ Nv / 2 ] << D_adj[ Nv - 1 ];
-            DbgLv(2) << "AdjSD:    rho 0,m,e" << Dens[ 0 ] << Dens[ Nv / 2 ] << Dens[ Nv - 1 ];
-            DbgLv(2) << "AdjSD:    visc 0,m,e" << Visc[ 0 ] << Visc[ Nv / 2 ] << Visc[ Nv - 1 ];
-            DbgLv(2) << "AdjSD:    vbar vbar_w rho_w" << vbar << vbar_w << rho_w;}
-            kst2 += (int) timer.restart();
-            DbgLv(3) << "AdjSD:  times 1 2" << kst1 << kst2;
-         #endif
          }
 
          break;
