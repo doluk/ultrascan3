@@ -2596,6 +2596,16 @@ DbgLv(1) << "  PX=Vbar";
 DbgLv(1) << "  PX=Molec.Wt.log";
       xtype           = 5;
    }
+   else if ( x_is_s )
+   {
+      DbgLv(1) << "  PX=Molec.Wt.log";
+      xtype           = 6;
+   }
+   else if ( x_is_D )
+   {
+      DbgLv(1) << "  PX=Molec.Wt.log";
+      xtype           = 7;
+   }
 
    else if ( x_is_Rh )
    {
