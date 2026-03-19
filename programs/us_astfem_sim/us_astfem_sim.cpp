@@ -1708,7 +1708,6 @@ for(int ss=0; ss<kscn; ss++ )
       }
    }
    // write experiment file
-   QRegularExpression rx( "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" );
    if ( odir.right( 1 ) != "/" )
    {
       odir += "/"; // Ensure trailing /

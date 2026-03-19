@@ -29,10 +29,7 @@ class US_DDistr_Combine : public US_Widgets
       QMap< QStringList, QList< QColor> >      changedPlotX_auto ( int,  QMap < QString, QString >);
       QString a_mode;
 
-      
-      
    private:
-
       // Distribution description object
       class DistrDesc
       {
@@ -145,8 +142,7 @@ class US_DDistr_Combine : public US_Widgets
       QRadioButton*  rb_pltff0;
       QRadioButton*  rb_pltvb;
       QRadioButton*  rb_pltMWl;
-      QRadioButton*  rb_plts;
-      QRadioButton*  rb_pltD;
+      QRadioButton*  rb_pltRh;
 
       QTextEdit*     te_status;
 

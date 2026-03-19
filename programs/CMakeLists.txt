@@ -75,6 +75,10 @@ endif()
 if(UNIX AND NOT APPLE)
     target_link_libraries(us_program_common INTERFACE OpenSSL::Crypto)
 endif()
+# windows with MSVC needs openssl applink shim to work properly at runtime
+if(WIN32 AND MSVC AND TARGET OpenSSL::SSL AND TARGET OpenSSL::applink)
+    target_link_libraries(us_program_common INTERFACE OpenSSL::applink)
+endif()
 
 # --------------------------------------------------------------------------
 # 2) Utils: shared by default, static only if profile asked for it
@@ -136,14 +140,10 @@ endif()
 
 if(WIN32)
     target_compile_definitions(us_program_common INTERFACE QWT_DLL QT_DLL)
-    # Force GUI subsystem (no console) for Release builds using linker flags.
-    # This avoids using WIN32_EXECUTABLE which triggers a dependency on qtmain.lib,
-    # often causing configuration issues (like looking for DEBUG versions in Release).
     if(CMAKE_BUILD_TYPE STREQUAL "Release")
         if(MINGW)
             target_link_options(us_program_common INTERFACE "-mwindows")
         elseif(MSVC)
-            # /ENTRY:mainCRTStartup is needed because we are skipping qtmain's WinMain
             target_link_options(us_program_common INTERFACE "/SUBSYSTEM:WINDOWS" "/ENTRY:mainCRTStartup")
         endif()
     endif()
