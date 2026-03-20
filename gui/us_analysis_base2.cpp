@@ -328,7 +328,7 @@ void US_AnalysisBase2::update( int selection )
    QString errmsg = "";
    US_Passwd pw;
    US_DB2*   dbP  = ( disk_controls->db() ) ?
-                    new US_DB2( pw.getPasswd() ) : 0;
+                    new US_DB2( pw.getPasswd() ) : nullptr;
 
    bool    bufin  = US_SolutionVals::values( dbP, d, solID, svbar, bdens,
                                              bvisc, bcomp, bmanu, errmsg );
@@ -351,7 +351,7 @@ void US_AnalysisBase2::update( int selection )
             tr( "Empty solution ID value!" ) );
       }
 
-      else if ( solID.length() < 36  &&  dbP != NULL )
+      else if ( solID.length() < 36  &&  dbP != nullptr )
       {  // Have DB solution ID
          solution_rec.readFromDB( solID.toInt(), dbP );
       }
