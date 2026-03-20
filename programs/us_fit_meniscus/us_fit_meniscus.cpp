@@ -671,7 +671,7 @@ void US_FitMeniscus::load_data()
    v_bott.clear();
    v_rmsd.clear();
    bott_fit          = false;
-   auto regex_exp = QRegExp( "[^0-9eE\\.\\n\\+\\-]+" ) ;
+   auto regex_exp = QRegularExpression( "[^0-9eE\\.\\n\\+\\-]+" ) ;
 
 DbgLv(1) << "LD:  bott_fit" << bott_fit << "fname_load" << fname_load;
 

@@ -615,7 +615,7 @@ bool US_Buffer::writeToDisk(const QString &filename) const {
    for (int i = 0; i < cosed_component.size(); i++) {
       US_CosedComponent bc = cosed_component[i];
       xml.writeStartElement("cosed_component");
-      xml.writeAttribute("id", bc.componentID.isNull() ? QString(i) : bc.componentID);
+      xml.writeAttribute("id", bc.componentID.isNull() ? QString::number(i) : bc.componentID);
       xml.writeAttribute("name", bc.name);
       xml.writeAttribute("GUID", bc.GUID);
       xml.writeAttribute("concentration", QString::number(bc.conc, 'f', 5));
@@ -629,7 +629,7 @@ bool US_Buffer::writeToDisk(const QString &filename) const {
 
       xml.writeStartElement("densityCoefficients");
       for (int j = 0; j < 6; j++) {
-         factor.sprintf("c%i", j);
+         factor.asprintf("c%i", j);
          value = QString::number(bc.dens_coeff[j], 'f', 5);
          qDebug() << factor << value;
          xml.writeAttribute(factor, value);
@@ -639,7 +639,7 @@ bool US_Buffer::writeToDisk(const QString &filename) const {
 
       xml.writeStartElement("viscosityCoefficients");
       for (int j = 0; j < 6; j++) {
-         factor.sprintf("c%i", j);
+         factor.asprintf("c%i", j);
          value = QString::number(bc.visc_coeff[j], 'f', 5);
          qDebug() << factor << value;
          xml.writeAttribute(factor, value);
