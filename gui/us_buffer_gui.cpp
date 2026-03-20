@@ -1690,7 +1690,7 @@ void US_BufferGuiNew::add_cosed_component(bool overlaying) {
    bool exists_already = false;
    for (US_CosedComponent& cc : buffer->cosed_component)
    {
-      idCosedComponent = max(idCosedComponent,cc.id);
+      idCosedComponent = qMax(idCosedComponent,cc.id);
       qDebug() << "Existing CosedComps " << cc.name << " " << cc.conc << " " << cc.overlaying;
       qDebug() << "cc.name == cosed_name " << (cc.name == cosed_name);
       qDebug() << "cc.overlaying == overlaying " << (cc.overlaying == overlaying);
@@ -1705,7 +1705,7 @@ void US_BufferGuiNew::add_cosed_component(bool overlaying) {
    QString entext = cosed_name + " (" + QString::number(concen * 1000, 'f', 3) + " mM)";
    if (exists_already)
    {
-      US_CosedComponent cc = cosed_component_list[ QString(idCosedComponent) ];
+      US_CosedComponent cc = cosed_component_list[ QString::number(idCosedComponent) ];
       for (int ii = 0; ii < listwidget->count(); ii++)
       {
          QListWidgetItem* listwidgetitem = listwidget->item(ii);
@@ -1917,7 +1917,7 @@ void US_BufferGuiNew::edit_cosedcomp() {
    bool exists_already = false;
    for (const US_CosedComponent& cc : buffer->cosed_component)
    {
-      idCosedComponent = max(idCosedComponent,cc.id);
+      idCosedComponent = qMax(idCosedComponent,cc.id);
       if (cc.name == cosed_name && cc.overlaying == overlaying){
          exists_already = true;
          idCosedComponent = cc.id;
@@ -1927,7 +1927,7 @@ void US_BufferGuiNew::edit_cosedcomp() {
    QString entext = cosed_name + " (" + QString::number(concen * 1000, 'f', 3) + " mM)";
    if (exists_already)
    {
-      US_CosedComponent cc = cosed_component_list[ QString(idCosedComponent) ];
+      US_CosedComponent cc = cosed_component_list[ QString::number(idCosedComponent) ];
       cc.conc = concen;
       for (int ii = 0; ii < listwidget->count(); ii++)
       {
@@ -1946,7 +1946,7 @@ void US_BufferGuiNew::edit_cosedcomp() {
    US_CosedComponent bcomp;
    bcomp.name = cosed_name;
    bcomp.id = idCosedComponent;
-   bcomp.componentID = QString(idCosedComponent);
+   bcomp.componentID = QString::number(idCosedComponent);
    bcomp.conc = concen;
    bcomp.overlaying = overlaying;
 

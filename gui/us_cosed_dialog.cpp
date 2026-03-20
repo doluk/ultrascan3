@@ -9,7 +9,7 @@
 #include <qwt_legend.h>
 
 US_BaseBufferRequester::US_BaseBufferRequester(QMap<QString, US_CosedComponent> &base_comps_, double* dens, double* visc)
-        : US_WidgetsDialog(nullptr, nullptr), density(dens), viscosity(visc), base_comps(base_comps_) {
+        : US_WidgetsDialog(nullptr, Qt::WindowFlags()), density(dens), viscosity(visc), base_comps(base_comps_) {
    if (base_comps.count() == 0) {
       this->close();
    }
@@ -81,7 +81,7 @@ void US_BaseBufferRequester::edit(void) {
 
 US_CosedComponentRequester::US_CosedComponentRequester(QMap<QString, US_CosedComponent> &base_comps_,
                                                        QList<US_CosedComponent> &excess_comps_,
-                                                       US_CosedComponent* comp_) : US_WidgetsDialog(nullptr, nullptr),
+                                                       US_CosedComponent* comp_) : US_WidgetsDialog(nullptr, Qt::WindowFlags()),
                                                                                    base_comps(base_comps_),
                                                                                    excess_comps(excess_comps_),
                                                                                    comp(comp_) {
@@ -261,7 +261,7 @@ void US_CosedComponentRequester::edit(void) {
 }
 
 US_LowerCosedComponentRequester::US_LowerCosedComponentRequester(QList<US_CosedComponent> &excess_comps_,
-                                                       US_CosedComponent* comp_) : US_WidgetsDialog(nullptr, nullptr),
+                                                       US_CosedComponent* comp_) : US_WidgetsDialog(nullptr, Qt::WindowFlags()),
                                                                                    excess_comps(excess_comps_),
                                                                                    comp(comp_) {
    if (base_comps.count() == 0 || excess_comps.count() == 0) {
