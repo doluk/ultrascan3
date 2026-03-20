@@ -394,7 +394,7 @@ US_FeMatch::US_FeMatch() : US_Widgets()
 
    sdata          = &wsdata;
 
-   setMaximumSize( qApp->desktop()->size() - QSize( 40, 40 ) );
+   setMaximumSize( QGuiApplication::primaryScreen()->availableSize() );
    data_plot2->replot();
 }
 
