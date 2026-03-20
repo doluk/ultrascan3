@@ -407,11 +407,6 @@ void US_FeMatch::initialize_adv_vals()
    adv_vals[ "meshtype"   ] = "ASTFEM";
    adv_vals[ "gridtype"   ] = "Moving";
    adv_vals[ "modelsim"   ] = "mean";
-
-   sdata          = &wsdata;
-
-   setMaximumSize( QGuiApplication::primaryScreen()->availableSize() );
-   data_plot2->replot();
 }
 
 // public function to get pointer to edit data
@@ -808,7 +803,13 @@ DbgLv(1) << "Fem:Upd: (0)svbar" << svbar;
    {
       bmd_pos  = rbmapd->pos();
       rbmapd->close();
-      rbmapd   = 0;
+      rbmapd.clear();
+   }
+   if ( report_dialog )
+   {
+      report_pos  = report_dialog->pos();
+      report_dialog->close();
+      report_dialog.clear();
    }
 }
 
@@ -1267,16 +1268,21 @@ void US_FeMatch::view_report( )
 
    // generate the report file
    write_report( ts );
+   if ( report_dialog.isNull())
+   {
+      report_dialog = new US_Editor( US_Editor::DEFAULT, true, "HTML (*.html);;Text files (*.txt)", this );
+      report_dialog->setWindowTitle( tr( "Report:  FE Match Model Simulation" ) );
+      report_dialog->resize( 800, 700 );
+      report_dialog->e->setFont( QFont( US_GuiSettings::fontFamily(),
+                             US_GuiSettings::fontSize() ) );
+   }
 
    // display the report dialog
-   US_Editor* editd = new US_Editor( US_Editor::DEFAULT, true, "", this );
-   editd->setWindowTitle( tr( "Report:  FE Match Model Simulation" ) );
-   editd->move( this->pos() + QPoint( 100, 100 ) );
-   editd->resize( 800, 700 );
-   editd->e->setFont( QFont( US_GuiSettings::fontFamily(),
-                             US_GuiSettings::fontSize() ) );
-   editd->e->setHtml( mtext );
-   editd->show();
+   report_dialog->e->setHtml( mtext );
+   report_dialog->show();
+   report_dialog->activateWindow();
+   report_dialog->raise();
+
 }
 
 // Slot to handle a change in Exclude-From
