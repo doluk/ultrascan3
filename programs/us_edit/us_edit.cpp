@@ -1134,7 +1134,7 @@ pb_plateau->setVisible(false);
    p.setColor(QPalette::Text, Qt::darkRed);
    le_info->setPalette(p);
    le_info->setText(tr( "Baseline Correction Instructions:"
-			"<ul><li>[Firt Point]: to select, Hold Ctrl & Left Mouse click </ul></li>"
+			"<ul><li>[First Point]: to select, Hold Ctrl & Left Mouse click </ul></li>"
 			"<ul><li>Continue holding Ctrl, move Mouse to the Second Point to be selected (you will see red line following the mouse)</ul></li>"
 			"<ul><li>[Second Point]: to select, click Left Mouse (while still holding Ctrl)</ul></li>"
 			));
@@ -1727,7 +1727,7 @@ pb_plateau->setVisible(false);
    p.setColor(QPalette::Text, Qt::darkRed);
    le_info->setPalette(p);
    le_info->setText(tr( "Baseline Correction Instructions:"
-			"<ul><li>[Firt Point]: to select, Hold Ctrl & Left Mouse click </ul></li>"
+			"<ul><li>[First Point]: to select, Hold Ctrl & Left Mouse click </ul></li>"
 			"<ul><li>Continue holding Ctrl, move Mouse to the Second Point to be selected (you will see red line following the mouse)</ul></li>"
 			"<ul><li>[Second Point]: to select, click Left Mouse (while still holding Ctrl)</ul></li>"
 			));
