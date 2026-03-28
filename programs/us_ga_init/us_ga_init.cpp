@@ -1339,7 +1339,7 @@ DbgLv(1) << "MC" << monte_carlo << " iters" << mc_iters;
    {
       for ( int jj = 0; jj < model.components.size(); jj++ )
       {
-         US_Model::calc_coefficients( model.components[ jj ] );
+         //US_Model::calc_coefficients( model.components[ jj ] );
 
          sol_sk.s  = model.components[ jj ].s * 1.0e13;
          sol_sk.k  = model.components[ jj ].f_f0;
@@ -2192,7 +2192,7 @@ DbgLv(1) << "VIEW OPENED";
       QString rtext = ts.readAll();
       filei.close();
 
-      US_Editor* eddiag = new US_Editor( US_Editor::DEFAULT, true );
+      US_Editor* eddiag = new US_Editor( US_Editor::DEFAULT, true, "HTML (*.html)" );
       eddiag->setWindowTitle( tr( "Statistics File Contents" ) );
       eddiag->move( this->pos() + QPoint( 30, 30 ) );
       eddiag->resize( 760, 700 );

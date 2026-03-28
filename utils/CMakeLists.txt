@@ -208,15 +208,6 @@ if(BUILD_TESTING OR US3_PREFER_STATIC)
         endif()
     endif()
 
-    # Debug options
-    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-        if(MSVC)
-            target_compile_options(us_utils_static PRIVATE /Zi /Od)
-        else()
-            target_compile_options(us_utils_static PRIVATE -g -O0)
-        endif()
-    endif()
-
     # Export static library alias
     add_library(UltraScan3::Utils_Static ALIAS us_utils_static)
 
