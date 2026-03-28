@@ -1,6 +1,10 @@
 #include <QPrinter>
 #include <QPdfWriter>
 #include <QPainter>
+#include <QFileDialog>
+#include <QSettings>
+#include <QTextDocument>
+#include <QProcess>
 
 #include "us_reporter_gmp.h"
 #include "us_settings.h"
@@ -18,6 +22,10 @@
 #include "../us/us_revision.h"
 
 #define MIN_NTC   25
+// Allow enough time for large report documents with many embedded figures.
+static const int TYPST_COMPILATION_TIMEOUT_MS = 300000;
+// Grace period for process termination escalation.
+static const int PROCESS_KILL_TIMEOUT_MS      = 5000;
 
 // Macro stringification helpers
 #define STRINGIFY(x) #x
@@ -219,6 +227,10 @@ US_ReporterGMP::US_ReporterGMP() : US_Widgets()
   pb_unselect_all  = us_pushbutton( tr( "Unselect All Tree Items" ) );
   pb_expand_all    = us_pushbutton( tr( "Expand All Tree Items" ) );
   pb_collapse_all  = us_pushbutton( tr( "Collapse All Tree Items" ) );
+  le_typst_bin_path      = us_lineedit( tr(""), 0, false );
+  le_typst_template_path = us_lineedit( tr(""), 0, false );
+  QPushButton* pb_typst_bin_path      = us_pushbutton( tr( "Browse Typst Binary..." ) );
+  QPushButton* pb_typst_template_path = us_pushbutton( tr( "Browse Typst Template..." ) );
 
   //Filename path
   QLabel*      lb_fpath_info = us_label( tr( "Report File \nLocation:" ) );
@@ -255,6 +267,12 @@ US_ReporterGMP::US_ReporterGMP() : US_Widgets()
   buttonsLayout->addWidget( le_loaded_run,    row++, 2, 1, 10 );
   buttonsLayout->addWidget( pb_loadrun,       row++, 0, 1, 12 );
   buttonsLayout->addWidget( pb_gen_report,    row++, 0, 1, 12 );
+  buttonsLayout->addWidget( us_label( tr( "Typst Binary Path:" ) ), row,   0, 1, 3 );
+  buttonsLayout->addWidget( le_typst_bin_path,                      row,   3, 1, 6 );
+  buttonsLayout->addWidget( pb_typst_bin_path,                      row++, 9, 1, 3 );
+  buttonsLayout->addWidget( us_label( tr( "Typst Template Path:" ) ), row,   0, 1, 3 );
+  buttonsLayout->addWidget( le_typst_template_path,                    row,   3, 1, 6 );
+  buttonsLayout->addWidget( pb_typst_template_path,                    row++, 9, 1, 3 );
   buttonsLayout->addWidget( lb_fpath_info,    row,   0, 1, 2 );
   buttonsLayout->addWidget( te_fpath_info,    row++, 2, 1, 10 );
   buttonsLayout->addWidget( pb_view_report,   row++, 0, 1, 12 );
@@ -302,6 +320,10 @@ US_ReporterGMP::US_ReporterGMP() : US_Widgets()
 	   this,            SLOT( expand_all()   ) );
   connect( pb_collapse_all, SIGNAL( clicked()      ),
 	   this,            SLOT(   collapse_all()   ) ); 
+  connect( pb_typst_bin_path, SIGNAL( clicked()      ),
+	   this,              SLOT(   select_typst_bin_path()   ) );
+  connect( pb_typst_template_path, SIGNAL( clicked()      ),
+	   this,                   SLOT(   select_typst_template_path()   ) );
 
   connect( pb_loadreport_db,  SIGNAL( clicked()      ),
   	   this,              SLOT(   load_gmp_report_db()   ) );
@@ -379,6 +401,8 @@ US_ReporterGMP::US_ReporterGMP() : US_Widgets()
   qDebug() << "Init gen Tree: height -- "     << genTree->height();
   qDebug() << "Init perChan Tree: height -- " << perChanTree->height();
   qDebug() << "Init Combo Tree: height -- "   << combPlotsTree->height();
+
+  load_typst_settings();
 }
 
 //For autoflow: constructor
@@ -392,6 +416,8 @@ US_ReporterGMP::US_ReporterGMP( QString a_mode ) : US_Widgets()
   first_time_perChan_tree_build = true;
   auto_mode  = true;
   GMP_report = true;
+  le_typst_bin_path      = nullptr;
+  le_typst_template_path = nullptr;
   
   // primary layouts
   QVBoxLayout* superLayout    = new QVBoxLayout( this );
@@ -588,6 +614,7 @@ US_ReporterGMP::US_ReporterGMP( QString a_mode ) : US_Widgets()
     }
   
   resize( 1350, 800 );
+  load_typst_settings();
 }
 
 
@@ -3318,6 +3345,396 @@ void US_ReporterGMP::view_report_db ( void )
 				"No such file or directory...") .arg( filePath_db ) );
     }
 }
+
+void US_ReporterGMP::select_typst_bin_path( void )
+{
+  QString bin_path = QFileDialog::getOpenFileName(
+      this,
+      tr( "Select Typst Binary" ),
+      QFileInfo( typst_bin_path ).absolutePath() );
+
+  if ( !bin_path.isEmpty() )
+    {
+      typst_bin_path = bin_path;
+      if ( le_typst_bin_path != nullptr )
+        le_typst_bin_path->setText( bin_path );
+      save_typst_settings();
+    }
+}
+
+void US_ReporterGMP::select_typst_template_path( void )
+{
+  QString template_path = QFileDialog::getOpenFileName(
+      this,
+      tr( "Select Typst Template" ),
+      QFileInfo( typst_template_path ).absolutePath(),
+      tr( "Typst Files (*.typ);;All Files (*)" ) );
+
+  if ( !template_path.isEmpty() )
+    {
+      typst_template_path = template_path;
+      if ( le_typst_template_path != nullptr )
+        le_typst_template_path->setText( template_path );
+      save_typst_settings();
+    }
+}
+
+void US_ReporterGMP::load_typst_settings( void )
+{
+  QSettings settings;
+  QString default_template_path =
+      QDir( QCoreApplication::applicationDirPath() ).filePath( "default_report_template.typ" );
+
+  typst_bin_path = settings.value( "us_reporter_gmp/typst_bin_path", "typst" ).toString();
+  typst_template_path = settings.value( "us_reporter_gmp/typst_template_path",
+                                        default_template_path ).toString();
+
+  if ( le_typst_bin_path != nullptr )
+    le_typst_bin_path->setText( typst_bin_path );
+
+  if ( le_typst_template_path != nullptr )
+    le_typst_template_path->setText( typst_template_path );
+}
+
+void US_ReporterGMP::save_typst_settings( void )
+{
+  if ( le_typst_bin_path != nullptr )
+    typst_bin_path = le_typst_bin_path->text().trimmed();
+
+  if ( le_typst_template_path != nullptr )
+    typst_template_path = le_typst_template_path->text().trimmed();
+
+  if ( typst_bin_path.isEmpty() )
+    typst_bin_path = "typst";
+
+  QSettings settings;
+  settings.setValue( "us_reporter_gmp/typst_bin_path", typst_bin_path );
+  settings.setValue( "us_reporter_gmp/typst_template_path", typst_template_path );
+}
+
+QString US_ReporterGMP::default_typst_template( void ) const
+{
+  return QString(
+      "#set document(title: [{{REPORT_TITLE}}])\n"
+      "#set page(paper: \"us-letter\", margin: (x: 0.6in, y: 0.6in), numbering: \"1 / 1\")\n"
+      "#set heading(numbering: \"1.\")\n"
+      "#set text(size: 9pt)\n"
+      "#set par(justify: true, leading: 0.65em)\n\n"
+      "#align(center)[#text(size: 13pt, weight: \"bold\")[{{REPORT_TITLE}}]]\n"
+      "#v(0.8em)\n\n"
+      "{{REPORT_BODY}}\n" );
+}
+
+QString US_ReporterGMP::typst_escape_text( const QString& text ) const
+{
+  QString escaped;
+  escaped.reserve( text.size() * 2 );
+
+  for ( int ii = 0; ii < text.size(); ++ii )
+    {
+      const QChar ch = text.at( ii );
+      if ( ch == '\\' || ch == '#' || ch == '[' || ch == ']' || ch == '{' || ch == '}' )
+        escaped += '\\';
+      escaped += ch;
+    }
+
+  return escaped;
+}
+
+void US_ReporterGMP::assemble_typst_report( const QString& report_dir )
+{
+  typst_assembled.clear();
+
+  auto cell_text = [&]( const QString& value ) -> QString
+  {
+    QString v = value.isEmpty() ? tr( "N/A" ) : value;
+    v.replace( "\r\n", "\n" );
+    v.replace( "\r", "\n" );
+    v.replace( "\n", "; " );
+    return typst_escape_text( v );
+  };
+
+  auto string_text = [&]( const QString& value ) -> QString
+  {
+    QString escaped;
+    escaped.reserve( value.size() * 2 );
+
+    for ( int ii = 0; ii < value.size(); ++ii )
+      {
+        const QChar ch = value.at( ii );
+        if ( ch == '\\' || ch == '"' )
+          escaped += '\\';
+        escaped += ch;
+      }
+
+    return escaped;
+  };
+
+  auto append_table = [&]( const QString& caption,
+                           const QVector< QPair< QString, QString > >& rows )
+  {
+    if ( rows.isEmpty() )
+      return;
+
+    typst_assembled += "#figure(\n";
+    typst_assembled += "  table(\n";
+    typst_assembled += "    columns: 2,\n";
+    typst_assembled += "    inset: 6pt,\n";
+    typst_assembled += "    stroke: .35pt,\n";
+    typst_assembled += "    table.header([Field], [Value]),\n";
+
+    for ( int ii = 0; ii < rows.size(); ++ii )
+      {
+        typst_assembled += "    [" + cell_text( rows[ ii ].first ) + "], ["
+                           + cell_text( rows[ ii ].second ) + "],\n";
+      }
+
+    typst_assembled += "  ),\n";
+    typst_assembled += "  caption: [" + typst_escape_text( caption ) + "],\n";
+    typst_assembled += ")\n\n";
+  };
+
+  auto append_list_table = [&]( const QString& caption, const QStringList& values,
+                                const QString& header )
+  {
+    QVector< QPair< QString, QString > > rows;
+    if ( values.isEmpty() )
+      {
+        rows << qMakePair( tr( "1" ), tr( "N/A" ) );
+      }
+    else
+      {
+        for ( int ii = 0; ii < values.size(); ++ii )
+          rows << qMakePair( QString::number( ii + 1 ), values[ ii ] );
+      }
+
+    typst_assembled += "#figure(\n";
+    typst_assembled += "  table(\n";
+    typst_assembled += "    columns: 2,\n";
+    typst_assembled += "    inset: 6pt,\n";
+    typst_assembled += "    stroke: .35pt,\n";
+    typst_assembled += "    table.header([#], [" + typst_escape_text( header ) + "]),\n";
+
+    for ( int ii = 0; ii < rows.size(); ++ii )
+      {
+        typst_assembled += "    [" + cell_text( rows[ ii ].first ) + "], ["
+                           + cell_text( rows[ ii ].second ) + "],\n";
+      }
+
+    typst_assembled += "  ),\n";
+    typst_assembled += "  caption: [" + typst_escape_text( caption ) + "],\n";
+    typst_assembled += ")\n\n";
+  };
+
+  QString report_type = GMP_report ? "GMP" : "Non-GMP";
+
+  typst_assembled += "= " + typst_escape_text( report_type + " Report Overview" ) + "\n";
+  QVector< QPair< QString, QString > > overview_rows;
+  overview_rows << qMakePair( tr( "Run" ), runName )
+                << qMakePair( tr( "Run ID" ), runID )
+                << qMakePair( tr( "Created" ), current_date )
+                << qMakePair( tr( "Protocol" ), currProto.protoname )
+                << qMakePair( tr( "Investigator" ), currProto.investigator )
+                << qMakePair( tr( "Project" ), currProto.project )
+                << qMakePair( tr( "Experiment Type" ), expType );
+  append_table( tr( "Report Overview" ), overview_rows );
+  typst_assembled += "\n";
+
+  typst_assembled += "== General Settings\n";
+  QVector< QPair< QString, QString > > general_rows;
+  general_rows << qMakePair( tr( "Run Temperature (deg C)" ), QString::number( currProto.temperature ) )
+               << qMakePair( tr( "Temperature-Equilibration Delay (mins)" ),
+                             QString::number( currProto.temeq_delay ) )
+               << qMakePair( tr( "Laboratory" ), currProto.rpRotor.laboratory )
+               << qMakePair( tr( "Rotor" ), currProto.rpRotor.rotor )
+               << qMakePair( tr( "Calibration Date" ), currProto.rpRotor.calibration );
+  append_table( tr( "General Settings" ), general_rows );
+  typst_assembled += "\n";
+
+  typst_assembled += "== Operator and Review Setup\n";
+  QJsonDocument jsonDocOperList = QJsonDocument::fromJson( eSign_details[ "operatorListJson" ] .toUtf8() );
+  QJsonDocument jsonDocRevList  = QJsonDocument::fromJson( eSign_details[ "reviewersListJson" ] .toUtf8() );
+  QJsonDocument jsonDocApprList = QJsonDocument::fromJson( eSign_details[ "approversListJson" ] .toUtf8() );
+  QString opers_a = get_assigned_oper_revs( jsonDocOperList );
+  QString revs_a  = get_assigned_oper_revs( jsonDocRevList );
+  QString apprs_a = get_assigned_oper_revs( jsonDocApprList );
+  QVector< QPair< QString, QString > > sign_rows;
+  sign_rows << qMakePair( tr( "Operator(s)" ), opers_a )
+            << qMakePair( tr( "Reviewer(s)" ), revs_a )
+            << qMakePair( tr( "Approver(s)" ), apprs_a );
+  append_table( tr( "Operator, Reviewer, and Approver Assignments" ), sign_rows );
+  typst_assembled += "\n";
+
+  typst_assembled += "== Stage Parameters\n";
+  QVector< QPair< QString, QString > > stage_rows;
+  stage_rows << qMakePair( tr( "Duration" ), duration_str )
+             << qMakePair( tr( "Delay Stage" ), delay_stage_str )
+             << qMakePair( tr( "Total Time" ), total_time_str )
+             << qMakePair( tr( "UV/Vis Delay" ), delay_uvvis_str )
+             << qMakePair( tr( "UV/Vis Scan Interval" ), scanint_uvvis_str )
+             << qMakePair( tr( "Intensity Delay" ), delay_int_str )
+             << qMakePair( tr( "Intensity Scan Interval" ), scanint_int_str );
+  append_table( tr( "Stage Parameters" ), stage_rows );
+  typst_assembled += "\n";
+
+  typst_assembled += "== Dropped Triples\n";
+  append_list_table( tr( "Dropped Triple List" ), droppedTriplesList, tr( "Dropped Triple" ) );
+  typst_assembled += "\n";
+
+  typst_assembled += "== Missing Models\n";
+  QString missing_msg = missing_models_msg();
+  QStringList missing_lines;
+  if ( !missing_msg.isEmpty() )
+    missing_lines = missing_msg.split( "\n", Qt::SkipEmptyParts );
+  append_list_table( tr( "Missing Models Summary" ), missing_lines, tr( "Details" ) );
+  typst_assembled += "\n";
+
+  typst_assembled += "== Plots and Figures\n";
+  QDir rpt_dir( report_dir );
+  QStringList fig_masks;
+  fig_masks << "*.png" << "*.jpg" << "*.jpeg" << "*.svg";
+  QStringList fig_files = rpt_dir.entryList( fig_masks, QDir::Files, QDir::Name );
+  if ( fig_files.isEmpty() )
+    {
+      typst_assembled += typst_escape_text( tr( "No plot images were found in the report directory." ) ) + "\n\n";
+    }
+  else
+    {
+      for ( int ii = 0; ii < fig_files.size(); ++ii )
+        {
+          QString fname = fig_files[ ii ];
+          QString cap   = tr( "Plot: %1" ).arg( fname );
+          QString alt   = tr( "Generated report plot image for %1" ).arg( fname );
+          typst_assembled += "#figure(\n";
+          typst_assembled += "  image(\"" + string_text( fname )
+                             + "\", width: 92%, alt: [" + typst_escape_text( alt ) + "]),\n";
+          typst_assembled += "  caption: [" + typst_escape_text( cap ) + "],\n";
+          typst_assembled += ")\n\n";
+        }
+    }
+
+  typst_assembled += "== Generated Report Artifacts\n";
+  QStringList masks;
+  masks << "*.pdf" << "*.png" << "*.svgz" << "*.svg" << "*.typ";
+  QStringList files = rpt_dir.entryList( masks, QDir::Files, QDir::Name );
+  append_list_table( tr( "Generated Artifact Files" ), files, tr( "Artifact Filename" ) );
+  typst_assembled += "\n";
+
+  typst_assembled += "== Notes\n";
+  QVector< QPair< QString, QString > > notes_rows;
+  notes_rows << qMakePair( tr( "Generation Backend" ),
+                           tr( "This report was generated through the Typst CLI backend." ) )
+             << qMakePair( tr( "Figures and Tables" ),
+                           tr( "Plots are emitted as Typst figures with alt text and tables are captioned for numbering." ) );
+  append_table( tr( "Report Notes" ), notes_rows );
+}
+
+bool US_ReporterGMP::write_typst_pdf( const QString& report_dir, const QString& pdf_path, const QString& report_title )
+{
+  QString template_path = typst_template_path;
+  QString typst_bin     = typst_bin_path;
+
+  if ( le_typst_template_path != nullptr )
+    template_path = le_typst_template_path->text().trimmed();
+
+  if ( le_typst_bin_path != nullptr )
+    typst_bin = le_typst_bin_path->text().trimmed();
+
+  if ( typst_bin.isEmpty() )
+    typst_bin = "typst";
+
+  QString normalized_bin = QDir::fromNativeSeparators( typst_bin );
+  QFileInfo tbin_info( typst_bin );
+  bool is_path_to_binary = tbin_info.isAbsolute() || normalized_bin.contains( "/" );
+  if ( is_path_to_binary )
+    {
+      if ( !tbin_info.exists() || !tbin_info.isFile() || !tbin_info.isExecutable() )
+        {
+          QMessageBox::warning( this, tr( "Typst Binary Error" ),
+                                tr( "Typst binary path must exist, be a file, and be executable:\n%1" )
+                                .arg( typst_bin ) );
+          return false;
+        }
+    }
+
+  QString template_text;
+  if ( !template_path.isEmpty() )
+    {
+      QFile tfile( template_path );
+      if ( !tfile.open( QIODevice::ReadOnly | QIODevice::Text ) )
+        {
+          template_text = default_typst_template();
+        }
+      else
+        {
+          template_text = QString::fromUtf8( tfile.readAll() );
+          tfile.close();
+        }
+    }
+  else
+    {
+      template_text = default_typst_template();
+    }
+
+  QString body_text = typst_assembled;
+  if ( template_text.contains( "{{REPORT_TITLE}}" ) )
+    template_text.replace( "{{REPORT_TITLE}}", typst_escape_text( report_title ) );
+  if ( template_text.contains( "{{REPORT_BODY}}" ) )
+    template_text.replace( "{{REPORT_BODY}}", body_text );
+  else
+    template_text += "\n\n" + body_text + "\n";
+
+  QString typst_input = QDir( report_dir ).filePath( report_title + ".typ" );
+  QFile typst_file( typst_input );
+  if ( !typst_file.open( QIODevice::WriteOnly | QIODevice::Text ) )
+    {
+      QMessageBox::warning( this, tr( "Typst Error" ),
+                            tr( "Could not write Typst input file:\n%1" ).arg( typst_input ) );
+      return false;
+    }
+  typst_file.write( template_text.toUtf8() );
+  typst_file.close();
+
+  QProcess process;
+  process.setWorkingDirectory( report_dir );
+  process.start( typst_bin, QStringList() << "compile"
+                                           << typst_input
+                                           << pdf_path );
+  if ( !process.waitForFinished( TYPST_COMPILATION_TIMEOUT_MS ) )
+    {
+      process.terminate();
+      if ( !process.waitForFinished( PROCESS_KILL_TIMEOUT_MS ) )
+        {
+          process.kill();
+          if ( !process.waitForFinished( PROCESS_KILL_TIMEOUT_MS ) )
+            {
+              QMessageBox::warning( this, tr( "Typst Process Error" ),
+                                    tr( "Typst process did not exit after termination and kill requests." ) );
+            }
+        }
+      QMessageBox::warning( this, tr( "Typst Compilation Timed Out" ),
+                            tr( "Timed out while generating report PDF with Typst." ) );
+      return false;
+    }
+
+  if ( process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0 )
+    {
+      QString out = QString::fromUtf8( process.readAllStandardOutput() );
+      QString err = QString::fromUtf8( process.readAllStandardError() );
+      QMessageBox::warning( this, tr( "Typst Compilation Failed" ),
+                            tr( "Command failed while generating PDF with Typst.\n\n"
+                                "Binary: %1\nInput: %2\nOutput: %3\n\n"
+                                "Stdout:\n%4\n\nStderr:\n%5" )
+                              .arg( typst_bin )
+                              .arg( typst_input )
+                              .arg( pdf_path )
+                              .arg( out )
+                              .arg( err ) );
+      return false;
+    }
+
+  return QFileInfo( pdf_path ).exists();
+}
  
 
 //reset
@@ -3453,6 +3870,7 @@ void US_ReporterGMP::reset_report_panel ( void )
   html_analysis_profile.clear();
   html_analysis_profile_2dsa.clear();
   html_analysis_profile_pcsa .clear();
+  typst_assembled.clear();
 
   qApp->processEvents();
 }
@@ -3494,6 +3912,7 @@ void US_ReporterGMP::generate_report( void )
   html_analysis_profile.clear();
   html_analysis_profile_2dsa.clear();
   html_analysis_profile_pcsa .clear();
+  typst_assembled.clear();
 
   
   //Part 1
@@ -3720,7 +4139,7 @@ void US_ReporterGMP::generate_report( void )
   write_pdf_report( );
   qApp->processEvents();
 
-  pb_view_report -> setEnabled( true );
+  pb_view_report -> setEnabled( QFileInfo( filePath ).exists() );
 
 
   //TEST !!!!!!!!1
@@ -12182,47 +12601,13 @@ void US_ReporterGMP::write_pdf_report( void )
   
   //filePath  = US_Settings::tmpDir() + "/" + fileName;
   filePath  = dirName + "/" + fileName;
-  
-  // //Standard way if printing: ******************************/
-  // QTextDocument document;
-  // document.setHtml( html_assembled );
-  
-  // QPrinter printer(QPrinter::PrinterResolution);
-  // printer.setOutputFormat(QPrinter::PdfFormat);
-  // printer.setPaperSize(QPrinter::Letter);
-
-  // printer.setOutputFileName( filePath );
-  // printer.setFullPage(true);
-  // printer.setPageMargins(0, 0, 0, 0, QPrinter::Millimeter);
-  
-  // document.print(&printer);
-  /** END of standard way of printing *************************/
-
-  qDebug() << "HTMP_assembled -- " << html_assembled;
-
-
-  
-  /** ALT. painting ********************************************/
-  QTextDocument textDocument;
-  textDocument.setHtml( html_assembled );
-
-  qDebug() << "Default QtextDoc font1: " << textDocument.defaultFont();
-  QFont t_f = textDocument.defaultFont();
-  t_f. setPointSize( 7 );
-  textDocument. setDefaultFont( t_f );
-  qDebug() << "Default QtextDoc font2: " << textDocument.defaultFont();
-  
-  QPrinter printer(QPrinter::PrinterResolution);//(QPrinter::HighResolution);//(QPrinter::PrinterResolution);
-  printer.setOutputFormat(QPrinter::PdfFormat);
-  printer.setPageSize( QPageSize( QPageSize::Letter ) );
-
-  printer.setOutputFileName( filePath );
-  printer.setFullPage(true);
-  //printer.setFullPage(false);
-  
-  printDocument(printer, &textDocument ); //, 0);
-  
-  /*************************************************************/
+  assemble_typst_report( dirName );
+  save_typst_settings();
+  if ( !write_typst_pdf( dirName, filePath, ProtocolName_auto ) )
+    {
+      filePath.clear();
+      return;
+    }
 
   qApp->processEvents();
   
@@ -13712,4 +14097,3 @@ void US_ReporterGMP::add_solution_details( const QString sol_id, const QString s
 	;
     }
 }
-
