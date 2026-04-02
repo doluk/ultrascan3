@@ -357,6 +357,7 @@ class US_Edit : public US_Widgets
       int     autoflowID_passed;
       int     autoflowStatusID;
       QString autoflow_expType;
+      QString expType_manual;
       QString dataSource;
       bool    simulated_data;
 

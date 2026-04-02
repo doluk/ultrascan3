@@ -43,6 +43,8 @@ US_Edit::US_Edit( QString auto_mode ) : US_Widgets()
    pb_removeAllbutLast = us_pushbutton( tr( "Remove All but Last" ), true );
    pb_baseline_correct = us_pushbutton( tr( "Correct Baseline" ), false );
    pb_pass             = us_pushbutton( tr( "Accept Changes for a Channel" ), false );
+
+   expType_manual = "";
    
    check        = US_Images::getIcon( US_Images::CHECK );
    invert       = 1.0;
@@ -835,6 +837,8 @@ pb_plateau->setVisible(false);
 US_Edit::US_Edit( QVector< US_DataIO::RawData > allData, QStringList  triples,
 		  QString  workingDir, int currenChtInd, int plotind, QString exptype ) : US_Widgets()
 {
+   expType_manual = exptype;
+  
    pb_bll_modify       = us_pushbutton( tr( "Modify Baseline Correction for Selected Triple" ), false );
    pb_bll_modify -> setVisible( false );
    
@@ -1430,6 +1434,8 @@ US_Edit::US_Edit( QVector< US_DataIO::RawData > allData, QStringList  triples,
 {
    pb_bll_modify       = us_pushbutton( tr( "Modify Baseline Correction for Selected Triple" ), false );
    pb_bll_modify -> setVisible( false );
+
+   expType_manual = exptype;
        
    check        = US_Images::getIcon( US_Images::CHECK );
    invert       = 1.0;
@@ -2063,6 +2069,9 @@ US_Edit::US_Edit() : US_Widgets()
    lb_bll_intercept    = us_label( tr( "Y-intercept:" ), -1 );
    le_bll_intercept    = us_lineedit( "", 1, true );
    pb_pass             = us_pushbutton( tr( "Accept Changes for a Channel" ), false );
+
+   expType_manual = "";
+   
    check        = US_Images::getIcon( US_Images::CHECK );
    invert       = 1.0;
    all_edits    = false;
@@ -6343,7 +6352,7 @@ void US_Edit::set_data_over_lamda() {
             edata         = &allData[ trx ];               // Triple data
             int iwavl     = rawi_wvlns[ jj ];             // Wavelength value
             int wvx       = toti_wvlns.indexOf( iwavl );   // Wavelength index
-            DbgLv(1) << "IS-MWL:   trx ccx wvx" << trx << ccx << wvx;
+            //DbgLv(1) << "IS-MWL:   trx ccx wvx" << trx << ccx << wvx;
 
             int rpidx = -1;
             for ( int kk = xvals_pos.at(jj); kk < edata->pointCount(); kk++)
@@ -10412,25 +10421,7 @@ void US_Edit::write_auto( void )
  
   // ////
 
-  if ( autoflow_expType == "ABDE" ) 
-    {
-      QMessageBox msgBox(this);
-      msgBox.setIcon(QMessageBox::Warning);
-      msgBox.setWindowTitle(tr("ABDE Edit Profiles"));
-      msgBox.setText(tr("Before saving edit profiles, please verify if\n"
-			"all scans but last were excluded for all channels.\n\n"
-			"If not, you can do this by clicking \"Remove All but Last\"\n"
-			"button for every selected channel..."));
-      
-      QPushButton *verifyButton = msgBox.addButton(tr("Let me verify"), QMessageBox::RejectRole);
-      QPushButton *yesButton = msgBox.addButton(tr("Proceed with saving"), QMessageBox::AcceptRole);
-      
-      msgBox.setDefaultButton(verifyButton);
-      msgBox.exec();
-      
-      if (msgBox.clickedButton() != yesButton)
-	return; 
-    }
+
 
   /****  TEMP1 **/
   //--- Check if saving already initiated
@@ -15111,6 +15102,28 @@ void US_Edit::pass_values_bll( void )
 // Close edit after review of saved edits
 void US_Edit::pass_values( void )
 {
+  //For ABDE. check if Remove ALl but Last was ckicked
+  qDebug() << "autoflow_expType -- " << expType_manual;
+  if ( expType_manual == "ABDE" ) 
+    {
+      QMessageBox msgBox(this);
+      msgBox.setIcon(QMessageBox::Warning);
+      msgBox.setWindowTitle(tr("ABDE Edit Profile"));
+      msgBox.setText(tr("Before applying cjanges for edit profile, please verify that\n"
+			"all scans but last were excluded for this channel.\n\n"
+			"If not, you can do this by clicking \"Remove All but Last\"\n"
+			"button for every selected channel..."));
+      
+      QPushButton *verifyButton = msgBox.addButton(tr("Let me verify"), QMessageBox::RejectRole);
+      QPushButton *yesButton = msgBox.addButton(tr("Proceed with saving"), QMessageBox::AcceptRole);
+      
+      msgBox.setDefaultButton(verifyButton);
+      msgBox.exec();
+      
+      if (msgBox.clickedButton() != yesButton)
+	return; 
+    }
+  
   //collect menicsus | airGap | baseline | range | etc data && pass to main edit stage
 
   QString triple_name = cb_triple->itemText( cb_triple->currentIndex() );
