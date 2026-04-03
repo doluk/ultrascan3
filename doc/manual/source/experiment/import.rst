@@ -32,7 +32,7 @@ Once Run is completed, define reference scans, drop Triplicates, and the edit pr
 
 .. _select_delete:
 
-.. image:: ../_static/images/import_drop-Triplicate.png
+.. image:: ../_static/images/import_drop-triple.png
     :align: center
 
 
