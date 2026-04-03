@@ -54,8 +54,6 @@ The advanced analysis choices presented in this dialog fall into three categorie
     - Check to specify a band-forming centerpiece if running a band forming sedimentation velocity experiment.
   * - **Band-loading volume (µL)**
     - Specify the volume added to the reservoir in the band-forming centerpiece in microliters (µL). 
-  * - **Band-loading Volume:**
-    - Specify a band-loading volume value.
   * - **Simulation Points:**
     - Specify the number of discretized radial positions used when numerically integrating the Lamm equation. For typical analyses, 200 simulation points provide sufficient resolution. Increasing this value improves the precision of the simulation but also increases computational time. 
   * - **(mesh type)**
