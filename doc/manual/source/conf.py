@@ -23,8 +23,8 @@ from sphinxcontrib.qthelp import QtHelpBuilder
 import os
 import subprocess
 import sys
-
-sys.path.insert(0, os.path.abspath(__file__.__name__))
+# add current directory to path
+sys.path.insert(0, os.path.abspath('.'))
 
 
 def _run_git(args: list[str], cwd: Path) -> str:
