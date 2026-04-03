@@ -34,11 +34,11 @@ Configuration Functions:
   * - **WWW Browser:**
     - This is the path to the executable of your html browser. If your preferred browser (for example, firefox) is in your search path, the single word 'firefox' will suffice here, otherwise enter the complete path.
   * - **Base Work Directory:** 
-    - The root path where your instrument(s) (XL-A, XL-I, Optima) saves acquired data. 
+    - The default location for all UltraScan related files and folders.
   * - **Import Directory:**  
-    - The location where all imported data files are stored. 
+    - The location where all data to be.
   * - **Temporary Directory**
-    - The location where UltraScan should place temporary files.
+    - The location where UltraScan stores temporary files.
 
 
 **Miscellaneous Settings:**
@@ -198,13 +198,13 @@ Adv. Config. Functions:
   
   * - **Debug Text List**
     -  Additional debugging to aid in trouble-shooting can be turned on or off based on a debug text phrase. One or more of such phrases may be entered in this list. Leading or trailing blanks and multiple consecutive blanks are ignored.
-  * - **Debug Level:** 
+  * - **Debug Level**
     - The quantity of debug outputs may be determined by the magnitude of the value selected here. The greater the count,the greater the number of debug lines output for applications that take advantage of the debug level value. 
-  * -  **Advanced Level:** 
+  * -  **Advanced Level**
     - For certain applications, there are options that should only be visible and changeable by a highly knowledgeable user working in advanced mode. The level of advanced mode may be set with the counter here.
-  * - **Number of Threads:** 
-    - A threads count greater than one is advantageous in certain applications that are thread-aware. A number from one to ten may be set here.
-  * - **Noise Dialog Level:** 
+  * - **Number of Threads**
+    - On multi-core computers, a thread count greater than one is advantageous in certain applications that are thread-aware. The number depends on the application and the available resources.
+  * - **Noise Dialog Level**
     - This function enables user to select from multiple noise profiles that are associated with a model. When the level flag is 1 (enabled), in `Finite Element Viewer <fe_match/fe_match_main.html#noise-vector-selection>`_, user is prompted to select from a list of noise profiles, where the earlier profiles will have higher Model Sibling 000#. See `Finite Element Viewer <fe_match/fe_match_main.html#noise-vector-selection>`_ help documentation for further instructions.
   * - **Reset to Last Saved** 
     -  All of the above settings can be made to revert to last-saved settings by clicking this button.
@@ -241,28 +241,17 @@ Optima Host Configuration Panel:
 
     **Instrument Configuration**
 
-The optima host configuration panel allows you to configure the connection to one or more Optima instruments in your lab. Here you can enter the description, host address and port of the Optima instrument, as well as Optima database name, user name, and password. Additional information includes a radial calibration wavelength, a file from which to upload a chromatic aberration array, and installed optical systems.
+The Optima host configuration panel allows you to configure the connection to one or more Optima instruments in your lab. Here you can enter the description, host address and port of the Optima instrument, as well as Optima database name, user name, and password. Additional information includes a radial calibration wavelength, a file from which to upload a chromatic aberration array, and installed optical systems.
 
 When Add *New Entry* or *Edit Current Entry* is selected, one of the following dialogs is opened: 
 
-.. grid:: 2
-  :gutter: 2 
+.. image:: _static/images/optima_config_new.png
+    :align: center
 
-  .. grid-item:: 
-
-    .. image:: _static/images/optima_config_new.png
-      :align: left
-      :width: 100%
+.. rst-class::
+    :align: center
 
     **New Entry Dialog**
-
-  .. grid-item:: 
-
-    .. image:: _static/images/optima_config_edit.png
-      :width: 100%
-      :align: right
-    
-    **Modify Current Entry Dialogs**
 
 **Optima Host Connection Information**
 
@@ -275,13 +264,13 @@ When Add *New Entry* or *Edit Current Entry* is selected, one of the following d
   * - **Instrument Serial Number**
     - The instrument's serial number.
   * - **Instrument DB Host Address**
-    - IP address to the Optima, generally in a local domain.
+    - IP address to the Optima, generally in a non-routable subnet (example: 192.168.*.*).
   * - **Instrument DB Port**
-    - Port to the Optima's Postgresql database; for example, 5432.
+    - Port to the Optima database.
   * - **Instrument Status Msg Port:**
     - Port used for the UltraScan data acquisition software (ssl-encrypted data exchange)
   * - **Instrument DB Name**
-    - Name of the PostGreSQL database on the Optima AUC system.
+    - Name of the database on the Optima AUC system.
   * - **Instrument DB Username**
     - Optima database login name.
   * - **Instrument DB Password**
@@ -303,14 +292,13 @@ When Add *New Entry* or *Edit Current Entry* is selected, one of the following d
     -  Close the dialog without updating the database.
   * - **Installed Optical Systems**
     - Up to three optical systems available on the instrument where choices are: 
-  * - * UV/visible
+  * - * UV/Visible
       * Rayleigh interference
-      * Fluorescence
-      * (not install) - Available optical slot
+      * (not installed) - Available optical slot
     -
 
 **Installed Optical Systems**: 
-Text description of which optical system is installed (Uv/visible, Rayleigh Interference, Fluorescence or available slot)
+Text description of which optical system is installed (UV/Visible, Rayleigh interference or available slot)
 
 Test the connection to the new or modified instrument by clicking *Test Connectivity*
 
