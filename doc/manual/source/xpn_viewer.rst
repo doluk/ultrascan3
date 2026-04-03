@@ -10,7 +10,7 @@ Beckman Optima Data Viewer
   :local: 
 
 
-The **Load Raw optima Data** allows the user to visualize and load raw data collected from connected Optima instruments via Data Acquisition or GMP modules and export as OpenAUC format. This module functions during and after data collection.  
+The **Load Raw Optima Data** allows the user to visualize and load raw data collected from connected Optima instruments via Data Acquisition or GMP modules and export as OpenAUC format. This module functions during and after data collection.
 
 .. image:: _static/images/xpn_viewer.png
 
@@ -32,7 +32,7 @@ Data Viewer Process:
 
   1. Ensure the instrument is connected by reading a green **connected** text in the **Connection Status:** textbox. 
   2. Select the instrument from the **DB Host** pulldown menu. 
-  3. Click **Load Raw Optima Data** for raw optima data or **Load US3 AUC Data** to call a previously imported dataset. 
+  3. Click **Load Raw Optima Data** for raw Optima data or **Load US3 AUC Data** to call a previously imported dataset.
 
 .. image:: _static/images/xpn_viewer-saved.png 
   :align: center
@@ -55,9 +55,9 @@ Load the Run
   * - **Directory Text Box**
     - The location of the directory file the scans will be saved in. 
   * - **DB Host**
-    - Name of the optima instrument. 
+    - Name of the Optima instrument.
   * - **Connection Status:**
-    - Status of connection to optima instrument(s). 
+    - Status of connection to Optima instrument(s).
   * - **Run ID:**
     - Name of the data run id. 
   * - **Load Raw Optima Data:**
