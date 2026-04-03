@@ -123,7 +123,7 @@ vHw Enhanced Functions:
   * - **Close** 
     - Close all windows and exit.
 
-van Holde Wieschet Analysis Steps
+van Holde Weischet Analysis Steps
 ========================================
 
 
