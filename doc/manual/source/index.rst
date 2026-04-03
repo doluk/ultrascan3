@@ -11,7 +11,7 @@ Welcome to UltraScan-III's Documentation and Resource!
     
 .. note::
 
-   For more information on AUC and how to install Ultrascan-III visit `Ultrascan-III website <https://uslims.uleth.ca>`_.
+   For more information on AUC and how to install Ultrascan-III visit `Ultrascan-III website <https://ultrascan.aucsolutions.com>`_.
    
 
 .. image:: /_static/images/UltraScan-logo.png
