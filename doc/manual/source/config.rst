@@ -24,8 +24,8 @@ There are a number of parameters that can be set to customize UltraScan-III acco
 
 If you start UltraScan-III for the first time, the configuration settings will be set to the UltraScan default settings. After starting the configuration panel, you can edit the items in the list or click on the respective pushbutton for the file selection window to select your preferred web browser or set data paths. When a path is required, select the desired directory name. For the browser, select a filename of a preferred browser. 
 
-Configuration Functions: 
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Configuration Functions
+^^^^^^^^^^^^^^^^^^^^^^^
 
 .. list-table::
   :widths: 20 50
@@ -63,8 +63,8 @@ Configuration Functions:
 Once all settings are correct, click on **Save** to make your settings permanent.
 
 
-Color Configuration Panel:
-============================
+Color Configuration Panel
+=========================
 
 .. _col_change:
 
@@ -101,8 +101,8 @@ If you want to delete a custom scheme, select the scheme and click on the Delete
 
 
 
-Font Configuration Panel:
-==========================
+Font Configuration Panel
+========================
 
 .. _fon_change:
 
@@ -128,8 +128,8 @@ Selecting *Save* will save the currently displayed font as the UltraScan *defaul
     **Font Selection Dialog**
 
 
-Database Configuration Panel:
-===============================
+Database Configuration Panel
+============================
 
 .. _dat_change:
 
@@ -154,8 +154,8 @@ When Reset is selected, the fields are cleared and a new entry can be entered. T
 To delete an entry, select it and click on Delete Current Entry. 
 
 
-Master Password Panel:
-=========================
+Master Password Panel
+=====================
 
 .. _mp_change:
 
@@ -173,8 +173,8 @@ The user's master password needs to be entered in order to access encrypted data
      There is no way to recover the master password so it must be remembered. If the password is lost, UltraScan can be reset, but all database login settings will have to be manually reentered. 
 
 
-Advanced Configuration Panel:
-=================================
+Advanced Configuration Panel
+============================
 
 .. _adv_change:
 
@@ -189,8 +189,8 @@ Advanced Configuration Panel:
 
     **Advanced Settings**
 
-Adv. Config. Functions: 
--------------------------
+Adv. Config. Functions
+----------------------
 
 .. list-table::
   :widths: 20 50
@@ -225,7 +225,7 @@ Adv. Config. Functions:
     - Close all windows and exit.
 
 
-Optima Host Configuration Panel: 
+Instrument Preference Panel
 ===================================
 
 .. _opt_change:
