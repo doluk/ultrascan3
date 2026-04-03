@@ -22,7 +22,9 @@ from pathlib import Path
 from sphinxcontrib.qthelp import QtHelpBuilder
 import os
 import subprocess
+import sys
 
+sys.path.insert(0, os.path.abspath(__file__.__name__))
 
 
 def _run_git(args: list[str], cwd: Path) -> str:
@@ -165,7 +167,8 @@ extensions = [
     'sphinx.ext.autosectionlabel',
     'sphinxcontrib.qthelp',
     'sphinx.ext.graphviz',
-    'sphinx_design'
+    'sphinx_design',
+    'auto_index'
 ]
 
 # Add any paths that contain templates here, relative to this directory.
