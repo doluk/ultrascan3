@@ -258,6 +258,7 @@ latex_elements = {
     # LaTeX preamble additions
     'preamble': r"""
 \usepackage{graphicx}
+\setlength{\headheight}{13.6pt}
 """,
 }
 
@@ -265,7 +266,7 @@ latex_elements = {
 # (source start file, target name, title,
 #  author, documentclass [howto, manual, or own class]).
 latex_documents = [
-    (master_doc, 'UltraScanIII.tex', html_title,
+    (master_doc, 'UltraScanIII.tex', f"{project} Documentation",
      'Borries Demeler, Haben Gabir', 'manual'),
 ]
 
@@ -275,7 +276,7 @@ latex_documents = [
 # One entry per manual page. List of tuples
 # (source start file, name, description, authors, manual section).
 man_pages = [
-    (master_doc, project, html_title,
+    (master_doc, project, f"{project} Documentation",
      [author], 1)
 ]
 
@@ -286,7 +287,7 @@ man_pages = [
 # (source start file, target name, title, author,
 #  dir menu entry, description, category)
 texinfo_documents = [
-    (master_doc, project, html_title,
+    (master_doc, project, f"{project} Documentation",
      author, project, 'Comprehensive data analysis software for hydrodynamic data from analytical ultracentrifugation experiments.',
      'Science',
      'Miscellaneous'),
