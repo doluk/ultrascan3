@@ -87,7 +87,7 @@ Together, these outputs form the core quality-control layer for determining whet
 
 Model assessment focuses on the interpretation of the fitted sedimentation velocity solution. In UltraScan3, model assessment includes both visual and statistical outputs. These results help the user decide whether a model is physically meaningful, whether multiple species are resolved, and how stable the fitted parameters are across simulations.
 
-A. 2-D and 3D Plots
+A. 2-D and 3-D Plots
 ~~~~~~~~~~~~~~~~~~~~~
 
 The visual assessment tools provide direct graphical insight into the fitted distributions and related spectral or structural properties.

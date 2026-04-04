@@ -87,7 +87,7 @@ The "Save Data" button in the `PCSA Controls <pcsa_analys.html#pcsa-fitting-proc
    - **Data Analysis Settings:** The name of the model is determined by the analysis number_the type of analysis completed_the database request number_number of models in the analysis cohort
    - **Number of components:** Number of components with unique s, and D values. 
    - **Residual RMS Deviation:** The RMSD determined by re-simulating the model in the finite element viewer module. 
-   - **Model-reported RMSD:** The RMSD of the simulated model determined by message passing interface (MPI ) or the 2DSA GUI.
+   - **Model-reported RMSD:** The RMSD of the simulated model determined by message passing interface (MPI) or the 2DSA GUI.
    - **Weight Averaged s20,W, D20,W, Molecular weight, and f/f0:** describe the weight averaged (using % of the total concentration) to calculate the s20,W, D20,W, Molecular weight, and f/f0 coefficients of each component at 20ºC and in water. 
    - **Total concentration:** The baseline and noise subtracted optical density at the measured wavelength of the absorbing components as a function of radius.  
    - **Constant vbar20:** The analyte vbar at 20ºC. 

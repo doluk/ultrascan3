@@ -245,8 +245,8 @@ The **Report** button summons the channel-specific report settings window. The u
 
 **Global Parameters for Combined Plots** allows the user to define the plot minimum, plot maximum and Gaussian sigma for each plot type.
 
-8.2. 2DSA
-----------------
+8.2. 2DSA Controls
+------------------
 
 .. _aprofile-2dsa:
 
@@ -265,8 +265,8 @@ The **2DSA Job Flow** panel allows the user to control which analysis steps are 
     * 2DSA with Monte Carlo iterations (MC), with a user-defined number of Monte Carlo iterations.
 
 
-8.3. PCSA
-------------
+8.3. PCSA Controls
+------------------
 
 .. _aprofile-pcsa:
 
