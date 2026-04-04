@@ -1,5 +1,5 @@
 ===========================================
-Finite Element (FE) Model Viewer
+Finite Element Model Viewer Module
 ===========================================
 
 .. toctree:: 
@@ -27,7 +27,7 @@ This module is used to display, and export FE solutions fitted to velocity exper
 
     **Simulated Finite Element Solution**
 
-FE Viewer Functions:
+FE Viewer Functions
 =======================
 
 .. list-table::

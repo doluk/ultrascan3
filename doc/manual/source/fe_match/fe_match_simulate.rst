@@ -1,5 +1,5 @@
 =====================================
-Finite Element (FE) Model Simulation
+Finite Element Model Simulation
 =====================================
 
 .. toctree:: 
@@ -8,8 +8,8 @@ Finite Element (FE) Model Simulation
 .. contents:: Index
   :local: 
 
-Simulation Product Output Summary:
-===================================
+Simulation Product Output Summary
+=================================
 
 When the **Simulate Model** button is clicked in the **Finite Element Model Viewer** window, a simulation is performed using the Edit data, a Loaded Model, and simulation parameters primarily created using the edit data set. A simulation data set is created that has the same ranges as the edit set, but with readings values that are calculated and compared to the actual experimental data. The comparison spawns a number of new dialogs and options that allow the user to evaluate the quality of the model.
 
@@ -26,8 +26,8 @@ When the **Simulate Model** button is clicked in the **Finite Element Model View
 
     **Simulation Results**
 
-Finite Element Viewer
------------------------
+Data/Residuals Viewer
+=====================
 The simulation creates a data set with the same ranges as the edit experimental data set. The actual values for scan readings vectors are synthetically produced, as illustrated by the plot below.
 
 .. image:: ../_static/images/fe_match_viewer.png
@@ -38,8 +38,8 @@ The simulation creates a data set with the same ranges as the edit experimental 
 
     **Simulated Viewer Result**
 
-Finite Element Viewer Functions:
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Data/Residuals Viewer Functions
+-------------------------------
 
 **FE Analysis Data Viewer**
 
@@ -85,7 +85,7 @@ Finite Element Viewer Functions:
 
 
 Noise Data Analysis
-^^^^^^^^^^^^^^^^^^^^^^
+-------------------
 
 .. list-table::
   :widths: 50 50
@@ -177,7 +177,7 @@ Noise Data Analysis
 
 
 Residual Bit Map
------------------
+================
 Experimental-Simulation residuals are plotted in another way in a bit map. This small window represents each residual #Scans x #Readings point as a color: green where simulation is greater than experimental; red where experimental is greater. A random distribution of colors throughout the bit map is indication of a good model fit. 
 
 .. image:: ../_static/images/bitmap.png
@@ -189,27 +189,36 @@ Experimental-Simulation residuals are plotted in another way in a bit map. This 
     **Pixel Bit Map**
 
 Report: FE Match Model Simulation
------------------------------------
+=================================
 The "Save Data" button produces a set of report files. One of these is displayable via the "View Report" button, which produces a dialog that shows the contents of a report. A dialog sample follows. 
 
 .. image:: ../_static/images/simulatedReport.png
   :align: center
 
+|
 
-.. rst-class:: 
-   :align: center
+.. list-table:: **Detailed 2DSA Report**
+   :widths: 20 50
+   :header-rows: 0
 
-  **Detailed 2DSA Report**
-
-   - **Heading 1:** Analysis type
-   - **Heading 2:** This heading indicates the "dataset named in the Import module", the cell number, channel, and wavelength triplicate, the edit profile processed in the Edit data module,  
-   - **Model Analysis:** The name of the model is determined by the analysis number_the type of analysis completed_the database request number_number of models in the analysis cohort
-   - **Number of components:** Number of components with unique s, and D values. 
-   - **Residual RMS Deviation:** The RMSD determined by re-simulating the model in the finite element viewer module. 
-   - **Model-reported RMSD:** The RMSD of the simulated model determined by message passing interface (MPI ) or the 2DSA GUI.
-   - **Weight Averaged s20,W, D20,W, Molecular weight, and f/f0:** describe the weight averaged (using % of the total concentration) to calculate the s20,W, D20,W, Molecular weight, and f/f0 coefficients of each component at 20ºC and in water. 
-   - **Total concentration:** The baseline and noise subtracted optical density at the measured wavelength of the absorbing components as a function of radius.  
-   - **Constant vbar20:** The analyte vbar at 20ºC. 
+   * - **Heading 1:**
+     - Analysis type
+   * - **Heading 2:**
+     - This heading indicates the "dataset named in the Import module", the cell number, channel, and wavelength triplicate, the edit profile processed in the Edit data module,
+   * - **Model Analysis:**
+     - The name of the model is determined by the analysis number_the type of analysis completed_the database request number_number of models in the analysis cohort
+   * - **Number of components:**
+     - Number of components with unique s, and D values.
+   * - **Residual RMS Deviation:**
+     - The RMSD determined by re-simulating the model in the finite element viewer module.
+   * - **Model-reported RMSD:**
+     - The RMSD of the simulated model determined by message passing interface (MPI ) or the 2DSA GUI.
+   * - **Weight Averaged s20,W, D20,W, Molecular weight, and f/f0:**
+     - Describes the weight averaged (using % of the total concentration) to calculate the s20,W, D20,W, Molecular weight, and f/f0 coefficients of each component at 20ºC and in water.
+   * - **Total concentration:**
+     - The baseline and noise subtracted optical density at the measured wavelength of the absorbing components as a function of radius.
+   * - **Constant vbar20:**
+     - The analyte vbar at 20ºC.
 
 .. note:: 
    Difference between the Residual RMSD and model-reported RMSD should be within 3 significant figures. Greater then 3 significant figures indicates an error in analysis. 
@@ -217,8 +226,8 @@ The "Save Data" button produces a set of report files. One of these is displayab
 |
 
 
-Distribution Information Units:
--------------------------------
+Distribution Information Units
+------------------------------
 
 - **Molec. Wt.:** Dalton
 - **S Apparent:** seconds
