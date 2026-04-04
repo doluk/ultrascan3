@@ -209,18 +209,57 @@ Adv. Config. Functions
   * - **Reset to Last Saved** 
     -  All of the above settings can be made to revert to last-saved settings by clicking this button.
 
+|
 
-**Window Controls**
+.. list-table:: **Debug Text Options**
+    :widths: 20 50
+    :header-rows: 1
 
+    * - Debug Text Option
+      - Description
+    * - SetSpeedResolution
+      - The resolution of the speed (raw_speed/speed_resolution)*speed_resolution. Default: `SetSpeedResolution=100`
+    * - SetSpeedLowAcc
+      - The threshold for the acceleration rate to be considered low acceleration. Default: `SetSpeedLowAcc=250`
+    * - SetSpeedLowR
+      - The threshold for eligible experimental speed. Default: `SetSpeedLowR=1500`
+    * - SpeedStepLowSec
+      - Minimum time in seconds for a constant speed zone without scans to be treated as distinct speed step. Default: `SpeedStepLowSec=20`
+    * - normCutoff
+      - The norm cut off, value for which a solute gets removed from the grid space. Default: `normCutoff=1.0`
+    * - 2dsaFinalNoiseOnly
+      - Flag to apply any noise correction only on the final iteration.
+    * - MC-GaussianSmooth
+      - Flag to construct MC sigmas from residuals smoothed for each scan instead from iteration 1 residuals.
+    * - 2dsaTiming
+      - Flag to print debug timings in us_2dsa.
+    * - protocolFromDisk
+      - Flag to load protocols from disk and not from database.
+    * - men2click
+      - Flag to require user to specify right and left border of the meniscus in us_edit instead of specifying one position.
+    * - pcsaTiming
+      - Flag to print debug timings in us_pcsa.
+    * - hsclogo
+      - Flag to include the University of Texas Health Science Center logo in the generated reports.
+    * - becklogo
+      - Flag to include the Beckman Coulter logo in the generated reports.
+    * - us3logo
+      - Flag to include the UltraScan-III logo in the generated reports.
+    * - DB_ENFORCE_DEFAULT_SSL_SECURITY
+      - Flag to enforce the use of the OS configured default SSL security level for database connections, instead of lowering it to for UltraScan database connections to zero.
+    * - auto_positioning
+      - Flag to enable the legacy window positioning behavior from UltraScan instead of relying on the OS window manager.
 
-.. list-table::
+|
+
+.. list-table:: **Window Controls**
   :widths: 20 50
   :header-rows: 0 
 
   * - **Reset** 
     - Indicate that parameters are to be reset and the plots re-displayed based on original parameters.
   * - **Help** 
-    - Display this detailed Fit Meniscus help.
+    - Display this detailed help.
   * - **Close** 
     - Close all windows and exit.
 

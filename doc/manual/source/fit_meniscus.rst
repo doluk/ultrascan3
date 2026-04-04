@@ -81,6 +81,6 @@ Fit Meniscus Functions:
   * - **Reset** 
     - Indicate that parameters are to be reset and the plots re-displayed based on original parameters.
   * - **Help** 
-    - Display this detailed Fit Meniscus help.
+    - Display this detailed help.
   * - **Close** 
     - Close all windows and exit.

@@ -87,7 +87,7 @@ Pseudo-3D Functions
   :header-rows: 0 
 
   * - **Help** 
-    - Display this detailed Fit Meniscus help.
+    - Display this detailed help.
   * - **Close** 
     - Close all windows and exit.
 
