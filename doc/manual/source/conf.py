@@ -138,6 +138,7 @@ class UltraScanQtHelpBuilder(QtHelpBuilder):
 
 def setup(app):
     app.add_builder(UltraScanQtHelpBuilder, override=True)
+    app.add_config_value('qthelp_css_files', [], 'html', types=frozenset({list, tuple}))
 
 # -- Project information -----------------------------------------------------
 
@@ -220,6 +221,10 @@ html_static_path = ['_static']
 
 html_css_files = [
     'custom.css',
+]
+qthelp_css_files = [
+    ('custom.css', {}),
+    ('qthelp.css', {})
 ]
 # def setup(app):
 
