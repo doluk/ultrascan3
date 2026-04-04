@@ -8,7 +8,15 @@ table.docutils {
     text-align: center;
 }
 
-
 .underline {
   text-decoration: underline;
+}
+
+/* _static/custom.css */
+.side-by-side td {
+  vertical-align: middle;
+}
+.side-by-side img {
+  max-width: 100%;
+  height: auto;
 }
