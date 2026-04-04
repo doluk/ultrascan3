@@ -24,15 +24,15 @@ class AutoIndexSectionTransform(SphinxTransform):
             else:
                 entry_text = section[0].astext() if section.children else "Unnamed Section"
             entry_text = entry_text.split('\n')[0]
-            entry_text = entry_text.strip(":.")
+            entry_text = entry_text.strip(":. \n\t\r")
 
-            clean_title = re.sub(r'^(?:step )?(?:STEP )?[0-9]+[a-zA-Z]*(?:\.[0-9]+)*[:.]*\s+', '', entry_text)
-
-            clean_title = re.sub(r'2dsa', '2DSA', clean_title, flags=re.IGNORECASE)
+            clean_title = re.sub(r'^(?:step )?(?:STEP )?[0-9]+[a-zA-Z]*(?:\.[0-9]+)*[:.]*\s+', '', entry_text, flags=re.IGNORECASE)
+            clean_title = re.sub(r'^[ABab]\. ', '', clean_title, flags=re.IGNORECASE)
+            clean_title = re.sub(r'2[- ]?d', '2-D', clean_title, flags=re.IGNORECASE)
+            clean_title = re.sub(r'3[- ]?d', '3-D', clean_title, flags=re.IGNORECASE)
+            clean_title = re.sub(r'2[- ]?dsa', '2DSA', clean_title, flags=re.IGNORECASE)
             clean_title = re.sub(r'2[- ]?Dimensional', '2-Dimensional', clean_title, flags=re.IGNORECASE)
             clean_title = re.sub(r'3[- ]?Dimensional', '3-Dimensional', clean_title, flags=re.IGNORECASE)
-            clean_title = re.sub(r'2d', '2D', clean_title, flags=re.IGNORECASE)
-            clean_title = re.sub(r'3d', '3D', clean_title, flags=re.IGNORECASE)
             clean_title = re.sub(r'Dmga', 'DMGA', clean_title, flags=re.IGNORECASE)
             clean_title = re.sub(r'pcsa', 'PCSA', clean_title, flags=re.IGNORECASE)
             clean_title = re.sub(r'openauc', 'OpenAUC', clean_title, flags=re.IGNORECASE)
@@ -41,6 +41,9 @@ class AutoIndexSectionTransform(SphinxTransform):
             clean_title = re.sub(r'UltraScan', 'UltraScan', clean_title, flags=re.IGNORECASE)
             clean_title = re.sub(r'UltraScan-?iii', 'UltraScan-III', clean_title, flags=re.IGNORECASE)
             clean_title = re.sub(r'van\s*Holde\s*-\s*Weischet', 'van Holde-Weischet', clean_title, flags=re.IGNORECASE)
+            clean_title = clean_title.strip()
+            if clean_title[0].lower() == clean_title[0]:
+                clean_title = clean_title[0].upper() + clean_title[1:]
             if not section['ids']:
                 section['ids'].append(nodes.make_id(clean_title))
 
