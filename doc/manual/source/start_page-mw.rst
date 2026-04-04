@@ -141,10 +141,10 @@ Step 10: Perform a 2DSA with refinement only
 
 #. Perform 2DSA refinement of the **SSF-ISSF-** datasets. 
 
-Step 11: Perform van Holde - Weischet analysis - (recommended)
+Step 11: Perform van Holde-Weischet analysis - (recommended)
 ----------------------------------------------------------------
 
-#. Open Velocity: `Enhanced van Holde - Weischet <vhw_enhanced.html>`_. 
+#. Open Velocity: `Enhanced van Holde-Weischet <vhw_enhanced.html>`_.
 #. Load the desired experiment, applying the noise files from Step 6 (the latest model).
 #. Check Plateaus from 2DSA and Use Enhanced vHW.
 #. Adjust Beck Diffusion Tolerance, Divisions, Data Smoothing, % of Boundary, and Boundary Position to desired values.
@@ -154,14 +154,14 @@ Step 11: Perform van Holde - Weischet analysis - (recommended)
 #. Save Data and distributions.
 
 .. note::
-    Refer to the `van Holde - Weischet manual <vhw_enhanced.html>`_ page for additional details.
+    Refer to the `van Holde-Weischet manual <vhw_enhanced.html>`_ page for additional details.
 
 
 Step 12: Overlay combined distributions - (recommended)
 ----------------------------------------------------------------
 
-#. All van Holde - Weischet distributions and finite element models can be combined into a single plot for easy comparison.
-#. Use Velocity: `Combine Distribution Plots <vhw_combine.html>`_ (vHW) for van Holde - Weischet plots.
+#. All van Holde-Weischet distributions and finite element models can be combined into a single plot for easy comparison.
+#. Use Velocity: `Combine Distribution Plots <vhw_combine.html>`_ (vHW) for van Holde-Weischet plots.
 #. Use Velocity: `Combine Discrete Distributions <ddist_combine.html>`_ for all finite element models (2DSA, GA, Monte Carlo).
 #. Use Velocity: `Combine Integral Distributions <idist_combine.html>`_ for all finite element models (2DSA, GA, Monte Carlo).
 #. Use Velocity: `Combine pseudo-3D Distributions <pseudo3d.html>`_ for all finite element models (2DSA, GA, Monte Carlo).

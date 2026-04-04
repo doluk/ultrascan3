@@ -2,7 +2,7 @@
 UltraScan vHW Distribution Plot
 ================================
 
-In the van Holde - Weischet (vHW) Enhanced program, there is a Distribution Plot option that brings up a dialog in which the vHW analysis data is displayed as a distribution plot or a histogram plot. In either case, a clustering of data around several sedimentation coefficient points indicates the presence of multiple species in the solution. 
+In the van Holde-Weischet (vHW) Enhanced program, there is a Distribution Plot option that brings up a dialog in which the vHW analysis data is displayed as a distribution plot or a histogram plot. In either case, a clustering of data around several sedimentation coefficient points indicates the presence of multiple species in the solution.
 
 .. image:: _static/images/vhw_distribution.png
     :align: center

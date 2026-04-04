@@ -1,5 +1,5 @@
 ========================================
-van Holde - Weischet Enhanced Analysis
+van Holde-Weischet Enhanced Analysis
 ========================================
 
 .. toctree:: 
@@ -16,7 +16,7 @@ The method of van Holde and Weischet (vHW) is a versatile, model-independent app
 .. image:: _static/images/vhw_enhanced.png
   :align: center
 
-vHw Enhanced Functions:
+vHW Enhanced Functions:
 ========================
 
 .. list-table::
@@ -123,14 +123,14 @@ vHw Enhanced Functions:
   * - **Close** 
     - Close all windows and exit.
 
-van Holde Weischet Analysis Steps
+van Holde-Weischet Analysis Steps
 ========================================
 
 
 
 *  **Step 1:** First, load a velocity dataset. Click on **Load Experiment** to select an edited velocity data set from the database or from local disk.
 
-*  **Step 2:** Secondly, select a model from database or disk. Simply click on a triplicate in the Cell / Channel / Wavelength. Enhanced van Holde - Weischet analysis is automatically applied according to the Analysis Controls
+*  **Step 2:** Secondly, select a model from database or disk. Simply click on a triplicate in the Cell / Channel / Wavelength. Enhanced van Holde-Weischet analysis is automatically applied according to the Analysis Controls
 
 *  **Step 3:** If necessary, adjust the Back Diffusion Tolerance, Divisions, % of Boundary and Boundary Position (%).
 
