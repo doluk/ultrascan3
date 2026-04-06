@@ -49,7 +49,7 @@ void US_Zoomer::initializeZoomStack( QwtPlotZoomer* zoomer ) {
       return;
    }
    const QwtPlot* plot = zoomer->plot();
-   if ( plot && plot->itemList(QwtPlotItem::Rtti_PlotCurve).count() == 0 ) {
+   if ( plot == nullptr || plot->itemList(QwtPlotItem::Rtti_PlotCurve).count() == 0 ) {
       return;
    }
    // first zoom event, check if the zoomStack is properly set
@@ -63,10 +63,10 @@ void US_Zoomer::initializeZoomStack( QwtPlotZoomer* zoomer ) {
    const auto zoom_base = zoomer->zoomBase();
 
    // if zoom base is within 10% of the actual axis values, do not reset zoom stack
-   if ( x_min * 0.9 <= zoom_base.left() && zoom_base.left() <= x_min * 1.1 &&
-      y_min * 0.9 <= zoom_base.top() && zoom_base.top() <= y_min * 1.1 &&
-      x_max * 0.9 <= zoom_base.right() && zoom_base.right() <= x_max * 1.1 &&
-      y_max * 0.9 <= zoom_base.bottom() && zoom_base.bottom() <= y_max * 1.1 ) {
+   if ( qAbs(x_min * 0.9) <= qAbs(zoom_base.left()) && qAbs(zoom_base.left()) <= qAbs(x_min * 1.1) &&
+      qAbs(y_min * 0.9) <= qAbs(zoom_base.top()) && qAbs(zoom_base.top()) <= qAbs(y_min * 1.1) &&
+      qAbs(x_max * 0.9) <= qAbs(zoom_base.right()) && qAbs(zoom_base.right()) <= qAbs(x_max * 1.1) &&
+      qAbs(y_max * 0.9) <= qAbs(zoom_base.bottom()) && qAbs(zoom_base.bottom()) <= qAbs(y_max * 1.1) ) {
       return;
    }
    if ( !qFuzzyCompare(zoom_base.left(), x_min ) ||
@@ -81,7 +81,9 @@ void US_Zoomer::initializeZoomStack( QwtPlotZoomer* zoomer ) {
 }
 
 void US_Zoomer::begin(  ) {
-   initializeZoomStack( this );
+   if ( !zoom_base_set ) {
+	   initializeZoomStack( this );
+   }
    zoom_base_set = true;
    QwtPlotZoomer::begin();
 }
