@@ -167,8 +167,9 @@ Welcome to UltraScan-III's Documentation and Resource!
    run_details
    3d_plot
 
+.. only:: html
 
-:download:`UltraScan-III Manual PDF <../../../build/doc/manual/latex/UltraScanIII.pdf>`
+   :download:`UltraScan-III Manual PDF <_static/UltraScanIII.pdf>`
 
 
 
