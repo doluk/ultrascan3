@@ -48,103 +48,12 @@ jobs:
             pip install -r doc/manual/source/requirements.txt
           fi
 
-      - name: Register Sphinx Problem Matcher
-        run: echo "::add-matcher::.github/sphinx-matcher.json"
-
       - name: Build qthelp
         run: |
           sphinx-build -M qthelp doc/manual/source doc/manual/build -q 2>&1 | tee build.log
         continue-on-error: true
-      - name: Annotate Sphinx warnings from build.log
-        if: always() # still annotate even if the build step failed
-        shell: python
-        run: |
-          import os
-          import re
-          import sys
-
-          LOG_PATH = "build.log"
-
-          def extract_line_information(line_information: str):
-              # This replicates the logic in action.py, but is a bit more robust
-              # (handles Windows drive letters and "no line number" cases).
-              s = line_information.strip()
-
-              # Windows drive letter case: "C:\path\file.rst:22: ..."
-              # Split into at most 3 ":" parts so paths with ":" don't explode too much.
-              parts = s.split(":")
-              if len(parts) >= 2 and len(parts[0]) == 1:
-                  # Re-join "C" + ":" + "\path\file.rst"
-                  parts[1] = parts[0] + ":" + parts[1]
-                  parts = parts[1:]
-
-              # Now expect either:
-              # - ["path", " WARNING..."]  (no line number)
-              # - ["path", "22", " WARNING..."]
-              if len(parts) < 2:
-                  return None
-
-              if len(parts) >= 3:
-                  # Try parse line number in parts[1]
-                  try:
-                      line_num = int(parts[1])
-                      file_name = parts[0]
-                      return file_name, line_num
-                  except ValueError:
-                      return None
-              else:
-                  # No line number -> mark whole file
-                  file_name = parts[0]
-                  return file_name, 1
-
-          def parse_sphinx_warnings_log(lines):
-              annotations = []
-              for i, line in enumerate(lines):
-                  if "WARNING" not in line:
-                      continue
-
-                  warning_tokens = line.split("WARNING:")
-                  if len(warning_tokens) != 2:
-                      continue
-
-                  file_and_line, message = warning_tokens
-                  file_and_line = extract_line_information(file_and_line)
-                  if not file_and_line:
-                      continue
-
-                  file_name, line_number = file_and_line
-
-                  warning_message = message
-                  # If next line exists and isn't itself a WARNING, append it
-                  if (i != len(lines) - 1) and ("WARNING" not in lines[i + 1]):
-                      warning_message += lines[i + 1]
-
-                  warning_message = warning_message.strip()
-                  annotations.append((file_name, line_number, warning_message))
-              return annotations
-
-          if not os.path.exists(LOG_PATH):
-              print(f"[sphinx-action] No {LOG_PATH} found; skipping annotations.")
-              sys.exit(0)
-
-          with open(LOG_PATH, "r", encoding="utf-8", errors="replace") as f:
-              lines = f.readlines()
-
-          ann = parse_sphinx_warnings_log(lines)
-
-          # Emit GitHub Actions annotations:
-          # ::warning file=path,line=LINE::message
-          # Newlines must be escaped.
-          def escape(s: str) -> str:
-              return s.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-
-          for file_name, line_number, msg in ann:
-              # If your build runs inside docs/ or another directory, you may want to
-              # prefix/normalize file_name here so it matches repo paths.
-              print(f"::warning file={escape(file_name)},line={line_number}::{escape(msg)}")
-
-          print(f"[sphinx-action] Emitted {len(ann)} warning annotation(s) from {LOG_PATH}.")
-
+      - name: Sphinx Problem Matcher
+        uses: sphinx-doc/github-problem-matcher@v1
       - name: Run Linkcheck
         run: sphinx-build -M linkcheck $(pwd)/doc/manual/source $(pwd)/doc/manual/build -q --keep-going
         continue-on-error: true
@@ -184,9 +93,6 @@ jobs:
             texlive-fonts-recommended \
             fonts-freefont-ttf \
             latexmk
-
-      - name: Register Sphinx Problem Matcher
-        run: echo "::add-matcher::.github/sphinx-matcher.json"
 
       - name: Build pdf
         run: |
