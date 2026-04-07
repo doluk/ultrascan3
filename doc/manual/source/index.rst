@@ -16,7 +16,6 @@ Welcome to UltraScan-III's Documentation and Resource!
 
 .. image:: /_static/images/UltraScan-logo.png
     :align: center
-
 .. toctree::
    :maxdepth: 1
    :caption: Ultrascan-III Protocols:
@@ -25,8 +24,9 @@ Welcome to UltraScan-III's Documentation and Resource!
    start_page
    start_page-mw
    start_page-rpt
-  
-
+   start_page-int
+   start_page-abde
+   start_page-dm
 
 .. toctree::
    :maxdepth: 1
@@ -94,6 +94,8 @@ Welcome to UltraScan-III's Documentation and Resource!
    2dsa/index
    pcsa/index
    ga_initialize
+   dmga_init
+   dmga_init_constr
 
 
 .. toctree::
@@ -110,7 +112,6 @@ Welcome to UltraScan-III's Documentation and Resource!
    :caption: Analysis Utilities:
 
    grid_editor
-
    combine_models
    model_editor
    components
@@ -126,14 +127,14 @@ Welcome to UltraScan-III's Documentation and Resource!
    predict1
    predict2
    sassoc
-   dmga_init
-   dmga_init_constr
+
 
 
 .. toctree::
    :maxdepth: 1
    :caption: Reports and Data Viewers:
 
+   tmst_viewer
    fe_match/index
    reporter
    us_modelmetrics
@@ -142,7 +143,7 @@ Welcome to UltraScan-III's Documentation and Resource!
    ddist_combine
    idist_combine 
    vhw_combine
-   tmst_viewer
+   
 
 
 
@@ -166,10 +167,6 @@ Welcome to UltraScan-III's Documentation and Resource!
    common_dialogs
    run_details
    3d_plot
-
-.. only:: html
-
-   :download:`UltraScan-III Manual PDF <_static/UltraScanIII.pdf>`
 
 
 

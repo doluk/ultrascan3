@@ -1,4 +1,4 @@
-Triplets====================================
+TripleTriplets====================================
 Buoyancy Equilibrium Data Analysis
 ====================================
 
