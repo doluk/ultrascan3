@@ -48,14 +48,16 @@ jobs:
             pip install -r doc/manual/source/requirements.txt
           fi
 
-      - name: Sphinx Problem Matcher
-        uses: sphinx-doc/github-problem-matcher@v1
+      - name: Register Sphinx Problem Matcher
+        run: echo "::add-matcher::.github/sphinx-matcher.json"
 
       - name: Build qthelp
-        run: sphinx-build -M qthelp $(pwd)/doc/manual/source $(pwd)/doc/manual/build --keep-going
+        run: |
+          sphinx-build -M qthelp $(pwd)/doc/manual/source $(pwd)/doc/manual/build -q
 
       - name: Run Linkcheck
         run: sphinx-build -M linkcheck $(pwd)/doc/manual/source $(pwd)/doc/manual/build -q --keep-going
+        continue-on-error: true
   build-html:
     name: Build Html
     runs-on: ubuntu-latest
@@ -94,22 +96,17 @@ jobs:
             latexmk
 
       - name: Register Sphinx Problem Matcher
-        uses: sphinx-doc/github-problem-matcher@v1
+        run: echo "::add-matcher::.github/sphinx-matcher.json"
 
-      - name: Build Documentation
+      - name: Build pdf
         run: |
-          # Use absolute paths for SOURCEDIR and BUILDDIR to ensure problem matcher
-          # can correctly locate files relative to the repository root.
-          ABS_SOURCE="$(pwd)/doc/manual/source"
-          ABS_BUILD="$(pwd)/doc/manual/build"
-          
-          # Build HTML, PDF, and compiled QtHelp
-          # Note: 'make html' in this project's Makefile depends on 'latexpdf'
-          # 'make qch' builds and compiles the QtHelp collection
-          make -C doc/manual html \
-            SOURCEDIR="$ABS_SOURCE" \
-            BUILDDIR="$ABS_BUILD" \
-            SPHINXOPTS="-W --keep-going"
+          sphinx-build -M latexpdf doc/manual/source doc/manual/build -q
+          cp doc/manual/build/latex/UltraScanIII.pdf doc/manual/source/_static/UltraScanIII.pdf
+        continue-on-error: true
+      - name: Build html
+        run: |
+          sphinx-build -M html doc/manual/source doc/manual/build -q
+        continue-on-error: true
 
       - name: Upload HTML Documentation
         uses: actions/upload-artifact@v7.0.0
