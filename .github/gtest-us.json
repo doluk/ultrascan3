@@ -1,0 +1,23 @@
+{
+  "problemMatcher": [
+    {
+      "owner": "gtest-us-failures",
+      "severity": "error",
+      "pattern": [
+        {
+          "regexp": "^(.+):(\\d+): Failure$",
+          "file": 1,
+          "line": 2
+        },
+        {
+          "regexp": "^Failed$"
+        },
+        {
+          "regexp": "^(.*)$",
+          "message": 1,
+          "loop": true
+        }
+      ]
+    }
+  ]
+}
