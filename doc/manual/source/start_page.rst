@@ -1,4 +1,4 @@
-TripleTriplets=========================================================
+=========================================================
 Flowchart for the Analysis of Sedimentation Velocity Data 
 =========================================================
 
@@ -33,7 +33,7 @@ Step 1: Import Experimental data into UltraScan-III OpenAUC format
         * If you have more than one Triplicate, you can click on Apply to All but verify centerpiece and solution for each Triplicate first. Also, check the Description field again to make sure the appropriate information is saved.
 #.  If data were collected in intensity mode, you will need to Define Reference Scans by selecting a short region from the air-to-air interface portion of the data.
 #.  For equilibrium data from 6-channel centerpieces you should separate each channel with the Define Subsets/Process Subsets functions.
-#.  Failed Triplicates or empty Triplicates can be excluded from the run by clicking on Drop Selected Triplicates.
+#.  Failed Triples or empty Triples can be excluded from the run by clicking on Drop Selected Triples.
 #.  When everything has been set you can Save the scans to database or disk.
 
 
@@ -72,7 +72,7 @@ Step 3: Perform a Time Derivative analysis and find the limits of the s-value ra
 Step 4:  Submit a 2DSA analysis request in USLIMS.
 --------------------------------------------------
 
-#. Log in and select the run and triplicates in `USLIMS <https://uslims.aucsolutions.com/index.php>`_. 
+#. Log in and select the run and triples in `USLIMS <https://uslims.aucsolutions.com/index.php>`_.
 #. Locate the dataset and set the s-value limits to values obtained in step 3, and set f/f0 limits to 1-4 or adjust the upper limit based on prior knowledge of the sample (in case of DNA for example).
 
 #. Set the resolution for S and f/f0 to the desired value. 64 is the default for both S and f/f0, the resolution is the number of points into which this variable will be discretized. For example, if the range is selected from 1-5, and the resolution is set to 40, there will be 10 grid points/S-value, resulting in an increment of 0.1 S.

@@ -1,4 +1,4 @@
-TripleTriplets=========================================
+=========================================
 Common Dialogs of Ultrascan-III
 =========================================
 
@@ -29,9 +29,9 @@ Ultrascan-III modules can load models by first loading the Run as **Experiment**
 Data Set Selection
 --------------------
 
-Most often, you need not expand the list tree and need only select the top level run ID description. This effectively selects all Triplicates for the run and selects the first listed edit for each Triplicate. In the default case where Latest Data Edit was checked in the calling dialog, there will be only one edit (the latest) for each Triplicate. If Latest Data Edit was not checked, there may be multiple edits for Triplicates. In this case, selecting a Run description or a Triplicate description effectively selects the earliest edit(s).
+Most often, you need not expand the list tree and need only select the top level run ID description. This effectively selects all Triples for the run and selects the first listed edit for each Triplicate. In the default case where Latest Data Edit was checked in the calling dialog, there will be only one edit (the latest) for each Triplicate. If Latest Data Edit was not checked, there may be multiple edits for Triples. In this case, selecting a Run description or a Triplicate description effectively selects the earliest edit(s).
 
-You may, of course, select specific Triplicates of a run.
+You may, of course, select specific Triples of a run.
 Similarly, in the case where Lastest Data Edit was not checked, you may select any edit of a Triplicate.
 
 .. image:: /_static/images/data_loader-edits.png

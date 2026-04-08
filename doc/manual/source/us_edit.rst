@@ -1,4 +1,4 @@
-TripleTriplets====================
+====================
 Edit UltraScan Data
 ====================
 
@@ -146,7 +146,7 @@ Edit Multi-Wavelength (MWL) Data
 
 .. image:: _static/images/us_edit_mwl.png
 
-Where the data loaded in an editing session is comprised of multiple wavelengths (more than two), the main editor window is changed to the above form. Instead of selecting Triplicates to edit, this MWL edit procedure consists of selecting Cell / Channel pairs and the wavelengths within those doubles. Once editing in the normal way has been completed, the user may save the edit for either the specific Triplicate ("Save Current Edit Profile") or for all of the wavelengths of the current double ("Save to all Wavelengths").
+Where the data loaded in an editing session is comprised of multiple wavelengths (more than two), the main editor window is changed to the above form. Instead of selecting Triples to edit, this MWL edit procedure consists of selecting Cell / Channel pairs and the wavelengths within those doubles. Once editing in the normal way has been completed, the user may save the edit for either the specific Triplicate ("Save Current Edit Profile") or for all of the wavelengths of the current double ("Save to all Wavelengths").
 
 Most of the edit controls for MWL are the same as for the standard :ref:`Data Editor Window <US-edit-Functions>`; and are not repeated here. The steps and control objects described herein are those specific to MWL processing.
 

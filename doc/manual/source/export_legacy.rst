@@ -1,4 +1,4 @@
-TripletripletsTriplets==================================
+==================================
 Export Data in Legacy Format: 
 ==================================
 
@@ -9,7 +9,7 @@ Export Data in Legacy Format:
   :local: 
 
 
-This module enables you to load a run with one or more triplicates in Ultrascan-III format (.auc) and export the data to files in legacy (Beckman) format. 
+This module enables you to load a run with one or more triples in Ultrascan-III format (.auc) and export the data to files in legacy (Beckman) format.
 
 
 .. image:: _static/images/export_legacy.png
@@ -104,7 +104,7 @@ OpenAUC Converter Functions:
   * - **Run Details**
     - Pop up a dialog showing run details.
   * - **Export Data**
-    - Click to export all Triplicates of the data to files in legacy (Beckman) format.
+    - Click to export all Triples of the data to files in legacy (Beckman) format.
   * - **View Data Report** 
     - Generate a report file and view it in a dialog.
   * - **Run ID:** 
@@ -114,7 +114,7 @@ OpenAUC Converter Functions:
   * - **(experiment description)**
     - A text string is displayed giving a fairly detailed description of the experiment.
   * - **Cell / Channel / Wavelength** 
-    - One or more rows of raw data Triplicates. Click on a row to display its data in the plot window to the right.
+    - One or more rows of raw data Triples. Click on a row to display its data in the plot window to the right.
   * - **Export Status** 
     - This text window displays continually updated summaries of computational activity and results.
   * - **(right side plot)** 

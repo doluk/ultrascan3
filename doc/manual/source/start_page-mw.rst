@@ -1,4 +1,4 @@
-TripleTriplets===========================================================================
+===========================================================================
 Flowchart for the Analysis of Multi-Wavelength Sedimentation Velocity Data 
 ===========================================================================
 
@@ -33,7 +33,7 @@ Step 1: Import Experimental data into UltraScan-III OpenAUC format
         * If you have more than one Triplicate, you can click on Apply to All but verify centerpiece and solution for each Triplicate first. Also, check the Description field again to make sure the appropriate information is saved.
 #.  If data were collected in intensity mode, you will need to Define Reference Scans by selecting a short region from the air-to-air interface portion of the data.
 #.  For equilibrium data from 6-channel centerpieces you should separate each channel with the Define Subsets/Process Subsets functions.
-#.  Failed Triplicates or empty Triplicates can be excluded from the run by clicking on Drop Selected Triplicates.
+#.  Failed Triples or empty Triples can be excluded from the run by clicking on Drop Selected Triples.
 #.  When everything has been set you can Save the scans to database or disk.
 
 .. image:: _static/images/mwlr_viewer_wvl.png

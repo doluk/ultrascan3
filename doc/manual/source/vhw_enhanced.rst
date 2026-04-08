@@ -1,4 +1,4 @@
-TripletripleTriplets========================================
+========================================
 van Holde-Weischet Enhanced Analysis
 ========================================
 
@@ -45,7 +45,7 @@ vHW Enhanced Functions:
     - The text box below the one for temperature shows a full data description string.		
 
 
-**Cell / Channel / Wavelength** The text box below this label gives cell, channel and wavelength Triplicates available in this data set. Highlight the desired value.
+**Cell / Channel / Wavelength** The text box below this label gives cell, channel and wavelength Triples available in this data set. Highlight the desired value.
 
 .. list-table::
   :widths: 20 50
