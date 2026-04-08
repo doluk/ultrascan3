@@ -11,6 +11,20 @@ Common Dialogs of Ultrascan-III
 
 UltraScan-III provides several dialogs for inputting data for analysis or viewing, including options to load run data or load/remove distribution/fitted model data.
 
+Select Pre-Filter
+==================
+
+A number of UltraScan-III applications load model distribution data for processing. For large-volume data bases, it helps the speed of model list preparation to do a pre-filter of the model data by run ID. These applications use the US_SelectRuns dialog class to allow the user to choose runs with which to filter model listings. 
+The dialog presented when a US_SelectRuns is executed allows a list of run ID data choices from database or local disk. A Search text field allows the list to be pared down further to those of interest. After one or more data sets are selected in the list, a button labelled **Select PreFilter(s)** passes experiment data to the caller which passes selections to the :ref:`Load Model Dialog <fe_data_loader>`. 
+
+.. image:: /_static/images/select_prefilt.png
+  :align: center
+
+.. rst-class::
+  :align: center
+
+  **Load Run Data from DB**
+
 Data Loader 
 =============
 
