@@ -1002,7 +1002,7 @@ void US_XpnHostDB::newHost( QMap < QString, QString > & newInstrument  )
 void US_XpnHostDB::help( void )
 {
    US_Help* showhelp = new US_Help(this);
-   showhelp->show_help( "optima_host_config.html" );
+   showhelp->show_help( "config.html#instrument-preference-panel" );
 }
 
 //Test Connection
