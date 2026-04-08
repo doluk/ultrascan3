@@ -98,7 +98,7 @@ TEST_F(US_HelpPagesTest, ValidateAllHelpPagesExist) {
         QString fullRstPath = sourcePath + rstFile;
         if (!QFile::exists(fullRstPath)) {
             missingCount++;
-            QString errorMsg = QString("Missing help source file!\nHelp String: %3\n  Expected RST: %4\n  Context: %5")
+            QString errorMsg = QString("Not matching rst file for help String: %1 (Expected RST: %2)\n  Context: %3")
                 .arg(call.helpString)
                 .arg(fullRstPath)
                 .arg(call.context);
