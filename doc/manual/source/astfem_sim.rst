@@ -37,7 +37,7 @@ Simulation Functions:
   :header-rows: 0
 
   * - **Model Control** 
-    - Load a model from database or local disk using a `Model Editor <model_editor.html>`_ dialog. 
+    - Load a model from database or local disk using a :ref:`Model Editor <model_editor>` dialog. 
   * - **Define Buffer** 
     - Normally not used, this button allows you to specify buffer conditions through a `Buffer Management <buffer/index.html>`_ dialog. 
   * - **Simulation Parameters** 

@@ -86,6 +86,7 @@ In the 'Experiment Information' window, a label can be created for the run, the 
   
   **Edit Run Information**
 
+
 **STEP 4:** Adjust Separation Tolerance (Optional): 
 ----------------------------------------------------
 
