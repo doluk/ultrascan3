@@ -74,13 +74,13 @@ Load Run Functions:
   * - **Search**
     - As characters are entered in the text box to the right of the Search label, the list of data sets is modified to consist of matching entries. A blank field restores the full list. Note that the search is case-insensitive. 
   * - **Run**
-    - The Run ID given in the `Import stage <import.html>`_. 
+    - The Run ID given in the :doc:`Import stage <import>`. 
   * - **date**
     - The date the data was imported to Ultrascan or generated using connected instruments.
   * - **Database identification (DbID)**
     - The Database ID number.
   * - **Run**
-    - The Run Label given in the `Import stage <import.html>`_. 
+    - The Run Label given in the remove_mod_dis: :doc:`Import stage <import>`. 
   * - **Show Edits**
     - Click to transform the data list from showing only runs to showing a data tree with Triplicate and edit children. If no Run List entry is selected, the entire data tree will be transformed. If a Run is selected, only that run with its Triplicate and edit descendants will be shown. 
   * - **Load**

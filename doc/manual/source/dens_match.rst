@@ -38,11 +38,11 @@ DM Functions:
   * - **(prefilter text):**
     - Brief information about PreFilter selection(s) made. 
   * - **Select PreFilter:**
-    - Open a `Models Pre-Filter dialog <common_dialogs.html#data-loader>`_ to select Run IDs on which to pre-filter lists of models for loading. 
+    - Open a :doc:`Models Pre-Filter dialog <common_dialogs>` to select Run IDs on which to pre-filter lists of models for loading. 
   * - **Load Distribution(s):**
-    - Load model distribution data to use in density matching, as specified through a `Model Loader dialog <common_dialogs.html#load-distribution-model>`_.
+    - Load model distribution data to use in density matching, as specified through a :doc:`Model Loader dialog <common_dialogs>`.
   * - **Remove Distribution(s):**
-    - Open a `Remove Models dialog <common_dialogs.html#remove-model-distributions>`_ to pare down the list of selected models. 
+    - Open a :doc:`Remove Models dialog <common_dialogs>` to pare down the list of selected models. 
   * - **Refresh Plot:**
     - Force a re-plot of the currently selected plot type. 
   * - **Set Model Parameters:**

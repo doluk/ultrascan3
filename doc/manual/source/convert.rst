@@ -43,7 +43,7 @@ Multi-wavelength data is listed in the Cell/Channel/Wavelength range (# of wavel
 Data can be loaded into the window using one of the following:
 
     * **Import Experimental Data:** Load raw data located on the local disk 
-    * **Load US3 OpenAUC Run:** Load data that has already been converted to the UltraScan-III OpenAUC format using `Data load dialog <common_dialogs.html#data-loader>`_. This allows for steps 3 and 5 to be skipped as the information defined in these steps is populated based upon the experiment submission. 
+    * **Load US3 OpenAUC Run:** Load data that has already been converted to the UltraScan-III OpenAUC format using :doc:`Data load dialog <common_dialogs>`. This allows for steps 3 and 5 to be skipped as the information defined in these steps is populated based upon the experiment submission. 
 
 .. image:: /_static/images/us_convert_05.png
   :align: center
@@ -73,7 +73,7 @@ If the run is being reimported, the Run ID must be made unique to avoid deleting
   **Modify Experiment Information**
 
 
-In the 'Experiment Information' window, a label can be created for the run, the `'Select Project' <us_project.html>`_  button assigns the data to a pre-existing project, the 'Experiment Type' drop-down menu specifies the type of experiment (Velocity, Equilibrium, Diffusion, Buoyancy, Calibration or Other), the 'Instrument' drop-down menu associates the data to a laboratory instrument, and the 'Operator' drop-down menu records the individual who conducted the experiment. 
+In the 'Experiment Information' window, a label can be created for the run, the :doc:`'Select Project' <us_project>`  button assigns the data to a pre-existing project, the 'Experiment Type' drop-down menu specifies the type of experiment (Velocity, Equilibrium, Diffusion, Buoyancy, Calibration or Other), the 'Instrument' drop-down menu associates the data to a laboratory instrument, and the 'Operator' drop-down menu records the individual who conducted the experiment. 
 
     * **Select Lab/Rotor/Calibration:** Allows for the selection of the rotor and associated rotor (stretch) calibration profile. 
 
@@ -96,7 +96,7 @@ The separation tolerance (0-100) defines the threshold for distinguishing closel
 **STEP 5:** Modify Cell/Channel/Wavelength (c/c/w) Info:
 ------------------------------------------------------------
 
-The **Description** text box allows for notes to be assigned to each channel. Next, the **centerpiece** drop-down menu can be used to assign the centerpiece to each channel. The **Manage Solutions** button opens the `'Solutions Management' <solution/solution_select.html>`_ window, where new or pre-existing solutions can be assigned to each channel. **Apply to All** assigns the centerpiece and solution information of the currently channel to all channels. 
+The **Description** text box allows for notes to be assigned to each channel. Next, the **centerpiece** drop-down menu can be used to assign the centerpiece to each channel. The **Manage Solutions** button opens the `'Solutions Management' <solution/solution_select>` window, where new or pre-existing solutions can be assigned to each channel. **Apply to All** assigns the centerpiece and solution information of the currently channel to all channels. 
 
 **Dropping Data:** 'Drop Selected Data' removes all of the wavelengths for a particular cell and channel. 'Drop All Channel 'A's removes all of the listed A channels when an 'A' channel is selected in the list. 'Drop All Channel 'B's removes all of the listed B channels when a 'B' channel is selected in the list. 'Drop Selected Triples' opens the 'Triples Selector for Deletes' window:
 
