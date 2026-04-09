@@ -17,6 +17,10 @@ All experimental data acquired with the analytical ultracentrifuge must be proce
 .. image:: _static/images/us_edit.png
   :align: center
 
+.. rst-class::
+  :align: center
+
+  **Edit Data Main Window**
 
 Edit Functions:
 ====================
@@ -212,6 +216,9 @@ Edit Specific Scans
 .. image:: _static/images/edit_scan.png
   :align: center 
 
+.. rst-class::
+  :align: center
+
   **Edit Individual Scans**
 
 1. Use the zoom function as needed to focus on a point.
@@ -228,5 +235,8 @@ Exclude scan ranges and intervals with this dialog.
 
 .. image:: _static/images/edit_exclude_scan.png
   :align: center 
+
+.. rst-class::
+  :align: center
 
   **Exclude Scans**
