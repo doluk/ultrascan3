@@ -66,3 +66,8 @@ Simulation Functions:
     - This plot window displays the final result of simulation calculations. 
   * - **(progress counters and bars)** 
     - Several counters and bars illustrate ongoing progress during simulation calculation. 
+
+
+
+Clip
+======
