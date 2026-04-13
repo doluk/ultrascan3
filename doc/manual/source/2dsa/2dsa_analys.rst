@@ -171,6 +171,8 @@ Functions Specific to Varying Vbar
 Residual Plot Dialog
 ======================
 
+.. _residual_plot_dialog:
+
 .. image:: ../_static/images/2dsa_resplot.png
     :align: center
 
