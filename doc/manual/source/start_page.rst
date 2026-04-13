@@ -16,20 +16,19 @@ Step 1: Import Experimental data into UltraScan-III OpenAUC format
         Required for data from XLA or XLI, this step is performed automatically in the Optima AUC.
         Sedimentation velocity data should not be measured in absorbance mode, use intensity mode instead.
 
-#. Import the experimental data: Utilities: :doc:`Import Experimental Data <convert>`
-
-#. Confirm Investigator setting and local/database selection
-#.  Import Experimental Data from local disk 
-#.  Edit Run Information, Select Lab/Rotor/Calibration
-#.  Enter a Label (verbose description for the run)
+#.  Import the experimental data: Utilities: :doc:`Import Experimental Data <convert>`.
+#.  Confirm Investigator setting and local/database selection.
+#.  Import Experimental Data from local disk.
+#.  Edit Run Information, Select :ref:`Lab/Rotor/Calibration <edit-run-info>`.
+#.  Enter a Label (verbose description for the run).
 #.  Select the corresponding project by clicking on the Project button. If there is no project, create a new project. 
-#.  Confirm experiment type and optical detection system
-#.  Enter any comments, if applicable
-#.  Select instrument, rotor, rotor calibration and operator
+#.  Confirm experiment type and optical detection system.
+#.  Enter any comments, if applicable.
+#.  Select instrument, rotor, rotor calibration and operator.
 #.  Click on Accept.
         * Edit the Description field if necessary
 #.  Navigate to the first channel and select the centerpiece type.
-#.  Select the proper solution - Make sure that the solution contains at least one analyte and a buffer
+#.  Select the proper solution - Make sure that the solution contains at least one analyte and a buffer.
         * If you have more than one Triple, you can click on Apply to All but verify centerpiece and solution for each Triple first. Also, check the Description field again to make sure the appropriate information is saved.
 #.  If data were collected in intensity mode, you will need to Define Reference Scans by selecting a short region from the air-to-air interface portion of the data.
 #.  For equilibrium data from 6-channel centerpieces you should separate each channel with the Define Subsets/Process Subsets functions.

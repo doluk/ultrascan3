@@ -16,7 +16,8 @@ This module is used to display, and export FE solutions fitted to velocity exper
 Steps to compare Experiment to FE models: 
 =============================================
 
-**Step 1:** *Load experimental velocity data.* Click on :ref:`Load Data <fe-data-loader>` to select an edited velocity data set from the database or from local disk.
+**Step 1:** *Load experimental velocity data.* Click on 
+:ref:`Load Data <fe-data-loader>` to select an edited velocity data set from the database or from local disk.
 
 **Step 2:** *Select a model from database or disk.* Simply click on :ref:`Load Model <fe-model-loader>` and choose a model in the resulting dialog. If they exist, you will be given the choice of also loading noise vectors.
 

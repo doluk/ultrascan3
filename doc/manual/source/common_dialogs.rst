@@ -174,7 +174,7 @@ Remove Functions:
   * - **(status)**
     - The ongoing status of the list and current selections is documented here.
 
-.. _load_us3:
+.. _load-us3:
 
 Load Ultrascan-III Runs 
 ==========================
