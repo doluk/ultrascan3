@@ -13,9 +13,9 @@ Select Buffer Tab
 
 
 * :ref:`Select Buffer <select_buffer>` - A panel whose primary purpose is to select a buffer to return to the caller.
-* `Enter New Buffer <buffer_new.html>`_ - A panel whose primary purpose is to enter a brand new buffer, defined mostly by specifying components and each one's concentration.
-* `Edit Existing Buffer <buffer_edit.html>`_ - A panel whose primary purpose is to change non-hydrodynamic characteristics of an already existing buffer.
-* `Settings <buffer_settings.html>`_ - A panel whose primary purpose is to set Database-or-Disk input, the investigator; or to synchronize the local buffer components file from the database.
+* `Enter New Buffer <buffer_new>` - A panel whose primary purpose is to enter a brand new buffer, defined mostly by specifying components and each one's concentration.
+* `Edit Existing Buffer <buffer_edit>` - A panel whose primary purpose is to change non-hydrodynamic characteristics of an already existing buffer.
+* `Settings <buffer_settings>`` - A panel whose primary purpose is to set Database-or-Disk input, the investigator; or to synchronize the local buffer components file from the database.
 
 
 Select Buffer Panel
@@ -101,7 +101,7 @@ The panel allows actions beyond simple buffer selection, including getting buffe
 
     
 .. note::
-  Buffer spectra can be added **Managae Spectrum** button found in either the `New Buffer <../analyte/analyte_new.html#add-analyte-spectrum>`_ tab or the `Edit Analyte <buffer_edit.html#edit-buffer-spectrum>`_ tab.
+  Buffer spectra can be added **Managae Spectrum** button found in either the :ref:`New Buffer <../analyte/analyte_new.html#add-analyte-spectrum>`_ tab or the :ref:`Edit Analyte <buffer_edit.html#edit-buffer-spectrum>`_ tab.
     
 .. _buffer_details:
 

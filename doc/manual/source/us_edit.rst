@@ -39,11 +39,11 @@ Edit Functions:
   * - **Local Disk** 
     - Check to specify data input from local disk. 
   * - **Load Data** 
-    - Click here and, in the resulting `Load Data Dialog <common_dialogs.html#data-loader>`_, select raw data set(s) to load for editing. 
+    - Click here and, in the resulting :ref:`Load Data Dialog <fe-data-loader>`, select raw data set(s) to load for editing. 
   * - **Run Details**
-    - This button brings up a child window `Details for Raw Data <run_details.html>`_ to  that describes additional information associated with the data. The data description may be updated in this window. 
+    - This button brings up a child window :doc:`Details for Raw Data <run_details>` to  that describes additional information associated with the data. The data description may be updated in this window. 
   * - **Cell / Channel / Wavelength** 
-    - Select the Triplicate for which to perform editing. 
+    - Select the Triple for which to perform editing. 
   * - **Threshold for Scan Gaps** 
     - This spin button controls the check for consecutive interpolated data. If more than the specified number of consecutive points on a scan have been interpolated, a warning is displayed when the data is loaded. When editing wavelength data, this control specifies the gap in wavelengths 
 
@@ -126,9 +126,9 @@ Editing Steps
     
     When zoomed, the graph may be panned by pressing the center mouse button (usually the scroll wheel) and dragging.
 
-*   **Step 1:** Load data from the database or a local data directory that contains the UltraScan-III data files previously converted from the Beckman raw data. Load choices are made in a `Load Data Dialog <common_dialogs.html#data-loader>`_.
+*   **Step 1:** Load data from the database or a local data directory that contains the UltraScan-III data files previously converted from the Beckman raw data. Load choices are made in a :ref:`Load Data Dialog <fe-data-loader>`_.
 
-*    **Step 2:** Select the Cell / Channel / Wavelength Triplicate to be edited.
+*    **Step 2:** Select the Cell / Channel / Wavelength Triple to be edited.
 
 *    **Step 3:** Specify the meniscus of the data by holding down the Control key and using the left mouse button. The meniscus value may be manually adjusted with the keyboard.
 
@@ -140,7 +140,7 @@ Editing Steps
 
 *   **Step 7:** Make any other optional adjustments to the data that are necesary and save the edit profile. When saving, a pop-up message is presented asking for an edit ID. The default for this ID is the current date and time in the form of YYMMddhhmm (Year / Month / Day / Hour / Minute), but this default can be supplemented with a suffix of your own choice.
 
-*   **Step 8:** Repeat the above process for each Triplicate (Cell / Channel / Wavelength combination) in the data set. 
+*   **Step 8:** Repeat the above process for each Triple (Cell / Channel / Wavelength combination) in the data set. 
   
 
 .. Note:: The above process may be reset to any point by pressing the appropriate button at the associated specification entry.
@@ -150,7 +150,7 @@ Edit Multi-Wavelength (MWL) Data
 
 .. image:: _static/images/us_edit_mwl.png
 
-Where the data loaded in an editing session is comprised of multiple wavelengths (more than two), the main editor window is changed to the above form. Instead of selecting Triples to edit, this MWL edit procedure consists of selecting Cell / Channel pairs and the wavelengths within those doubles. Once editing in the normal way has been completed, the user may save the edit for either the specific Triplicate ("Save Current Edit Profile") or for all of the wavelengths of the current double ("Save to all Wavelengths").
+Where the data loaded in an editing session is comprised of multiple wavelengths (more than two), the main editor window is changed to the above form. Instead of selecting Triples to edit, this MWL edit procedure consists of selecting Cell / Channel pairs and the wavelengths within those doubles. Once editing in the normal way has been completed, the user may save the edit for either the specific Triple ("Save Current Edit Profile") or for all of the wavelengths of the current double ("Save to all Wavelengths").
 
 Most of the edit controls for MWL are the same as for the standard :ref:`Data Editor Window <US-edit-Functions>`; and are not repeated here. The steps and control objects described herein are those specific to MWL processing.
 
@@ -207,7 +207,7 @@ Editing steps specific to MWL
 *   **Step 1:** Load data from the database or a local data directory. Select an entire runID so that MWL data is recognized as such. 
 *   **Step 2:** Select the Cell / Channel to be edited; specify the Lambda (wavelength) range to be edited; and select a single wavelength for display and edit.
 *   **Step 3:** Specify editing parameters - such as Meniscus, Data Range, and Plateau - in the normal Control-Click way. 
-*   **Step 4:** Save editing for either the specific Triplicate selected or to be applied to all wavelengths of a cell / channel double.
+*   **Step 4:** Save editing for either the specific Triple selected or to be applied to all wavelengths of a cell / channel double.
 
 
 Edit Specific Scans

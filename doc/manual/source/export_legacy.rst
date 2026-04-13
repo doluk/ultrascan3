@@ -1,4 +1,4 @@
-==================================
+Triple==================================
 Export Data in Legacy Format: 
 ==================================
 
@@ -110,7 +110,7 @@ OpenAUC Converter Functions:
   * - **Run ID:** 
     - The Run identifier string is displayed for the loaded data sets.
   * - **Avg. Temp.:** 
-    - The average temperature over all the scans of the currently selected Triplicate.
+    - The average temperature over all the scans of the currently selected Triple.
   * - **(experiment description)**
     - A text string is displayed giving a fairly detailed description of the experiment.
   * - **Cell / Channel / Wavelength** 
@@ -118,7 +118,7 @@ OpenAUC Converter Functions:
   * - **Export Status** 
     - This text window displays continually updated summaries of computational activity and results.
   * - **(right side plot)** 
-    - This plot shows the Experimental data for the currently selected Triplicate.
+    - This plot shows the Experimental data for the currently selected Triple.
   * - **Reset**
     - Reset all parameters to defaults.
   * - **Help** 

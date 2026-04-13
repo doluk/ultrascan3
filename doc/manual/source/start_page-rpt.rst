@@ -1,4 +1,4 @@
-========================================
+Triple========================================
 Reporting SV-Data
 ========================================
 
@@ -71,7 +71,7 @@ The simulation quality assessment includes the following results:
   :header-rows: 0
 
   *  - **root-mean-square deviation**
-     - The root-mean-square deviation (RMSD) is reported together with the edit profile, analysis method, and Triplicate designation. This allows the user to evaluate fit quality in the exact context in which the model was generated. RMSD is a primary indicator of how closely the simulation matches the experimental scans.
+     - The root-mean-square deviation (RMSD) is reported together with the edit profile, analysis method, and Triple designation. This allows the user to evaluate fit quality in the exact context in which the model was generated. RMSD is a primary indicator of how closely the simulation matches the experimental scans.
   *  - :doc:`Bitmap <fe_match/fe_match_simulate.html#residual-bit-map>`_
      - A bitmap representation of fit quality or residual structure may be generated to provide a rapid visual diagnostic of agreement between the model and the data. Such displays can help reveal systematic artifacts, scan-specific problems, or localized fitting errors.
   *  - :doc:`Time- and radially invariant noise profiles <fe_match/fe_match_simulate.html#noise-data-analysis>`_

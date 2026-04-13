@@ -98,11 +98,11 @@ GA Functions:
   :widths: 20 50 
 
   * - **Select PreFilter(s)**
-    - Open  `Select Pre-Filter <common_dialogs.html#data-loader>`_ to select Run IDs on which to pre-filter lists of models for loading. This can significantly reduce model loading time, particularly with large model counts in the database. The text box to the right of this button will display a summary of runs selected as Pre-filters.     
+    - Open  :ref:`Select Pre-Filter <fe-data-loader>` to select Run IDs on which to pre-filter lists of models for loading. This can significantly reduce model loading time, particularly with large model counts in the database. The text box to the right of this button will display a summary of runs selected as Pre-filters.     
   * - **Load Distribution**
-    - Load model distribution data as specified through a `Model Loader dialog <common_dialogs.html#load-distribution-model>`_.
+    - Load model distribution data as specified through a :ref:`Model Loader dialog <fe-model-loader>`.
   * - **Load Color File**
-    - Load a color map (.xml) for Z dimension display as specified through `Load Color File dialog <colorgradient.html>`_.
+    - Load a color map (.xml) for Z dimension display as specified through :doc:`Load Color File dialog <colorgradient>`.
   * - **1-Dimensional Plot**
     - Select to plot in one dimension, displaying the selected X-axis variable on the horizontal axis and the partial concentration on the Y-axis as a bar plot.
   * - **2-Dimensional Plot**

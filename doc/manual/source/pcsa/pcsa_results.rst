@@ -1,4 +1,4 @@
-=====================================================
+triple=====================================================
 Parametrically Constrained Spectrum Analysis Results
 =====================================================
 
@@ -82,7 +82,7 @@ The "Save Data" button in the `PCSA Controls <pcsa_analys.html#pcsa-fitting-proc
   **Detailed 2DSA Report**
 
    - **Heading 1:** Analysis type
-   - **Heading 2:** This heading indicates the "dataset named in the Import module", the cell number, channel, and wavelength triplicate, the edit profile processed in the Edit data module,  
+   - **Heading 2:** This heading indicates the "dataset named in the Import module", the cell number, channel, and wavelength triple, the edit profile processed in the Edit data module,  
    - **Model Statistics:** The settings entered to generate the models and the. The model line used by the analysis,  number_the type of analysis completed_the database request number_number of models in the analysis cohort
    - **Data Analysis Settings:** The name of the model is determined by the analysis number_the type of analysis completed_the database request number_number of models in the analysis cohort
    - **Number of components:** Number of components with unique s, and D values. 

@@ -1,4 +1,4 @@
-========================================
+Triple========================================
 van Holde-Weischet Combined Plots
 ========================================
 
@@ -54,7 +54,7 @@ Combine vHW Functions:
   * - **Run IDs:** 
     - The list below shows all runs selected in Load Data dialogs. Click on a list line to reveal the Cell / Channel / Wavelength Triples for the run.
   * - **Cell/Channel/ Wavelength:** 
-    - The list below shows the Triples for the currently selected run. Click on a Triplicate line to have its distribution/envelope added to the combined plot.
+    - The list below shows the Triples for the currently selected run. Click on a Triple line to have its distribution/envelope added to the combined plot.
 
 .. _selrun:
 

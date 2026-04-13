@@ -30,7 +30,7 @@ Process:
 .. image:: _static/images/pseudo-abde-2.png
     :align: center
 
-2. Assign the reference channel in the Reference pulldown menu. The reference will automatically be subtracted. Select which Triplicate to save by clicking the **Save** checkbox.  
+2. Assign the reference channel in the Reference pulldown menu. The reference will automatically be subtracted. Select which Triple to save by clicking the **Save** checkbox.  
 
 .. image:: _static/images/pseudo-abde-3.png
     :align: center

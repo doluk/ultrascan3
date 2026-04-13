@@ -130,7 +130,7 @@ van Holde-Weischet Analysis Steps
 
 *  **Step 1:** First, load a velocity dataset. Click on **Load Experiment** to select an edited velocity data set from the database or from local disk.
 
-*  **Step 2:** Secondly, select a model from database or disk. Simply click on a triplicate in the Cell / Channel / Wavelength. Enhanced van Holde-Weischet analysis is automatically applied according to the Analysis Controls
+*  **Step 2:** Secondly, select a model from database or disk. Simply click on a triple in the Cell / Channel / Wavelength. Enhanced van Holde-Weischet analysis is automatically applied according to the Analysis Controls
 
 *  **Step 3:** If necessary, adjust the Back Diffusion Tolerance, Divisions, % of Boundary and Boundary Position (%).
 

@@ -1,4 +1,4 @@
-=========================================
+Triple=========================================
 Common Dialogs of Ultrascan-III
 =========================================
 
@@ -43,10 +43,10 @@ Ultrascan-III modules can load models by first loading the Run as **Experiment**
 Data Set Selection
 --------------------
 
-Most often, you need not expand the list tree and need only select the top level run ID description. This effectively selects all Triples for the run and selects the first listed edit for each Triplicate. In the default case where Latest Data Edit was checked in the calling dialog, there will be only one edit (the latest) for each Triplicate. If Latest Data Edit was not checked, there may be multiple edits for Triples. In this case, selecting a Run description or a Triplicate description effectively selects the earliest edit(s).
+Most often, you need not expand the list tree and need only select the top level run ID description. This effectively selects all Triples for the run and selects the first listed edit for each Triple. In the default case where Latest Data Edit was checked in the calling dialog, there will be only one edit (the latest) for each Triple. If Latest Data Edit was not checked, there may be multiple edits for Triples. In this case, selecting a Run description or a Triple description effectively selects the earliest edit(s).
 
 You may, of course, select specific Triples of a run.
-Similarly, in the case where Lastest Data Edit was not checked, you may select any edit of a Triplicate.
+Similarly, in the case where Lastest Data Edit was not checked, you may select any edit of a Triple.
 
 .. image:: /_static/images/data_loader-edits.png
     :align: center
@@ -82,7 +82,7 @@ Load Run Functions:
   * - **Run**
     - The Run Label given in the remove_mod_dis: :doc:`Import stage <import>`. 
   * - **Show Edits**
-    - Click to transform the data list from showing only runs to showing a data tree with Triplicate and edit children. If no Run List entry is selected, the entire data tree will be transformed. If a Run is selected, only that run with its Triplicate and edit descendants will be shown. 
+    - Click to transform the data list from showing only runs to showing a data tree with Triple and edit children. If no Run List entry is selected, the entire data tree will be transformed. If a Run is selected, only that run with its Triple and edit descendants will be shown. 
   * - **Load**
     - Click to accept the choice(s) highlighted in the data list and pass data back to the caller. 
 
@@ -100,7 +100,7 @@ Load Run Functions:
     - Click to close the dialog with no model list modifications made.
 
 .. note:: 
-  Note that multiple selections must all be from the same run. Only one selection is allowed for each Triplicate.
+  Note that multiple selections must all be from the same run. Only one selection is allowed for each Triple.
 
 
 Load Distribution Model 
@@ -108,7 +108,7 @@ Load Distribution Model
 
 .. _fe_model_loader:
 
-After the Run has been loaded the triplicate analysis model is loaded using *Load Distribution Model*.
+After the Run has been loaded the triple analysis model is loaded using *Load Distribution Model*.
 
 .. image:: /_static/images/fe_load_model_distrib.png
     :align: center
@@ -126,7 +126,7 @@ Advanced Model List Options
   :header-rows: 0 
   
   * - **Monte Carlo Singles** 
-    - Checking the Monte Carlo Singles box expands the list to include all the Monte Carlo singles of any triplicate with Monte Carlo analysis done. 
+    - Checking the Monte Carlo Singles box expands the list to include all the Monte Carlo singles of any triple with Monte Carlo analysis done. 
   * - **Filter by Edit/Run**
     - Filters the list by the experimental run initially selected and the latest Edit of the experiment selected. 
   * - **Edit-Unassigned one** 

@@ -1,4 +1,4 @@
-====================================
+Triple====================================
 Buoyancy Equilibrium Data Analysis
 ====================================
 
@@ -60,7 +60,7 @@ Peak Decom. Functions:
     - 
   * - **Cell /Channel/ Wavelength:**
     - 
-  * - **Speed Step (RPM) of Triplicate:**
+  * - **Speed Step (RPM) of Triple:**
     - 
 
 

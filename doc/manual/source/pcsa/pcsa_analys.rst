@@ -138,7 +138,7 @@ Control dialog parameters differ slightly in interpretation, based on whether th
      * Fixed+LM -- where the final LM model is the desired overall final model. 
 
 
-A detailed explanation of the PCSA specific results can be found in `Parametrically Constrained Spectrum Analysis Results <pcsa_results.html>`_
+A detailed explanation of the PCSA specific results can be found in :doc:`Parametrically Constrained Spectrum Analysis Results <pcsa_results>
 
 Fitting Controls Functions:
 ============================
@@ -175,7 +175,7 @@ Fitting Controls Functions:
   * - **Stop Fit**  
     -  If something seems wrong with the progress of analysis or if you realize you have parameterized incorrectly, click this button to abort the fit run.
   * - **Perform Regularization Scan**
-    -  Once fit analysis is complete, you may optionally click here to bring up a `Regularization Parameter Scan <pcsa_rpscan.html>`_ dialog that sets the best value for Regularization Parameter.
+    -  Once fit analysis is complete, you may optionally click here to bring up a :doc:`Regularization Parameter Scan <pcsa_rpscan> dialog that sets the best value for Regularization Parameter.
   * - **Regularize Current Model**
     -  Any time you set the Regularization Parameter, either manually or through scan, you may then compute a final model, using that parameter, by clicking here. 
 
@@ -198,7 +198,7 @@ Fitting Controls Functions:
   * - **Plot Results**
     - Open 3-D and Residual plot dialogs to display final results.
   * - **Save Results:**
-    - Save final model(s) and any noises generated. Also output `PCSA report <pcsa_results.html#pcsa-report>`_ and plot image files.
+    - Save final model(s) and any noises generated. Also output :ref:`PCSA report <pcsa-report>` and plot image files.
   * - **Advanced Controls**
     - Click on this button to open the advanced controls dialog
   * - **Plot Model Lines**

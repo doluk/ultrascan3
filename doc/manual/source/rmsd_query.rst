@@ -1,4 +1,4 @@
-=========================================
+triple=========================================
 RMSD Model Query  
 =========================================
 
@@ -30,7 +30,7 @@ When you open the module, click on "Load Data" to loads the chosen experimental 
 * **Lambda:** Specify the wavelength(s) at which the sample(s) were measured.
 * **RMSD Threshold:** Set the maximum acceptable RMSD value.
 
-Once parameters are selected, you can run the simulation to compute the RMSD for every combination of edit, analysis, method, and sample triplicate. RMSD results are displayed in a table, where values below the threshold are highlighted in green and values above the threshold in yellow. The table can be exported as a .dat file for further processing.
+Once parameters are selected, you can run the simulation to compute the RMSD for every combination of edit, analysis, method, and sample triple. RMSD results are displayed in a table, where values below the threshold are highlighted in green and values above the threshold in yellow. The table can be exported as a .dat file for further processing.
 
 
 .. image:: _static/images//rmsd_query-c.png

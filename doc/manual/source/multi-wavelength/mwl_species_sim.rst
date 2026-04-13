@@ -1,4 +1,4 @@
-==================================
+Triple==================================
 MWL Pre-Fit Species Simulation
 ==================================
 
@@ -64,8 +64,8 @@ MWL Pre-Fit Species Functions:
     - Save simulation once generated. Simulations are saved in $HOME/ultrascan/imports/
   * - **Run ID:** 
     - The Run name automatically generated for simulations. Simulations will have the "ISS-" prefix.  
-  * - **Triplicate:** 
-    - The Triplicate initially loaded using **Select Models**.  
+  * - **Triple:** 
+    - The Triple initially loaded using **Select Models**.  
   * - **Help**
     - The Help documentation of this "MWL Pre-Fit Species Simulation" Module.
   * - **Close**

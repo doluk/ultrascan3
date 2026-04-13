@@ -53,7 +53,7 @@ Absolute stretch values are plotted in blue as a function of speed, with black c
 .. image:: _static/images/rotorstretch-5.png
   :align: center
 
-Clicking OK, the user is prompted with the `Rotor Management <rotor.html>`_ program where a new stretch profile can be stored. 
+Clicking OK, the user is prompted with the :doc:`Rotor Management <rotor>` program where a new stretch profile can be stored. 
 
 It is important to note that the appropriate rotor is pre-selected, based on the rotor information used to store the data originally in the LIMS database when the data was committed to the database. The user can add a name for the calibration as well as a w2t value for the rotor, if known. The date on which the rotor data are committed is automatically added to each rotor's profile in the LIMS system. The final report can be printed out by clicking on **View Calibration Report**:
 
