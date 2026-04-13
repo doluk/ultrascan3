@@ -1,4 +1,4 @@
-Triple================================
+================================
 Automated GMP workflow setup
 ================================
 
@@ -172,7 +172,7 @@ The 2DSA settings should closely match the simulation parameters for optimal res
 
 In this screen, specify the 2DSA workflow and analysis parameters, such as s-value and f/f0-value ranges, noise fitting, boundary condition fits, and Monte Carlo details. A manual or automatic meniscus/bottom position fit is available.
 
-The recommended analysis flow chart is explained in this :doc:`Flowchart <../start_page>.
+The recommended analysis flow chart is explained in this :doc:`Flowchart <../start_page>`.
 
 .. image:: ../_static/images/gmp/automation/2dsa.png
     :align: center

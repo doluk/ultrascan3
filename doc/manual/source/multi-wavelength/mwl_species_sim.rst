@@ -1,4 +1,4 @@
-Triple==================================
+==================================
 MWL Pre-Fit Species Simulation
 ==================================
 
@@ -49,7 +49,7 @@ MWL Pre-Fit Species Functions:
   * - **PreFilter Models** 
     - Load a run dataset as a Pre-filter using the "Select Run(s) as Models Pre-Filter (DB)".  
   * - **Select Models**
-    - Select the distributions to base simulation on in the ":doc:`Load Distribution Model(s) <../common_dialogs.html#load-distribution-model>`_. Click and drag to select multiples model distributions. Click on **Select Models** first to select models across runs. 
+    - Select the distributions to base simulation on in the ":doc:`Load Distribution Model(s) <fe-model-loader>`. Click and drag to select multiples model distributions. Click on **Select Models** first to select models across runs. 
   * - **Define Buffer**
     - Open the :doc:`Buffer Management <../buffer/index>` dialog to select the buffer the simulations will use for density and viscosity values. 
   * - **Simulation Parameters**

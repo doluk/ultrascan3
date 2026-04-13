@@ -175,7 +175,7 @@ Fitting Controls Functions:
   * - **Stop Fit**  
     -  If something seems wrong with the progress of analysis or if you realize you have parameterized incorrectly, click this button to abort the fit run.
   * - **Perform Regularization Scan**
-    -  Once fit analysis is complete, you may optionally click here to bring up a :doc:`Regularization Parameter Scan <pcsa_rpscan> dialog that sets the best value for Regularization Parameter.
+    -  Once fit analysis is complete, you may optionally click here to bring up a :doc:`Regularization Parameter Scan <pcsa_rpscan>` dialog that sets the best value for Regularization Parameter.
   * - **Regularize Current Model**
     -  Any time you set the Regularization Parameter, either manually or through scan, you may then compute a final model, using that parameter, by clicking here. 
 

@@ -15,7 +15,7 @@ Edit Existing Buffer Tab
 * :doc:`Select Buffer <buffer_select>` - A panel whose primary purpose is to select a buffer to return to the caller.
 * :doc:`Enter New Buffer <buffer_new>` - A panel whose primary purpose is to enter a brand new buffer, defined mostly by specifying components and each one's concentration.
 * :ref:`Edit Existing Buffer <edit_buffer>` - A panel whose primary purpose is to change non-hydrodynamic characteristics of an already existing buffer.
-* :ref:`Settings <buffer_settings> - A panel whose primary purpose is to set Database-or-Disk input, the investigator; or to synchronize the local buffer components file from the database.
+* :ref:`Settings <buffer_settings>` - A panel whose primary purpose is to set Database-or-Disk input, the investigator; or to synchronize the local buffer components file from the database.
 
 Edit Buffer Panel
 =======================
@@ -46,9 +46,9 @@ Buffer Edit Functions:
     * - **Description**
       - The description of the currently selected buffer for which modification are to be made.
     * - **Cancel** 
-      - Click this button to abandon any changes and return to the :doc:`Select Buffer <buffer_select> panel with the original unchanged buffer.
+      - Click this button to abandon any changes and return to the :doc:`Select Buffer <buffer_select>` panel with the original unchanged buffer.
     * - **Accept**
-      - Click this button to save any changes and return to the :doc:`Select Buffer <buffer_select> panel with a buffer as modified in this panel.
+      - Click this button to save any changes and return to the :doc:`Select Buffer <buffer_select>` panel with a buffer as modified in this panel.
     * - **pH:**
       - Manually change pH to be associated with the current buffer.
     * - **Manage Spectrum**

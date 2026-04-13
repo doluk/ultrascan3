@@ -28,10 +28,6 @@ Solutions Panel:
 
 .. _solutions:
 
-Using this panel, you can specify the solutions used in each channel. :ref:`Comments <comments>` can also be included and appended to the solution name. 
-The :doc:`Solutions Management <../solutions/index> module help page has detailed explanations of these items. 
-
-
 .. image:: ../_static/images/experiment_solutions.png
     :align: center
 
@@ -41,6 +37,11 @@ The :doc:`Solutions Management <../solutions/index> module help page has detaile
     **Solutions Panel**
 
 .. _comments:
+
+Using this panel, you can specify the solutions used in each channel. :ref:`Comments <comments>` can also be included and appended to the solution name. 
+The :doc:`Solutions Management <../solutions/index>`module help page has detailed explanations of these items. 
+
+
 
 
 .. image:: ../_static/images/experiment_solutions_comments.png
@@ -55,4 +56,4 @@ The :doc:`Solutions Management <../solutions/index> module help page has detaile
 Shared Panel Functions:
 ========================
 
-A panel status box and multiple buttons are shared by all panels. The :doc:`General <general> tab help page has detailed explanations of these items. 
+A panel status box and multiple buttons are shared by all panels. The :doc:`General <general>` tab help page has detailed explanations of these items. 

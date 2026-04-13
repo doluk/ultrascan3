@@ -24,7 +24,7 @@ vHW Enhanced Functions:
   :header-rows: 0
 
   * - **Load Experiment**
-    - Click on this button and, in the resulting :doc:`Load Run Data Dialog <common_dialogs.html#data-loader>`_, select an edited data set to load.
+    - Click on this button and, in the resulting :ref:`Load Run Data Dialog <fe-data-loader>`, select an edited data set to load.
   * - **Run Details**
     - Bring up a :doc:`Run Details Dialog <run_details>` with a summary of data and run details.		 
   * - **Latest Data Edit**

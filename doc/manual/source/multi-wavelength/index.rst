@@ -14,6 +14,6 @@ Multi-Wavelength Data Viewing, Analysis and Reporting
 Links to Associated Modules:  
  
 
-* :doc:`Spectrum Fitter <us_extinction> - Generate the extinction basis spectrum for each species in dataset. 
+* :doc:`Spectrum Fitter <us_extinction>` - Generate the extinction basis spectrum for each species in dataset. 
 * :ref:`Analyte <analyte/edit-analyte-spectrum>`_ - Associate an extinction basis spectrum file to an analyte. 
 * :doc:`Flowchart to Multi-Wavelength Sedimentation Velocity Analysis <../start_page-mw>.

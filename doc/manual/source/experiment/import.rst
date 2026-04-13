@@ -57,7 +57,7 @@ LIMS Import Functions:
   * - **Triple (c/c/w) Info:**
     - Cell Centerpiece. 
   * - **Solution:**
-    - Solution added in the :doc:`Cells <cells> Experiment tab. 
+    - Solution added in the :doc:`Cells <cells>` Experiment tab. 
   * - **Scan Focus from:**
     - Select Scan start range to exclude. 
   * - **Scan Focus to:**

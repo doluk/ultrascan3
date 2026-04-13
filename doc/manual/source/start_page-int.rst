@@ -13,7 +13,7 @@ Analysis of Interacting Solutes
 
 Step 1: 2DSA refinement 
 ------------------------
-#. Follow steps 1-6 in the :doc:`2DSA Flowchart <start_page>`_ to perform
+#. Follow steps 1-6 in the :doc:`2DSA Flowchart <start_page>`  to perform
 a 2DSA analysis and fit the boundary conditions and the associated time-
 and radially-invariant noises using iterative refinements.
 

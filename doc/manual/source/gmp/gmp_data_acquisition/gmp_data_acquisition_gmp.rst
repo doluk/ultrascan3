@@ -1,4 +1,4 @@
-Triple================================
+================================
 GMP Data Acquisition
 ================================
 
@@ -15,7 +15,7 @@ After a run is initiated from the instrument, the user is presented with the 'Da
 .. image:: ../../_static/images/gmp/data_acquisition/gmp/gmp_data_acquisition_gmp_01.png
     :align: center
 
-Once the machine reaches the desired rotor speed and begins acquiring scans, **Optical System** allows for the user to select the intensity/interference data. Each cell/channel/wavelength Triple can be viewed using the **Cell/Channel** and **Wavelength** drop down menus, which can be cycled through using the **Next** and **Previous** buttons. **Skip Stage** allows for the current stage to be skipped. While **STOP** allows for the run to be stopped, and prompts the :doc:`GMP e-signature <../gmp_signature> window for user authentication. 
+Once the machine reaches the desired rotor speed and begins acquiring scans, **Optical System** allows for the user to select the intensity/interference data. Each cell/channel/wavelength Triple can be viewed using the **Cell/Channel** and **Wavelength** drop down menus, which can be cycled through using the **Next** and **Previous** buttons. **Skip Stage** allows for the current stage to be skipped. While **STOP** allows for the run to be stopped, and prompts the :doc:`GMP e-signature <../gmp_signature>` window for user authentication. 
 
 .. image:: ../../_static/images/gmp/data_acquisition/gmp/gmp_data_acquisition_gmp_02.png
     :align: center

@@ -102,7 +102,7 @@ Once an analysis is complete, the main window will appear similar to this:
   * - **3-D Plot**
     - After a 2DSA model is fitted, open a control window for a :doc:`3-Dimensional plot <../3d_plot>` of the final computed model. 
   * - **Residual Plot**
-    - After a 2DSA model is fitted, open a plot dialog for a far more detailed set of result plots. See :doc:`Finite Element Viewer/Residual Plot Dialog <../fe_match/fe_match_simulate> or :doc:`2-D Analysis Controls <residual-plot-dialog>` for further details.
+    - After a 2DSA model is fitted, open a plot dialog for a far more detailed set of result plots. See :doc:`Finite Element Viewer/Residual Plot Dialog <../fe_match/fe_match_simulate>`or :doc:`2-D Analysis Controls <residual-plot-dialog>` for further details.
   * - **Status Info:**
     - This text window displays continually updated summaries of computational activity and results.
   * - **(upper right side plot)**

@@ -60,4 +60,4 @@ Lab/Rotor Functions:
 Shared Panel Functions:
 ========================
 
-A panel status box and multiple buttons are shared by all panels. The :doc:`General <general> tab help page has detailed explanations of these items. 
+A panel status box and multiple buttons are shared by all panels. The :doc:`General <general>` tab help page has detailed explanations of these items. 

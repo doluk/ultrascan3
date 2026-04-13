@@ -53,7 +53,7 @@ Load in the parameters from a pre-existing protocol in the database,
 
 .. _select-project: 
 
-Assign the run to a user-created Project in the :doc:`Project Management <../../us_project> module. Each section requires information on the goals, molecules being analyzed, and experimental design.
+Assign the run to a user-created Project in the :doc:`Project Management <../../us_project>` module. Each section requires information on the goals, molecules being analyzed, and experimental design.
 
 
 2. Lab/Rotor

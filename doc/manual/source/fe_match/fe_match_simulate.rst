@@ -1,4 +1,4 @@
-triple=====================================
+=====================================
 Finite Element Model Simulation
 =====================================
 
@@ -15,7 +15,7 @@ When the **Simulate Model** button is clicked in the **Finite Element Model View
 
  * **Finite Element Data/Residuals Viewer** - Visual comparison of simulated and experimental data. Graphical display of time and radially invariant noises subtracted. 
  * **Residuals Pixel Map** - Bit map of every scan as a pixel line and the positive or negative difference of the model to the data are highlighted as red (negative) and green(positive) pixels. an Excellent residual map will have a random distribution of red and green pixels. 
- * :doc:`3-Dimensional Plot Controls <../3d_plot> - 3D plots of the simulated data.
+ * :doc:`3-Dimensional Plot Controls <../3d_plot>`- 3D plots of the simulated data.
  * **Data report File** - Generate a Simulated model Report file and view it in a dialog.
 
 .. image:: ../_static/images/fe_match_allct.png

@@ -98,9 +98,9 @@ Step 5: Simulated a time-grid synchronized model based on 2DSA-IT MWL models
 #. Simulate a time synchronized **ISSF_** model based on the MWL 2DSA-IT models using the :doc:`MWL Pre-Fit Species Simulation <multi-wavelength/mwl_species_sim>`. 
 #. Click **PreFilter Models** to define the MWL pre-filter for the simulation and
 #. Click **Select Models** and load all related 2DSA-IT models from one MWL dataset channel.
-#. **Define Buffer** and open the :doc:`Buffer Management <buffer/index>`_ dialog to define the experimental parameters of the dataset
+#. **Define Buffer** and open the :doc:`Buffer Management <buffer/index>`  dialog to define the experimental parameters of the dataset
 #. Define the simulation parameters
-#. Click **Define Rotor** and open the :doc:`Rotor Management <rotors>`_ dialog to select the Default 1003 (Simulation) rotor. 
+#. Click **Define Rotor** and open the :doc:`Rotor Management <rotors>`  dialog to select the Default 1003 (Simulation) rotor. 
 #. Start the simulation and save the open-auc file into $HOME/ultrascan/imports folder. 
  
 
@@ -125,7 +125,7 @@ Step 8: Deconvolute MW data using species basis spectra
 ----------------------------------------------------------
 
 #. Deconvolute the analytes in :doc:`MWL Species Fit Analysis <multi-wavelength/mwl_species_fit>`. 
-#. Load the time-synchronized **ISSF-** simulation generated using :doc:`Optima MWL Fit Simulations <multi-wavelength/mwl_species_sim>` using :ref:`Load Run Data Dialog <fe-data-loader>`_. 
+#. Load the time-synchronized **ISSF-** simulation generated using :doc:`Optima MWL Fit Simulations <multi-wavelength/mwl_species_sim>` using :ref:`Load Run Data Dialog <fe-data-loader>` . 
 #. Click **Load Species Fits** and load the species extinction coefficient basis spectra from local disk. 
 #. Perform the deconvolution by clicking **Species Fit Data**. 
 #. Deconvoluted sedimentation velocity data of each species will by generated with a **SSF-ISSF-** pre-fix. 

@@ -48,8 +48,8 @@ parameters can be set to a logarithmic scale by checking the **LogSc?** checkbox
 DMGA Constraint Functions:
 ===========================
 
-Component Parameters:
-----------------------
+DMGA Component Parameters:
+---------------------------
 
 .. list-table::
   :widths: 20 50

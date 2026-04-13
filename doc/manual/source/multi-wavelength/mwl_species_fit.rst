@@ -70,7 +70,7 @@ MWL Species Fit Functions:
   * - **Load Experiment** 
     - Load the time-synchronized **ISSF-** simulations generated in :doc:`MWL Pre-Fit Species Simulation module <mwl_species_sim>. 
   * - **Run Details** 
-    - Bring up a :doc:`Run Details Dialog <../run_details> with a summary of data and run details.
+    - Bring up a :doc:`Run Details Dialog <../run_details>` with a summary of data and run details.
   * - **Latest Data Editor** 
     - Select latest edit of all data displayed.   
   * - **Database** 
@@ -82,7 +82,7 @@ MWL Species Fit Functions:
   * - **Save Data** 
     - Save the simulated data in $HOME/ultrascan/imports  
   * - **Load Species Fits**
-    - Load the extinction-coefficient spectra files of 2 or more species from local file. Files will be saved in csv format from :doc:`Spectrum Fitter <../us_extinction>  
+    - Load the extinction-coefficient spectra files of 2 or more species from local file. Files will be saved in csv format from :doc:`Spectrum Fitter <../us_extinction>`  
   * - **Species Fit Data**
     - Generate and save **SSF-ISSF-** simulation files.  
   * - **Species to Plot:** 

@@ -1,4 +1,4 @@
-Triple================================
+================================
 Protocol Development
 ================================
 
@@ -43,7 +43,7 @@ The protocol name is the only information that can be changed, since the source 
 2: Lab/Rotor
 ===============
 
-The user cannot change the laboratory, rotor, rotor calibration profile, instrument, and experiment types. The roles of Operator, Reviewer, Approver, and Subject Matter Expert (SME) can be re-assigned from the drop-down menus. See here for more information: `UltraScan GMP Help <../index.html>`_. 
+The user cannot change the laboratory, rotor, rotor calibration profile, instrument, and experiment types. The roles of Operator, Reviewer, Approver, and Subject Matter Expert (SME) can be re-assigned from the drop-down menus. See here for more information: :doc:`UltraScan GMP Help <../index>`. 
 
 3: Speeds
 =============

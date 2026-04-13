@@ -104,9 +104,9 @@ Experimental Space
   :header-rows: 0 
 
   * - **T [C]** 
-    - The temperature selected by the user in the :doc:`Buffer Management <buffer/index>`_ module. Manually setting the temperature will readout **arbitrary Value!!!** error. 
+    - The temperature selected by the user in the :doc:`Buffer Management <buffer/index>`  module. Manually setting the temperature will readout **arbitrary Value!!!** error. 
   * - **Load Buffer**
-    - Load the buffer using the :doc:`Buffer Management <buffer/index>`_ module. 
+    - Load the buffer using the :doc:`Buffer Management <buffer/index>`  module. 
   * - **Description**
     - Read out the buffer selected or error if temperature is not set in the buffer management module. 
   * - **p (20°C) [g/mL]**
