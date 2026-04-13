@@ -10,7 +10,7 @@ Initialize Genetic Algorithm
   :local: 
 
 
-When the **Initialize Genetic Algorithm module** is opened from *Velocity*, a **Etc Dorectory Cleaned** dialog will open. Press **OK** to continue to the Genetic Algorithm Initiation Window. 
+When the **Initialize Genetic Algorithm module** is opened from *Velocity*, a **Etc Directory Cleaned** dialog will open. Press **OK** to continue to the Genetic Algorithm Initiation Window. 
 
 .. image:: /_static/images/ga_initialize-o.png
     :align: center

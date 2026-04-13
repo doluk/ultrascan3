@@ -55,7 +55,7 @@ MWL Pre-Fit Species Functions:
   * - **Simulation Parameters**
     - Click to set the :doc:`Simulation Parameters <../simparams>` profile. 
   * - **Select Rotor**
-    - Click to open the :doc:`Rotor Management <../rotor>` dialog. Set the Rotor type and the associated calibration profiles for the simulation.  
+    - Click to open the :doc:`Rotor Management <../rotors>` dialog. Set the Rotor type and the associated calibration profiles for the simulation.  
   * - **Start Simulations**
     - Once all parameters have been entered, click to start simulation. 
   * - **Stop Simulations**

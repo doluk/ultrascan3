@@ -25,8 +25,7 @@ Welcome to UltraScan-III's Documentation and Resource!
    start_page-mw
    start_page-rpt
    start_page-int
-   start_page-abde
-   start_page-dm
+
 
 .. toctree::
    :maxdepth: 1
@@ -157,7 +156,7 @@ Welcome to UltraScan-III's Documentation and Resource!
    solutions/index
    us_project
    manage_data
-   rotor
+   rotors
    rotor_calibration
 
 .. toctree::
@@ -171,7 +170,7 @@ Welcome to UltraScan-III's Documentation and Resource!
 
 .. toctree::
    :maxdepth: 1
-   :caption: Under contruction
+   :caption: Under construction
 
    analysprof_general 
    global_equil 

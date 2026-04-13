@@ -31,7 +31,7 @@ Upon completion of an analysis fit, windows and plots generated include:
 PCSA Data Residuals Viewer
 ============================
 
-.. _pcsa_data_residuals_viewer:
+.. _pcsa-data-residuals-viewer:
 
 The simulation creates a data set with the same ranges as the edit experimental data set. The actual values for scan readings vectors are synthetically produced, as illustrated by the plot below.
 
@@ -62,11 +62,10 @@ Experimental-Simulation residuals are plotted in another way in a bit map. This 
 
     **Pixel Bit Map**
 
+.. _pcsa-report:
 
 PCSA Report
 ===============
-
-.. _pcsa_report:
 
 The "Save Data" button in the `PCSA Controls <pcsa_analys.html#pcsa-fitting-process>`_ produces a set of report files. One of these is displayable via the "View Report" button, which produces a dialog that shows the contents of a report. A dialog sample follows. 
 

@@ -72,7 +72,7 @@ Selection of the hardware and experiment type, along with the assignment of role
 
 .. _advanced-lab:
 
-Management of rotors and associated rotor (stretch) calibration profiles is accessed by calling the :doc:`Rotor Management <../../rotor>. 
+Management of rotors and associated rotor (stretch) calibration profiles is accessed by calling the :doc:`Rotor Management <../../rotors>`. 
 
 .. image:: ../../_static/images/gmp/data_acquisition/experiment/gmp_data_acquisition_experiment_15.png
     :align: center

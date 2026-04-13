@@ -1,10 +1,10 @@
-Triple=========================================================
+=========================================================
 Flowchart for the Analysis of Sedimentation Velocity Data 
 =========================================================
 
 
 .. toctree:: 
-  :maxdepth: 3
+  :maxdepth: 4
 
 .. contents:: Analysis Steps:
   :local: 

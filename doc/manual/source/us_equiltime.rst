@@ -48,7 +48,7 @@ Est. Equilibrium Time Functions:
   * - Set / Change / Review Model 
     - Use this pushbutton to bring up the Model Editor. 
   * - Radius Settings 
-    - Chose a pre-dfined top and bottom radius settings with the Channel Type radio buttons. Use the Custom button to manually define the radius settings. 
+    - Chose a pre-defined top and bottom radius settings with the Channel Type radio buttons. Use the Custom button to manually define the radius settings. 
   * - Rotor speed Settings 
     - Select the appropriate radio button to enter the speeds in terms of sigma (reduced molecular weight term: **(M * ω² * (1 - vbar * ρ))/( 2 * R * T)** or by RPM. 
 

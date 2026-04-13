@@ -100,7 +100,7 @@ Step 5: Simulated a time-grid synchronized model based on 2DSA-IT MWL models
 #. Click **Select Models** and load all related 2DSA-IT models from one MWL dataset channel.
 #. **Define Buffer** and open the :doc:`Buffer Management <buffer/index>`_ dialog to define the experimental parameters of the dataset
 #. Define the simulation parameters
-#. Click **Define Rotor** and open the :doc:`Rotor Management <buffer/index>`_ dialog to select the Default 1003 (Simulation) rotor. 
+#. Click **Define Rotor** and open the :doc:`Rotor Management <rotors>`_ dialog to select the Default 1003 (Simulation) rotor. 
 #. Start the simulation and save the open-auc file into $HOME/ultrascan/imports folder. 
  
 

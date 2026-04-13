@@ -43,7 +43,7 @@ Multi-wavelength data is listed in the Cell/Channel/Wavelength range (# of wavel
 Data can be loaded into the window using one of the following:
 
     * **Import Experimental Data:** Load raw data located on the local disk 
-    * **Load US3 OpenAUC Run:** Load data that has already been converted to the UltraScan-III OpenAUC format using :doc:`Data load dialog <common_dialogs>`. This allows for steps 3 and 5 to be skipped as the information defined in these steps is populated based upon the experiment submission. 
+    * **Load US3 OpenAUC Run:** Load data that has already been converted to the UltraScan-III OpenAUC format using :ref:`Data load dialog <load-us3>`. This allows for steps 3 and 5 to be skipped as the information defined in these steps is populated based upon the experiment submission. 
 
 .. image:: /_static/images/us_convert_05.png
   :align: center

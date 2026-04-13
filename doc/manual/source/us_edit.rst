@@ -49,7 +49,7 @@ Edit Functions:
 
 **Scan Control**
 
-Scans to be included in analysis, exluded scans are note deleted.
+Scans to be included in analysis, excluded scans are note deleted.
 
 .. list-table::
   :widths: 20 50
@@ -77,17 +77,17 @@ Scans to be included in analysis, exluded scans are note deleted.
   
 
   * - **Specify Meniscus**
-    - This button enables the edit range selection step to be set to specify the meniscus via Ctrl-Click on the meniscus position. The radius value of the selected point is displayed in the text box tothe right of the button.
+    - This button enables the edit range selection step to be set to specify the meniscus via Ctrl-Click on the meniscus position. The radius value of the selected point is displayed in the text box to the right of the button.
   * - **Specify Data Range** 
     - This button enables the edit range selection step to be set to specify the data range via Ctrl-Click's on the start and end data positions. The radius values of the selected points are displayed in the text box to the right of the button.
   * - **Specify Plateau** 
-    - This button enables the edit range selection stepto be set to specify the plateau via Ctrl-Click on the plateau position.The radius value of the selected point is displayed in the text box to the right of the button.
+    - This button enables the edit range selection step to be set to specify the plateau via Ctrl-Click on the plateau position.The radius value of the selected point is displayed in the text box to the right of the button.
   * - **Baseline**
     - The text box displays the radius value and average OD value of a baseline automatically computed after the plateau is chosen.
   * - **OD Limit:**
     - Select an upper limit on OD values in the data above which data is excluded from 2-Dimensional Spectrum Analysis computations.
   * - **Determine RI Noise**
-    - This button analyzes all scans to determine any radial invariant noise. It brings up a window that shows polynomial coefficients for a best fit of the scan integral. Residuals to this integral represent radially invariant noise. Subtracting the residual values from each data point in a scan will correct radially invariant noise. It is important that the loss of mass in the data as a function of time is properly matched to an appropriate polynomial, so select a polynomial degree thatprovides the best overall fit to all integral values.    
+    - This button analyzes all scans to determine any radial invariant noise. It brings up a window that shows polynomial coefficients for a best fit of the scan integral. Residuals to this integral represent radially invariant noise. Subtracting the residual values from each data point in a scan will correct radially invariant noise. It is important that the loss of mass in the data as a function of time is properly matched to an appropriate polynomial, so select a polynomial degree that provides the best overall fit to all integral values.    
   * - **Subtract Noise**
     - This button removes the calculated noise from the current data set.
   * - **Invert Sign**
@@ -126,7 +126,7 @@ Editing Steps
     
     When zoomed, the graph may be panned by pressing the center mouse button (usually the scroll wheel) and dragging.
 
-*   **Step 1:** Load data from the database or a local data directory that contains the UltraScan-III data files previously converted from the Beckman raw data. Load choices are made in a :ref:`Load Data Dialog <fe-data-loader>`_.
+*   **Step 1:** Load data from the database or a local data directory that contains the UltraScan-III data files previously converted from the Beckman raw data. Load choices are made in a :ref:`Load Data Dialog <fe-data-loader>`.
 
 *    **Step 2:** Select the Cell / Channel / Wavelength Triple to be edited.
 
@@ -138,7 +138,7 @@ Editing Steps
 
 *    **Step 6:** Specify the location of the scan plateau. This is the radial position where most scans have a stable plateau, but the selected position should not reach into the back-diffusion region. The most appropriate point tends to be close to the right edge of the data range, but not so far to the right that it extends into the region where the concentration of the later scans curves upward at the bottom of the cell due to back-diffusion.
 
-*   **Step 7:** Make any other optional adjustments to the data that are necesary and save the edit profile. When saving, a pop-up message is presented asking for an edit ID. The default for this ID is the current date and time in the form of YYMMddhhmm (Year / Month / Day / Hour / Minute), but this default can be supplemented with a suffix of your own choice.
+*   **Step 7:** Make any other optional adjustments to the data that are necessary and save the edit profile. When saving, a pop-up message is presented asking for an edit ID. The default for this ID is the current date and time in the form of YYMMddhhmm (Year / Month / Day / Hour / Minute), but this default can be supplemented with a suffix of your own choice.
 
 *   **Step 8:** Repeat the above process for each Triple (Cell / Channel / Wavelength combination) in the data set. 
   
