@@ -125,7 +125,7 @@ Step 8: Deconvolute MW data using species basis spectra
 ----------------------------------------------------------
 
 #. Deconvolute the analytes in :doc:`MWL Species Fit Analysis <multi-wavelength/mwl_species_fit>`. 
-#. Load the time-synchronized **ISSF-** simulation generated using :doc:`Optima MWL Fit Simulations <multi-wavelength/mwl_species_sim>` using :doc:`Load Run Data Dialog <common_dialogs.html#data-loader>`_. 
+#. Load the time-synchronized **ISSF-** simulation generated using :doc:`Optima MWL Fit Simulations <multi-wavelength/mwl_species_sim>` using :ref:`Load Run Data Dialog <fe-data-loader>`_. 
 #. Click **Load Species Fits** and load the species extinction coefficient basis spectra from local disk. 
 #. Perform the deconvolution by clicking **Species Fit Data**. 
 #. Deconvoluted sedimentation velocity data of each species will by generated with a **SSF-ISSF-** pre-fix. 

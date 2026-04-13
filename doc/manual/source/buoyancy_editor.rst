@@ -22,10 +22,10 @@ The Pseudo-Absorbance Program is the first processing step in the characterizati
     **ABDE**
 
 
-Process:
-=========
+PsAP Process:
+==============
 
-1. Click **Import Run** and load ABDE dataset using a :doc:`Load Run Data Dialog <common_dialogs.html>`.
+1. Click **Import Run** and load ABDE dataset using a :doc:`Load Run Data Dialog <common_dialogs>`.
 
 .. image:: _static/images/pseudo-abde-2.png
     :align: center

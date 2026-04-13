@@ -55,7 +55,7 @@ PCSA Functions:
   :header-rows: 0 
   
   * - **Load Experiment**
-    - Click here and, in the resulting :doc:`Load Run Data Dialog <common_dialogs.html#data-loader>`_, select an edited data set to load.
+    - Click here and, in the resulting :doc:`Load Run Data Dialog <fe-data-loader>`, select an edited data set to load.
   * - **Run Details**
     - Pop up a dialog showing :doc:`Run Details Dialog <run_details>`.
   * - **Latest Data Edit**

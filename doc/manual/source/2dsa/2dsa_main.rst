@@ -54,7 +54,7 @@ Once an analysis is complete, the main window will appear similar to this:
   :header-rows: 0 
   
   * - **Load Experiment**
-    - Click here and, in the resulting `Load Run Data Dialog <../fe-data-loader>`, select an edited data set to load.
+    - Click here and, in the resulting :ref:`Load Run Data Dialog <../fe-data-loader>`, select an edited data set to load.
   * - **Run Details**
     - Pop up a dialog showing :doc:`Run Details Dialog <../run_details>`.
   * - **Latest Data Edit**
@@ -98,7 +98,7 @@ Once an analysis is complete, the main window will appear similar to this:
   * - **Reset Scan Range**
     - Reset to the full range of scans.
   * - **Fit Control**
-    - Open a dialog to set analysis parameters and start a fit run. For details on the results of clicking this button, see :doc:`2DSA Analysis Control <2dsa_analys>.
+    - Open a dialog to set analysis parameters and start a fit run. For details on the results of clicking this button, see :doc:`2DSA Analysis Control <2dsa_analys>`.
   * - **3-D Plot**
     - After a 2DSA model is fitted, open a control window for a :doc:`3-Dimensional plot <../3d_plot> of the final computed model. 
   * - **Residual Plot**
