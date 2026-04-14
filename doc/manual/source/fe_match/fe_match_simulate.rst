@@ -83,6 +83,7 @@ Data/Residuals Viewer Functions
 
 |
 
+.. _noise-data-analysis:
 
 Noise Data Analysis
 -------------------
@@ -173,8 +174,7 @@ Noise Data Analysis
 
     **Random noise**
 
-
-
+.. _residual-bit-map:
 
 Residual Bit Map
 ================
@@ -188,6 +188,8 @@ Experimental-Simulation residuals are plotted in another way in a bit map. This 
     :align: center
 
     **Pixel Bit Map**
+
+.. _fe-match-report:
 
 Report: FE Match Model Simulation
 =================================

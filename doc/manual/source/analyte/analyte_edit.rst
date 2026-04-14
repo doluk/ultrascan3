@@ -31,6 +31,8 @@ This panel allows the user to modify non-hydrodynamic characteristics.
 
     **Edit Existing Analyte Window**
 
+.. _edit-analyte-spectrum:
+
 Edit Analyte Spectrum 
 ======================
 

@@ -63,6 +63,8 @@ Using this panel, the user can create a new analyte in the current database or i
 
     **Add Analyte Sequence Window**
 
+.. _add-analyte-spectrum:
+
 Add Analyte Spectrum 
 ========================
 

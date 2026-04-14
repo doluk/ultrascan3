@@ -24,7 +24,7 @@ For sigmoid types, a variation count is directly specified. The curves cover the
 
     **PCSA Fitting Controls**
 
-.. _pcsa_fitting:
+.. _pcsa-fitting-process:
 
 PCSA Fitting Process: 
 =========================
@@ -138,7 +138,7 @@ Control dialog parameters differ slightly in interpretation, based on whether th
      * Fixed+LM -- where the final LM model is the desired overall final model. 
 
 
-A detailed explanation of the PCSA specific results can be found in :doc:`Parametrically Constrained Spectrum Analysis Results <pcsa_results>
+A detailed explanation of the PCSA specific results can be found in :doc:`Parametrically Constrained Spectrum Analysis Results <pcsa_results>`.
 
 Fitting Controls Functions:
 ============================
@@ -196,15 +196,15 @@ Fitting Controls Functions:
   * - **Fit Radially-Invariant Noise**
     - Check this box if you want to calculate radially-invariant noise.
   * - **Plot Results**
-    - Open 3-D and Residual plot dialogs to display final results.
+    - Open 3-D and `Residual plot dialogs <residual-plot-dialog>` to display final results.
   * - **Save Results:**
     - Save final model(s) and any noises generated. Also output :ref:`PCSA report <pcsa-report>` and plot image files.
   * - **Advanced Controls**
     - Click on this button to open the advanced controls dialog
   * - **Plot Model Lines**
-    -  Click on this button to open a dialog showing the Model Lines specified (such as :ref:`Sigmoid Models <pcsa_fitting>`). 
+    -  Click on this button to open a dialog showing the Model Lines specified (such as :ref:`Sigmoid Models <pcsa-fitting-process>`). 
             
-.. note:: Note that the dialog is automatically opened upon analysis completion. But this button can be used to re-display completed model lines if the dialog has been closed by the user. The dialogs after analysis include color-coded illustrations of best and near-best models: :ref:`Fitted Models <pcsa_fitting>`.
+.. note:: Note that the dialog is automatically opened upon analysis completion. But this button can be used to re-display completed model lines if the dialog has been closed by the user. The dialogs after analysis include color-coded illustrations of best and near-best models: :ref:`Fitted Models <pcsa-fitting-process>`.
 
 .. list-table::
   :widths: 20 50

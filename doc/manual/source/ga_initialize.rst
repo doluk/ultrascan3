@@ -115,7 +115,7 @@ GA Functions:
     - Specify that you are about to manually draw bins in a 2-D or 3-D plot. Each bin is drawn by clicking and holding on one bin vertex, moving the mouse and showing a rubber band rectangle, then releasing when the diagonal vertex point is reached.
   * - **Check for Bin Overlaps / Sort**
     - Click this button to check that no drawn bins overlap and to sort bins so they are ordered by the X,Y upper-left vertex.
-  * - **Autoassign Solute Bins**
+  * - **Auto-assign Solute Bins**
     - Automatically draw bins around solute points, using bucket width and height values specified. If a number of initial solutes value is first specified, only that number of the bins with the highest concentration values will be initially drawn. Where bins overlap, additional rectangles will be drawn using the portion of the second rectangle that is not overlapping.
   * - **Reset Solute Bins**
     - Erase bins from the plot and internal data base, so that a new set may be generated.
@@ -140,6 +140,7 @@ GA Functions:
   * - **Close** 
     - Close all windows and exit.
 
+.. _ga-stats-report:
 
 Statistics File Output
 ============================

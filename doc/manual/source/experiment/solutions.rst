@@ -39,7 +39,7 @@ Solutions Panel:
 .. _comments:
 
 Using this panel, you can specify the solutions used in each channel. :ref:`Comments <comments>` can also be included and appended to the solution name. 
-The :doc:`Solutions Management <../solutions/index>`module help page has detailed explanations of these items. 
+The :doc:`Solutions Management <../solutions/index>` module help page has detailed explanations of these items. 
 
 
 

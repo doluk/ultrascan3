@@ -43,9 +43,9 @@ Once parameters are selected, you can run the simulation to compute the RMSD for
 
 For deeper inspection, select an item from the results list and click Simulate to generate:
 
-* :doc:`Finite Element Data / Residual Viewer <fe_match_simulate>`
+* :doc:`Finite Element Data / Residual Viewer <fe_match/fe_match_simulate>`
 
-* :doc:`Residual Pixel Map <fe_match_simulate>`
+* :ref:`Residual Pixel Map <residual-bit-map>`
 
 * :doc:`3D Plot Controls <3d_plot>`
 

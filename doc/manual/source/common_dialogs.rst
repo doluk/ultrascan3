@@ -139,7 +139,7 @@ Advanced Model List Options
 Remove Model Distributions
 ===========================
 
-.. _remove_mod_dis: 
+.. _remove-mod-dis: 
 
 The dialog is presented when **Remove Distribution(s)** is clicked. The dialog shows a list of loaded models, by selecting items in this list and clicking on a Remove button, you can remove models from the original distribution list. After all the desired removals have been performed, an Accept button passes the reduced model data to the caller. 
 

@@ -108,8 +108,8 @@ Step 6: Perform a final 2DSA refinement
 #. Visualize the final results in Velocity: :doc:`FE Model Viewer <fe_match/fe_match_simulate>` and save results to database.
 #. All subsequent analyses methods should now be based on the model generated in this final 2DSA refinement step.
 
-
-At this point, multiple analysis options exist depending on the properties of the analyte distribution. If a polydisperse solution is obtained, parsimonious regularization with the genetic algorithm method is appropriate. Otherwise, the data should be analyzed only by the 2DSA analysis in conjunction with a 50-iteration Monte Carlo analysis. Both options are explained below.
+.. note::
+    At this point, multiple analysis options exist depending on the properties of the analyte distribution. If a polydisperse solution is obtained, parsimonious regularization with the genetic algorithm method is appropriate. Otherwise, the data should be analyzed only by the 2DSA analysis in conjunction with a 50-iteration Monte Carlo analysis. Both options are explained below.
 
 
 

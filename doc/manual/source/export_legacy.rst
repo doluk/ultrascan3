@@ -20,7 +20,7 @@ This module enables you to load a run with one or more triples in Ultrascan-III 
 
     **Export Data into Legacy (Beckman) Format**
 
-Once loaded by clicking **Load Data**, sedimentation velocity data that has been converted to pseudo-absorbance from intensity by the :doc:`Import <import>` module can be exported as Intensity(RI) or as Pseudo-absorbance (RA) data. 
+Once loaded by clicking **Load Data**, sedimentation velocity data that has been converted to pseudo-absorbance from intensity by the :doc:`Import <convert>` module can be exported as Intensity(RI) or as Pseudo-absorbance (RA) data. 
 
 A popup dialog will appear to prompt the type the user wants to export 
 

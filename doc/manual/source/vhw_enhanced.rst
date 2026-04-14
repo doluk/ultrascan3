@@ -52,7 +52,7 @@ vHW Enhanced Functions:
   :header-rows: 0
 
   * - **Solution** 
-    - Click this button to open a :doc:`Solution Management <solutions/solution>` that allows changes to buffer and analyte characteristics of the data set.
+    - Click this button to open a :doc:`Solution Management <solutions/solution_select>` that allows changes to buffer and analyte characteristics of the data set.
   * - **Density (20°C)**
     - Shows the density value for the loaded experiment. Click the Solution button to open a dialog in which density and other values may be changed.		
   * - **Viscosity (20°C)**

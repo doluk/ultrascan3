@@ -72,7 +72,7 @@ Fitting Analysis Process:
   * - **Stop Fit**
     - If something seems wrong with the progress of analysis or if you realize you have parameterized incorrectly, click this button to abort the fit run.
   * - **Plot Results**
-    - Open 3-D and :ref:`residual-plot-dialog` to display final results.
+    - Open 3-D and :ref:`Residual Plot dialog <residual-plot-dialog>` to display final results.
   * - **Save Results:** 
     - Save final model(s) and any noises generated. Also output report and plot image files.
   * - **Estimated Memory:**

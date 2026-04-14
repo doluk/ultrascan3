@@ -31,7 +31,7 @@ Each refinement iteration proceeds over a defined grid of s and f/f :sub:`0` val
 2DSA Process:
 ================
 
-*  **Step 1:** First, load experimental velocity data. Click on :ref:`Load Data <../fe-data-loader>` to select an edited velocity data set from the database or from local disk.
+*  **Step 1:** First, load experimental velocity data. Click on :ref:`Load Data <fe-data-loader>` to select an edited velocity data set from the database or from local disk.
 *  **Step 2:** Secondly, open an analysis control window by clicking on :doc:`Fit Control <2dsa_analys>`. Within that dialog, define the grids and iterations that comprise the analysis.
 *  **Step 3:** Next, after having specified analysis parameters, begin the fit analysis by clicking **Start Fit**.
 *  **Step 4:** Display and Save Results: After simulation, a variety of options are available for displaying simulation results, residuals, and distributions. Report text files and graphics plot files can also be generated.
@@ -54,7 +54,7 @@ Once an analysis is complete, the main window will appear similar to this:
   :header-rows: 0 
   
   * - **Load Experiment**
-    - Click here and, in the resulting :ref:`Load Run Data Dialog <../fe-data-loader>`, select an edited data set to load.
+    - Click here and, in the resulting :ref:`Load Run Data Dialog <fe-data-loader>`, select an edited data set to load.
   * - **Run Details**
     - Pop up a dialog showing :doc:`Run Details Dialog <../run_details>`.
   * - **Latest Data Edit**
@@ -64,7 +64,7 @@ Once an analysis is complete, the main window will appear similar to this:
   * - **Local Disk**
     - Select to specify data input from local disk.
   * - **View Data Report**  
-    - Generate a report file and view it in a dialog. See the details of the report in :doc:`2DSA Process <2dsa_analys>`.
+    - Generate a report file and view it in a dialog. See the details of the report by clicking :ref:`View Report <fe-match-report>`.
   * - **Save Data**
     - Save models and noises, as well as report and plot images files.
   * - **Run ID / Edit ID:**
@@ -102,7 +102,7 @@ Once an analysis is complete, the main window will appear similar to this:
   * - **3-D Plot**
     - After a 2DSA model is fitted, open a control window for a :doc:`3-Dimensional plot <../3d_plot>` of the final computed model. 
   * - **Residual Plot**
-    - After a 2DSA model is fitted, open a plot dialog for a far more detailed set of result plots. See :doc:`Finite Element Viewer/Residual Plot Dialog <../fe_match/fe_match_simulate>`or :doc:`2-D Analysis Controls <residual-plot-dialog>` for further details.
+    - After a 2DSA model is fitted, open a plot dialog for a far more detailed set of result plots. See :doc:`Finite Element Viewer/Residual Plot Dialog <../fe_match/fe_match_simulate>` or :ref:`2-D Analysis Controls <residual-plot-dialog>` for further details.
   * - **Status Info:**
     - This text window displays continually updated summaries of computational activity and results.
   * - **(upper right side plot)**
