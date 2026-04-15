@@ -170,7 +170,7 @@ Welcome to UltraScan-III's Documentation and Resource!
 
 .. toctree::
    :maxdepth: 1
-   :caption: Under construction
+   :caption: Under Construction
 
    analysprof_general 
    global_equil 
