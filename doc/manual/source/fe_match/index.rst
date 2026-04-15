@@ -1,5 +1,5 @@
 ===========================================
-Finite Element Model Viewer Flow
+Finite Element Model Viewer
 ===========================================
 
 This module is used to display, and export FE solutions fitted to velocity experiments by various methods. 
