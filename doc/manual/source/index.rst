@@ -29,14 +29,6 @@ Welcome to UltraScan-III's Documentation and Resource!
 
 .. toctree::
    :maxdepth: 1
-   :caption: SV-AUC Experimental Tips:
-
-
-   3000_rpm
-
-
-.. toctree::
-   :maxdepth: 1
    :caption: Ultrascan-III Installation and Customization:
 
    register
@@ -64,6 +56,26 @@ Welcome to UltraScan-III's Documentation and Resource!
    gmp/index
    experiment/index
 
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Model-Free Analysis: 
+
+   time_derivative
+   second_moment
+   vhw_enhanced
+   vhw_distrib_plot
+
+.. toctree::
+   :maxdepth: 1
+   :caption: ASTFEM/ASTFVM Analysis: 
+
+   2dsa/index
+   pcsa/index
+   ga_initialize
+   dmga_init
+   dmga_init_constr
+
 .. toctree::
    :maxdepth: 1
    :caption: Multi-Wavelength: 
@@ -76,26 +88,6 @@ Welcome to UltraScan-III's Documentation and Resource!
 
    us_extinction
    us_spectrum
-
-.. toctree::
-   :maxdepth: 1
-   :caption: Diagnostics: 
-
-   time_derivative
-   second_moment
-   vhw_enhanced
-   vhw_distrib_plot
-
-.. toctree::
-   :maxdepth: 1
-   :caption: ASTFEM Analysis: 
-
-   2dsa/index
-   pcsa/index
-   ga_initialize
-   dmga_init
-   dmga_init_constr
-
 
 .. toctree::
    :maxdepth: 1
@@ -133,18 +125,21 @@ Welcome to UltraScan-III's Documentation and Resource!
    :maxdepth: 1
    :caption: Reports and Data Viewers:
 
-   tmst_viewer
    fe_match/index
+   tmst_viewer
    reporter
    us_modelmetrics
    rmsd_query
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Plotting:
+
    pseudo3d
    ddist_combine
    idist_combine 
    vhw_combine
    
-
-
 
 .. toctree::
    :maxdepth: 1
@@ -156,6 +151,7 @@ Welcome to UltraScan-III's Documentation and Resource!
    solutions/index
    us_project
    manage_data
+   
    rotors
    rotor_calibration
 
@@ -167,6 +163,12 @@ Welcome to UltraScan-III's Documentation and Resource!
    run_details
    3d_plot
 
+.. toctree::
+   :maxdepth: 1
+   :caption: SV-AUC Experimental Tips:
+
+
+   3000_rpm
 
 .. toctree::
    :maxdepth: 1
