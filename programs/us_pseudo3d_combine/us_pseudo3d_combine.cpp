@@ -216,10 +216,10 @@ US_Pseudo3D_Combine::US_Pseudo3D_Combine() : US_Widgets()
    rb_y_D   ->setToolTip( tr( "Set Y axis to Diffusion Coefficient"     ) );
    rb_y_f   ->setToolTip( tr( "Set Y axis to Frictional Coefficient"    ) );
    rb_y_rh  ->setToolTip( tr( "Set Y axis to Hydrodynamic Radius"       ) );
-   connect( bg_x_axis,  SIGNAL( buttonReleased( int ) ),
-            this,       SLOT  ( select_x_axis ( int ) ) );
-   connect( bg_y_axis,  SIGNAL( buttonReleased( int ) ),
-            this,       SLOT  ( select_y_axis ( int ) ) );
+   connect( bg_x_axis,  &QButtonGroup::idReleased,
+            this,       &US_Pseudo3D_Combine::select_x_axis );
+   connect( bg_y_axis,  &QButtonGroup::idReleased,
+            this,       &US_Pseudo3D_Combine::select_y_axis );
 
    pb_pltall     = us_pushbutton( tr( "Plot All Distros" ) );
    pb_pltall->setEnabled( false );
