@@ -49,7 +49,7 @@ void US_Zoomer::initializeZoomStack( QwtPlotZoomer* zoomer ) {
       return;
    }
    const QwtPlot* plot = zoomer->plot();
-   if ( plot == nullptr || plot->itemList(QwtPlotItem::Rtti_PlotCurve).count() == 0 ) {
+   if ( plot == nullptr || ( plot->itemList(QwtPlotItem::Rtti_PlotCurve).count() == 0 && plot->itemList(QwtPlotItem::Rtti_PlotSpectrogram).count() == 0 ) ) {
       return;
    }
    // first zoom event, check if the zoomStack is properly set
