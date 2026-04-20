@@ -8,9 +8,10 @@ Buoyancy Equilibrium Data Analysis
 .. contents:: Index
   :local: 
   
- 
-Peak selection 
+.. caution::
+  This module is designed to determine the density and partial specific volume of peak positions in a gradient forming solution at equilibrium, for example, in analytical buoyant density gradient experiments (ABDE) experiments. The model's original numerical calculation does not take into account certain non-ideality conditions encountered in CsCl, a topic that is currently under investigation. Until an update is available, the density results obtained in CsCl gradients could be inaccurate.
 
+  
 .. image:: _static/images/abde-1.png
     :align: center
 
