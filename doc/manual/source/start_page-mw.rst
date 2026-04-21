@@ -36,13 +36,7 @@ Step 1: Import Experimental data into UltraScan-III OpenAUC format
 #.  Failed Triples or empty Triples can be excluded from the run by clicking on Drop Selected Triples.
 #.  When everything has been set you can Save the scans to database or disk.
 
-.. image:: _static/images/mwlr_viewer_wvl.png
-    :align: center
 
-.. rst-class::
-    :align: center
-
-    **Alternate Record and X-axis**
 
 
 Step 2: Edit experimental data
@@ -60,13 +54,7 @@ Step 2: Edit experimental data
 #. Specify the location of the scan plateau. This is the radial position where most scans have a stable plateau, but the selected position should not reach into the back-diffusion region. The most appropriate point tends to be close to the right edge of the data range, but not so far to the right that it extends into the region where the concentration of the later scans curves upward at the bottom of the cell due to back-diffusion. 
 #. Make any other optional adjustments to the data that are necessary and save the edit profile. When saving, a pop-up message is presented asking for an edit ID. The default for this ID is the current date and time in the form of YYMMdd hhmm (Year / Month / Day / Hour / Minute), but this default can be supplemented with a suffix of your own choice. 
 
-.. image:: _static/images/mwlr_viewer_wvl.png
-    :align: center
 
-.. rst-class::
-    :align: center
-
-    **Alternate Record and X-axis**
 
 
 Step 3: Inspect and plot the raw data 
