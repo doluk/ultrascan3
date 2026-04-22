@@ -190,7 +190,7 @@ Step 12: Perform Parametrically Constrained Spectrum Analysis (PCSA) - (optional
     * Tikhonov regularization can be performed with a specified regularization level, or by asking the program to auto-compute the most appropriate regularization level based on the L-curve criterion, see:
 
 Reference
-==========
+----------
 
 **2DSA**
 
