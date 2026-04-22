@@ -108,7 +108,7 @@ def generate_version_metadata(source_dir: str | os.PathLike[str]) -> dict[str, s
         "VERSION_FULL": version_full,
     }
 
-# Read root VERSION file at ../../../VERSION
+# Read root VERSION file at ../../../../VERSION aka /VERSION
 version_file = Path(__file__).parent.parent.parent.parent / "VERSION"
 version = "v4.1.0-dev" # match default in utils/us_defines.h
 if version_file.exists():
