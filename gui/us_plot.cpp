@@ -805,6 +805,11 @@ void US_Plot::scale_yRight( const QRectF &rect ) const
    if (! plot->axisEnabled ( QwtPlot::yRight )){
       return;
    }
+   // if a QwtPlotSpectrogram is present, return early too
+   if ( plot->itemList(QwtPlotItem::Rtti_PlotSpectrogram).count() > 0 )
+   {
+      return;
+   }
    const double dyL = yLeftRange.at(1) - yLeftRange.at(0);
    const double ys_0 = (rect.top() - yLeftRange.at(0)) / dyL;
    const double ys_1 = (rect.bottom() - yLeftRange.at(0)) / dyL;
