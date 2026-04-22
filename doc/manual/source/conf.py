@@ -15,7 +15,6 @@
 #   import sys
 #   sys.path.insert(0, os.path.abspath('../src'))
 # ---------------------------------------------------------------------------
-from __future__ import annotations
 import datetime
 import re
 from pathlib import Path
