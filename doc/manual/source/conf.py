@@ -96,7 +96,7 @@ def generate_version_metadata(source_dir: str | os.PathLike[str]) -> dict[str, s
 
     revision_date = revision_date or "unknown"
 
-    version_full = f"({build_number}|{git_revision} {local_changes})"
+    version_full = f"({build_number}|{git_revision}{' ' if local_changes else ''}{local_changes})"
 
     return {
         "BUILD_NUMBER": build_number,
