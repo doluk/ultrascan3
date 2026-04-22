@@ -155,7 +155,7 @@ Step 12: Overlay combined distributions - (recommended)
 #. Use Velocity: :doc:`Combine pseudo-3D Distributions <pseudo3d>` for all finite element models (2DSA, GA, Monte Carlo).
 
 Reference
-==========
+----------
 
 **2DSA**
 
