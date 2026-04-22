@@ -234,7 +234,7 @@ US_Pseudo3D_Combine::US_Pseudo3D_Combine() : US_Widgets()
    pb_refresh    = us_pushbutton( tr( "Refresh Pseudo-3D Plot" ) );
    pb_refresh->setEnabled(  false );
    connect( pb_refresh, &QPushButton::clicked,
-            this,       [&, this]{this->plot_data();} );
+            this,       [this]{this->plot_data();} );
 
    pb_reset      = us_pushbutton( tr( "Reset" ) );
    pb_reset->setEnabled( true );
@@ -260,7 +260,7 @@ US_Pseudo3D_Combine::US_Pseudo3D_Combine() : US_Widgets()
    pb_lddistr    = us_pushbutton( tr( "Load Distribution(s)" ) );
    pb_lddistr->setEnabled( true );
    connect( pb_lddistr, &QPushButton::clicked,
-            this,       [&,this]{this->load_distro();} );
+            this,       [this]{this->load_distro();} );
 
    pb_rmvdist    = us_pushbutton( tr( "Remove Distribution(s)" ) );
    pb_rmvdist->setEnabled( true );
