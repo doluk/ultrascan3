@@ -31,8 +31,20 @@ US_AdvancedFem::US_AdvancedFem( US_Model* amodel,
    QLabel* lb_parameter  = us_label(  tr( "Parameter:"                 ) );
 
    ct_simpoints  = us_counter( 3, 0, 10000,   1 );
-   ct_bandvolume = us_counter( 3, 0,   1, 0.001 );
+   if (parmap.contains("simpoints"))
+   {
+      ct_simpoints->setValue(parmap["simpoints"].toDouble());
+   }
+   ct_bandvolume = us_counter( 3,    1,    20,   15 );
+   if (parmap.contains("bandvolume"))
+   {
+      ct_bandvolume->setValue(parmap["bandvolume"].toDouble()*1000.0);
+   }
    ct_parameter  = us_counter( 2, 1,  50,     1 );
+   if (parmap.contains("parameter"))
+   {
+      ct_parameter->setValue(adv_vals["parameter"].toDouble());
+   }
 
    cb_mesh      = us_comboBox();
    cb_mesh->addItem( "Adaptive Space Time Mesh (ASTFEM)" );
@@ -40,10 +52,43 @@ US_AdvancedFem::US_AdvancedFem( US_Model* amodel,
    cb_mesh->addItem( "Moving Hat Mesh"                   );
    cb_mesh->addItem( "File: \"$ULTRASCAN/mesh.dat\""     );
    cb_mesh->addItem( "AST Finite Volume Method (ASTFVM)" );
+   if (parmap.contains("meshtype"))
+   {
+      QString mtyp = parmap["meshtype"];
+      if ( mtyp.contains( "Claverie" ) )
+      {
+         cb_mesh->setCurrentText( "Claverie Mesh" );
+      }
+      else if ( mtyp.contains( "Moving Hat" ) )
+      {
+         cb_mesh->setCurrentText( "Moving Hat Mesh" );
+      }
+      else if ( mtyp.contains( "File:"      ) )
+      {
+         cb_mesh->setCurrentText( "File: \"$ULTRASCAN/mesh.dat\"" );
+      }
+
+      else if ( mtyp.contains( "ASTFVM"     ) )
+      {
+         cb_mesh->setCurrentText( "AST Finite Volume Method (ASTFVM)" );
+      }
+   }
 
    cb_grid      = us_comboBox();
    cb_grid->addItem( "Moving Time Grid"                  );
    cb_grid->addItem( "Constant Time Grid"                );
+   if (parmap.contains("gridtype"))
+   {
+      QString gtyp = parmap["gridtype"];
+      if ( gtyp.contains( "Moving" ) )
+      {
+         cb_grid->setCurrentText( "Moving Time Grid" );
+      }
+      else if ( gtyp.contains( "Constant" ) )
+      {
+         cb_grid->setCurrentText( "Constant Time Grid" );
+      }
+   }
 
    QPushButton* pb_help    = us_pushbutton( tr( "Help" ) );
    QPushButton* pb_cancel  = us_pushbutton( tr( "Cancel" ) );
@@ -63,11 +108,8 @@ US_AdvancedFem::US_AdvancedFem( US_Model* amodel,
    mainLayout->addWidget( pb_cancel,       row,   2, 1, 2 );
    mainLayout->addWidget( pb_accept,       row++, 4, 1, 2 );
 
-   ct_simpoints ->setValue( parmap[ "simpoints" ].toDouble() );
-   ct_bandvolume->setValue( parmap[ "bandvolume" ].toDouble() );
-   ct_parameter ->setValue( parmap[ "parameter" ].toDouble() );
    ct_simpoints ->setSingleStep(     5 );
-   ct_bandvolume->setSingleStep( 0.001 );
+   ct_bandvolume->setSingleStep(  0.1 );
    ct_parameter ->setSingleStep(     1 );
 
    connect( pb_help,    SIGNAL( clicked() ),
@@ -89,7 +131,7 @@ qDebug() << "AdvF:Post-resize size" << size();
 void US_AdvancedFem::done( void )
 {
    parmap[ "simpoints"  ] = QString::number( ct_simpoints ->value() );
-   parmap[ "bandvolume" ] = QString::number( ct_bandvolume->value() );
+   parmap[ "bandvolume" ] = QString::number( ct_bandvolume->value() / 1000.0 );
    parmap[ "parameter"  ] = QString::number( ct_parameter ->value() );
    parmap[ "meshtype"   ] = cb_mesh->currentText();
    parmap[ "gridtype"   ] = cb_grid->currentText();

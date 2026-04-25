@@ -80,6 +80,9 @@ class US_FeMatch : public US_Widgets
         //! \param point_param A point parameter.
         void auto_load_simulate(US_DataIO::RawData rawData, US_DataIO::EditedData editedData, US_Model model, int int_param, QPoint point_param);
 
+        //! \brief Initalize adv_vals with the default values
+        void initialize_adv_vals();
+
         signals:
                 //! \brief Signal for ASTFEM comparison.
                 //! \param int_param An integer parameter.
@@ -206,10 +209,12 @@ class US_FeMatch : public US_Widgets
         QPointer<US_PlotControlFem> eplotcd; //!< Pointer to plot control.
         QPointer<US_ResidPlotFem> resplotd; //!< Pointer to residual plot.
         QPointer<US_AdvancedFem> advdiag; //!< Pointer to advanced dialog.
+        QPointer<US_Editor> report_dialog; //!< Pointer to report window.
 
         QPoint bmd_pos; //!< Bitmap position.
         QPoint epd_pos; //!< Plot control position.
         QPoint rpd_pos; //!< Residual plot position.
+        QPoint report_pos; //!< Report window position.
 
         QDateTime start_time; //!< Start time.
 
