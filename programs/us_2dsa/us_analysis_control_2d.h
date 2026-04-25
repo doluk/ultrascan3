@@ -188,7 +188,7 @@ class US_AnalysisControl2D : public US_WidgetsDialog
       void primary_range_changed( double range );
       void secondary_range_changed( double range );
       void help     ( void )
-      { showHelp.show_help( "2dsa_analys.html" ); };
+      { showHelp.show_help( "manual/2dsa/2dsa_analys.html" ); };
 };
 #endif
 

@@ -188,7 +188,7 @@ class US_GUI_EXTERN US_AnalyteMgrSelect: public US_Widgets
       QString analyte_smry ( US_Analyte* );
       void sequence        (void);
 
-      void help( void ) { showHelp.show_help( "analyte_select.html" ); };
+      void help( void ) { showHelp.show_help( "analyte/analyte_select.html" ); };
 
    public slots:
       void init_analyte		( void );
@@ -334,7 +334,7 @@ class US_GUI_EXTERN US_AnalyteMgrNew : public US_Widgets
       void newCanceled     ( void );
       void write_db        ( void );
       void write_disk      ( void );
-      void help( void ) { showHelp.show_help( "analyte_new.html" ); };
+      void help( void ) { showHelp.show_help( "analyte/analyte_new.html" ); };
 
       void manage_sequence ( void );
       //void manage_spectrum ( void );
@@ -413,7 +413,7 @@ class US_GUI_EXTERN US_AnalyteMgrEdit : public US_Widgets
       void write_db    ( void );
       void write_disk  ( void );
      
-      void help( void ) { showHelp.show_help( "analyte_edit.html" ); };
+      void help( void ) { showHelp.show_help( "analyte/analyte_edit.html" ); };
       void change_spectrum( void ); 
       void accept_enable  ( void ); 
       void description    ( void );
@@ -468,7 +468,7 @@ class US_GUI_EXTERN US_AnalyteMgrSettings: public US_Widgets
       void db_changed         ( bool );
 
       void help            ( void ) 
-      { showHelp.show_help( "analytes.html" ); };
+      { showHelp.show_help( "analyte/index.html" ); };
 
 };
 
