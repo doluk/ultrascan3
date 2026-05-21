@@ -369,7 +369,6 @@ void US_AnalysisControl2D::uncheck_optimize( int ckflag )
    }
    if ( ckflag == 3 )
    {
-      ck_menisc->setChecked( false );
       cmb_primary->setCurrentIndex( 0 );
       cmb_secondary->setCurrentIndex( 0 );
    }
