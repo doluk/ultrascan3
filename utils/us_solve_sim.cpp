@@ -153,7 +153,16 @@ US_SolveSim::calc_residuals(int offset, int dataset_count, Simulation &sim_vals,
                             US_LammAstfvm::CosedData* csD ) {
    QVector<double> sv_nnls_a;
    QVector<double> sv_nnls_b;
-
+   if ( US_Settings::debug_match("US_SIMVAL_ALPHAD") && sim_vals.alpha == 0.0 ) {
+      QString alpha = US_Settings::debug_value("US_SIMVAL_ALPHAD");
+      // convert to double if number
+      bool ok = false;
+      double alpha_value = alpha.toDouble(&ok);
+      if (ok) {
+         //sim_vals.alpha = alpha_value;
+         qDebug() << "Value alpha" << alpha_value;
+      }
+   }
    dbg_level = sim_vals.dbg_level;            // Debug level
    dbg_timing = sim_vals.dbg_timing;           // Debug-timing flag
    noisflag = sim_vals.noisflag;             // Noise-calculation flag

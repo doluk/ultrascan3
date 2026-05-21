@@ -126,6 +126,7 @@ private:
       QVector< int >             tkdepths;   // task packet depths
 
       QVector< double >          sigmas;     // monte carlo sigma variations
+      QVector< QVector<double>>  mc_noise;
       QVector< double >          normv;      // norm values for A columns
       QList< double >            itvaris;    // iteration variances
 

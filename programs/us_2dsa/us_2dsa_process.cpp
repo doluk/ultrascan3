@@ -1347,6 +1347,61 @@ DbgLv(1) << "FIN_FIN: neediter" << neediter << "  sdiffs" << sdiffs
    }
    // Done with refinement iterations:   check for meniscus or MC iteration
    int k_iter         = mm_iter;
+   if ( mmtype == 2 && k_iter != 0) {
+      // debug output for monte carlo iterations going bad
+      // criteria is model has only one component
+      bool dump_mc = false;
+      if ( model.components.size() == 1 ) {
+         dump_mc = true;
+      }
+      // if rmsd is higher than initial variance + 50%
+      if ( vari_curr > itvaris[0] * 1.5 ) {
+         dump_mc = true;
+      }
+      if ( dump_mc ) {
+         // save sigmas and mc_noise
+         // construct base file name from run name + iteration
+         QDir tmp_dir (US_Settings::tmpDir());
+         QString base_file_name = model.description + "_mciter" + QString::number(k_iter);
+         // save sigmas in tmp_dir/base_file_name
+         QString sigmas_file = tmp_dir.absoluteFilePath(base_file_name + "_sigmas.csv");
+         QFile sigmas_out(sigmas_file);
+         if (sigmas_out.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            QTextStream out(&sigmas_out);
+            out << "sigma\n";
+            for ( int i = 0; i < sigmas.length(); i++ ) {
+               out << QString::number(sigmas[i]) << "\n";
+            }
+            sigmas_out.flush();
+            sigmas_out.close();
+         }
+         // save mc_noise in tmp_dir/base_file_name _
+         QString mc_noise_file = tmp_dir.absoluteFilePath(base_file_name + "_mc_noise.csv");
+         QFile mc_noise_out(mc_noise_file);
+         if (mc_noise_out.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            int max_length = 0;
+            QTextStream out(&mc_noise_out);
+            for (auto& scan: mc_noise) {
+               max_length = qMax(max_length, scan.length());
+            }
+            for ( int r = -1; r < max_length; r++ ) {
+               for ( int s = 0; s < mc_noise.length(); s++ ) {
+                  if ( r == -1 ) {
+                     out << "Scan " << s+1 << ",";
+                  }
+                  else if ( r < mc_noise[s].length() ) {
+                     out << QString::number(mc_noise[s][r]) << ",";
+                  } else {
+                     out << ",";
+                  }
+               }
+               out << "\n";
+            }
+            mc_noise_out.flush();
+            mc_noise_out.close();
+         }
+      }
+   }
    bool dens_grad = simparms->meshType == US_SimulationParameters::ASTFVM && !dsets[0]->solution_rec.buffer.cosed_component.isEmpty();
    if ( mmtype > 0  &&  ++mm_iter < mtiters )
    {  // doing meniscus or monte carlo and more to do
@@ -2165,19 +2220,21 @@ DbgLv(1) << "MCARLO: mm_iter" << mm_iter;
    if ( mm_iter == 1 )
    {
       set_gaussians();              // calculate sigmas at 1st mc iteration
-
+      qDebug() << "MCARLO: mm_iter" << mm_iter << " sigmas[0] = " << sigmas[0] << vari_curr;
       sdata1 = sdata;               // save mc iteration 1 simulation
    }
 
    // Get a randomized variation of the concentrations
    // Use a gaussian distribution with the residual as the standard deviation
    int kk = 0;
-
+   mc_noise.resize(nscans);
    for ( int ss = 0; ss < nscans; ss++ )
    {
+      mc_noise[ss].resize(npoints);
       for ( int rr = 0; rr < npoints; rr++ )
       {
          double variation = US_Math2::box_muller( 0.0, sigmas[ kk++ ] );
+         mc_noise[ss][rr] = variation;
          wdata.setValue( ss, rr, ( sdata1.value( ss, rr ) + variation ) );
       }
    }
