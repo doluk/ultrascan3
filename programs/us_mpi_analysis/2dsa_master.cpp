@@ -221,6 +221,77 @@ DbgLv(1) << " master loop-BOT: GF job_queue empty" << job_queue.isEmpty();
                      << "  of MC_Iteration" << mc_iteration;
             max_iterations              = max_iters_all;
             simulation_values           = wksim_vals;
+            if ( mc_iteration > 1 ) {
+               bool dump_mc = false;
+               if ( simulation_values.solutes.size() == 1 ) {
+                  dump_mc = true;
+               }
+               // if rmsd is higher than initial variance + 25%
+               if ( simulation_values.variance >  mc_box_variance * 1.25 ) {
+                  dump_mc = true;
+               }
+               if ( dump_mc ) {
+                  // save sigmas and mc_noise
+                  // construct base file name from run name + iteration
+                  QString base_file_name = "MC_iter" + QString::number(mc_iteration);
+                  // save sigmas in tmp_dir/base_file_name
+                  QString sigmas_file = base_file_name + "_sigmas.csv";
+                  QFile sigmas_out(sigmas_file);
+                  if (sigmas_out.open(QIODevice::WriteOnly | QIODevice::Text)) {
+                     QTextStream out(&sigmas_out);
+                     out << "sigma\n";
+                     for ( int i = 0; i < sigmas.length(); i++ ) {
+                        out << QString::number(sigmas[i]) << "\n";
+                     }
+                     sigmas_out.flush();
+                     sigmas_out.close();
+                     qDebug() << "Sigma data written to file for iteration " << mc_iteration;
+                  }
+                  // save mc_noise in tmp_dir/base_file_name _
+                  QString mc_noise_file = base_file_name + "_mc_noise.csv";
+                  QFile mc_noise_out(mc_noise_file);
+                  if (mc_noise_out.open(QIODevice::WriteOnly | QIODevice::Text)) {
+                     QVector<QVector<double>> mc_noise;
+                     int    index      = 0;
+                     int    scnx       = 0;
+                     for ( int ee = 0; ee < count_datasets; ee++ ) {
+                        edata             = &data_sets[ ee ]->run_data;
+                        int scan_count    = edata->scanCount();
+                        int radius_points = edata->pointCount();
+                        int indxh=((scan_count/2)*radius_points)+(radius_points/2);
+
+                        for ( int scan_index = 0; scan_index < scan_count; scan_index++, scnx++ ) {
+                           QVector<double> scan;
+                           for ( int radius_index = 0; radius_index < radius_points; radius_index++ ) {
+                              scan << mc_data[ index++ ] - sim_data1.value( scnx, radius_index );
+                           }
+                           mc_noise << scan;
+                        }
+                     }
+                     int max_length = 0;
+                     QTextStream out(&mc_noise_out);
+                     for (auto& scan: mc_noise) {
+                        max_length = qMax(max_length, scan.length());
+                     }
+                     for ( int r = -1; r < max_length; r++ ) {
+                        for ( int s = 0; s < mc_noise.length(); s++ ) {
+                           if ( r == -1 ) {
+                              out << "Scan " << s+1 << ",";
+                           }
+                           else if ( r < mc_noise[s].length() ) {
+                              out << QString::number(mc_noise[s][r]) << ",";
+                           } else {
+                              out << ",";
+                           }
+                        }
+                        out << "\n";
+                     }
+                     mc_noise_out.flush();
+                     mc_noise_out.close();
+                     qDebug() << "Monte Carlo noise data written to file for iteration " << mc_iteration;
+                  }
+               }
+            }
 
             if ( mc_iteration < mc_iterations )
             {
@@ -745,7 +816,7 @@ DbgLv(1) << "sMC:  index" << index << "sdat" << sim_data1.value(scnx,rr)
       }
    }
 DbgLv(1) << "sMC:   mcdata sum" << datasum;
-
+   mc_box_variance = varrmsd / (double)( dsPoints );
    varrmsd          = sqrt( varrmsd / (double)( dsPoints ) );
    qDebug() << "  Box_Muller Variation RMSD"
             << QString::number( varrmsd, 'f', 7 )

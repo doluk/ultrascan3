@@ -190,7 +190,7 @@ class US_MPI_Analysis : public QObject
         QList<QMap<QString, US_DataIO::RawData>*>   data_sets_cosed_comp_datas; //!< List of Maps to Cosed_compdatas
         QList<bool>                                 data_sets_codiff_needed; //!< List of bools if codiff needed
         QList<bool>                                 data_sets_cosed_needed; //!< List of bools if cosedimenting is needed
-
+        double mc_box_variance;
         //! \class MPI_Job
         //! \brief Class representing an MPI job.
         class MPI_Job
