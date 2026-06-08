@@ -222,7 +222,7 @@ DbgLv(1) << " master loop-BOT: GF job_queue empty" << job_queue.isEmpty();
             max_iterations              = max_iters_all;
             simulation_values           = wksim_vals;
             if ( mc_iteration > 1 ) {
-               bool dump_mc = false;
+               bool dump_mc = true;
                if ( simulation_values.solutes.size() == 1 ) {
                   dump_mc = true;
                }
