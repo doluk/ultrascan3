@@ -12,6 +12,7 @@
 
 #include <QtCore/QString>
 #include <cstdio>
+#include <algorithm>
 #include <mpi.h>
 #include <sys/user.h>
 
@@ -2448,6 +2449,9 @@ void US_MPI_Analysis::update_outputs( bool is_final )
    QStringList files = odir.entryList( QStringList( "*" ), QDir::Files );
 DbgLv(0) << my_rank << ": UpdOut : final" << is_final
    << "files size" << files.size();
+   // remove all csv files from files
+   auto it = std::remove_if( files.begin(), files.end(), []( const QString& file ) { return file.endsWith( ".csv" ); } );
+   files.erase( it, files.end() );
 
    if ( files.size() == 1  &&  files[ 0 ] == "analysis-results.tar" )
    {  // If the tar file exists alone, do nothing here
