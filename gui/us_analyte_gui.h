@@ -23,8 +23,6 @@
 #define DbgLv(a) if(dbg_level>=a)qDebug()
 #endif
 
-class US_GUI_EXTERN US_Extinction;
-
 //! A class to bring up a dialog that edits an analyte sequence
 class US_GUI_EXTERN US_SequenceEditor : public US_WidgetsDialog
 {
