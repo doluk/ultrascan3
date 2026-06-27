@@ -35,6 +35,18 @@ US_BufferGuiSelect::US_BufferGuiSelect( int *invID, int *select_db_disk,
    pb_info     = us_pushbutton( tr( "Buffer Details" ) );
    pb_help     = us_pushbutton( tr( "Help" ) );
 
+   buffer_state_style = tr( "color: %1; background-color: white;" ) +
+                        tr( "font-family: '%1';" ).arg( US_GuiSettings::fontFamily() ) +
+                        tr( "font-size: %1pt; font-weight: bold;" ).arg( US_GuiSettings::fontSize() );
+
+   lb_buffer_state  = new QLabel( this );
+   lb_buffer_state->setText("");
+   lb_buffer_state->setFixedHeight( 30 );
+   lb_buffer_state->setStyleSheet( buffer_state_style.arg( "green" ) );
+   lb_buffer_state->setFrameStyle( QFrame::StyledPanel | QFrame::Raised );
+   lb_buffer_state->setAlignment ( Qt::AlignCenter );
+   lb_buffer_state->setAutoFillBackground( true );
+
    QLabel* bn_select     = us_banner( tr( "Select a buffer to use" ) );
    QLabel* lb_search     = us_label( tr( "Search:" ) );
 
@@ -83,7 +95,6 @@ US_BufferGuiSelect::US_BufferGuiSelect( int *invID, int *select_db_disk,
    lw_buffer_comps->setSelectionMode( QAbstractItemView::NoSelection );
    lw_cosed_comps->setSelectionMode(QAbstractItemView::NoSelection);
 
-
    int row = 0;
    main->addWidget( bn_select,       row++, 0, 1, 5 );
    main->addWidget( lb_search,       row,   0, 1, 1 );
@@ -95,8 +106,7 @@ US_BufferGuiSelect::US_BufferGuiSelect( int *invID, int *select_db_disk,
    main->addWidget( pb_delete,       row++, 4, 1, 1 );
    main->addWidget( pb_info,         row,   3, 1, 1 );
    main->addWidget( pb_help,         row++, 4, 1, 1 );
-
-   main->addWidget(bn_bcomps, row++, 3, 1, 2);
+   main->addWidget(lb_buffer_state, row++, 3, 1, 2);
    main->addWidget(lw_buffer_comps, row, 3, 3, 2);
    row += 3;
    main->addWidget(bn_cosedcomps, row++, 3, 1, 2);
@@ -201,6 +211,16 @@ void US_BufferGuiSelect::select_buffer()
    le_viscosity ->setText( QString::number( buffer->viscosity,  'f', 5 ) );
    le_ph        ->setText( QString::number( buffer->pH,         'f', 4 ) );
    le_compressib->setText( QString::number( buffer->compressibility, 'e', 4 ) );
+
+   if ( buffer->manual )
+   {
+      lb_buffer_state->setText( "Manual Buffer" );
+      lb_buffer_state->setStyleSheet( buffer_state_style.arg( "red" ) );
+   } else
+   {
+      lb_buffer_state->setText( "Automatic Temperature Correction" );
+      lb_buffer_state->setStyleSheet( buffer_state_style.arg( "green" ) );
+   }
 
    lw_buffer_comps->clear();
    lw_cosed_comps->clear();
@@ -955,6 +975,7 @@ void US_BufferGuiSelect::reset()
    lw_buffer_comps->clear();
    lw_cosed_comps->clear();
    lw_buffer_list ->setCurrentRow( -1 );
+   lb_buffer_state      ->clear();
    le_density     ->setText( "" );
    le_viscosity   ->setText( "" );
    le_ph          ->setText( "" );
@@ -974,11 +995,9 @@ void US_BufferGuiSelect::calc_visc_dent_temp()
    qApp->processEvents();
    if (le_density->text().isEmpty()) return;
    if (le_viscosity->text().isEmpty()) return;
-   double density_tb, viscosity_tb;
-   if (temp == 20) {
-      density_tb = buffer->density;
-      viscosity_tb = buffer->viscosity;
-   } else {
+   double density_tb = buffer->density;
+   double viscosity_tb = buffer->viscosity;
+   if (temp != 20 && !buffer->manual) {
       US_Math2::SolutionData sol;
       sol.manual = false;
       sol.viscosity = buffer->viscosity;
