@@ -335,17 +335,12 @@ US_Plot3D::US_Plot3D( QWidget* p, US_Model* m, QVector< QVector3D >* d )
 // Public function to calculate dimension value types and data ranges
 void US_Plot3D::calculateAxes( )
 {
-   const double VROUND = 10.0;
-   const double VNEGOF = (1.0/VROUND);
-   const double MAX_ANNO = (99.9/VROUND);
-   int    powrz;
-   double xval;
-   double yval;
-   double zval;
-   double xround = VROUND;
-   double yround = VROUND;
-   double xavg;
-   double yavg;
+   constexpr double VROUND   = 10.0;
+   constexpr double VNEGOF   = (1.0/VROUND);
+   constexpr double MAX_ANNO = (99.9/VROUND);
+   int              powrz;
+   double           xround = VROUND;
+   double           yround = VROUND;
    // If there is only one data point, ensure that the minimum and maximum of each axis is not the same
    if ( data_points == 1 )
    {
@@ -358,18 +353,18 @@ void US_Plot3D::calculateAxes( )
    }
 
    // extend x,y,z ranges a bit
-   xval      = ( xmax - xmin ) * 0.05;
+   double xval = ( xmax - xmin ) * 0.05;
    xmin     -= xval;
    xmax     += xval;
-   yval      = ( ymax - ymin ) * 0.05;
+   double yval = ( ymax - ymin ) * 0.05;
    ymin     -= yval;
    ymax     += yval;
+   double xavg = ( qAbs( xmin ) + qAbs( xmax ) ) * 0.5;
+   double yavg = ( qAbs( ymin ) + qAbs( ymax ) ) * 0.5;
 
    // determine a normalizing power-of-ten for x, y and z
    if ( model != nullptr )
    {
-      xavg   = ( qAbs( xmin ) + qAbs( xmax ) ) * 0.5;
-      yavg   = ( qAbs( ymin ) + qAbs( ymax ) ) * 0.5;
       x_norm    = MAX_ANNO / xavg;
       y_norm    = MAX_ANNO / yavg;
    }
@@ -447,18 +442,7 @@ void US_Plot3D::calculateAxes( )
 // Public function to set dimension value types and calculate data ranges
 void US_Plot3D::setTypes( int tx, int ty, int tz )
 {
-   const double VROUND = 10.0;
-   const double VNEGOF = (1.0/VROUND);
-   const double MAX_ANNO = (99.9/VROUND);
-//   const double MAX_ANNO = (999.0/VROUND);
-   US_Model::SimulationComponent* sc;
    int    ncomp = model->components.size();
-   int    powrz;
-   double xval;
-   double yval;
-   double zval;
-   double xround = VROUND;
-   double yround = VROUND;
 
    // set internal type-flag variables
    typex   = tx;
@@ -467,21 +451,21 @@ void US_Plot3D::setTypes( int tx, int ty, int tz )
 DbgLv(2) << "P3D:sT: type xyz" << typex << typey << typez;
 
    // determine the range of values for each of the 3 dimensions
-   sc      = &model->components[ 0 ];          // first component
-   xmin    = comp_value( sc, typex,  1.0 );    // initial ranges
-   ymin    = comp_value( sc, typey,  1.0 );
-   zmin    = comp_value( sc, -typez, 1.0 );
-   xmax    = xmin;
-   ymax    = ymin;
-   zmax    = zmin;
+   US_Model::SimulationComponent* sc = &model->components[0];         // first component
+   xmin                              = comp_value( sc, typex,  1.0 ); // initial ranges
+   ymin                              = comp_value( sc, typey,  1.0 );
+   zmin                              = comp_value( sc, -typez, 1.0 );
+   xmax                              = xmin;
+   ymax                              = ymin;
+   zmax                              = zmin;
 
    for ( int ii = 0; ii < ncomp; ii++ )
    {
       sc      = &model->components[ ii ];      // current component
 
-      xval    = comp_value( sc, typex,  1.0 ); // x,y,z value of component
-      yval    = comp_value( sc, typey,  1.0 );
-      zval    = comp_value( sc, -typez, 1.0 );
+      double xval = comp_value( sc, typex, 1.0 ); // x,y,z value of component
+      double yval = comp_value( sc, typey, 1.0 );
+      double zval = comp_value( sc, -typez, 1.0 );
 
       xmin    = xmin < xval ? xmin : xval;     // update range values
       xmax    = xmax > xval ? xmax : xval;
@@ -496,22 +480,14 @@ DbgLv(2) << "P3D:sT: type xyz" << typex << typey << typez;
 }
 
 // Public function to set dimension value types and calculate data ranges
-void US_Plot3D::setTitles( QString wndt, QString pltt,
-                           QString xat, QString yat, QString zat )
+void US_Plot3D::setTitles( const QString& wndt, const QString& pltt,
+                           const QString& xat, const QString& yat, const QString& zat )
 {
-   const double VROUND = 10.0;
-   const double MAX_ANNO = (99.9/VROUND);
-//   const double MAX_ANNO = (999.0/VROUND);
-#if 0
-   const double VNEGOF = (1.0/VROUND);
-   double xround = VROUND;
-   double yround = VROUND;
-#endif
-   int    nidpt  = xyzdat->count();
-   int    powrz;
-   double xval;
-   double yval;
-   double zval;
+   #if 0
+      const double VNEGOF = (1.0/VROUND);
+      double xround = VROUND;
+      double yround = VROUND;
+   #endif
 
    // Set internal type-flag variables
    setWindowTitle( wndt );
@@ -530,11 +506,11 @@ void US_Plot3D::setTitles( QString wndt, QString pltt,
    ymax    = ymin;
    zmax    = zmin;
 
-   for ( int ii = 1; ii < nidpt; ii++ )
+   for ( int ii = 1; ii < xyzdat->count(); ii++ )
    {
-      xval    = xyzdat->at( ii ).x();          // x,y,z value of point
-      yval    = xyzdat->at( ii ).y();
-      zval    = xyzdat->at( ii ).z();
+      double xval = xyzdat->at( ii ).x();          // x,y,z value of point
+      double yval = xyzdat->at( ii ).y();
+      double zval = xyzdat->at( ii ).z();
 
       xmin    = qMin( xmin, xval );            // update range values
       xmax    = qMax( xmax, xval );
@@ -548,7 +524,7 @@ void US_Plot3D::setTitles( QString wndt, QString pltt,
    calculateAxes();
 }
 
-void US_Plot3D::setPlotTitle( QString pltt )
+void US_Plot3D::setPlotTitle( const QString& pltt )
 {
    dataWidget->setTitle( pltt );
 }
@@ -618,7 +594,7 @@ void US_Plot3D::reloadData( QVector< QVector3D >* d )
 
    for ( int ii = 0; ii < nidpt; ii++ )
    {  // Accumulate unique X values so that we can count rows
-      double xval     = xyzdat->at( ii ).x();
+      const double xval     = xyzdat->at( ii ).x();
       if ( ! xvals.contains( xval ) )
          xvals << xval;
    }
@@ -686,11 +662,11 @@ void US_Plot3D::calculateContour()
 //   gaussian decay around the input point.
 void US_Plot3D::calculatePoints()
 {
-   int    nidpt  = xyzdat->count();
-   int    kcols  = zdata.count();
-   int    krows  = ( kcols == 0 ) ? 0 : zdata[ 0 ].count();
-   double dx = (xmax - xmin) / (ncols - 1);
-   double dy = (ymax - ymin) / (nrows - 1);
+   const int    nidpt = xyzdat->count();
+   const int    kcols = zdata.count();
+   const int    krows = ( kcols == 0 ) ? 0 : zdata[ 0 ].count();
+   const double dx    = (xmax - xmin) / (ncols - 1);
+   const double dy    = (ymax - ymin) / (nrows - 1);
 
    if ( nrows != krows  ||  ncols != kcols )
    {
@@ -700,12 +676,12 @@ void US_Plot3D::calculatePoints()
       alloc_2dvect( tdata, ncols, nrows );
    }
 
-   int    hixd   = ncols / 5;  // max raster radius is 5th of total extent
-   int    hiyd   = nrows / 5;
-   int    loxd   = 5;
-   int    loyd   = 5;
-   int    nxd    = hixd;
-   int    nyd    = hiyd;
+   const int     hixd = ncols / 5;  // max raster radius is 5th of total extent
+   const int     hiyd = nrows / 5;
+   constexpr int loxd = 5;
+   constexpr int loyd = 5;
+   int           nxd  = hixd;
+   int           nyd  = hiyd;
    DbgLv(1) << "cP: ncols nrows hixd hiyd" << ncols << nrows << hixd << hiyd;
    int    fx;
    int    lx;
@@ -980,8 +956,6 @@ void US_Plot3D::replot()
     double dx = (xmax - xmin) / (ncols - 1);
     double dy = (ymax - ymin) / (nrows - 1);
 
-    double tmin = DBL_MAX;
-    double tmax = -DBL_MAX;
    double** wdata = new double* [ ncols ];
 DbgLv(2) << "P3D: replot: ncols nrows" << ncols << nrows;
 
@@ -990,7 +964,10 @@ DbgLv(2) << "P3D: replot: ncols nrows" << ncols << nrows;
 
    for ( int ii = 0; ii < ncols; ii++ )
    {  // copy data to work 2D vector and get new z-max
-if ((ii&63)==1) DbgLv(2) << "P3D:  rp: row" << ii;
+      if ((ii&63)==1)
+      {
+         DbgLv( 2 ) << "P3D:  rp: row" << ii;
+      }
       wdata[ ii ] = new double [ nrows ];
 
       for ( int jj = 0; jj < nrows; jj++ )
@@ -1000,7 +977,7 @@ if ((ii&63)==1) DbgLv(2) << "P3D:  rp: row" << ii;
          QVector<double> temp;
          temp.clear();
          temp << xmin + ii*dx << ymin + jj*dy << zdata[ii][jj];
-         Triple t = Triple( xmin + ii*dx, ymin + jj*dy, zdata[ii][jj] );
+         const Triple t = Triple( xmin + ii*dx, ymin + jj*dy, zdata[ii][jj] );
          tdata[ ii ][ jj ] = t;
          zdata << temp;
          zdmx              = zdmx > zval ? zdmx : zval;
@@ -1013,6 +990,7 @@ if ((ii&63)==1&&(jj&63)==1) DbgLv(2) << "P3D:    rp: col" << jj
    zfac  = zmax / zdmx;
 
    for ( int ii = 0; ii < ncols; ii++ )
+   {
       for ( int jj = 0; jj < nrows; jj++ )
       {
          wdata[ ii ][ jj ] *= zfac;
@@ -1020,6 +998,7 @@ if ((ii&63)==1&&(jj&63)==1) DbgLv(2) << "P3D:    rp: col" << jj
          t.z = wdata[ ii ][ jj ];
          tdata[ ii ][ jj ] = t;
       }
+   }
 
    // load the widget raster data
    //dataWidget->loadFromData( wdata, kcols, krows, ymin, ymax, xmin, xmax );
@@ -1129,8 +1108,8 @@ void US_Plot3D::replot( bool hold_color )
    double zcmax   = zmax;
    double zdmx    = zmin;
    double zfac    = 1.0;
-   Triple** wdata = NULL;
-   double** wddat = NULL;
+   Triple** wdata = nullptr;
+   double** wddat = nullptr;
    int lcol       = ncols - 1;
    dataWidget->makeCurrent();
 //if(reverse_y) y_scale *= -1.0;
@@ -1178,8 +1157,8 @@ void US_Plot3D::replot( bool hold_color )
          wdata[ lcol ][ 0 ]= Triple( xval, yval, zmax );
       }
 
-      int m=nrows-1;
-      int n=ncols-1;
+      const int m = nrows - 1;
+      const int n = ncols - 1;
       DbgLv(1) << "P3D:replot: wdata[0][0]" << wdata[0][0].x << wdata[0][0].y
                << wdata[0][0].z;
       DbgLv(1) << "P3D:replot: wdata[n][0]" << wdata[n][0].x << wdata[n][0].y
@@ -1228,11 +1207,13 @@ void US_Plot3D::replot( bool hold_color )
       zfac           = ( zdmx < 1e-20 ) ? zmax : ( zmax / zdmx );
 
       for ( int ii = 0; ii < ncols; ii++ )
+      {
          for ( int jj = 0; jj < nrows; jj++ )
          {
             wddat[ ii ][ jj ] *= zfac;
             tdata[ ii ][ jj ].z *= zfac;
          }
+      }
 
 
       DbgLv(1) << "P3D:ld:  xmin xmax ycmin ycmax" << xmin << xmax
@@ -1387,7 +1368,7 @@ QOpenGLWidget* US_Plot3D::dataWidgetP( void )
 }
 
 // Public method to save the plot to an image file
-bool US_Plot3D::save_plot( const QString filename, const QString imagetype )
+bool US_Plot3D::save_plot( const QString& filename, const QString& imagetype )
 {
    dataWidget->updateData();
    dataWidget->update();
@@ -1688,8 +1669,7 @@ DbgLv(2) << "  min x,y dim" << wdim;
 }
 
 // get simulation component x/y/z value of given type
-double US_Plot3D::comp_value( US_Model::SimulationComponent* sc, int type, 
-      double normscl )
+double US_Plot3D::comp_value( const US_Model::SimulationComponent* sc, const int type, const double normscl )
 {
    double xyval = sc->s;
 
@@ -2263,88 +2243,12 @@ void US_Plot3D::dump_contents()
    QString reportDir = US_Settings::reportDir();
    if ( ! dir.exists( reportDir ) ) dir.mkpath( reportDir );
 
-   QString ofname     = US_Settings::reportDir() + "/" + modldesc
+   QString ofname     = US_Settings::reportDir() + "/"  +modldesc
       + "_" + datetime + "_plot3d." + fileext;
-
    bool ok           = false;
    if (fileext == "csv")
    {
-      // save to csv located at ofname
-      QFile myFile(ofname);
-      if (!myFile.open(QIODevice::WriteOnly)) {
-         qDebug() << "Could not write to file:" << ofname << "Error string:" << myFile.errorString();
-      }
-      else{
-         QTextStream out(&myFile);
-         unsigned int kcols = (unsigned int)ncols;
-         unsigned int krows = (unsigned int)nrows;
-         DbgLv(1) << "P3D:replot: ncols nrows" << ncols << nrows
-                  << "triples-in" << triples_in;
-         double xcmin   = xmin;
-         double xcmax   = xmax;
-         double ycmin   = reverse_y ? ymax : ymin;
-         double ycmax   = reverse_y ? ymin : ymax;
-         double zcmin   = zmin;
-         double zcmax   = zmax;
-         double zdmx    = zmin;
-         double zfac    = 1.0;
-         Triple** wdata = NULL;
-         double** wddat = NULL;
-         int lcol       = ncols - 1;
-         if ( triples_in )
-         {
-            wdata          = new Triple* [ ncols ];
-            DbgLv(1) << "P3D:replot: wdata size" << tdata.size();
-
-            if ( reverse_y )
-            {
-               double yroff   = ( ycmin + ycmax ) / y_norm;
-
-               for ( int ii = 0; ii < ncols; ii++ )
-               {
-                  wdata[ ii ]    = new Triple [ nrows ];
-                  int kk         = lcol - ii;
-
-                  for ( int jj = 0; jj < nrows; jj++ )
-                  {
-                     double xval       = tdata[ kk ][ jj ].x;
-                     double yval       = ( yroff - tdata[ kk ][ jj ].y );
-                     double zval       = tdata[ kk ][ jj ].z;
-                     wdata[ ii ][ jj ] = Triple( xval/x_norm, yval/y_norm, zval/z_norm );
-                  }
-               }
-            }
-            else
-            {
-               for ( int ii = 0; ii < ncols; ii++ )
-               {
-                  wdata[ ii ]    = new Triple [ nrows ];
-                  for ( int jj = 0; jj < nrows; jj++ )
-                     wdata[ ii ][ jj ] = tdata[ ii ][ jj ];
-               }
-            }
-
-            out << xatitle << ", " << yatitle << ", " << zatitle;
-            out << Qt::endl;
-            for ( int ii = 0; ii < ncols; ii++){
-               for ( int jj = 0; jj < nrows; jj++){
-                  out << QString::number(wdata[ii][jj].x) << ", " << QString::number(wdata[ii][jj].y) << ", " << QString::number(wdata[ii][jj].z) << Qt::endl;
-               }
-            }
-            myFile.flush();}
-         else {
-            out << xatitle << ", " << yatitle << ", " << zatitle;
-            out << Qt::endl;
-            for ( int ii = 0; ii < tdata.size(); ii++){
-               for ( int jj = 0; jj < tdata.first().size(); jj++){
-                  out << QString::number(tdata[ii][jj].x) << ", " << QString::number(tdata[ii][jj].y) << ", " << QString::number(tdata[ii][jj].z) << Qt::endl;
-               }
-            }
-            myFile.flush();
-         }
-
-         myFile.close();
-         ok = true;}
+      ok = save_csv( ofname );
    }
    else {
       ok = IO::save( dataWidget, ofname, imagetype );
@@ -2427,3 +2331,81 @@ void US_Plot3D::closeEvent( QCloseEvent* e )
    e->accept();
 }
 
+bool US_Plot3D::save_csv( const QString& filename)
+{
+   bool ok = false;
+         // save to csv located at ofname
+   QFile myFile( filename );
+   if ( !myFile.open( QIODevice::WriteOnly ) )
+   {
+      qDebug() << "Could not write to file:" << filename << "Error string:" << myFile.errorString();
+   }
+   else{
+      QTextStream  out(&myFile);
+      DbgLv(1) << "P3D:replot: ncols nrows" << ncols << nrows << "triples-in" << triples_in;
+      double ycmin   = reverse_y ? ymax : ymin;
+      double ycmax   = reverse_y ? ymin : ymax;
+      Triple** wdata = nullptr;
+      int lcol       = ncols - 1;
+      if ( triples_in )
+      {
+         wdata          = new Triple* [ ncols ];
+         DbgLv(1) << "P3D:replot: wdata size" << tdata.size();
+
+         if ( reverse_y )
+         {
+            double yroff   = ( ycmin + ycmax ) / y_norm;
+
+            for ( int ii = 0; ii < ncols; ii++ )
+            {
+               wdata[ ii ]    = new Triple [ nrows ];
+               int kk         = lcol - ii;
+
+               for ( int jj = 0; jj < nrows; jj++ )
+               {
+                  double xval       = tdata[ kk ][ jj ].x;
+                  double yval       = ( yroff - tdata[ kk ][ jj ].y );
+                  double zval       = tdata[ kk ][ jj ].z;
+                  wdata[ ii ][ jj ] = Triple( xval/x_norm, yval/y_norm, zval/z_norm );
+               }
+            }
+         }
+         else
+         {
+            for ( int ii = 0; ii < ncols; ii++ )
+            {
+               wdata[ ii ]    = new Triple [ nrows ];
+               for ( int jj = 0; jj < nrows; jj++ )
+               {
+                  wdata[ ii ][ jj ] = tdata[ ii ][ jj ];
+               }
+            }
+         }
+
+         out << xatitle << ", " << yatitle << ", " << zatitle;
+         out << "\n";
+         for ( int ii = 0; ii < ncols; ii++){
+            for ( int jj = 0; jj < nrows; jj++){
+               out << QString::number(wdata[ii][jj].x) << ", "
+                     << QString::number(wdata[ii][jj].y) << ", "
+                     << QString::number(wdata[ii][jj].z) << "\n";
+            }
+         }
+         myFile.flush();}
+      else {
+         out << xatitle << ", " << yatitle << ", " << zatitle;
+         out << "\n";
+         for ( int ii = 0; ii < tdata.size(); ii++){
+            for ( int jj = 0; jj < tdata.first().size(); jj++){
+               out << QString::number(tdata[ii][jj].x) << ", "
+                     << QString::number(tdata[ii][jj].y) << ", "
+                     << QString::number(tdata[ii][jj].z) << "\n";
+            }
+         }
+         myFile.flush();
+      }
+      myFile.close();
+      ok = true;
+   }
+   return ok;
+}

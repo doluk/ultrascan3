@@ -894,7 +894,13 @@ int US_Math2::nnls( double* a, int a_dim1, int m, int n,
    double temp, wmax, t, alpha, asave, dummy, unorm, ztest, cc;
 
    /* Check the parameters and data */
-   if ( m <= 0 || n <= 0 || a == NULL || b == NULL || x == NULL ) return 2;
+   if ( m <= 0 || n <= 0 || a == NULL || b == NULL || x == NULL ) {
+      qDebug() << "US_Math2::NNLS failed";
+      // error output
+      qDebug() << "US_Math2::NNLS a_dim1" << a_dim1 << "m" << m << "n" << n;
+      qDebug() << "US_Math2::NNLS a " << a << "b " << b << "x " << x;
+      return 2;
+   }
 
    /* Allocate memory for working space, if required */
    QVector< double > wVec;
@@ -929,7 +935,13 @@ int US_Math2::nnls( double* a, int a_dim1, int m, int n,
       index = iVec.data();
    }
 
-   if ( w == NULL || zz == NULL || index == NULL ) return 2;
+   if ( w == NULL || zz == NULL || index == NULL ) {
+      qDebug() << "US_Math2::NNLS failed";
+      // error output
+      qDebug() << "US_Math2::NNLS a_dim1" << a_dim1 << "m" << m << "n" << n;
+      qDebug() << "US_Math2::NNLS w" << w << "zz" << zz << "index" << index;
+      return 2;
+   }
 
    /* Initialize the arrays index[] and x[] */
    for( int k = 0; k < n; k++ ) 
@@ -1204,7 +1216,12 @@ int US_Math2::nnls( double* a, int a_dim1, int m, int n,
          w[ j ] = 0.0;
 
    if ( rnorm != NULL ) *rnorm = sqrt( sm );
-
+   if ( ret == 1 ) {
+      qDebug() << "US_Math2::NNLS exceed iteration limit";
+      // error output
+      qDebug() << "US_Math2::NNLS a_dim1" << a_dim1 << "m" << m << "n" << n;
+      qDebug() << "US_Math2::NNLS rnorm " << sqrt(sm);
+   }
    return ret;
 }
 
