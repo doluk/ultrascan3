@@ -46,6 +46,7 @@ US_LammAstfvm::Mesh::Mesh( const double xl, const double xr, const int Nelem, co
 
       for ( i = 0; i < Ne; i++ )
       {
+         MeshDen[i] = 1.0;
          Eid[i] = (i%2==0)?1:4;
          RefLev[i] = 0; // Set all refinement levels to zero
       }
@@ -373,19 +374,43 @@ void US_LammAstfvm::Mesh::Refine( const double beta ) {
 /////////////////////////
 void US_LammAstfvm::Mesh::RefineMesh( const double *u0, const double *u1, const double ErrTol) {
    // Precomputed constants
-   static const double sqrt3 = sqrt(3.0);
-   static const double inv_sqrt3 = 1.0 / sqrt3;
+   static const double sqrt3 = sqrt(3.0) * 9.0;
 
    // refinement threshold: h*|D_3u|^(1/3) > beta
-   const double beta = 6.0 * cbrt(ErrTol * inv_sqrt3);
+   const double beta = cbrt(ErrTol * sqrt3);
 
    // coarsening threshold: h*|D_3u|^(1/3) < alpha
-   const double alpha = beta * 0.25;
+   const double alpha = 6.0 * cbrt(ErrTol / sqrt( 3.0 )) * 0.25;
 
    ComputeMeshDen_D3(u0, u1);
    Smoothing(Ne, MeshDen, SmoothingWt, SmoothingCyl);
    Unrefine(alpha);
    Refine(beta);
+}
+
+/////////////////////////
+//
+// RefineAround
+//
+/////////////////////////
+void US_LammAstfvm::Mesh::RefineAround( const double r_min, const double width, const double ErrTol ) {
+   const double r_max = r_min + width;
+   // Precomputed constants
+   static const double sqrt3 = sqrt(3.0) * 9.0;
+
+   // refinement threshold: h*|D_3u|^(1/3) > beta
+   const double beta = cbrt(ErrTol * sqrt3);
+   // Use a high density for the lamella region to force refinement
+   for ( int k = 0; k < Ne; k++ ) {
+      // lamella overlaps with the cell
+      if ( (x[ k + 1 ] >= r_min || qFuzzyCompare( x[ k + 1 ], r_min ) ) && ( x[ k ] <= r_max || qFuzzyCompare( x[ k ], r_max ) ) ) {
+         MeshDen[ k ] = 1000.0;
+      } else {
+         MeshDen[ k ] = 1.0;
+      }
+   }
+//   Smoothing(Ne, MeshDen, SmoothingWt, SmoothingCyl);
+   Refine( beta ); // Use a small beta to force significant refinement
 }
 
 /////////////////////////
@@ -418,7 +443,7 @@ void US_LammAstfvm::Mesh::InitMesh( const double s, const double D, const double
       u1[ 2 * j + 1 ] = exp(nu * (x2 - b2)) * (nu * nu * b2);
    }
 
-   RefineMesh(u0, u1, 1.e-4);
+   RefineMesh(u0, u1, 1.e-5);
 
    delete[] u0;
    delete[] u1;
@@ -775,8 +800,8 @@ US_LammAstfvm::US_LammAstfvm( US_Model& rmodel, US_SimulationParameters& rsimpar
    param_w2_t0 = param_w2;
    param_w2_t0dt = param_w2;
    DbgLv( 2 ) << "LFvm: m b w2 stretch" << param_m << param_b << param_w2 << stretch;
-   param_m -= stretch;
-   param_b += stretch;
+   //param_m -= stretch;
+   //param_b += stretch;
    DbgLv( 2 ) << "LFvm:  m b" << param_m << param_b;
 
    MeshSpeedFactor = 1; // default mesh moving option
@@ -1071,6 +1096,24 @@ int US_LammAstfvm::solve_component( int compx )
    int           ktime5 = 0;
    int           ktime6 = 0;
    timer.start();
+
+   double conc_profile_startpoint = simparams.meniscus;
+   double conc_profile_endpoint   = simparams.bottom;
+   const bool bfe_gaussian_profile = US_Settings::debug_match( "BFE_GAUSSIAN" );
+   if ( simparams.band_forming )
+   {
+      // Calculate the width of the lamella
+      double angle          = simparams.cp_angle != 0.0 ? simparams.cp_angle : 2.5;
+      double path_length    = simparams.cp_pathlen != 0.0 ? simparams.cp_pathlen : 1.2;
+      double base           = sq( simparams.meniscus ) + simparams.band_volume * 360.0 / ( angle * path_length * M_PI );
+      double lamella_width  = sqrt( base ) - simparams.meniscus;
+      conc_profile_endpoint = conc_profile_startpoint + lamella_width;
+
+      // Increase the resolution for small lamellas
+      msh->RefineAround( conc_profile_startpoint, lamella_width * 2.0, err_tol );
+   }
+
+
    // initialization
    N0                             = msh->Nv;         // number of radial positions
    N0u                            = N0 + N0 - 1;     // number of concentration*radius values (including mid-points)
@@ -1084,17 +1127,6 @@ int US_LammAstfvm::solve_component( int compx )
    x1                             = x1_vec.data();
    u1_vec.resize( N1u );
    u1                             = u1_vec.data();
-   double conc_profile_startpoint = simparams.meniscus;
-   double conc_profile_endpoint   = simparams.bottom;
-   if ( simparams.band_forming )
-   {
-      // Calculate the width of the lamella
-      double angle          = simparams.cp_angle != 0.0 ? simparams.cp_angle : 2.5;
-      double path_length    = simparams.cp_pathlen != 0.0 ? simparams.cp_pathlen : 1.2;
-      double base           = sq( simparams.meniscus ) + simparams.band_volume * 360.0 / ( angle * path_length * M_PI );
-      double lamella_width  = sqrt( base ) - simparams.meniscus;
-      conc_profile_endpoint = conc_profile_startpoint + lamella_width;
-   }
    double r_value = 0.0;
    for ( int jj = 0; jj < N0; jj++ )
    {
@@ -1105,14 +1137,24 @@ int US_LammAstfvm::solve_component( int compx )
       x1[jj]  = r_value;
       if ( simparams.band_forming )
       {
-         // Calculate the width of the lamella
-         if ( r_value < conc_profile_endpoint && r_value > conc_profile_startpoint )
+         if ( bfe_gaussian_profile )
          {
-            u0[kk] = r_value * sig_conc;
+            const double lamella_width = qMax( conc_profile_endpoint - conc_profile_startpoint, 1.0e-12 );
+            const double rel_r         = ( r_value - conc_profile_endpoint ) / lamella_width * 0.5;
+            const double gauss_amp     = exp( -pow(rel_r, 4.0) );
+            u0[kk] = r_value * sig_conc * 2 * gauss_amp;
          }
          else
          {
-            u0[kk] = 0.0;
+            // Calculate the width of the lamella
+            if ( r_value <= conc_profile_endpoint && (r_value >= conc_profile_startpoint) )
+            {
+               u0[kk] = r_value * sig_conc * 2;
+            }
+            else
+            {
+               u0[kk] = 0.0;
+            }
          }
       }
       else

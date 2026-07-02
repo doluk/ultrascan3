@@ -41,13 +41,19 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
             //! \param s  Sedimentation coefficient
             //! \param D  Diffusion coefficient
             //! \param w2 Omega squared
-            void InitMesh( double, double, double );
+            void InitMesh( double s, double D, double w2);
 
             //! \brief Refine mesh
             //! \param u0     Current concentration array
             //! \param u1     Next concentration array
             //! \param ErrTol Error tolerance
-            void RefineMesh( const double*, const double*, double );
+            void RefineMesh( const double* u0, const double* u1, double ErrTol);
+
+            //! \brief Refine mesh around a specific point
+            //! \param r_min  Start of refinement region
+            //! \param width  Width of refinement region
+            //! \param ErrTol Error tolerance
+            void RefineAround( double r_min, double width, double ErrTol );
 
             int     Nv;       //!< Number of grids
             int     Ne;       //!< Number of elements
