@@ -377,7 +377,7 @@ void US_LammAstfvm::Mesh::RefineMesh( const double *u0, const double *u1, const 
    static const double sqrt3 = sqrt(3.0) * 9.0;
 
    // refinement threshold: h*|D_3u|^(1/3) > beta
-   const double beta = cbrt(ErrTol * sqrt3);
+   const double beta = 6.0 * cbrt(ErrTol / sqrt( 3.0 ));
 
    // coarsening threshold: h*|D_3u|^(1/3) < alpha
    const double alpha = 6.0 * cbrt(ErrTol / sqrt( 3.0 )) * 0.25;
@@ -399,7 +399,7 @@ void US_LammAstfvm::Mesh::RefineAround( const double r_min, const double width, 
    static const double sqrt3 = sqrt(3.0) * 9.0;
 
    // refinement threshold: h*|D_3u|^(1/3) > beta
-   const double beta = cbrt(ErrTol * sqrt3);
+   const double beta = 6.0 * cbrt(ErrTol / sqrt( 3.0 ));
    // Use a high density for the lamella region to force refinement
    for ( int k = 0; k < Ne; k++ ) {
       // lamella overlaps with the cell
@@ -409,7 +409,7 @@ void US_LammAstfvm::Mesh::RefineAround( const double r_min, const double width, 
          MeshDen[ k ] = 1.0;
       }
    }
-//   Smoothing(Ne, MeshDen, SmoothingWt, SmoothingCyl);
+   // Smoothing(Ne, MeshDen, SmoothingWt, SmoothingCyl);
    Refine( beta ); // Use a small beta to force significant refinement
 }
 
@@ -1041,7 +1041,7 @@ int US_LammAstfvm::solve_component( int compx )
 
    Mesh* msh = new Mesh( param_m, param_b, simparams.simpoints, 0 );
 
-   // msh->InitMesh( param_s20w, param_D20w, param_w2 );
+   msh->InitMesh( param_s20w, param_D20w, param_w2 );
    int    mesh_refine_option = 1; // mesh refine option;
    double dt_old             = dt;
    // make settings based on the non-ideal case type
@@ -1081,7 +1081,6 @@ int US_LammAstfvm::solve_component( int compx )
 
    SetMeshRefineOpt( mesh_refine_option ); // mesh refine option
    SetMeshSpeedFactor( 1.0 );              // mesh speed factor
-
 
    // get initial concentration for this component
    double sig_conc = model.components[comp_x].signal_concentration;
@@ -1173,6 +1172,39 @@ int US_LammAstfvm::solve_component( int compx )
    DbgLv( 2 ) << "LAsc:  u0 0,1,2...,N" << u0[0] << u0[1] << u0[2] << u0[N0u - 3] << u0[N0u - 2]
             << u0[N0u - 1];
    msh->RefineMesh( u0, u1, err_tol );
+   if ( msh->Nv != N0 )
+   {
+      // RefineMesh() can add/remove mesh elements based on the curvature of the
+      // initial profile (e.g. the sharp edges of a band-forming lamella). x0/u0
+      // were built on the pre-RefineMesh grid, so they must be re-synced with
+      // msh's current grid before the time-stepping loop starts - otherwise msh
+      // and x0/u0/N0 disagree on the mesh size and later RefineMesh() calls in
+      // the main loop index u0 against the wrong element count.
+      const int N0new  = msh->Nv;
+      const int N0unew = N0new + N0new - 1;
+      QVector<double> x0new_vec( N0new );
+      double*         x0new = x0new_vec.data();
+      for ( int jj = 0; jj < N0new; jj++ )
+      {
+         x0new[jj] = msh->x[jj];
+      }
+
+      QVector<double> u0new_vec( N0unew );
+      QVector<double> u1new_vec( N0unew );
+      ProjectQ( N0 - 1, x0, u0, N0new - 1, x0new, u0new_vec.data() );
+      ProjectQ( N0 - 1, x0, u1, N0new - 1, x0new, u1new_vec.data() );
+
+      N0    = N0new;
+      N0u   = N0unew;
+      x0_vec = x0new_vec;
+      x0     = x0_vec.data();
+      x1_vec = x0new_vec;
+      x1     = x1_vec.data();
+      u0_vec = u0new_vec;
+      u0     = u0_vec.data();
+      u1_vec = u1new_vec;
+      u1     = u1_vec.data();
+   }
    for ( int jj = 0; jj < ncs; jj++ )
    {
       // get output radius vector
