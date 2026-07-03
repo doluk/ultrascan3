@@ -811,6 +811,14 @@ endif()
 # =============================================================================
 add_subdirectory(utils)
 
+# Optional headless ASTFVM convergence driver (see
+# utils/tools/astfvm_convergence). Off by default; enable with
+# -DBUILD_ASTFVM_CONVERGENCE_DRIVER=ON.
+option(BUILD_ASTFVM_CONVERGENCE_DRIVER "Build the headless ASTFVM convergence driver" OFF)
+if(BUILD_ASTFVM_CONVERGENCE_DRIVER)
+    add_subdirectory(utils/tools/astfvm_convergence)
+endif()
+
 if(BUILD_DOCUMENTATION AND NOT US3_PROFILE STREQUAL "HPC")
     add_subdirectory(doc/manual)
 endif()

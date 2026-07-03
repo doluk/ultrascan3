@@ -2,6 +2,7 @@
 #ifndef US_LAMMASTFVM_H
 #define US_LAMMASTFVM_H
 
+#include <QFile>
 #include "us_extern.h"
 #include "us_model.h"
 #include "us_simparms.h"
@@ -52,6 +53,14 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
             int     Nv;       //!< Number of grids
             int     Ne;       //!< Number of elements
             double* x;        //!< radius coordinates of grids
+
+            //! \brief Read-only access to the per-element mesh density array
+            //!        (Ne entries). Used by the solution-trace export.
+            const double* meshDensity() const { return MeshDen; }
+
+            //! \brief Allow/skip the one-time adaptive refine in InitMesh.
+            //!        When false, InitMesh keeps the uniform mesh as-is.
+            bool    allowInitRefine = true;
 
          private:
             int     dbg_level;       // debug level
@@ -165,6 +174,51 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
       //! \param flag    Flag for whether or not to operate in show-movie mode.
       void setMovieFlag( bool );
 
+      // ---- Instrumentation & convergence controls (Chapter 4 / ASTFVM) ----
+      // All of the following are opt-in. When none are called and tracing is
+      // off, the solver output is byte-for-byte identical to the default path.
+
+      //! \brief Set the initial number of mesh elements.
+      //! \param n  Element count (>0). When <=0 (default) the value derived
+      //!           from simparams.simpoints is used, i.e. unchanged behavior.
+      void setInitElements( int n );
+
+      //! \brief Set the number of time steps per sedimentation transit.
+      //! \param k  Steps per transit (>0); scales dt ~ 1/k. When <=0 (default)
+      //!           the original dt formula is used, i.e. unchanged behavior.
+      void setStepsPerTransit( int k );
+
+      //! \brief Force a fixed time step, bypassing the dt formula.
+      //! \param dt_fixed  Time step in seconds (>0). When <=0 (default) the
+      //!                  dt formula is used, i.e. unchanged behavior.
+      void setFixedDt( double dt_fixed );
+
+      //! \brief Keep the initial mesh uniform (skip the setup adaptive refine).
+      //! \param on  When true, combined with SetMeshRefineOpt(0), Nv stays
+      //!            constant across all steps (= initial elements + 1).
+      void setUniformMesh( bool on );
+
+      //! \brief Set the mesh-refinement error tolerance (err_tol).
+      //! \param tol  Error tolerance (>0). When <=0 (default) the internal
+      //!             value is used, i.e. unchanged behavior.
+      void setErrorTolerance( double tol );
+
+      //! \brief Enable/disable the per-step solution trace (adaptive mesh +
+      //!        solution + mass). Off by default with zero overhead.
+      //! \param on   Turn tracing on/off.
+      //! \param dir  Output directory (default: US_Settings::tmpDir()).
+      //! \param tag  Run tag used in filenames (default: timestamp).
+      void setSolutionTrace( bool on, const QString& dir = QString(),
+                             const QString& tag = QString() );
+
+      //! \brief Emit a trace record every Nth calculated time step.
+      //! \param every_n_steps  Stride (>=1, default 1 = every step).
+      void setTraceStride( int every_n_steps );
+
+      //! \brief Restrict the trace to specific model times (overrides stride).
+      //! \param times  Model times (s); empty (default) => use stride.
+      void setTraceTimes( const QVector<double>& times );
+
    signals:
       //! \brief Signal calculation start and give maximum steps
       //! \param nsteps Number of expected total calculation progress steps
@@ -189,6 +243,12 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
       //! \brief Signal component progress, giving running component number
       //! The connected slot receives the scan time value from calc. functions.a
       void new_time     ( double );
+
+      //! \brief Signal carrying the adaptive mesh (not the output grid).
+      //! The connected slot receives the internal mesh radii, the U=r*C
+      //! array, the vertex count and the current time. Used for live
+      //! visualization of mesh adaptivity; emitted only when tracing/movie.
+      void new_mesh_scan( QVector< double >*, double*, int, double );
 
       //! \brief Signal that a calculate_ni()/calculate_ra2() step is complete.
       //! The connected slot receives the integer step count from loops in
@@ -259,7 +319,39 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
       double  d_coeff[ 6 ]{};    // SD Adjust buffer density coefficients
       double  v_coeff[ 6 ]{};    // SD Adjust buffer viscosity coefficients
       double dt;
+
+      // ---- Instrumentation & convergence controls ----
+      int     init_Nelem   = 0;      // >0 => initial element count override
+      int     steps_per_transit = 0; // >0 => steps-per-transit dt control
+      double  fixed_dt     = 0.0;    // >0 => use this dt directly
+      bool    uniformMesh  = false;  // true => skip setup adaptive refine
+      bool    refineOptSet = false;  // true => external SetMeshRefineOpt honored
+      bool    meshSpeedSet = false;  // true => external SetMeshSpeedFactor honored
+      bool    errTolSet    = false;  // true => user err_tol override in effect
+      double  user_err_tol = 0.0;    // user-supplied err_tol (when errTolSet)
+
+      // Solution-trace export state
+      bool             traceFlag    = false;   // master on/off (default off)
+      QString          traceDir;               // resolved output directory
+      QString          traceTag;               // run tag used in filenames
+      int              traceStride  = 1;        // emit every Nth step
+      QVector<double>  traceTimes;             // empty => use stride
+      QFile*           traceNodesFile = nullptr; // per-node-per-step rows
+      QFile*           traceStepsFile = nullptr; // per-step scalar rows
+      bool             traceHdrDone   = false;   // header written for cur. comp
+      double           traceMass0     = 0.0;     // first recorded mass (drift ref)
+      bool             traceMass0Set  = false;    // whether traceMass0 is valid
+
       // private functions
+
+      // ---- solution-trace helpers ----
+      void   openTraceFiles( int compx );
+      void   writeTraceRecord( int compx, int jt, double time, double dt_,
+                               const double* x1, const double* u1, int N1,
+                               const Mesh* msh );
+      void   closeTraceFiles();
+      bool   traceThisStep( int jt, double t0, double t1 ) const;
+
 
       //! \brief Get the non-ideal case number from model parameters
       //! \returns Non-zero if multiple non-ideal conditions

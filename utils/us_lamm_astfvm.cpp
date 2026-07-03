@@ -1,6 +1,7 @@
 //! \file us_lamm_astfvm.cpp
 
 #include <QtWidgets/QFileDialog>
+#include <QDateTime>
 #include <cstring>
 #include <cmath>
 #include "us_lamm_astfvm.h"
@@ -48,6 +49,7 @@ US_LammAstfvm::Mesh::Mesh( const double xl, const double xr, const int Nelem, co
       {
          Eid[i] = (i%2==0)?1:4;
          RefLev[i] = 0; // Set all refinement levels to zero
+         MeshDen[i] = 0.0; // avoid uninitialized density when refine is off
       }
    }
 }
@@ -418,7 +420,8 @@ void US_LammAstfvm::Mesh::InitMesh( const double s, const double D, const double
       u1[ 2 * j + 1 ] = exp(nu * (x2 - b2)) * (nu * nu * b2);
    }
 
-   RefineMesh(u0, u1, 1.e-4);
+   if ( allowInitRefine )
+      RefineMesh(u0, u1, 1.e-4);
 
    delete[] u0;
    delete[] u1;
@@ -959,7 +962,18 @@ int US_LammAstfvm::solve_component( int compx )
    double* u1p0;
    double* u1p;
    double  total_t = ( param_b - param_m ) * 2.0 / ( param_s * param_w2 * param_m );
-   dt              = log( param_b / param_m ) / ( param_w2 * param_s * simparams.simpoints ) / 2.5;
+   if ( fixed_dt > 0.0 )
+   {  // user-forced fixed time step (Fig 1 dt sweep)
+      dt = fixed_dt;
+   }
+   else if ( steps_per_transit > 0 )
+   {  // controlled steps-per-transit (dt ~ 1/k)
+      dt = log( param_b / param_m ) / ( param_w2 * param_s * static_cast<double>(steps_per_transit) );
+   }
+   else
+   {  // default (unchanged) behavior
+      dt = log( param_b / param_m ) / ( param_w2 * param_s * simparams.simpoints ) / 2.5;
+   }
    int ntcc = static_cast<int>(total_t / dt) + 1; // nbr. times in calculations
    int jt   = 0;
    int nts  = af_data.scan.size(); // nbr. output times (scans)
@@ -976,8 +990,8 @@ int US_LammAstfvm::solve_component( int compx )
    {
       true_dt_min = qMin( true_dt_min, af_data.scan[ i ].time - af_data.scan[ i - 1 ].time );
    }
-   if ( true_dt_min < dt )
-   {
+   if ( true_dt_min < dt && fixed_dt <= 0.0 )
+   {  // honor an explicit fixed_dt exactly; otherwise cap dt to scan spacing
       DbgLv( 1 ) << "dt Problem dt=" << dt << " true_dt_min=" << true_dt_min << "new dt" << true_dt_min / 1.5;
       dt = true_dt_min / 1.5;
    }
@@ -998,9 +1012,10 @@ int US_LammAstfvm::solve_component( int compx )
       // if multiple cases, abort
       return 1;
    }
-   if ( NonIdealCaseNo == 3 )
+   if ( NonIdealCaseNo == 3 && fixed_dt <= 0.0 )
    {
       // compressibility: 8-fold smaller delta-t and greater time points
+      // (skipped when the user forces a fixed dt so that value is honored)
       dt /= 8.0;
       ntc = static_cast<int>(solut_t / dt) + 1;
    }
@@ -1014,7 +1029,8 @@ int US_LammAstfvm::solve_component( int compx )
    conc1.resize( ncs );
    rads.resize( ncs );
 
-   Mesh* msh = new Mesh( param_m, param_b, simparams.simpoints, 0 );
+   const int mesh_Nelem = ( init_Nelem > 0 ) ? init_Nelem : simparams.simpoints;
+   Mesh* msh = new Mesh( param_m, param_b, mesh_Nelem, 0 );
 
    // msh->InitMesh( param_s20w, param_D20w, param_w2 );
    int    mesh_refine_option = 1; // mesh refine option;
@@ -1054,8 +1070,16 @@ int US_LammAstfvm::solve_component( int compx )
       NonIdealCaseNo = 0;
    }
 
-   SetMeshRefineOpt( mesh_refine_option ); // mesh refine option
-   SetMeshSpeedFactor( 1.0 );              // mesh speed factor
+   // Apply internal mesh defaults only when the caller has not explicitly
+   // set them (sentinels). This lets the convergence driver force refine=0
+   // and toggle the mesh-speed (Lagrangian tracing) factor. The values are
+   // assigned directly here so the internal defaults do not themselves trip
+   // the sentinels reserved for external callers.
+   if ( !refineOptSet ) MeshRefineOpt   = mesh_refine_option; // mesh refine option
+   if ( !meshSpeedSet ) MeshSpeedFactor = 1.0;                // mesh speed factor
+
+   // Apply a user-supplied error tolerance last (overrides non-ideal defaults).
+   if ( errTolSet ) err_tol = user_err_tol;
 
 
    // get initial concentration for this component
@@ -1130,7 +1154,8 @@ int US_LammAstfvm::solve_component( int compx )
    }
    DbgLv( 2 ) << "LAsc:  u0 0,1,2...,N" << u0[0] << u0[1] << u0[2] << u0[N0u - 3] << u0[N0u - 2]
             << u0[N0u - 1];
-   msh->RefineMesh( u0, u1, err_tol );
+   if ( !uniformMesh )
+      msh->RefineMesh( u0, u1, err_tol ); // skip to keep an exactly-uniform mesh
    for ( int jj = 0; jj < ncs; jj++ )
    {
       // get output radius vector
@@ -1366,6 +1391,20 @@ int US_LammAstfvm::solve_component( int compx )
       //           }
       //       }
       ktime5 += static_cast<int>(timer.restart());
+
+      // ---- solution-trace export (opt-in; zero overhead when off) ----
+      if ( traceFlag && traceThisStep( jt, t0, t1 ) )
+      {
+         writeTraceRecord( compx, jt, t1, dt, x1, u1, N1, msh );
+      }
+      // optional live adaptive-mesh signal for GUI visualization
+      #ifndef NO_DB
+      if ( traceFlag )
+      {
+         Q_EMIT new_mesh_scan( &x1_vec, u1, N1, t1 );
+      }
+      #endif
+
       // see if the current scan is between calculated times; output scan if so
 
       Q_EMIT new_time( t0 );
@@ -1516,6 +1555,9 @@ int US_LammAstfvm::solve_component( int compx )
       DbgLv( 1 ) << "  Integral Min Max Mean" << c_min << c_max << c_avg;
       DbgLv( 1 ) << "  ( range of" << c_diff << "=" << c_diff_percent << " percent of mean )";
    }
+
+   // flush and close any open solution-trace files for this component
+   closeTraceFiles();
 
    // QVectors (x0_vec, u0_vec, x1_vec, u1_vec) clean up automatically
    delete msh;
@@ -1815,11 +1857,240 @@ void US_LammAstfvm::SetNonIdealCase_4()
 void US_LammAstfvm::SetMeshSpeedFactor( const double speed )
 {
    MeshSpeedFactor = speed;
+   meshSpeedSet    = true; // honor this external value over internal defaults
 }
 
 void US_LammAstfvm::SetMeshRefineOpt( const int Opt )
 {
    MeshRefineOpt = Opt;
+   refineOptSet  = true; // honor this external value over internal defaults
+}
+
+// ---- Instrumentation & convergence controls ----
+
+void US_LammAstfvm::setInitElements( const int n )
+{
+   init_Nelem = n;
+}
+
+void US_LammAstfvm::setStepsPerTransit( const int k )
+{
+   steps_per_transit = k;
+}
+
+void US_LammAstfvm::setFixedDt( const double dt_fixed )
+{
+   fixed_dt = dt_fixed;
+}
+
+void US_LammAstfvm::setUniformMesh( const bool on )
+{
+   uniformMesh = on;
+}
+
+void US_LammAstfvm::setErrorTolerance( const double tol )
+{
+   if ( tol > 0.0 )
+   {
+      user_err_tol = tol;
+      errTolSet    = true;
+   }
+   else
+   {
+      errTolSet = false;
+   }
+}
+
+void US_LammAstfvm::setSolutionTrace( const bool on, const QString& dir,
+                                      const QString& tag )
+{
+   traceFlag = on;
+   traceDir  = dir.isEmpty() ? US_Settings::tmpDir() : dir;
+   traceTag  = tag.isEmpty()
+             ? QString( "astfvm_%1" )
+                  .arg( QDateTime::currentDateTime().toString( "yyyyMMdd_hhmmss" ) )
+             : tag;
+}
+
+void US_LammAstfvm::setTraceStride( const int every_n_steps )
+{
+   traceStride = qMax( 1, every_n_steps );
+}
+
+void US_LammAstfvm::setTraceTimes( const QVector<double>& times )
+{
+   traceTimes = times;
+}
+
+// Decide whether the current step should be recorded in the trace.
+bool US_LammAstfvm::traceThisStep( const int jt, const double t0,
+                                   const double t1 ) const
+{
+   if ( !traceTimes.isEmpty() )
+   {  // record when a requested model time falls within (t0, t1]
+      for ( const double tt : traceTimes )
+      {
+         if ( tt > t0 && tt <= t1 )
+         {
+            return true;
+         }
+      }
+      return false;
+   }
+   // otherwise use the stride (every Nth calculated step)
+   return ( ( jt % traceStride ) == 0 );
+}
+
+// Lazily open the two trace files for a component and write the metadata
+// header block plus the column headers.
+void US_LammAstfvm::openTraceFiles( const int compx )
+{
+   QDir dir;
+   if ( !dir.exists( traceDir ) )
+   {
+      dir.mkpath( traceDir );
+   }
+
+   const QString base = QString( "%1/%2_c%3" ).arg( traceDir, traceTag )
+                                              .arg( compx );
+   traceStepsFile = new QFile( base + "_trace_steps.csv" );
+   traceNodesFile = new QFile( base + "_trace_nodes.csv" );
+
+   if ( !traceStepsFile->open( QIODevice::WriteOnly | QIODevice::Truncate ) ||
+        !traceNodesFile->open( QIODevice::WriteOnly | QIODevice::Truncate ) )
+   {
+      DbgLv( 1 ) << "*ERROR* Unable to open solution-trace files under" << traceDir;
+      delete traceStepsFile; traceStepsFile = nullptr;
+      delete traceNodesFile; traceNodesFile = nullptr;
+      traceFlag    = false; // disable further attempts this run
+      traceHdrDone = true;
+      return;
+   }
+
+   const int    n_init = ( init_Nelem > 0 ) ? init_Nelem : simparams.simpoints;
+   const double rpm    = simparams.speed_step.isEmpty()
+                       ? 0.0 : simparams.speed_step[0].rotorspeed;
+   const double vbar   = model.components[compx].vbar20;
+
+   // metadata + column header for the per-step scalar file
+   QString sh;
+   sh += QString( "# meta: tag,%1  N_init,%2  steps_per_transit,%3  fixed_dt,%4\n" )
+            .arg( traceTag ).arg( n_init ).arg( steps_per_transit )
+            .arg( fixed_dt, 0, 'g', 10 );
+   sh += QString( "# meta: refine_opt,%1  mesh_speed,%2  uniform,%3  err_tol,%4\n" )
+            .arg( MeshRefineOpt ).arg( MeshSpeedFactor, 0, 'g', 4 )
+            .arg( uniformMesh ? 1 : 0 ).arg( err_tol, 0, 'g', 10 );
+   sh += QString( "# meta: m,%1 b,%2 s,%3 D,%4 w2,%5 rpm,%6 vbar,%7 nonideal_case,%8\n" )
+            .arg( param_m, 0, 'g', 10 ).arg( param_b, 0, 'g', 10 )
+            .arg( param_s, 0, 'g', 10 ).arg( param_D, 0, 'g', 10 )
+            .arg( param_w2, 0, 'g', 10 ).arg( rpm, 0, 'g', 10 )
+            .arg( vbar, 0, 'g', 10 ).arg( NonIdealCaseNo );
+   sh += "step,time,dt,Nv,Ne,total_mass,mass_rel_drift,cmax,r_cmax\n";
+   traceStepsFile->write( sh.toUtf8() );
+
+   // column header for the per-node file
+   traceNodesFile->write(
+      QByteArray( "step,time,node_index,r,U,C,mesh_density,elem_h,is_midpoint\n" ) );
+
+   traceHdrDone  = true;
+   traceMass0Set = false;
+}
+
+// Write one per-step scalar row and the N1 node rows for a traced step.
+void US_LammAstfvm::writeTraceRecord( const int compx, const int jt,
+                                      const double time, const double dt_,
+                                      const double* x1, const double* u1,
+                                      const int N1, const Mesh* msh )
+{
+   if ( !traceHdrDone )
+   {
+      openTraceFiles( compx );
+   }
+   if ( traceStepsFile == nullptr || traceNodesFile == nullptr )
+   {
+      return; // open failed; tracing disabled
+   }
+
+   // total mass = integral of U = r*C over [m,b] (same integrator as loop)
+   const double mass = IntQs( x1, u1, 0, -1, N1 - 2, 1 );
+   if ( !traceMass0Set )
+   {
+      traceMass0    = mass;
+      traceMass0Set = true;
+   }
+   const double drift = ( traceMass0 != 0.0 )
+                      ? qAbs( mass - traceMass0 ) / qAbs( traceMass0 ) : 0.0;
+
+   // peak concentration and its radius over the mesh vertices
+   double cmax   = 0.0;
+   double r_cmax = x1[0];
+   for ( int j = 0; j < N1; j++ )
+   {
+      const double c = ( x1[j] != 0.0 ) ? u1[2 * j] / x1[j] : 0.0;
+      if ( c > cmax )
+      {
+         cmax   = c;
+         r_cmax = x1[j];
+      }
+   }
+
+   const int Ne = N1 - 1;
+   traceStepsFile->write( QString( "%1,%2,%3,%4,%5,%6,%7,%8,%9\n" )
+      .arg( jt ).arg( time, 0, 'g', 10 ).arg( dt_, 0, 'g', 10 )
+      .arg( N1 ).arg( Ne )
+      .arg( mass, 0, 'g', 16 ).arg( drift, 0, 'g', 6 )
+      .arg( cmax, 0, 'g', 10 ).arg( r_cmax, 0, 'g', 10 ).toUtf8() );
+
+   // per-node rows: vertices (is_midpoint=0) and element midpoints (=1)
+   const double* dens = ( msh != nullptr ) ? msh->meshDensity() : nullptr;
+   const int     nden = ( msh != nullptr ) ? msh->Ne : 0;
+   QString nb;
+   nb.reserve( N1 * 96 );
+   for ( int j = 0; j < N1; j++ )
+   {
+      const double r    = x1[j];
+      const double U    = u1[2 * j];
+      const double C    = ( r != 0.0 ) ? U / r : 0.0;
+      const double md   = ( dens != nullptr && nden > 0 )
+                        ? dens[ qMin( j, nden - 1 ) ] : 0.0;
+      const double hj   = ( j < Ne ) ? 0.5 * ( x1[j + 1] - x1[j] )
+                                     : 0.5 * ( x1[j] - x1[j - 1] );
+      nb += QString( "%1,%2,%3,%4,%5,%6,%7,%8,0\n" )
+               .arg( jt ).arg( time, 0, 'g', 10 ).arg( j )
+               .arg( r, 0, 'g', 10 ).arg( U, 0, 'g', 12 ).arg( C, 0, 'g', 12 )
+               .arg( md, 0, 'g', 8 ).arg( hj, 0, 'g', 10 );
+
+      if ( j < Ne )
+      {  // element midpoint
+         const double rm = 0.5 * ( x1[j] + x1[j + 1] );
+         const double Um = u1[2 * j + 1];
+         const double Cm = ( rm != 0.0 ) ? Um / rm : 0.0;
+         nb += QString( "%1,%2,%3,%4,%5,%6,%7,%8,1\n" )
+                  .arg( jt ).arg( time, 0, 'g', 10 ).arg( j )
+                  .arg( rm, 0, 'g', 10 ).arg( Um, 0, 'g', 12 ).arg( Cm, 0, 'g', 12 )
+                  .arg( md, 0, 'g', 8 ).arg( hj, 0, 'g', 10 );
+      }
+   }
+   traceNodesFile->write( nb.toUtf8() );
+}
+
+// Flush and close trace files; reset per-component header state.
+void US_LammAstfvm::closeTraceFiles()
+{
+   if ( traceStepsFile != nullptr )
+   {
+      traceStepsFile->close();
+      delete traceStepsFile;
+      traceStepsFile = nullptr;
+   }
+   if ( traceNodesFile != nullptr )
+   {
+      traceNodesFile->close();
+      delete traceNodesFile;
+      traceNodesFile = nullptr;
+   }
+   traceHdrDone  = false;
+   traceMass0Set = false;
 }
 
 ///////////////////////////////////////////////////////////////

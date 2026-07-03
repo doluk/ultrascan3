@@ -32,3 +32,4 @@ CMakeUserPresets.json
 __pycache__
 /CLAUDE.md
 *.pyc
+*.egg-info/

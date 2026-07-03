@@ -1,0 +1,20 @@
+[project]
+name = "us3utils"
+version = "0.1.0"
+description = "Post-processing for US_LammAstfvm ASTFVM solution traces (Chapter 4 figures)"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy",
+    "pandas",
+    "matplotlib",
+]
+
+[project.scripts]
+us3utils = "us3utils.cli:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["us3utils*"]
