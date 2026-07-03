@@ -1141,14 +1141,14 @@ int US_LammAstfvm::solve_component( int compx )
             const double lamella_width = qMax( conc_profile_endpoint - conc_profile_startpoint, 1.0e-12 );
             const double rel_r         = ( r_value - conc_profile_endpoint ) / lamella_width * 0.5;
             const double gauss_amp     = exp( -pow(rel_r, 4.0) );
-            u0[kk] = r_value * sig_conc * 2 * gauss_amp;
+            u0[kk] = r_value * sig_conc * gauss_amp;
          }
          else
          {
             // Calculate the width of the lamella
             if ( r_value <= conc_profile_endpoint && (r_value >= conc_profile_startpoint) )
             {
-               u0[kk] = r_value * sig_conc * 2;
+               u0[kk] = r_value * sig_conc;
             }
             else
             {
