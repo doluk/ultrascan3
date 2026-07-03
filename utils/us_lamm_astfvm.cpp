@@ -1149,7 +1149,7 @@ int US_LammAstfvm::solve_component( int compx )
             // Calculate the width of the lamella
             if ( r_value <= conc_profile_endpoint && (r_value >= conc_profile_startpoint) )
             {
-               u0[kk] = r_value * sig_conc * 2;
+               u0[kk] = r_value * sig_conc;
             }
             else
             {
@@ -1173,6 +1173,39 @@ int US_LammAstfvm::solve_component( int compx )
    DbgLv( 2 ) << "LAsc:  u0 0,1,2...,N" << u0[0] << u0[1] << u0[2] << u0[N0u - 3] << u0[N0u - 2]
             << u0[N0u - 1];
    msh->RefineMesh( u0, u1, err_tol );
+   if ( msh->Nv != N0 )
+   {
+      // RefineMesh() can add/remove mesh elements based on the curvature of the
+      // initial profile (e.g. the sharp edges of a band-forming lamella). x0/u0
+      // were built on the pre-RefineMesh grid, so they must be re-synced with
+      // msh's current grid before the time-stepping loop starts - otherwise msh
+      // and x0/u0/N0 disagree on the mesh size and later RefineMesh() calls in
+      // the main loop index u0 against the wrong element count.
+      const int N0new  = msh->Nv;
+      const int N0unew = N0new + N0new - 1;
+      QVector<double> x0new_vec( N0new );
+      double*         x0new = x0new_vec.data();
+      for ( int jj = 0; jj < N0new; jj++ )
+      {
+         x0new[jj] = msh->x[jj];
+      }
+
+      QVector<double> u0new_vec( N0unew );
+      QVector<double> u1new_vec( N0unew );
+      ProjectQ( N0 - 1, x0, u0, N0new - 1, x0new, u0new_vec.data() );
+      ProjectQ( N0 - 1, x0, u1, N0new - 1, x0new, u1new_vec.data() );
+
+      N0    = N0new;
+      N0u   = N0unew;
+      x0_vec = x0new_vec;
+      x0     = x0_vec.data();
+      x1_vec = x0new_vec;
+      x1     = x1_vec.data();
+      u0_vec = u0new_vec;
+      u0     = u0_vec.data();
+      u1_vec = u1new_vec;
+      u1     = u1_vec.data();
+   }
    for ( int jj = 0; jj < ncs; jj++ )
    {
       // get output radius vector
