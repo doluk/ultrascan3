@@ -6,6 +6,15 @@ single-hue sequential blue ramp for ordered quantities like N or dt)."""
 CAT_BLUE = "#2a78d6"    # slot 1: N-sweep series
 CAT_RED = "#e34948"     # slot 6: dt-sweep series
 CAT_GREEN = "#008300"   # slot 4: reference / analytic curve
+CAT_VIOLET = "#4a3aa7"  # slot 5
+CAT_ORANGE = "#eb6834"  # slot 8
+CAT_AQUA = "#1baf7a"    # slot 2
+
+# Fixed-order palette used to assign colors to an open-ended list of mesh
+# configuration "series" (e.g. refine/uniform combinations), by sorted
+# series-name order -- never re-assigned per data value.
+CAT_SERIES_ORDER = [CAT_BLUE, CAT_RED, CAT_VIOLET, CAT_ORANGE, CAT_GREEN, CAT_AQUA]
+MARKER_SERIES_ORDER = ["o", "s", "^", "D", "v", "P"]
 
 # Chart chrome
 INK_PRIMARY = "#0b0b0b"

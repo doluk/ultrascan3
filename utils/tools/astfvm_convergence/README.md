@@ -39,15 +39,51 @@ reasonable SV defaults but are **not** taken from the paper -- pass
 `--rpm`, `--meniscus`, `--bottom` explicitly once the real run metadata is
 confirmed (see spec Sec. 9).
 
-## Example sweep (shell)
+## Tag convention for sweeps
+
+`us3utils` groups runs by tag: `N_<value>[_<series>]` for the spatial
+sweep, `dt_<value>[_<series>]` for the temporal sweep. The optional
+`_<series>` suffix (e.g. `R0_U1` for refine=0/uniform=1) lets you vary a
+mesh configuration alongside N or dt and have each configuration plotted
+as its own line instead of being mixed together -- see
+`../us3utils/README.md` for how the plotting side groups these.
+
+**Prefer `--fixed-dt` over `--steps-per-transit` for a dt sweep.** The
+solver has a pre-existing safety clamp that caps `dt` to the output scan
+spacing; with few scans it can silently override every
+`--steps-per-transit` value to the *same* clamped `dt`, making the sweep
+a no-op. `--fixed-dt` bypasses that clamp and is honored exactly (raise
+`--nscans` if you want to use `--steps-per-transit` instead, so the
+clamp doesn't engage).
+
+## Example sweep (bash)
 
 ```sh
 for N in 50 100 200 400 800; do
-  ./astfvm_convergence_driver --outdir out --tag "N_$N" \
-     --N "$N" --refine 0 --uniform 1 --steps-per-transit 200
+  for series in R0_U1 R1_U1 R1_U0; do
+    IFS=_ read -r r refine u uniform <<< "$series"
+    ./astfvm_convergence_driver --outdir out --tag "N_${N}_${series}" \
+       --N "$N" --refine "${refine#R}" --uniform "${uniform#U}" --fixed-dt 60
+  done
 done
-for K in 50 100 200 400 800; do
-  ./astfvm_convergence_driver --outdir out --tag "dt_$K" \
-     --N 400 --refine 0 --uniform 1 --steps-per-transit "$K"
+for dt in 1 2 3 5 7 10 15 20 30 40 50 75 100 125 150; do
+  ./astfvm_convergence_driver --outdir out --tag "dt_${dt}_R0_U1" \
+     --N 200 --refine 0 --uniform 1 --fixed-dt "$dt"
+  ./astfvm_convergence_driver --outdir out --tag "dt_${dt}_R1_U0" \
+     --N 200 --refine 1 --uniform 0 --fixed-dt "$dt"
 done
+```
+
+## Example sweep (PowerShell)
+
+```powershell
+foreach ($N in 20..1000 | Where-Object { $_ % 20 -eq 0 }) {
+  .\astfvm_convergence_driver.exe --outdir sweep --tag "N_${N}_R0_U1" --N "$N" --refine 0 --uniform 1 --fixed-dt 60 --nscans 50 --npoints 200 --run-hours 1.0
+  .\astfvm_convergence_driver.exe --outdir sweep --tag "N_${N}_R1_U1" --N "$N" --refine 1 --uniform 1 --fixed-dt 60 --nscans 50 --npoints 200 --run-hours 1.0
+  .\astfvm_convergence_driver.exe --outdir sweep --tag "N_${N}_R1_U0" --N "$N" --refine 1 --uniform 0 --fixed-dt 60 --nscans 50 --npoints 200 --run-hours 1.0
+}
+foreach ($dt in "1","2","3","5","7","10","15","20","30","40","50","75","100","125","150") {
+  .\astfvm_convergence_driver.exe --outdir sweep --tag "dt_${dt}_R0_U1" --N 200 --refine 0 --uniform 1 --fixed-dt "$dt" --nscans 50 --npoints 200 --run-hours 1.0
+  .\astfvm_convergence_driver.exe --outdir sweep --tag "dt_${dt}_R1_U0" --N 200 --refine 1 --uniform 0 --fixed-dt "$dt" --nscans 50 --npoints 200 --run-hours 1.0
+}
 ```
