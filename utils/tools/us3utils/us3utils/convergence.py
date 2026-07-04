@@ -230,6 +230,56 @@ def plot_error_vs_time(series_runs: dict, ref_run: TraceRun, outpath: str,
     plt.close(fig)
 
 
+def plot_error_vs_time_multi(value_runs: Sequence[tuple], ref_run: TraceRun, outpath: str,
+                             value_label: str = "dt", norm: str = "Linf", stride: int = 1) -> None:
+    """Error vs. time for several runs that share one mesh-config series but
+    differ in the swept value (e.g. dt), matching the paper's Fig 2 style:
+    one color, one marker per value. ``value_runs`` is a
+    ``[(value, run), ...]`` list, e.g. one entry of
+    ``sweep.group_sweep(...)[series]``. Runs identical to ``ref_run`` are
+    skipped (their error is trivially zero).
+    """
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(6.5, 4.2), facecolor="white")
+    ax.set_facecolor("white")
+    ax.grid(True, color=GRID, linewidth=0.8, zorder=0)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_color(INK_MUTED)
+    ax.spines["bottom"].set_color(INK_MUTED)
+    ax.tick_params(colors=INK_SECONDARY)
+    ax.set_yscale("log")
+
+    from ._palette import CAT_BLUE, MARKER_SERIES_ORDER
+
+    i = 0
+    for value, run in value_runs:
+        if run is ref_run:
+            continue
+        rows = error_over_time(run, ref_run, stride=stride)
+        if not rows:
+            continue
+        times = [row["time"] for row in rows]
+        errs = [row[norm] for row in rows]
+        marker = MARKER_SERIES_ORDER[i % len(MARKER_SERIES_ORDER)]
+        ax.plot(times, errs, color=CAT_BLUE, marker=marker,
+               markevery=max(1, len(times) // 20), markersize=5,
+               markeredgecolor="white", markeredgewidth=0.5,
+               linewidth=1.5, label=f"{value_label}={value:g}", zorder=3)
+        i += 1
+
+    ax.set_xlabel("time (s)", color=INK_SECONDARY)
+    ax.set_ylabel(f"{norm} error vs. reference", color=INK_PRIMARY)
+    ax.set_title("Error vs. time", color=INK_PRIMARY, fontsize=11)
+    if i:
+        ax.legend(frameon=False, fontsize=8, labelcolor=INK_SECONDARY)
+
+    fig.tight_layout()
+    fig.savefig(outpath, dpi=200, facecolor="white")
+    plt.close(fig)
+
+
 def plot_mass_drift_by_series(series_runs: dict, outpath: str) -> None:
     """Companion figure: relative mass drift vs. time, one representative
     run per mesh-config series (e.g. the finest N in that series), colored

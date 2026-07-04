@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 
@@ -60,6 +61,28 @@ class TraceRun:
         if vertices_only:
             sub = sub[sub["is_midpoint"] == 0]
         return sub.sort_values("r").reset_index(drop=True)
+
+    def nodes_bracketing_time(self, time: float, vertices_only: bool = True):
+        """The two recorded steps bracketing ``time`` (t0 <= time <= t1), for
+        proper time interpolation instead of snap-to-nearest. Returns
+        ``(t0, nodes0, t1, nodes1)``; t0 == t1 (nodes0 is nodes1) when
+        ``time`` lands exactly on a recorded step or the run has only one.
+        """
+        step_times = self.steps["time"].to_numpy()
+        idx1 = int(np.searchsorted(step_times, time))
+        idx1 = min(max(idx1, 0), len(step_times) - 1)
+        idx0 = idx1 if step_times[idx1] <= time else max(idx1 - 1, 0)
+        idx1 = idx0 if step_times[idx0] >= time else min(idx0 + 1, len(step_times) - 1)
+        t0, t1 = float(step_times[idx0]), float(step_times[idx1])
+
+        def _nodes_for(idx):
+            step_no = self.steps["step"].iloc[idx]
+            sub = self.nodes[self.nodes["step"] == step_no]
+            if vertices_only:
+                sub = sub[sub["is_midpoint"] == 0]
+            return sub.sort_values("r").reset_index(drop=True)
+
+        return t0, _nodes_for(idx0), t1, _nodes_for(idx1)
 
 
 def load_trace(steps_csv: str | Path, nodes_csv: str | Path | None = None,

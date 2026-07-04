@@ -10,8 +10,12 @@ from .reference import pure_diffusion_reference, self_convergence_reference
 from .convergence import (
     compute_norms, convergence_sweep, error_over_time, plot_convergence, plot_mass_drift,
     plot_convergence_by_series, plot_mass_drift_by_series, plot_error_vs_time,
+    plot_error_vs_time_multi,
 )
-from .mesh_tracking import plot_mesh_tracking, plot_elem_h_profile, plot_grids_vs_time
+from .mesh_tracking import (
+    plot_mesh_tracking, plot_elem_h_profile, plot_grids_vs_time,
+    plot_grids_vs_time_multi, plot_concentration_profiles,
+)
 from .sweep import parse_tag, series_label, series_style, group_sweep
 
 __all__ = [
@@ -27,9 +31,12 @@ __all__ = [
     "plot_convergence_by_series",
     "plot_mass_drift_by_series",
     "plot_error_vs_time",
+    "plot_error_vs_time_multi",
     "plot_mesh_tracking",
     "plot_elem_h_profile",
     "plot_grids_vs_time",
+    "plot_grids_vs_time_multi",
+    "plot_concentration_profiles",
     "parse_tag",
     "series_label",
     "series_style",

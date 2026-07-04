@@ -41,14 +41,29 @@ def pure_diffusion_reference(r: np.ndarray, t: float, D: float,
 
 
 def self_convergence_reference(finest_run: TraceRun, time: float):
-    """Return a callable C_ref(r) built by interpolating the finest run's
-    vertex solution at the closest available step to ``time``.
+    """Return a callable C_ref(r) for the finest run at ``time``, built by
+    linearly blending the two recorded steps bracketing ``time`` in time
+    (each first interpolated in r) -- the same f0/f1 blend the solver
+    itself uses for output scans. Snapping to only the nearest recorded
+    step (as a plain lookup would) produces a sawtooth error-vs-time
+    artifact whenever the query times don't land exactly on the
+    reference's own recorded steps; blending removes that.
     """
-    nodes = finest_run.nodes_at_time(time, vertices_only=True)
-    r_ref = nodes["r"].to_numpy()
-    c_ref = nodes["C"].to_numpy()
+    t0, nodes0, t1, nodes1 = finest_run.nodes_bracketing_time(time, vertices_only=True)
+    r0, c0 = nodes0["r"].to_numpy(), nodes0["C"].to_numpy()
+
+    if t1 <= t0:  # time lands exactly on a step (or only one step available)
+        def _interp(r: np.ndarray) -> np.ndarray:
+            return np.interp(r, r0, c0, left=c0[0], right=c0[-1])
+        return _interp
+
+    r1, c1 = nodes1["r"].to_numpy(), nodes1["C"].to_numpy()
+    f0 = (t1 - time) / (t1 - t0)
+    f1 = (time - t0) / (t1 - t0)
 
     def _interp(r: np.ndarray) -> np.ndarray:
-        return np.interp(r, r_ref, c_ref, left=c_ref[0], right=c_ref[-1])
+        c0r = np.interp(r, r0, c0, left=c0[0], right=c0[-1])
+        c1r = np.interp(r, r1, c1, left=c1[0], right=c1[-1])
+        return f0 * c0r + f1 * c1r
 
     return _interp

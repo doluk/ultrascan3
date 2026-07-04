@@ -63,7 +63,8 @@ US_Model buildMyoglobinModel( double s, double D, double vbar20, double conc )
 // Build simulation parameters for a single constant-speed run.
 US_SimulationParameters buildSimParams( double rpm, double meniscus, double bottom,
                                         double total_seconds, int n_scans,
-                                        int init_Nelem, bool band_forming )
+                                        int init_Nelem, bool band_forming,
+                                        double band_volume )
 {
    US_SimulationParameters sp;
    sp.meshType   = US_SimulationParameters::ASTFVM;
@@ -74,7 +75,7 @@ US_SimulationParameters buildSimParams( double rpm, double meniscus, double bott
    sp.bottom_position = bottom;
    sp.temperature = 20.0;
    sp.band_forming = band_forming;
-   sp.band_volume  = band_forming ? 0.015 : 0.0; // mL, only used if band_forming
+   sp.band_volume  = band_forming ? band_volume : 0.0; // mL, only used if band_forming
    sp.cp_pathlen   = 1.2;
    sp.cp_angle     = 2.5;
    sp.rotorcoeffs[0] = 0.0; // no rotor stretch for this synthetic run
@@ -189,7 +190,21 @@ int main( int argc, char* argv[] )
    QCommandLineOption optMeshSpeed( "mesh-speed", "Mesh speed factor: 1=moving, 0=fixed.", "0|1", "1" );
    QCommandLineOption optUniform( "uniform", "Keep initial mesh exactly uniform (skip setup refine).", "0|1", "0" );
    QCommandLineOption optErrTol( "err-tol", "Mesh refinement error tolerance.", "tol", "1e-5" );
+   QCommandLineOption optMonCutoff( "mon-cutoff",
+      "Mesh-density level-off value: the smallest element may be at most this "
+      "many times smaller than the largest one (paper default: 500; solver "
+      "default if unset: 1000).", "cutoff", "0" );
    QCommandLineOption optBand( "band-forming", "Simulate a sharp overlay band instead of a full column.", "0|1", "0" );
+   QCommandLineOption optBandVolume( "band-volume",
+      "Lamella volume (mL) for --band-forming. The band-forming initial "
+      "condition only tests mesh VERTICES against the band bounds (element "
+      "midpoints are just vertex averages), so the band must span at least "
+      "one full element of the *initial* mesh or it silently loads zero "
+      "concentration everywhere. Default 0.06 mL gives a band comfortably "
+      "wider than the ~0.14cm initial element spacing at N=10 over the "
+      "default meniscus/bottom; widen further (or raise --N) if you lower "
+      "--N below 10 or change --meniscus/--bottom.",
+      "mL", "0.06" );
    QCommandLineOption optRpm( "rpm", "Rotor speed (rpm).", "rpm", "50000" );
    QCommandLineOption optMeniscus( "meniscus", "Meniscus radius (cm).", "cm", "5.8" );
    QCommandLineOption optBottom( "bottom", "Bottom radius (cm).", "cm", "7.2" );
@@ -210,7 +225,9 @@ int main( int argc, char* argv[] )
    parser.addOption( optMeshSpeed );
    parser.addOption( optUniform );
    parser.addOption( optErrTol );
+   parser.addOption( optMonCutoff );
    parser.addOption( optBand );
+   parser.addOption( optBandVolume );
    parser.addOption( optRpm );
    parser.addOption( optMeniscus );
    parser.addOption( optBottom );
@@ -232,7 +249,9 @@ int main( int argc, char* argv[] )
    const double meshSpeed   = parser.value( optMeshSpeed ).toDouble();
    const bool   uniform     = parser.value( optUniform ).toInt() != 0;
    const double errTol       = parser.value( optErrTol ).toDouble();
+   const double monCutoff    = parser.value( optMonCutoff ).toDouble();
    const bool   bandForming = parser.value( optBand ).toInt() != 0;
+   const double bandVolume  = parser.value( optBandVolume ).toDouble();
    const double rpm          = parser.value( optRpm ).toDouble();
    const double meniscus     = parser.value( optMeniscus ).toDouble();
    const double bottom       = parser.value( optBottom ).toDouble();
@@ -255,7 +274,7 @@ int main( int argc, char* argv[] )
    US_Model model = buildMyoglobinModel( s_val, D_val, vbar,
                                         bandForming ? 3100.0 : 1.0 );
    US_SimulationParameters simparams = buildSimParams(
-      rpm, meniscus, bottom, totalSeconds, nscans, initN, bandForming );
+      rpm, meniscus, bottom, totalSeconds, nscans, initN, bandForming, bandVolume );
    US_DataIO::RawData rawData = buildRawData(
       meniscus, bottom, npoints, totalSeconds, nscans, rpm );
 
@@ -276,6 +295,7 @@ int main( int argc, char* argv[] )
    }
    solver.setUniformMesh( uniform );
    solver.setErrorTolerance( errTol );
+   solver.setMeshDensityCutoff( monCutoff );
    solver.SetMeshRefineOpt( refineOn ? 1 : 0 );
    solver.SetMeshSpeedFactor( meshSpeed );
    solver.setSolutionTrace( true, outDir, tag );

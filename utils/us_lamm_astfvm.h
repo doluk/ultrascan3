@@ -62,6 +62,12 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
             //!        When false, InitMesh keeps the uniform mesh as-is.
             bool    allowInitRefine = true;
 
+            //! \brief Set the mesh-density level-off value (paper's "Mon"
+            //!        cutoff): the smallest element is allowed to be at
+            //!        most this many times smaller than the largest one.
+            //!        Default (unset) is 1000.
+            void SetMonCutoff( double cutoff ) { MonCutoff = cutoff; }
+
          private:
             int     dbg_level;       // debug level
             int     MaxRefLev;
@@ -203,6 +209,13 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
       //!             value is used, i.e. unchanged behavior.
       void setErrorTolerance( double tol );
 
+      //! \brief Set the mesh-density level-off value (paper's "Mon" cutoff):
+      //!        the smallest element is allowed to be at most this many
+      //!        times smaller than the largest one (paper default: 500).
+      //! \param cutoff  Level-off value (>0). When <=0 (default) the
+      //!                internal value (1000) is used, i.e. unchanged behavior.
+      void setMeshDensityCutoff( double cutoff );
+
       //! \brief Enable/disable the per-step solution trace (adaptive mesh +
       //!        solution + mass). Off by default with zero overhead.
       //! \param on   Turn tracing on/off.
@@ -329,6 +342,8 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
       bool    meshSpeedSet = false;  // true => external SetMeshSpeedFactor honored
       bool    errTolSet    = false;  // true => user err_tol override in effect
       double  user_err_tol = 0.0;    // user-supplied err_tol (when errTolSet)
+      bool    monCutoffSet = false;  // true => user mesh-density cutoff override in effect
+      double  user_mon_cutoff = 0.0; // user-supplied MonCutoff (when monCutoffSet)
 
       // Solution-trace export state
       bool             traceFlag    = false;   // master on/off (default off)

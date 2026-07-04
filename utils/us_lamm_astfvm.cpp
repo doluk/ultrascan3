@@ -1031,6 +1031,7 @@ int US_LammAstfvm::solve_component( int compx )
 
    const int mesh_Nelem = ( init_Nelem > 0 ) ? init_Nelem : simparams.simpoints;
    Mesh* msh = new Mesh( param_m, param_b, mesh_Nelem, 0 );
+   if ( monCutoffSet ) msh->SetMonCutoff( user_mon_cutoff );
 
    // msh->InitMesh( param_s20w, param_D20w, param_w2 );
    int    mesh_refine_option = 1; // mesh refine option;
@@ -1901,6 +1902,19 @@ void US_LammAstfvm::setErrorTolerance( const double tol )
    }
 }
 
+void US_LammAstfvm::setMeshDensityCutoff( const double cutoff )
+{
+   if ( cutoff > 0.0 )
+   {
+      user_mon_cutoff = cutoff;
+      monCutoffSet    = true;
+   }
+   else
+   {
+      monCutoffSet = false;
+   }
+}
+
 void US_LammAstfvm::setSolutionTrace( const bool on, const QString& dir,
                                       const QString& tag )
 {
@@ -1977,9 +1991,10 @@ void US_LammAstfvm::openTraceFiles( const int compx )
    sh += QString( "# meta: tag,%1  N_init,%2  steps_per_transit,%3  fixed_dt,%4\n" )
             .arg( traceTag ).arg( n_init ).arg( steps_per_transit )
             .arg( fixed_dt, 0, 'g', 10 );
-   sh += QString( "# meta: refine_opt,%1  mesh_speed,%2  uniform,%3  err_tol,%4\n" )
+   sh += QString( "# meta: refine_opt,%1  mesh_speed,%2  uniform,%3  err_tol,%4  mon_cutoff,%5\n" )
             .arg( MeshRefineOpt ).arg( MeshSpeedFactor, 0, 'g', 4 )
-            .arg( uniformMesh ? 1 : 0 ).arg( err_tol, 0, 'g', 10 );
+            .arg( uniformMesh ? 1 : 0 ).arg( err_tol, 0, 'g', 10 )
+            .arg( monCutoffSet ? user_mon_cutoff : 1000.0, 0, 'g', 10 );
    sh += QString( "# meta: m,%1 b,%2 s,%3 D,%4 w2,%5 rpm,%6 vbar,%7 nonideal_case,%8\n" )
             .arg( param_m, 0, 'g', 10 ).arg( param_b, 0, 'g', 10 )
             .arg( param_s, 0, 'g', 10 ).arg( param_D, 0, 'g', 10 )

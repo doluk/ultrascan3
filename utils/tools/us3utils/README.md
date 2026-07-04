@@ -15,7 +15,7 @@ pip install -e .
 ## Use
 
 ```sh
-python -m us3utils.cli /path/to/trace/dir --outdir figures --time 5400
+python -m us3utils.cli /path/to/trace/dir --outdir figures
 ```
 
 This expects the driver's sweep-by-tag naming convention:
@@ -23,21 +23,47 @@ This expects the driver's sweep-by-tag naming convention:
 for the temporal sweep -- see `../astfvm_convergence/README.md` for an
 example sweep script. It writes:
 
-- `convergence.png` -- log-log error vs. N and error vs. dt, with fitted
-  slope annotations (Fig 1: reproduces the "dt matters more than N" result).
+- `convergence.png` -- log-log error vs. N and error vs. dt at one
+  observation time, with fitted slope annotations (reproduces the "dt
+  matters more than N" result).
 - `mass_drift.png` -- relative mass drift vs. time (one representative run
-  per series; the numerical confirmation of exact mass conservation,
-  companion to Fig 1).
+  per series; the numerical confirmation of exact mass conservation).
 - `grids_vs_time.png` -- number of mesh vertices (Nv) vs. time, one line
   per series -- adaptive (refine=1) series grow/shrink the mesh over time;
-  a fixed (refine=0) series stays flat (companion to Fig 2).
+  a fixed (refine=0) series stays flat.
 - `error_vs_time.png` -- Linf error vs. the reference run, evaluated at
   each series' own recorded times (`--error-stride` to subsample for long
-  runs).
+  runs) -- this is the full error trajectory, so you don't need to pick a
+  single `--time` to see how accuracy evolves.
+- `concentration_profiles.png` -- C(r) overlaid at several times for one
+  run (the classic "partial concentration" panel).
 - `mesh_tracking.png` -- space-time scatter of adaptive-mesh vertices,
-  colored by C(r,t), showing the mesh clustering follow the band (Fig 2).
-- `elem_h_profile.png` -- local element size vs. radius at several times
-  (companion to Fig 2).
+  colored by C(r,t), showing the mesh clustering follow the band.
+- `elem_h_profile.png` -- local element size vs. radius at several times.
+
+### How to pick `--time`
+
+Only `convergence.png`'s single-snapshot log-log slope figure needs one
+observation time; every other figure shows the full time trajectory. If
+you don't pass `--time`, it defaults to 70% of the reference run's
+duration -- late enough to be past the initial transient, early enough
+that the run hasn't reached its end (where boundary effects or the
+band exiting the domain can distort the comparison). Pick your own if you
+specifically care about accuracy at a particular scan time, or if 70%
+happens to land somewhere unrepresentative for your problem (e.g. right
+on a mesh-refinement event); the chosen/defaulted value isn't printed
+elsewhere, so check the driver's `--nscans`/`--run-hours` to convert a
+scan number to seconds if you want to match a specific experimental scan.
+
+### Comparing specific dt (or N) values within one series
+
+To reproduce the classic figure comparing a handful of specific dt values
+directly (one color, marker per value -- e.g. `dt=12.953, 6.4768, 3.2384`),
+pass `--compare-series <series>` (e.g. `R1_U0`) and optionally
+`--compare-kind {dt,N}` (default `dt`). This writes
+`grids_vs_time_compare.png` and `error_vs_time_compare.png` using every
+run tagged with that series for the chosen kind, instead of the one
+representative run per series used by the other companion figures.
 
 ### Comparing mesh configurations (refine / uniform variations)
 
@@ -75,12 +101,19 @@ errs = [compute_norms(r, ref, time=5400.0) for r in runs if r is not finest]
 reference for the `s=0` case (see its docstring for the approximation's
 validity range); `self_convergence_reference` treats the finest run in a
 sweep as surrogate ground truth and works for the general (non-ideal)
-band-forming case.
+band-forming case. It linearly blends the two recorded reference steps
+bracketing the query time (the same f0/f1 blend the solver itself uses
+for output scans) rather than snapping to the single nearest step, so
+comparing against a reference with a different dt doesn't introduce a
+time-quantization sawtooth into `error_vs_time.png`.
 
 `error_over_time(run, ref_run, stride=1)` gives the L2/Linf error at each
 of a run's own recorded times (used by `plot_error_vs_time`); `run.steps`
 carries `Nv`/`Ne` directly (used by `plot_grids_vs_time`), no reference
-solution needed for that one.
+solution needed for that one. `plot_grids_vs_time_multi`/
+`plot_error_vs_time_multi` take a `[(value, run), ...]` list (e.g. one
+entry of `group_sweep(runs, "dt")[series]`) instead of a per-series dict,
+for the "compare specific values within one series" figures.
 
 ## Node indexing convention
 
