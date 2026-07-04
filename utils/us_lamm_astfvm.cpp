@@ -1078,9 +1078,8 @@ int US_LammAstfvm::solve_component( int compx )
    {
       NonIdealCaseNo = 0;
    }
-
-   SetMeshRefineOpt( mesh_refine_option ); // mesh refine option
-   SetMeshSpeedFactor( 1.0 );              // mesh speed factor
+   MeshRefineOpt = mesh_refine_option; // mesh refine option
+   MeshSpeedFactor = 1.0;              // mesh speed factor
 
    // get initial concentration for this component
    double sig_conc = model.components[comp_x].signal_concentration;
