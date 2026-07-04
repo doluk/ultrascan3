@@ -7,6 +7,7 @@ from typing import Callable, Sequence
 import numpy as np
 
 from ._palette import CAT_BLUE, CAT_RED, GRID, INK_MUTED, INK_PRIMARY, INK_SECONDARY, sequential_blues
+from .reference import self_convergence_reference
 from .sweep import series_label, series_style
 from .trace_io import TraceRun
 
@@ -35,6 +36,24 @@ def convergence_sweep(runs: Sequence[TraceRun], ref_fn: Callable[[np.ndarray], n
     """Compute norms for a list of runs and sort by the sweep variable."""
     rows = [compute_norms(r, ref_fn, time) for r in runs]
     rows.sort(key=lambda row: row[sweep_key])
+    return rows
+
+
+def error_over_time(run: TraceRun, ref_run: TraceRun, times: Sequence[float] | None = None,
+                    stride: int = 1) -> list:
+    """L2/Linf error of ``run`` vs. ``ref_run`` at each of ``run``'s own
+    recorded step times (or an explicit ``times`` list). ``ref_run`` is
+    re-interpolated at each time via ``self_convergence_reference``, so
+    ``ref_run`` should be the finest/most-trusted run (see
+    ``self_convergence_reference``'s caveats). ``stride`` subsamples
+    ``run``'s own times to bound cost for long runs.
+    """
+    if times is None:
+        times = run.steps["time"].to_numpy()[::max(1, stride)]
+    rows = []
+    for t in times:
+        ref_fn = self_convergence_reference(ref_run, t)
+        rows.append(compute_norms(run, ref_fn, t))
     return rows
 
 
@@ -160,6 +179,51 @@ def plot_convergence_by_series(series_sweeps_N: dict, series_sweeps_dt: dict,
     ax_dt.set_title("Temporal convergence", color=INK_PRIMARY, fontsize=11)
     if series_sweeps_dt:
         ax_dt.legend(frameon=False, fontsize=8, labelcolor=INK_SECONDARY, loc="best")
+
+    fig.tight_layout()
+    fig.savefig(outpath, dpi=200, facecolor="white")
+    plt.close(fig)
+
+
+def plot_error_vs_time(series_runs: dict, ref_run: TraceRun, outpath: str,
+                       norm: str = "Linf", stride: int = 1) -> None:
+    """Error vs. time, one representative run per mesh-config series (e.g.
+    the finest N run in each, as in ``plot_mass_drift_by_series``), each
+    compared against the same ``ref_run`` at every one of its own recorded
+    times. Runs identical to ``ref_run`` are skipped (their error is
+    trivially zero).
+    """
+    import matplotlib.pyplot as plt
+
+    styles = series_style(series_runs.keys())
+
+    fig, ax = plt.subplots(figsize=(6.5, 4.2), facecolor="white")
+    ax.set_facecolor("white")
+    ax.grid(True, color=GRID, linewidth=0.8, zorder=0)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_color(INK_MUTED)
+    ax.spines["bottom"].set_color(INK_MUTED)
+    ax.tick_params(colors=INK_SECONDARY)
+    ax.set_yscale("log")
+
+    for series, run in sorted(series_runs.items()):
+        if run is ref_run:
+            continue
+        st = styles[series]
+        rows = error_over_time(run, ref_run, stride=stride)
+        if not rows:
+            continue
+        times = [row["time"] for row in rows]
+        errs = [row[norm] for row in rows]
+        ax.plot(times, errs, color=st["color"], linewidth=1.8,
+               label=f"{series_label(series)} (N={run.N_init})", zorder=3)
+
+    ax.set_xlabel("time (s)", color=INK_SECONDARY)
+    ax.set_ylabel(f"{norm} error vs. reference", color=INK_PRIMARY)
+    ax.set_title("Error vs. time", color=INK_PRIMARY, fontsize=11)
+    if any(r is not ref_run for r in series_runs.values()):
+        ax.legend(frameon=False, fontsize=8, labelcolor=INK_SECONDARY)
 
     fig.tight_layout()
     fig.savefig(outpath, dpi=200, facecolor="white")

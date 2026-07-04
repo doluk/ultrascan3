@@ -28,6 +28,12 @@ example sweep script. It writes:
 - `mass_drift.png` -- relative mass drift vs. time (one representative run
   per series; the numerical confirmation of exact mass conservation,
   companion to Fig 1).
+- `grids_vs_time.png` -- number of mesh vertices (Nv) vs. time, one line
+  per series -- adaptive (refine=1) series grow/shrink the mesh over time;
+  a fixed (refine=0) series stays flat (companion to Fig 2).
+- `error_vs_time.png` -- Linf error vs. the reference run, evaluated at
+  each series' own recorded times (`--error-stride` to subsample for long
+  runs).
 - `mesh_tracking.png` -- space-time scatter of adaptive-mesh vertices,
   colored by C(r,t), showing the mesh clustering follow the band (Fig 2).
 - `elem_h_profile.png` -- local element size vs. radius at several times
@@ -70,6 +76,11 @@ reference for the `s=0` case (see its docstring for the approximation's
 validity range); `self_convergence_reference` treats the finest run in a
 sweep as surrogate ground truth and works for the general (non-ideal)
 band-forming case.
+
+`error_over_time(run, ref_run, stride=1)` gives the L2/Linf error at each
+of a run's own recorded times (used by `plot_error_vs_time`); `run.steps`
+carries `Nv`/`Ne` directly (used by `plot_grids_vs_time`), no reference
+solution needed for that one.
 
 ## Node indexing convention
 

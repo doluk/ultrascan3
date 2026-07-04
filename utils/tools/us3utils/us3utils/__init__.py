@@ -8,10 +8,10 @@ convergence and mesh-tracking figures.
 from .trace_io import TraceRun, load_trace
 from .reference import pure_diffusion_reference, self_convergence_reference
 from .convergence import (
-    compute_norms, convergence_sweep, plot_convergence, plot_mass_drift,
-    plot_convergence_by_series, plot_mass_drift_by_series,
+    compute_norms, convergence_sweep, error_over_time, plot_convergence, plot_mass_drift,
+    plot_convergence_by_series, plot_mass_drift_by_series, plot_error_vs_time,
 )
-from .mesh_tracking import plot_mesh_tracking, plot_elem_h_profile
+from .mesh_tracking import plot_mesh_tracking, plot_elem_h_profile, plot_grids_vs_time
 from .sweep import parse_tag, series_label, series_style, group_sweep
 
 __all__ = [
@@ -21,12 +21,15 @@ __all__ = [
     "self_convergence_reference",
     "compute_norms",
     "convergence_sweep",
+    "error_over_time",
     "plot_convergence",
     "plot_mass_drift",
     "plot_convergence_by_series",
     "plot_mass_drift_by_series",
+    "plot_error_vs_time",
     "plot_mesh_tracking",
     "plot_elem_h_profile",
+    "plot_grids_vs_time",
     "parse_tag",
     "series_label",
     "series_style",

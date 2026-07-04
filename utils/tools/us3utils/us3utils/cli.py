@@ -10,6 +10,11 @@ line so refine/uniform variations are never averaged or overplotted
 together. Tags without a recognized ``N_``/``dt_`` prefix (e.g. a one-off
 ``band_mesh`` run) are not part of a sweep and are used only for the
 mesh-tracking figure (pass --mesh-tag to pick one explicitly).
+
+Writes: convergence.png, mass_drift.png, grids_vs_time.png (number of
+mesh vertices vs. time, one line per series), error_vs_time.png (Linf
+error vs. the reference run at each of the run's own recorded times),
+mesh_tracking.png, elem_h_profile.png.
 """
 
 from __future__ import annotations
@@ -18,8 +23,10 @@ import argparse
 import sys
 from pathlib import Path
 
-from .convergence import convergence_sweep, plot_convergence_by_series, plot_mass_drift_by_series
-from .mesh_tracking import plot_elem_h_profile, plot_mesh_tracking
+from .convergence import (
+    convergence_sweep, plot_convergence_by_series, plot_mass_drift_by_series, plot_error_vs_time,
+)
+from .mesh_tracking import plot_elem_h_profile, plot_grids_vs_time, plot_mesh_tracking
 from .reference import self_convergence_reference
 from .sweep import group_sweep
 from .trace_io import load_sweep
@@ -53,6 +60,9 @@ def main(argv=None) -> int:
     p.add_argument("--mesh-tag", default=None,
                    help="Tag of the run to use for the mesh-tracking figure "
                         "(default: the reference run)")
+    p.add_argument("--error-stride", type=int, default=1,
+                   help="Subsample a run's own recorded times by this stride when "
+                        "computing error_vs_time.png (default: every step)")
     args = p.parse_args(argv)
 
     tracedir = Path(args.tracedir)
@@ -91,16 +101,25 @@ def main(argv=None) -> int:
                                str(outdir / "convergence.png"))
     print(f"wrote {outdir / 'convergence.png'}")
 
-    # Mass drift: one representative (finest) run per series, across
-    # whichever of the N-/dt-sweeps that series appears in.
-    mass_series_runs = {}
+    # One representative (finest) run per series, across whichever of the
+    # N-/dt-sweeps that series appears in -- shared by the mass-drift,
+    # grids-vs-time, and error-vs-time companion figures.
+    series_runs = {}
     for series, pairs in n_groups.items():
-        mass_series_runs[series] = pairs[-1][1]  # largest N
+        series_runs[series] = pairs[-1][1]  # largest N
     for series, pairs in dt_groups.items():
-        mass_series_runs.setdefault(series, pairs[0][1])  # smallest dt
-    if mass_series_runs:
-        plot_mass_drift_by_series(mass_series_runs, str(outdir / "mass_drift.png"))
+        series_runs.setdefault(series, pairs[0][1])  # smallest dt
+
+    if series_runs:
+        plot_mass_drift_by_series(series_runs, str(outdir / "mass_drift.png"))
         print(f"wrote {outdir / 'mass_drift.png'}")
+
+        plot_grids_vs_time(series_runs, str(outdir / "grids_vs_time.png"))
+        print(f"wrote {outdir / 'grids_vs_time.png'}")
+
+        plot_error_vs_time(series_runs, reference, str(outdir / "error_vs_time.png"),
+                          stride=args.error_stride)
+        print(f"wrote {outdir / 'error_vs_time.png'}")
 
     mesh_run = None
     if args.mesh_tag:
