@@ -122,4 +122,9 @@ install(TARGETS us_reporter_gmp
         COMPONENT Programs
         )
 
+install(FILES default_report_template.typ
+        DESTINATION bin
+        COMPONENT Programs
+        )
+
 message(STATUS "Created: us_reporter_gmp")
