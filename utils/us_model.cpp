@@ -860,6 +860,59 @@ int US_Model::load_multi_model( QTextStream& tsi )
          mcont         = mcont + mline + "\n";
       }
    }
+   // Prefetch the variance and analyte count for each model
+   QVector< double > variances(nmcixs);
+   QVector< int > analyteCounts(nmcixs);
+   for ( int ii = 0; ii < nmcixs; ii++ )
+   {
+      mcont = mcixmls[ ii ];
+      QXmlStreamReader xml( mcont );
+      QXmlStreamAttributes a;
+      bool read_next = true;
+      int  nmtag     = 0;
+      int analyte_count = 0;
+      double variance_single = 0.0;
+      while ( ! xml.atEnd() )
+      {
+         if ( read_next )
+         {
+            xml.readNext();
+         }
+         read_next = true;
+
+         if ( xml.isStartElement() )
+         {
+            if ( xml.name() == "model" )
+            {
+               nmtag++;
+               a = xml.attributes();
+
+               QString vari    = a.value( "variance"       ).toString();
+               variance_single = (vari.isEmpty() ? 0.0 : vari.toDouble());
+            }
+
+            else if ( xml.name() == "analyte" )
+            {
+               analyte_count++;
+            }
+         }
+      }
+      variances[ii] = variance_single;
+      analyteCounts[ii] = analyte_count;
+   }
+   // Calculate the average variance and std dev
+   double avg_variance = 0.0;
+   double avg_stddev  = 0.0;
+   for ( int ii = 0; ii < nmcixs; ii++ )
+   {
+      avg_variance += variances[ii];
+   }
+   avg_variance /= nmcixs;
+   for ( int ii = 0; ii < nmcixs; ii++ )
+   {
+      avg_stddev += (variances[ii] - avg_variance) * (variances[ii] - avg_variance);
+   }
+   avg_stddev = sqrt(avg_stddev / nmcixs);
 
    QVector< SimulationComponent >  mmcomps;
    QVector< Association >          mmassos;
@@ -867,18 +920,27 @@ int US_Model::load_multi_model( QTextStream& tsi )
    int ncnstk    = 0;
 
    // Build composite components and associations
+   int skipped = 0;
    for ( int ii = 0; ii < nmcixs; ii++ )
    {
       mcont            = mcixmls[ ii ];
       QXmlStreamReader xml( mcont );
       load_stream( xml );
-
+      // if the variance is greater than avg_variance + avg_stddev, skip
+      if (variances[ii] > avg_variance + avg_stddev && components.size() == 1)
+      {
+         qDebug() << "Skipping " << description << " variance: " << variances[ii] << " avg_variance: " << avg_variance << " avg_stddev: " << avg_stddev;
+         skipped++;
+         continue;
+      }
       mmcomps << components;
       mmassos << associations;
 
       if ( constant_vbar() )  ncnstv++;
       if ( constant_ff0()  )  ncnstk++;
    }
+   // adjust nmcixs to the correct size
+   nmcixs = nmcixs - skipped;
 
    // Compress and scale components to only unique solute points
 
