@@ -10,6 +10,7 @@
 #include "us_astfem_math.h"
 #include "us_astfem_rsa.h"
 #include "us_math_bf.h"
+#include "us_solvent_exchange.h"
 
 #ifndef DbgLv
 #define DbgLv(a) if(dbg_level>=a)qDebug() //!< debug-level-conditioned qDebug()
@@ -104,6 +105,16 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
             //! \param Visccosed Viscosity of cosed buffer for current time
             void InterpolateCCosed( int, const double*, double, double*, double*);
 
+            //! \brief Interpolate the concentration of one co-sedimenting component
+            //! \param key   Name or analyte GUID of the wanted component
+            //! \param N     Number of elements in arrays
+            //! \param x     X (radius) array, in increasing order
+            //! \param t     Current time value
+            //! \param Conc  Output concentration array (mol/l)
+            //! \returns     True if the component was found and interpolated
+            bool InterpolateComp( const QString& key, int N, const double* x,
+                                  double t, double* Conc );
+
             US_DataIO::RawData      sa_data;   //!< cosed data 1-component
                                                //!<  simulation for co-sed
             QMap<QString, US_DataIO::RawData> cosed_comp_data;
@@ -171,6 +182,15 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
       //! \param flag    Flag for whether or not to operate in show-movie mode.
       void setMovieFlag( bool );
 
+      //! \brief Override the solvent exchange description of all model
+      //! components.  Without an override, the description stored with each
+      //! model component is used.
+      //! \param exch    Solvent exchange (H/D) or ligand binding description
+      void set_solvent_exchange( const US_SolventExchange& exch );
+
+      //! \brief Clear a solvent exchange override set previously
+      void clear_solvent_exchange( void );
+
    signals:
       //! \brief Signal calculation start and give maximum steps
       //! \param nsteps Number of expected total calculation progress steps
@@ -204,6 +224,17 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
 
 
    private:
+
+      //! \brief Fields needed to keep the s,D adjustment identical while the
+      //! analyte and its exchange label are transported.
+      //! The label field holds theta*C*r, the concentration field holds C*r.
+      struct ExchState
+      {
+         const double* c0;   // concentration field on mesh x0 at time t
+         const double* l0;   // label field on mesh x0 at time t
+         const double* c1;   // concentration field on mesh x1 at time t+dt
+         const double* l1;   // label field on mesh x1 at time t+dt
+      };
 
       US_Model&                 model;       // input model
       US_SimulationParameters&  simparams;   // input simulation parameters
@@ -265,6 +296,16 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
       double  d_coeff[ 6 ]{};    // SD Adjust buffer density coefficients
       double  v_coeff[ 6 ]{};    // SD Adjust buffer viscosity coefficients
       double dt;
+
+      US_SolventExchange exch_pars;     // exchange description of current comp.
+      US_SolventExchange exch_override; // caller-supplied exchange description
+      bool    exch_has_override;        // flag for exchange description override
+      bool    exch_active;              // flag exchange modeled for current comp.
+      double  exch_mw;                  // molar mass of current comp. (g/mol)
+      mutable US_CosedComponent exch_lig_comp;  // co-diffusing ligand component
+      mutable int exch_lig_source;      // ligand source: -1 unknown, 0 uniform,
+                                        //   1 co-sedimenting, 2 co-diffusing
+
       // private functions
 
       //! \brief Get the non-ideal case number from model parameters
@@ -287,8 +328,42 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
       //! \brief Set up non-ideal case type 4 (co-diffusing)
       void SetNonIdealCase_4( );
 
+      //! \brief Set up the solvent exchange modeling for a model component
+      //! \param compx Index to model component to use in solution pass
+      void SetupExchange( int compx );
+
+      //! \brief Get the local concentration of the exchanging solvent component
+      //! \param t    Current time value
+      //! \param N    Number of elements in arrays
+      //! \param x    X (radius) array, in increasing order
+      //! \param lig  Output ligand concentration array (mol/l)
+      void LigandField( double t, int N, const double* x, double* lig ) const;
+
+      //! \brief Build the initial exchange label field ( theta * C * r )
+      //! \param t    Current time value
+      //! \param N    Number of radial grid points
+      //! \param x    X (radius) array
+      //! \param u    Concentration*radius array ( 2*N-1 values )
+      //! \param w    Output label array ( 2*N-1 values )
+      void InitLabel( double t, int N, const double* x, const double* u,
+                      double* w ) const;
+
+      //! \brief Relax the occupancy towards the local equilibrium over a step
+      //! \param t     Time at the end of the step
+      //! \param dtime Length of the time step
+      //! \param N     Number of radial grid points
+      //! \param x     X (radius) array
+      //! \param u     Concentration*radius array ( 2*N-1 values )
+      //! \param w     Label array to update ( 2*N-1 values )
+      void ExchangeReact( double t, double dtime, int N, const double* x,
+                          const double* u, double* w ) const;
+
+      //! \brief Occupancy of a label,concentration pair, limited to 0 to 1
+      static double Occupancy( double label, double conc );
+
       // Lamm equation step for sedimentation difference - predict
-      void LammStepSedDiff_P( double, double, int, const double*, const double*, double*, const int* scan_hint = nullptr ) const;
+      void LammStepSedDiff_P( double, double, int, const double*, const double*, double*, const int* scan_hint = nullptr,
+                              const ExchState* exs = nullptr ) const;
 
       // Lamm equation step for sedimentation difference - calculate
       //! \brief  Correction step of solving Lamm equation (sedimentation-diffusion only) Given the solution (x0, u0)
@@ -303,8 +378,11 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
       //! \param u1p piecewise quadratic estimated solution at t+dt on mesh x1
       //! \param u1 piecewise quadratic solution at t+dt on mesh x1 (output)
       //! \param scan_hint Scan hint for adjusting s and D in cosedimenting cases
+      //! \param exs Concentration and exchange label fields used for the s,D
+      //! adjustment; needed when the transported field is the exchange label
       void LammStepSedDiff_C( double t, double dt_, int M0, const double *x0, const double *u0, int M1, const double *x1,
-                              const double *u1p, double *u1, const int* scan_hint = nullptr) const;
+                              const double *u1p, double *u1, const int* scan_hint = nullptr,
+                              const ExchState* exs = nullptr ) const;
 
       // Project piecewise quadratic solution onto mesh
       void   ProjectQ(   int, const double*, const double*, int, const double*, double* ) const;
@@ -318,7 +396,8 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
       static void   LocateStar( int, const double*, int, const double*, int*, double* );
 
       // Adjust s and D arrays
-      void   AdjustSD( const double, const int, const double*, const double*, double*, double*, const int* ) const;
+      void   AdjustSD( const double, const int, const double*, const double*, double*, double*,
+                       const int* scan_hint = nullptr, const double* theta = nullptr ) const;
 
       static void   fun_phi(    double, double* );
 
@@ -347,5 +426,12 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
       mutable QVector< double > _xi;
       mutable QVector< double > _ViscVec;
       mutable QVector< double > _DensVec;
+      mutable QVector< double > _KsVec;    // s per unit buoyancy at each point
+      mutable QVector< double > _RhoVec;   // local solvent density at each point
+      mutable QVector< double > _Th0Vec;   // occupancy at quadrature pts, time t
+      mutable QVector< double > _Th1Vec;   // occupancy at quadrature pts, t+dt
+      mutable QVector< double > _Cg0Vec;   // concentration at quadrature pts, t
+      mutable QVector< double > _PosVec;   // node+midpoint radial positions
+      mutable QVector< double > _LigVec;   // ligand concentration at _PosVec
 };
 #endif

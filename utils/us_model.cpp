@@ -24,6 +24,7 @@ US_Model::SimulationComponent::SimulationComponent()
    shape                = SPHERE;
    axial_ratio          = 10.0;
    analyte_type         = 0;  // Protein
+   exchange             = US_SolventExchange();
    c0.radius       .clear();
    c0.concentration.clear();
 }
@@ -48,6 +49,8 @@ bool US_Model::SimulationComponent::operator==
    if ( shape                != sc.shape                 ) return false;
    if ( axial_ratio          != sc.axial_ratio           ) return false;
    if ( analyte_type         != sc.analyte_type          ) return false;
+
+   if ( exchange             != sc.exchange              ) return false;
 
    if ( c0.radius            != sc.c0.radius             ) return false;
    if ( c0.concentration     != sc.c0.concentration      ) return false;
@@ -756,6 +759,7 @@ int US_Model::load_stream( QXmlStreamReader& xml )
             sc.axial_ratio  = aaxia.isEmpty() ? 10.0 : aaxia.toDouble();
             sc.sigma        = a.value( "sigma"      ).toString().toDouble();
             sc.delta        = a.value( "delta"      ).toString().toDouble();
+            sc.exchange.read_attributes( a );
 
             sc.molar_concentration  = a.value( "molar"  ).toString().toDouble();
             sc.signal_concentration = a.value( "signal" ).toString().toDouble();
@@ -1401,6 +1405,8 @@ void US_Model::write_stream( QXmlStreamWriter& xml )
       }
       xml.writeAttribute( "signal",     strSignal );
 
+      sc->exchange.write_attributes( xml );
+
       for ( int j = 0; j < sc->c0.radius.size(); j++ )
       {
          xml.writeStartElement( "mfem_scan" );
@@ -1882,6 +1888,8 @@ void US_Model::debug( void )
       qDebug() << "  oligomer" << sc->oligomer;
       qDebug() << "  shape" << (int)sc->shape;
       qDebug() << "  type" << (int)sc->analyte_type;
+      if ( sc->exchange.type != US_SolventExchange::NONE )
+         sc->exchange.debug();
 
       for ( int j = 0; j < sc->c0.radius.size(); j++ )
       {

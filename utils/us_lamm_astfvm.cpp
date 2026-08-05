@@ -760,6 +760,91 @@ void US_LammAstfvm::CosedData::InterpolateCCosed( int     N, const double* x, do
    }    // cosed component loop end
 }
 
+// interpolate the concentration of a single co-sedimenting component
+bool US_LammAstfvm::CosedData::InterpolateComp( const QString& key, const int N, const double* x, const double t,
+                                                double* Conc )
+{
+   if ( is_empty || key.isEmpty() || N < 1 )
+   {
+      return false;
+   }
+
+   // find the co-sedimenting component that carries the wanted name or GUID
+   QString guid;
+   Q_FOREACH( const US_Model::SimulationComponent& comp, model.components )
+   {
+      if ( comp.name == key || comp.analyteGUID == key )
+      {
+         guid = comp.analyteGUID;
+         break;
+      }
+   }
+
+   if ( guid.isEmpty() )
+   {
+      return false;
+   }
+
+   const auto scd = cosed_comp_data.constFind( guid );
+   if ( scd == cosed_comp_data.constEnd() )
+   {
+      return false;
+   }
+
+   const US_DataIO::RawData& rdata = scd.value();
+   const int                 nscan = rdata.scanData.size();
+
+   if ( nscan < 2 || rdata.xvalues.size() < 2 )
+   {
+      return false;
+   }
+
+   // walk down the scans until we straddle the desired time value
+   int scn = 1;
+   while ( scn < ( nscan - 1 ) && rdata.scanData[scn].seconds < t )
+   {
+      scn++;
+   }
+
+   const int npts = qMin( rdata.xvalues.size(),
+                          qMin( rdata.scanData[scn - 1].rvalues.size(), rdata.scanData[scn].rvalues.size() ) );
+
+   if ( npts < 2 )
+   {
+      return false;
+   }
+
+   const double tm0 = rdata.scanData[scn - 1].seconds;
+   const double tm1 = rdata.scanData[scn].seconds;
+   double       et1 = ( tm1 > tm0 ) ? ( ( t - tm0 ) / ( tm1 - tm0 ) ) : 0.0;
+   et1              = qMin( qMax( et1, 0.0 ), 1.0 );
+   const double et0 = 1.0 - et1;
+
+   const double* cs0 = rdata.scanData[scn - 1].rvalues.constData();
+   const double* cs1 = rdata.scanData[scn].rvalues.constData();
+   const double* xs  = rdata.xvalues.constData();
+
+   // interpolate linearly in both time and radius
+   int k = 1;
+   for ( int jf = 0; jf < N; jf++ )
+   {
+      const double xj = x[jf];
+      while ( xj > xs[k] && k < ( npts - 1 ) )
+      {
+         k++;
+      }
+
+      const int    m   = k - 1;
+      double       xik = ( xs[k] > xs[m] ) ? ( ( xj - xs[m] ) / ( xs[k] - xs[m] ) ) : 0.0;
+      xik              = qMin( qMax( xik, 0.0 ), 1.0 );
+      const double xim = 1.0 - xik;
+
+      Conc[jf] = et0 * ( xim * cs0[m] + xik * cs0[k] ) + et1 * ( xim * cs1[m] + xik * cs1[k] );
+   }
+
+   return true;
+}
+
 US_LammAstfvm::CosedData::CosedData()
 {
    is_empty = true;
@@ -835,6 +920,25 @@ US_LammAstfvm::US_LammAstfvm( US_Model& rmodel, US_SimulationParameters& rsimpar
    param_D20w          = 0.0;
    param_s20w          = 0.0;
    dt                  = 0.0;
+   exch_pars           = US_SolventExchange();
+   exch_override       = US_SolventExchange();
+   exch_has_override   = false;
+   exch_active         = false;
+   exch_mw             = 0.0;
+   exch_lig_comp       = US_CosedComponent();
+   exch_lig_source     = -1;
+}
+
+void US_LammAstfvm::set_solvent_exchange( const US_SolventExchange& exch )
+{
+   exch_override     = exch;
+   exch_has_override = true;
+}
+
+void US_LammAstfvm::clear_solvent_exchange( void )
+{
+   exch_override     = US_SolventExchange();
+   exch_has_override = false;
 }
 
 // primary method to calculate solutions for all species
@@ -951,6 +1055,7 @@ int US_LammAstfvm::solve_component( int compx )
 
    param_s20w = model.components[compx].s != 0.0 ? model.components[compx].s : 1e-14;
    param_D20w = model.components[compx].D;
+   SetupExchange( compx ); // set up H/D exchange or ligand binding modeling
    if ( nonIdealCaseNo() != 0 ) // set the non-ideal case number
    {
       // if multiple cases, abort
@@ -977,12 +1082,21 @@ int US_LammAstfvm::solve_component( int compx )
    QVector<double> u1_vec;
    QVector<double> u1p0_vec;
    QVector<double> u1p_vec;
+   // exchange label fields ( theta * C * r ), transported with the analyte
+   QVector<double> w0_vec;
+   QVector<double> w1_vec;
+   QVector<double> w1p0_vec;
+   QVector<double> w1p_vec;
    double* x0;
    double* u0;
    double* x1;
    double* u1;
    double* u1p0;
    double* u1p;
+   double* w0   = nullptr;
+   double* w1   = nullptr;
+   double* w1p0 = nullptr;
+   double* w1p  = nullptr;
    double  total_t = ( param_b - param_m ) * 2.0 / ( param_s * param_w2 * param_m );
    dt              = log( param_b / param_m ) / ( param_w2 * param_s * simparams.simpoints ) / 2.5;
    int ntcc = static_cast<int>(total_t / dt) + 1; // nbr. times in calculations
@@ -1222,6 +1336,25 @@ int US_LammAstfvm::solve_component( int compx )
    DbgLv( 2 ) << "LAsc:   u0 0,1,2...,N" << u0[0] << u0[1] << u0[2] << u0[N0u - 3] << u0[N0u - 2]
             << u0[N0u - 1];
 
+   if ( exch_active )
+   {
+      // initial state of the exchangeable sites of the analyte
+      w0_vec.resize( N0u );
+      w0 = w0_vec.data();
+      w1_vec.resize( N0u );
+      w1 = w1_vec.data();
+
+      InitLabel( 0.0, N0, x0, u0, w0 );
+
+      for ( int jj = 0; jj < N0u; jj++ )
+      {
+         w1[jj] = w0[jj];
+      }
+
+      DbgLv( 2 ) << "LAsc:   w0 0,1,2...,N" << w0[0] << w0[1] << w0[2] << w0[N0u - 3] << w0[N0u - 2]
+               << w0[N0u - 1];
+   }
+
    #ifndef NO_DB
    int ktinc = 5; // signal progress every 5th scan
    if ( nts > 10000 )
@@ -1387,7 +1520,19 @@ int US_LammAstfvm::solve_component( int compx )
 
       u1p0_vec.resize( N0u );
       u1p0 = u1p0_vec.data();
-      LammStepSedDiff_P( t0, dt, N0 - 1, x0, u0, u1p0, p_scan_hint );
+
+      // the s,D adjustment of both prediction steps sees the analyte itself
+      ExchState        exs { u0, w0, u0, w0 };
+      const ExchState* p_exs = exch_active ? &exs : nullptr;
+
+      LammStepSedDiff_P( t0, dt, N0 - 1, x0, u0, u1p0, p_scan_hint, p_exs );
+
+      if ( exch_active )
+      {  // predict the transport of the exchange label with the same s and D
+         w1p0_vec.resize( N0u );
+         w1p0 = w1p0_vec.data();
+         LammStepSedDiff_P( t0, dt, N0 - 1, x0, w0, w1p0, p_scan_hint, p_exs );
+      }
       //      for (int i = 0; i < N0u; i++){
       //          double v = u1p0[i];
       //          if (qAbs(v)< 1e-6){
@@ -1424,13 +1569,54 @@ int US_LammAstfvm::solve_component( int compx )
          u1_vec.resize( N1u );
          u1 = u1_vec.data();
 
+         if ( exch_active )
+         {
+            // project the exchange label onto the refined mesh; ProjectQ is
+            // linear, so a uniform occupancy stays uniform
+            w1p_vec.resize( N1u );
+            w1p = w1p_vec.data();
+            ProjectQ( N0 - 1, x0, w1p0, N1 - 1, x1, w1p );
+
+            w1_vec.resize( N1u );
+            w1 = w1_vec.data();
+
+            exs.c1 = u1p;
+            exs.l1 = w1p;
+         }
+
          ktime4 += static_cast<int>(timer.restart());
-         LammStepSedDiff_C( t0, dt, N0 - 1, x0, u0, N1 - 1, x1, u1p, u1, p_scan_hint );
+         LammStepSedDiff_C( t0, dt, N0 - 1, x0, u0, N1 - 1, x1, u1p, u1, p_scan_hint, p_exs );
+
+         if ( exch_active )
+         {
+            LammStepSedDiff_C( t0, dt, N0 - 1, x0, w0, N1 - 1, x1, w1p, w1, p_scan_hint, p_exs );
+         }
       }
       else
       {
+         if ( exch_active )
+         {
+            w1_vec.resize( N1u );
+            w1 = w1_vec.data();
+
+            exs.c1 = u1p0;
+            exs.l1 = w1p0;
+         }
+
          ktime4 += static_cast<int>(timer.restart());
-         LammStepSedDiff_C( t0, dt, N0 - 1, x0, u0, N1 - 1, x1, u1p0, u1, p_scan_hint );
+         LammStepSedDiff_C( t0, dt, N0 - 1, x0, u0, N1 - 1, x1, u1p0, u1, p_scan_hint, p_exs );
+
+         if ( exch_active )
+         {
+            LammStepSedDiff_C( t0, dt, N0 - 1, x0, w0, N1 - 1, x1, w1p0, w1, p_scan_hint, p_exs );
+         }
+      }
+
+      if ( exch_active )
+      {
+         // let the occupancy relax towards the local equilibrium of the
+         // solvent composition the analyte has been moved into
+         ExchangeReact( t1, dt, N1, x1, u1, w1 );
       }
       //       for (int i = 0; i < N1u; i++){
       //           double v = u1[i];
@@ -1548,6 +1734,13 @@ int US_LammAstfvm::solve_component( int compx )
       u0_vec.swap( u1_vec );
       u0 = u0_vec.data();
       u1 = u1_vec.data();
+
+      if ( exch_active )
+      {
+         w0_vec.swap( w1_vec );
+         w0 = w0_vec.data();
+         w1 = w1_vec.data();
+      }
    } // end main time loop
 
    if ( dbg_level > 0 )
@@ -1885,6 +2078,216 @@ void US_LammAstfvm::SetNonIdealCase_4()
    }
 }
 
+///////////////////////////////////////////////////////////////
+//
+// Solvent exchange ( H/D exchange, ligand binding ) support
+//
+// The occupancy theta of the exchangeable sites of an analyte is carried
+// along with the analyte itself:  the label field  w = theta * C * r  obeys
+// the same Lamm equation as  u = C * r  ( same s, same D ), plus a local
+// relaxation towards the equilibrium occupancy of the solvent composition
+// found at the current position.  Splitting transport and reaction lets the
+// relaxation be integrated analytically, so any exchange rate - up to
+// instantaneous local equilibrium - can be modeled without a time step limit.
+//
+///////////////////////////////////////////////////////////////
+
+// prepare the solvent exchange modeling for a model component
+void US_LammAstfvm::SetupExchange( const int compx )
+{
+   exch_pars       = exch_has_override ? exch_override : model.components[compx].exchange;
+   exch_active     = exch_pars.active();
+   exch_mw         = model.components[compx].mw;
+   exch_lig_source = -1;   // the ligand source is looked up on first use
+
+   if ( !exch_active )
+   {
+      return;
+   }
+
+   if ( exch_mw <= 0.0 )
+   {
+      // no molar mass given: derive it from the transport coefficients
+      const double vbar = model.components[compx].vbar20;
+      const double buoy = 1.0 - vbar * DENS_20W;
+
+      if ( param_D20w > 0.0 && qAbs( buoy ) > 1.0e-9 )
+      {
+         exch_mw = param_s20w * R_GC * K20 / ( param_D20w * buoy );
+      }
+   }
+
+   if ( exch_mw <= 0.0 )
+   {
+      DbgLv( 1 ) << "LAsc: exchange disabled for component" << compx << ": no molar mass";
+      exch_active = false;
+      return;
+   }
+
+   DbgLv( 1 ) << "LAsc: exchange" << exch_pars.typeText() << "for" << model.components[compx].name
+            << "mw" << exch_mw << "sites" << exch_pars.sites << "rate" << exch_pars.rate
+            << "ligand" << exch_pars.ligand;
+}
+
+// get the local concentration of the exchanging/binding solvent component
+void US_LammAstfvm::LigandField( const double t, const int N, const double* x, double* lig ) const
+{
+   if ( exch_lig_source < 0 )
+   {  // first call for this component: find out where the ligand comes from
+      exch_lig_source = 0;
+
+      if ( !exch_pars.ligand.isEmpty() )
+      {
+         if ( saltdata != nullptr && !saltdata->is_empty &&
+              saltdata->InterpolateComp( exch_pars.ligand, N, x, t, lig ) )
+         {  // co-sedimenting component: interpolate its simulated gradient
+            exch_lig_source = 1;
+            return;
+         }
+
+         if ( bandFormingGradient != nullptr && !bandFormingGradient->is_empty )
+         {  // co-diffusing component: evaluate the band forming gradient
+            const QList<QList<US_CosedComponent>> comp_lists
+               { bandFormingGradient->upper_comps, bandFormingGradient->lower_comps,
+                 bandFormingGradient->cosed_component };
+
+            Q_FOREACH( const QList<US_CosedComponent>& comps, comp_lists )
+            {
+               Q_FOREACH( const US_CosedComponent& comp, comps )
+               {
+                  if ( comp.name == exch_pars.ligand || comp.GUID == exch_pars.ligand ||
+                       comp.componentID == exch_pars.ligand )
+                  {
+                     exch_lig_comp   = comp;
+                     exch_lig_source = 2;
+                     break;
+                  }
+               }
+
+               if ( exch_lig_source == 2 )
+               {
+                  break;
+               }
+            }
+         }
+      }
+
+      DbgLv( 1 ) << "LAsc: exchange ligand" << exch_pars.ligand << "source" << exch_lig_source
+               << "( 0 uniform, 1 co-sedimenting, 2 co-diffusing )";
+   }
+
+   if ( exch_lig_source == 1 &&
+        saltdata->InterpolateComp( exch_pars.ligand, N, x, t, lig ) )
+   {
+      return;
+   }
+
+   if ( exch_lig_source == 2 )
+   {
+      const double temp = simparams.temperature + K0;
+
+      for ( int jf = 0; jf < N; jf++ )
+      {
+         lig[jf] = bandFormingGradient->calc_comp_conc( x[jf], t, temp, exch_lig_comp );
+      }
+
+      return;
+   }
+
+   // no gradient of the ligand available: assume a uniform solvent
+   const double lconc = exch_pars.ligand_conc;
+
+   for ( int jf = 0; jf < N; jf++ )
+   {
+      lig[jf] = lconc;
+   }
+}
+
+// occupancy of a label,concentration pair, limited to the physical range
+double US_LammAstfvm::Occupancy( const double label, const double conc )
+{
+   if ( qAbs( conc ) < 1.0e-25 )
+   {  // no analyte present: report the unexchanged state
+      return 0.0;
+   }
+
+   return qMin( qMax( label / conc, 0.0 ), 1.0 );
+}
+
+// build the initial exchange label field
+void US_LammAstfvm::InitLabel( const double t, const int N, const double* x, const double* u, double* w ) const
+{
+   const int Nu = N + N - 1;
+
+   if ( exch_pars.preequilibrated() )
+   {  // start the analyte in equilibrium with the local solvent composition
+      _PosVec.resize( Nu );
+      _LigVec.resize( Nu );
+      double* pos = _PosVec.data();
+      double* lig = _LigVec.data();
+
+      for ( int jj = 0; jj < N - 1; jj++ )
+      {
+         pos[jj + jj]     = x[jj];
+         pos[jj + jj + 1] = ( x[jj] + x[jj + 1] ) * 0.5;
+      }
+      pos[Nu - 1] = x[N - 1];
+
+      LigandField( t, Nu, pos, lig );
+
+      for ( int kk = 0; kk < Nu; kk++ )
+      {
+         w[kk] = exch_pars.occupancy_eq( lig[kk] ) * u[kk];
+      }
+   }
+   else
+   {
+      const double theta = qMin( qMax( exch_pars.theta0, 0.0 ), 1.0 );
+
+      for ( int kk = 0; kk < Nu; kk++ )
+      {
+         w[kk] = theta * u[kk];
+      }
+   }
+}
+
+// relax the occupancy towards the local equilibrium over one time step
+void US_LammAstfvm::ExchangeReact( const double t, const double dtime, const int N, const double* x,
+                                   const double* u, double* w ) const
+{
+   const int Nu = N + N - 1;
+   _PosVec.resize( Nu );
+   _LigVec.resize( Nu );
+   double* pos = _PosVec.data();
+   double* lig = _LigVec.data();
+
+   // radial positions of the piecewise quadratic values: nodes and mid-points
+   for ( int jj = 0; jj < N - 1; jj++ )
+   {
+      pos[jj + jj]     = x[jj];
+      pos[jj + jj + 1] = ( x[jj] + x[jj + 1] ) * 0.5;
+   }
+   pos[Nu - 1] = x[N - 1];
+
+   LigandField( t, Nu, pos, lig );
+
+   double th_min = 1.0;
+   double th_max = 0.0;
+
+   for ( int kk = 0; kk < Nu; kk++ )
+   {
+      const double uval = u[kk];
+      const double theta = exch_pars.relax( Occupancy( w[kk], uval ), lig[kk], dtime );
+
+      w[kk]  = theta * uval;
+      th_min = qMin( th_min, theta );
+      th_max = qMax( th_max, theta );
+   }
+
+   DbgLv( 3 ) << "LAsc: exchange t" << t << "theta min max" << th_min << th_max
+            << "ligand 0 N" << lig[0] << lig[Nu - 1];
+}
+
 void US_LammAstfvm::SetMeshSpeedFactor( const double speed )
 {
    MeshSpeedFactor = speed;
@@ -1909,9 +2312,10 @@ void US_LammAstfvm::SetMeshRefineOpt( const int Opt )
 //
 ///////////////////////////////////////////////////////////////
 void US_LammAstfvm::LammStepSedDiff_P( const double  t, const double dt_, const int M0, const double* x0,
-                                       const double* u0, double*     u1, const int* scan_hint ) const
+                                       const double* u0, double*     u1, const int* scan_hint,
+                                       const ExchState* exs ) const
 {
-   LammStepSedDiff_C( t, dt_, M0, x0, u0, M0, x0, u0, u1, scan_hint );
+   LammStepSedDiff_C( t, dt_, M0, x0, u0, M0, x0, u0, u1, scan_hint, exs );
 }
 
 
@@ -1934,7 +2338,8 @@ void
    US_LammAstfvm::LammStepSedDiff_C( const double t, const double dt_, const int M0, const double* __restrict x0,
                                      const double* __restrict u0, const int M1, const double* __restrict
                                      x1, const double* __restrict u1p,
-                                     double* __restrict u1, const int* scan_hint ) const
+                                     double* __restrict u1, const int* scan_hint,
+                                     const ExchState* exs ) const
 {
    const int Ng        = 2 * M1; // number of x_star points
    _ke.resize( Ng );
@@ -1969,22 +2374,42 @@ void
    static int    k_time7 = 0;
    static int    k_time8 = 0;
    timer.start();
+   // when an exchange is modeled, s and D follow the analyte concentration and
+   // the occupancy, not the field that is being transported
+   const double* __restrict c1p = ( exs != nullptr ) ? exs->c1 : u1p;
+   double* __restrict       th1 = nullptr;
+
+   if ( exs != nullptr )
+   {
+      _Th1Vec.resize( Ng );
+      th1 = _Th1Vec.data();
+   }
+
    // calculate Sv, Dv at t+dt on xg=(xl, xr)
    for ( int j = 0; j < Ng; j += 2 )
    {
       const int j2 = j / 2;
       xg1[j]       = x1[j2] * 0.75 + x1[j2 + 1] * 0.25; // xl
       xg1[j + 1]   = x1[j2] * 0.25 + x1[j2 + 1] * 0.75; // xr
-      ug1[j]       = ( 3. * u1p[j] + 6. * u1p[j + 1] - u1p[j + 2] ) / 8.;
-      ug1[j + 1]   = ( 3. * u1p[j + 2] + 6. * u1p[j + 1] - u1p[j] ) / 8.;
+      ug1[j]       = ( 3. * c1p[j] + 6. * c1p[j + 1] - c1p[j + 2] ) / 8.;
+      ug1[j + 1]   = ( 3. * c1p[j + 2] + 6. * c1p[j + 1] - c1p[j] ) / 8.;
       Sv[j] = 0.0;
       Sv[j+1] = 0.0;
       Dv[j] = 0.0;
       Dv[j+1] = 0.0;
+
+      if ( th1 != nullptr )
+      {
+         const double* __restrict l1p = exs->l1;
+         const double wl = ( 3. * l1p[j] + 6. * l1p[j + 1] - l1p[j + 2] ) / 8.;
+         const double wr = ( 3. * l1p[j + 2] + 6. * l1p[j + 1] - l1p[j] ) / 8.;
+         th1[j]     = Occupancy( wl, ug1[j] );
+         th1[j + 1] = Occupancy( wr, ug1[j + 1] );
+      }
    }
    DbgLv( 2 ) << "pre_adjust  xg1 0 1 M Nm N" << xg1[0] << xg1[1] << xg1[Ng / 2] << xg1[Ng - 2] << xg1[Ng - 1];
    DbgLv( 2 ) << "pre_adjust  Sv 0 1 M Nm N" << Sv[0] << Sv[1] << Sv[Ng / 2] << Sv[Ng - 2] << Sv[Ng - 1];
-   AdjustSD( t + dt_, Ng, xg1, ug1, Sv, Dv, scan_hint );
+   AdjustSD( t + dt_, Ng, xg1, ug1, Sv, Dv, scan_hint, th1 );
    k_time1 += static_cast<int>(timer.restart());
    DbgLv( 2 ) << "  xg1 0 1 M Nm N" << xg1[0] << xg1[1] << xg1[Ng / 2] << xg1[Ng - 2] << xg1[Ng - 1];
    DbgLv( 2 ) << "  Sv 0 1 M Nm N" << Sv[0] << Sv[1] << Sv[Ng / 2] << Sv[Ng - 2] << Sv[Ng - 1];
@@ -2055,16 +2480,35 @@ void
 
    LocateStar( M0 + 1, x0, Ng, xg0, ke, xi ); // position of xg0 on mesh x0
 
+   double* __restrict cg0 = ug0;
+   double* __restrict th0 = nullptr;
+
+   if ( exs != nullptr )
+   {
+      _Cg0Vec.resize( Ng );
+      _Th0Vec.resize( Ng );
+      cg0 = _Cg0Vec.data();
+      th0 = _Th0Vec.data();
+   }
+
    for ( int j = 0; j < Ng; j++ )
    {
       fun_phi( xi[j], phi );
       const int j2 = 2 * ke[j];
       ug0[j]       = u0[j2] * phi[0] + u0[j2 + 1] * phi[1] + u0[j2 + 2] * phi[2];
+
+      if ( th0 != nullptr )
+      {
+         const double* __restrict c0 = exs->c0;
+         const double* __restrict l0 = exs->l0;
+         cg0[j] = c0[j2] * phi[0] + c0[j2 + 1] * phi[1] + c0[j2 + 2] * phi[2];
+         th0[j] = Occupancy( l0[j2] * phi[0] + l0[j2 + 1] * phi[1] + l0[j2 + 2] * phi[2], cg0[j] );
+      }
    }
 
    // calculate s, D at xg0 on time t
    k_time3 += static_cast<int>(timer.restart());
-   AdjustSD( t, Ng, xg0, ug0, Sv, Dv, scan_hint );
+   AdjustSD( t, Ng, xg0, cg0, Sv, Dv, scan_hint, th0 );
    k_time4 += static_cast<int>(timer.restart());
 
    // calculate Flux(u0,t) at all xg0
@@ -2228,7 +2672,7 @@ void US_LammAstfvm::LocateStar(
 ///////////////////////////////////////////////////////////////
 void US_LammAstfvm::AdjustSD(
    const double t, const int Nv, const double* __restrict x, const double* __restrict u,
-   double* __restrict s_adj, double* __restrict D_adj, const int* scan_hint = nullptr ) const
+   double* __restrict s_adj, double* __restrict D_adj, const int* scan_hint, const double* __restrict theta ) const
 {
    const double  vbar = model.components[comp_x].vbar20;
    QElapsedTimer timer;
@@ -2238,6 +2682,22 @@ void US_LammAstfvm::AdjustSD(
    const double  local_D20w           = param_D20w;
    const double  D20w_correction_stem = ( simparams.temperature + K0 ) * VISC_20W / K20 * local_D20w;
    const double  s20w_correction_stem = ( VISC_20W / ( 1.0 - vbar * DENS_20W ) ) * local_s20w;
+
+   // for a solvent exchange, the buoyancy term of the Svedberg equation has to
+   // be rebuilt from the occupancy, so keep the local solvent density and the
+   // sedimentation coefficient per unit buoyancy of each point
+   const bool exch_on = ( exch_active && theta != nullptr );
+   double* __restrict Ks  = nullptr;
+   double* __restrict Rho = nullptr;
+
+   if ( exch_on )
+   {
+      _KsVec .resize( Nv );
+      _RhoVec.resize( Nv );
+      Ks  = _KsVec .data();
+      Rho = _RhoVec.data();
+   }
+
    switch ( NonIdealCaseNo )
    {
       case 0: // ideal, s=s_0, D=D_0
@@ -2415,6 +2875,12 @@ void US_LammAstfvm::AdjustSD(
             }
             s_adj[jj] = s20w_correction_stem * inv_curVisc * ( 1.0 - vbar * curDens ) * sigma_corr;
             D_adj[jj] = D20w_correction_stem * inv_curVisc * delta_corr;
+
+            if ( exch_on )
+            {  // s per unit buoyancy: stays finite at the isopycnic point
+               Ks [jj] = s20w_correction_stem * inv_curVisc * sigma_corr;
+               Rho[jj] = curDens;
+            }
          }
          }
 
@@ -2451,6 +2917,12 @@ void US_LammAstfvm::AdjustSD(
                const double rho = density / denom;
                s_adj[jj] = s_base * ( 1.0 - phip * rho );
                D_adj[jj] = D_base;
+
+               if ( exch_on )
+               {
+                  Ks [jj] = s_base;
+                  Rho[jj] = rho;
+               }
             }
             DbgLv( 3 ) << "AdjSD: compr dens" << compressib << density;
             DbgLv( 3 ) << "AdjSD:    factn msq sa" << factn << msq << sA;
@@ -2474,6 +2946,15 @@ void US_LammAstfvm::AdjustSD(
                bandFormingGradient->adjust_sd( x[jj], t, adj_s, adj_d, simparams.temperature, vbar_x );
                s_adj[jj] = adj_s;
                D_adj[jj] = adj_d;
+
+               if ( exch_on )
+               {
+                  double dens = density;
+                  double visc = viscosity;
+                  double conc = 0.0;
+                  bandFormingGradient->calc_dens_visc( x[jj], t, simparams.temperature, dens, visc, conc );
+                  Rho[jj] = dens;
+               }
                DbgLv( 2 ) << "AdjSD:   CoSed s_adj" << QString::number( adj_s * 1E+13, 'f', 4 );
                DbgLv( 2 ) << "AdjSD:   CoSed D_adj" << QString::number( adj_d * 1E+6, 'f', 4 );
             }
@@ -2486,6 +2967,48 @@ void US_LammAstfvm::AdjustSD(
          qDebug( "invalid case number for non-ideal sedimentation" );
          break;
    } // switch
+
+   if ( exch_on )
+   {
+      // cases that do not build a local buoyancy term: split the constant one
+      // off the sedimentation coefficient that was just computed
+      if ( NonIdealCaseNo != 2 && NonIdealCaseNo != 3 )
+      {
+         const bool have_rho = ( NonIdealCaseNo == 4 );
+
+         for ( int jj = 0; jj < Nv; jj++ )
+         {
+            if ( !have_rho )
+            {
+               Rho[jj] = density;
+            }
+
+            const double buoy = 1.0 - vbar * Rho[jj];
+            Ks[jj] = ( qAbs( buoy ) > 1.0e-9 ) ? ( s_adj[jj] / buoy ) : 0.0;
+         }
+      }
+
+      // rebuild s and D from the buoyant mass and the friction of the analyte
+      // at the occupancy it has reached at each point
+      for ( int jj = 0; jj < Nv; jj++ )
+      {
+         const double th = theta[jj];
+
+         if ( th <= 0.0 )
+         {  // unexchanged analyte: nothing to correct
+            continue;
+         }
+
+         const double fric = exch_pars.friction_ratio( th, exch_mw, vbar );
+         const double buoy = exch_pars.buoyancy( th, Rho[jj], exch_mw, vbar );
+
+         s_adj[jj] = ( Ks[jj] != 0.0 ) ? ( Ks[jj] * buoy / fric ) : ( s_adj[jj] / fric );
+         D_adj[jj] = D_adj[jj] / fric;
+      }
+
+      DbgLv( 3 ) << "AdjSD:   exch theta 0 m n" << theta[0] << theta[Nv / 2] << theta[Nv - 1]
+               << "s_adj 0 m n" << s_adj[0] << s_adj[Nv / 2] << s_adj[Nv - 1];
+   }
 }
 
 

@@ -4,6 +4,7 @@
 
 #include "us_extern.h"
 #include "ius_db2.h"
+#include "us_solvent_exchange.h"
 
 #define SUBT_SL   1
 #define SUBT_IS   2
@@ -265,6 +266,8 @@ class US_UTIL_EXTERN US_Model
          int         analyte_type;  //!< Protein, RNA, DNA, Corbohydrate, etc
          MfemInitial c0;            //!< The radius/concentration points for a
                                     //!< user-defined initial concentration grid
+         US_SolventExchange exchange; //!< Solvent exchange (H/D) or ligand
+                                    //!< binding (Cs+) description of the analyte
       };
 
       //! \brief Reversible association class
