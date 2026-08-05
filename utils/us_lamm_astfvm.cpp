@@ -27,6 +27,7 @@ US_LammAstfvm::Mesh::Mesh( const double xl, const double xr, const int Nelem, co
    SmoothingWt  = 0.7;
    SmoothingCyl = 4;
    MinCellSize  = 0.0;   // unbounded refinement until a solver sets a floor
+   MonNorm      = 0.0;   // absolute steepness monitor until a scale is given
 
    Ne      = Nelem;
    Nv      = Ne + 1;
@@ -115,8 +116,15 @@ void US_LammAstfvm::Mesh::ComputeMeshDen_D3( const double *u0, const double *u1 
    D21[ Ne - 1 ] = D21[ Ne - 2 ];
 
    // level-off and smoothing - use cbrt instead of pow(x, 0.33333)
+   // Dividing by the magnitude of the profile makes the monitor depend on the
+   // shape of a feature rather than on how much signal it carries, so a sharp
+   // edge is refined the same way whether it belongs to a strongly or a weakly
+   // absorbing species. It also makes the comparison against the refinement
+   // threshold dimensionally consistent.
+   const double norm = ( MonNorm > 0.0 ) ? ( 1.0 / MonNorm ) : 1.0;
+
    for ( int i = 0; i < Ne; i++ ) {
-      const double val = 1.0 + MonScale * ( fabs( D20[ i ] ) + fabs( D21[ i ] ) );
+      const double val = 1.0 + MonScale * ( fabs( D20[ i ] ) + fabs( D21[ i ] ) ) * norm;
       MeshDen[ i ] = qMin( cbrt( val ), MonCutoff );
    }
 
@@ -397,37 +405,22 @@ void US_LammAstfvm::Mesh::RefineMesh( const double *u0, const double *u1, const 
 
 /////////////////////////
 //
-// RefineAround
-//
-/////////////////////////
-void US_LammAstfvm::Mesh::RefineAround( const double r_min, const double width, const double ErrTol ) {
-   const double r_max = r_min + width;
-   // Precomputed constants
-   static const double sqrt3 = sqrt(3.0) * 9.0;
-
-   // refinement threshold: h*|D_3u|^(1/3) > beta
-   const double beta = 6.0 * cbrt(ErrTol / sqrt( 3.0 ));
-   // Use a high density for the lamella region to force refinement
-   for ( int k = 0; k < Ne; k++ ) {
-      // lamella overlaps with the cell
-      if ( (x[ k + 1 ] >= r_min || qFuzzyCompare( x[ k + 1 ], r_min ) ) && ( x[ k ] <= r_max || qFuzzyCompare( x[ k ], r_max ) ) ) {
-         MeshDen[ k ] = 1000.0;
-      } else {
-         MeshDen[ k ] = 1.0;
-      }
-   }
-   // Smoothing(Ne, MeshDen, SmoothingWt, SmoothingCyl);
-   Refine( beta ); // Use a small beta to force significant refinement
-}
-
-/////////////////////////
-//
 // SetMinCellSize
 //
 /////////////////////////
 void US_LammAstfvm::Mesh::SetMinCellSize( const double h )
 {
    MinCellSize = qMax( 0.0, h );
+}
+
+/////////////////////////
+//
+// SetMonitorScale
+//
+/////////////////////////
+void US_LammAstfvm::Mesh::SetMonitorScale( const double scale )
+{
+   MonNorm = qMax( 0.0, scale );
 }
 
 /////////////////////////
@@ -1133,9 +1126,11 @@ int US_LammAstfvm::solve_component( int compx )
    // species needs to travel from meniscus to bottom, divided by simpoints.
    // It knows nothing about how steep the profile actually is. From here on
    // that value is only an upper bound (dt_char); the actual dt and the
-   // smallest cell the mesh may create are derived together from the steepest
-   // feature that is present, and both relax back towards the cheap values as
-   // soon as the profile has smoothed out.
+   // smallest cell the mesh may create both follow from one measured number,
+   // the width of the steepest feature the solution currently has. Nothing
+   // below asks where that feature came from, where in the cell it sits or
+   // which way it travels, so a layered band, a self sharpening boundary and
+   // a floating species are all handled by the same arithmetic.
    // ---------------------------------------------------------------------
    const US_GridControl::Config grid_cfg = US_GridControl::config();
    const double grid_span   = param_b - param_m;
@@ -1148,131 +1143,120 @@ int US_LammAstfvm::solve_component( int compx )
       grid_w2max       = qMax( grid_w2max, w2s );
    }
 
+   // Only magnitudes enter, so the sign of s never matters here
    const double grid_vmax = US_GridControl::front_velocity( param_s, grid_w2max, param_b );
    const double grid_dmax = qMax( param_D, 0.0 );
    const double dt_char   = dt;             // ceiling: never step coarser
    const double dt_floor  = dt_char / qMax( 1.0, grid_cfg.max_reduction );
 
+   // Bound the refinement from below before any of it happens. Without a floor
+   // the curvature driven refinement chases a steep initial condition down to
+   // its own error tolerance, and cells that small subdivide a feature no
+   // admissible step can carry - that combination is what rings.
+   const double h_afford = US_GridControl::min_cell( dt_floor, grid_vmax, grid_dmax, grid_cfg );
+
+   msh->SetMinCellSize( grid_cfg.enabled
+                        ? qMin( qMax( h_afford,
+                                      grid_base_h / qMax( 1.0, grid_cfg.max_refinement ) ),
+                                grid_base_h )
+                        : 0.0 );
+
    if ( simparams.band_forming )
    {
-      // Calculate the width of the lamella
-      const double grid_lamella = US_GridControl::lamella_width( simparams.meniscus,
-                                                                 simparams.band_volume,
-                                                                 simparams.cp_pathlen,
-                                                                 simparams.cp_angle );
-      conc_profile_endpoint     = conc_profile_startpoint + grid_lamella;
-
-      // A freshly layered lamella is a pair of discontinuities, so there is no
-      // feature width to measure yet. Bound the refinement below by the finest
-      // cell the cheapest admissible step can still carry - without that bound
-      // RefineAround() drives the cell size down to its own error tolerance,
-      // which is precisely the over-refinement that turns into ringing.
-      const double h_afford = US_GridControl::min_cell( dt_floor, grid_vmax, grid_dmax, grid_cfg );
-      const double h_start  = grid_cfg.enabled
-                              ? qMin( qMax( h_afford,
-                                            grid_base_h / qMax( 1.0, grid_cfg.max_refinement ) ),
-                                      grid_base_h )
-                              : 0.0;
-
-      msh->SetMinCellSize( h_start );
-
-      // Increase the resolution for small lamellas
-      msh->RefineAround( conc_profile_startpoint, grid_lamella * 2.0, err_tol );
+      conc_profile_endpoint = conc_profile_startpoint
+                            + US_GridControl::lamella_width( simparams.meniscus,
+                                                             simparams.band_volume,
+                                                             simparams.cp_pathlen,
+                                                             simparams.cp_angle );
    }
 
-
-   // initialization
-   N0                             = msh->Nv;         // number of radial positions
-   N0u                            = N0 + N0 - 1;     // number of concentration*radius values (including mid-points)
-   x0_vec.resize( N0 );
-   x0                             = x0_vec.data();   // radius values
-   u0_vec.resize( N0u );
-   u0                             = u0_vec.data();   // concentration*radius values
-   N1                             = N0;
-   N1u                            = N0u;
-   x1_vec.resize( N1 );
-   x1                             = x1_vec.data();
-   u1_vec.resize( N1u );
-   u1                             = u1_vec.data();
-   double r_value = 0.0;
-   for ( int jj = 0; jj < N0; jj++ )
+   // The one place that knows what the initial condition looks like. Everything
+   // downstream only ever samples it, so the resolution machinery stays free of
+   // any assumption about its shape, its position or where it came from.
+   const auto init_u = [&]( const double r ) -> double
    {
-      // initialize X and U values
-      int kk  = jj + jj;
-      r_value = msh->x[jj];
-      x0[jj]  = r_value; // r value
-      x1[jj]  = r_value;
-      if ( simparams.band_forming )
+      if ( ! simparams.band_forming )
       {
-         if ( bfe_gaussian_profile )
-         {
-            const double lamella_width = qMax( conc_profile_endpoint - conc_profile_startpoint, 1.0e-12 );
-            const double rel_r         = ( r_value - conc_profile_endpoint ) / lamella_width * 0.5;
-            const double gauss_amp     = exp( -pow(rel_r, 4.0) );
-            u0[kk] = r_value * sig_conc * gauss_amp;
-         }
-         else
-         {
-            // Calculate the width of the lamella
-            if ( r_value <= conc_profile_endpoint && (r_value >= conc_profile_startpoint) )
-            {
-               u0[kk] = r_value * sig_conc;
-            }
-            else
-            {
-               u0[kk] = 0.0;
-            }
-         }
+         return r * sig_conc;                      // C*r, uniformly loaded
       }
-      else
+
+      if ( bfe_gaussian_profile )
       {
-         u0[kk] = r_value * sig_conc; // C*r value
+         const double lamella_width = qMax( conc_profile_endpoint - conc_profile_startpoint,
+                                            1.0e-12 );
+         const double rel_r         = ( r - conc_profile_endpoint ) / lamella_width * 0.5;
+
+         return r * sig_conc * exp( -pow( rel_r, 4.0 ) );
       }
-      u1[kk] = u0[kk];
+
+      return ( r <= conc_profile_endpoint  &&  r >= conc_profile_startpoint )
+             ? ( r * sig_conc )
+             : 0.0;
+   };
+
+   // Resolve the initial condition: sample it on the mesh, let the curvature
+   // driven refinement react, resample on the finer mesh, and repeat until the
+   // mesh settles or the cell size floor stops it. Sampling instead of
+   // projecting keeps a sharp edge sharp however narrow it is, and the loop
+   // does not care whether that edge is a layered lamella, a hand written c0
+   // vector or the first scan of an experiment.
+   constexpr int max_init_passes = 12;
+
+   for ( int pass = 0; ; pass++ )
+   {
+      N0  = msh->Nv;                     // number of radial positions
+      N0u = N0 + N0 - 1;                 // ... plus the element mid-points
+      x0_vec.resize( N0 );
+      x0  = x0_vec.data();
+      u0_vec.resize( N0u );
+      u0  = u0_vec.data();
+      u1_vec.resize( N0u );
+      u1  = u1_vec.data();
+
+      for ( int jj = 0; jj < N0; jj++ )
+      {
+         const double r_value = msh->x[jj];
+         x0[jj]               = r_value;
+         u0[jj + jj]          = init_u( r_value );
+      }
+
+      for ( int kk = 1; kk < N0u - 1; kk += 2 )
+      {  // mid-point values of the piecewise quadratic representation
+         u0[kk] = init_u( ( x0[( kk - 1 ) / 2] + x0[( kk + 1 ) / 2] ) * 0.5 );
+      }
+
+      memcpy( u1, u0, N0u * sizeof( double ) );
+
+      if ( pass >= max_init_passes )
+      {
+         break;
+      }
+
+      const int nv_before = msh->Nv;
+
+      if ( grid_cfg.enabled )
+      {  // Judge steepness relative to the profile, not in absolute units
+         msh->SetMonitorScale( US_GridControl::magnitude( u0, N0, 2 ) );
+      }
+
+      msh->RefineMesh( u0, u1, err_tol );
+
+      if ( msh->Nv == nv_before )
+      {
+         break;
+      }
    }
 
-   for ( int kk = 1; kk < N0u - 1; kk += 2 )
-   {
-      // fill in mid-point U values
-      u0[kk] = ( u0[kk - 1] + u0[kk + 1] ) * 0.5;
-      u1[kk] = u0[kk];
-   }
+   N1  = N0;
+   N1u = N0u;
+   x1_vec = x0_vec;
+   x1     = x1_vec.data();
+   x0     = x0_vec.data();
+   u0     = u0_vec.data();
+   u1     = u1_vec.data();
+
    DbgLv( 2 ) << "LAsc:  u0 0,1,2...,N" << u0[0] << u0[1] << u0[2] << u0[N0u - 3] << u0[N0u - 2]
             << u0[N0u - 1];
-   msh->RefineMesh( u0, u1, err_tol );
-   if ( msh->Nv != N0 )
-   {
-      // RefineMesh() can add/remove mesh elements based on the curvature of the
-      // initial profile (e.g. the sharp edges of a band-forming lamella). x0/u0
-      // were built on the pre-RefineMesh grid, so they must be re-synced with
-      // msh's current grid before the time-stepping loop starts - otherwise msh
-      // and x0/u0/N0 disagree on the mesh size and later RefineMesh() calls in
-      // the main loop index u0 against the wrong element count.
-      const int N0new  = msh->Nv;
-      const int N0unew = N0new + N0new - 1;
-      QVector<double> x0new_vec( N0new );
-      double*         x0new = x0new_vec.data();
-      for ( int jj = 0; jj < N0new; jj++ )
-      {
-         x0new[jj] = msh->x[jj];
-      }
-
-      QVector<double> u0new_vec( N0unew );
-      QVector<double> u1new_vec( N0unew );
-      ProjectQ( N0 - 1, x0, u0, N0new - 1, x0new, u0new_vec.data() );
-      ProjectQ( N0 - 1, x0, u1, N0new - 1, x0new, u1new_vec.data() );
-
-      N0    = N0new;
-      N0u   = N0unew;
-      x0_vec = x0new_vec;
-      x0     = x0_vec.data();
-      x1_vec = x0new_vec;
-      x1     = x1_vec.data();
-      u0_vec = u0new_vec;
-      u0     = u0_vec.data();
-      u1_vec = u1new_vec;
-      u1     = u1_vec.data();
-   }
 
    // The mesh now carries the initial profile, so the steepest feature can be
    // measured instead of guessed. Pick the first time step from it and tell
@@ -1295,16 +1279,17 @@ int US_LammAstfvm::solve_component( int compx )
       // Node values of the piecewise quadratic solution live at even indices.
       const double feature = US_GridControl::front_scale( xg, nvg, ug, 2 );
       const double dt_want = US_GridControl::step_for_feature( dt_char, feature,
-                                                               grid_span, grid_base_h,
                                                                grid_vmax, grid_dmax,
                                                                grid_cfg );
       const double dt_new  = US_GridControl::relax( dt_prev, dt_want, grid_cfg );
 
-      // The floor is capped at the unrefined cell size: the resolution the
-      // user asked for through simpoints is always allowed, the controller
-      // only decides how much finer than that the mesh may go.
+      // Keep the mesh and the step consistent with each other. The floor is
+      // capped at the unrefined cell size: the resolution the user asked for
+      // through simpoints is always allowed, the controller only decides how
+      // much finer than that the mesh may go.
       msh->SetMinCellSize( qMin( US_GridControl::min_cell( dt_new, grid_vmax, grid_dmax, grid_cfg ),
                                  grid_base_h ) );
+      msh->SetMonitorScale( US_GridControl::magnitude( ug, nvg, 2 ) );
 
       return dt_new;
    };

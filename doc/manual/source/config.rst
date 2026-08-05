@@ -244,9 +244,9 @@ Adv. Config. Functions
     * - auto_positioning
       - Flag to enable the legacy window positioning behavior from UltraScan instead of relying on the OS window manager.
     * - NO_ADAPTIVE_GRID
-      - Flag to switch the Lamm equation solvers back to the legacy grid resolution, where the time step and the radial cell size follow the sedimentation characteristic alone. By default both are additionally derived from the steepest feature of the concentration profile, which is what keeps a band forming lamella free of oscillations.
+      - Flag to switch the Lamm equation solvers back to the legacy grid resolution, where the time step and the radial cell size follow the sedimentation characteristic alone. By default both are instead derived from the measured width of the steepest feature the concentration profile carries, whatever produced it and wherever in the cell it sits, which is what keeps steep profiles such as a band forming lamella free of oscillations. Also restores the legacy mesh refinement, which reacts to the absolute size of a curvature rather than to the shape of a feature.
     * - COARSE_ADAPTIVE_GRID
-      - Flag to halve the resolution targets of the adaptive grid. Useful to tell a physically narrow feature apart from one that is merely under-resolved: if a feature changes shape when this flag is set, the simulation is resolution limited.
+      - Flag to relax the resolution targets of the adaptive grid. Useful to tell a physically narrow feature apart from one that is merely under-resolved: if a feature changes shape when this flag is set, the simulation is resolution limited.
 
 |
 

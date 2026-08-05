@@ -49,12 +49,6 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
             //! \param ErrTol Error tolerance
             void RefineMesh( const double* u0, const double* u1, double ErrTol);
 
-            //! \brief Refine mesh around a specific point
-            //! \param r_min  Start of refinement region
-            //! \param width  Width of refinement region
-            //! \param ErrTol Error tolerance
-            void RefineAround( double r_min, double width, double ErrTol );
-
             //! \brief Set the smallest cell size the refinement may produce
             //!
             //! Cells below this size cannot be advanced without ringing by the
@@ -63,6 +57,18 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
             //! leaves the refinement unbounded, as it was historically.
             //! \param h Smallest admissible cell size in cm
             void SetMinCellSize( double h );
+
+            //! \brief Set the magnitude the steepness monitor is measured against
+            //!
+            //! Without it the monitor compares an absolute third derivative to
+            //! a fixed threshold, so the same profile scaled down in
+            //! concentration is refined less - a sharp edge of a weakly
+            //! absorbing species is then simply not seen. Passing the value
+            //! range of the profile makes the refinement depend on the shape
+            //! only. A value of zero (the default) restores the historical
+            //! absolute behavior.
+            //! \param scale Value range of the profile being refined
+            void SetMonitorScale( double scale );
 
             //! \brief Smallest cell size currently present in the mesh
             //! \returns Smallest distance between neighboring grid points
@@ -80,6 +86,7 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
             double  SmoothingWt;
             int     SmoothingCyl;
             double  MinCellSize;     // smallest admissible cell size (0=off)
+            double  MonNorm;         // magnitude the monitor is relative to (0=off)
 
             int*    Eid;      // elem id
             int*    RefLev;   // refinement level of an elem

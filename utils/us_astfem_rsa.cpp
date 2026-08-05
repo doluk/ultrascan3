@@ -14,6 +14,7 @@
 #include <unistd.h>
 #endif
 #include <algorithm>
+#include <cmath>
 #if (defined(_WIN32) || defined(_WIN64) || defined(Q_OS_WIN))         // Include headers so getpid() works on Windows
 #include <windows.h>
 #include <psapi.h>
@@ -45,8 +46,8 @@ US_Astfem_RSA::US_Astfem_RSA( US_Model&                model,
                              // refer to display on experimental grid.
    show_movie      = false;  // Flag used to see a movie i.e. movement of scans.
    dbg_level       = 0  ;    // Flag used to choose a debug level.
-   band_cell_size  = 0.0;    // No steep initial feature until one is detected.
-   band_region_end = 0.0;
+   feat_scale      = qInf(); // No steep initial feature until one is measured.
+   feat_cell_size  = 0.0;
 }
 
 //!< Takes the experimental data i.e. 'exp_data' as input and updates the scans
@@ -453,6 +454,10 @@ DbgLv(2)<< "s_n_D_values are" << sc->s << sc->D  << cc ;
       {
          initialize_conc( cc, CT0, true ); // Initialize the concentration vector on initial grid
 
+         // Record how steep the initial condition is, so the grid can be
+         // sized for it further down
+         set_initial_feature( CT0 );
+
          // Resizes for the s and D values
          af_params.s   .resize( 1 );
          af_params.D   .resize( 1 );
@@ -826,6 +831,9 @@ DbgLv(2) << "RSA:      jj in_npts" << jj << initial_npts;
       }
 
       decompose( vC0 );
+
+      // Record the steepest feature over all components of the group
+      set_initial_feature( vC0, num_comp );
 
 
 DbgLv(2) << "RSA: decompose OUT";
@@ -1636,6 +1644,10 @@ static int totT8=0;
          }
          initialize_conc( cc, CT0, true, overlaying ); // Initialize the concentration vector on initial grid
 
+         // Record how steep the initial condition is, so the grid can be
+         // sized for it further down
+         set_initial_feature( CT0 );
+
          // Resizes for the s and D values
          af_params.s   .resize( 1 );
          af_params.D   .resize( 1 );
@@ -2009,6 +2021,9 @@ DbgLv(1) << "RSA:emit ccomp: component" << cc+1;
       }
 
       decompose( vC0 );
+
+      // Record the steepest feature over all components of the group
+      set_initial_feature( vC0, num_comp );
 
 
       DbgLv(2) << "RSA: decompose OUT";
@@ -3061,13 +3076,10 @@ QDateTime clcSt9 = clcSt0;
       mesh_gen_RefL( jx + 1, 4 * jx );
    }
 
-   // Resolve a band forming lamella. The grid moves with the characteristics,
-   // so refining the region the lamella starts in keeps it resolved while it
-   // travels. Does nothing when the grid there is fine enough already.
-   if ( band_cell_size > 0.0 )
-   {
-      mesh_gen_RefBand( band_region_end, band_cell_size );
-   }
+   // Resolve whatever the initial condition is steep about. The regions were
+   // measured from the profile itself, so this covers a lamella at the
+   // meniscus, a boundary at the bottom and anything in between alike.
+   mesh_gen_RefFeature();
 
    //--------------------------------------
    // Initialize the coefficient matrices
@@ -4043,89 +4055,204 @@ DbgLv(1) << "RSA:mgR: Nx xA sme" << Nx << x[0] << x[1] << x[2]
  << x[mm-1] << x[mm] << x[mm+1] << x[mm+2] << x[ee-2] << x[ee-1] << x[ee];
 }
 
-// Replace the meniscus side of the grid by a uniformly fine one
+// Subdivide every grid interval that carries an under-resolved feature
 //
-//  parameters: r_end = outer radius of the region that has to be resolved
-//              h     = wanted cell size inside that region
-void US_Astfem_RSA::mesh_gen_RefBand( double r_end, double h )
+// Existing points are always kept, so this composes with whatever mesh_gen()
+// produced - exponential, Claverie, refined at the bottom - and it refines
+// wherever the feature happens to be. A boundary at the bottom of a floating
+// species, a lamella at the meniscus and a step somewhere in the middle of the
+// column are all the same thing here.
+void US_Astfem_RSA::mesh_gen_RefFeature( void )
 {
    const int nx = (int)x.size();
 
+   if ( feat_cell_size <= 0.0  ||  feat_lo.isEmpty()  ||  nx < 3 )
+   {
+      return;
+   }
+
    xA = x.data();
 
-   if ( nx < 3  ||  h <= 0.0 )
+   // Keep the point count sane: if the wanted cell size would blow the grid
+   // up, coarsen it until it fits rather than refusing to refine at all.
+   const int max_points = qMin( 10000, qMax( 4 * nx, nx + 500 ) );
+   double    hwant      = feat_cell_size;
+   int       npts       = 0;
+
+   for ( int trial = 0; trial < 20; trial++ )
    {
-      return;
+      npts = 1;
+
+      for ( int kk = 0; kk < ( nx - 1 ); kk++ )
+      {
+         npts += interval_subdivisions( xA[ kk ], xA[ kk + 1 ], hwant );
+      }
+
+      if ( npts <= max_points )
+      {
+         break;
+      }
+
+      hwant *= 1.5;
    }
 
-   const double r_beg = xA[ 0 ];
-   r_end              = qMin( r_end, xA[ nx - 2 ] );
-
-   if ( r_end <= r_beg )
+   if ( npts <= nx )
    {
-      return;
-   }
-
-   // Index of the first original point at or beyond the region to resolve
-   int jx = 1;
-
-   while ( jx < ( nx - 2 )  &&  xA[ jx ] < r_end )
-   {
-      jx++;
-   }
-
-   const double span  = xA[ jx ] - r_beg;
-   const int    nfine = US_GridControl::points_for_span( span, h );
-
-   if ( nfine <= ( jx + 1 ) )
-   {
-      return;                   // the existing grid is already fine enough
+      return;                            // the existing grid is fine enough
    }
 
    QVector< double > zz;
-   zz.reserve( nx + nfine );
+   zz.reserve( npts );
+   zz .append( xA[ 0 ] );
 
-   const double dh = span / (double)( nfine - 1 );
-
-   for ( int jp = 0; jp < ( nfine - 1 ); jp++ )
+   for ( int kk = 0; kk < ( nx - 1 ); kk++ )
    {
-      zz .append( r_beg + (double)jp * dh );
-   }
+      const double xl   = xA[ kk ];
+      const double xr   = xA[ kk + 1 ];
+      const int    nsub = interval_subdivisions( xl, xr, hwant );
 
-   for ( int jp = jx; jp < nx; jp++ )
-   {
-      zz .append( xA[ jp ] );
+      for ( int jp = 1; jp <= nsub; jp++ )
+      {
+         zz .append( xl + ( xr - xl ) * (double)jp / (double)nsub );
+      }
    }
 
    x  = zz;
    Nx = x.size();
    xA = x.data();
 
-DbgLv(1) << "RSA:mgRB: Nx" << Nx << "region" << r_beg << xA[ nfine - 1 ]
- << "h wanted" << h << "h used" << dh << "pts" << nfine;
+DbgLv(1) << "RSA:mgRF: Nx" << Nx << "was" << nx << "h wanted" << feat_cell_size
+ << "h used" << hwant << "regions" << feat_lo.size();
 }
 
-// Derive dt and the radial cell size from the steepest feature of the initial
-// condition instead of from the sedimentation characteristic alone.
+// Number of pieces an interval has to be split into for the feature regions
+int US_Astfem_RSA::interval_subdivisions( double xl, double xr, double h ) const
+{
+   if ( h <= 0.0  ||  xr <= xl )
+   {
+      return 1;
+   }
+
+   for ( int kr = 0; kr < feat_lo.size(); kr++ )
+   {
+      if ( xr > feat_lo[ kr ]  &&  xl < feat_hi[ kr ] )
+      {
+         return qMax( 1, (int)ceil( ( xr - xl ) / h ) );
+      }
+   }
+
+   return 1;
+}
+
+// Measure the steepest feature of an initial concentration vector
+//
+// This is the only thing the ASTFEM resolution control ever looks at. It does
+// not matter whether the vector came from a band forming lamella, from a user
+// supplied c0, from the first scan of an experiment or from a previous speed
+// step: all that is recorded is how narrow the narrowest feature is and which
+// radial intervals carry it.
+void US_Astfem_RSA::set_initial_feature( const US_AstfemMath::MfemInitial& C0 )
+{
+   feat_scale = qInf();
+   feat_lo.clear();
+   feat_hi.clear();
+   feat_r .clear();
+   feat_c .clear();
+
+   const int nval = (int)qMin( C0.radius.size(), C0.concentration.size() );
+
+   if ( nval < 2 )
+   {
+      return;
+   }
+
+   feat_r = C0.radius;
+   feat_c = C0.concentration;
+   feat_r.resize( nval );
+   feat_c.resize( nval );
+
+   feat_scale = US_GridControl::front_scale( feat_r.constData(), nval,
+                                             feat_c.constData() );
+DbgLv(1) << "RSA:sif: initial feature scale" << feat_scale << "npts" << nval;
+}
+
+// Measure the steepest feature over all components of a reacting group
+//
+// The components share one grid and one time step, so the narrowest feature
+// among them is what has to be resolved. Their profiles are normalized before
+// they are combined, so a species present at a hundredth of the concentration
+// of another still contributes its steepness.
+void US_Astfem_RSA::set_initial_feature( const US_AstfemMath::MfemInitial* C0,
+                                         int num_comp )
+{
+   feat_scale = qInf();
+   feat_lo.clear();
+   feat_hi.clear();
+   feat_r .clear();
+   feat_c .clear();
+
+   if ( C0 == nullptr  ||  num_comp < 1 )
+   {
+      return;
+   }
+
+   const int nval = (int)qMin( C0[ 0 ].radius.size(), C0[ 0 ].concentration.size() );
+
+   if ( nval < 2 )
+   {
+      return;
+   }
+
+   feat_r = C0[ 0 ].radius;
+   feat_r.resize( nval );
+   feat_c.fill( 0.0, nval );
+
+   for ( int kc = 0; kc < num_comp; kc++ )
+   {
+      if ( (int)C0[ kc ].concentration.size() < nval )
+      {
+         continue;
+      }
+
+      const double range = US_GridControl::magnitude( C0[ kc ].concentration.constData(),
+                                                      nval );
+
+      if ( range <= 0.0 )
+      {
+         continue;
+      }
+
+      const double scal = 1.0 / range;
+
+      for ( int jj = 0; jj < nval; jj++ )
+      {
+         feat_c[ jj ] += C0[ kc ].concentration[ jj ] * scal;
+      }
+   }
+
+   feat_scale = US_GridControl::front_scale( feat_r.constData(), nval,
+                                             feat_c.constData() );
+DbgLv(1) << "RSA:sif: group feature scale" << feat_scale << "ncomp" << num_comp;
+}
+
+// Derive dt and the radial cell size from the steepest feature of the solution
 //
 // The classic ASTFEM resolution follows the characteristic line of the fastest
 // species: dt is the meniscus-to-bottom travel time divided by simpoints. That
-// is fine for a boundary which starts as a single step at the meniscus, but a
-// band forming run starts with a lamella that is one to two orders of
-// magnitude narrower than the column. The characteristic step then moves that
-// lamella by many cells per step, which is what shows up as oscillations. Here
-// the time step and the cell size wanted across the lamella are picked
-// together, and only for runs that actually carry such a feature.
+// says nothing about how steep the profile is, so any initial condition
+// carrying structure narrower than the characteristic assumes gets transported
+// across many cells per step - which is what shows up as oscillations. Here
+// the time step and the cell size are both derived from the measured width of
+// the steepest feature, whatever produced it and wherever it sits.
 void US_Astfem_RSA::adapt_grid_resolution( double duration )
 {
-   band_cell_size  = 0.0;
-   band_region_end = 0.0;
+   feat_cell_size = 0.0;
 
    US_GridControl::Config cfg = US_GridControl::config();
 
-   if ( ! cfg.enabled  ||  ! simparams.band_forming )
+   if ( ! cfg.enabled  ||  ! std::isfinite( feat_scale ) )
    {
-      return;
+      return;                            // nothing steep to resolve
    }
 
    // Unlike the finite volume solver, ASTFEM cannot relax dt while a speed
@@ -4134,18 +4261,15 @@ void US_Astfem_RSA::adapt_grid_resolution( double duration )
    // how far below the characteristic step the controller may go.
    cfg.max_reduction = qMin( cfg.max_reduction, 8.0 );
 
-   const double lamella = US_GridControl::lamella_width( af_params.current_meniscus,
-                                                         simparams.band_volume,
-                                                         simparams.cp_pathlen,
-                                                         simparams.cp_angle );
-   const double span    = af_params.current_bottom - af_params.current_meniscus;
+   const double span = af_params.current_bottom - af_params.current_meniscus;
 
-   if ( lamella <= 0.0  ||  span <= 0.0  ||
-        af_params.dt <= 0.0  ||  duration <= 0.0 )
+   if ( span <= 0.0  ||  af_params.dt <= 0.0  ||  duration <= 0.0 )
    {
       return;
    }
 
+   // Only magnitudes enter, so floating species, sedimenting species and
+   // mixtures of both are covered by whichever of them is fastest
    double s_max = 0.0;
    double d_max = 0.0;
 
@@ -4159,46 +4283,63 @@ void US_Astfem_RSA::adapt_grid_resolution( double duration )
       d_max = qMax( d_max, qAbs( af_params.D[ ii ] ) );
    }
 
+   // The feature was measured on the initial condition. By the time a later
+   // speed step starts it has been spreading for start_time seconds, so let it
+   // age instead of holding on to a sharpness that is no longer there. For the
+   // first speed step start_time is zero and nothing changes.
+   const double feature = sqrt( feat_scale * feat_scale
+                                + 2.0 * d_max * qMax( af_params.start_time, 0.0 ) );
+
    const double base_h  = span / (double)qMax( 2, af_params.simpoints - 1 );
    const double vel_max = US_GridControl::front_velocity( s_max, af_params.omega_s,
                                                           af_params.current_bottom );
-
-   // A freshly layered lamella is a pair of discontinuities, so there is no
-   // feature width to measure: a feature of zero asks the controller for the
-   // finest pair of dt and cell size it is allowed to spend.
-   const double dt_new  = US_GridControl::step_for_feature( af_params.dt, 0.0, span,
-                                                            base_h, vel_max, d_max, cfg );
+   const double dt_new  = US_GridControl::step_for_feature( af_params.dt, feature,
+                                                            vel_max, d_max, cfg );
 
    if ( dt_new >= af_params.dt )
    {
       return;                   // nothing the current resolution cannot carry
    }
 
-   const double h_new = qMin( US_GridControl::min_cell( dt_new, vel_max, d_max, cfg ),
+   const double h_new = qMin( qMax( US_GridControl::min_cell( dt_new, vel_max, d_max, cfg ),
+                                    base_h / qMax( 1.0, cfg.max_refinement ) ),
                               base_h );
 
-DbgLv(1) << "RSA:agr: band dt" << af_params.dt << "->" << dt_new
- << "cell" << base_h << "->" << h_new << "lamella" << lamella
+DbgLv(1) << "RSA:agr: feature" << feature << "initial" << feat_scale
+ << "dt" << af_params.dt << "->" << dt_new
+ << "cell" << base_h << "->" << h_new
  << "steps" << af_params.time_steps << "->" << qCeil( duration / dt_new );
 
    af_params.dt         = dt_new;
    af_params.time_steps = qCeil( duration / af_params.dt );
+   feat_cell_size       = h_new;
 
-   // The radial refinement can only sit at the meniscus side, because the mesh
-   // is regenerated at the start of every speed step. That is where the band
-   // is while it is layered; once it has sedimented away from the meniscus the
-   // refinement would be spent on empty solvent, so ask for it only as long as
-   // the band is still inside the region it started in. The reduced time step
-   // above keeps applying for the whole run either way.
-   const double r_band = af_params.current_meniscus
-                         * exp( s_max * af_params.start_om2t );
-   const double r_end  = af_params.current_meniscus + lamella * 2.0;
+   // The regions were measured on the initial condition, so they have to be
+   // widened to wherever the feature has got to by now: how far it has spread,
+   // how far it has travelled since the run started, and enough room for the
+   // cells themselves. A moving grid carries its refinement along during the
+   // speed step, a fixed one does not and needs the travel of this step too.
+   // All of the padding is symmetric, so the direction of travel - and with it
+   // the sign of s - never enters.
+   const double t_start = qMax( af_params.start_time, 0.0 );
 
-   if ( r_band < r_end )
+   double pad = sqrt( 2.0 * d_max * ( t_start + duration ) )
+              + vel_max * t_start
+              + (double)cfg.feature_points * h_new;
+
+   if ( simparams.gridType == US_SimulationParameters::FIXED )
    {
-      band_cell_size  = h_new;
-      band_region_end = r_end;
+      pad += vel_max * duration;
    }
+
+   if ( feat_r.size() > 1 )
+   {
+      US_GridControl::steep_regions( feat_r.constData(), (int)feat_r.size(),
+                                     feat_c.constData(), 1,
+                                     h_new, pad, cfg, feat_lo, feat_hi );
+   }
+
+DbgLv(1) << "RSA:agr: regions" << feat_lo.size() << "pad" << pad;
 }
 
 // Compute the coefficient matrices based on fixed mesh
@@ -5100,13 +5241,10 @@ DbgLv(1) << "RSA:_ra2: s_min s_max" << s_min << s_max << "xc xAj"
 DbgLv(1) << "RSA:_ra2:(3) Nx" << Nx << "x size" << x.size();
    }
 
-   // Resolve a band forming lamella. The grid moves with the characteristics,
-   // so refining the region the lamella starts in keeps it resolved while it
-   // travels. Does nothing when the grid there is fine enough already.
-   if ( band_cell_size > 0.0 )
-   {
-      mesh_gen_RefBand( band_region_end, band_cell_size );
-   }
+   // Resolve whatever the initial condition is steep about. The regions were
+   // measured from the profile itself, so this covers a lamella at the
+   // meniscus, a boundary at the bottom and anything in between alike.
+   mesh_gen_RefFeature();
 DbgLv(1) << "RSA:_ra2:(4) Nx" << Nx << "x size" << x.size();
 
    for ( int i = 0; i < Nx; i++ )

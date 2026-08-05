@@ -131,13 +131,16 @@ class US_UTIL_EXTERN US_Astfem_RSA : public QObject
       double tot_conc;        //!< Total concentration in model
       int    Nx;              //!< Number of points used in radial direction
       int    dbg_level;       //!< Debug level
-      double band_cell_size;  //!< Radial cell size wanted across a band forming
-                              //!<  lamella, 0 when no such feature is present.
+      double feat_scale;      //!< Width of the steepest feature of the initial
+                              //!<  condition, infinite when it has none
+      double feat_cell_size;  //!< Radial cell size wanted where the initial
+                              //!<  condition is steep, 0 when nothing is.
                               //!<  Set by adapt_grid_resolution() together with
-                              //!<  the time step, used by mesh_gen_RefBand()
-      double band_region_end; //!< Outer radius of the region that carries the
-                              //!<  lamella and has to be resolved by cells of
-                              //!<  band_cell_size
+                              //!<  the time step, used by mesh_gen_RefFeature()
+      QVector< double > feat_lo;  //!< Inner radii of the regions to resolve
+      QVector< double > feat_hi;  //!< Outer radii of the regions to resolve
+      QVector< double > feat_r;   //!< Radii of the measured initial condition
+      QVector< double > feat_c;   //!< Values of the measured initial condition
 
       US_AstfemMath::AstFemParameters af_params;  //!< Parameters used for adaptive
                                                   //!<  space time finite element solution
@@ -238,21 +241,39 @@ class US_UTIL_EXTERN US_Astfem_RSA : public QObject
 
       void   mesh_gen_RefL  ( int, int );
 
-      //!< Replaces the meniscus side of the grid by a uniformly fine one so
-      //   that a band forming lamella is resolved by cells of the size the
-      //   current time step can carry.
-      //!< Input  : Outer radius of the region to resolve ( double )
-      //          : Wanted cell size in that region       ( double )
+      //!< Subdivides every grid interval that overlaps one of the regions in
+      //   feat_lo/feat_hi and is coarser than feat_cell_size. Existing points
+      //   are kept, so it composes with any mesh type and refines wherever the
+      //   feature happens to be - at the meniscus, at the bottom, or in the
+      //   middle of the column.
       //!< Output : x: QVector containing radial points
       //            ( updated after refinement )
-      void   mesh_gen_RefBand( double, double );
+      void   mesh_gen_RefFeature( void );
+
+      //!< Number of pieces a grid interval has to be split into so that the
+      //   feature regions are covered by cells of the given size. Returns 1
+      //   for an interval that does not touch any region.
+      //!< Input : Left and right radius of the interval, wanted cell size
+      int    interval_subdivisions( double, double, double ) const;
+
+      //!< Measures the steepest feature of an initial concentration vector and
+      //   records it, so that adapt_grid_resolution() can size the grid for it.
+      //!< Input  : Initial concentration vector on the initial grid
+      //!< Output : feat_scale, feat_r, feat_c
+      void   set_initial_feature( const US_AstfemMath::MfemInitial& );
+
+      //!< Same for a reacting group: the narrowest feature over all components
+      //   decides, and the steep regions are the union over all of them.
+      //!< Input  : Array of initial concentration vectors, number of components
+      //!< Output : feat_scale, feat_r, feat_c
+      void   set_initial_feature( const US_AstfemMath::MfemInitial*, int );
 
       //!< Derives the time step and the radial cell size from the steepest
       //   feature of the initial condition instead of from the sedimentation
-      //   characteristic alone. Only band forming runs carry such a feature in
-      //   the ASTFEM solver, so everything else is left untouched.
+      //   characteristic alone. A profile with no steep structure keeps the
+      //   classic characteristic step untouched.
       //!< Input  : Duration of the constant speed zone in seconds ( double )
-      //!< Output : af_params.dt, af_params.time_steps and band_cell_size
+      //!< Output : af_params.dt, af_params.time_steps and feat_cell_size
       void   adapt_grid_resolution( double );
 
       //!< Computes coefficient matrix for fixed mesh case
