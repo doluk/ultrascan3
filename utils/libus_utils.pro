@@ -39,6 +39,7 @@ HEADERS      = us_ana_profile.h   \
                us_eprofile.h      \
                us_experiment.h  \
                us_global.h        \
+               us_grid_control.h  \
                us_gzip.h          \
                us_hardware.h      \
                us_hydrosim.h      \
@@ -98,6 +99,7 @@ SOURCES      = us_ana_profile.cpp   \
                us_eprofile.cpp      \
                us_experiment.cpp  \
                us_global.cpp        \
+               us_grid_control.cpp  \
                us_gzip.cpp          \
                us_hardware.cpp      \
                us_http_post.cpp     \

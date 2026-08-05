@@ -4,6 +4,7 @@
 #include <cstring>
 #include <cmath>
 #include "us_lamm_astfvm.h"
+#include "us_grid_control.h"
 #include "us_math2.h"
 #include "us_constants.h"
 #include "us_astfem_rsa.h"
@@ -25,6 +26,7 @@ US_LammAstfvm::Mesh::Mesh( const double xl, const double xr, const int Nelem, co
    MonCutoff    = 1000;
    SmoothingWt  = 0.7;
    SmoothingCyl = 4;
+   MinCellSize  = 0.0;   // unbounded refinement until a solver sets a floor
 
    Ne      = Nelem;
    Nv      = Ne + 1;
@@ -279,8 +281,13 @@ void US_LammAstfvm::Mesh::Refine( const double beta ) {
    while ( true ) {
 
       // set marker for elements that need to be refined
+      // A halved cell must stay at or above MinCellSize: below that size the
+      // time step in use can no longer advance the cell without ringing, so
+      // the extra cells would buy oscillations instead of accuracy.
       for ( int k = 0; k < Ne; k++ ) {
-         Mark[ k ] = ((x[ k + 1 ] - x[ k ]) * MeshDen[ k ] > beta && RefLev[ k ] < MaxRefLev ) ? 1 : 0;
+         const double hnew = ( x[ k + 1 ] - x[ k ] ) * 0.5;
+         Mark[ k ] = ((x[ k + 1 ] - x[ k ]) * MeshDen[ k ] > beta && RefLev[ k ] < MaxRefLev
+                      && hnew >= MinCellSize ) ? 1 : 0;
       }
 
       for ( int k = 0; k < Ne - 1; k++ ) {    // RefLev differs at most 2 for nabos
@@ -411,6 +418,26 @@ void US_LammAstfvm::Mesh::RefineAround( const double r_min, const double width, 
    }
    // Smoothing(Ne, MeshDen, SmoothingWt, SmoothingCyl);
    Refine( beta ); // Use a small beta to force significant refinement
+}
+
+/////////////////////////
+//
+// SetMinCellSize
+//
+/////////////////////////
+void US_LammAstfvm::Mesh::SetMinCellSize( const double h )
+{
+   MinCellSize = qMax( 0.0, h );
+}
+
+/////////////////////////
+//
+// MinSpacing
+//
+/////////////////////////
+double US_LammAstfvm::Mesh::MinSpacing( void ) const
+{
+   return US_GridControl::min_spacing( x, Nv );
 }
 
 /////////////////////////
@@ -1098,17 +1125,59 @@ int US_LammAstfvm::solve_component( int compx )
    double conc_profile_startpoint = simparams.meniscus;
    double conc_profile_endpoint   = simparams.bottom;
    const bool bfe_gaussian_profile = US_Settings::debug_match( "BFE_GAUSSIAN" );
+
+   // ---------------------------------------------------------------------
+   // Feature aware resolution control.
+   //
+   // Up to here dt is the classic characteristic based step: the time the
+   // species needs to travel from meniscus to bottom, divided by simpoints.
+   // It knows nothing about how steep the profile actually is. From here on
+   // that value is only an upper bound (dt_char); the actual dt and the
+   // smallest cell the mesh may create are derived together from the steepest
+   // feature that is present, and both relax back towards the cheap values as
+   // soon as the profile has smoothed out.
+   // ---------------------------------------------------------------------
+   const US_GridControl::Config grid_cfg = US_GridControl::config();
+   const double grid_span   = param_b - param_m;
+   const double grid_base_h = grid_span / qMax( 2, simparams.simpoints );
+   double       grid_w2max  = param_w2;
+
+   for ( int js = 0; js < simparams.speed_step.size(); js++ )
+   {
+      const double w2s = sq( simparams.speed_step[js].rotorspeed * M_PI / 30.0 );
+      grid_w2max       = qMax( grid_w2max, w2s );
+   }
+
+   const double grid_vmax = US_GridControl::front_velocity( param_s, grid_w2max, param_b );
+   const double grid_dmax = qMax( param_D, 0.0 );
+   const double dt_char   = dt;             // ceiling: never step coarser
+   const double dt_floor  = dt_char / qMax( 1.0, grid_cfg.max_reduction );
+
    if ( simparams.band_forming )
    {
       // Calculate the width of the lamella
-      double angle          = simparams.cp_angle != 0.0 ? simparams.cp_angle : 2.5;
-      double path_length    = simparams.cp_pathlen != 0.0 ? simparams.cp_pathlen : 1.2;
-      double base           = sq( simparams.meniscus ) + simparams.band_volume * 360.0 / ( angle * path_length * M_PI );
-      double lamella_width  = sqrt( base ) - simparams.meniscus;
-      conc_profile_endpoint = conc_profile_startpoint + lamella_width;
+      const double grid_lamella = US_GridControl::lamella_width( simparams.meniscus,
+                                                                 simparams.band_volume,
+                                                                 simparams.cp_pathlen,
+                                                                 simparams.cp_angle );
+      conc_profile_endpoint     = conc_profile_startpoint + grid_lamella;
+
+      // A freshly layered lamella is a pair of discontinuities, so there is no
+      // feature width to measure yet. Bound the refinement below by the finest
+      // cell the cheapest admissible step can still carry - without that bound
+      // RefineAround() drives the cell size down to its own error tolerance,
+      // which is precisely the over-refinement that turns into ringing.
+      const double h_afford = US_GridControl::min_cell( dt_floor, grid_vmax, grid_dmax, grid_cfg );
+      const double h_start  = grid_cfg.enabled
+                              ? qMin( qMax( h_afford,
+                                            grid_base_h / qMax( 1.0, grid_cfg.max_refinement ) ),
+                                      grid_base_h )
+                              : 0.0;
+
+      msh->SetMinCellSize( h_start );
 
       // Increase the resolution for small lamellas
-      msh->RefineAround( conc_profile_startpoint, lamella_width * 2.0, err_tol );
+      msh->RefineAround( conc_profile_startpoint, grid_lamella * 2.0, err_tol );
    }
 
 
@@ -1204,6 +1273,47 @@ int US_LammAstfvm::solve_component( int compx )
       u1_vec = u1new_vec;
       u1     = u1_vec.data();
    }
+
+   // The mesh now carries the initial profile, so the steepest feature can be
+   // measured instead of guessed. Pick the first time step from it and tell
+   // the mesh how far it may refine while that step is in use.
+   //
+   // adapt_resolution() is used unchanged for every later step, which is what
+   // makes the back coupled cases work: when a cosedimenting gradient, a
+   // codiffusing density profile or a concentration dependent s sharpens the
+   // solution, the very next call sees the steeper profile and answers with a
+   // smaller dt and a finer mesh; when the profile smooths out again, both
+   // relax back towards the characteristic values.
+   const auto adapt_resolution = [&]( const double* xg, const int nvg,
+                                      const double* ug, const double dt_prev ) -> double
+   {
+      if ( !grid_cfg.enabled )
+      {
+         return dt_char;
+      }
+
+      // Node values of the piecewise quadratic solution live at even indices.
+      const double feature = US_GridControl::front_scale( xg, nvg, ug, 2 );
+      const double dt_want = US_GridControl::step_for_feature( dt_char, feature,
+                                                               grid_span, grid_base_h,
+                                                               grid_vmax, grid_dmax,
+                                                               grid_cfg );
+      const double dt_new  = US_GridControl::relax( dt_prev, dt_want, grid_cfg );
+
+      // The floor is capped at the unrefined cell size: the resolution the
+      // user asked for through simpoints is always allowed, the controller
+      // only decides how much finer than that the mesh may go.
+      msh->SetMinCellSize( qMin( US_GridControl::min_cell( dt_new, grid_vmax, grid_dmax, grid_cfg ),
+                                 grid_base_h ) );
+
+      return dt_new;
+   };
+
+   dt = adapt_resolution( x0, N0, u0, dt );
+   DbgLv( 1 ) << "LAsc: adaptive dt" << dt << "characteristic dt" << dt_char
+            << "floor" << dt_floor << "base h" << grid_base_h
+            << "mesh h_min" << msh->MinSpacing() << "Nv" << msh->Nv;
+
    for ( int jj = 0; jj < ncs; jj++ )
    {
       // get output radius vector
@@ -1266,11 +1376,26 @@ int US_LammAstfvm::solve_component( int compx )
    double       runtime      = 0.0;
    double       dt_scaling   = 0.0;
    bool         break_switch = false;
-   const double original_dt  = dt;
+   // The cosedimenting ramp is driven by the characteristic step, exactly as
+   // before: the controller must be able to make a step finer without also
+   // slowing down the ramp that grows it back.
+   const double original_dt  = dt_char;
+   // Step the resolution controller currently asks for. It is tracked apart
+   // from the step actually taken so that the cosedimenting schedule below
+   // stays the schedule it was tuned to be.
+   double       dt_ctl       = dt;
    int          scan_hint    = 2;
    int*         p_scan_hint  = &scan_hint;
+
+   // dt is no longer constant, so ntc is only a safety bound on the iteration
+   // count; the loop really terminates once the last output scan was filled.
+   // Size the bound for the smallest step the controller may settle on.
+   const double ntc_est = solut_t / qMax( dt_floor, 1.0e-6 );
+   const int    ntc_max = qMax( ntc,
+                                static_cast< int >( qMin( ntc_est, 1.0e8 ) ) + 2 );
+
    // main loop for time
-   for ( jt = 0, kt = 0; jt < ntc; jt++ )
+   for ( jt = 0, kt = 0; jt < ntc_max; jt++ )
    {
       DbgLv( 2 ) << "---------------------------------------";
       timer.restart();
@@ -1313,14 +1438,20 @@ int US_LammAstfvm::solve_component( int compx )
          //   dt_scaling += original_dt * 0.05;
          //}
          t0 = runtime;
-         runtime += qMin( ( original_dt + dt_scaling ), dt_old );
+         // The cosedimenting ramp stays as it is - it is the schedule the
+         // gradient interpolation was tuned for. The resolution controller may
+         // only make the step finer, never coarser, so a steep component
+         // profile is still resolved while the cosed behavior is preserved.
+         runtime += qMin( qMin( ( original_dt + dt_scaling ), dt_old ), dt_ctl );
          t1 = runtime;
          dt = t1 - t0;
       }
       else
       {
-         t0 = dt * static_cast<double>(jt);
-         t1 = t0 + dt;
+         dt       = dt_ctl;
+         t0       = runtime;
+         t1       = t0 + dt;
+         runtime  = t1;
       }
       ts = af_data.scan[kt].time; // time at output scan
       while ( ts < t0 && kt < af_data.scan.size() - 1 )
@@ -1548,6 +1679,21 @@ int US_LammAstfvm::solve_component( int compx )
       u0_vec.swap( u1_vec );
       u0 = u0_vec.data();
       u1 = u1_vec.data();
+
+      // Re-derive dt and the refinement floor from the profile that was just
+      // produced. This is the point where back coupled effects feed back into
+      // the resolution: whatever sharpened the solution during this step is
+      // visible in u0 now and is answered before the next step is taken.
+      // dt stays at or below dt_char, which the scan spacing clamp already
+      // keeps under the smallest gap between two output scans, so a step can
+      // never jump over a scan no matter how far the controller relaxes.
+      dt_ctl = adapt_resolution( x0, N0, u0, dt_ctl );
+
+      if ( dbg_level > 1  &&  ( ( jt / 50 ) * 50 ) == jt )
+      {
+         DbgLv( 2 ) << "LAsc: adapt jt" << jt << "t" << runtime << "dt" << dt_ctl
+                  << "Nv" << N0 << "h_min" << msh->MinSpacing();
+      }
    } // end main time loop
 
    if ( dbg_level > 0 )

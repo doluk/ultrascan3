@@ -1,6 +1,7 @@
 //! \file us_astfem_rsa.cpp
 #include "us_astfem_rsa.h"
 #include "us_astfem_math.h"
+#include "us_grid_control.h"
 #include "us_hardware.h"
 #include "us_math2.h"
 #include "us_memory.h"
@@ -44,6 +45,8 @@ US_Astfem_RSA::US_Astfem_RSA( US_Model&                model,
                              // refer to display on experimental grid.
    show_movie      = false;  // Flag used to see a movie i.e. movement of scans.
    dbg_level       = 0  ;    // Flag used to choose a debug level.
+   band_cell_size  = 0.0;    // No steep initial feature until one is detected.
+   band_region_end = 0.0;
 }
 
 //!< Takes the experimental data i.e. 'exp_data' as input and updates the scans
@@ -630,6 +633,10 @@ DbgLv(1) << "RSA:calc:  dt" << af_params.dt << "rat omgf simp"
             af_params.start_time = current_time;// Update starting time for constant speed zone
             af_params.start_om2t = current_om2t;// Update starting w2t for constant speed zone
 
+            // Let a steep initial feature lower dt and ask for a finer radial
+            // cell size; a smooth start leaves both untouched
+            adapt_grid_resolution( duration );
+
 #ifdef TIMING_RA
 QDateTime clcSt4 = QDateTime::currentDateTime();
 totT3+=(clcSt3.msecsTo(clcSt4));
@@ -1042,8 +1049,13 @@ DbgLv(1) << "RSA: ***COMPUTED simpoints:" << af_params.simpoints;
          // Find out the minimum number of simpoints needed to provide the
          // necessary dt:
          af_params.time_steps = qCeil ( duration / af_params.dt );;
+
          af_params.start_time = current_time;// Update starting time for constant speed zone
          af_params.start_om2t = current_om2t;// Update starting w2t for constant speed zone
+
+         // Let a steep initial feature lower dt and ask for a finer radial
+         // cell size; a smooth start leaves both untouched
+         adapt_grid_resolution( duration );
          US_AstfemMath::MfemData* ed = &af_data;
 
 DbgLv(2) << "RSA:   tsteps sttime" << af_params.time_steps << current_time;
@@ -1802,6 +1814,10 @@ totT2+=(clcSt2.msecsTo(clcSt3));
             af_params.start_time = current_time;// Update starting time for constant speed zone
             af_params.start_om2t = current_om2t;// Update starting w2t for constant speed zone
 
+            // Let a steep initial feature lower dt and ask for a finer radial
+            // cell size; a smooth start leaves both untouched
+            adapt_grid_resolution( duration );
+
 #ifdef TIMING_RA
             QDateTime clcSt4 = QDateTime::currentDateTime();
 totT3+=(clcSt3.msecsTo(clcSt4));
@@ -2216,8 +2232,13 @@ DbgLv(1) << "RSA:emit ccomp: component" << cc+1;
          // Find out the minimum number of simpoints needed to provide the
          // necessary dt:
          af_params.time_steps = qCeil ( duration / af_params.dt );;
+
          af_params.start_time = current_time;// Update starting time for constant speed zone
          af_params.start_om2t = current_om2t;// Update starting w2t for constant speed zone
+
+         // Let a steep initial feature lower dt and ask for a finer radial
+         // cell size; a smooth start leaves both untouched
+         adapt_grid_resolution( duration );
          US_AstfemMath::MfemData* ed = &af_data;
 
          DbgLv(2) << "RSA:   tsteps sttime" << af_params.time_steps << current_time;
@@ -3038,6 +3059,14 @@ QDateTime clcSt9 = clcSt0;
             if ( xA[ Nx - jx - 1 ] < xc ) break;
       }
       mesh_gen_RefL( jx + 1, 4 * jx );
+   }
+
+   // Resolve a band forming lamella. The grid moves with the characteristics,
+   // so refining the region the lamella starts in keeps it resolved while it
+   // travels. Does nothing when the grid there is fine enough already.
+   if ( band_cell_size > 0.0 )
+   {
+      mesh_gen_RefBand( band_region_end, band_cell_size );
    }
 
    //--------------------------------------
@@ -4014,6 +4043,164 @@ DbgLv(1) << "RSA:mgR: Nx xA sme" << Nx << x[0] << x[1] << x[2]
  << x[mm-1] << x[mm] << x[mm+1] << x[mm+2] << x[ee-2] << x[ee-1] << x[ee];
 }
 
+// Replace the meniscus side of the grid by a uniformly fine one
+//
+//  parameters: r_end = outer radius of the region that has to be resolved
+//              h     = wanted cell size inside that region
+void US_Astfem_RSA::mesh_gen_RefBand( double r_end, double h )
+{
+   const int nx = (int)x.size();
+
+   xA = x.data();
+
+   if ( nx < 3  ||  h <= 0.0 )
+   {
+      return;
+   }
+
+   const double r_beg = xA[ 0 ];
+   r_end              = qMin( r_end, xA[ nx - 2 ] );
+
+   if ( r_end <= r_beg )
+   {
+      return;
+   }
+
+   // Index of the first original point at or beyond the region to resolve
+   int jx = 1;
+
+   while ( jx < ( nx - 2 )  &&  xA[ jx ] < r_end )
+   {
+      jx++;
+   }
+
+   const double span  = xA[ jx ] - r_beg;
+   const int    nfine = US_GridControl::points_for_span( span, h );
+
+   if ( nfine <= ( jx + 1 ) )
+   {
+      return;                   // the existing grid is already fine enough
+   }
+
+   QVector< double > zz;
+   zz.reserve( nx + nfine );
+
+   const double dh = span / (double)( nfine - 1 );
+
+   for ( int jp = 0; jp < ( nfine - 1 ); jp++ )
+   {
+      zz .append( r_beg + (double)jp * dh );
+   }
+
+   for ( int jp = jx; jp < nx; jp++ )
+   {
+      zz .append( xA[ jp ] );
+   }
+
+   x  = zz;
+   Nx = x.size();
+   xA = x.data();
+
+DbgLv(1) << "RSA:mgRB: Nx" << Nx << "region" << r_beg << xA[ nfine - 1 ]
+ << "h wanted" << h << "h used" << dh << "pts" << nfine;
+}
+
+// Derive dt and the radial cell size from the steepest feature of the initial
+// condition instead of from the sedimentation characteristic alone.
+//
+// The classic ASTFEM resolution follows the characteristic line of the fastest
+// species: dt is the meniscus-to-bottom travel time divided by simpoints. That
+// is fine for a boundary which starts as a single step at the meniscus, but a
+// band forming run starts with a lamella that is one to two orders of
+// magnitude narrower than the column. The characteristic step then moves that
+// lamella by many cells per step, which is what shows up as oscillations. Here
+// the time step and the cell size wanted across the lamella are picked
+// together, and only for runs that actually carry such a feature.
+void US_Astfem_RSA::adapt_grid_resolution( double duration )
+{
+   band_cell_size  = 0.0;
+   band_region_end = 0.0;
+
+   US_GridControl::Config cfg = US_GridControl::config();
+
+   if ( ! cfg.enabled  ||  ! simparams.band_forming )
+   {
+      return;
+   }
+
+   // Unlike the finite volume solver, ASTFEM cannot relax dt while a speed
+   // step runs: the stiffness matrices are assembled once for a fixed dt. The
+   // whole budget is therefore spent up front and has to stay modest, so cap
+   // how far below the characteristic step the controller may go.
+   cfg.max_reduction = qMin( cfg.max_reduction, 8.0 );
+
+   const double lamella = US_GridControl::lamella_width( af_params.current_meniscus,
+                                                         simparams.band_volume,
+                                                         simparams.cp_pathlen,
+                                                         simparams.cp_angle );
+   const double span    = af_params.current_bottom - af_params.current_meniscus;
+
+   if ( lamella <= 0.0  ||  span <= 0.0  ||
+        af_params.dt <= 0.0  ||  duration <= 0.0 )
+   {
+      return;
+   }
+
+   double s_max = 0.0;
+   double d_max = 0.0;
+
+   for ( int ii = 0; ii < af_params.s.size(); ii++ )
+   {
+      s_max = qMax( s_max, qAbs( af_params.s[ ii ] ) );
+   }
+
+   for ( int ii = 0; ii < af_params.D.size(); ii++ )
+   {
+      d_max = qMax( d_max, qAbs( af_params.D[ ii ] ) );
+   }
+
+   const double base_h  = span / (double)qMax( 2, af_params.simpoints - 1 );
+   const double vel_max = US_GridControl::front_velocity( s_max, af_params.omega_s,
+                                                          af_params.current_bottom );
+
+   // A freshly layered lamella is a pair of discontinuities, so there is no
+   // feature width to measure: a feature of zero asks the controller for the
+   // finest pair of dt and cell size it is allowed to spend.
+   const double dt_new  = US_GridControl::step_for_feature( af_params.dt, 0.0, span,
+                                                            base_h, vel_max, d_max, cfg );
+
+   if ( dt_new >= af_params.dt )
+   {
+      return;                   // nothing the current resolution cannot carry
+   }
+
+   const double h_new = qMin( US_GridControl::min_cell( dt_new, vel_max, d_max, cfg ),
+                              base_h );
+
+DbgLv(1) << "RSA:agr: band dt" << af_params.dt << "->" << dt_new
+ << "cell" << base_h << "->" << h_new << "lamella" << lamella
+ << "steps" << af_params.time_steps << "->" << qCeil( duration / dt_new );
+
+   af_params.dt         = dt_new;
+   af_params.time_steps = qCeil( duration / af_params.dt );
+
+   // The radial refinement can only sit at the meniscus side, because the mesh
+   // is regenerated at the start of every speed step. That is where the band
+   // is while it is layered; once it has sedimented away from the meniscus the
+   // refinement would be spent on empty solvent, so ask for it only as long as
+   // the band is still inside the region it started in. The reduced time step
+   // above keeps applying for the whole run either way.
+   const double r_band = af_params.current_meniscus
+                         * exp( s_max * af_params.start_om2t );
+   const double r_end  = af_params.current_meniscus + lamella * 2.0;
+
+   if ( r_band < r_end )
+   {
+      band_cell_size  = h_new;
+      band_region_end = r_end;
+   }
+}
+
 // Compute the coefficient matrices based on fixed mesh
 void US_Astfem_RSA::ComputeCoefMatrixFixedMesh(
       double D, double sw2, double** CA, double** CB )
@@ -4911,6 +5098,14 @@ DbgLv(1) << "RSA:_ra2: s_min s_max" << s_min << s_max << "xc xAj"
                      "floating mixed, use uniform mesh";
       }
 DbgLv(1) << "RSA:_ra2:(3) Nx" << Nx << "x size" << x.size();
+   }
+
+   // Resolve a band forming lamella. The grid moves with the characteristics,
+   // so refining the region the lamella starts in keeps it resolved while it
+   // travels. Does nothing when the grid there is fine enough already.
+   if ( band_cell_size > 0.0 )
+   {
+      mesh_gen_RefBand( band_region_end, band_cell_size );
    }
 DbgLv(1) << "RSA:_ra2:(4) Nx" << Nx << "x size" << x.size();
 

@@ -131,6 +131,13 @@ class US_UTIL_EXTERN US_Astfem_RSA : public QObject
       double tot_conc;        //!< Total concentration in model
       int    Nx;              //!< Number of points used in radial direction
       int    dbg_level;       //!< Debug level
+      double band_cell_size;  //!< Radial cell size wanted across a band forming
+                              //!<  lamella, 0 when no such feature is present.
+                              //!<  Set by adapt_grid_resolution() together with
+                              //!<  the time step, used by mesh_gen_RefBand()
+      double band_region_end; //!< Outer radius of the region that carries the
+                              //!<  lamella and has to be resolved by cells of
+                              //!<  band_cell_size
 
       US_AstfemMath::AstFemParameters af_params;  //!< Parameters used for adaptive
                                                   //!<  space time finite element solution
@@ -230,6 +237,23 @@ class US_UTIL_EXTERN US_Astfem_RSA : public QObject
       //            ( updated after refinement )
 
       void   mesh_gen_RefL  ( int, int );
+
+      //!< Replaces the meniscus side of the grid by a uniformly fine one so
+      //   that a band forming lamella is resolved by cells of the size the
+      //   current time step can carry.
+      //!< Input  : Outer radius of the region to resolve ( double )
+      //          : Wanted cell size in that region       ( double )
+      //!< Output : x: QVector containing radial points
+      //            ( updated after refinement )
+      void   mesh_gen_RefBand( double, double );
+
+      //!< Derives the time step and the radial cell size from the steepest
+      //   feature of the initial condition instead of from the sedimentation
+      //   characteristic alone. Only band forming runs carry such a feature in
+      //   the ASTFEM solver, so everything else is left untouched.
+      //!< Input  : Duration of the constant speed zone in seconds ( double )
+      //!< Output : af_params.dt, af_params.time_steps and band_cell_size
+      void   adapt_grid_resolution( double );
 
       //!< Computes coefficient matrix for fixed mesh case
 

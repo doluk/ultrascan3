@@ -55,6 +55,19 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
             //! \param ErrTol Error tolerance
             void RefineAround( double r_min, double width, double ErrTol );
 
+            //! \brief Set the smallest cell size the refinement may produce
+            //!
+            //! Cells below this size cannot be advanced without ringing by the
+            //! time step currently in use, so refining into them only costs
+            //! work and adds oscillations. A value of zero (the default)
+            //! leaves the refinement unbounded, as it was historically.
+            //! \param h Smallest admissible cell size in cm
+            void SetMinCellSize( double h );
+
+            //! \brief Smallest cell size currently present in the mesh
+            //! \returns Smallest distance between neighboring grid points
+            double MinSpacing( void ) const;
+
             int     Nv;       //!< Number of grids
             int     Ne;       //!< Number of elements
             double* x;        //!< radius coordinates of grids
@@ -66,6 +79,7 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
             double  MonCutoff;
             double  SmoothingWt;
             int     SmoothingCyl;
+            double  MinCellSize;     // smallest admissible cell size (0=off)
 
             int*    Eid;      // elem id
             int*    RefLev;   // refinement level of an elem
