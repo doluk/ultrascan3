@@ -94,7 +94,7 @@ US_AnalysisControl2D::US_AnalysisControl2D( QList< SS_DATASET* >& dsets,
    QPushButton* pb_help    = us_pushbutton( tr( "Help" ) );
    QPushButton* pb_close   = us_pushbutton( tr( "Close" ) );
    QPushButton* pb_advance = us_pushbutton( tr( "Advanced Analysis Controls" ) );
-   QPushButton* pb_anorm   = us_pushbutton( tr( "Plot Norm Grid" ) );
+   pb_anorm                = us_pushbutton( tr( "Plot Norm Grid" ) );
 
    te_status               = us_textedit();
    us_setReadOnly( te_status, true );
@@ -1151,7 +1151,12 @@ void US_AnalysisControl2D::calculate_norms( )
    US_SolveSim::DataSet* dset;
 
    int nthrd       = (int)ct_thrdcnt->value();
-DbgLv(1) << " calculate_norms is called" << nthrd; 
+DbgLv(1) << " calculate_norms is called" << nthrd;
+
+   // Block re-entry:  a second pass while workers are still running would
+   //  reset kthrdr and let two sets of threads write model2 concurrently.
+   pb_anorm->setEnabled( false );
+
    normstep = 0;
    int attr_x      = 0;      // Default X is s
    int attr_y      = 1;      // Default Y is f/f0
@@ -1189,6 +1194,19 @@ DbgLv(1)<< "CN: nprs nprk" << nprs << nprk << "s_step" << s_step << "ff0_step" <
    solutes         = US_Solute::create_solutes( slo, sup, s_step, klo, kup, ff0_step, cff0 );
 
    int nsolutes    = solutes.size();
+
+   if ( nsolutes < 1 )
+   {  // Nothing to compute:  the grid limits produced no solute points
+      QMessageBox::warning( this, tr( "Empty Norm Grid" ),
+         tr( "The current s and f/f0 limits produce no grid points.\n"
+             "Adjust the grid limits and step counts, then retry." ) );
+      pb_anorm->setEnabled( true );
+      return;
+   }
+
+   // Never start more threads than there are solute points:  a thread with
+   //  no work has no valid solute indexes.
+   nthrd           = qMin( nthrd, nsolutes );
    kthrdr          = nthrd;          // Threads remaining
    dset            = dsets[ 0 ];
 
@@ -1446,11 +1464,16 @@ DbgLv(1)<<"kk="<< kk ;
       model2.components[ kk ].signal_concentration = workout.csolutes[ ii ].c;
    }
 
-   model2.update_coefficients();
+   wthr->deleteLater();          // Worker has delivered its results
    kthrdr--;
 
    if ( kthrdr == 0 )
    {
+      // Complete the remaining coefficients only once, when every component
+      //  has been filled in.  Doing this per worker ran it over components
+      //  that were still all-zero, which is not a valid model.
+      model2.update_coefficients();
+
       double cff0       = ck_varvbar->isChecked() ? ct_constff0->value() : 0.0;
       bool cnst_vbr     = ( cff0 == 0.0 );
 
@@ -1462,12 +1485,21 @@ DbgLv(1) << "model2_values_from_norm_complete"
  << "  norm" << model2.components[ ii ].signal_concentration;
       }
 
+      if ( ! analcd1.isNull() )
+      {  // Discard any dialog left over from a previous norm calculation
+         //  (WA_DeleteOnClose below makes close() destroy it)
+         analcd1->close();
+      }
+
       analcd1  = new US_show_norm( &model2, cnst_vbr, parentw );
+      analcd1->setAttribute( Qt::WA_DeleteOnClose );
 
       analcd1->show();
 //DbgLv(1) << "time_before_kthrd=0" << QDateTime.toString( "hh:mm:ss") ;
+
+      pb_anorm->setEnabled( true );
    }
-   
+
 DbgLv(1) << "uac2:NC: kthrdr" << kthrdr << "COMPLETE thrn" << workout.thrn;
 }
 

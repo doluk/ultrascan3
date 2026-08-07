@@ -39,11 +39,13 @@ bool distro_lessthan( const S_Solute &solu1, const S_Solute &solu2 )
 //------------------------------------------------------------------------
 // US_Pseudo3D_Combine class constructor
 
-US_show_norm::US_show_norm(  US_Model* model, bool& cnst_vbar, QWidget* p )
-   : US_WidgetsDialog( p, Qt::WindowFlags() ), cnst_vbar( cnst_vbar )
+US_show_norm::US_show_norm(  US_Model* a_model, bool a_cnst_vbar, QWidget* p )
+   : US_WidgetsDialog( p, Qt::WindowFlags() )
 
 {
    // set up the GUI
+   cnst_vbar      = a_cnst_vbar;
+   model          = a_model;      // must be set before any set_limits() call
    parentw        = p;
    dbg_level      = US_Settings::us_debug();
    colormap       = NULL;
@@ -105,13 +107,18 @@ US_show_norm::US_show_norm(  US_Model* model, bool& cnst_vbar, QWidget* p )
    connect( ck_autosxy, SIGNAL( clicked() ),
             this,       SLOT( select_autosxy() ) );
 
+   // The Z range is always taken from the data:  there is no manual Z entry
+   //  to fall back on, so this is shown checked and disabled rather than
+   //  offering a choice that cannot be honored.
    us_checkbox( tr( "Autoscale Z" ), ck_autoscz, true );
-   connect( ck_autoscz, SIGNAL( clicked() ),
-            this,       SLOT( select_autoscz() ) );
+   ck_autoscz->setEnabled( false );
+   ck_autoscz->setToolTip( tr( "The Z range is always taken from the data" ) );
 
-   us_checkbox( tr( "Continuous Loop" ), ck_conloop, true );
-   connect( ck_conloop, SIGNAL( clicked() ),
-            this,       SLOT( select_conloop() ) );
+   // Not yet implemented for the norm display:  shown disabled rather than
+   //  connected to a slot that does not exist.
+   us_checkbox( tr( "Continuous Loop" ), ck_conloop, false );
+   ck_conloop->setEnabled( false );
+   ck_conloop->setToolTip( tr( "Not implemented for norm grids" ) );
 
    us_checkbox( tr( "Z as Percentage" ), ck_zpcent,  false );
 
@@ -155,8 +162,11 @@ US_show_norm::US_show_norm(  US_Model* model, bool& cnst_vbar, QWidget* p )
 
    ct_curr_distr = us_counter( 3, 0.0, 10.0, 0.0 );
    ct_curr_distr->setSingleStep( 1 );
-   connect( ct_curr_distr, SIGNAL( valueChanged     ( double ) ),
-            this,          SLOT(   update_curr_distr( double ) ) );
+   // Only a single distribution is ever shown here, so this selector has
+   //  nothing to select:  shown disabled rather than connected to a slot
+   //  that does not exist.
+   ct_curr_distr->setEnabled( false );
+   ct_curr_distr->setToolTip( tr( "Only one norm distribution is loaded" ) );
 
    te_distr_info = us_textedit();
    te_distr_info->setText    ( tr( "Run:  runID.triple (method)\n" )
@@ -325,36 +335,28 @@ US_show_norm::US_show_norm(  US_Model* model, bool& cnst_vbar, QWidget* p )
    runsel     = true;
    latest     = true;
    reset() ;
-   int nsolutes = model->components.size();
 
-   S_Solute sol ;
-   xy_distro.clear();
+   build_xy_distro();
 
-   double tot_conc  = 0.0;
-   plot_y           = cnst_vbar ? ATTR_K : ATTR_V;
+   // Keep the Y-axis selector consistent with the attribute actually
+   //  plotted:  vbar for a constant-f/f0 grid, f/f0 otherwise.
+   if ( plot_y == ATTR_V )
+      rb_y_vbar->setChecked( true );
+   else
+      rb_y_ff0 ->setChecked( true );
 
-   for ( int ii = 0; ii < nsolutes; ii++ )
-   {
-       sol.s   = model->components[ ii ].s;
-       sol.k   = ( plot_y == ATTR_K ) ? model->components[ ii ].f_f0
-                                      : model->components[ ii ].vbar20;
-       sol.c   = model->components[ ii ].signal_concentration;
-       xy_distro << sol;
-       tot_conc += xy_distro[ii].c;
-//DbgLv(1) << "distro_values" << tot_conc << xy_distro[ii].c;
-   }
-   xy_distro_zp.clear();
-   xy_distro_zp.reserve(nsolutes);
-
-   for ( int ii = 0; ii < nsolutes; ii++ )
-   {
-      S_Solute sol = xy_distro[ ii ];    
-      sol.c = sol.c * 100.0 / tot_conc;     
-      xy_distro_zp << sol;
-   }
-
-   plot_data();
+   // Apply the matching axis titles, counter labels and ranges, derive the
+   //  plot limits and draw.  Previously the Y labels and limits were left
+   //  describing f/f0 even when vbar was the attribute being plotted.
+   select_y_axis( plot_y );
 }
+
+US_show_norm::~US_show_norm()
+{
+   delete colormap;
+   colormap   = NULL;
+}
+
 void US_show_norm::reset( void )
 {
    dataPlotClear( data_plot );
@@ -363,7 +365,9 @@ void US_show_norm::reset( void )
    need_save  = false;
 
    plot_x     = ATTR_S;
-   plot_y     = ATTR_K;
+   // Y follows the attribute that actually varies over the grid, so that
+   //  Reset cannot leave the axis labelled f/f0 while vbar is plotted.
+   plot_y     = cnst_vbar ? ATTR_K : ATTR_V;
    resolu     = 90.0;
    ct_resolu->setRange( 1.0, 100.0 );
    ct_resolu->setSingleStep( 1.0 );
@@ -415,6 +419,7 @@ void US_show_norm::reset( void )
    ct_plt_smax->setEnabled( false );
 
    // default to white-cyan-magenta-red-black color map
+   delete colormap;
    colormap  = new QwtLinearColorMap( Qt::white, Qt::black );
    colormap->addColorStop( 0.10, Qt::cyan );
    colormap->addColorStop( 0.50, Qt::magenta );
@@ -435,20 +440,30 @@ void US_show_norm::plot_data( void )
    QList< S_Solute >* sol_d ;
 
    if ( zpcent )
-   {
+   {  // Each column norm as a percentage of the sum of all column norms
       data_plot->setAxisTitle( QwtPlot::yRight,
-         tr( "Norms on grids" ) );
+         tr( "Column norm (percent of total)" ) );
       sol_d    = &xy_distro_zp;
    }
 
    else
-   {
+   {  // Norm of the A-matrix column, i.e. the L2 norm of the simulated
+      //  signal of a single species at unit loading concentration
       data_plot->setAxisTitle( QwtPlot::yRight,
-         tr( "Norms on grids" ) );
+         tr( "Norm of A column (1 OD species)" ) );
       sol_d    = &xy_distro;
    }
 
    DbgLv(1)<<"sol_d values"<<sol_d->size() ;
+
+   if ( sol_d->size() < 1 )
+   {  // Nothing to raster.  US_SpectrogramData::setRaster() returns without
+      //  sizing its buffer for an empty list, so drawing a spectrogram here
+      //  would index an empty raster.
+      data_plot->detachItems( QwtPlotItem::Rtti_PlotSpectrogram );
+      data_plot->replot();
+      return;
+   }
 
    data_plot->detachItems( QwtPlotItem::Rtti_PlotSpectrogram );
 
@@ -470,17 +485,25 @@ DbgLv(1) << "colormap_before" << colormap;
             ( plt_smax - plt_smin ), ( plt_kmax - plt_kmin ) );
    }
 
-   plt_zmin = zpcent ? 100.0 :  1e+50;
-   plt_zmax = zpcent ?   0.0 : -1e+50;
+   // Find Z min,max for the current distribution.  This must happen
+   //  unconditionally:  when it was done only for auto-scale-Z, plt_zmax
+   //  kept its -1e+50 initializer and produced an inverted color-bar
+   //  interval and an inverted yRight scale.
+   plt_zmin = 1e+50;
+   plt_zmax = -1e+50;
 
-   if ( auto_scz )
-   {  // Find Z min,max for current distribution
-      for ( int jj = 0; jj < sol_d->size(); jj++ )
-      {
-         double zval = sol_d->at( jj ).c;
-         plt_zmin    = qMin( plt_zmin, zval );
-         plt_zmax    = qMax( plt_zmax, zval );
-      }
+   for ( int jj = 0; jj < sol_d->size(); jj++ )
+   {
+      double zval = sol_d->at( jj ).c;
+      plt_zmin    = qMin( plt_zmin, zval );
+      plt_zmax    = qMax( plt_zmax, zval );
+   }
+
+   if ( plt_zmax <= 0.0 )
+   {  // Every norm zero:  use a nominal range so that the color map
+      //  and the color bar stay well-defined.
+      plt_zmin    = 0.0;
+      plt_zmax    = 1.0;
    }
 
    spec_dat.setRastRanges( xreso, yreso, resolu, zfloor, drect );
@@ -602,6 +625,15 @@ void US_show_norm::load_color()
    QList< double > cmvalue;
 
    US_ColorGradIO::read_color_steps( fname, cmcolor, cmvalue );
+
+   if ( cmcolor.size() < 2  ||  cmvalue.size() != cmcolor.size() )
+   {  // Unusable color file:  keep the map currently in effect
+      QMessageBox::warning( this, tr( "Color Map Error" ),
+         tr( "No usable color steps could be read from:\n  %1" ).arg( fname ) );
+      return;
+   }
+
+   delete colormap;
    colormap  = new QwtLinearColorMap( cmcolor.first(), cmcolor.last() );
 
    for ( int jj = 1; jj < cmvalue.size() - 1; jj++ )
@@ -629,14 +661,16 @@ void US_show_norm::set_limits()
    data_plot->setAxisTitle( QwtPlot::xBottom, xa_title );
    data_plot->setAxisTitle( QwtPlot::yLeft,   ya_title );
 
-   if ( model->components.size() < 1 )
+   if ( xy_distro.size() < 1 )
       return;
 
-   // find min,max for X,Y distributions
-   for ( int ii = 0; ii < model->components.size(); ii++ )
+   // find min,max for X,Y distributions.  Derive them from the points that
+   //  are actually plotted, so that the axis limits cannot disagree with
+   //  the raster (the Y attribute is f/f0 or vbar depending on grid type).
+   for ( int ii = 0; ii < xy_distro.size(); ii++ )
    {
-      double sval = model->components[ii].s;
-      double kval = model->components[ii].f_f0;
+      double sval = xy_distro[ ii ].s;
+      double kval = xy_distro[ ii ].k;
       smin        = qMin( smin, sval );
       smax        = qMax( smax, sval );
       kmin        = qMin( kmin, kval );
@@ -842,29 +876,44 @@ void US_show_norm::select_y_axis( int ival )
 // Re-generate the XY version of the current distribution
 void US_show_norm::build_xy_distro()
 {
-   if ( model->components.size() < 1 )
+   xy_distro   .clear();
+   xy_distro_zp.clear();
+
+   int nsolutes  = model->components.count();
+
+   if ( nsolutes < 1 )
       return;
-   S_Solute sol ;
-   xy_distro.clear();
+
+   xy_distro   .reserve( nsolutes );
+   xy_distro_zp.reserve( nsolutes );
+
+   // In the constant-vbar case the grid varies f/f0; in the constant-f/f0
+   //  case it varies vbar.  The Y attribute follows whichever one varies.
+   plot_y        = cnst_vbar ? ATTR_K : ATTR_V;
+
+   S_Solute sol;
    double tot_conc  = 0.0;
-   int    nsolutes    =  model->components.count();;
-   plot_y = cnst_vbar ? ATTR_K : ATTR_V;
 
    for ( int ii = 0; ii < nsolutes; ii++ )
    {
-       sol.s   = model->components[ ii ].s;
-       sol.k   = ( plot_y == ATTR_K ) ? model->components[ ii ].f_f0 : model->components[ ii ].vbar20;
-       sol.c   = model->components[ ii ].signal_concentration;
-       xy_distro << sol;
-       tot_conc += xy_distro[ii].c;
+      sol.s      = model->components[ ii ].s;
+      sol.k      = ( plot_y == ATTR_K ) ? model->components[ ii ].f_f0
+                                        : model->components[ ii ].vbar20;
+      sol.c      = model->components[ ii ].signal_concentration;
+      xy_distro << sol;
+      tot_conc  += sol.c;
    }
+
+   // Percentage-of-total version.  Guard against an all-zero norm set
+   //  (e.g. every column below the NNLS norm cutoff).
+   double zscale = ( tot_conc > 0.0 ) ? ( 100.0 / tot_conc ) : 0.0;
 
    for ( int ii = 0; ii < nsolutes; ii++ )
    {
-     xy_distro_zp[ ii ].c = xy_distro[ii].c * 100.0 / tot_conc;
-
+      sol        = xy_distro[ ii ];
+      sol.c     *= zscale;
+      xy_distro_zp << sol;
    }
-
 }
 
 // Set annotation title for a plot index

@@ -29,10 +29,13 @@ class US_show_norm : public US_WidgetsDialog
    Q_OBJECT
 
    public:
-      US_show_norm( US_Model*, bool&,  QWidget* = 0 ); 
+      US_show_norm( US_Model*, bool,  QWidget* = 0 );
+      ~US_show_norm();
 
    private:
-      bool&         cnst_vbar;
+      // Note: held by value.  The caller passes a local flag, so a reference
+      //  member would dangle once this modeless dialog outlives that frame.
+      bool          cnst_vbar;
       US_Model*     model;
 
       enum attr_type { ATTR_S, ATTR_K, ATTR_W, ATTR_V, ATTR_D, ATTR_F };

@@ -144,6 +144,7 @@ class US_AnalysisControl2D : public US_WidgetsDialog
       QPushButton*  pb_plot;
       QPushButton*  pb_save;
       QPushButton*  pb_ldmodel;
+      QPushButton*  pb_anorm;
 
    protected:
       US_Help       showHelp;

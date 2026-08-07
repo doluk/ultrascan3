@@ -96,7 +96,16 @@ DbgLv(1) << "calc_norms is called" << nsolutes << nthrd ;
    }
 
    nwsols         = solxs.count();         // count of solutes for worker
-DbgLv(1) << "nwsols_" << nwsols << "solx0" << solxs[0] << "solx1" << solxs[1] 
+
+   if ( nwsols < 1 )
+   {  // No solute points fell to this worker:  nothing to simulate
+DbgLv(1) << "CN(WT):  CN:  no solutes for thread" << thrn;
+      solutes_c.clear();
+      emit work_complete( this );
+      return;
+   }
+
+DbgLv(1) << "nwsols_" << nwsols << "solx0" << solxs[0]
  << "solxn" << solxs[nwsols-1];
 
    solutes_c.resize( nwsols );             // computed solute points
