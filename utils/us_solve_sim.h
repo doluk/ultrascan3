@@ -104,6 +104,14 @@ class US_UTIL_EXTERN US_SolveSim : public QObject
     //! \returns         Flag of size problem existing
     bool check_grid_size( double, QString& );
 
+    //! \brief Get the A-matrix column-norm cutoff currently in effect.
+    //!
+    //! Columns whose norm falls below this value are dropped from the NNLS
+    //! problem entirely.  The built-in default may be overridden with a
+    //! "normCutoff=<value>" entry in the debug text settings.
+    //! \returns         Norm cutoff value below which A columns are cut
+    static double norm_cutoff( void );
+
     //! \brief Calculate a simulation and the resulting residuals
     //!
     //! \param offset         Starting data-sets offset

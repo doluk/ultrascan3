@@ -20,6 +20,14 @@ WorkerThreadCalcNorm::WorkerThreadCalcNorm( QObject* parent )
    attr_z     = 3;
    amask      = 0;
    cff0       = 0.0;
+   nss        = 0;
+   row0       = 0;
+   nrows      = 0;
+   nsamp      = 0;
+   sig_nrad   = 0;
+   sig_nscn   = 0;
+   sig_rstr   = 1;
+   sig_sstr   = 1;
    dbg_level  = US_Settings::us_debug();
 DbgLv(1) << "CN(WT): Thread created";
 }
@@ -44,6 +52,9 @@ void WorkerThreadCalcNorm::define_work( WorkPacketCN& workin )
    dset        = workin.dset;           // dataset pointer
    amask       = workin.amask;          // xyz attribute mask
    cff0        = workin.cff0;           // constant f/f0 value
+   nss         = workin.nss;            // grid row length (0 if no grid)
+   row0        = workin.row0;           // first grid row for this worker
+   nrows       = workin.nrows;          // grid rows for this worker
    attr_x      = ( amask >> 6 );        // attribute indecies
    attr_y      = ( amask >> 3 ) & 7;
    attr_z      = amask & 7;
@@ -63,15 +74,14 @@ void WorkerThreadCalcNorm::get_result( WorkPacketCN& workout )
    workout.solxs    = solxs;
    workout.nsolutes = nsolutes;
    workout.nwsols   = nwsols;
-//*DEBUG*
-//int nn=workout.csolutes.size();
-//int kk=nn/2;
-//int ni=solutes_i.size();
-//DbgLv(1) << "CN(WT): thr nn" << thrn << nn << "out sol0 solk soln"
-// << workout.csolutes[0].c << workout.csolutes[kk].c << workout.csolutes[nn-1].c
-// << "in sol0 soln" << ni << solutes_i[0].s*1.e13 << solutes_i[ni-1].s*1.e13
-// << solutes_i[0].c << solutes_i[ni-1].c;
-//*DEBUG*
+   workout.nss      = nss;
+   workout.row0     = row0;
+   workout.nrows    = nrows;
+   workout.nsamp    = nsamp;
+   workout.coher_x  = coher_x;
+   workout.coher_y  = coher_y;
+   workout.sig_first = sig_first;
+   workout.sig_last  = sig_last;
 DbgLv(1) << "get_result" << workout.csolutes.size() << workout.nthrd ;
 }
 
@@ -84,15 +94,71 @@ void WorkerThreadCalcNorm::run()
    exec();
 }
 
+// Build a unit-length subsampled signature of a simulation.
+//
+// The signature is used only for the neighbour-coherence diagnostic, never
+// for the reported norm.  Subsampling keeps a full grid row of signatures
+// small enough to hold in memory; the simulated boundaries are smooth, so
+// the sampled inner product tracks the full one closely.
+void WorkerThreadCalcNorm::signature( US_DataIO::RawData& simdat, float* sig )
+{
+   double sumsq   = 0.0;
+   int    kk      = 0;
+
+   for ( int ii = 0; ii < sig_nscn; ii++ )
+   {
+      int jscn    = ii * sig_sstr;
+
+      for ( int jj = 0; jj < sig_nrad; jj++ )
+      {
+         double dval = simdat.value( jscn, jj * sig_rstr );
+         sig[ kk++ ] = (float)dval;
+         sumsq      += ( dval * dval );
+      }
+   }
+
+   // Normalize to unit length so that a dot product of two signatures is
+   //  directly the cosine of the angle between the two A columns.
+   double scale   = ( sumsq > 0.0 ) ? ( 1.0 / sqrt( sumsq ) ) : 0.0;
+
+   for ( int ii = 0; ii < nsamp; ii++ )
+      sig[ ii ]   = (float)( sig[ ii ] * scale );
+}
+
+// Dot product of two unit-length signatures
+double WorkerThreadCalcNorm::coherence( const float* siga, const float* sigb )
+{
+   double dotp    = 0.0;
+
+   for ( int ii = 0; ii < nsamp; ii++ )
+      dotp       += ( (double)siga[ ii ] * (double)sigb[ ii ] );
+
+   return qBound( 0.0, dotp, 1.0 );
+}
+
 // Do the real work of a thread:  norm values for each of its solutes
 void WorkerThreadCalcNorm::calc_norms()
 {
 DbgLv(1) << "calc_norms is called" << nsolutes << nthrd ;
 
-   for ( int ii = ( thrn - 1 ); ii < nsolutes; ii += nthrd )
-   {  // fill list with this worker's solute point indecies
-      solxs << ii;
-      DbgLv(1) <<"solxs_values"<< solxs;
+   // A grid description means this worker owns a contiguous band of grid
+   //  rows and can report neighbour coherences.  Without one, fall back to
+   //  the interleaved share of solute points and report norms only.
+   bool ongrid    = ( nss > 0  &&  nrows > 0 );
+
+   if ( ongrid )
+   {
+      int ilo     = row0 * nss;
+      int ihi     = qMin( nsolutes, ( row0 + nrows ) * nss );
+
+      for ( int ii = ilo; ii < ihi; ii++ )
+         solxs << ii;
+   }
+
+   else
+   {
+      for ( int ii = ( thrn - 1 ); ii < nsolutes; ii += nthrd )
+         solxs << ii;
    }
 
    nwsols         = solxs.count();         // count of solutes for worker
@@ -106,7 +172,8 @@ DbgLv(1) << "CN(WT):  CN:  no solutes for thread" << thrn;
    }
 
 DbgLv(1) << "nwsols_" << nwsols << "solx0" << solxs[0]
- << "solxn" << solxs[nwsols-1];
+ << "solxn" << solxs[nwsols-1] << "ongrid" << ongrid << "row0" << row0
+ << "nrows" << nrows;
 
    solutes_c.resize( nwsols );             // computed solute points
 
@@ -130,6 +197,27 @@ DbgLv(1) << "CN(WT):  CN:  sol_c0.s" << solutes_c[0].s;
    int npoint        = simdat.pointCount();
 DbgLv(1) << "CN(WT):  CN:  nscan" << nscan << "npoint" << npoint;
 
+   // Signature geometry:  subsample to a bounded number of values
+   sig_rstr          = qMax( 1, ( npoint + MAX_SIG_RAD - 1 ) / MAX_SIG_RAD );
+   sig_sstr          = qMax( 1, ( nscan  + MAX_SIG_SCN - 1 ) / MAX_SIG_SCN );
+   sig_nrad          = ( npoint + sig_rstr - 1 ) / sig_rstr;
+   sig_nscn          = ( nscan  + sig_sstr - 1 ) / sig_sstr;
+   nsamp             = sig_nrad * sig_nscn;
+
+   // Rolling row buffers used for the coherence calculation.  Only three
+   //  grid rows of subsampled signatures are ever resident.
+   QVector< float > sig_prev;      // signatures of the previous grid row
+   QVector< float > sig_curr;      // signatures of the row being filled
+
+   if ( ongrid )
+   {
+      sig_prev .resize( nss * nsamp );
+      sig_curr .resize( nss * nsamp );
+      sig_first.resize( nss * nsamp );
+      coher_x  .fill( -1.0, nwsols );
+      coher_y  .fill( -1.0, nwsols );
+   }
+
    // Zeroed model component for initialization
    US_Model::SimulationComponent zcomponent;
    zcomponent.s      = 0.0;
@@ -149,7 +237,7 @@ DbgLv(1) << "CN(WT):  CN:  nscan" << nscan << "npoint" << npoint;
       set_comp_attr( model1.components[ 0 ], solutes_c[ ii ], attr_z );
 
       // Compute the other coefficients
-      model1.update_coefficients(); 
+      model1.update_coefficients();
 
       // Convert to 20w space
       model1.components[ 0 ].s /= dset->s20w_correction;
@@ -169,8 +257,49 @@ DbgLv(1) << "CN(WT):  CN:   ii" << ii << "astfem_rsa:";
       // Store the norm value for this simulation (A matrix column)
       double znorm      = US_Math2::norm_value( &simdat );
       solutes_c[ ii ].c = znorm;
+
+      if ( ongrid )
+      {  // Accumulate coherences against the already-computed neighbours
+         int    isx        = ii % nss;         // X index within the row
+         int    irx        = ii / nss;         // row index within the band
+         float* sigc       = sig_curr.data() + ( isx * nsamp );
+
+         signature( simdat, sigc );
+
+         if ( isx > 0 )
+         {  // Coherence with the previous point in the same row is
+            //  reported on that previous point (its +X neighbour)
+            coher_x[ ii - 1 ] = coherence( sigc - nsamp, sigc );
+         }
+
+         if ( irx > 0 )
+         {  // Coherence with the point below in the previous row is
+            //  reported on that lower point (its +Y neighbour)
+            coher_y[ ii - nss ] = coherence( sig_prev.data() + ( isx * nsamp ),
+                                             sigc );
+         }
+
+         if ( isx == ( nss - 1 ) )
+         {  // Row complete:  keep a copy of the first row for the caller,
+            //  then roll the current row into the previous-row slot.  The
+            //  swapped-in buffer is stale but every entry of it is rewritten
+            //  before it is read again.
+            if ( irx == 0 )
+               sig_first    = sig_curr;
+
+            sig_prev.swap( sig_curr );
+         }
+      }
+
       // Signal a completed step (solute point)
       emit work_progress( 1 );
+   }
+
+   if ( ongrid )
+   {  // The last fully-filled row closes the Y coherence at the far edge
+      //  of this worker's band, once the caller pairs it with the first
+      //  row of the next band.
+      sig_last          = sig_prev;
    }
 
    // Signal that a thread's work is done
@@ -180,9 +309,9 @@ DbgLv(1) << "CN(WT):  CN:   ii" << ii << "astfem_rsa:";
 // Set a model component coefficient from a solute attribute
 void WorkerThreadCalcNorm::set_comp_attr( US_Model::SimulationComponent& component,
       US_Solute& solute, int attr_type )
-{  
+{
    switch ( attr_type )
-   {  
+   {
       default:
       case ATTR_S:          // Sedimentation Coefficient
          component.s      = solute.s;

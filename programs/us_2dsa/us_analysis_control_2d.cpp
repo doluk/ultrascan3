@@ -1204,10 +1204,53 @@ DbgLv(1)<< "CN: nprs nprk" << nprs << nprk << "s_step" << s_step << "ff0_step" <
       return;
    }
 
-   // Never start more threads than there are solute points:  a thread with
-   //  no work has no valid solute indexes.
-   nthrd           = qMin( nthrd, nsolutes );
+   // Work out the grid shape actually produced.  create_solutes() steps the
+   //  Y attribute in the outer loop and X (s) in the inner one, so a run of
+   //  entries sharing the first Y value is exactly one grid row.  Deriving
+   //  the shape rather than trusting the requested step counts keeps this
+   //  correct when floating-point stepping yields a different count.
+   bool   varyvbar = ( cff0 > 0.0 );
+   double yfirst   = varyvbar ? solutes[ 0 ].v : solutes[ 0 ].k;
+   int    gnss     = 0;
+
+   while ( gnss < nsolutes )
+   {
+      double yval     = varyvbar ? solutes[ gnss ].v : solutes[ gnss ].k;
+
+      if ( yval != yfirst )
+         break;
+
+      gnss++;
+   }
+
+   int    gnks     = ( gnss > 0 ) ? ( nsolutes / gnss ) : 0;
+
+   if ( gnss < 1  ||  ( gnss * gnks ) != nsolutes )
+   {  // Not a clean rectangular grid:  compute norms without the
+      //  neighbour-coherence diagnostic rather than mis-pairing points
+DbgLv(1) << "CN: irregular grid - coherence disabled" << gnss << gnks
+ << nsolutes;
+      gnss            = 0;
+      gnks            = 0;
+   }
+
+DbgLv(1) << "CN: grid gnss gnks" << gnss << gnks << "of" << nsolutes;
+
+   // Never start more threads than there is work to hand out.  With a grid,
+   //  work is handed out as whole rows so that each worker can pair each of
+   //  its points with its grid neighbours.
+   nthrd           = ( gnks > 0 ) ? qMin( nthrd, gnks )
+                                  : qMin( nthrd, nsolutes );
    kthrdr          = nthrd;          // Threads remaining
+   nrm_nss         = gnss;
+   nrm_nks         = gnks;
+   nrm_coher_x.fill( -1.0, nsolutes );
+   nrm_coher_y.fill( -1.0, nsolutes );
+   nrm_sig_first.clear();
+   nrm_sig_last .clear();
+   nrm_sig_first.resize( nthrd );
+   nrm_sig_last .resize( nthrd );
+   nrm_nsamp       = 0;
    dset            = dsets[ 0 ];
 
 DbgLv(1)<< "CN: s0" << solutes[0].s << "sn" << solutes[nsolutes-1].s;
@@ -1251,7 +1294,17 @@ DbgLv(1) << "aac2:  ii" << ii << "create thread";
       workin.cff0     = cff0;
       workin.isolutes = solutes;
       workin.dset     = dset;
-DbgLv(1) << "aac2:define_work" << workin.thrn << workin.nthrd;
+      // Contiguous band of grid rows for this worker (zero-length when the
+      //  solute set is not a clean grid, which selects the interleaved
+      //  fallback partition inside the worker)
+      workin.nss      = gnss;
+      workin.row0     = ( gnks > 0 ) ? ( ( ii       * gnks ) / nthrd ) : 0;
+      workin.nrows    = ( gnks > 0 )
+                      ? ( ( ( ( ii + 1 ) * gnks ) / nthrd ) - workin.row0 )
+                      : 0;
+      workin.nsamp    = 0;
+DbgLv(1) << "aac2:define_work" << workin.thrn << workin.nthrd
+ << "row0" << workin.row0 << "nrows" << workin.nrows;
       
       wthr->define_work( workin );
 
@@ -1462,6 +1515,22 @@ DbgLv(1)<<"kk="<< kk ;
       model2.components[ kk ].f_f0   = workout.csolutes[ ii ].k;
       model2.components[ kk ].vbar20 = workout.csolutes[ ii ].v;
       model2.components[ kk ].signal_concentration = workout.csolutes[ ii ].c;
+
+      if ( ii < workout.coher_x.size() )
+      {  // Neighbour coherences, in the same global solute indexing
+         nrm_coher_x[ kk ] = workout.coher_x[ ii ];
+         nrm_coher_y[ kk ] = workout.coher_y[ ii ];
+      }
+   }
+
+   int bandx         = workout.thrn - 1;
+
+   if ( bandx >= 0  &&  bandx < nrm_sig_first.size() )
+   {  // Retain the band's edge rows so that the Y coherence can be closed
+      //  across the boundary between this band and the next
+      nrm_sig_first[ bandx ] = workout.sig_first;
+      nrm_sig_last [ bandx ] = workout.sig_last;
+      nrm_nsamp              = qMax( nrm_nsamp, workout.nsamp );
    }
 
    wthr->deleteLater();          // Worker has delivered its results
@@ -1469,6 +1538,40 @@ DbgLv(1)<<"kk="<< kk ;
 
    if ( kthrdr == 0 )
    {
+      // Close the Y coherence across the band boundaries.  Each worker kept
+      //  the signatures of its first and last grid row; pairing the last row
+      //  of one band with the first row of the next leaves no gaps in the
+      //  coherence map.
+      int nbands        = nrm_sig_first.size();
+
+      for ( int bb = 0; ( bb + 1 ) < nbands; bb++ )
+      {
+         const QVector< float >& slast = nrm_sig_last [ bb    ];
+         const QVector< float >& sfrst = nrm_sig_first[ bb + 1 ];
+         int nexrow        = ( ( bb + 1 ) * nrm_nks ) / nbands;
+         int lasrow        = nexrow - 1;
+
+         if ( nrm_nsamp < 1  ||  lasrow < 0  ||
+              slast.size() < ( nrm_nss * nrm_nsamp )  ||
+              sfrst.size() < ( nrm_nss * nrm_nsamp ) )
+            continue;
+
+         for ( int is = 0; is < nrm_nss; is++ )
+         {
+            const float* siga = slast.constData() + ( is * nrm_nsamp );
+            const float* sigb = sfrst.constData() + ( is * nrm_nsamp );
+            double dotp       = 0.0;
+
+            for ( int jj = 0; jj < nrm_nsamp; jj++ )
+               dotp             += ( (double)siga[ jj ] * (double)sigb[ jj ] );
+
+            nrm_coher_y[ lasrow * nrm_nss + is ] = qBound( 0.0, dotp, 1.0 );
+         }
+      }
+
+      nrm_sig_first.clear();       // Signatures are no longer needed
+      nrm_sig_last .clear();
+
       // Complete the remaining coefficients only once, when every component
       //  has been filled in.  Doing this per worker ran it over components
       //  that were still all-zero, which is not a valid model.
@@ -1485,13 +1588,27 @@ DbgLv(1) << "model2_values_from_norm_complete"
  << "  norm" << model2.components[ ii ].signal_concentration;
       }
 
+      // Describe the grid for the viewer:  shape, the NNLS column-norm
+      //  cutoff in effect, and the neighbour coherences
+      US_NormGridInfo ginfo;
+      ginfo.nss         = nrm_nss;
+      ginfo.nks         = nrm_nks;
+      ginfo.norm_cut    = US_SolveSim::norm_cutoff();
+      ginfo.coher_x     = nrm_coher_x;
+      ginfo.coher_y     = nrm_coher_y;
+      ginfo.descr       = tr( "%1  (%2 s x %3 %4 grid points)" )
+                             .arg( edata != NULL ? edata->runID : QString() )
+                             .arg( nrm_nss )
+                             .arg( nrm_nks )
+                             .arg( cnst_vbr ? tr( "f/f0" ) : tr( "vbar" ) );
+
       if ( ! analcd1.isNull() )
       {  // Discard any dialog left over from a previous norm calculation
          //  (WA_DeleteOnClose below makes close() destroy it)
          analcd1->close();
       }
 
-      analcd1  = new US_show_norm( &model2, cnst_vbr, parentw );
+      analcd1  = new US_show_norm( &model2, cnst_vbr, ginfo, parentw );
       analcd1->setAttribute( Qt::WA_DeleteOnClose );
 
       analcd1->show();

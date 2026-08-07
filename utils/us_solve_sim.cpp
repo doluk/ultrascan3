@@ -160,6 +160,24 @@ bool US_SolveSim::check_grid_size( double s_max, QString& smsg )
    return checkGridSize( data_sets, s_max, smsg );
 }
 
+// Get the A-matrix column norm cutoff currently in effect (class method)
+double US_SolveSim::norm_cutoff( void )
+{
+   double norm_cut    = _NORM_CUTOFF_;      // Default norm cutoff value
+
+   // If debug text modifies the norm cutoff, apply it
+   QStringList dbgtxt = US_Settings::debug_text();
+
+   for ( int ii = 0; ii < dbgtxt.count(); ii++ )
+   {
+      if ( dbgtxt[ ii ].startsWith( "normCutoff=" ) )
+         norm_cut        = QString( dbgtxt[ ii ] ).section( "=", 1, 1 )
+                                                  .toDouble();
+   }
+
+   return norm_cut;
+}
+
 // Do the real work of a 2dsa/ga thread/processor:  simulation from solutes set
 void US_SolveSim::calc_residuals( int offset, int dataset_count, Simulation& sim_vals,
    bool padAB, QVector< double >* ASave, QVector< double >* BSave,
@@ -186,19 +204,7 @@ void US_SolveSim::calc_residuals( int offset, int dataset_count, Simulation& sim
    nsolutes      = use_zsol ? nzsol : nsolutes;   // Count of used solutes
    int npoints   = data_sets[ 0 ]->run_data.pointCount();
    int nscans    = data_sets[ 0 ]->run_data.scanCount();
-   double norm_cut  = _NORM_CUTOFF_;              // Default norm_cutoff value
-
-   // If debug text modifies norm_cut factor, apply it
-   QStringList dbgtxt = US_Settings::debug_text();
-if(thrnrank<2) DbgLv(1) << "CR: NCUTOFF dbgtxt count" << dbgtxt.count();
-
-   for ( int ii = 0; ii < dbgtxt.count(); ii++ )
-   {  // If debug text modifies norm_cutoff, apply it
-      if ( dbgtxt[ ii ].startsWith( "normCutoff=" ) )
-         norm_cut      = QString( dbgtxt[ ii ] ).section( "=", 1, 1 ).toDouble();
-if(thrnrank<2) DbgLv(1) << "CR:   NORMCUT  ii" << ii << "dbgtii" << dbgtxt[ii]
- << "norm_cut" << norm_cut;
-   }
+   double norm_cut  = norm_cutoff();              // Norm cutoff in effect
 if(thrnrank<2) DbgLv(1) << "CR: NORMCUT=" << norm_cut;
 
 //   double norm_cs   = norm_cut;
