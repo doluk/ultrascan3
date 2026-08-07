@@ -84,7 +84,11 @@ US_AnalysisControl2D::US_AnalysisControl2D( QList< SS_DATASET* >& dsets,
    QLabel* lb_mciters      = us_label(  tr( "Monte Carlo Iterations:" ) );
    QLabel* lb_iters        = us_label(  tr( "Maximum Iterations:" ) );
    QLabel* lb_statinfo     = us_banner( tr( "Status Information:" ) );
-   QLabel* lb_tolnorm      = us_label( tr( "Norm Tolerance" ) );
+   QLabel* lb_tolnorm      = us_label( tr( "Norm Tolerance (10^n):" ) );
+   lb_tolnorm->setToolTip( tr(
+      "Power of ten of the A-matrix column-norm cutoff.  A grid point whose\n"
+      "simulated signal has a smaller norm is dropped from the NNLS problem\n"
+      "entirely.  Use \"Plot Norm Grid\" to see which points that affects." ) );
 
    pb_strtfit              = us_pushbutton( tr( "Start Fit" ),    true  );
    pb_stopfit              = us_pushbutton( tr( "Stop Fit" ),     false );
@@ -154,13 +158,25 @@ DbgLv(1) << "idealThrCout" << nthr;
 
 
    ct_iters     = us_counter( 2,    1,   16,    1 );
-   ct_tol       = us_counter( 2,  -15,    0,    1 );
+
+   // Norm tolerance, as the power of ten of the A-matrix column-norm cutoff.
+   //  An A column whose norm falls below the cutoff is dropped from the NNLS
+   //  problem.  The counter was previously laid out but never read, so the
+   //  cutoff could only be changed through the debug text settings.
+   ct_tol       = us_counter( 2,  -15,    0,    0 );
    ct_tol->setSingleStep    ( 1 );
    ct_tol->setMaximum       ( 0 );
    ct_tol->setMinimum       ( -15 );
+   // Show the cutoff in effect.  This is set before the connect below, so
+   //  it does not itself install an override:  a normCutoff= debug setting
+   //  stays in force until the user actually moves the counter.
+   ct_tol->setValue( log10( qMax( US_SolveSim::norm_cutoff(), 1.0e-15 ) ) );
 
    ct_tol->setIncSteps( QwtCounter::Button1,   1 );
    ct_tol->setIncSteps( QwtCounter::Button2,  10 );
+
+   connect( ct_tol, SIGNAL( valueChanged ( double ) ),
+            this,   SLOT  ( update_normtol( double ) ) );
 
    ct_menisrng  = us_counter( 3, 0.01, 0.65, 0.03 );
    ct_menispts  = us_counter( 2,    3,   51,   11 );
@@ -1158,9 +1174,9 @@ DbgLv(1) << " calculate_norms is called" << nthrd;
    pb_anorm->setEnabled( false );
 
    normstep = 0;
-   int attr_x      = 0;      // Default X is s
-   int attr_y      = 1;      // Default Y is f/f0
-   int attr_z      = 3;      // Default Z is vbar
+   int attr_x      = ATTR_S;      // X is s
+   int attr_y      = ATTR_K;      // Y is f/f0
+   int attr_z      = ATTR_V;      // Z is vbar
    int smask       = ( attr_x << 6 ) | ( attr_y << 3 ) | attr_z;
 DbgLv(1) << "smask_calculate_norms" << smask;
 
@@ -1451,32 +1467,12 @@ int US_AnalysisControl2D::memory_check( )
    return status;
 }
 
-// Set component attribute from a solute parameter
-void US_AnalysisControl2D::set_comp_attr( US_Model::SimulationComponent& component,
-      US_Solute& solute, int attr_type )
-{  
-   switch ( attr_type )
-   {  
-      default:
-      case ATTR_S:          // Sedimentation Coefficient
-         component.s      = solute.s;
-         break;
-      case ATTR_K:          // Frictional Ratio
-         component.f_f0   = solute.k;
-         break;
-      case ATTR_W:          // Molecular Weight
-         component.mw     = solute.d;
-         break;
-      case ATTR_V:          // Partial Specific Volume (vbar)
-         component.vbar20 = solute.v;
-         break;
-      case ATTR_D:          // Diffusion Coefficient
-         component.D      = solute.d;
-         break;
-      case ATTR_F:          // Frictional Coefficient
-         component.f      = solute.d;
-         break;
-   }
+// Apply a change to the A-matrix column-norm cutoff
+void US_AnalysisControl2D::update_normtol( double dval )
+{
+   US_SolveSim::set_norm_cutoff( pow( 10.0, dval ) );
+DbgLv(1) << "uac2: normtol 10^" << dval
+ << "cutoff" << US_SolveSim::norm_cutoff();
 }
 
 // Report progress in calc_norm
@@ -1594,6 +1590,10 @@ DbgLv(1) << "model2_values_from_norm_complete"
       ginfo.nss         = nrm_nss;
       ginfo.nks         = nrm_nks;
       ginfo.norm_cut    = US_SolveSim::norm_cutoff();
+      // Data points behind each column norm, so that the viewer can express
+      //  the norm as an RMS signal per point rather than a bare magnitude
+      ginfo.ndpts       = ( edata != NULL )
+                        ? ( edata->scanCount() * edata->pointCount() ) : 0;
       ginfo.coher_x     = nrm_coher_x;
       ginfo.coher_y     = nrm_coher_y;
       ginfo.descr       = tr( "%1  (%2 s x %3 %4 grid points)" )

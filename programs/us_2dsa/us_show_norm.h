@@ -28,10 +28,12 @@
 //! grid neighbours.
 struct US_NormGridInfo
 {
-   US_NormGridInfo() : nss( 0 ), nks( 0 ), norm_cut( 0.0 ) {}
+   US_NormGridInfo() : nss( 0 ), nks( 0 ), ndpts( 0 ), norm_cut( 0.0 ) {}
 
    int     nss;                  //!< grid points per row (X direction)
    int     nks;                  //!< grid rows (Y direction)
+   int     ndpts;                //!< data points behind each norm
+                                 //!<  (scans x radial points)
    double  norm_cut;             //!< NNLS column-norm cutoff in effect
    QString descr;                //!< run and grid description
 
@@ -40,6 +42,66 @@ struct US_NormGridInfo
    QVector< double > coher_x;
    //! Cosine of the angle between each A column and its +Y grid neighbour
    QVector< double > coher_y;
+};
+
+//! \brief Raster data that renders one flat cell per grid point
+//!
+//! The pseudo-3D raster this window used before spreads every point as a
+//! Gaussian and merges overlapping points by maximum.  That suits a sparse
+//! distribution from a fit, but a norm grid is dense and regular, and the
+//! spreading blurs away exactly the point-to-point differences the window
+//! exists to show.  This raster instead returns the value of the grid point
+//! nearest the queried position, so each point owns a cell with a hard
+//! edge, and no value is invented between grid points.  On a rectilinear
+//! grid those cells are exactly the grid cells.
+//!
+//! Lookup uses a uniform bucket index over the plotted rectangle, searching
+//! outward from the query position's bucket until no unexamined bucket can
+//! hold anything closer.
+class US_NormRasterData : public QwtRasterData
+{
+   public:
+      US_NormRasterData();
+
+      //! \brief Define the points, their Z range, and the plotted rectangle
+      //! \param xpos  Plot X coordinate of each point
+      //! \param ypos  Plot Y coordinate of each point
+      //! \param zval  Z value of each point
+      //! \param zmin  Z minimum for the color scale
+      //! \param zmax  Z maximum for the color scale
+      //! \param drect Plotted rectangle in plot coordinates
+      void setPoints( const QVector< double >&, const QVector< double >&,
+                      const QVector< double >&, double, double,
+                      const QRectF& );
+
+#if QWT_VERSION < QT_VERSION_CHECK(6, 3, 0)
+      QwtInterval interval( Qt::Axis axis ) const;
+#else
+      QwtInterval interval( Qt::Axis axis ) const override;
+#endif
+
+      //! \brief Z value of the grid point nearest a plot position
+      double value( double x, double y ) const override;
+
+   private:
+      QVector< double >       upos;      // normalized X of each point
+      QVector< double >       vpos;      // normalized Y of each point
+      QVector< double >       zpos;      // Z value of each point
+      QVector< QVector< int > >  bkts;   // point indexes per bucket
+
+      double  xmin;
+      double  ymin;
+      double  uscl;      // 1 / X range
+      double  vscl;      // 1 / Y range
+      double  xmax;
+      double  ymax;
+      double  zmin;
+      double  zmax;
+      double  cellm;     // smaller bucket dimension, normalized
+
+      int     nbx;       // buckets across X
+      int     nby;       // buckets across Y
+      int     npts;      // number of points
 };
 
 //! \brief A window showing the A-matrix column norms of a 2DSA grid,
@@ -71,6 +133,7 @@ class US_show_norm : public US_WidgetsDialog
       enum z_mode
       {
          ZM_NORM,      //!< column norm, linear
+         ZM_RMS,       //!< column norm per data point (RMS signal, OD)
          ZM_LOGNORM,   //!< column norm, log10
          ZM_RELX,      //!< norm as a percentage of the maximum at the same X
          ZM_DEVX,      //!< deviation from the mean over Y at the same X
@@ -97,10 +160,6 @@ class US_show_norm : public US_WidgetsDialog
 
       QComboBox*    cb_zmode;
 
-      QwtCounter*   ct_resolu;
-      QwtCounter*   ct_xreso;
-      QwtCounter*   ct_yreso;
-      QwtCounter*   ct_zfloor;
       QwtCounter*   ct_plt_kmin;
       QwtCounter*   ct_plt_kmax;
       QwtCounter*   ct_plt_smin;
@@ -140,7 +199,7 @@ class US_show_norm : public US_WidgetsDialog
       US_NormGridInfo     ginfo;
 
       //! Plotted points:  s holds the X attribute, k the Y attribute and
-      //!  c the Z value shifted so that the raster minimum is zero
+      //!  c the Z value of the current Z mode
       QList< S_Solute >   xy_distro;
 
       //! Column norms, grid order, index = iy * nss + ix
@@ -148,16 +207,12 @@ class US_show_norm : public US_WidgetsDialog
       //! Unshifted Z values for the current Z mode, same order as gnorm
       QVector< double >   zvals;
 
-      double        resolu;
       double        plt_smin;
       double        plt_smax;
       double        plt_kmin;
       double        plt_kmax;
       double        plt_zmin;
       double        plt_zmax;
-      double        xreso;
-      double        yreso;
-      double        zfloor;
 
       int           plot_x;
       int           plot_y;
@@ -165,10 +220,15 @@ class US_show_norm : public US_WidgetsDialog
       int           pick_ix;
       int           pick_iy;
 
+      //! 1/sqrt(ndpts):  converts a column norm to the RMS signal per data
+      //!  point, in OD, that one OD of that species would produce
+      double        rms_scale;
+
       bool          auto_sxy;
       bool          have_grid;
       bool          have_coher;
       bool          have_cut;
+      bool          have_rms;
 
       QString       xa_title;
       QString       ya_title;
@@ -178,10 +238,6 @@ class US_show_norm : public US_WidgetsDialog
       void select_x_axis   ( int  );
       void select_y_axis   ( int  );
       void load_color      ( void );
-      void update_resolu   ( double );
-      void update_xreso    ( double );
-      void update_yreso    ( double );
-      void update_zfloor   ( double );
       void update_plot_smin( double );
       void update_plot_smax( double );
       void update_plot_kmin( double );

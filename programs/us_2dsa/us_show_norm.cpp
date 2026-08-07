@@ -22,6 +22,145 @@
 // offered here.
 //------------------------------------------------------------------------
 
+US_NormRasterData::US_NormRasterData() : QwtRasterData()
+{
+   xmin     = 0.0;
+   ymin     = 0.0;
+   xmax     = 1.0;
+   ymax     = 1.0;
+   uscl     = 1.0;
+   vscl     = 1.0;
+   zmin     = 0.0;
+   zmax     = 1.0;
+   cellm    = 1.0;
+   nbx      = 1;
+   nby      = 1;
+   npts     = 0;
+}
+
+// Define the points, their Z range, and the plotted rectangle
+void US_NormRasterData::setPoints( const QVector< double >& xpos,
+      const QVector< double >& ypos, const QVector< double >& zval,
+      double a_zmin, double a_zmax, const QRectF& drect )
+{
+   npts     = qMin( xpos.size(), qMin( ypos.size(), zval.size() ) );
+   xmin     = drect.left  ();
+   xmax     = drect.right ();
+   ymin     = drect.top   ();
+   ymax     = drect.bottom();
+   zmin     = a_zmin;
+   zmax     = a_zmax;
+   uscl     = 1.0 / qMax( xmax - xmin, 1.0e-300 );
+   vscl     = 1.0 / qMax( ymax - ymin, 1.0e-300 );
+
+#if QWT_VERSION < QT_VERSION_CHECK(6, 3, 0)
+   setInterval( Qt::XAxis, QwtInterval( xmin, xmax ) );
+   setInterval( Qt::YAxis, QwtInterval( ymin, ymax ) );
+   setInterval( Qt::ZAxis, QwtInterval( zmin, zmax ) );
+#endif
+
+   upos.resize( npts );
+   vpos.resize( npts );
+   zpos.resize( npts );
+
+   // About one point per bucket, so that a lookup normally resolves within
+   //  the query bucket and its immediate neighbours
+   int nbuc = qBound( 4, (int)qRound( sqrt( (double)qMax( npts, 1 ) ) ), 256 );
+   nbx      = nbuc;
+   nby      = nbuc;
+   cellm    = qMin( 1.0 / (double)nbx, 1.0 / (double)nby );
+
+   bkts.clear();
+   bkts.resize( nbx * nby );
+
+   for ( int ii = 0; ii < npts; ii++ )
+   {
+      double uu    = ( xpos[ ii ] - xmin ) * uscl;
+      double vv    = ( ypos[ ii ] - ymin ) * vscl;
+      upos[ ii ]   = uu;
+      vpos[ ii ]   = vv;
+      zpos[ ii ]   = zval[ ii ];
+
+      int    bx    = qBound( 0, (int)( uu * (double)nbx ), nbx - 1 );
+      int    by    = qBound( 0, (int)( vv * (double)nby ), nby - 1 );
+      bkts[ by * nbx + bx ] << ii;
+   }
+}
+
+QwtInterval US_NormRasterData::interval( Qt::Axis axis ) const
+{
+   switch ( axis )
+   {
+      case Qt::XAxis:  return QwtInterval( xmin, xmax );
+      case Qt::YAxis:  return QwtInterval( ymin, ymax );
+      case Qt::ZAxis:
+      default:         return QwtInterval( zmin, zmax );
+   }
+}
+
+// Z value of the grid point nearest a plot position
+double US_NormRasterData::value( double x, double y ) const
+{
+   if ( npts < 1 )
+      return zmin;
+
+   double uu      = ( x - xmin ) * uscl;
+   double vv      = ( y - ymin ) * vscl;
+   int    bx      = qBound( 0, (int)( uu * (double)nbx ), nbx - 1 );
+   int    by      = qBound( 0, (int)( vv * (double)nby ), nby - 1 );
+   int    maxr    = qMax( nbx, nby );
+   int    besti   = -1;
+   double bestd   = 1.0e+300;
+
+   for ( int rr = 0; rr <= maxr; rr++ )
+   {  // Examine the ring of buckets at radius rr around the query bucket
+      int jy0     = by - rr;
+      int jy1     = by + rr;
+      int jx0     = bx - rr;
+      int jx1     = bx + rr;
+
+      for ( int jy = jy0; jy <= jy1; jy++ )
+      {
+         if ( jy < 0  ||  jy >= nby )  continue;
+
+         bool edgey  = ( jy == jy0  ||  jy == jy1 );
+
+         for ( int jx = jx0; jx <= jx1; jx++ )
+         {
+            if ( jx < 0  ||  jx >= nbx )  continue;
+            // Interior buckets belong to a smaller ring already examined
+            if ( ! edgey  &&  jx != jx0  &&  jx != jx1 )  continue;
+
+            const QVector< int >& bkt = bkts[ jy * nbx + jx ];
+
+            for ( int kk = 0; kk < bkt.size(); kk++ )
+            {
+               int    ii      = bkt[ kk ];
+               double du      = uu - upos[ ii ];
+               double dv      = vv - vpos[ ii ];
+               double dd      = ( du * du ) + ( dv * dv );
+
+               if ( dd < bestd )
+               {
+                  bestd          = dd;
+                  besti          = ii;
+               }
+            }
+         }
+      }
+
+      // Nothing in a wider ring can be closer than rr bucket widths away
+      double reach   = (double)rr * cellm;
+
+      if ( besti >= 0  &&  bestd <= ( reach * reach ) )
+         break;
+   }
+
+   return ( besti >= 0 ) ? zpos[ besti ] : zmin;
+}
+
+//------------------------------------------------------------------------
+
 US_show_norm::US_show_norm( US_Model* a_model, bool a_cnst_vbar,
       const US_NormGridInfo& a_ginfo, QWidget* p )
    : US_WidgetsDialog( p, Qt::WindowFlags() )
@@ -45,6 +184,14 @@ US_show_norm::US_show_norm( US_Model* a_model, bool a_cnst_vbar,
                       ginfo.coher_x.size() == nsolutes  &&
                       ginfo.coher_y.size() == nsolutes );
    have_cut       = ( ginfo.norm_cut > 0.0 );
+
+   // A column norm is a sum in quadrature over every data point, so its
+   //  magnitude depends on how many scans and radial points the experiment
+   //  has.  Dividing by the square root of that count gives the RMS signal
+   //  per data point, in OD, which is directly interpretable and comparable
+   //  between runs.
+   have_rms       = ( ginfo.ndpts > 0 );
+   rms_scale      = have_rms ? ( 1.0 / sqrt( (double)ginfo.ndpts ) ) : 1.0;
 
    // Column norms, kept apart from the model so that the Z modes can be
    //  recomputed without touching it
@@ -89,6 +236,7 @@ US_show_norm::US_show_norm( US_Model* a_model, bool a_cnst_vbar,
 
    cb_zmode      = us_comboBox();
    cb_zmode->addItem( tr( "Column norm  ||a||"                    ) );
+   cb_zmode->addItem( tr( "RMS signal per point  ||a||/sqrt(N)"   ) );
    cb_zmode->addItem( tr( "Column norm  log10(||a||)"             ) );
    cb_zmode->addItem( tr( "Norm relative to max at same X  (%)"   ) );
    cb_zmode->addItem( tr( "Norm deviation from mean over Y  (%)"  ) );
@@ -116,6 +264,11 @@ US_show_norm::US_show_norm( US_Model* a_model, bool a_cnst_vbar,
       cb_zmode->setItemData( ZM_COH_X,   0, Qt::UserRole - 1 );
       cb_zmode->setItemData( ZM_COH_Y,   0, Qt::UserRole - 1 );
       cb_zmode->setItemData( ZM_COH_MAX, 0, Qt::UserRole - 1 );
+   }
+
+   if ( ! have_rms )
+   {  // The RMS mode needs the data point count
+      cb_zmode->setItemData( ZM_RMS, 0, Qt::UserRole - 1 );
    }
 
    connect( cb_zmode, SIGNAL( currentIndexChanged( int ) ),
@@ -185,41 +338,6 @@ US_show_norm::US_show_norm( US_Model* a_model, bool a_cnst_vbar,
             this, &US_show_norm::select_y_axis );
 
    // Raster and scaling controls
-   QLabel* lb_resolu     = us_label( tr( "Norm Resolution:" ) );
-   lb_resolu->setAlignment( Qt::AlignVCenter | Qt::AlignLeft );
-
-   ct_resolu     = us_counter( 3, 1.0, 100.0, 100.0 );
-   ct_resolu->setSingleStep( 1 );
-   ct_resolu->setToolTip( tr(
-      "Spread of each grid point in the raster.  100 keeps each grid point\n"
-      "as a flat cell; lower values blur neighbouring points together." ) );
-   connect( ct_resolu, SIGNAL( valueChanged( double ) ),
-            this,      SLOT( update_resolu( double ) ) );
-
-   QLabel* lb_xreso      = us_label( tr( "X Resolution:" ) );
-   lb_xreso->setAlignment( Qt::AlignVCenter | Qt::AlignLeft );
-
-   ct_xreso      = us_counter( 3, 10.0, 1000.0, 0.0 );
-   ct_xreso->setSingleStep( 1 );
-   connect( ct_xreso,  SIGNAL( valueChanged( double ) ),
-            this,      SLOT( update_xreso( double ) ) );
-
-   QLabel* lb_yreso      = us_label( tr( "Y Resolution:" ) );
-   lb_yreso->setAlignment( Qt::AlignVCenter | Qt::AlignLeft );
-
-   ct_yreso      = us_counter( 3, 10.0, 1000.0, 0.0 );
-   ct_yreso->setSingleStep( 1 );
-   connect( ct_yreso,  SIGNAL( valueChanged( double ) ),
-            this,      SLOT( update_yreso( double ) ) );
-
-   QLabel* lb_zfloor     = us_label( tr( "Z Visibility Percent:" ) );
-   lb_zfloor->setAlignment( Qt::AlignVCenter | Qt::AlignLeft );
-
-   ct_zfloor     = us_counter( 3, 50.0, 150.0, 1.0 );
-   ct_zfloor->setSingleStep( 1 );
-   connect( ct_zfloor, SIGNAL( valueChanged( double ) ),
-            this,      SLOT( update_zfloor( double ) ) );
-
    us_checkbox( tr( "Autoscale X and Y" ), ck_autosxy, true );
    connect( ck_autosxy, SIGNAL( clicked() ),
             this,       SLOT( select_autosxy() ) );
@@ -301,14 +419,6 @@ US_show_norm::US_show_norm( US_Model* a_model, bool a_cnst_vbar,
    spec->addLayout( gl_y_vbar,     s_row,   5, 1, 1 );
    spec->addLayout( gl_y_D,        s_row,   6, 1, 1 );
    spec->addLayout( gl_y_f,        s_row++, 7, 1, 1 );
-   spec->addWidget( lb_resolu,     s_row,   0, 1, 4 );
-   spec->addWidget( ct_resolu,     s_row++, 4, 1, 4 );
-   spec->addWidget( lb_xreso,      s_row,   0, 1, 4 );
-   spec->addWidget( ct_xreso,      s_row++, 4, 1, 4 );
-   spec->addWidget( lb_yreso,      s_row,   0, 1, 4 );
-   spec->addWidget( ct_yreso,      s_row++, 4, 1, 4 );
-   spec->addWidget( lb_zfloor,     s_row,   0, 1, 4 );
-   spec->addWidget( ct_zfloor,     s_row++, 4, 1, 4 );
    spec->addWidget( ck_autosxy,    s_row++, 0, 1, 8 );
    spec->addWidget( lb_plt_smin,   s_row,   0, 1, 4 );
    spec->addWidget( ct_plt_smin,   s_row++, 4, 1, 4 );
@@ -391,29 +501,6 @@ void US_show_norm::reset( void )
    //  Reset cannot leave the axis labelled f/f0 while vbar is plotted.
    plot_y     = cnst_vbar ? ATTR_K : ATTR_V;
 
-   // A norm grid is a dense regular grid, not the sparse distribution this
-   //  raster was written for, so pick a spread that makes neighbouring grid
-   //  cells just meet.  At resolution 100 each point becomes a flat disc
-   //  whose radius is about 0.0118 of the raster width, which covers a grid
-   //  cell once the grid has roughly 45 points on its shorter side.  Below
-   //  that, a Gaussian spread of about 1.665 cells closes the gaps instead.
-   //  Spreading further than this merges neighbouring points together and
-   //  hides exactly the small variations this window exists to show.
-   int ngmin  = have_grid ? qMin( ginfo.nss, ginfo.nks ) : 0;
-   resolu     = ( ngmin >= 45 ) ? 100.0
-              : ( ngmin >  1 )  ? qBound( 5.0, ngmin * 1.665, 99.0 )
-                                : 90.0;
-   ct_resolu->setValue( resolu );
-
-   // Raster finely enough that a grid cell spans several pixels
-   xreso      = have_grid ? qBound( 100.0, ginfo.nss * 20.0, 1000.0 ) : 400.0;
-   yreso      = have_grid ? qBound( 100.0, ginfo.nks * 20.0, 1000.0 ) : 400.0;
-   ct_xreso->setValue( xreso );
-   ct_yreso->setValue( yreso );
-
-   zfloor     = 100.0;
-   ct_zfloor->setValue( zfloor );
-
    auto_sxy   = true;
    ck_autosxy->setChecked( auto_sxy );
 
@@ -488,7 +575,9 @@ QString US_show_norm::zmode_title( void )
 {
    switch ( zmode )
    {
-      case ZM_LOGNORM:  return tr( "log10 of column norm" );
+      case ZM_RMS:      return tr( "RMS signal per point (OD)"
+                                   " for a 1 OD species" );
+      case ZM_LOGNORM:  return tr( "log10 of column norm ||a||" );
       case ZM_RELX:     return tr( "Norm, percent of max at same X" );
       case ZM_DEVX:     return tr( "Norm deviation from Y-mean (%)" );
       case ZM_PCTTOT:   return tr( "Norm, percent of all norms" );
@@ -499,7 +588,8 @@ QString US_show_norm::zmode_title( void )
       case ZM_COH_MAX:  return tr( "Collinearity, worst neighbour"
                                    "  -log10(1-cos)" );
       case ZM_NORM:
-      default:          return tr( "Column norm ||a||, 1 OD species" );
+      default:          return tr( "Column norm ||a|| (OD, quadrature sum"
+                                   " over %1 points)" ).arg( ginfo.ndpts );
    }
 }
 
@@ -525,6 +615,13 @@ void US_show_norm::compute_zvals( void )
 
    switch ( zmode )
    {
+      case ZM_RMS:
+
+         for ( int ii = 0; ii < nsol; ii++ )
+            zvals[ ii ]    = gnorm[ ii ] * rms_scale;
+
+         break;
+
       case ZM_LOGNORM:
       {  // Norms reach zero at the pelleting edge, so floor the log well
          //  below the smallest norm that still carries signal
@@ -671,8 +768,7 @@ void US_show_norm::build_xy_distro( void )
    {
       sol.s          = attr_value( ii, plot_x );
       sol.k          = attr_value( ii, plot_y );
-      // Shifted so that the raster never has to represent a negative value
-      sol.c          = zvals[ ii ] - plt_zmin;
+      sol.c          = zvals[ ii ];
       xy_distro << sol;
    }
 }
@@ -756,22 +852,29 @@ void US_show_norm::plot_data( void )
    plt_kmin    = ymin;
    plt_kmax    = ymax;
 
-   QwtPlotSpectrogram* d_spectrogram = new QwtPlotSpectrogram();
-   US_SpectrogramData* rdata = new US_SpectrogramData();
-   d_spectrogram->setData( rdata );
-   d_spectrogram->setColorMap( ColorMapCopy( colormap ) );
+   // One flat cell per grid point, with hard edges:  no value is invented
+   //  between grid points and none is blurred away.
+   QVector< double > rx;
+   QVector< double > ry;
+   QVector< double > rz;
+   rx.reserve( xy_distro.size() );
+   ry.reserve( xy_distro.size() );
+   rz.reserve( xy_distro.size() );
 
-   US_SpectrogramData& spec_dat = (US_SpectrogramData&)*(d_spectrogram->data());
+   for ( int ii = 0; ii < xy_distro.size(); ii++ )
+   {
+      rx << xy_distro[ ii ].s;
+      ry << xy_distro[ ii ].k;
+      rz << zvals    [ ii ];
+   }
+
    QRectF drect( xmin, ymin, ( xmax - xmin ), ( ymax - ymin ) );
 
-   // The raster carries shifted values in [0, span]; the color bar below is
-   //  labelled with the true values over the same span, so the colors line
-   //  up while the numbers stay meaningful.
-   double zspan   = plt_zmax - plt_zmin;
-
-   spec_dat.setRastRanges( xreso, yreso, resolu, zfloor, drect );
-   spec_dat.setZRange( 0.0, zspan );
-   spec_dat.setRaster( &xy_distro );
+   QwtPlotSpectrogram* d_spectrogram = new QwtPlotSpectrogram();
+   US_NormRasterData*  rdata         = new US_NormRasterData();
+   rdata->setPoints( rx, ry, rz, plt_zmin, plt_zmax, drect );
+   d_spectrogram->setData( rdata );
+   d_spectrogram->setColorMap( ColorMapCopy( colormap ) );
 
    d_spectrogram->attach( data_plot );
 
@@ -919,9 +1022,11 @@ void US_show_norm::plot_sections( void )
    xsec_plot_x->setAxisAutoScale( QwtPlot::yLeft   );
 
    // Where the Z axis is still a norm, show the NNLS cutoff on it
-   if ( have_cut  &&  ( zmode == ZM_NORM  ||  zmode == ZM_LOGNORM ) )
+   if ( have_cut  &&  ( zmode == ZM_NORM  ||  zmode == ZM_RMS  ||
+                        zmode == ZM_LOGNORM ) )
    {
       double cutv = ( zmode == ZM_LOGNORM ) ? log10( ginfo.norm_cut )
+                  : ( zmode == ZM_RMS     ) ? ( ginfo.norm_cut * rms_scale )
                                             : ginfo.norm_cut;
 
       for ( int ii = 0; ii < 2; ii++ )
@@ -987,15 +1092,33 @@ void US_show_norm::update_stats( void )
    txt           += tr( "Column norm ||a||    : min %1  median %2  max %3\n" )
                        .arg( nmin, 0, 'g', 4 ).arg( nmed, 0, 'g', 4 )
                        .arg( nmax, 0, 'g', 4 );
+
+   if ( have_rms )
+   {  // The same norms per data point, which is what an OD reading means
+      txt           += tr( "  as RMS signal (OD)  : min %1  median %2"
+                           "  max %3\n" )
+                          .arg( nmin * rms_scale, 0, 'g', 4 )
+                          .arg( nmed * rms_scale, 0, 'g', 4 )
+                          .arg( nmax * rms_scale, 0, 'g', 4 );
+      txt           += tr( "  ( ||a|| / sqrt(%1 data points),"
+                           " per 1 OD of species )\n" ).arg( ginfo.ndpts );
+   }
+
    txt           += tr( "Dynamic range max/min: %1\n" )
                        .arg( ( nmin > 0.0 ) ? QString::number( nmax / nmin,
                                                                'g', 4 )
                                             : tr( "infinite (min is 0)" ) );
 
    if ( have_cut )
+   {
       txt           += tr( "Below NNLS cutoff %1 : %2 points (%3 %)\n" )
                           .arg( ginfo.norm_cut, 0, 'g', 4 ).arg( kcut )
                           .arg( kcut * 100.0 / (double)nsol, 0, 'f', 1 );
+
+      if ( have_rms )
+         txt           += tr( "  cutoff as RMS signal: %1 OD\n" )
+                             .arg( ginfo.norm_cut * rms_scale, 0, 'g', 4 );
+   }
 
    if ( have_grid )
    {  // Relative spread of the norm along each grid axis.  The contrast
@@ -1141,6 +1264,10 @@ void US_show_norm::pick_point( const QPointF& pos )
       .arg( xy_distro[ knear ].k, 0, 'g', 5 )
       .arg( gnorm[ knear ], 0, 'g', 5 );
 
+   if ( have_rms )
+      ptxt          += tr( " (%1 OD RMS)" )
+         .arg( gnorm[ knear ] * rms_scale, 0, 'g', 4 );
+
    if ( have_coher )
       ptxt          += tr( ",  cos to X nb %1,  to Y nb %2" )
          .arg( ginfo.coher_x[ knear ], 0, 'f', 6 )
@@ -1164,26 +1291,6 @@ void US_show_norm::select_zmode( int ival )
 void US_show_norm::select_cutmark()
 {
    plot_data();
-}
-
-void US_show_norm::update_resolu( double dval )
-{
-   resolu = dval;
-}
-
-void US_show_norm::update_xreso( double dval )
-{
-   xreso  = dval;
-}
-
-void US_show_norm::update_yreso( double dval )
-{
-   yreso  = dval;
-}
-
-void US_show_norm::update_zfloor( double dval )
-{
-   zfloor = dval;
 }
 
 void US_show_norm::update_plot_smin( double dval )

@@ -41,9 +41,6 @@ class US_AnalysisControl2D : public US_WidgetsDialog
       US_AnalysisControl2D( QList< SS_DATASET* >&, bool&, QWidget* p = 0 );
       enum attr_type { ATTR_S, ATTR_K, ATTR_W, ATTR_V, ATTR_D, ATTR_F };
       US_Model  model2 ;
-      //void calculate_norms( US_Model& ) ;
-      void set_comp_attr     ( US_Model::SimulationComponent&,
-                             US_Solute&, int );
 
    public slots:
       void update_progress (  int  );
@@ -88,7 +85,6 @@ class US_AnalysisControl2D : public US_WidgetsDialog
       US_Model*                        model;
       US_Noise*                        ri_noise;
       US_Noise*                        ti_noise;
-      QVector< double >                normvA;
       US_SimulationParameters*         sparms;
       QPointer< QTextEdit    >         mw_stattext;
       int*                             mw_baserss;
@@ -136,7 +132,6 @@ class US_AnalysisControl2D : public US_WidgetsDialog
       QCheckBox*    ck_mcarlo;
       QCheckBox*    ck_iters;
       QCheckBox*    ck_varvbar;
-      QCheckBox*    ck_norm;
 
 
       QLineEdit*    le_estmemory;
@@ -162,6 +157,7 @@ class US_AnalysisControl2D : public US_WidgetsDialog
    private slots:
       void optimize_options( void );
       void calculate_norms ( void );
+      void update_normtol  ( double );
       void uncheck_optimize( int  );
       void checkUniGrid (    bool );
       void checkCusGrid (    bool );

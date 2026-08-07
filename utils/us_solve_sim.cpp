@@ -17,6 +17,10 @@
 // Define the default norm cutoff value
 #define _NORM_CUTOFF_   1.00
 
+// Norm cutoff override set from the GUI; negative means "not set".  Written
+//  from the GUI thread before a fit starts and only read by the workers.
+static double norm_cut_ovr = -1.0;
+
 
 double zerothr = 0.020;    //!< zero threshold OD value
 double linethr = 0.050;    //!< linear threshold OD value
@@ -163,6 +167,9 @@ bool US_SolveSim::check_grid_size( double s_max, QString& smsg )
 // Get the A-matrix column norm cutoff currently in effect (class method)
 double US_SolveSim::norm_cutoff( void )
 {
+   if ( norm_cut_ovr >= 0.0 )
+      return norm_cut_ovr;                  // Value set from the GUI
+
    double norm_cut    = _NORM_CUTOFF_;      // Default norm cutoff value
 
    // If debug text modifies the norm cutoff, apply it
@@ -176,6 +183,12 @@ double US_SolveSim::norm_cutoff( void )
    }
 
    return norm_cut;
+}
+
+// Override the A-matrix column norm cutoff (class method)
+void US_SolveSim::set_norm_cutoff( double norm_cut )
+{
+   norm_cut_ovr    = norm_cut;
 }
 
 // Do the real work of a 2dsa/ga thread/processor:  simulation from solutes set

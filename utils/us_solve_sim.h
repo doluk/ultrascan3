@@ -112,6 +112,14 @@ class US_UTIL_EXTERN US_SolveSim : public QObject
     //! \returns         Norm cutoff value below which A columns are cut
     static double norm_cutoff( void );
 
+    //! \brief Override the A-matrix column-norm cutoff.
+    //!
+    //! Set from the GUI before a fit is started.  Workers only read the
+    //! value, so it must not be changed while a fit is running.  A negative
+    //! value restores the built-in default and the debug-text override.
+    //! \param norm_cut  Norm cutoff to apply to subsequent fits
+    static void set_norm_cutoff( double );
+
     //! \brief Calculate a simulation and the resulting residuals
     //!
     //! \param offset         Starting data-sets offset
