@@ -1319,24 +1319,39 @@ DbgLv(1) << "CN: signatures" << nrm_nrad << "x" << nrm_nscn << "=" << nrm_nsamp
 DbgLv(1)<< "CN: s0" << solutes[0].s << "sn" << solutes[nsolutes-1].s;
 DbgLv(1)<< "CN: k0" << solutes[0].k << "kn" << solutes[nsolutes-1].k;
  
-   US_SimulationParameters simparms = dset->simparams;
-  
-
-   QString runID   = edata->runID;
-   QString tmst_fpath = US_Settings::resultDir() +"/" + runID +"/" + runID + ".time_state.tmst";
-   QFileInfo check_file( tmst_fpath );
-
-   if ( check_file.exists() && check_file.isFile() )
+   // Resolve the rotor speed profile into the data set's own simulation
+   //  parameters, exactly as US_SolveSim::calc_residuals() does before a
+   //  fit, and do it once here rather than in each worker:  the workers
+   //  share this data set, and the profile governs the simulation every
+   //  A-matrix column is built from.  Previously this was loaded into a
+   //  local copy that was then discarded, so a norm grid computed before
+   //  any fit had been run used a different speed profile than the fit.
+   if ( dset->simparams.tsobj == NULL  ||
+        dset->simparams.sim_speed_prof.count() < 1 )
    {
-      simparms.simSpeedsFromTimeState( tmst_fpath);
-DbgLv(1) << "adv_anal_control_2d : timestate file exists"
- << tmst_fpath << " timestateobject=" << simparms.tsobj << solutes.size() 
- << simparms.speed_step.size() << simparms.speed_step[0].rotorspeed 
- << simparms.speed_step[0].time_first << simparms.speed_step[0].time_last;
-   }
-   else
-   {
-DbgLv(1) << "adv_anal_control_2d: timestate file does not exist" << solutes.size();
+      dset->simparams.tsobj = NULL;
+      dset->simparams.sim_speed_prof.clear();
+
+      QString   runID      = edata->runID;
+      QString   tmst_fpath = US_Settings::resultDir() + "/" + runID + "/"
+                             + runID + ".time_state.tmst";
+      QFileInfo check_file( tmst_fpath );
+
+      if ( check_file.exists()  &&  check_file.isFile() )
+      {  // Only a one-second-interval time state can be loaded directly
+         US_DataIO::RawData tsimdat;
+         US_AstfemMath::initSimData( tsimdat, dset->run_data, 0.0 );
+
+         if ( US_AstfemMath::timestate_onesec( tmst_fpath, tsimdat ) )
+            dset->simparams.simSpeedsFromTimeState( tmst_fpath );
+
+DbgLv(1) << "CN: timestate" << tmst_fpath << "tsobj"
+ << dset->simparams.tsobj << "sspknt"
+ << dset->simparams.sim_speed_prof.count();
+      }
+
+      else
+DbgLv(1) << "CN: no timestate file" << tmst_fpath;
    }
    model2.components.resize( nsolutes ) ;
    b_progress->reset();
@@ -1669,6 +1684,25 @@ DbgLv(1) << "model2_values_from_norm_complete"
                              .arg( nrm_nss )
                              .arg( nrm_nks )
                              .arg( cnst_vbr ? tr( "f/f0" ) : tr( "vbar" ) );
+
+      // Say which cell configuration the columns were simulated under, so
+      //  that the norms are not read as belonging to a different fit
+      US_SimulationParameters& sparm = dsets[ 0 ]->simparams;
+
+      if ( sparm.band_forming )
+      {
+         US_SolveSim::BandThresholds bthr;
+         bool bdthr        = US_SolveSim::bandform_thresholds( sparm, bthr );
+         ginfo.descr      += tr( "\nBand-forming, %1 uL load%2" )
+                                .arg( sparm.band_volume * 1000.0, 0, 'g', 4 )
+                                .arg( bdthr ? tr( ", data thresholds applied" )
+                                            : tr( ", no threshold config" ) );
+      }
+
+      else
+         ginfo.descr      += tr( "\nStandard sector cell" );
+
+      ginfo.descr      += tr( ",  %1 simulation points" ).arg( sparm.simpoints );
 
       analcd1  = new US_show_norm( &model2, cnst_vbr, ginfo, parentw );
       analcd1->setAttribute( Qt::WA_DeleteOnClose );

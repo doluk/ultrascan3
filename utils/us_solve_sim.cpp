@@ -37,47 +37,81 @@ US_SolveSim::US_SolveSim( QList< DataSet* >& data_sets, int thrnrank,
    abort        = false;     // Default: no abort
    dbg_level    = 0;         // Default: no debug prints
    dbg_timing   = false;     // Default: no debug timing prints
-   banddthr     = false;     // Default: no bandform data_threshold
-
    // If band-forming, possibly read in threshold control values
-   if ( data_sets[ 0 ]->simparams.band_forming )
-   {
-      QString bfcname = US_Settings::appBaseDir() + "/etc/bandform.config";
-      QFile   bfcfile( bfcname );
-      if ( bfcfile.open( QIODevice::ReadOnly ) )
-      {
-         QTextStream tsi( &bfcfile );
-         // Read in, in order: zero-thresh, linear-thresh, max-od, min-nz-scale
-         while ( ! tsi.atEnd() )
-         {
-            QString fline  = tsi.readLine();
-            int     cmx    = fline.indexOf( "#" ) - 1;
-            double  val    = cmx > 0
-                             ? fline.left( cmx ).simplified().toDouble() : 0.0;
-            if ( cmx <= 0 )
-               continue;
-            else if ( fline.contains( "zero threshold" ) )
-               zerothr  = val;
-            else if ( fline.contains( "linear threshold" ) )
-               linethr  = val;
-            else if ( fline.contains( "maximum OD" ) )
-               maxod    = val;
-            else if ( fline.contains( "minimum non-zero" ) )
-               minnzsc  = val;
-            else if ( fline.contains( "sim multiply factor" ) )
-               mfactor  = val;
-            else if ( fline.contains( "exp multiply factor" ) )
-               mfactex  = val;
-         }
-         bfcfile.close();
+   BandThresholds bthr;
+   banddthr     = bandform_thresholds( data_sets[ 0 ]->simparams, bthr );
 
-         banddthr    = true;
-      }
+   if ( banddthr )
+   {
+      zerothr      = bthr.zerothr;
+      linethr      = bthr.linethr;
+      maxod        = bthr.maxod;
+      minnzsc      = bthr.minnzsc;
+      mfactor      = bthr.mfactor;
+      mfactex      = bthr.mfactex;
 
 if(thrnrank==1) DbgLv(1) << "CR:zthr lthr mxod mnzc mfac mfex bthr"
  << zerothr << linethr << maxod << minnzsc
  << mfactor << mfactex << banddthr;
    }
+}
+
+// Get the band-forming data thresholds in effect for a run (class method)
+bool US_SolveSim::bandform_thresholds( const SIMPARAMS& simparams,
+      BandThresholds& bthr )
+{
+   bthr            = BandThresholds();      // Built-in defaults
+
+   if ( ! simparams.band_forming )
+      return false;                         // Not a band-forming run
+
+   QString bfcname = US_Settings::appBaseDir() + "/etc/bandform.config";
+   QFile   bfcfile( bfcname );
+
+   if ( ! bfcfile.open( QIODevice::ReadOnly ) )
+      return false;                         // No threshold control file
+
+   QTextStream tsi( &bfcfile );
+
+   // Read in, in order: zero-thresh, linear-thresh, max-od, min-nz-scale
+   while ( ! tsi.atEnd() )
+   {
+      QString fline  = tsi.readLine();
+      int     cmx    = fline.indexOf( "#" ) - 1;
+      double  val    = cmx > 0 ? fline.left( cmx ).simplified().toDouble()
+                               : 0.0;
+      if ( cmx <= 0 )
+         continue;
+      else if ( fline.contains( "zero threshold"    ) )
+         bthr.zerothr  = val;
+      else if ( fline.contains( "linear threshold"  ) )
+         bthr.linethr  = val;
+      else if ( fline.contains( "maximum OD"        ) )
+         bthr.maxod    = val;
+      else if ( fline.contains( "minimum non-zero"  ) )
+         bthr.minnzsc  = val;
+      else if ( fline.contains( "sim multiply factor" ) )
+         bthr.mfactor  = val;
+      else if ( fline.contains( "exp multiply factor" ) )
+         bthr.mfactex  = val;
+   }
+
+   bfcfile.close();
+
+   // A band-forming fit carries its simulation multiplier in cp_width, and
+   //  a negative value there disables the thresholds entirely.  This mirrors
+   //  what calc_residuals() applies, so that both paths threshold alike.
+   bthr.mfactor   = simparams.cp_width;
+
+   if ( bthr.mfactor < 0.0 )
+   {
+      bthr.mfactor   = 1.0;
+      bthr.zerothr   = 0.0;
+      bthr.linethr   = 0.0;
+      bthr.maxod     = 1.0e+20;
+   }
+
+   return true;
 }
 
 // Create a Simulation object
@@ -514,7 +548,8 @@ DbgLv(2) << "   CR:114  rss now" << US_Memory::rss_now() << "cc" << cc;
 
             if ( banddthr )
             {  // If band forming, hold data within thresholds; skip if all-zero
-               if ( data_threshold( &simdat, zerothr, linethr, maxod, mfactor ) )
+               if ( data_threshold( &simdat, zerothr, linethr, maxod, mfactor,
+                                    minnzsc ) )
                   continue;
 
                ksols++;
@@ -830,7 +865,8 @@ DbgLv(1) << "CR: sdat:"
 
             if ( banddthr )
             {  // If band forming, hold data within thresholds; skip if all-zero
-               if ( data_threshold( &simdat, zerothr, linethr, maxod, mfactor ) )
+               if ( data_threshold( &simdat, zerothr, linethr, maxod, mfactor,
+                                    minnzsc ) )
                   continue;
 
                ksols++;
@@ -1027,7 +1063,8 @@ DbgLv(1) << "solve_sim_3: timestate file does not exist" << tmst_fpath << dset->
 
             if ( banddthr )
             {  // If band forming, hold data within thresholds; skip if all-zero
-               if ( data_threshold(&simdat, zerothr, linethr, maxod, mfactor) )
+               if ( data_threshold( &simdat, zerothr, linethr, maxod, mfactor,
+                                    minnzsc ) )
                   continue;
 
                ksols++;
@@ -2185,7 +2222,8 @@ void US_SolveSim::DebugTime( QString mtext )
 
 // Modify amplitude of data by thresholds and return flag if all-zero result
 bool US_SolveSim::data_threshold( US_DataIO::RawData* sdata,
-      double zerothr, double linethr, double maxod, double mfactor )
+      double zerothr, double linethr, double maxod, double mfactor,
+      double minnzsc )
 {
    int    nnzro   = 0;
    int    nzset   = 0;
@@ -2238,7 +2276,9 @@ maxs=qMax(maxs,avalue);
 
    int lownnz = qRound( minnzsc * (double)( nscans * npoints ) );
    nnzro      = ( nnzro < lownnz ) ? 0 : nnzro;
-DbgLv(1) << "  CR:THR: nnzro zs nt cl" << nnzro << nzset << nntrp << nclip;
+// A class method has no thread rank or debug level of its own
+if(US_Settings::us_debug()>=1) qDebug() << "  CR:THR: nnzro zs nt cl"
+ << nnzro << nzset << nntrp << nclip;
 //if(nnzro>0) {DbgLv(1) << "CR:THR: maxs" << maxs << maxsi << "mfact" << mfactor;}
 //else        {DbgLv(1) << "CR:THz: maxs" << maxs << nnzro << "mfact" << mfactor;}
 

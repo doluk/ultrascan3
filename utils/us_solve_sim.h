@@ -104,6 +104,44 @@ class US_UTIL_EXTERN US_SolveSim : public QObject
     //! \returns         Flag of size problem existing
     bool check_grid_size( double, QString& );
 
+    //! \brief Data thresholds applied to a band-forming experiment
+    class US_UTIL_EXTERN BandThresholds
+    {
+        public:
+            BandThresholds() : zerothr( 0.020 ), linethr( 0.050 ),
+                               maxod( 1.50 ), minnzsc( 0.005 ),
+                               mfactor( 3.00 ), mfactex( 1.00 ) {}
+
+            double zerothr;   //!< zero threshold OD value
+            double linethr;   //!< linear threshold OD value
+            double maxod;     //!< maximum OD value
+            double minnzsc;   //!< minimum non-zero scale factor
+            double mfactor;   //!< peak multiplier, simulation
+            double mfactex;   //!< peak multiplier, experiment
+    };
+
+    //! \brief Get the band-forming data thresholds in effect for a run.
+    //!
+    //! Thresholding applies only to a band-forming run whose threshold
+    //! control file (etc/bandform.config) can be read; otherwise the data
+    //! are used as they stand.  Exposed so that anything reproducing the
+    //! A-matrix columns outside a fit applies the same treatment the fit
+    //! would.
+    //! \param simparams  Simulation parameters of the run
+    //! \param bthr       Returned threshold values
+    //! \returns          Flag that band-form thresholding applies
+    static bool bandform_thresholds( const SIMPARAMS&, BandThresholds& );
+
+    //! \brief Limit simulated data to the band-forming thresholds
+    //! \returns  Flag that the thresholded data are entirely zero, in
+    //!           which case a fit drops the corresponding A column
+    static bool data_threshold    ( US_DataIO::RawData*,
+                                    double, double, double, double, double );
+
+    //! \brief Limit experiment data to the band-forming thresholds
+    static bool data_threshold    ( US_DataIO::EditedData*,
+                                    double, double, double, double );
+
     //! \brief Get the A-matrix column-norm cutoff currently in effect.
     //!
     //! Columns whose norm falls below this value are dropped from the NNLS
@@ -211,14 +249,6 @@ class US_UTIL_EXTERN US_SolveSim : public QObject
                                          QVector< double >&,
                                           const QVector< double >&,
                                           const QVector< double >& );
-
-    // Limit data to thresholds
-    bool data_threshold    ( US_DataIO::RawData*,
-                             double, double, double, double );
-
-    // Limit data to thresholds  (experiment data version)
-    bool data_threshold    ( US_DataIO::EditedData*,
-                             double, double, double, double );
 
     // Set a model component attribute value
     void set_comp_attr     ( US_Model::SimulationComponent&,

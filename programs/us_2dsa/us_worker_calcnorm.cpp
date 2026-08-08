@@ -202,8 +202,28 @@ DbgLv(1) << "CN(WT):  CN:  sol_c0.s" << solutes_c[0].s;
    US_Model           model1;              // 1-component work model
    model1.components.resize( 1 );
 
-   // Initialize the simulation data set
-   US_AstfemMath::initSimData( simdat, dset->run_data, 0.0 );
+   // A band-forming run has its data held within thresholds before the A
+   //  matrix is built, and columns whose thresholded simulation is entirely
+   //  zero are dropped from the fit.  Reproduce both here, so that a norm
+   //  grid describes the fit that would actually be run.
+   US_SolveSim::BandThresholds bthr;
+   bool banddthr  = US_SolveSim::bandform_thresholds( simparms, bthr );
+   US_DataIO::EditedData wdata;
+
+   if ( banddthr )
+   {  // Threshold the experiment data, as the fit does, so that the
+      //  simulation is laid out on the same radial and scan grid
+      wdata          = dset->run_data;
+      US_SolveSim::data_threshold( &wdata, bthr.zerothr, bthr.linethr,
+                                   bthr.maxod, bthr.mfactex );
+   }
+
+DbgLv(1) << "CN(WT):  CN:  banddthr" << banddthr << "bandvol"
+ << simparms.band_volume << "mfactor" << bthr.mfactor;
+
+   // Initialize the simulation data set on the experiment's grid
+   US_AstfemMath::initSimData( simdat,
+                               banddthr ? wdata : dset->run_data, 0.0 );
 
    int nscan         = simdat.scanCount();
    int npoint        = simdat.pointCount();
@@ -254,6 +274,16 @@ DbgLv(1) << "CN(WT):  CN:   ii" << ii << "astfem_rsa:";
       US_Astfem_RSA astfem_rsa( model1, simparms );
 
       astfem_rsa.calculate( simdat );
+
+      if ( banddthr )
+      {  // Hold the simulation within the band-forming thresholds.  A
+         //  column left entirely zero is one the fit would not include at
+         //  all, which a zero norm reports faithfully:  it falls below any
+         //  cutoff and is marked as dropped.
+         US_SolveSim::data_threshold( &simdat, bthr.zerothr, bthr.linethr,
+                                      bthr.maxod, bthr.mfactor,
+                                      bthr.minnzsc );
+      }
 
       // Store the norm value for this simulation (A matrix column)
       double znorm      = US_Math2::norm_value( &simdat );
