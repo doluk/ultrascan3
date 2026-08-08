@@ -180,9 +180,24 @@ US_show_norm::US_show_norm( US_Model* a_model, bool a_cnst_vbar,
    // A usable grid needs a shape that accounts for every point
    have_grid      = ( ginfo.nss > 0  &&  ginfo.nks > 0  &&
                       ( ginfo.nss * ginfo.nks ) == nsolutes );
+   have_sigs      = ( have_grid  &&  ginfo.nsamp > 0  &&
+                      ginfo.sigs.size() == ( nsolutes * ginfo.nsamp ) );
+   // The arrays are sized even when nothing filled them, so require that at
+   //  least one real coherence came back before offering those modes
    have_coher     = ( have_grid  &&
                       ginfo.coher_x.size() == nsolutes  &&
                       ginfo.coher_y.size() == nsolutes );
+
+   if ( have_coher )
+   {
+      bool anycoh    = false;
+
+      for ( int ii = 0; ii < nsolutes  &&  ! anycoh; ii++ )
+         anycoh         = ( ginfo.coher_x[ ii ] >= 0.0  ||
+                            ginfo.coher_y[ ii ] >= 0.0 );
+
+      have_coher     = anycoh;
+   }
    have_cut       = ( ginfo.norm_cut > 0.0 );
 
    // A column norm is a sum in quadrature over every data point, so its
@@ -241,6 +256,7 @@ US_show_norm::US_show_norm( US_Model* a_model, bool a_cnst_vbar,
    cb_zmode->addItem( tr( "Norm relative to max at same X  (%)"   ) );
    cb_zmode->addItem( tr( "Norm deviation from mean over Y  (%)"  ) );
    cb_zmode->addItem( tr( "Norm as percent of all norms  (%)"     ) );
+   cb_zmode->addItem( tr( "Collinearity with SELECTED point"      ) );
    cb_zmode->addItem( tr( "Collinearity with X neighbour"         ) );
    cb_zmode->addItem( tr( "Collinearity with Y neighbour"         ) );
    cb_zmode->addItem( tr( "Collinearity, worst neighbour"         ) );
@@ -249,9 +265,15 @@ US_show_norm::US_show_norm( US_Model* a_model, bool a_cnst_vbar,
       "The norm varies over orders of magnitude along s but only by a few\n"
       "percent along f/f0, so a single linear scale hides the f/f0\n"
       "dependence entirely.  The relative and deviation modes rescale each\n"
-      "X column so that dependence becomes visible.  The collinearity modes\n"
-      "show how nearly parallel neighbouring A columns are, which is what\n"
-      "actually limits how well NNLS can separate them." ) );
+      "X column so that dependence becomes visible.\n\n"
+      "The collinearity modes show how nearly parallel two A columns are,\n"
+      "which is what limits how well NNLS can separate them.  In every\n"
+      "collinearity mode a HIGHER value means HARDER to separate.\n\n"
+      "\"With SELECTED point\" compares every grid point against the one\n"
+      "clicked in the map:  it shows the whole region of parameter space\n"
+      "that this experiment cannot distinguish from that point.  The\n"
+      "neighbour modes instead compare each point with the one next to it,\n"
+      "which says whether the grid itself is finer than the data warrant." ) );
 
    if ( ! have_grid )
    {  // Column-relative modes need a known grid shape
@@ -260,10 +282,15 @@ US_show_norm::US_show_norm( US_Model* a_model, bool a_cnst_vbar,
    }
 
    if ( ! have_coher )
-   {  // Collinearity modes need the coherence values
+   {  // Neighbour collinearity modes need the coherence values
       cb_zmode->setItemData( ZM_COH_X,   0, Qt::UserRole - 1 );
       cb_zmode->setItemData( ZM_COH_Y,   0, Qt::UserRole - 1 );
       cb_zmode->setItemData( ZM_COH_MAX, 0, Qt::UserRole - 1 );
+   }
+
+   if ( ! have_sigs )
+   {  // Comparing against an arbitrary point needs the column signatures
+      cb_zmode->setItemData( ZM_COH_PICK, 0, Qt::UserRole - 1 );
    }
 
    if ( ! have_rms )
@@ -563,11 +590,33 @@ QString US_show_norm::attr_label( int attr )
    }
 }
 
+// Cosine of the angle between two A columns.
+//
+// The retained signatures are unit length, so their dot product is the
+// cosine directly.  They are subsampled, which puts a floor of roughly
+// 1e-5 on how close to 1 the result can be resolved; the value is a lower
+// bound on the true collinearity, never an overstatement of separability.
+double US_show_norm::coher_pair( int ia, int ib )
+{
+   if ( ! have_sigs  ||  ia < 0  ||  ib < 0 )
+      return -1.0;
+
+   int          nsamp = ginfo.nsamp;
+   const float* siga  = ginfo.sigs.constData() + ( (size_t)ia * nsamp );
+   const float* sigb  = ginfo.sigs.constData() + ( (size_t)ib * nsamp );
+   double       dotp  = 0.0;
+
+   for ( int jj = 0; jj < nsamp; jj++ )
+      dotp              += ( (double)siga[ jj ] * (double)sigb[ jj ] );
+
+   return qBound( 0.0, dotp, 1.0 );
+}
+
 // True when the current Z mode maps a collinearity rather than a norm
 bool US_show_norm::zmode_is_coher( void )
 {
-   return ( zmode == ZM_COH_X  ||  zmode == ZM_COH_Y  ||
-            zmode == ZM_COH_MAX );
+   return ( zmode == ZM_COH_PICK  ||  zmode == ZM_COH_X  ||
+            zmode == ZM_COH_Y     ||  zmode == ZM_COH_MAX );
 }
 
 // Title of the Z axis, per the current Z mode
@@ -581,12 +630,14 @@ QString US_show_norm::zmode_title( void )
       case ZM_RELX:     return tr( "Norm, percent of max at same X" );
       case ZM_DEVX:     return tr( "Norm deviation from Y-mean (%)" );
       case ZM_PCTTOT:   return tr( "Norm, percent of all norms" );
+      case ZM_COH_PICK: return tr( "Collinearity with selected point"
+                                   "  -log10(1-cos), higher = inseparable" );
       case ZM_COH_X:    return tr( "Collinearity, X neighbour"
-                                   "  -log10(1-cos)" );
+                                   "  -log10(1-cos), higher = inseparable" );
       case ZM_COH_Y:    return tr( "Collinearity, Y neighbour"
-                                   "  -log10(1-cos)" );
+                                   "  -log10(1-cos), higher = inseparable" );
       case ZM_COH_MAX:  return tr( "Collinearity, worst neighbour"
-                                   "  -log10(1-cos)" );
+                                   "  -log10(1-cos), higher = inseparable" );
       case ZM_NORM:
       default:          return tr( "Column norm ||a|| (OD, quadrature sum"
                                    " over %1 points)" ).arg( ginfo.ndpts );
@@ -602,12 +653,16 @@ QString US_show_norm::zmode_title( void )
 void US_show_norm::compute_zvals( void )
 {
    int nsol       = gnorm.size();
-   zvals.resize( nsol );
+   zvals .resize( nsol );
+   zvalid.fill( true, nsol );
 
    if ( nsol < 1 )
       return;
 
-   if ( zmode_is_coher()  &&  ! have_coher )
+   if ( zmode == ZM_COH_PICK  &&  ! have_sigs )
+      zmode          = ZM_NORM;      // Signatures were never retained
+
+   if ( zmode_is_coher()  &&  zmode != ZM_COH_PICK  &&  ! have_coher )
       zmode          = ZM_NORM;      // Coherence was never computed
 
    int nss        = have_grid ? ginfo.nss : nsol;
@@ -686,14 +741,40 @@ void US_show_norm::compute_zvals( void )
       }
       break;
 
+      case ZM_COH_PICK:
+      {  // Cosine of every column against the selected one.  This is the
+         //  resolution profile of the fit around that point:  it shows how
+         //  far one has to move through parameter space before the data can
+         //  tell the difference, which the neighbour maps cannot say.
+         int    kpick   = qBound( 0, pick_iy, nks - 1 ) * nss
+                        + qBound( 0, pick_ix, nss - 1 );
+         double zhi     = -1.0e+30;
+
+         for ( int ii = 0; ii < nsol; ii++ )
+         {
+            if ( ii == kpick )
+            {  // Its cosine with itself is 1 by construction and would run
+               //  off the top of the scale; give it the worst real value
+               //  found, below.
+               zvalid[ ii ]   = false;
+               continue;
+            }
+
+            double dcoh    = qMax( 1.0 - coher_pair( kpick, ii ), 1.0e-9 );
+            zvals[ ii ]    = -log10( dcoh );
+            zhi            = qMax( zhi, zvals[ ii ] );
+         }
+
+         zvals[ kpick ] = ( zhi > -1.0e+29 ) ? zhi : 0.0;
+      }
+      break;
+
       case ZM_COH_X:
       case ZM_COH_Y:
       case ZM_COH_MAX:
       {  // Map the cosine through -log10(1-cos) so that the interesting
          //  range, cos between 0.99 and 0.999999, occupies most of the
          //  scale instead of being crushed against 1.
-         double zlo     = 1.0e+30;
-
          for ( int ii = 0; ii < nsol; ii++ )
          {
             double cohx    = ginfo.coher_x[ ii ];
@@ -703,24 +784,28 @@ void US_show_norm::compute_zvals( void )
                                                    : qMax( cohx, cohy );
 
             if ( cohv < 0.0 )
-            {  // No neighbour on that side of this point
-               zvals[ ii ]    = -1.0e+30;
+            {  // Edge point with no neighbour on that side
+               zvalid[ ii ]   = false;
                continue;
             }
 
             double dcoh    = qMax( 1.0 - cohv, 1.0e-9 );
             zvals[ ii ]    = -log10( dcoh );
-            zlo            = qMin( zlo, zvals[ ii ] );
          }
 
-         if ( zlo > 1.0e+29 )
-            zlo             = 0.0;
-
+         // The map has to paint the edge points, so give each the value of
+         //  the neighbour it was compared against.  That repeats a cell
+         //  rather than inventing a cliff at the edge of the grid; the
+         //  cross sections skip them entirely.
          for ( int ii = 0; ii < nsol; ii++ )
-         {  // Edge points without a neighbour drop to the bottom of the
-            //  scale rather than distorting it
-            if ( zvals[ ii ] < -1.0e+29 )
-               zvals[ ii ]    = zlo;
+         {
+            if ( zvalid[ ii ] )
+               continue;
+
+            int jj         = ( zmode == ZM_COH_Y ) ? ( ii - nss ) : ( ii - 1 );
+            jj             = ( jj >= 0  &&  jj < nsol  &&  zvalid[ jj ] )
+                           ? jj : -1;
+            zvals[ ii ]    = ( jj >= 0 ) ? zvals[ jj ] : 0.0;
          }
       }
       break;
@@ -974,8 +1059,13 @@ void US_show_norm::plot_sections( void )
    QVector< double > yz;
 
    for ( int iy = 0; iy < nks; iy++ )
-   {
+   {  // Points the current Z mode has no real value for are left out
+      //  rather than drawn at a substituted level
       int jj      = iy * nss + pick_ix;
+
+      if ( ! zvalid[ jj ] )
+         continue;
+
       yx << xy_distro[ jj ].k;
       yz << zvals   [ jj ];
    }
@@ -1002,6 +1092,10 @@ void US_show_norm::plot_sections( void )
    for ( int ix = 0; ix < nss; ix++ )
    {
       int jj      = pick_iy * nss + ix;
+
+      if ( ! zvalid[ jj ] )
+         continue;
+
       xx << xy_distro[ jj ].s;
       xz << zvals   [ jj ];
    }
@@ -1020,6 +1114,18 @@ void US_show_norm::plot_sections( void )
    xsec_plot_x->setAxisTitle( QwtPlot::yLeft,   ztitle );
    xsec_plot_x->setAxisAutoScale( QwtPlot::xBottom );
    xsec_plot_x->setAxisAutoScale( QwtPlot::yLeft   );
+
+   // Mark where the two sections cross, i.e. the selected grid point
+   for ( int ii = 0; ii < 2; ii++ )
+   {
+      QwtPlotMarker* pmark = new QwtPlotMarker();
+      pmark->setLineStyle( QwtPlotMarker::VLine );
+      pmark->setLinePen  ( QPen( Qt::darkGray, 1, Qt::DashLine ) );
+      pmark->setXValue   ( ( ii == 0 )
+                           ? xy_distro[ pick_iy * nss + pick_ix ].k
+                           : xy_distro[ pick_iy * nss + pick_ix ].s );
+      pmark->attach      ( ( ii == 0 ) ? xsec_plot_y : xsec_plot_x );
+   }
 
    // Where the Z axis is still a norm, show the NNLS cutoff on it
    if ( have_cut  &&  ( zmode == ZM_NORM  ||  zmode == ZM_RMS  ||
@@ -1183,6 +1289,51 @@ void US_show_norm::update_stats( void )
                                 -8 )
                           .arg( sensx.isEmpty() ? 0.0
                                 : sensx[ sensx.size() / 2 ], 0, 'f', 2 );
+   }
+
+   if ( have_sigs )
+   {  // How far the selected point has to be moved before the data can
+      //  tell the difference.  This is the resolution of the experiment at
+      //  that point, and the number a peak position should be quoted with.
+      const double cthr = 0.99;      // still separable below this cosine
+      int    nss     = ginfo.nss;
+      int    nks     = ginfo.nks;
+      int    ixp     = qBound( 0, pick_ix, nss - 1 );
+      int    iyp     = qBound( 0, pick_iy, nks - 1 );
+      int    kpick   = iyp * nss + ixp;
+      int    ixlo    = ixp;
+      int    ixhi    = ixp;
+      int    iylo    = iyp;
+      int    iyhi    = iyp;
+
+      while ( ixlo > 0  &&
+              coher_pair( kpick, iyp * nss + ixlo - 1 ) >= cthr )  ixlo--;
+      while ( ixhi < ( nss - 1 )  &&
+              coher_pair( kpick, iyp * nss + ixhi + 1 ) >= cthr )  ixhi++;
+      while ( iylo > 0  &&
+              coher_pair( kpick, ( iylo - 1 ) * nss + ixp ) >= cthr )  iylo--;
+      while ( iyhi < ( nks - 1 )  &&
+              coher_pair( kpick, ( iyhi + 1 ) * nss + ixp ) >= cthr )  iyhi++;
+
+      txt           += tr( "\nResolution around the selected point"
+                           " (|cos| < %1 to separate):\n" )
+                          .arg( cthr, 0, 'g', 3 );
+      txt           += tr( "   along %1 : %2 of %3 grid steps,  %4 to %5\n" )
+                          .arg( attr_label( plot_x ), -8 )
+                          .arg( ixhi - ixlo + 1 ).arg( nss )
+                          .arg( attr_value( iyp * nss + ixlo, plot_x ),
+                                0, 'g', 4 )
+                          .arg( attr_value( iyp * nss + ixhi, plot_x ),
+                                0, 'g', 4 );
+      txt           += tr( "   along %1 : %2 of %3 grid steps,  %4 to %5\n" )
+                          .arg( attr_label( plot_y ), -8 )
+                          .arg( iyhi - iylo + 1 ).arg( nks )
+                          .arg( attr_value( iylo * nss + ixp, plot_y ),
+                                0, 'g', 4 )
+                          .arg( attr_value( iyhi * nss + ixp, plot_y ),
+                                0, 'g', 4 );
+      txt           += tr( "   Grid points inside that span cannot be told\n"
+                           "   apart from the selected one by these data.\n" );
    }
 
    if ( have_coher )

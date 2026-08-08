@@ -28,6 +28,7 @@ WorkerThreadCalcNorm::WorkerThreadCalcNorm( QObject* parent )
    sig_nscn   = 0;
    sig_rstr   = 1;
    sig_sstr   = 1;
+   sigbuf     = NULL;
    dbg_level  = US_Settings::us_debug();
 DbgLv(1) << "CN(WT): Thread created";
 }
@@ -55,6 +56,12 @@ void WorkerThreadCalcNorm::define_work( WorkPacketCN& workin )
    nss         = workin.nss;            // grid row length (0 if no grid)
    row0        = workin.row0;           // first grid row for this worker
    nrows       = workin.nrows;          // grid rows for this worker
+   nsamp       = workin.nsamp;          // signature geometry, set by caller
+   sig_nrad    = workin.sig_nrad;
+   sig_nscn    = workin.sig_nscn;
+   sig_rstr    = workin.sig_rstr;
+   sig_sstr    = workin.sig_sstr;
+   sigbuf      = workin.sigbuf;         // caller's buffer slice
    attr_x      = ( amask >> 6 );        // attribute indecies
    attr_y      = ( amask >> 3 ) & 7;
    attr_z      = amask & 7;
@@ -80,8 +87,6 @@ void WorkerThreadCalcNorm::get_result( WorkPacketCN& workout )
    workout.nsamp    = nsamp;
    workout.coher_x  = coher_x;
    workout.coher_y  = coher_y;
-   workout.sig_first = sig_first;
-   workout.sig_last  = sig_last;
 DbgLv(1) << "get_result" << workout.csolutes.size() << workout.nthrd ;
 }
 
@@ -141,10 +146,12 @@ void WorkerThreadCalcNorm::calc_norms()
 {
 DbgLv(1) << "calc_norms is called" << nsolutes << nthrd ;
 
-   // A grid description means this worker owns a contiguous band of grid
-   //  rows and can report neighbour coherences.  Without one, fall back to
-   //  the interleaved share of solute points and report norms only.
-   bool ongrid    = ( nss > 0  &&  nrows > 0 );
+   // A grid description and a signature buffer mean this worker owns a
+   //  contiguous band of grid rows and can record signatures and neighbour
+   //  coherences.  Without them, fall back to the interleaved share of
+   //  solute points and report norms only.
+   bool ongrid    = ( nss > 0  &&  nrows > 0  &&  nsamp > 0  &&
+                      sigbuf != NULL );
 
    if ( ongrid )
    {
@@ -197,25 +204,13 @@ DbgLv(1) << "CN(WT):  CN:  sol_c0.s" << solutes_c[0].s;
    int npoint        = simdat.pointCount();
 DbgLv(1) << "CN(WT):  CN:  nscan" << nscan << "npoint" << npoint;
 
-   // Signature geometry:  subsample to a bounded number of values
-   sig_rstr          = qMax( 1, ( npoint + MAX_SIG_RAD - 1 ) / MAX_SIG_RAD );
-   sig_sstr          = qMax( 1, ( nscan  + MAX_SIG_SCN - 1 ) / MAX_SIG_SCN );
-   sig_nrad          = ( npoint + sig_rstr - 1 ) / sig_rstr;
-   sig_nscn          = ( nscan  + sig_sstr - 1 ) / sig_sstr;
-   nsamp             = sig_nrad * sig_nscn;
-
-   // Rolling row buffers used for the coherence calculation.  Only three
-   //  grid rows of subsampled signatures are ever resident.
-   QVector< float > sig_prev;      // signatures of the previous grid row
-   QVector< float > sig_curr;      // signatures of the row being filled
-
    if ( ongrid )
-   {
-      sig_prev .resize( nss * nsamp );
-      sig_curr .resize( nss * nsamp );
-      sig_first.resize( nss * nsamp );
+   {  // The signature geometry is fixed by the caller, which sized the
+      //  shared buffer from it
       coher_x  .fill( -1.0, nwsols );
       coher_y  .fill( -1.0, nwsols );
+DbgLv(1) << "CN(WT):  CN:  sig nrad nscn" << sig_nrad << sig_nscn
+ << "rstr sstr" << sig_rstr << sig_sstr << "nsamp" << nsamp;
    }
 
    // Zeroed model component for initialization
@@ -259,47 +254,31 @@ DbgLv(1) << "CN(WT):  CN:   ii" << ii << "astfem_rsa:";
       solutes_c[ ii ].c = znorm;
 
       if ( ongrid )
-      {  // Accumulate coherences against the already-computed neighbours
+      {  // Record the signature, then take the coherences with the two
+         //  neighbours that have already been computed.  Both live in this
+         //  worker's own slice, since it walks a contiguous band of rows
+         //  with X varying fastest.
          int    isx        = ii % nss;         // X index within the row
-         int    irx        = ii / nss;         // row index within the band
-         float* sigc       = sig_curr.data() + ( isx * nsamp );
+         float* sigc       = sigbuf + ( (size_t)ii * nsamp );
 
          signature( simdat, sigc );
 
          if ( isx > 0 )
          {  // Coherence with the previous point in the same row is
             //  reported on that previous point (its +X neighbour)
-            coher_x[ ii - 1 ] = coherence( sigc - nsamp, sigc );
+            coher_x[ ii - 1 ]   = coherence( sigc - nsamp, sigc );
          }
 
-         if ( irx > 0 )
+         if ( ii >= nss )
          {  // Coherence with the point below in the previous row is
             //  reported on that lower point (its +Y neighbour)
-            coher_y[ ii - nss ] = coherence( sig_prev.data() + ( isx * nsamp ),
+            coher_y[ ii - nss ] = coherence( sigc - ( (size_t)nss * nsamp ),
                                              sigc );
-         }
-
-         if ( isx == ( nss - 1 ) )
-         {  // Row complete:  keep a copy of the first row for the caller,
-            //  then roll the current row into the previous-row slot.  The
-            //  swapped-in buffer is stale but every entry of it is rewritten
-            //  before it is read again.
-            if ( irx == 0 )
-               sig_first    = sig_curr;
-
-            sig_prev.swap( sig_curr );
          }
       }
 
       // Signal a completed step (solute point)
       emit work_progress( 1 );
-   }
-
-   if ( ongrid )
-   {  // The last fully-filled row closes the Y coherence at the far edge
-      //  of this worker's band, once the caller pairs it with the first
-      //  row of the next band.
-      sig_last          = sig_prev;
    }
 
    // Signal that a thread's work is done

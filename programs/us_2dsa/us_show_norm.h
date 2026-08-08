@@ -28,12 +28,14 @@
 //! grid neighbours.
 struct US_NormGridInfo
 {
-   US_NormGridInfo() : nss( 0 ), nks( 0 ), ndpts( 0 ), norm_cut( 0.0 ) {}
+   US_NormGridInfo() : nss( 0 ), nks( 0 ), ndpts( 0 ), nsamp( 0 ),
+                       norm_cut( 0.0 ) {}
 
    int     nss;                  //!< grid points per row (X direction)
    int     nks;                  //!< grid rows (Y direction)
    int     ndpts;                //!< data points behind each norm
                                  //!<  (scans x radial points)
+   int     nsamp;                //!< values per column signature
    double  norm_cut;             //!< NNLS column-norm cutoff in effect
    QString descr;                //!< run and grid description
 
@@ -42,6 +44,12 @@ struct US_NormGridInfo
    QVector< double > coher_x;
    //! Cosine of the angle between each A column and its +Y grid neighbour
    QVector< double > coher_y;
+
+   //! Unit-length subsampled signature of every A column, laid out as one
+   //!  block of nsamp values per grid point.  The dot product of two blocks
+   //!  is the cosine of the angle between those two columns, so this allows
+   //!  any pair to be compared, not only neighbours.
+   QVector< float >  sigs;
 };
 
 //! \brief Raster data that renders one flat cell per grid point
@@ -138,6 +146,7 @@ class US_show_norm : public US_WidgetsDialog
          ZM_RELX,      //!< norm as a percentage of the maximum at the same X
          ZM_DEVX,      //!< deviation from the mean over Y at the same X
          ZM_PCTTOT,    //!< norm as a percentage of the sum of all norms
+         ZM_COH_PICK,  //!< collinearity with the selected grid point
          ZM_COH_X,     //!< collinearity with the +X grid neighbour
          ZM_COH_Y,     //!< collinearity with the +Y grid neighbour
          ZM_COH_MAX,   //!< worst collinearity with either grid neighbour
@@ -206,6 +215,11 @@ class US_show_norm : public US_WidgetsDialog
       QVector< double >   gnorm;
       //! Unshifted Z values for the current Z mode, same order as gnorm
       QVector< double >   zvals;
+      //! False where the current Z mode has no real value for a point (an
+      //!  edge point with no neighbour).  The map must paint something
+      //!  there, but the cross sections leave a gap rather than invent a
+      //!  value and draw a cliff that is not in the data.
+      QVector< bool >     zvalid;
 
       double        plt_smin;
       double        plt_smax;
@@ -227,6 +241,7 @@ class US_show_norm : public US_WidgetsDialog
       bool          auto_sxy;
       bool          have_grid;
       bool          have_coher;
+      bool          have_sigs;
       bool          have_cut;
       bool          have_rms;
 
@@ -268,6 +283,8 @@ class US_show_norm : public US_WidgetsDialog
       void   apply_axis_ranges( void );
       //! \brief Fill zvals from gnorm and the coherences, per the Z mode
       void   compute_zvals  ( void );
+      //! \brief Cosine of the angle between two A columns, from signatures
+      double coher_pair     ( int, int );
       //! \brief Grid index of the point nearest a plot position, or -1
       int    nearest_point  ( const QPointF& );
       //! \brief Number of grid points whose norm falls below the NNLS cutoff

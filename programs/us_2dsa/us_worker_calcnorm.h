@@ -30,7 +30,17 @@ typedef struct work_packet_cn_s
    int     nss;        //!< grid points per row (X/s direction); 0 = no grid
    int     row0;       //!< first grid row (Y direction) owned by this worker
    int     nrows;      //!< number of grid rows owned by this worker
-   int     nsamp;      //!< values per subsampled signature (output)
+
+   int     nsamp;      //!< values per signature (sig_nrad * sig_nscn)
+   int     sig_nrad;   //!< radial points kept in a signature
+   int     sig_nscn;   //!< scans kept in a signature
+   int     sig_rstr;   //!< radial stride of a signature
+   int     sig_sstr;   //!< scan stride of a signature
+
+   //! Base of this worker's slice of the caller's signature buffer, sized
+   //!  nwsols * nsamp.  Each worker owns a disjoint contiguous range, so no
+   //!  locking is needed.  NULL disables the coherence calculation.
+   float*  sigbuf;
 
    double  cff0;       //!< constant f/f0 (or zero)
 
@@ -44,13 +54,6 @@ typedef struct work_packet_cn_s
    //!  per entry of csolutes.  -1.0 where the neighbour is not available.
    QVector< double >      coher_y;
 
-   //! Unit-length subsampled signatures of the worker's first grid row,
-   //!  laid out as nss consecutive blocks of nsamp values.  Used by the
-   //!  caller to close the Y-coherence across worker band boundaries.
-   QVector< float >       sig_first;
-   //! Unit-length subsampled signatures of the worker's last grid row.
-   QVector< float >       sig_last;
-
    QList< int >           solxs;     //!< solute indexes list
 
    US_SolveSim::DataSet*  dset;      //!< data set object pointer
@@ -62,13 +65,16 @@ typedef struct work_packet_cn_s
 //! This class is for each of the individual worker threads that do the
 //! actual computational work of calculating norm values.
 //!
-//! When the caller supplies a grid description (nss, row0, nrows), the
-//! worker takes a contiguous band of grid rows and additionally reports
-//! the coherence (cosine of the angle) between each column of the A
-//! matrix and its immediate grid neighbours.  That coherence, rather than
-//! the column norm, is what governs how well NNLS can separate adjacent
-//! grid points.  Otherwise the worker falls back to an interleaved share
-//! of the solute points and reports norms only.
+//! When the caller supplies a grid description (nss, row0, nrows) and a
+//! signature buffer, the worker takes a contiguous band of grid rows and
+//! additionally records a unit-length subsampled signature of every A
+//! column, plus the coherence (cosine of the angle) between each column
+//! and its immediate grid neighbours.  That coherence, rather than the
+//! column norm, is what governs how well NNLS can separate grid points;
+//! keeping the signatures lets the caller measure the coherence between
+//! any pair of columns afterwards, not just neighbours.  Without a grid
+//! the worker falls back to an interleaved share of the solute points and
+//! reports norms only.
 class WorkerThreadCalcNorm : public QThread
 {
    Q_OBJECT
@@ -126,6 +132,8 @@ class WorkerThreadCalcNorm : public QThread
       int  sig_rstr;      // radial stride of a signature
       int  sig_sstr;      // scan stride of a signature
 
+      float* sigbuf;      // caller's signature buffer slice for this worker
+
       double  cff0;       // constant f/f0 (or zero)
 
       US_DataIO::EditedData*  edata;       // experiment data (pointer)
@@ -141,9 +149,6 @@ class WorkerThreadCalcNorm : public QThread
 
       QVector< double >       coher_x;     // X-neighbour coherences
       QVector< double >       coher_y;     // Y-neighbour coherences
-
-      QVector< float >        sig_first;   // signatures of first owned row
-      QVector< float >        sig_last;    // signatures of last owned row
 };
 
 #endif

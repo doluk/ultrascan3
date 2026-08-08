@@ -67,11 +67,13 @@ class US_AnalysisControl2D : public US_WidgetsDialog
       // Norm-grid accumulation across the calc-norm worker threads
       int           nrm_nss;      // grid points per row (X direction)
       int           nrm_nks;      // grid rows (Y direction)
-      int           nrm_nsamp;    // values per coherence signature
-      QVector< double >           nrm_coher_x;   // +X neighbour coherences
-      QVector< double >           nrm_coher_y;   // +Y neighbour coherences
-      QVector< QVector< float > > nrm_sig_first; // per-band first-row signatures
-      QVector< QVector< float > > nrm_sig_last;  // per-band last-row signatures
+      int           nrm_nsamp;    // values per column signature
+      QVector< double >  nrm_coher_x;  // +X neighbour coherences
+      QVector< double >  nrm_coher_y;  // +Y neighbour coherences
+      //! Unit-length subsampled signature of every A column, laid out as
+      //!  nsolutes consecutive blocks of nrm_nsamp values.  Workers write
+      //!  disjoint slices of this directly.
+      QVector< float >   nrm_sigs;
       int           kthrdr;
       int           nsolutes;
 

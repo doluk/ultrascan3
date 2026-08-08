@@ -1173,6 +1173,14 @@ DbgLv(1) << " calculate_norms is called" << nthrd;
    //  reset kthrdr and let two sets of threads write model2 concurrently.
    pb_anorm->setEnabled( false );
 
+   if ( ! analcd1.isNull() )
+   {  // Any existing map is superseded by this pass.  Close it now, and let
+      //  its deferred delete run, so that its copy of the column signatures
+      //  is released before a new set is allocated below.
+      analcd1->close();
+      qApp->processEvents();
+   }
+
    normstep = 0;
    int attr_x      = ATTR_S;      // X is s
    int attr_y      = ATTR_K;      // Y is f/f0
@@ -1262,12 +1270,50 @@ DbgLv(1) << "CN: grid gnss gnks" << gnss << gnks << "of" << nsolutes;
    nrm_nks         = gnks;
    nrm_coher_x.fill( -1.0, nsolutes );
    nrm_coher_y.fill( -1.0, nsolutes );
-   nrm_sig_first.clear();
-   nrm_sig_last .clear();
-   nrm_sig_first.resize( nthrd );
-   nrm_sig_last .resize( nthrd );
-   nrm_nsamp       = 0;
    dset            = dsets[ 0 ];
+
+   // Size the column signatures.  Retaining one for every grid point is what
+   //  lets the viewer measure the coherence between any pair of columns, not
+   //  just neighbours, so that it can answer "how far do I have to move
+   //  before the fit can tell the difference".  Cap the total at a memory
+   //  budget, reducing the sampling only when a grid is large enough to
+   //  need it.
+   const qint64 sig_budget = 512LL * 1024LL * 1024LL;   // bytes
+
+   int  sig_nrad   = 0;
+   int  sig_nscn   = 0;
+   int  sig_rstr   = 1;
+   int  sig_sstr   = 1;
+   nrm_nsamp       = 0;
+   nrm_sigs.clear();
+
+   if ( gnks > 0 )
+   {
+      int    nscn     = dset->run_data.scanCount();
+      int    npnt     = dset->run_data.pointCount();
+      qint64 fcap     = sig_budget / ( 4LL * (qint64)nsolutes );
+      int    scap     = (int)qBound( (qint64)128, fcap,
+            (qint64)( WorkerThreadCalcNorm::MAX_SIG_RAD *
+                      WorkerThreadCalcNorm::MAX_SIG_SCN ) );
+      double shrink   = qMin( 1.0, sqrt( (double)scap /
+            (double)( WorkerThreadCalcNorm::MAX_SIG_RAD *
+                      WorkerThreadCalcNorm::MAX_SIG_SCN ) ) );
+      int    maxrad   = qMax( 16,
+            (int)( WorkerThreadCalcNorm::MAX_SIG_RAD * shrink ) );
+      int    maxscn   = qMax(  8,
+            (int)( WorkerThreadCalcNorm::MAX_SIG_SCN * shrink ) );
+
+      sig_rstr        = qMax( 1, ( npnt + maxrad - 1 ) / maxrad );
+      sig_sstr        = qMax( 1, ( nscn + maxscn - 1 ) / maxscn );
+      sig_nrad        = ( npnt + sig_rstr - 1 ) / sig_rstr;
+      sig_nscn        = ( nscn + sig_sstr - 1 ) / sig_sstr;
+      nrm_nsamp       = sig_nrad * sig_nscn;
+
+      nrm_sigs.resize( nsolutes * nrm_nsamp );
+
+DbgLv(1) << "CN: signatures" << sig_nrad << "x" << sig_nscn << "=" << nrm_nsamp
+ << "for" << nsolutes << "columns," << ( nrm_sigs.size() * 4 / 1048576 ) << "MB";
+   }
 
 DbgLv(1)<< "CN: s0" << solutes[0].s << "sn" << solutes[nsolutes-1].s;
 DbgLv(1)<< "CN: k0" << solutes[0].k << "kn" << solutes[nsolutes-1].k;
@@ -1318,7 +1364,18 @@ DbgLv(1) << "aac2:  ii" << ii << "create thread";
       workin.nrows    = ( gnks > 0 )
                       ? ( ( ( ( ii + 1 ) * gnks ) / nthrd ) - workin.row0 )
                       : 0;
-      workin.nsamp    = 0;
+      workin.nsamp    = nrm_nsamp;
+      workin.sig_nrad = sig_nrad;
+      workin.sig_nscn = sig_nscn;
+      workin.sig_rstr = sig_rstr;
+      workin.sig_sstr = sig_sstr;
+      // Disjoint slice of the shared signature buffer.  Workers only ever
+      //  touch their own rows, so no locking is needed, and nothing may
+      //  resize nrm_sigs while they run.
+      workin.sigbuf   = ( nrm_nsamp > 0 )
+                      ? ( nrm_sigs.data()
+                          + ( (size_t)workin.row0 * gnss * nrm_nsamp ) )
+                      : NULL;
 DbgLv(1) << "aac2:define_work" << workin.thrn << workin.nthrd
  << "row0" << workin.row0 << "nrows" << workin.nrows;
       
@@ -1519,54 +1576,39 @@ DbgLv(1)<<"kk="<< kk ;
       }
    }
 
-   int bandx         = workout.thrn - 1;
-
-   if ( bandx >= 0  &&  bandx < nrm_sig_first.size() )
-   {  // Retain the band's edge rows so that the Y coherence can be closed
-      //  across the boundary between this band and the next
-      nrm_sig_first[ bandx ] = workout.sig_first;
-      nrm_sig_last [ bandx ] = workout.sig_last;
-      nrm_nsamp              = qMax( nrm_nsamp, workout.nsamp );
-   }
-
    wthr->deleteLater();          // Worker has delivered its results
    kthrdr--;
 
    if ( kthrdr == 0 )
    {
-      // Close the Y coherence across the band boundaries.  Each worker kept
-      //  the signatures of its first and last grid row; pairing the last row
-      //  of one band with the first row of the next leaves no gaps in the
-      //  coherence map.
-      int nbands        = nrm_sig_first.size();
-
-      for ( int bb = 0; ( bb + 1 ) < nbands; bb++ )
+      // Close the Y coherence across the worker band boundaries.  Each
+      //  worker computed the coherences inside its own band; the one row
+      //  where a band meets the next has its +Y neighbour in the other
+      //  band, and is filled in here now that every signature is written.
+      if ( nrm_nsamp > 0 )
       {
-         const QVector< float >& slast = nrm_sig_last [ bb    ];
-         const QVector< float >& sfrst = nrm_sig_first[ bb + 1 ];
-         int nexrow        = ( ( bb + 1 ) * nrm_nks ) / nbands;
-         int lasrow        = nexrow - 1;
-
-         if ( nrm_nsamp < 1  ||  lasrow < 0  ||
-              slast.size() < ( nrm_nss * nrm_nsamp )  ||
-              sfrst.size() < ( nrm_nss * nrm_nsamp ) )
-            continue;
-
-         for ( int is = 0; is < nrm_nss; is++ )
+         for ( int iy = 0; ( iy + 1 ) < nrm_nks; iy++ )
          {
-            const float* siga = slast.constData() + ( is * nrm_nsamp );
-            const float* sigb = sfrst.constData() + ( is * nrm_nsamp );
-            double dotp       = 0.0;
+            for ( int ix = 0; ix < nrm_nss; ix++ )
+            {
+               int kk            = iy * nrm_nss + ix;
 
-            for ( int jj = 0; jj < nrm_nsamp; jj++ )
-               dotp             += ( (double)siga[ jj ] * (double)sigb[ jj ] );
+               if ( nrm_coher_y[ kk ] >= 0.0 )
+                  continue;                  // Already done by a worker
 
-            nrm_coher_y[ lasrow * nrm_nss + is ] = qBound( 0.0, dotp, 1.0 );
+               const float* siga = nrm_sigs.constData()
+                                 + ( (size_t)kk * nrm_nsamp );
+               const float* sigb = siga + ( (size_t)nrm_nss * nrm_nsamp );
+               double dotp       = 0.0;
+
+               for ( int jj = 0; jj < nrm_nsamp; jj++ )
+                  dotp             += ( (double)siga[ jj ] *
+                                        (double)sigb[ jj ] );
+
+               nrm_coher_y[ kk ] = qBound( 0.0, dotp, 1.0 );
+            }
          }
       }
-
-      nrm_sig_first.clear();       // Signatures are no longer needed
-      nrm_sig_last .clear();
 
       // Complete the remaining coefficients only once, when every component
       //  has been filled in.  Doing this per worker ran it over components
@@ -1596,17 +1638,15 @@ DbgLv(1) << "model2_values_from_norm_complete"
                         ? ( edata->scanCount() * edata->pointCount() ) : 0;
       ginfo.coher_x     = nrm_coher_x;
       ginfo.coher_y     = nrm_coher_y;
+      ginfo.nsamp       = nrm_nsamp;
+      // Hand the signatures over rather than sharing them, so that the
+      //  control holds no second reference once the viewer owns them
+      ginfo.sigs.swap( nrm_sigs );
       ginfo.descr       = tr( "%1  (%2 s x %3 %4 grid points)" )
                              .arg( edata != NULL ? edata->runID : QString() )
                              .arg( nrm_nss )
                              .arg( nrm_nks )
                              .arg( cnst_vbr ? tr( "f/f0" ) : tr( "vbar" ) );
-
-      if ( ! analcd1.isNull() )
-      {  // Discard any dialog left over from a previous norm calculation
-         //  (WA_DeleteOnClose below makes close() destroy it)
-         analcd1->close();
-      }
 
       analcd1  = new US_show_norm( &model2, cnst_vbr, ginfo, parentw );
       analcd1->setAttribute( Qt::WA_DeleteOnClose );
