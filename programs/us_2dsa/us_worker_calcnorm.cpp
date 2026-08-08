@@ -87,6 +87,7 @@ void WorkerThreadCalcNorm::get_result( WorkPacketCN& workout )
    workout.nsamp    = nsamp;
    workout.coher_x  = coher_x;
    workout.coher_y  = coher_y;
+   workout.signorm  = signorm;
 DbgLv(1) << "get_result" << workout.csolutes.size() << workout.nthrd ;
 }
 
@@ -105,7 +106,7 @@ void WorkerThreadCalcNorm::run()
 // for the reported norm.  Subsampling keeps a full grid row of signatures
 // small enough to hold in memory; the simulated boundaries are smooth, so
 // the sampled inner product tracks the full one closely.
-void WorkerThreadCalcNorm::signature( US_DataIO::RawData& simdat, float* sig )
+double WorkerThreadCalcNorm::signature( US_DataIO::RawData& simdat, float* sig )
 {
    double sumsq   = 0.0;
    int    kk      = 0;
@@ -123,11 +124,15 @@ void WorkerThreadCalcNorm::signature( US_DataIO::RawData& simdat, float* sig )
    }
 
    // Normalize to unit length so that a dot product of two signatures is
-   //  directly the cosine of the angle between the two A columns.
-   double scale   = ( sumsq > 0.0 ) ? ( 1.0 / sqrt( sumsq ) ) : 0.0;
+   //  directly the cosine of the angle between the two A columns.  The norm
+   //  is returned so the caller can undo this and recover readings in OD.
+   double signrm  = ( sumsq > 0.0 ) ? sqrt( sumsq ) : 0.0;
+   double scale   = ( signrm > 0.0 ) ? ( 1.0 / signrm ) : 0.0;
 
    for ( int ii = 0; ii < nsamp; ii++ )
       sig[ ii ]   = (float)( sig[ ii ] * scale );
+
+   return signrm;
 }
 
 // Dot product of two unit-length signatures
@@ -209,6 +214,7 @@ DbgLv(1) << "CN(WT):  CN:  nscan" << nscan << "npoint" << npoint;
       //  shared buffer from it
       coher_x  .fill( -1.0, nwsols );
       coher_y  .fill( -1.0, nwsols );
+      signorm  .fill(  0.0, nwsols );
 DbgLv(1) << "CN(WT):  CN:  sig nrad nscn" << sig_nrad << sig_nscn
  << "rstr sstr" << sig_rstr << sig_sstr << "nsamp" << nsamp;
    }
@@ -261,7 +267,7 @@ DbgLv(1) << "CN(WT):  CN:   ii" << ii << "astfem_rsa:";
          int    isx        = ii % nss;         // X index within the row
          float* sigc       = sigbuf + ( (size_t)ii * nsamp );
 
-         signature( simdat, sigc );
+         signorm[ ii ]     = signature( simdat, sigc );
 
          if ( isx > 0 )
          {  // Coherence with the previous point in the same row is

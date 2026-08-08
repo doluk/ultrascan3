@@ -68,8 +68,13 @@ class US_AnalysisControl2D : public US_WidgetsDialog
       int           nrm_nss;      // grid points per row (X direction)
       int           nrm_nks;      // grid rows (Y direction)
       int           nrm_nsamp;    // values per column signature
+      int           nrm_nrad;     // radial points per signature
+      int           nrm_nscn;     // scans per signature
+      int           nrm_rstr;     // radial stride of a signature
+      int           nrm_sstr;     // scan stride of a signature
       QVector< double >  nrm_coher_x;  // +X neighbour coherences
       QVector< double >  nrm_coher_y;  // +Y neighbour coherences
+      QVector< double >  nrm_signorm;  // norms of the subsampled columns
       //! Unit-length subsampled signature of every A column, laid out as
       //!  nsolutes consecutive blocks of nrm_nsamp values.  Workers write
       //!  disjoint slices of this directly.

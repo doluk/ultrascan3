@@ -54,6 +54,11 @@ typedef struct work_packet_cn_s
    //!  per entry of csolutes.  -1.0 where the neighbour is not available.
    QVector< double >      coher_y;
 
+   //! Norm of the subsampled column, one entry per entry of csolutes.
+   //!  Multiplying a signature by this recovers the simulated readings at
+   //!  the sampled points, which the signature's own normalization removed.
+   QVector< double >      signorm;
+
    QList< int >           solxs;     //!< solute indexes list
 
    US_SolveSim::DataSet*  dset;      //!< data set object pointer
@@ -109,7 +114,8 @@ class WorkerThreadCalcNorm : public QThread
       void set_comp_attr   ( US_Model::SimulationComponent&,
                              US_Solute&, int );
       //! \brief Build a unit-length subsampled signature of a simulation
-      void signature       ( US_DataIO::RawData&, float* );
+      //! \returns  The norm of the subsampled values, before normalization
+      double signature     ( US_DataIO::RawData&, float* );
       //! \brief Dot product of two unit-length signatures
       double coherence     ( const float*, const float* );
 
@@ -149,6 +155,7 @@ class WorkerThreadCalcNorm : public QThread
 
       QVector< double >       coher_x;     // X-neighbour coherences
       QVector< double >       coher_y;     // Y-neighbour coherences
+      QVector< double >       signorm;     // norms of the subsampled columns
 };
 
 #endif

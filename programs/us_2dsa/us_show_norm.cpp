@@ -182,6 +182,16 @@ US_show_norm::US_show_norm( US_Model* a_model, bool a_cnst_vbar,
                       ( ginfo.nss * ginfo.nks ) == nsolutes );
    have_sigs      = ( have_grid  &&  ginfo.nsamp > 0  &&
                       ginfo.sigs.size() == ( nsolutes * ginfo.nsamp ) );
+   // Plotting a signature back as scans additionally needs its scale and
+   //  the radius of each sampled reading
+   have_scans     = ( have_sigs  &&
+                      ginfo.signorm   .size() == nsolutes  &&
+                      ginfo.sig_radius.size() == ginfo.sig_nrad  &&
+                      ginfo.sig_nrad > 1  &&  ginfo.sig_nscn > 0 );
+   have_comp      = false;
+   comp_ix        = 0;
+   comp_iy        = 0;
+   nscans         = 8;
    // The arrays are sized even when nothing filled them, so require that at
    //  least one real coherence came back before offering those modes
    have_coher     = ( have_grid  &&
@@ -315,6 +325,33 @@ US_show_norm::US_show_norm( US_Model* a_model, bool a_cnst_vbar,
    // Read-out for the point last clicked in the map
    le_pickinfo   = us_lineedit( tr( "Click the map to select a grid point" ),
                                 -1, true );
+   le_compinfo   = us_lineedit( tr( "Click a section to compare a second"
+                                    " grid point" ), -1, true );
+
+   // Simulated-scan display
+   QLabel* lb_nscans     = us_label( tr( "Scans to draw:" ) );
+   lb_nscans->setAlignment( Qt::AlignVCenter | Qt::AlignLeft );
+
+   ct_nscans     = us_counter( 2, 1.0, qMax( 1.0, (double)ginfo.sig_nscn ),
+                               (double)nscans );
+   ct_nscans->setSingleStep( 1 );
+   ct_nscans->setEnabled( have_scans );
+   ct_nscans->setToolTip( tr(
+      "Number of simulated scans drawn, spread evenly over the run." ) );
+   connect( ct_nscans, SIGNAL( valueChanged ( double ) ),
+            this,      SLOT  ( update_nscans( double ) ) );
+
+   us_checkbox( tr( "Difference of shapes, not amplitudes" ), ck_shapedf,
+                true );
+   ck_shapedf->setEnabled( have_scans );
+   ck_shapedf->setToolTip( tr(
+      "Collinearity is a property of the shape of a column, not its size.\n"
+      "With this set, the compared column is rescaled to the same norm as\n"
+      "the selected one before the difference is taken, so what is left is\n"
+      "exactly what no amount of amplitude fitting can absorb.  Clear it to\n"
+      "compare the two as they are, both at 1 OD loading concentration." ) );
+   connect( ck_shapedf, SIGNAL( clicked() ),
+            this,       SLOT  ( select_shapedf() ) );
 
    // Axis attribute selection
            plot_x      = ATTR_S;
@@ -432,6 +469,10 @@ US_show_norm::US_show_norm( US_Model* a_model, bool a_cnst_vbar,
    spec->addWidget( cb_zmode,      s_row++, 3, 1, 5 );
    spec->addWidget( ck_cutmark,    s_row++, 0, 1, 8 );
    spec->addWidget( le_pickinfo,   s_row++, 0, 1, 8 );
+   spec->addWidget( le_compinfo,   s_row++, 0, 1, 8 );
+   spec->addWidget( lb_nscans,     s_row,   0, 1, 4 );
+   spec->addWidget( ct_nscans,     s_row++, 4, 1, 4 );
+   spec->addWidget( ck_shapedf,    s_row++, 0, 1, 8 );
    spec->addWidget( lb_x_axis,     s_row,   0, 1, 2 );
    spec->addLayout( gl_x_s,        s_row,   2, 1, 1 );
    spec->addLayout( gl_x_ff0,      s_row,   3, 1, 1 );
@@ -467,7 +508,7 @@ US_show_norm::US_show_norm( US_Model* a_model, bool a_cnst_vbar,
    QBoxLayout* plot = new US_Plot( data_plot,
       tr( "Norm grid" ), xa_title, ya_title );
 
-   data_plot->setMinimumSize( 600, 420 );
+   data_plot->setMinimumSize( 600, 320 );
    data_plot->enableAxis( QwtPlot::xBottom, true );
    data_plot->enableAxis( QwtPlot::yLeft,   true );
    data_plot->enableAxis( QwtPlot::yRight,  true );
@@ -478,10 +519,23 @@ US_show_norm::US_show_norm( US_Model* a_model, bool a_cnst_vbar,
    QBoxLayout* xsx = new US_Plot( xsec_plot_x,
       tr( "Section along X" ), xa_title, tr( "Norm" ) );
 
-   xsec_plot_y->setMinimumSize( 280, 220 );
-   xsec_plot_x->setMinimumSize( 280, 220 );
+   xsec_plot_y->setMinimumSize( 280, 190 );
+   xsec_plot_x->setMinimumSize( 280, 190 );
    xsec_plot_y->setCanvasBackground( Qt::white );
    xsec_plot_x->setCanvasBackground( Qt::white );
+
+   // The simulated data behind the numbers:  the scans of the selected
+   //  column, of a compared column, and what is left between them
+   QBoxLayout* scnl = new US_Plot( scan_plot,
+      tr( "Simulated scans" ), tr( "Radius (cm)" ),
+      tr( "Concentration (OD)" ) );
+   QBoxLayout* difl = new US_Plot( diff_plot,
+      tr( "Difference" ), tr( "Radius (cm)" ), tr( "Difference (OD)" ) );
+
+   scan_plot->setMinimumSize( 280, 190 );
+   diff_plot->setMinimumSize( 280, 190 );
+   scan_plot->setCanvasBackground( Qt::white );
+   diff_plot->setCanvasBackground( Qt::white );
 
    // Clicking the map selects the grid point the sections are taken through
    pick = new US_PlotPicker( data_plot );
@@ -490,13 +544,32 @@ US_show_norm::US_show_norm( US_Model* a_model, bool a_cnst_vbar,
    connect( pick, SIGNAL( mouseDown ( const QPointF& ) ),
             this, SLOT  ( pick_point( const QPointF& ) ) );
 
+   // Clicking either section selects a second point to compare against
+   pick_sy = new US_PlotPicker( xsec_plot_y );
+   pick_sy->setStateMachine( new QwtPickerClickPointMachine() );
+   pick_sy->setRubberBand( QwtPicker::VLineRubberBand );
+   connect( pick_sy, SIGNAL( mouseDown  ( const QPointF& ) ),
+            this,    SLOT  ( pick_sect_y( const QPointF& ) ) );
+
+   pick_sx = new US_PlotPicker( xsec_plot_x );
+   pick_sx->setStateMachine( new QwtPickerClickPointMachine() );
+   pick_sx->setRubberBand( QwtPicker::VLineRubberBand );
+   connect( pick_sx, SIGNAL( mouseDown  ( const QPointF& ) ),
+            this,    SLOT  ( pick_sect_x( const QPointF& ) ) );
+
    xsecs->addLayout( xsy );
    xsecs->addLayout( xsx );
 
+   QHBoxLayout* scns = new QHBoxLayout();
+   scns->addLayout( scnl );
+   scns->addLayout( difl );
+
    right->addLayout( plot  );
    right->addLayout( xsecs );
+   right->addLayout( scns  );
    right->setStretchFactor( plot,  3 );
    right->setStretchFactor( xsecs, 2 );
+   right->setStretchFactor( scns,  2 );
 
    left->addLayout( spec );
    left->addStretch();
@@ -551,6 +624,10 @@ void US_show_norm::reset( void )
    cb_zmode->blockSignals( false );
 
    ck_cutmark->setChecked( have_cut );
+
+   have_comp  = false;
+   ck_shapedf->setChecked( true );
+   report_comp();
 
    sync_axis_buttons();
    apply_axis_ranges();
@@ -874,6 +951,7 @@ void US_show_norm::plot_data( void )
       data_plot->replot();
       update_stats();
       plot_sections();
+      plot_scans();
       return;
    }
 
@@ -1019,6 +1097,7 @@ void US_show_norm::plot_data( void )
 
    update_stats();
    plot_sections();
+   plot_scans();
 }
 
 void US_show_norm::plot_data( int )
@@ -1127,6 +1206,25 @@ void US_show_norm::plot_sections( void )
       pmark->attach      ( ( ii == 0 ) ? xsec_plot_y : xsec_plot_x );
    }
 
+   // Mark the compared point on whichever section it lies along
+   if ( have_comp )
+   {
+      int  kcomp     = qBound( 0, comp_iy, nks - 1 ) * nss
+                     + qBound( 0, comp_ix, nss - 1 );
+      bool alongy    = ( comp_ix == pick_ix  &&  comp_iy != pick_iy );
+      bool alongx    = ( comp_iy == pick_iy  &&  comp_ix != pick_ix );
+
+      if ( alongy  ||  alongx )
+      {
+         QwtPlotMarker* cmark = new QwtPlotMarker();
+         cmark->setLineStyle( QwtPlotMarker::VLine );
+         cmark->setLinePen  ( QPen( Qt::darkRed, 1, Qt::DashLine ) );
+         cmark->setXValue   ( alongy ? xy_distro[ kcomp ].k
+                                     : xy_distro[ kcomp ].s );
+         cmark->attach      ( alongy ? xsec_plot_y : xsec_plot_x );
+      }
+   }
+
    // Where the Z axis is still a norm, show the NNLS cutoff on it
    if ( have_cut  &&  ( zmode == ZM_NORM  ||  zmode == ZM_RMS  ||
                         zmode == ZM_LOGNORM ) )
@@ -1149,6 +1247,133 @@ void US_show_norm::plot_sections( void )
 
    xsec_plot_y->replot();
    xsec_plot_x->replot();
+}
+
+// Redraw the simulated-scan and difference plots.
+//
+// Every number in this window is derived from these curves, so being able
+// to look at them is what turns a collinearity figure from an assertion
+// into something checkable:  two columns with cos near 1 are two families
+// of scans that lie on top of one another, and the difference plot shows
+// how little is left for the fit to work with.
+void US_show_norm::plot_scans( void )
+{
+   scan_plot->detachItems( QwtPlotItem::Rtti_PlotCurve );
+   diff_plot->detachItems( QwtPlotItem::Rtti_PlotCurve );
+
+   if ( ! have_scans )
+   {
+      scan_plot->setTitle( tr( "Simulated scans not available" ) );
+      diff_plot->setTitle( tr( "Difference not available" ) );
+      scan_plot->replot();
+      diff_plot->replot();
+      return;
+   }
+
+   int nss        = ginfo.nss;
+   int nrad       = ginfo.sig_nrad;
+   int nscn       = ginfo.sig_nscn;
+   int kpick      = qBound( 0, pick_iy, ginfo.nks - 1 ) * nss
+                  + qBound( 0, pick_ix, nss - 1 );
+   int kcomp      = have_comp
+                  ? ( qBound( 0, comp_iy, ginfo.nks - 1 ) * nss
+                      + qBound( 0, comp_ix, nss - 1 ) )
+                  : -1;
+
+   if ( kcomp == kpick )
+      kcomp          = -1;
+
+   const float* sigp = ginfo.sigs.constData() + ( (size_t)kpick * ginfo.nsamp );
+   const float* sigc = ( kcomp >= 0 )
+                     ? ( ginfo.sigs.constData()
+                         + ( (size_t)kcomp * ginfo.nsamp ) ) : NULL;
+   double normp   = ginfo.signorm[ kpick ];
+   double normc   = ( kcomp >= 0 ) ? ginfo.signorm[ kcomp ] : 0.0;
+
+   // Either compare the two columns as they stand, both at 1 OD loading
+   //  concentration, or rescale the compared one to the same norm first.
+   //  The rescaled difference is the part of the two columns that no
+   //  amplitude the fit could choose is able to absorb.
+   bool   shapedf = ck_shapedf->isChecked();
+   double cscale  = ( shapedf  &&  normc > 0.0 ) ? ( normp / normc ) : 1.0;
+
+   int    nshow   = qBound( 1, nscans, nscn );
+
+   for ( int is = 0; is < nshow; is++ )
+   {
+      int iscn       = ( nshow > 1 ) ? ( is * ( nscn - 1 ) / ( nshow - 1 ) )
+                                     : 0;
+      // Shade from light to dark with elapsed run time
+      int    vlev    = 210 - ( 130 * is / qMax( 1, nshow - 1 ) );
+      QColor colp    = QColor::fromHsv( 220, 235, vlev );
+      QColor colc    = QColor::fromHsv(   0, 235, vlev );
+
+      QVector< double > yp( nrad );
+      QVector< double > yc( nrad );
+      QVector< double > yd( nrad );
+
+      for ( int jj = 0; jj < nrad; jj++ )
+         yp[ jj ]       = (double)sigp[ iscn * nrad + jj ] * normp;
+
+      QwtPlotCurve* pcv = new QwtPlotCurve(
+         tr( "selected scan %1" ).arg( iscn ) );
+      pcv->setPen    ( QPen( colp, 1 ) );
+      pcv->setSamples( ginfo.sig_radius, yp );
+      pcv->attach    ( scan_plot );
+
+      if ( kcomp < 0 )
+         continue;
+
+      for ( int jj = 0; jj < nrad; jj++ )
+      {
+         yc[ jj ]       = (double)sigc[ iscn * nrad + jj ] * normc * cscale;
+         yd[ jj ]       = yc[ jj ] - yp[ jj ];
+      }
+
+      QwtPlotCurve* ccv = new QwtPlotCurve(
+         tr( "compared scan %1" ).arg( iscn ) );
+      ccv->setPen    ( QPen( colc, 1, Qt::DashLine ) );
+      ccv->setSamples( ginfo.sig_radius, yc );
+      ccv->attach    ( scan_plot );
+
+      QwtPlotCurve* dcv = new QwtPlotCurve(
+         tr( "difference scan %1" ).arg( iscn ) );
+      dcv->setPen    ( QPen( colc, 1 ) );
+      dcv->setSamples( ginfo.sig_radius, yd );
+      dcv->attach    ( diff_plot );
+   }
+
+   QString ptit   = tr( "Scans at %1 %2, %3 %4" )
+      .arg( attr_label( plot_x ) )
+      .arg( xy_distro[ kpick ].s, 0, 'g', 4 )
+      .arg( attr_label( plot_y ) )
+      .arg( xy_distro[ kpick ].k, 0, 'g', 4 );
+
+   if ( kcomp >= 0 )
+   {
+      double cohv    = coher_pair( kpick, kcomp );
+      scan_plot->setTitle( ptit + tr( "  (solid) vs %1 %2, %3 %4  (dashed)" )
+         .arg( attr_label( plot_x ) )
+         .arg( xy_distro[ kcomp ].s, 0, 'g', 4 )
+         .arg( attr_label( plot_y ) )
+         .arg( xy_distro[ kcomp ].k, 0, 'g', 4 ) );
+      diff_plot->setTitle( shapedf
+         ? tr( "Difference of shapes,  cos %1" ).arg( cohv, 0, 'f', 6 )
+         : tr( "Difference at 1 OD each,  cos %1" ).arg( cohv, 0, 'f', 6 ) );
+   }
+
+   else
+   {
+      scan_plot->setTitle( ptit );
+      diff_plot->setTitle( tr( "Click a section to compare a second point" ) );
+   }
+
+   scan_plot->setAxisAutoScale( QwtPlot::xBottom );
+   scan_plot->setAxisAutoScale( QwtPlot::yLeft   );
+   diff_plot->setAxisAutoScale( QwtPlot::xBottom );
+   diff_plot->setAxisAutoScale( QwtPlot::yLeft   );
+   scan_plot->replot();
+   diff_plot->replot();
 }
 
 // Number of grid points whose norm falls below the NNLS cutoff
@@ -1408,6 +1633,11 @@ void US_show_norm::pick_point( const QPointF& pos )
       pick_iy        = knear / ginfo.nss;
    }
 
+   // Moving the primary point invalidates any comparison against the old one
+   have_comp      = false;
+   le_compinfo->setText( tr( "Click a section to compare a second"
+                             " grid point" ) );
+
    QString ptxt   = tr( "%1 %2,  %3 %4,  norm %5" )
       .arg( attr_label( plot_x ) )
       .arg( xy_distro[ knear ].s, 0, 'g', 5 )
@@ -1430,6 +1660,124 @@ void US_show_norm::pick_point( const QPointF& pos )
    le_pickinfo->setText( ptxt );
 
    plot_data();
+}
+
+// Handle a click in a cross section:  choose a second point to compare
+// the selected one against
+void US_show_norm::pick_sect_y( const QPointF& pos )
+{
+   if ( ! have_grid )
+      return;
+
+   int    nss     = ginfo.nss;
+   int    knear   = -1;
+   double dnear   = 1.0e+30;
+
+   for ( int iy = 0; iy < ginfo.nks; iy++ )
+   {  // The section runs along Y at the selected X
+      int    jj      = iy * nss + qBound( 0, pick_ix, nss - 1 );
+      double dd      = qAbs( pos.x() - xy_distro[ jj ].k );
+
+      if ( dd < dnear )
+      {
+         dnear          = dd;
+         knear          = jj;
+      }
+   }
+
+   if ( knear < 0 )
+      return;
+
+   comp_ix        = knear % nss;
+   comp_iy        = knear / nss;
+   have_comp      = true;
+
+   plot_sections();
+   plot_scans();
+   report_comp();
+}
+
+void US_show_norm::pick_sect_x( const QPointF& pos )
+{
+   if ( ! have_grid )
+      return;
+
+   int    nss     = ginfo.nss;
+   int    iyp     = qBound( 0, pick_iy, ginfo.nks - 1 );
+   int    knear   = -1;
+   double dnear   = 1.0e+30;
+
+   for ( int ix = 0; ix < nss; ix++ )
+   {  // The section runs along X at the selected Y
+      int    jj      = iyp * nss + ix;
+      double dd      = qAbs( pos.x() - xy_distro[ jj ].s );
+
+      if ( dd < dnear )
+      {
+         dnear          = dd;
+         knear          = jj;
+      }
+   }
+
+   if ( knear < 0 )
+      return;
+
+   comp_ix        = knear % nss;
+   comp_iy        = knear / nss;
+   have_comp      = true;
+
+   plot_sections();
+   plot_scans();
+   report_comp();
+}
+
+// Describe the compared point and its relation to the selected one
+void US_show_norm::report_comp( void )
+{
+   if ( ! have_comp  ||  ! have_grid )
+   {
+      le_compinfo->setText( tr( "Click a section to compare a second"
+                                " grid point" ) );
+      return;
+   }
+
+   int nss        = ginfo.nss;
+   int kpick      = qBound( 0, pick_iy, ginfo.nks - 1 ) * nss
+                  + qBound( 0, pick_ix, nss - 1 );
+   int kcomp      = qBound( 0, comp_iy, ginfo.nks - 1 ) * nss
+                  + qBound( 0, comp_ix, nss - 1 );
+
+   QString ctxt   = tr( "vs %1 %2,  %3 %4" )
+      .arg( attr_label( plot_x ) )
+      .arg( xy_distro[ kcomp ].s, 0, 'g', 5 )
+      .arg( attr_label( plot_y ) )
+      .arg( xy_distro[ kcomp ].k, 0, 'g', 5 );
+
+   if ( kcomp != kpick  &&  have_sigs )
+   {
+      double cohv    = coher_pair( kpick, kcomp );
+      // Two unit-length columns at cosine c are sqrt(2(1-c)) apart, and
+      //  separating their amplitudes multiplies the data noise by 1/sin(t)
+      double dcoh    = qMax( 1.0 - cohv, 1.0e-12 );
+      double sint    = sqrt( qMax( 1.0 - ( cohv * cohv ), 1.0e-24 ) );
+      ctxt          += tr( ":  cos %1,  1-cos %2,  noise x%3 to separate" )
+         .arg( cohv, 0, 'f', 6 ).arg( dcoh, 0, 'e', 2 )
+         .arg( 1.0 / sint, 0, 'f', 1 );
+   }
+
+   le_compinfo->setText( ctxt );
+}
+
+void US_show_norm::update_nscans( double dval )
+{
+   nscans   = (int)dval;
+
+   plot_scans();
+}
+
+void US_show_norm::select_shapedf()
+{
+   plot_scans();
 }
 
 void US_show_norm::select_zmode( int ival )

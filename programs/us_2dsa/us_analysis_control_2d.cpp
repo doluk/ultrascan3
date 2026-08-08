@@ -1270,6 +1270,7 @@ DbgLv(1) << "CN: grid gnss gnks" << gnss << gnks << "of" << nsolutes;
    nrm_nks         = gnks;
    nrm_coher_x.fill( -1.0, nsolutes );
    nrm_coher_y.fill( -1.0, nsolutes );
+   nrm_signorm.fill(  0.0, nsolutes );
    dset            = dsets[ 0 ];
 
    // Size the column signatures.  Retaining one for every grid point is what
@@ -1280,10 +1281,10 @@ DbgLv(1) << "CN: grid gnss gnks" << gnss << gnks << "of" << nsolutes;
    //  need it.
    const qint64 sig_budget = 512LL * 1024LL * 1024LL;   // bytes
 
-   int  sig_nrad   = 0;
-   int  sig_nscn   = 0;
-   int  sig_rstr   = 1;
-   int  sig_sstr   = 1;
+   nrm_nrad        = 0;
+   nrm_nscn        = 0;
+   nrm_rstr        = 1;
+   nrm_sstr        = 1;
    nrm_nsamp       = 0;
    nrm_sigs.clear();
 
@@ -1303,15 +1304,15 @@ DbgLv(1) << "CN: grid gnss gnks" << gnss << gnks << "of" << nsolutes;
       int    maxscn   = qMax(  8,
             (int)( WorkerThreadCalcNorm::MAX_SIG_SCN * shrink ) );
 
-      sig_rstr        = qMax( 1, ( npnt + maxrad - 1 ) / maxrad );
-      sig_sstr        = qMax( 1, ( nscn + maxscn - 1 ) / maxscn );
-      sig_nrad        = ( npnt + sig_rstr - 1 ) / sig_rstr;
-      sig_nscn        = ( nscn + sig_sstr - 1 ) / sig_sstr;
-      nrm_nsamp       = sig_nrad * sig_nscn;
+      nrm_rstr        = qMax( 1, ( npnt + maxrad - 1 ) / maxrad );
+      nrm_sstr        = qMax( 1, ( nscn + maxscn - 1 ) / maxscn );
+      nrm_nrad        = ( npnt + nrm_rstr - 1 ) / nrm_rstr;
+      nrm_nscn        = ( nscn + nrm_sstr - 1 ) / nrm_sstr;
+      nrm_nsamp       = nrm_nrad * nrm_nscn;
 
       nrm_sigs.resize( nsolutes * nrm_nsamp );
 
-DbgLv(1) << "CN: signatures" << sig_nrad << "x" << sig_nscn << "=" << nrm_nsamp
+DbgLv(1) << "CN: signatures" << nrm_nrad << "x" << nrm_nscn << "=" << nrm_nsamp
  << "for" << nsolutes << "columns," << ( nrm_sigs.size() * 4 / 1048576 ) << "MB";
    }
 
@@ -1365,10 +1366,10 @@ DbgLv(1) << "aac2:  ii" << ii << "create thread";
                       ? ( ( ( ( ii + 1 ) * gnks ) / nthrd ) - workin.row0 )
                       : 0;
       workin.nsamp    = nrm_nsamp;
-      workin.sig_nrad = sig_nrad;
-      workin.sig_nscn = sig_nscn;
-      workin.sig_rstr = sig_rstr;
-      workin.sig_sstr = sig_sstr;
+      workin.sig_nrad = nrm_nrad;
+      workin.sig_nscn = nrm_nscn;
+      workin.sig_rstr = nrm_rstr;
+      workin.sig_sstr = nrm_sstr;
       // Disjoint slice of the shared signature buffer.  Workers only ever
       //  touch their own rows, so no locking is needed, and nothing may
       //  resize nrm_sigs while they run.
@@ -1573,6 +1574,7 @@ DbgLv(1)<<"kk="<< kk ;
       {  // Neighbour coherences, in the same global solute indexing
          nrm_coher_x[ kk ] = workout.coher_x[ ii ];
          nrm_coher_y[ kk ] = workout.coher_y[ ii ];
+         nrm_signorm[ kk ] = workout.signorm[ ii ];
       }
    }
 
@@ -1639,6 +1641,26 @@ DbgLv(1) << "model2_values_from_norm_complete"
       ginfo.coher_x     = nrm_coher_x;
       ginfo.coher_y     = nrm_coher_y;
       ginfo.nsamp       = nrm_nsamp;
+      ginfo.sig_nrad    = nrm_nrad;
+      ginfo.sig_nscn    = nrm_nscn;
+      ginfo.signorm     = nrm_signorm;
+
+      // Radius and elapsed time of the sampled points, so that the viewer
+      //  can plot a signature back as a set of simulated scans
+      if ( nrm_nsamp > 0 )
+      {
+         ginfo.sig_radius.resize( nrm_nrad );
+         ginfo.sig_time  .resize( nrm_nscn );
+
+         for ( int jj = 0; jj < nrm_nrad; jj++ )
+            ginfo.sig_radius[ jj ] = dsets[ 0 ]->run_data.radius(
+                                        jj * nrm_rstr );
+
+         for ( int jj = 0; jj < nrm_nscn; jj++ )
+            ginfo.sig_time  [ jj ] = dsets[ 0 ]->run_data.scanData[
+                                        jj * nrm_sstr ].seconds;
+      }
+
       // Hand the signatures over rather than sharing them, so that the
       //  control holds no second reference once the viewer owns them
       ginfo.sigs.swap( nrm_sigs );

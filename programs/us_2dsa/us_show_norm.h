@@ -29,13 +29,15 @@
 struct US_NormGridInfo
 {
    US_NormGridInfo() : nss( 0 ), nks( 0 ), ndpts( 0 ), nsamp( 0 ),
-                       norm_cut( 0.0 ) {}
+                       sig_nrad( 0 ), sig_nscn( 0 ), norm_cut( 0.0 ) {}
 
    int     nss;                  //!< grid points per row (X direction)
    int     nks;                  //!< grid rows (Y direction)
    int     ndpts;                //!< data points behind each norm
                                  //!<  (scans x radial points)
    int     nsamp;                //!< values per column signature
+   int     sig_nrad;             //!< radial points per signature
+   int     sig_nscn;             //!< scans per signature
    double  norm_cut;             //!< NNLS column-norm cutoff in effect
    QString descr;                //!< run and grid description
 
@@ -46,10 +48,18 @@ struct US_NormGridInfo
    QVector< double > coher_y;
 
    //! Unit-length subsampled signature of every A column, laid out as one
-   //!  block of nsamp values per grid point.  The dot product of two blocks
-   //!  is the cosine of the angle between those two columns, so this allows
-   //!  any pair to be compared, not only neighbours.
+   //!  block of nsamp values per grid point, each block being sig_nscn
+   //!  consecutive scans of sig_nrad readings.  The dot product of two
+   //!  blocks is the cosine of the angle between those two columns, so any
+   //!  pair can be compared, not only neighbours.
    QVector< float >  sigs;
+   //! Norm of each subsampled column.  Multiplying a signature by this
+   //!  recovers the simulated readings in OD.
+   QVector< double > signorm;
+   //! Radius of each sampled reading, sig_nrad values
+   QVector< double > sig_radius;
+   //! Elapsed run time of each sampled scan, sig_nscn values
+   QVector< double > sig_time;
 };
 
 //! \brief Raster data that renders one flat cell per grid point
@@ -166,6 +176,7 @@ class US_show_norm : public US_WidgetsDialog
 
       QLineEdit*    le_cmap_name;
       QLineEdit*    le_pickinfo;
+      QLineEdit*    le_compinfo;
 
       QComboBox*    cb_zmode;
 
@@ -177,8 +188,12 @@ class US_show_norm : public US_WidgetsDialog
       QwtPlot*      data_plot;
       QwtPlot*      xsec_plot_y;
       QwtPlot*      xsec_plot_x;
+      QwtPlot*      scan_plot;
+      QwtPlot*      diff_plot;
 
       US_PlotPicker* pick;
+      US_PlotPicker* pick_sy;
+      US_PlotPicker* pick_sx;
 
       QwtLinearColorMap*  colormap;
 
@@ -187,8 +202,11 @@ class US_show_norm : public US_WidgetsDialog
       QPushButton*  pb_reset;
       QPushButton*  pb_refresh;
 
+      QwtCounter*   ct_nscans;
+
       QCheckBox*    ck_autosxy;
       QCheckBox*    ck_cutmark;
+      QCheckBox*    ck_shapedf;
 
       QRadioButton* rb_x_s;
       QRadioButton* rb_x_ff0;
@@ -233,6 +251,9 @@ class US_show_norm : public US_WidgetsDialog
       int           zmode;
       int           pick_ix;
       int           pick_iy;
+      int           comp_ix;
+      int           comp_iy;
+      int           nscans;
 
       //! 1/sqrt(ndpts):  converts a column norm to the RMS signal per data
       //!  point, in OD, that one OD of that species would produce
@@ -244,6 +265,8 @@ class US_show_norm : public US_WidgetsDialog
       bool          have_sigs;
       bool          have_cut;
       bool          have_rms;
+      bool          have_scans;
+      bool          have_comp;
 
       QString       xa_title;
       QString       ya_title;
@@ -264,13 +287,21 @@ class US_show_norm : public US_WidgetsDialog
       void select_autosxy  ( void );
       void select_zmode    ( int  );
       void select_cutmark  ( void );
+      void select_shapedf  ( void );
+      void update_nscans   ( double );
       void pick_point      ( const QPointF& );
+      void pick_sect_y     ( const QPointF& );
+      void pick_sect_x     ( const QPointF& );
 
    private:
       //! \brief Rebuild the plotted point list from the current selections
       void   build_xy_distro( void );
       //! \brief Redraw the two cross-section plots
       void   plot_sections  ( void );
+      //! \brief Redraw the simulated-scan and difference plots
+      void   plot_scans     ( void );
+      //! \brief Refresh the compared-point read-out
+      void   report_comp    ( void );
       //! \brief Refresh the summary statistics box
       void   update_stats   ( void );
       //! \brief Value of one model attribute for one grid point
