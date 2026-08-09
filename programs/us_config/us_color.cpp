@@ -396,7 +396,7 @@ void US_Color::getCurrentSettings( void )
 
 void US_Color::updateScreen( void )
 {
-  QApplication::setStyle( QStyleFactory::create( current.guiStyle ) );
+  QApplication::setStyle( US_Theme::createStyle( current.guiStyle ) );
 
   // setStyle() installs the style's own palette, so the UltraScan chrome has
   // to be put back on top of it.
@@ -1538,7 +1538,7 @@ void US_Color::selectStyle( int index )
 
   const QString styleName = current.guiStyle;
 
-  QApplication::setStyle  ( QStyleFactory::create( styleName ) );
+  QApplication::setStyle  ( US_Theme::createStyle( styleName ) );
   QApplication::setPalette( US_Theme::applicationPalette() );
   qApp->setStyleSheet     ( US_Theme::styleSheet() );
   US_Theme::invalidate();

@@ -1,5 +1,6 @@
 //! \file us_theme.cpp
 #include "us_theme.h"
+#include "us_style.h"
 #include "us_gui_settings.h"
 #include "us_defines.h"
 
@@ -194,6 +195,21 @@ QString US_Theme::defaultStyle( void )
    return QString( "Fusion" );
 }
 
+QStyle* US_Theme::createStyle( const QString& name )
+{
+   QStyle* base = QStyleFactory::create( name );
+
+   if ( base == nullptr )
+      base = QStyleFactory::create( defaultStyle() );
+
+   if ( base == nullptr )
+      return nullptr;
+
+   // US_Style adds the UltraScan shapes on top of whichever style the user
+   // selected, taking its colors from each widget's own palette.
+   return new US_Style( base );
+}
+
 QFont US_Theme::baseFont( void )
 {
    return QFont( US_GuiSettings::fontFamily(), US_GuiSettings::fontSize() );
@@ -233,19 +249,18 @@ QString US_Theme::styleSheet( void )
 {
    const US_ThemeTokens t = tokens();
 
-   // What may and what may not appear in this style sheet
-   // -----------------------------------------------------
-   // A style sheet rule that touches a widget's box (border, background,
-   // padding) takes the painting of that widget away from the style, and Qt
-   // then ignores the palette that was set on the widget itself - inside a
-   // rule, palette() always resolves against the *application* palette.
+   // What belongs in this style sheet and what does not
+   // -------------------------------------------------
+   // A style sheet rule that touches a widget's box takes the painting of
+   // that widget away from the style, and Qt then ignores the QPalette that
+   // was set on the widget: inside a rule, palette() always resolves against
+   // the *application* palette, at widget level just as much as here.
    //
-   // Everything the user can recolor in the "Color Configuration" panel
-   // (labels, banners, push buttons, edit fields, item views, LCDs, plots) is
-   // therefore left entirely to its QPalette and is not mentioned here.  The
-   // rules below only cover chrome that has no palette of its own, so that
-   // shape and hover feedback can be modernized without taking the color
-   // settings away from the user.
+   // Everything the user can recolor - labels, banners, push buttons, entry
+   // fields, item views, LCDs, plots - and everything a program may recolor
+   // per widget is therefore shaped by US_Style, which is handed the widget's
+   // own palette.  Only top level chrome that never carries a palette of its
+   // own is left to the rules below.
    QString qss;
 
    // ---- Tool tips -------------------------------------------------------
@@ -254,70 +269,6 @@ QString US_Theme::styleSheet( void )
       " color: %1; background-color: %2; border: 1px solid %3;"
       " border-radius: 4px; padding: 4px 6px; }\n" )
       .arg( t.tipText.name(), t.tipBg.name(), t.border.name() );
-
-   // ---- Check boxes and radio buttons -----------------------------------
-   // The style outlines its indicators with a shade of the window color,
-   // which all but disappears on a dark background.
-   qss +=
-      "QCheckBox::indicator, QRadioButton::indicator, QGroupBox::indicator {"
-      " width: 14px; height: 14px;"
-      " background-color: palette(base); border: 1px solid palette(mid); }\n"
-      "QCheckBox::indicator, QGroupBox::indicator { border-radius: 3px; }\n"
-      "QRadioButton::indicator { border-radius: 8px; }\n"
-      "QCheckBox::indicator:hover, QRadioButton::indicator:hover,"
-      " QGroupBox::indicator:hover { border-color: palette(highlight); }\n"
-      "QCheckBox::indicator:checked, QGroupBox::indicator:checked {"
-      " background-color: palette(highlight); border-color: palette(highlight);"
-      " image: url(:/images/us_check.svg); }\n"
-      "QCheckBox::indicator:indeterminate {"
-      " background-color: palette(highlight); border-color: palette(highlight);"
-      " image: url(:/images/us_check_dash.svg); }\n"
-      "QRadioButton::indicator:checked {"
-      " background-color: palette(highlight); border-color: palette(highlight);"
-      " image: url(:/images/us_radio_dot.svg); }\n"
-      "QCheckBox::indicator:disabled, QRadioButton::indicator:disabled,"
-      " QGroupBox::indicator:disabled {"
-      " background-color: palette(button); border-color: palette(mid); }\n"
-      "QCheckBox::indicator:checked:disabled,"
-      " QRadioButton::indicator:checked:disabled {"
-      " background-color: palette(mid); border-color: palette(mid); }\n";
-
-   // ---- Tabs ------------------------------------------------------------
-   qss +=
-      "QTabWidget::pane {"
-      " border: 1px solid palette(mid); border-radius: 6px; top: -1px; }\n"
-      "QTabBar::tab {"
-      " background: transparent; color: palette(window-text);"
-      " border: none; border-bottom: 2px solid transparent;"
-      " padding: 6px 12px; margin-right: 2px; }\n"
-      "QTabBar::tab:selected {"
-      " color: palette(highlight); border-bottom: 2px solid palette(highlight); }\n"
-      "QTabBar::tab:!selected:hover { color: palette(highlight); }\n";
-
-   // ---- Group boxes -----------------------------------------------------
-   qss +=
-      "QGroupBox {"
-      " border: 1px solid palette(mid); border-radius: 6px;"
-      " margin-top: 9px; padding-top: 6px; }\n"
-      "QGroupBox::title {"
-      " subcontrol-origin: margin; subcontrol-position: top left;"
-      " left: 9px; padding: 0px 4px; }\n";
-
-   // ---- Progress bars ---------------------------------------------------
-   qss +=
-      "QProgressBar {"
-      " background-color: palette(base); border: 1px solid palette(mid);"
-      " border-radius: 6px; text-align: center; }\n"
-      "QProgressBar::chunk {"
-      " background-color: palette(highlight); border-radius: 5px;"
-      " margin: 1px; }\n";
-
-   // ---- Item view headers -----------------------------------------------
-   qss +=
-      "QHeaderView::section {"
-      " background-color: palette(button); color: palette(button-text);"
-      " border: none; border-right: 1px solid palette(mid);"
-      " border-bottom: 1px solid palette(mid); padding: 4px 6px; }\n";
 
    // ---- Menus -----------------------------------------------------------
    qss +=
@@ -340,21 +291,6 @@ QString US_Theme::styleSheet( void )
    qss += QString(
       "QMenu::item:disabled, QMenuBar::item:disabled { color: %1; }\n" )
       .arg( t.disabledText.name() );
-
-   // ---- Scroll bars -----------------------------------------------------
-   qss +=
-      "QScrollBar:vertical { background: transparent; width: 12px; margin: 0px; }\n"
-      "QScrollBar:horizontal { background: transparent; height: 12px; margin: 0px; }\n"
-      "QScrollBar::handle:vertical {"
-      " background: palette(mid); border-radius: 4px; margin: 2px;"
-      " min-height: 24px; }\n"
-      "QScrollBar::handle:horizontal {"
-      " background: palette(mid); border-radius: 4px; margin: 2px;"
-      " min-width: 24px; }\n"
-      "QScrollBar::handle:hover { background: palette(dark); }\n"
-      "QScrollBar::add-line, QScrollBar::sub-line {"
-      " width: 0px; height: 0px; border: none; background: none; }\n"
-      "QScrollBar::add-page, QScrollBar::sub-page { background: none; }\n";
 
    // ---- Splitters -------------------------------------------------------
    qss +=
@@ -389,10 +325,7 @@ void US_Theme::apply( bool force )
 
    applied_signature = signature;
 
-   QStyle* style = QStyleFactory::create( US_GuiSettings::guiStyle() );
-
-   if ( style == nullptr )
-      style = QStyleFactory::create( defaultStyle() );
+   QStyle* style = createStyle( US_GuiSettings::guiStyle() );
 
    if ( style != nullptr )
       QApplication::setStyle( style );

@@ -73,15 +73,15 @@ struct US_GUI_EXTERN US_ThemeTokens
      - the decision which of the two is currently in effect,
      - the application wide QStyle, palette, font and style sheet.
 
-     The style sheet deliberately stays away from every widget the user can
-     recolor in the "Color Configuration" panel of us_config.  A style sheet
+     The shapes come from US_Style, not from the style sheet.  A style sheet
      rule that touches a widget's box takes the painting of that widget away
      from the style, and Qt then ignores the QPalette that was set on the
      widget - inside a rule, <tt>palette()</tt> resolves against the
-     application palette, not the widget's own.  Labels, banners, push
-     buttons, edit fields, item views, LCDs and plots are therefore styled
-     through their palettes only; the style sheet modernizes the chrome that
-     has no palette of its own (menus, tabs, scroll bars, indicators, ...).
+     application palette, at widget level just as much as at application
+     level.  US_Style is handed each widget's own palette instead, so the
+     color configuration panel and any per-widget palette a program sets stay
+     in charge.  The style sheet is left with the top level chrome that never
+     carries a palette of its own: tool tips, menus and splitters.
 */
 class US_GUI_EXTERN US_Theme
 {
@@ -124,6 +124,17 @@ class US_GUI_EXTERN US_Theme
 
       //! \brief The widget style UltraScan uses unless the user picks another
       static QString defaultStyle    ( void );
+
+      //! \brief Corner radius of buttons, entry fields and frames, in pixels
+      static int     radius          ( void ) { return 5; }
+
+      //! \brief Corner radius of small elements (items, indicators), in pixels
+      static int     smallRadius     ( void ) { return 3; }
+
+      //! \brief Build the named style wrapped in US_Style
+      //! \param name A QStyleFactory key; the default style is used if unknown
+      //! \returns A new style, owned by the caller, or 0 if none can be made
+      static QStyle* createStyle     ( const QString& name );
 
       //! \brief The application font built from the US_GuiSettings values
       static QFont   baseFont        ( void );
