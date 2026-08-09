@@ -3,6 +3,7 @@
 
 #include "us_widgets.h"
 #include "us_gui_settings.h"
+#include "us_theme.h"
 #include "us_gui_util.h"
 #include "us_settings.h"
 #include "us_images.h"
@@ -10,7 +11,9 @@
 
 US_Widgets::US_Widgets( bool set_position, QWidget* w, Qt::WindowFlags f ) : QFrame( w, f )
 {
-  QApplication::setStyle( QStyleFactory::create( US_GuiSettings::guiStyle() ) );
+  // Install the UltraScan look (style, palette, font and style sheet).  This
+  // is a no-op once it has been done for the current configuration.
+  US_Theme::apply();
 
   if ( ! g.isValid() )
   {
@@ -36,8 +39,7 @@ US_Widgets::US_Widgets( bool set_position, QWidget* w, Qt::WindowFlags f ) : QFr
   }
 #endif
 
-  vlgray = US_GuiSettings::editColor();
-  vlgray.setColor( QPalette::Base, QColor( 0xe0, 0xe0, 0xe0 ) );
+  vlgray = US_GuiSettings::readonlyColor();
 
   QIcon us3_icon = US_Images::getIcon( US_Images::US3_ICON );
   setWindowIcon( us3_icon );
@@ -62,7 +64,7 @@ QLabel* US_Widgets::us_label( const QString& labelString, int fontAdjust,
 {
   QLabel* newLabel = new QLabel( labelString, this );
 
-  newLabel->setFrameStyle( QFrame::StyledPanel | QFrame::Raised );
+  newLabel->setFrameStyle( QFrame::NoFrame );
   newLabel->setAlignment ( Qt::AlignVCenter | Qt::AlignLeft );
   newLabel->setMargin    ( 2 );
   newLabel->setAutoFillBackground( true );
@@ -95,11 +97,16 @@ QLabel* US_Widgets::us_banner( const QString& labelString, int fontAdjust,
   QLabel* newLabel = us_label( labelString, fontAdjust, weight );
 
   newLabel->setAlignment ( Qt::AlignCenter );
-  newLabel->setFrameStyle( QFrame::WinPanel | QFrame::Raised );
-  newLabel->setMidLineWidth( 2 );
+  newLabel->setFrameStyle( QFrame::NoFrame );
+  newLabel->setMargin    ( 5 );
+
+  // Tags the label as a section header.  US_Theme leaves the banner colors
+  // to the palette below so that they stay user configurable; the property
+  // is a hook for site specific style sheets.
+  newLabel->setProperty( US_Theme::bannerProperty(), "banner" );
 
   // Set label colors
-  newLabel->setPalette( US_GuiSettings::frameColor() );
+  newLabel->setPalette( US_GuiSettings::bannerColor() );
 
   return newLabel;
 }
@@ -130,7 +137,7 @@ QTextEdit* US_Widgets::us_textedit( void )
                                 US_GuiSettings::fontSize  () - 1 ) );
   
   te->setPalette       ( US_GuiSettings::normalColor() );
-  te->setFrameStyle    ( WinPanel | Sunken );
+  te->setFrameStyle    ( StyledPanel | Plain );
   te->setAcceptRichText( true );
   te->setReadOnly      ( true );
   te->show();
@@ -273,7 +280,7 @@ QProgressBar* US_Widgets::us_progressBar( int low, int high, int value )
   pb->setRange( low, high );
   pb->setValue( value );
 
-  pb->setAlignment( Qt::AlignLeft | Qt::AlignVCenter );
+  pb->setAlignment( Qt::AlignCenter );
   pb->setPalette( US_GuiSettings::normalColor() );
   pb->setAutoFillBackground( true );
 
@@ -323,16 +330,23 @@ QwtCounter* US_Widgets::us_counter( int buttons, double low, double high,
   QList< QObject* > children = counter->children();
   int totwid          = 0;
 #ifdef Q_OS_MAC
-  QStyle *btnstyle = QApplication::setStyle( "fusion" );
+  // The counter's up/down buttons are unusably small with the native macOS
+  // style.  Give just those buttons a Fusion style - unlike the former
+  // QApplication::setStyle() call this leaves the style the user selected
+  // for the rest of the application alone.
+  static QStyle* btnstyle = QStyleFactory::create( "Fusion" );
 
-  for ( int jj = 0; jj < children.size(); jj++ )
+  if ( btnstyle != nullptr )
   {
-     QWidget* cwidg = (QWidget*)children.at( jj );
-     QString clname = cwidg->metaObject()->className();
-
-     if ( !clname.isEmpty()  &&  clname.contains( "Button" ) )
+     for ( int jj = 0; jj < children.size(); jj++ )
      {
-        cwidg->setStyle( btnstyle );
+        QWidget* cwidg = (QWidget*)children.at( jj );
+        QString clname = cwidg->metaObject()->className();
+
+        if ( !clname.isEmpty()  &&  clname.contains( "Button" ) )
+        {
+           cwidg->setStyle( btnstyle );
+        }
      }
   }
 #endif    // END: special button treatment for Mac
@@ -999,8 +1013,7 @@ US_LineEdit_RE::US_LineEdit_RE(const QString& txt, int fontAdjust, bool readonly
     this->setFont(QFont(US_GuiSettings::fontFamily(), US_GuiSettings::fontSize() + fontAdjust));
     this->insert(_mytext);
     this->setAutoFillBackground( true );
-    QPalette vlgray = US_GuiSettings::editColor();
-    vlgray.setColor( QPalette::Base, QColor( 0xe0, 0xe0, 0xe0 ) );
+    QPalette vlgray = US_GuiSettings::readonlyColor();
     if (readonly){
         this->setPalette ( vlgray );
         this->setReadOnly( true );

@@ -1,6 +1,7 @@
 //! \file us_color.cpp
 #include "us_color.h"
 #include "us_gui_settings.h"
+#include "us_theme.h"
 #include "us_plot.h"
 
 US_Color::US_Color( QWidget* w, Qt::WindowFlags flags ) 
@@ -164,10 +165,29 @@ US_Color::US_Color( QWidget* w, Qt::WindowFlags flags )
   cmbb_style->setCurrentIndex(
         cmbb_style->findText( current.guiStyle, Qt::MatchFixedString ) );
 
-  connect( cmbb_style, SIGNAL( activated  ( const QString& ) ),
-                       SLOT  ( selectStyle( const QString& ) ) );
+  // activated(const QString&) no longer exists in Qt6, so go through the
+  // index overload, which both Qt5 and Qt6 provide.
+  connect( cmbb_style, SIGNAL( activated  ( int ) ),
+                       SLOT  ( selectStyle( int ) ) );
 
   rightColumn->addWidget( cmbb_style, row++, 1 );
+
+  // Color scheme
+  lbl_scheme = us_label( tr( "Color Scheme:" ) );
+  rightColumn->addWidget( lbl_scheme, row, 0 );
+
+  cmbb_scheme = us_comboBox();
+  cmbb_scheme->addItem( tr( "Follow the desktop" ), QString( "auto"  ) );
+  cmbb_scheme->addItem( tr( "Light"             ), QString( "light" ) );
+  cmbb_scheme->addItem( tr( "Dark"              ), QString( "dark"  ) );
+  cmbb_scheme->setToolTip( tr( "The UltraScan default colors come in a light"
+                               " and a dark variant.  \"Follow the desktop\""
+                               " picks the one the desktop asks for." ) );
+
+  connect( cmbb_scheme, SIGNAL( activated   ( int ) ),
+                        SLOT  ( selectScheme( int ) ) );
+
+  rightColumn->addWidget( cmbb_scheme, row++, 1 );
 
   // Colors
   lbl_assign = us_banner( tr( "Assign new Colors" ) );
@@ -185,6 +205,7 @@ US_Color::US_Color( QWidget* w, Qt::WindowFlags flags )
   lbl_color1 = us_label( "Color1" );
   color_field1 = us_label( "" );
   color_field1->setFixedSize( 22, 22 );
+  color_field1->setFrameStyle( QFrame::Box | QFrame::Plain );
   color1->addWidget( lbl_color1 );
   color1->addWidget( color_field1 );
   
@@ -198,6 +219,7 @@ US_Color::US_Color( QWidget* w, Qt::WindowFlags flags )
   lbl_color2 = us_label( "Color2" );
   color_field2 = us_label( "" );
   color_field2->setFixedSize( 22, 22 );
+  color_field2->setFrameStyle( QFrame::Box | QFrame::Plain );
   color2->addWidget( lbl_color2 );
   color2->addWidget( color_field2 );
   
@@ -211,6 +233,7 @@ US_Color::US_Color( QWidget* w, Qt::WindowFlags flags )
   lbl_color3 = us_label( "Color3" );
   color_field3 = us_label( "" );
   color_field3->setFixedSize( 22, 22 );
+  color_field3->setFrameStyle( QFrame::Box | QFrame::Plain );
   color3->addWidget( lbl_color3 );
   color3->addWidget( color_field3 );
   
@@ -224,6 +247,7 @@ US_Color::US_Color( QWidget* w, Qt::WindowFlags flags )
   lbl_color4 = us_label( "Color4" );
   color_field4 = us_label( "" );
   color_field4->setFixedSize( 22, 22 );
+  color_field4->setFrameStyle( QFrame::Box | QFrame::Plain );
   color4->addWidget( lbl_color4 );
   color4->addWidget( color_field4 );
   
@@ -237,6 +261,7 @@ US_Color::US_Color( QWidget* w, Qt::WindowFlags flags )
   lbl_color5 = us_label( "Color5" );
   color_field5 = us_label( "" );
   color_field5->setFixedSize( 22, 22 );
+  color_field5->setFrameStyle( QFrame::Box | QFrame::Plain );
   color5->addWidget( lbl_color5 );
   color5->addWidget( color_field5 );
   
@@ -250,6 +275,7 @@ US_Color::US_Color( QWidget* w, Qt::WindowFlags flags )
   lbl_color6 = us_label( "Color6" );
   color_field6 = us_label( "" );
   color_field6->setFixedSize( 22, 22 );
+  color_field6->setFrameStyle( QFrame::Box | QFrame::Plain );
   color6->addWidget( lbl_color6 );
   color6->addWidget( color_field6 );
   
@@ -288,7 +314,8 @@ US_Color::US_Color( QWidget* w, Qt::WindowFlags flags )
   elements->setSizePolicy( QSizePolicy::Maximum, QSizePolicy::Expanding );
   elements->setMaximumWidth( 160 );
   elements->setMinimumWidth( 160 );
-  elements->insertItem( FRAME        , tr( "Frame and Banner"     ) );
+  elements->insertItem( FRAME        , tr( "Window Background"    ) );
+  elements->insertItem( BANNER       , tr( "Section Banner"       ) );
   elements->insertItem( NORMAL_PB    , tr( "Pushbutton, normal"   ) );
   elements->insertItem( DISABLED_PB  , tr( "Pushbutton, disabled" ) );
   elements->insertItem( PLOT_FRAME   , tr( "Plot, frame"          ) );
@@ -349,6 +376,7 @@ void US_Color::getCurrentSettings( void )
 {
   current.plotMargin    = US_GuiSettings::plotMargin();
   current.guiStyle      = US_GuiSettings::guiStyle();
+  current.colorScheme   = US_Theme::schemeSetting();
 
   current.plotCurve     = US_GuiSettings::plotCurve();
   current.plotBg        = US_GuiSettings::plotCanvasBG();
@@ -357,6 +385,7 @@ void US_Color::getCurrentSettings( void )
   current.plotPicker    = US_GuiSettings::plotPicker();
 
   current.frameColor    = US_GuiSettings::frameColor();
+  current.bannerColor   = US_GuiSettings::bannerColor();
   current.pushbColor    = US_GuiSettings::pushbColor();
   current.labelColor    = US_GuiSettings::labelColor();
   current.editColor     = US_GuiSettings::editColor();
@@ -367,13 +396,23 @@ void US_Color::getCurrentSettings( void )
 
 void US_Color::updateScreen( void )
 {
-  QApplication::setStyle( current.guiStyle );
+  QApplication::setStyle( QStyleFactory::create( current.guiStyle ) );
+
+  // setStyle() installs the style's own palette, so the UltraScan chrome has
+  // to be put back on top of it.
+  QApplication::setPalette  ( US_Theme::applicationPalette() );
+  qApp->setStyleSheet       ( US_Theme::styleSheet() );
+  US_Theme::invalidate();
 
   cmbb_style->setCurrentIndex(
       cmbb_style->findText( current.guiStyle, Qt::MatchFixedString ) );
 
+  int scheme_index = cmbb_scheme->findData( current.colorScheme );
+  cmbb_scheme->setCurrentIndex( scheme_index < 0 ? 0 : scheme_index );
+
   selectedElement( elements->currentRow() );
   resetFrames();
+  resetBanners();
   resetButtons();
   resetLabels();
   resetWidgets();
@@ -399,7 +438,7 @@ void US_Color::selectedElement( int index )
   
   switch ( index )
   {
-    case FRAME:  // Frame and Banner
+    case FRAME:  // Window background
       pb_color1->setEnabled( true  );
       pb_color2->setEnabled( true  );
       pb_color3->setEnabled( true  );
@@ -442,6 +481,43 @@ void US_Color::selectedElement( int index )
       color_field5->setPalette( p );
       
       p.setColor( QPalette::Window, Qt::gray );
+      lbl_color6->setText( "" );
+      color_field6->setPalette( p );
+
+      break;
+
+    case BANNER:  // Section banner
+
+      pb_color1->setEnabled( true  );
+      pb_color2->setEnabled( true  );
+      pb_color3->setEnabled( false );
+      pb_color4->setEnabled( false );
+      pb_color5->setEnabled( false );
+      pb_color6->setEnabled( false );
+
+      p = current.bannerColor;
+
+      // Set 2 before 1 so we don't overwrite p's Window Color
+      lbl_color2->setText( tr( "Background:" ) );
+      c = p.color( QPalette::Active, QPalette::Window );
+      p.setColor( QPalette::Window, c );
+      color_field2->setPalette( p );
+
+      lbl_color1->setText( tr( "Text:" ) );
+      c = p.color( QPalette::Active, QPalette::WindowText );
+      p.setColor( QPalette::Window, c );
+      color_field1->setPalette( p );
+
+      p.setColor( QPalette::Window, Qt::gray );
+      lbl_color3->setText( "" );
+      color_field3->setPalette( p );
+
+      lbl_color4->setText( "" );
+      color_field4->setPalette( p );
+
+      lbl_color5->setText( "" );
+      color_field5->setPalette( p );
+
       lbl_color6->setText( "" );
       color_field6->setPalette( p );
 
@@ -758,8 +834,13 @@ void US_Color::selectedElement( int index )
 
 void US_Color::resetFrames( void )
 {
-  QPalette p = current.frameColor;
-                  setPalette( p );
+  setPalette( current.frameColor );
+}
+
+void US_Color::resetBanners( void )
+{
+  QPalette p = current.bannerColor;
+
   lbl_background->setPalette( p );
   lbl_margin    ->setPalette( p );
   lbl_example   ->setPalette( p );
@@ -808,6 +889,8 @@ void US_Color::resetLabels( void )
   lbl_color6        ->setPalette( p );
   lbl_select_scheme ->setPalette( p );
   lbl_select_element->setPalette( p );
+  lbl_style         ->setPalette( p );
+  lbl_scheme        ->setPalette( p );
 }
 
 void US_Color::resetWidgets( void )
@@ -816,6 +899,7 @@ void US_Color::resetWidgets( void )
 
   cmbb_margin->setPalette( p );
   cmbb_style ->setPalette( p );
+  cmbb_scheme->setPalette( p );
   progress   ->setPalette( p );
   cnt        ->setPalette( p );
 }
@@ -856,6 +940,13 @@ void US_Color::pick_color1( void )
       current.frameColor.setColor( QPalette::Inactive, QPalette::WindowText, c );
       current.frameColor.setColor( QPalette::Disabled, QPalette::WindowText, c );
       resetFrames();
+      break;
+
+    case BANNER:
+      current.bannerColor.setColor( QPalette::Active  , QPalette::WindowText, c );
+      current.bannerColor.setColor( QPalette::Inactive, QPalette::WindowText, c );
+      current.bannerColor.setColor( QPalette::Disabled, QPalette::WindowText, c );
+      resetBanners();
       break;
 
     case NORMAL_PB:
@@ -938,6 +1029,13 @@ void US_Color::pick_color2( void )
       current.frameColor.setColor( QPalette::Inactive, QPalette::Window, c );
       current.frameColor.setColor( QPalette::Disabled, QPalette::Window, c );
       resetFrames();
+      break;
+
+    case BANNER:
+      current.bannerColor.setColor( QPalette::Active  , QPalette::Window, c );
+      current.bannerColor.setColor( QPalette::Inactive, QPalette::Window, c );
+      current.bannerColor.setColor( QPalette::Disabled, QPalette::Window, c );
+      resetBanners();
       break;
 
     case NORMAL_PB:
@@ -1247,12 +1345,16 @@ void US_Color::apply( void )
   US_GuiSettings::set_plotPicker  ( current.plotPicker    );
 
   US_GuiSettings::set_frameColor  ( current.frameColor    );
+  US_GuiSettings::set_bannerColor ( current.bannerColor   );
   US_GuiSettings::set_pushbColor  ( current.pushbColor    );
   US_GuiSettings::set_labelColor  ( current.labelColor    );
   US_GuiSettings::set_editColor   ( current.editColor     );
   US_GuiSettings::set_normalColor ( current.normalColor   );
   US_GuiSettings::set_lcdColor    ( current.lcdColor      );
   US_GuiSettings::set_plotColor   ( current.plotColor     );
+
+  // Rebuild the application chrome from what was just stored
+  US_Theme::apply( true );
 }
 
 void US_Color::save_as( void )
@@ -1293,6 +1395,7 @@ void US_Color::save_as( void )
   settings.setValue( set + "plotPicker"  , current.plotPicker    );
 
   settings.setValue( set + "frameColor"  , current.frameColor    );
+  settings.setValue( set + "bannerColor" , current.bannerColor   );
   settings.setValue( set + "pushbColor"  , current.pushbColor    );
   settings.setValue( set + "labelColor"  , current.labelColor    );
   settings.setValue( set + "editColor"   , current.editColor     );
@@ -1349,6 +1452,7 @@ void US_Color::delete_scheme( void )
     QString custom = "schemes/" + s + "/"; 
 
     settings.remove( custom + "frameColor"  );
+    settings.remove( custom + "bannerColor" );
     settings.remove( custom + "pushbColor"  );
     settings.remove( custom + "labelColor"  );
     settings.remove( custom + "editColor"   );
@@ -1380,20 +1484,21 @@ void US_Color::selected_scheme( void )
 
     case 1: // UltraScan default
       current.frameColor    = US_GuiSettings::frameColorDefault();
+      current.bannerColor   = US_GuiSettings::bannerColorDefault();
       current.pushbColor    = US_GuiSettings::pushbColorDefault();
       current.labelColor    = US_GuiSettings::labelColorDefault();
       current.editColor     = US_GuiSettings::editColorDefault();
       current.normalColor   = US_GuiSettings::normalColorDefault();
       current.lcdColor      = US_GuiSettings::lcdColorDefault();
       current.plotColor     = US_GuiSettings::plotColorDefault();
-                            
+
       current.plotMargin    = 10;
-                            
-      current.plotCurve     = Qt::yellow;
-      current.plotBg        = Qt::darkBlue;
-      current.plotMajorGrid = Qt::white;
-      current.plotMinorGrid = Qt::lightGray;
-      current.plotPicker    = Qt::white;
+
+      current.plotCurve     = US_GuiSettings::plotCurveDefault();
+      current.plotBg        = US_GuiSettings::plotCanvasBGDefault();
+      current.plotMajorGrid = US_GuiSettings::plotMajGridDefault();
+      current.plotMinorGrid = US_GuiSettings::plotMinGridDefault();
+      current.plotPicker    = US_GuiSettings::plotPickerDefault();
       pb_delete->setEnabled( false );
       break;
 
@@ -1402,6 +1507,9 @@ void US_Color::selected_scheme( void )
       
       QSettings settings( "UTHSCSA", "UltraScan" );
       current.frameColor    = settings.value( custom + "frameColor"  ).value<QPalette>();
+      current.bannerColor   = settings.value( custom + "bannerColor",
+                                              US_GuiSettings::bannerColorDefault()
+                                            ).value<QPalette>();
       current.pushbColor    = settings.value( custom + "pushbColor"  ).value<QPalette>();
       current.labelColor    = settings.value( custom + "labelColor"  ).value<QPalette>();
       current.editColor     = settings.value( custom + "editColor"   ).value<QPalette>();
@@ -1424,9 +1532,28 @@ void US_Color::selected_scheme( void )
   updateScreen();
 }
 
-void US_Color::selectStyle( const QString& styleName )
+void US_Color::selectStyle( int index )
 {
-  current.guiStyle = styleName;
-  QApplication::setStyle( QStyleFactory::create( styleName ) );
+  current.guiStyle = cmbb_style->itemText( index );
+
+  const QString styleName = current.guiStyle;
+
+  QApplication::setStyle  ( QStyleFactory::create( styleName ) );
+  QApplication::setPalette( US_Theme::applicationPalette() );
+  qApp->setStyleSheet     ( US_Theme::styleSheet() );
+  US_Theme::invalidate();
+}
+
+void US_Color::selectScheme( int index )
+{
+  // The scheme decides which set of default colors US_GuiSettings hands out,
+  // so it is stored right away and everything that is still at its default
+  // is re-read from the new scheme.
+  current.colorScheme = cmbb_scheme->itemData( index ).toString();
+
+  US_Theme::set_schemeSetting( current.colorScheme );
+
+  getCurrentSettings();
+  updateScreen();
 }
 

@@ -10,6 +10,7 @@
 #include "us_license.h"
 #include "us_settings.h"
 #include "us_gui_settings.h"
+#include "us_theme.h"
 #include "us_win_data.h"
 #include "us_defines.h"
 #include "us_revision.h"
@@ -658,14 +659,18 @@ void US_Win::splash( void )
   const int w = 710;
 
   bigframe = new QLabel( this );
-  bigframe->setFrameStyle        ( QFrame::Box | QFrame::Raised);
+  bigframe->setFrameStyle        ( QFrame::NoFrame );
   bigframe->setPalette           ( US_GuiSettings::frameColor() );
   bigframe->setGeometry          ( 0, y, w, height );
   bigframe->setAutoFillBackground( true );
 
+  // A soft drop shadow behind the splash image
+  QPalette shadow_pal;
+  shadow_pal.setColor( QPalette::Window, US_Theme::tokens().shadow );
+
   splash_shadow = new QLabel( this );
   splash_shadow->setGeometry( (unsigned int)( ( w / 2 ) - 210 ) , 130, 460, 276 );
-  splash_shadow->setPalette( QPalette( Qt::black, Qt::cyan ) );
+  splash_shadow->setPalette( shadow_pal );
   splash_shadow->setAutoFillBackground ( true );
 
   logo( w );
