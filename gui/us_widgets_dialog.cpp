@@ -1,5 +1,6 @@
 //! \file us_widgets_dialog.cpp
 #include "us_widgets_dialog.h"
+#include "us_widgets.h"
 #include "us_gui_settings.h"
 #include "us_theme.h"
 #include "us_images.h"
@@ -344,9 +345,7 @@ QwtPlot* US_WidgetsDialog::us_plot( const QString& title, const QString& x_axis,
   plot->setAxisTitle( QwtPlot::xBottom, x_axis );
   plot->setAxisTitle( QwtPlot::yLeft  , y_axis );
 
-  plot->setAutoFillBackground( true );
-  plot->setPalette ( US_GuiSettings::plotColor() );
-  plot->setCanvasBackground( US_GuiSettings::plotCanvasBG() );
+  US_Widgets::us_style_plot( plot );
 
   return plot;
 }

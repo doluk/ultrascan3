@@ -1,6 +1,8 @@
 //! \file us_widgets.cpp
 #include <QtSvg> 
 
+#include "qwt_plot_canvas.h"
+
 #include "us_widgets.h"
 #include "us_gui_settings.h"
 #include "us_theme.h"
@@ -380,6 +382,30 @@ QwtCounter* US_Widgets::us_counter( int buttons, double low, double high,
   return counter;
 }
 
+// Apply the theme to a plot.  Called for every plot UltraScan creates, so
+// that plots built outside the factory below look the same.
+void US_Widgets::us_style_plot( QwtPlot* plot )
+{
+  if ( plot == nullptr )
+    return;
+
+  plot->setAutoFillBackground( true );
+  plot->setPalette         ( US_GuiSettings::plotColor() );
+  plot->setCanvasBackground( US_GuiSettings::plotCanvasBG() );
+
+  QwtPlotCanvas* canvas = qobject_cast< QwtPlotCanvas* >( plot->canvas() );
+
+  if ( canvas != NULL )
+  {
+    // Qwt defaults the canvas to a 3D sunken panel.  A flat, rounded canvas
+    // matches the rest of the UltraScan widgets.  Note that the canvas
+    // background lives in the canvas palette's Window role, so the palette
+    // must not be replaced here - it would undo setCanvasBackground().
+    canvas->setFrameStyle  ( QFrame::NoFrame );
+    canvas->setBorderRadius( US_Theme::radius() );
+  }
+}
+
 QwtPlot* US_Widgets::us_plot( const QString& title, const QString& x_axis,
                               const QString& y_axis )
 {
@@ -391,9 +417,7 @@ QwtPlot* US_Widgets::us_plot( const QString& title, const QString& x_axis,
   plot->setAxisTitle( QwtPlot::xBottom, x_axis );
   plot->setAxisTitle( QwtPlot::yLeft  , y_axis );
 
-  plot->setAutoFillBackground( true );
-  plot->setPalette ( US_GuiSettings::plotColor() );
-  plot->setCanvasBackground( US_GuiSettings::plotCanvasBG() );
+  us_style_plot( plot );
 
   return plot;
 }

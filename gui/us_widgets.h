@@ -156,6 +156,12 @@ class US_GUI_EXTERN US_Widgets : public QFrame
     //! \param plot*   - Pointer to plot\n
     //! * Major Pen color is set to US_GuiSettings::plotMajGrid()\n
     //! * Minor Pen color is set to US_GuiSettings::plotMinGrid()
+    //! \brief Give a plot the UltraScan look: theme palette, canvas
+    //!        background, and a flat rounded canvas instead of the 3D
+    //!        sunken bevel Qwt draws by default.
+    //! \param plot The plot to restyle
+    static void   us_style_plot( QwtPlot* plot );
+
     QwtPlotGrid*  us_grid( QwtPlot* );
 
     //! \param plot*   - Pointer to plot\n
