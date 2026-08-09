@@ -2,8 +2,6 @@
 #include "us_style.h"
 #include "us_theme.h"
 
-#include <QtMath>
-
 namespace
 {
    //! The palette group that matches the state a widget is painted in.
@@ -23,7 +21,7 @@ namespace
    }
 
    //! A rounded rectangle that sits exactly on the pixel grid
-   void round_rect( QPainter* p, const QRect& rect, qreal rad,
+   void round_rect( QPainter* p, const QRect& rect, const qreal rad,
                     const QBrush& fill, const QColor& line )
    {
       const bool  aa = p->testRenderHint( QPainter::Antialiasing );
@@ -39,7 +37,7 @@ namespace
    }
 
    //! The outline of an interactive widget: accent while focused or hovered
-   QColor outline_of( const QStyleOption* option, QPalette::ColorGroup cg )
+   QColor outline_of( const QStyleOption* option, const QPalette::ColorGroup cg )
    {
       const QPalette& pal = option->palette;
 
@@ -76,7 +74,7 @@ namespace
    }
 
    //! Shrink a sub-control rectangle down to an arrow sized square
-   QRect arrow_rect( const QRect& rect, qreal fraction = 0.66 )
+   QRect arrow_rect( const QRect& rect, const qreal fraction = 0.66 )
    {
       const int side = qMax( 7, qRound( qMin( rect.width(), rect.height() )
                                         * fraction ) );
@@ -156,7 +154,7 @@ void US_Style::drawPrimitive( PrimitiveElement element,
       // ---- Entry fields --------------------------------------------------
       case PE_PanelLineEdit:
       {
-         const QStyleOptionFrame* f =
+         const auto* f =
             qstyleoption_cast< const QStyleOptionFrame* >( option );
 
          // A line edit inside a spin box or combo box has no frame of its
@@ -298,7 +296,7 @@ void US_Style::drawPrimitive( PrimitiveElement element,
    QProxyStyle::drawPrimitive( element, option, painter, widget );
 }
 
-void US_Style::drawControl( ControlElement element, const QStyleOption* option,
+void US_Style::drawControl(const ControlElement element, const QStyleOption* option,
                             QPainter* painter, const QWidget* widget ) const
 {
    const QPalette&           pal = option->palette;
@@ -318,7 +316,7 @@ void US_Style::drawControl( ControlElement element, const QStyleOption* option,
 
       case CE_ProgressBarContents:
       {
-         const QStyleOptionProgressBar* pb =
+         const auto* pb =
             qstyleoption_cast< const QStyleOptionProgressBar* >( option );
 
          if ( pb == nullptr )
@@ -332,10 +330,10 @@ void US_Style::drawControl( ControlElement element, const QStyleOption* option,
          if ( pb->minimum == pb->maximum )     // Busy indicator
             break;
 
-         const double span = double( pb->maximum ) - double( pb->minimum );
+         const double span = static_cast<double>(pb->maximum) - static_cast<double>(pb->minimum);
          const double done = qBound( 0.0,
-                                     ( double( pb->progress ) -
-                                       double( pb->minimum ) ) / span, 1.0 );
+                                     ( static_cast<double>(pb->progress) -
+                                       static_cast<double>(pb->minimum) ) / span, 1.0 );
          const int    wid  = qRound( groove.width() * done );
 
          if ( wid < 1 )
@@ -365,7 +363,7 @@ void US_Style::drawControl( ControlElement element, const QStyleOption* option,
       // ---- Tabs --------------------------------------------------------------
       case CE_TabBarTabShape:
       {
-         const QStyleOptionTab* tab =
+         const auto* tab =
             qstyleoption_cast< const QStyleOptionTab* >( option );
 
          if ( tab == nullptr )
@@ -383,7 +381,7 @@ void US_Style::drawControl( ControlElement element, const QStyleOption* option,
 
          if ( selected )
          {
-            const int    thick = 2;
+            constexpr int    thick = 2;
             const QColor bar   = pal.color( cg, QPalette::Highlight );
             QRect        r     = option->rect;
 
@@ -433,7 +431,7 @@ void US_Style::drawComplexControl( ComplexControl control,
       // ---- Scroll bars ------------------------------------------------------
       case CC_ScrollBar:
       {
-         const QStyleOptionSlider* sb =
+         const auto* sb =
             qstyleoption_cast< const QStyleOptionSlider* >( option );
 
          if ( sb == nullptr )
@@ -461,7 +459,7 @@ void US_Style::drawComplexControl( ComplexControl control,
       // ---- Combo boxes --------------------------------------------------------
       case CC_ComboBox:
       {
-         const QStyleOptionComboBox* cb =
+         const auto* cb =
             qstyleoption_cast< const QStyleOptionComboBox* >( option );
 
          if ( cb == nullptr )
@@ -481,7 +479,7 @@ void US_Style::drawComplexControl( ComplexControl control,
          round_rect( painter, option->rect, rad, fill,
                      outline_of( option, cg ) );
 
-         QStyleOption arrow = *option;
+         QStyleOptionComplex arrow = *option;
          arrow.rect = arrow_rect( proxy()->subControlRect( CC_ComboBox, cb,
                                                            SC_ComboBoxArrow,
                                                            widget ) );
@@ -493,7 +491,7 @@ void US_Style::drawComplexControl( ComplexControl control,
       // ---- Spin boxes ----------------------------------------------------------
       case CC_SpinBox:
       {
-         const QStyleOptionSpinBox* sp =
+         const auto* sp =
             qstyleoption_cast< const QStyleOptionSpinBox* >( option );
 
          if ( sp == nullptr )
@@ -515,7 +513,7 @@ void US_Style::drawComplexControl( ComplexControl control,
          const bool up_on = sp->stepEnabled & QAbstractSpinBox::StepUpEnabled;
          const bool dn_on = sp->stepEnabled & QAbstractSpinBox::StepDownEnabled;
 
-         QStyleOption arrow = *option;
+         QStyleOptionComplex arrow = *option;
 
          arrow.rect  = arrow_rect( proxy()->subControlRect( CC_SpinBox, sp,
                                                             SC_SpinBoxUp,
@@ -543,7 +541,7 @@ void US_Style::drawComplexControl( ComplexControl control,
    QProxyStyle::drawComplexControl( control, option, painter, widget );
 }
 
-int US_Style::pixelMetric( PixelMetric metric, const QStyleOption* option,
+int US_Style::pixelMetric(const PixelMetric metric, const QStyleOption* option,
                            const QWidget* widget ) const
 {
    switch ( metric )
@@ -558,7 +556,7 @@ int US_Style::pixelMetric( PixelMetric metric, const QStyleOption* option,
    return QProxyStyle::pixelMetric( metric, option, widget );
 }
 
-int US_Style::styleHint( StyleHint hint, const QStyleOption* option,
+int US_Style::styleHint(const StyleHint hint, const QStyleOption* option,
                          const QWidget* widget, QStyleHintReturn* ret ) const
 {
    switch ( hint )

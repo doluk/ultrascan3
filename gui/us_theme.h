@@ -8,11 +8,6 @@
 #include "us_extern.h"
 
 //! \brief The set of design tokens that make up one UltraScan color scheme.
-/*!  A token is a named, semantic color.  Everything that UltraScan paints -
-     the default widget palettes in US_GuiSettings as well as the application
-     wide style sheet - is derived from these values, so that changing the look
-     of all UltraScan programs is a matter of editing a single table.
-*/
 struct US_GUI_EXTERN US_ThemeTokens
 {
    // Surfaces and text
@@ -72,16 +67,6 @@ struct US_GUI_EXTERN US_ThemeTokens
      - the token table for the light and the dark color scheme,
      - the decision which of the two is currently in effect,
      - the application wide QStyle, palette, font and style sheet.
-
-     The shapes come from US_Style, not from the style sheet.  A style sheet
-     rule that touches a widget's box takes the painting of that widget away
-     from the style, and Qt then ignores the QPalette that was set on the
-     widget - inside a rule, <tt>palette()</tt> resolves against the
-     application palette, at widget level just as much as at application
-     level.  US_Style is handed each widget's own palette instead, so the
-     color configuration panel and any per-widget palette a program sets stay
-     in charge.  The style sheet is left with the top level chrome that never
-     carries a palette of its own: tool tips, menus and splitters.
 */
 class US_GUI_EXTERN US_Theme
 {
@@ -95,10 +80,6 @@ class US_GUI_EXTERN US_Theme
       };
 
       //! \brief Name of the dynamic property that tags a section banner
-      /*!  US_Widgets::us_banner() sets it to "banner".  UltraScan's own style
-           sheet does not use it - it is a hook for site specific style sheets
-           that want to single out section headers.
-      */
       static const char* bannerProperty() { return "usRole"; }
 
       //! \brief The color scheme currently in effect

@@ -10,20 +10,14 @@
 
 namespace
 {
-   // Remembers the configuration that produced the currently applied look, so
-   // that the many US_Widgets constructors do not rebuild it over and over.
    QString  applied_signature;
    bool     watcher_installed = false;
 
-   // The color scheme the desktop asked for the first time we looked.  It is
-   // sampled before UltraScan installs its own palette, because on Qt versions
-   // without QStyleHints::colorScheme() the system palette is the only hint we
-   // have and our own palette would falsify it.
    int      sampled_system_scheme = -1;
 }
 
 // The two token tables.  These are *the* place to edit UltraScan's colors.
-US_ThemeTokens US_Theme::tokens( Scheme s )
+US_ThemeTokens US_Theme::tokens(const Scheme s )
 {
    US_ThemeTokens t;
 
@@ -124,7 +118,7 @@ US_ThemeTokens US_Theme::tokens( void )
 
 QString US_Theme::schemeSetting( void )
 {
-   QSettings settings( US3, "UltraScan" );
+   const QSettings settings( US3, "UltraScan" );
    return settings.value( "colorScheme", "auto" ).toString().toLower();
 }
 
@@ -227,10 +221,8 @@ QPalette US_Theme::applicationPalette( void )
    const QList< QPalette::ColorGroup > groups = QList< QPalette::ColorGroup >()
       << QPalette::Active << QPalette::Inactive << QPalette::Disabled;
 
-   for ( int ii = 0; ii < groups.size(); ii++ )
+   for (const auto g : groups)
    {
-      const QPalette::ColorGroup g = groups[ ii ];
-
       p.setColor( g, QPalette::AlternateBase, t.baseAlt      );
       p.setColor( g, QPalette::ToolTipBase  , t.tipBg        );
       p.setColor( g, QPalette::ToolTipText  , t.tipText      );
@@ -306,7 +298,7 @@ void US_Theme::invalidate( void )
    applied_signature.clear();
 }
 
-void US_Theme::apply( bool force )
+void US_Theme::apply(const bool force )
 {
    if ( qApp == nullptr )
       return;
