@@ -17,6 +17,10 @@ namespace
 }
 
 // The two token tables.  These are *the* place to edit UltraScan's colors.
+//
+// The USLIMS web sites carry the same two tables as CSS custom properties in
+// us3lims_common/css/common.css, so that the portals look like the desktop
+// programs.  When a color below changes, change it there as well.
 US_ThemeTokens US_Theme::tokens(const Scheme s )
 {
    US_ThemeTokens t;
