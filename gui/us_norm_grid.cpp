@@ -24,11 +24,20 @@ US_NormGrid::US_NormGrid( QObject* parent ) : QObject( parent )
    nrm_rstr   = 1;
    nrm_sstr   = 1;
    busy       = false;
+   bfgrad     = NULL;
+   cosedd     = NULL;
    dbg_level  = US_Settings::us_debug();
 }
 
 US_NormGrid::~US_NormGrid()
 {
+}
+
+void US_NormGrid::set_cosed( US_Math_BF::Band_Forming_Gradient* bfg,
+      US_LammAstfvm::CosedData* csd )
+{
+   bfgrad     = bfg;
+   cosedd     = csd;
 }
 
 bool US_NormGrid::is_busy( void ) const
@@ -442,6 +451,8 @@ DbgLv(1) << "NG: signatures" << nrm_nrad << "x" << nrm_nscn << "=" << nrm_nsamp
       workin.nwsols   = 0;
       workin.cff0     = cff0;
       workin.varyvbar = varyvbar;
+      workin.bfgrad   = bfgrad;
+      workin.cosedd   = cosedd;
       workin.isolutes = solutes;
       workin.dset     = dset;
       // Contiguous band of grid rows for this worker (zero-length when the
@@ -604,10 +615,32 @@ void US_NormGrid::worker_complete( WorkerThreadCalcNorm* wthr )
    else
       ginfo.descr      += tr( "\nStandard sector cell" );
 
+   bool usefvm       = ( sparm.meshType == US_SimulationParameters::ASTFVM );
+
    ginfo.descr      += tr( ",  %1 sim points,  %2" )
                           .arg( sparm.simpoints )
-                          .arg( sparm.meshType == US_SimulationParameters::ASTFVM
-                                ? tr( "ASTFVM solver" ) : tr( "ASTFEM solver" ) );
+                          .arg( usefvm ? tr( "ASTFVM solver" )
+                                       : tr( "ASTFEM solver" ) );
+
+   // A fit over a buffer with co-sedimenting or co-diffusing components
+   //  builds a band-forming gradient and a co-sedimenting simulation and
+   //  hands them to the solver.  Say plainly when the columns here were
+   //  built without them, so the difference is not read as a property of
+   //  the grid.
+   if ( ! dset->solution_rec.buffer.cosed_component.isEmpty() )
+   {
+      if ( ! usefvm )
+         ginfo.descr      += tr( "\nBuffer has co-sedimenting components,"
+                                 " which only the ASTFVM solver applies" );
+
+      else if ( bfgrad == NULL  &&  cosedd == NULL )
+         ginfo.descr      += tr( "\nBuffer has co-sedimenting components, but"
+                                 " no gradient was supplied:\n"
+                                 "  columns simulated in a plain buffer" );
+
+      else
+         ginfo.descr      += tr( "\nCo-sedimenting buffer gradient applied" );
+   }
 
    // Radius and elapsed time of the sampled points, so that the viewer can
    //  plot a signature back as a set of simulated scans

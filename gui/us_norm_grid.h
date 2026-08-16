@@ -108,6 +108,18 @@ class US_GUI_EXTERN US_NormGrid : public QObject
       bool start( US_SolveSim::DataSet*, const GridDef&, QWidget*,
                   QString& );
 
+      //! \brief Supply the band-forming gradient and co-sedimenting data
+      //!        the finite volume solver should apply
+      //!
+      //! A fit over a buffer with co-diffusing or co-sedimenting components
+      //! builds these and hands them to the solver.  Without them the norm
+      //! columns are simulated in a plain buffer, which the viewer says so
+      //! that the difference is not read as a property of the grid.
+      //! \param bfg  Band-forming gradient, or null
+      //! \param csd  Co-sedimenting component simulation, or null
+      void set_cosed( US_Math_BF::Band_Forming_Gradient*,
+                      US_LammAstfvm::CosedData* );
+
       //! \brief Flag that a calculation is currently running
       bool is_busy( void ) const;
 
@@ -155,6 +167,9 @@ class US_GUI_EXTERN US_NormGrid : public QObject
       int     nrm_sstr;    // scan stride of a signature
       int     dbg_level;
       bool    busy;
+
+      US_Math_BF::Band_Forming_Gradient* bfgrad;
+      US_LammAstfvm::CosedData*          cosedd;
 
       QVector< double >  nrm_coher_x;
       QVector< double >  nrm_coher_y;

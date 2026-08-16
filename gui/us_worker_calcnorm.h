@@ -67,6 +67,12 @@ typedef struct work_packet_cn_s
 
    QList< int >           solxs;     //!< solute indexes list
 
+   //! Band-forming gradient the finite volume solver should apply, or null.
+   //!  A fit builds one when the buffer has co-diffusing components.
+   US_Math_BF::Band_Forming_Gradient* bfgrad;
+   //! Co-sedimenting component simulation the solver should apply, or null.
+   US_LammAstfvm::CosedData*          cosedd;
+
    US_SolveSim::DataSet*  dset;      //!< data set object pointer
 } WorkPacketCN;
 
@@ -149,6 +155,9 @@ class US_GUI_EXTERN WorkerThreadCalcNorm : public QThread
       double  cff0;       // constant f/f0 (or zero)
 
       bool    varyvbar;   // vbar comes from each solute rather than the dataset
+
+      US_Math_BF::Band_Forming_Gradient* bfgrad;   // band-forming gradient
+      US_LammAstfvm::CosedData*          cosedd;   // co-sedimenting data
 
       US_DataIO::EditedData*  edata;       // experiment data (pointer)
       US_Model                model1;      // output model

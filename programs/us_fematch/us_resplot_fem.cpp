@@ -105,7 +105,7 @@ US_ResidPlotFem::US_ResidPlotFem( QWidget* parent, const QString auto_mode )
    plotLayout2 = new US_Plot( data_plot2,
          tr( "Residuals" ),
          tr( "Radius (cm)" ),
-         tr( "OD Difference" ) );
+         tr( "OD Difference" ), true, "^resids" );
 
    data_plot1->setMinimumSize( p1size );
    data_plot2->setMinimumSize( p2size );

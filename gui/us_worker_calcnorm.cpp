@@ -21,6 +21,8 @@ WorkerThreadCalcNorm::WorkerThreadCalcNorm( QObject* parent )
    amask      = 0;
    cff0       = 0.0;
    varyvbar   = false;
+   bfgrad     = NULL;
+   cosedd     = NULL;
    nss        = 0;
    row0       = 0;
    nrows      = 0;
@@ -55,6 +57,8 @@ void WorkerThreadCalcNorm::define_work( WorkPacketCN& workin )
    amask       = workin.amask;          // xyz attribute mask
    cff0        = workin.cff0;           // constant f/f0 value
    varyvbar    = workin.varyvbar;       // vbar comes from each solute
+   bfgrad      = workin.bfgrad;         // band-forming gradient (or null)
+   cosedd      = workin.cosedd;         // co-sedimenting data (or null)
    nss         = workin.nss;            // grid row length (0 if no grid)
    row0        = workin.row0;           // first grid row for this worker
    nrows       = workin.nrows;          // grid rows for this worker
@@ -346,7 +350,7 @@ DbgLv(1) << "CN(WT):  CN:   ii" << ii << "usefvm" << usefvm;
       if ( usefvm )
       {
          US_LammAstfvm astfvm( model1, simparms );
-         astfvm.set_buffer( dset->solution_rec.buffer );
+         astfvm.set_buffer( dset->solution_rec.buffer, bfgrad, cosedd );
          astfvm.calculate( simdat );
       }
 

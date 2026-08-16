@@ -1347,7 +1347,9 @@ void US_AddRefScan::write2txt(const QString& file, US_RefScanDataIO::RefData& da
                     out_str << sval << "\n";
             }
         }
-        }
+        out_file.flush();
+        out_file.close();
+    }
     return;
 }
 
