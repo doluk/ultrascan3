@@ -222,12 +222,44 @@ DbgLv(1) << "CN(WT):  CN:  banddthr" << banddthr << "bandvol"
  << simparms.band_volume << "mfactor" << bthr.mfactor;
 
    // Initialize the simulation data set on the experiment's grid
-   US_AstfemMath::initSimData( simdat,
-                               banddthr ? wdata : dset->run_data, 0.0 );
+   US_DataIO::EditedData* bdata = banddthr ? &wdata : &dset->run_data;
+
+   US_AstfemMath::initSimData( simdat, *bdata, 0.0 );
 
    int nscan         = simdat.scanCount();
    int npoint        = simdat.pointCount();
 DbgLv(1) << "CN(WT):  CN:  nscan" << nscan << "npoint" << npoint;
+
+   // Where the experiment reaches its OD limit, the fit substitutes zero in
+   //  the B vector and zeroes the same position in every A column, so those
+   //  readings contribute to no column norm.  As in calc_residuals, this
+   //  engages only when the limit is actually reached somewhere, and the
+   //  positions excluded are those the B vector leaves at zero.
+   QVector< char > odzero;
+   int    kodl       = 0;
+   double odlim      = bdata->ODlimit;
+
+   for ( int jj = 0; jj < nscan; jj++ )
+      for ( int kk = 0; kk < npoint; kk++ )
+         if ( bdata->value( jj, kk ) >= odlim )
+            kodl++;
+
+   if ( kodl > 0 )
+   {
+      odzero.fill( 0, nscan * npoint );
+
+      for ( int jj = 0; jj < nscan; jj++ )
+      {
+         for ( int kk = 0; kk < npoint; kk++ )
+         {
+            double evalue     = bdata->value( jj, kk );
+            evalue            = ( evalue >= odlim ) ? 0.0 : evalue;
+            odzero[ jj * npoint + kk ] = ( evalue == 0.0 ) ? 1 : 0;
+         }
+      }
+   }
+
+DbgLv(1) << "CN(WT):  CN:  ODlimit" << odlim << "exceeded at" << kodl;
 
    if ( ongrid )
    {  // The signature geometry is fixed by the caller, which sized the
@@ -251,18 +283,48 @@ DbgLv(1) << "CN(WT):  CN:  sig nrad nscn" << sig_nrad << sig_nscn
    // Do the work of finite element modeling, norm value from simulation
    for ( int ii = 0; ii < nwsols; ii++ )
    {
-      // Initialize component, then set X,Y,Z from solute point
+      // Initialize component, then set X,Y from the solute point.
+      //
+      // The Z attribute is only taken from the solute when it is what the
+      // grid varies, i.e. the constant-f/f0 case.  With a constant vbar the
+      // solutes carry no vbar of their own, so applying Z would set vbar to
+      // zero and US_Model::calc_coefficients would silently substitute
+      // TYPICAL_VBAR for it, giving every column a different buoyancy from
+      // the one the fit uses.  calc_residuals sets only X and Y for the
+      // same reason, taking vbar from the data set.
       model1.components[ 0 ]    = zcomponent;
       set_comp_attr( model1.components[ 0 ], solutes_c[ ii ], attr_x );
       set_comp_attr( model1.components[ 0 ], solutes_c[ ii ], attr_y );
-      set_comp_attr( model1.components[ 0 ], solutes_c[ ii ], attr_z );
+
+      if ( cff0 > 0.0 )
+         set_comp_attr( model1.components[ 0 ], solutes_c[ ii ], attr_z );
 
       // Compute the other coefficients
       model1.update_coefficients();
 
-      // Convert to 20w space
-      model1.components[ 0 ].s /= dset->s20w_correction;
-      model1.components[ 0 ].D /= dset->D20w_correction;
+      // Convert to experiment space.  When vbar varies over the grid the
+      //  buffer corrections depend on each column's own vbar, so they must
+      //  be recomputed per column as calc_residuals does; with vbar fixed
+      //  the data set's own corrections apply to every column.
+      double scorr      = dset->s20w_correction;
+      double dcorr      = dset->D20w_correction;
+
+      if ( cff0 > 0.0 )
+      {
+         US_Math2::SolutionData sd;
+         sd.viscosity      = dset->viscosity;
+         sd.density        = dset->density;
+         sd.manual         = dset->manual;
+         sd.vbar20         = model1.components[ 0 ].vbar20;
+         sd.vbar           = US_Math2::adjust_vbar20( sd.vbar20,
+                                                      dset->temperature );
+         US_Math2::data_correction( dset->temperature, sd );
+         scorr             = sd.s20w_correction;
+         dcorr             = sd.D20w_correction;
+      }
+
+      model1.components[ 0 ].s /= scorr;
+      model1.components[ 0 ].D /= dcorr;
 
       // Reinitialize the simulation data set initial concentrations
       for ( int jj = 0; jj < nscan; jj++ )
@@ -283,6 +345,14 @@ DbgLv(1) << "CN(WT):  CN:   ii" << ii << "astfem_rsa:";
          US_SolveSim::data_threshold( &simdat, bthr.zerothr, bthr.linethr,
                                       bthr.maxod, bthr.mfactor,
                                       bthr.minnzsc );
+      }
+
+      if ( kodl > 0 )
+      {  // Zero the positions the fit excludes from every A column
+         for ( int jj = 0; jj < nscan; jj++ )
+            for ( int kk = 0; kk < npoint; kk++ )
+               if ( odzero[ jj * npoint + kk ] )
+                  simdat.setValue( jj, kk, 0.0 );
       }
 
       // Store the norm value for this simulation (A matrix column)
