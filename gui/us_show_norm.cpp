@@ -2098,17 +2098,29 @@ void US_show_norm::show_time_dev( void )
                       + ( (size_t)kcomp * nsamp ) ) : NULL;
 
    QVector< double > tvals( nscn );      // elapsed hours
-   QVector< double > nvals( nscn );      // norm accumulated to that time
+   QVector< double > nvals( nscn );      // norm of the selected column's scan
+   QVector< double > nvalc( nscn );      // norm of the compared column's scan
    QVector< double > cvx  ( nscn );      // collinearity with the X neighbour
    QVector< double > cvy  ( nscn );
    QVector< double > cvc  ( nscn );
+
+   // The signatures are unit length over the full radial range, so their
+   //  totals over the included range give the scale that turns a per-scan
+   //  partial sum back into a norm in the units of gnorm
    double sumtot  = 0.0;
+   double sumtoc  = 0.0;
 
    for ( int is = 0; is < nscn; is++ )
       for ( int jj = rad_ilo; jj < rad_ihi; jj++ )
       {
          double pv      = (double)sgp[ is * nrad + jj ];
          sumtot        += ( pv * pv );
+
+         if ( sgc != NULL )
+         {
+            double cv      = (double)sgc[ is * nrad + jj ];
+            sumtoc        += ( cv * cv );
+         }
       }
 
    double sump    = 0.0;
@@ -2122,11 +2134,14 @@ void US_show_norm::show_time_dev( void )
    for ( int is = 0; is < nscn; is++ )
    {
       int kk         = is * nrad;
+      double scnp    = 0.0;         // this scan's squared norm, selected
+      double scnc    = 0.0;         // this scan's squared norm, compared
 
       for ( int jj = rad_ilo; jj < rad_ihi; jj++ )
       {
          double pv      = (double)sgp[ kk + jj ];
          sump          += ( pv * pv );
+         scnp          += ( pv * pv );
 
          if ( sgx != NULL )
          {
@@ -2146,17 +2161,19 @@ void US_show_norm::show_time_dev( void )
          {
             double cv      = (double)sgc[ kk + jj ];
             sumc          += ( cv * cv );
+            scnc          += ( cv * cv );
             dotc          += ( pv * cv );
          }
       }
 
-      // The signature is unit length over the whole run, so the running sum
-      //  is the fraction of the column's squared norm acquired by this scan
+      // Norm of this one scan, not of everything up to it:  it says when
+      //  in the run a column carries its signal, so a species that pellets
+      //  early or has not yet cleared the meniscus shows up as such
       tvals[ is ]    = ginfo.sig_time[ is ] / 3600.0;
-      // gnorm already covers the included radial range, and sump runs to
-      //  that range's total, so scale by the fraction reached so far
       nvals[ is ]    = ( sumtot > 0.0 )
-                     ? ( gnorm[ kpick ] * sqrt( sump / sumtot ) ) : 0.0;
+                     ? ( gnorm[ kpick ] * sqrt( scnp / sumtot ) ) : 0.0;
+      nvalc[ is ]    = ( sgc != NULL  &&  sumtoc > 0.0 )
+                     ? ( gnorm[ kcomp ] * sqrt( scnc / sumtoc ) ) : 0.0;
 
       double cohx    = ( sgx != NULL  &&  sump > 0.0  &&  sumx > 0.0 )
                      ? qBound( 0.0, dotx / sqrt( sump * sumx ), 1.0 ) : -1.0;
@@ -2184,10 +2201,11 @@ void US_show_norm::show_time_dev( void )
    QwtPlot* np       = NULL;
    QwtPlot* cp       = NULL;
    QBoxLayout* npl   = new US_Plot( np,
-      tr( "Norm accumulated over the run" ), tr( "Elapsed time (hours)" ),
-      tr( "Column norm ||a|| to this time" ) );
+      tr( "Norm of each scan" ), tr( "Elapsed time (hours)" ),
+      tr( "Column norm ||a|| of that scan" ) );
    QBoxLayout* cpl   = new US_Plot( cp,
-      tr( "Collinearity over the run" ), tr( "Elapsed time (hours)" ),
+      tr( "Collinearity using all scans to that time" ),
+      tr( "Elapsed time (hours)" ),
       tr( "-log10(1-cos), higher = inseparable" ) );
 
    np->setMinimumSize( 520, 240 );
@@ -2195,10 +2213,20 @@ void US_show_norm::show_time_dev( void )
    np->setCanvasBackground( Qt::white );
    cp->setCanvasBackground( Qt::white );
 
-   QwtPlotCurve* ncv = new QwtPlotCurve( tr( "norm" ) );
+   QwtPlotCurve* ncv = new QwtPlotCurve( tr( "selected" ) );
    ncv->setPen    ( QPen( Qt::blue, 2 ) );
    ncv->setSamples( tvals, nvals );
    ncv->attach    ( np );
+
+   if ( sgc != NULL )
+   {  // The compared species alongside, on the same scale
+      QwtPlotCurve* nccv = new QwtPlotCurve( tr( "comparison" ) );
+      nccv->setPen    ( QPen( Qt::darkRed, 2, Qt::DashLine ) );
+      nccv->setSamples( tvals, nvalc );
+      nccv->attach    ( np );
+
+      np->insertLegend( new QwtLegend(), QwtPlot::BottomLegend );
+   }
 
    if ( sgx != NULL )
    {
@@ -2226,9 +2254,16 @@ void US_show_norm::show_time_dev( void )
 
    cp->insertLegend( new QwtLegend(), QwtPlot::BottomLegend );
 
-   QLabel* lb_head = us_banner( tr( "%1 %2,  %3 %4" )
+   QString htxt    = tr( "Selected:  %1 %2,  %3 %4" )
       .arg( attr_label( plot_x ) ).arg( xy_distro[ kpick ].s, 0, 'g', 5 )
-      .arg( attr_label( plot_y ) ).arg( xy_distro[ kpick ].k, 0, 'g', 5 ) );
+      .arg( attr_label( plot_y ) ).arg( xy_distro[ kpick ].k, 0, 'g', 5 );
+
+   if ( sgc != NULL )
+      htxt          += tr( "      Comparison:  %1 %2,  %3 %4" )
+         .arg( attr_label( plot_x ) ).arg( xy_distro[ kcomp ].s, 0, 'g', 5 )
+         .arg( attr_label( plot_y ) ).arg( xy_distro[ kcomp ].k, 0, 'g', 5 );
+
+   QLabel* lb_head = us_banner( htxt );
 
    QPushButton* pb_cl = us_pushbutton( tr( "Close" ) );
    connect( pb_cl, SIGNAL( clicked() ), tdlg, SLOT( accept() ) );
