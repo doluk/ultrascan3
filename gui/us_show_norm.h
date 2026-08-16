@@ -207,6 +207,8 @@ class US_GUI_EXTERN US_show_norm : public US_WidgetsDialog
       QPushButton*  pb_timedev;
 
       QwtCounter*   ct_nscans;
+      QwtCounter*   ct_radlo;
+      QwtCounter*   ct_radhi;
 
       QCheckBox*    ck_autosxy;
       QCheckBox*    ck_cutmark;
@@ -233,8 +235,14 @@ class US_GUI_EXTERN US_show_norm : public US_WidgetsDialog
       //!  c the Z value of the current Z mode
       QList< S_Solute >   xy_distro;
 
-      //! Column norms, grid order, index = iy * nss + ix
+      //! Column norms over the included radial range, grid order,
+      //!  index = iy * nss + ix
       QVector< double >   gnorm;
+      //! Column norms over the full radial range, as computed
+      QVector< double >   gnorm_full;
+      //! Neighbour coherences over the included radial range
+      QVector< double >   coher_x;
+      QVector< double >   coher_y;
       //! Unshifted Z values for the current Z mode, same order as gnorm
       QVector< double >   zvals;
       //! False where the current Z mode has no real value for a point (an
@@ -258,6 +266,9 @@ class US_GUI_EXTERN US_show_norm : public US_WidgetsDialog
       int           comp_ix;
       int           comp_iy;
       int           nscans;
+      //! Radial sample index range included in every calculation
+      int           rad_ilo;
+      int           rad_ihi;
 
       //! 1/sqrt(ndpts):  converts a column norm to the RMS signal per data
       //!  point, in OD, that one OD of that species would produce
@@ -297,6 +308,8 @@ class US_GUI_EXTERN US_show_norm : public US_WidgetsDialog
       void pick_sect_y     ( const QPointF& );
       void pick_sect_x     ( const QPointF& );
       void show_time_dev   ( void );
+      void update_radlo    ( double );
+      void update_radhi    ( double );
 
    private:
       //! \brief Rebuild the plotted point list from the current selections
@@ -321,6 +334,9 @@ class US_GUI_EXTERN US_show_norm : public US_WidgetsDialog
       void   compute_zvals  ( void );
       //! \brief Cosine of the angle between two A columns, from signatures
       double coher_pair     ( int, int );
+      //! \brief Recompute norms and coherences over the included radial
+      //!        range, from the retained signatures
+      void   apply_rad_range( void );
       //! \brief Grid index of the point nearest a plot position, or -1
       int    nearest_point  ( const QPointF& );
       //! \brief Number of grid points whose norm falls below the NNLS cutoff

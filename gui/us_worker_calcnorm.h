@@ -148,6 +148,8 @@ class US_GUI_EXTERN WorkerThreadCalcNorm : public QThread
 
       double  cff0;       // constant f/f0 (or zero)
 
+      bool    varyvbar;   // vbar comes from each solute rather than the dataset
+
       US_DataIO::EditedData*  edata;       // experiment data (pointer)
       US_Model                model1;      // output model
       US_SimulationParameters simparms;    // simulation parameters

@@ -226,6 +226,12 @@ US_show_norm::US_show_norm( US_Model* a_model, bool a_cnst_vbar,
    for ( int ii = 0; ii < nsolutes; ii++ )
       gnorm[ ii ]    = model->components[ ii ].signal_concentration;
 
+   gnorm_full     = gnorm;
+   coher_x        = ginfo.coher_x;
+   coher_y        = ginfo.coher_y;
+   rad_ilo        = 0;
+   rad_ihi        = qMax( 1, ginfo.sig_nrad );
+
    setWindowTitle( tr( "2DSA Norm Grid and Conditioning" ) );
    setPalette( US_GuiSettings::frameColor() );
 
@@ -341,6 +347,34 @@ US_show_norm::US_show_norm( US_Model* a_model, bool a_cnst_vbar,
       "Number of simulated scans drawn, spread evenly over the run." ) );
    connect( ct_nscans, SIGNAL( valueChanged ( double ) ),
             this,      SLOT  ( update_nscans( double ) ) );
+
+   // Radial range included in every norm and coherence.  Excluding the
+   //  readings nearest the meniscus or the base is routine when fitting,
+   //  and it changes what the columns can be told apart by.
+   QLabel* lb_radlo      = us_label( tr( "Include from radius (cm):" ) );
+   QLabel* lb_radhi      = us_label( tr( "Include to radius (cm):"   ) );
+   lb_radlo->setAlignment( Qt::AlignVCenter | Qt::AlignLeft );
+   lb_radhi->setAlignment( Qt::AlignVCenter | Qt::AlignLeft );
+
+   double rlo    = have_scans ? ginfo.sig_radius.first() : 5.8;
+   double rhi    = have_scans ? ginfo.sig_radius.last()  : 7.2;
+   ct_radlo      = us_counter( 4, rlo, rhi, rlo );
+   ct_radhi      = us_counter( 4, rlo, rhi, rhi );
+   ct_radlo->setSingleStep( 0.001 );
+   ct_radhi->setSingleStep( 0.001 );
+   ct_radlo->setEnabled( have_scans );
+   ct_radhi->setEnabled( have_scans );
+   ct_radlo->setToolTip( tr(
+      "Readings outside this radial range are left out of every norm and\n"
+      "every collinearity, as excluding them from a fit would.  A pair of\n"
+      "columns that only differs inside an excluded region becomes\n"
+      "indistinguishable, so this shows what such an exclusion costs.\n"
+      "Values snap to the nearest retained radial sample." ) );
+   ct_radhi->setToolTip( ct_radlo->toolTip() );
+   connect( ct_radlo, SIGNAL( valueChanged( double ) ),
+            this,     SLOT  ( update_radlo( double ) ) );
+   connect( ct_radhi, SIGNAL( valueChanged( double ) ),
+            this,     SLOT  ( update_radhi( double ) ) );
 
    us_checkbox( tr( "Difference of shapes, not amplitudes" ), ck_shapedf,
                 true );
@@ -484,6 +518,10 @@ US_show_norm::US_show_norm( US_Model* a_model, bool a_cnst_vbar,
    spec->addWidget( lb_nscans,     s_row,   0, 1, 4 );
    spec->addWidget( ct_nscans,     s_row++, 4, 1, 4 );
    spec->addWidget( ck_shapedf,    s_row++, 0, 1, 8 );
+   spec->addWidget( lb_radlo,      s_row,   0, 1, 4 );
+   spec->addWidget( ct_radlo,      s_row++, 4, 1, 4 );
+   spec->addWidget( lb_radhi,      s_row,   0, 1, 4 );
+   spec->addWidget( ct_radhi,      s_row++, 4, 1, 4 );
    spec->addWidget( lb_x_axis,     s_row,   0, 1, 2 );
    spec->addLayout( gl_x_s,        s_row,   2, 1, 1 );
    spec->addLayout( gl_x_ff0,      s_row,   3, 1, 1 );
@@ -639,6 +677,21 @@ void US_show_norm::reset( void )
 
    have_comp  = false;
    ck_shapedf->setChecked( true );
+
+   rad_ilo    = 0;
+   rad_ihi    = qMax( 1, ginfo.sig_nrad );
+
+   if ( have_scans )
+   {  // Restore the full radial range without a redraw per counter
+      ct_radlo->blockSignals( true );
+      ct_radhi->blockSignals( true );
+      ct_radlo->setValue( ginfo.sig_radius.first() );
+      ct_radhi->setValue( ginfo.sig_radius.last()  );
+      ct_radlo->blockSignals( false );
+      ct_radhi->blockSignals( false );
+   }
+
+   apply_rad_range();
    report_comp();
 
    sync_axis_buttons();
@@ -691,14 +744,160 @@ double US_show_norm::coher_pair( int ia, int ib )
       return -1.0;
 
    int          nsamp = ginfo.nsamp;
+   int          nrad  = ginfo.sig_nrad;
+   int          nscn  = ginfo.sig_nscn;
    const float* siga  = ginfo.sigs.constData() + ( (size_t)ia * nsamp );
    const float* sigb  = ginfo.sigs.constData() + ( (size_t)ib * nsamp );
    double       dotp  = 0.0;
 
-   for ( int jj = 0; jj < nsamp; jj++ )
-      dotp              += ( (double)siga[ jj ] * (double)sigb[ jj ] );
+   if ( rad_ilo <= 0  &&  rad_ihi >= nrad )
+   {  // Whole radial range:  the signatures are already unit length over it
+      for ( int jj = 0; jj < nsamp; jj++ )
+         dotp              += ( (double)siga[ jj ] * (double)sigb[ jj ] );
 
-   return qBound( 0.0, dotp, 1.0 );
+      return qBound( 0.0, dotp, 1.0 );
+   }
+
+   // Restricted range:  renormalize over the included samples, since the
+   //  stored signatures are unit length over the full one
+   double       suma  = 0.0;
+   double       sumb  = 0.0;
+
+   for ( int is = 0; is < nscn; is++ )
+   {
+      int kk             = is * nrad;
+
+      for ( int jj = rad_ilo; jj < rad_ihi; jj++ )
+      {
+         double av          = (double)siga[ kk + jj ];
+         double bv          = (double)sigb[ kk + jj ];
+         dotp              += ( av * bv );
+         suma              += ( av * av );
+         sumb              += ( bv * bv );
+      }
+   }
+
+   double denm        = sqrt( suma * sumb );
+
+   return ( denm > 0.0 ) ? qBound( 0.0, dotp / denm, 1.0 ) : -1.0;
+}
+
+// Recompute norms and coherences over the included radial range.
+//
+// Excluding the readings nearest the meniscus or the base is routine when
+// fitting, and it changes what the fit can see:  a column whose only
+// distinguishing feature sits in an excluded region is no longer
+// distinguishable.  The retained signatures are laid out as consecutive
+// scans of consecutive radii, so restricting the range is a partial sum
+// over each block, and nothing has to be simulated again.
+void US_show_norm::apply_rad_range( void )
+{
+   int nsol       = gnorm_full.size();
+   gnorm          = gnorm_full;
+   coher_x        = ginfo.coher_x;
+   coher_y        = ginfo.coher_y;
+
+   if ( ! have_sigs  ||  nsol < 1 )
+      return;
+
+   int nrad       = ginfo.sig_nrad;
+   int nscn       = ginfo.sig_nscn;
+   int nsamp      = ginfo.nsamp;
+   rad_ilo        = qBound( 0, rad_ilo, nrad - 1 );
+   rad_ihi        = qBound( rad_ilo + 1, rad_ihi, nrad );
+
+   if ( rad_ilo <= 0  &&  rad_ihi >= nrad )
+      return;                             // Nothing excluded
+
+   // Fraction of each column's squared norm that falls inside the range.
+   //  The signatures are unit length over the full range, so this is just
+   //  the partial sum.
+   QVector< double > frac( nsol, 0.0 );
+
+   for ( int ii = 0; ii < nsol; ii++ )
+   {
+      const float* sig  = ginfo.sigs.constData() + ( (size_t)ii * nsamp );
+      double sumsq      = 0.0;
+
+      for ( int is = 0; is < nscn; is++ )
+      {
+         int kk            = is * nrad;
+
+         for ( int jj = rad_ilo; jj < rad_ihi; jj++ )
+         {
+            double sv         = (double)sig[ kk + jj ];
+            sumsq            += ( sv * sv );
+         }
+      }
+
+      frac[ ii ]        = sumsq;
+      gnorm[ ii ]       = gnorm_full[ ii ] * sqrt( qMax( sumsq, 0.0 ) );
+   }
+
+   if ( ! have_grid )
+      return;
+
+   int nss        = ginfo.nss;
+   int nks        = ginfo.nks;
+
+   for ( int iy = 0; iy < nks; iy++ )
+   {
+      for ( int ix = 0; ix < nss; ix++ )
+      {
+         int kk            = iy * nss + ix;
+
+         coher_x[ kk ]     = ( ix + 1 < nss  &&  frac[ kk ] > 0.0 )
+                           ? coher_pair( kk, kk + 1 )   : -1.0;
+         coher_y[ kk ]     = ( iy + 1 < nks  &&  frac[ kk ] > 0.0 )
+                           ? coher_pair( kk, kk + nss ) : -1.0;
+      }
+   }
+}
+
+void US_show_norm::update_radlo( double dval )
+{
+   if ( ! have_scans )
+      return;
+
+   // Snap to the nearest retained radial sample
+   int    nrad    = ginfo.sig_nrad;
+   int    knear   = 0;
+   double dnear   = 1.0e+30;
+
+   for ( int jj = 0; jj < nrad; jj++ )
+   {
+      double dd      = qAbs( dval - ginfo.sig_radius[ jj ] );
+
+      if ( dd < dnear ) { dnear = dd; knear = jj; }
+   }
+
+   rad_ilo        = qBound( 0, knear, nrad - 2 );
+   rad_ihi        = qMax( rad_ihi, rad_ilo + 1 );
+
+   apply_rad_range();
+   plot_data();
+}
+
+void US_show_norm::update_radhi( double dval )
+{
+   if ( ! have_scans )
+      return;
+
+   int    nrad    = ginfo.sig_nrad;
+   int    knear   = nrad - 1;
+   double dnear   = 1.0e+30;
+
+   for ( int jj = 0; jj < nrad; jj++ )
+   {
+      double dd      = qAbs( dval - ginfo.sig_radius[ jj ] );
+
+      if ( dd < dnear ) { dnear = dd; knear = jj; }
+   }
+
+   rad_ihi        = qBound( rad_ilo + 1, knear + 1, nrad );
+
+   apply_rad_range();
+   plot_data();
 }
 
 // True when the current Z mode maps a collinearity rather than a norm
@@ -866,8 +1065,8 @@ void US_show_norm::compute_zvals( void )
          //  scale instead of being crushed against 1.
          for ( int ii = 0; ii < nsol; ii++ )
          {
-            double cohx    = ginfo.coher_x[ ii ];
-            double cohy    = ginfo.coher_y[ ii ];
+            double cohx    = coher_x[ ii ];
+            double cohy    = coher_y[ ii ];
             double cohv    = ( zmode == ZM_COH_X ) ? cohx
                            : ( zmode == ZM_COH_Y ) ? cohy
                                                    : qMax( cohx, cohy );
@@ -1270,8 +1469,9 @@ void US_show_norm::plot_sections( void )
 // how little is left for the fit to work with.
 void US_show_norm::plot_scans( void )
 {
-   scan_plot->detachItems( QwtPlotItem::Rtti_PlotCurve );
-   diff_plot->detachItems( QwtPlotItem::Rtti_PlotCurve );
+   scan_plot->detachItems( QwtPlotItem::Rtti_PlotCurve  );
+   scan_plot->detachItems( QwtPlotItem::Rtti_PlotMarker );
+   diff_plot->detachItems( QwtPlotItem::Rtti_PlotCurve  );
 
    if ( ! have_scans )
    {
@@ -1353,6 +1553,20 @@ void US_show_norm::plot_scans( void )
       dcv->setPen    ( QPen( colc, 1 ) );
       dcv->setSamples( ginfo.sig_radius, yd );
       dcv->attach    ( diff_plot );
+   }
+
+   if ( rad_ilo > 0  ||  rad_ihi < nrad )
+   {  // Show where the included radial range begins and ends
+      for ( int ii = 0; ii < 2; ii++ )
+      {
+         QwtPlotMarker* rmark = new QwtPlotMarker();
+         rmark->setLineStyle( QwtPlotMarker::VLine );
+         rmark->setLinePen  ( QPen( Qt::darkGray, 1, Qt::DashDotLine ) );
+         rmark->setXValue   ( ( ii == 0 )
+                              ? ginfo.sig_radius[ rad_ilo ]
+                              : ginfo.sig_radius[ rad_ihi - 1 ] );
+         rmark->attach      ( scan_plot );
+      }
    }
 
    QString ptit   = tr( "Scans at %1 %2, %3 %4" )
@@ -1627,8 +1841,8 @@ void US_show_norm::update_stats( void )
 
       for ( int ii = 0; ii < nsol; ii++ )
       {
-         if ( ginfo.coher_x[ ii ] >= 0.0 )  cohx << ginfo.coher_x[ ii ];
-         if ( ginfo.coher_y[ ii ] >= 0.0 )  cohy << ginfo.coher_y[ ii ];
+         if ( coher_x[ ii ] >= 0.0 )  cohx << coher_x[ ii ];
+         if ( coher_y[ ii ] >= 0.0 )  cohy << coher_y[ ii ];
       }
 
       std::sort( cohx.begin(), cohx.end() );
@@ -1710,8 +1924,8 @@ void US_show_norm::pick_point( const QPointF& pos )
 
    if ( have_coher )
       ptxt          += tr( ",  cos to X nb %1,  to Y nb %2" )
-         .arg( ginfo.coher_x[ knear ], 0, 'f', 6 )
-         .arg( ginfo.coher_y[ knear ], 0, 'f', 6 );
+         .arg( coher_x[ knear ], 0, 'f', 6 )
+         .arg( coher_y[ knear ], 0, 'f', 6 );
 
    if ( have_cut  &&  gnorm[ knear ] < ginfo.norm_cut )
       ptxt          += tr( "   [dropped by NNLS]" );
@@ -1888,6 +2102,15 @@ void US_show_norm::show_time_dev( void )
    QVector< double > cvx  ( nscn );      // collinearity with the X neighbour
    QVector< double > cvy  ( nscn );
    QVector< double > cvc  ( nscn );
+   double sumtot  = 0.0;
+
+   for ( int is = 0; is < nscn; is++ )
+      for ( int jj = rad_ilo; jj < rad_ihi; jj++ )
+      {
+         double pv      = (double)sgp[ is * nrad + jj ];
+         sumtot        += ( pv * pv );
+      }
+
    double sump    = 0.0;
    double sumx    = 0.0;
    double sumy    = 0.0;
@@ -1900,7 +2123,7 @@ void US_show_norm::show_time_dev( void )
    {
       int kk         = is * nrad;
 
-      for ( int jj = 0; jj < nrad; jj++ )
+      for ( int jj = rad_ilo; jj < rad_ihi; jj++ )
       {
          double pv      = (double)sgp[ kk + jj ];
          sump          += ( pv * pv );
@@ -1930,7 +2153,10 @@ void US_show_norm::show_time_dev( void )
       // The signature is unit length over the whole run, so the running sum
       //  is the fraction of the column's squared norm acquired by this scan
       tvals[ is ]    = ginfo.sig_time[ is ] / 3600.0;
-      nvals[ is ]    = gnorm[ kpick ] * sqrt( qMax( sump, 0.0 ) );
+      // gnorm already covers the included radial range, and sump runs to
+      //  that range's total, so scale by the fraction reached so far
+      nvals[ is ]    = ( sumtot > 0.0 )
+                     ? ( gnorm[ kpick ] * sqrt( sump / sumtot ) ) : 0.0;
 
       double cohx    = ( sgx != NULL  &&  sump > 0.0  &&  sumx > 0.0 )
                      ? qBound( 0.0, dotx / sqrt( sump * sumx ), 1.0 ) : -1.0;
