@@ -227,16 +227,7 @@ bool US_NormGrid::start( US_SolveSim::DataSet* a_dset, const GridDef& a_gdef,
 
    dset            = a_dset;
    gdef            = a_gdef;
-   parentw         = a_parentw;
-
-   // Any existing map is superseded by this pass.  Close it now, and let its
-   //  deferred delete run, so that its copy of the column signatures is
-   //  released before a new set is allocated below.
-   if ( ! analcd.isNull() )
-   {
-      analcd->close();
-      qApp->processEvents();
-   }
+   specmode        = false;
 
    int    nss      = qMax( 1, gdef.nss );
    int    nks      = qMax( 1, gdef.nks );
@@ -299,6 +290,79 @@ DbgLv(1) << "NG: irregular grid - coherence disabled" << gnss << gnks
    }
 
 DbgLv(1) << "NG: grid gnss gnks" << gnss << gnks << "of" << nsolutes;
+
+   return launch( solutes, gnss, gnks, ( cff0 > 0.0 ), cff0, nthrd,
+                  a_parentw, errmsg );
+}
+
+// Start computing norms for a model's own species
+bool US_NormGrid::start_species( US_SolveSim::DataSet* a_dset,
+      US_Model& model, int nthrd, QWidget* a_parentw, QString& errmsg )
+{
+   errmsg          = QString();
+
+   if ( busy )
+   {
+      errmsg          = tr( "A norm calculation is already running." );
+      return false;
+   }
+
+   if ( a_dset == NULL  ||  a_dset->run_data.scanCount() < 1 )
+   {
+      errmsg          = tr( "There is no data to simulate on." );
+      return false;
+   }
+
+   int ncomp       = model.components.size();
+
+   if ( ncomp < 1 )
+   {
+      errmsg          = tr( "The model has no components to simulate." );
+      return false;
+   }
+
+   model.update_coefficients();
+
+   // One column per model species, each carrying its own vbar.  Laid out as
+   //  a single-column grid so that consecutive species are neighbours; the
+   //  viewer plots them at their real s and f/f0 positions regardless.
+   QVector< US_Solute > solutes;
+   solutes.reserve( ncomp );
+
+   for ( int ii = 0; ii < ncomp; ii++ )
+   {
+      US_Model::SimulationComponent& mc = model.components[ ii ];
+      double vbar     = ( mc.vbar20 > 0.0 ) ? mc.vbar20 : a_dset->vbar20;
+      solutes << US_Solute( mc.s, mc.f_f0, 0.0, vbar );
+   }
+
+   dset            = a_dset;
+   gdef            = GridDef();
+   gdef.nthrd      = nthrd;
+   specmode        = true;
+   nsolutes        = ncomp;
+
+   return launch( solutes, 1, ncomp, true, 0.0, nthrd, a_parentw, errmsg );
+}
+
+// Common tail of start() and start_species()
+bool US_NormGrid::launch( QVector< US_Solute >& solutes, int gnss, int gnks,
+      bool varyvbar, double cff0, int nthrd, QWidget* a_parentw,
+      QString& errmsg )
+{
+   errmsg          = QString();
+   nsolutes        = solutes.size();
+   parentw         = a_parentw;
+
+   // Any existing map is superseded by this pass.  Close it now, and let its
+   //  deferred delete run, so that its copy of the column signatures is
+   //  released before a new set is allocated below.
+   if ( ! analcd.isNull() )
+   {
+      analcd->close();
+      qApp->processEvents();
+   }
+
 
    // Resolve the speed profile before any worker simulates
    resolve_timestate( dset );
@@ -377,6 +441,7 @@ DbgLv(1) << "NG: signatures" << nrm_nrad << "x" << nrm_nscn << "=" << nrm_nsamp
       workin.nsolutes = nsolutes;
       workin.nwsols   = 0;
       workin.cff0     = cff0;
+      workin.varyvbar = varyvbar;
       workin.isolutes = solutes;
       workin.dset     = dset;
       // Contiguous band of grid rows for this worker (zero-length when the
@@ -511,10 +576,16 @@ void US_NormGrid::worker_complete( WorkerThreadCalcNorm* wthr )
    ginfo.sig_nscn    = nrm_nscn;
    ginfo.signorm     = nrm_signorm;
 
-   ginfo.descr       = tr( "%1  (%2 s x %3 %4 grid points)" )
-                          .arg( dset->run_data.runID )
-                          .arg( nrm_nss ).arg( nrm_nks )
-                          .arg( cnst_vbr ? tr( "f/f0" ) : tr( "vbar" ) );
+   ginfo.species     = specmode;
+
+   if ( specmode )
+      ginfo.descr       = tr( "%1  (%2 model species)" )
+                             .arg( dset->run_data.runID ).arg( nrm_nks );
+   else
+      ginfo.descr       = tr( "%1  (%2 s x %3 %4 grid points)" )
+                             .arg( dset->run_data.runID )
+                             .arg( nrm_nss ).arg( nrm_nks )
+                             .arg( cnst_vbr ? tr( "f/f0" ) : tr( "vbar" ) );
 
    // Say which cell configuration and solver the columns were simulated
    //  under, so that the norms are not read as belonging to a different fit

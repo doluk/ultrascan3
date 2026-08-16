@@ -1528,7 +1528,54 @@ void US_show_norm::update_stats( void )
                                 : sensx[ sensx.size() / 2 ], 0, 'f', 2 );
    }
 
-   if ( have_sigs )
+   if ( ginfo.species  &&  have_sigs )
+   {  // A short list of species:  every pair matters, so report each one's
+      //  signal and its worst partner outright rather than a resolution
+      //  width, which only means something on a parameter grid.
+      txt           += tr( "\nPer species,  worst partner by collinearity:\n" );
+
+      for ( int ii = 0; ii < nsol; ii++ )
+      {
+         int    kwrst   = -1;
+         double cwrst   = -1.0;
+
+         for ( int jj = 0; jj < nsol; jj++ )
+         {
+            if ( jj == ii )  continue;
+
+            double cohv    = coher_pair( ii, jj );
+
+            if ( cohv > cwrst )
+            {
+               cwrst          = cohv;
+               kwrst          = jj;
+            }
+         }
+
+         txt           += tr( "  %1: s %2  f/f0 %3  norm %4" )
+                             .arg( ii + 1, 2 )
+                             .arg( attr_value( ii, ATTR_S ), 8, 'g', 4 )
+                             .arg( attr_value( ii, ATTR_K ), 6, 'g', 3 )
+                             .arg( gnorm[ ii ], 9, 'g', 4 );
+
+         if ( have_rms )
+            txt           += tr( " (%1 OD)" )
+                                .arg( gnorm[ ii ] * rms_scale, 0, 'g', 3 );
+
+         if ( kwrst >= 0 )
+         {  // Separating a pair at cosine c multiplies the data noise by
+            //  1/sin(angle) in the amplitudes that come out
+            double sint    = sqrt( qMax( 1.0 - ( cwrst * cwrst ), 1.0e-24 ) );
+            txt           += tr( "  vs #%1 cos %2, noise x%3" )
+                                .arg( kwrst + 1 ).arg( cwrst, 0, 'f', 6 )
+                                .arg( 1.0 / sint, 0, 'f', 1 );
+         }
+
+         txt           += "\n";
+      }
+   }
+
+   else if ( have_sigs )
    {  // How far the selected point has to be moved before the data can
       //  tell the difference.  This is the resolution of the experiment at
       //  that point, and the number a peak position should be quoted with.

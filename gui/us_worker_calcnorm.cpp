@@ -20,6 +20,7 @@ WorkerThreadCalcNorm::WorkerThreadCalcNorm( QObject* parent )
    attr_z     = 3;
    amask      = 0;
    cff0       = 0.0;
+   varyvbar   = false;
    nss        = 0;
    row0       = 0;
    nrows      = 0;
@@ -53,6 +54,7 @@ void WorkerThreadCalcNorm::define_work( WorkPacketCN& workin )
    dset        = workin.dset;           // dataset pointer
    amask       = workin.amask;          // xyz attribute mask
    cff0        = workin.cff0;           // constant f/f0 value
+   varyvbar    = workin.varyvbar;       // vbar comes from each solute
    nss         = workin.nss;            // grid row length (0 if no grid)
    row0        = workin.row0;           // first grid row for this worker
    nrows       = workin.nrows;          // grid rows for this worker
@@ -302,7 +304,7 @@ DbgLv(1) << "CN(WT):  CN:  sig nrad nscn" << sig_nrad << sig_nscn
       set_comp_attr( model1.components[ 0 ], solutes_c[ ii ], attr_x );
       set_comp_attr( model1.components[ 0 ], solutes_c[ ii ], attr_y );
 
-      if ( cff0 > 0.0 )
+      if ( varyvbar )
          set_comp_attr( model1.components[ 0 ], solutes_c[ ii ], attr_z );
 
       // Compute the other coefficients
@@ -317,7 +319,7 @@ DbgLv(1) << "CN(WT):  CN:  sig nrad nscn" << sig_nrad << sig_nscn
       double scorr      = usefvm ? 1.0 : dset->s20w_correction;
       double dcorr      = usefvm ? 1.0 : dset->D20w_correction;
 
-      if ( cff0 > 0.0  &&  ! usefvm )
+      if ( varyvbar  &&  ! usefvm )
       {
          US_Math2::SolutionData sd;
          sd.viscosity      = dset->viscosity;

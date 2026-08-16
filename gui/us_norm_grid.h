@@ -80,6 +80,21 @@ class US_GUI_EXTERN US_NormGrid : public QObject
       //! \param grid   Grid definition whose limits are set
       static void grid_from_model( US_Model&, GridDef& );
 
+      //! \brief Start computing norms for a model's own species
+      //!
+      //! Instead of covering a grid, this simulates exactly the species the
+      //! model contains.  It answers how well an experimental design can
+      //! capture each species and tell them apart from one another, rather
+      //! than what a fit over a whole parameter range could resolve.
+      //! \param dset    Data set the columns are built from
+      //! \param model   Model whose components are simulated
+      //! \param nthrd   Worker thread count
+      //! \param parentw Parent widget of the viewer window
+      //! \param errmsg  Returned reason when the start is refused
+      //! \returns       Flag that the calculation was started
+      bool start_species( US_SolveSim::DataSet*, US_Model&, int, QWidget*,
+                          QString& );
+
       //! \brief Start computing a norm grid
       //!
       //! Returns immediately; the calculation runs in worker threads and
@@ -118,10 +133,14 @@ class US_GUI_EXTERN US_NormGrid : public QObject
 
    private:
       void resolve_timestate( US_SolveSim::DataSet* );
+      //! \brief Common tail of start() and start_species()
+      bool launch( QVector< US_Solute >&, int, int, bool, double, int,
+                   QWidget*, QString& );
 
       US_SolveSim::DataSet*    dset;
       US_Model                 model2;
       GridDef                  gdef;
+      bool                     specmode;
       QPointer< QWidget >      parentw;
       QPointer< US_show_norm > analcd;
 

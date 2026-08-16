@@ -28,7 +28,8 @@
 struct US_GUI_EXTERN US_NormGridInfo
 {
    US_NormGridInfo() : nss( 0 ), nks( 0 ), ndpts( 0 ), nsamp( 0 ),
-                       sig_nrad( 0 ), sig_nscn( 0 ), norm_cut( 0.0 ) {}
+                       sig_nrad( 0 ), sig_nscn( 0 ), norm_cut( 0.0 ),
+                       species( false ) {}
 
    int     nss;                  //!< grid points per row (X direction)
    int     nks;                  //!< grid rows (Y direction)
@@ -39,6 +40,9 @@ struct US_GUI_EXTERN US_NormGridInfo
    int     sig_nscn;             //!< scans per signature
    double  norm_cut;             //!< NNLS column-norm cutoff in effect
    QString descr;                //!< run and grid description
+   //! The columns are a model's own species rather than a parameter grid,
+   //!  so they are a short unordered list and every pair matters
+   bool    species;
 
    //! Cosine of the angle between each A column and its +X grid neighbour;
    //!  -1.0 where no neighbour exists or coherence was not computed

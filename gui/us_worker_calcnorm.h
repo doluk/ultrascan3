@@ -45,6 +45,11 @@ typedef struct work_packet_cn_s
 
    double  cff0;       //!< constant f/f0 (or zero)
 
+   //! Take vbar for each column from its own solute rather than from the
+   //!  data set.  Set for a constant-f/f0 grid, which varies vbar, and for
+   //!  a species list, whose members each carry their own vbar.
+   bool    varyvbar;
+
    QVector< US_Solute >   isolutes;  //!< input solutes
    QVector< US_Solute >   csolutes;  //!< computed solutes
 
