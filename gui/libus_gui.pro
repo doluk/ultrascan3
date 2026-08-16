@@ -78,6 +78,9 @@ HEADERS      = \
                us_sim_params_gui.h      \
                us_solution_gui.h        \
                us_spectrodata.h         \
+               us_show_norm.h           \
+               us_worker_calcnorm.h     \
+               us_norm_grid.h           \
                us_style.h               \
                us_table.h               \
                us_theme.h               \
@@ -141,6 +144,9 @@ SOURCES      = \
                us_sim_params_gui.cpp      \
                us_solution_gui.cpp        \
                us_spectrodata.cpp         \
+               us_show_norm.cpp           \
+               us_worker_calcnorm.cpp     \
+               us_norm_grid.cpp           \
                us_style.cpp               \
                us_table.cpp               \
                us_theme.cpp               \

@@ -6,7 +6,7 @@
 #include "us_extern.h"
 #include "us_widgets_dialog.h"
 #include "us_2dsa_process.h"
-#include "us_worker_calcnorm.h"
+#include "us_norm_grid.h"
 #include "us_plot.h"
 #include "us_help.h"
 #include "us_plot.h"
@@ -20,7 +20,6 @@
 #include "qwt_scale_widget.h"
 #include "qwt_scale_draw.h"
 #include "qwt_color_map.h"
-#include "us_show_norm.h"
 
 #define PA_TMDIS_MS 0
 
@@ -40,7 +39,6 @@ class US_AnalysisControl2D : public US_WidgetsDialog
       //! \param p       Pointer to the parent of this widget
       US_AnalysisControl2D( QList< SS_DATASET* >&, bool&, QWidget* p = 0 );
       enum attr_type { ATTR_S, ATTR_K, ATTR_W, ATTR_V, ATTR_D, ATTR_F };
-      US_Model  model2 ;
 
    public slots:
       void update_progress (  int  );
@@ -48,7 +46,7 @@ class US_AnalysisControl2D : public US_WidgetsDialog
       void progress_message(  QString, bool = true );
       void reset_steps(       int,     int );
       void norm_progress(     int  );
-      void norm_complete( WorkerThreadCalcNorm* );
+      void norm_finished(     void );
 
    private:
       QList< SS_DATASET* >&            dsets;
@@ -64,21 +62,6 @@ class US_AnalysisControl2D : public US_WidgetsDialog
       int           memneed;
       int           normstep;
 
-      // Norm-grid accumulation across the calc-norm worker threads
-      int           nrm_nss;      // grid points per row (X direction)
-      int           nrm_nks;      // grid rows (Y direction)
-      int           nrm_nsamp;    // values per column signature
-      int           nrm_nrad;     // radial points per signature
-      int           nrm_nscn;     // scans per signature
-      int           nrm_rstr;     // radial stride of a signature
-      int           nrm_sstr;     // scan stride of a signature
-      QVector< double >  nrm_coher_x;  // +X neighbour coherences
-      QVector< double >  nrm_coher_y;  // +Y neighbour coherences
-      QVector< double >  nrm_signorm;  // norms of the subsampled columns
-      //! Unit-length subsampled signature of every A column, laid out as
-      //!  nsolutes consecutive blocks of nrm_nsamp values.  Workers write
-      //!  disjoint slices of this directly.
-      QVector< float >   nrm_sigs;
       int           kthrdr;
       int           nsolutes;
 
@@ -95,7 +78,7 @@ class US_AnalysisControl2D : public US_WidgetsDialog
       US_SimulationParameters*         sparms;
       QPointer< QTextEdit    >         mw_stattext;
       int*                             mw_baserss;
-      QPointer< US_show_norm >         analcd1;
+      QPointer< US_NormGrid >          normgrid;
 
       QWidget*                         parentw;
       US_2dsaProcess*                  processor;

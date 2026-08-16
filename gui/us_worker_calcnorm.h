@@ -81,7 +81,7 @@ typedef struct work_packet_cn_s
 //! any pair of columns afterwards, not just neighbours.  Without a grid
 //! the worker falls back to an interleaved share of the solute points and
 //! reports norms only.
-class WorkerThreadCalcNorm : public QThread
+class US_GUI_EXTERN WorkerThreadCalcNorm : public QThread
 {
    Q_OBJECT
 

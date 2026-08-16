@@ -5,7 +5,6 @@
 #include "us_2dsa.h"
 #include "us_analysis_control_2d.h"
 #include "us_adv_analysis_2d.h"
-#include "us_worker_calcnorm.h"
 #include "us_settings.h"
 #include "us_passwd.h"
 #include "us_db2.h"
@@ -26,7 +25,7 @@
 #include "us_passwd.h"
 #include "us_report.h"
 #include "us_constants.h"
-#include "us_show_norm.h"
+#include "us_norm_grid.h"
 #include <qwt_legend.h>
 
 #define setPBMaximum(a)   setRange(1,a)
@@ -38,6 +37,7 @@ US_AnalysisControl2D::US_AnalysisControl2D( QList< SS_DATASET* >& dsets,
 {
    parentw        = p;
    processor      = 0;
+   normgrid       = NULL;
    dbg_level      = US_Settings::us_debug();
    grtype         = US_2dsaProcess::UGRID;
    baserss        = 0;
@@ -1163,248 +1163,46 @@ DbgLv(1) << "AC:cp inum mmit vari meni bott"
 
 void US_AnalysisControl2D::calculate_norms( )
 {
-   QVector< US_Solute >  solutes;
-   US_SolveSim::DataSet* dset;
-
-   int nthrd       = (int)ct_thrdcnt->value();
-DbgLv(1) << " calculate_norms is called" << nthrd;
-
    // Block re-entry:  a second pass while workers are still running would
-   //  reset kthrdr and let two sets of threads write model2 concurrently.
+   //  let two sets of threads write the same model concurrently.
    pb_anorm->setEnabled( false );
 
-   if ( ! analcd1.isNull() )
-   {  // Any existing map is superseded by this pass.  Close it now, and let
-      //  its deferred delete run, so that its copy of the column signatures
-      //  is released before a new set is allocated below.
-      analcd1->close();
-      qApp->processEvents();
+   US_2dsa* mainw  = (US_2dsa*)parentw;
+   edata           = mainw->mw_editdata();
+
+   if ( normgrid == NULL )
+   {
+      normgrid        = new US_NormGrid( this );
+
+      connect( normgrid, SIGNAL( norm_progress( int ) ),
+               this,     SLOT  ( norm_progress( int ) ) );
+      connect( normgrid, SIGNAL( norm_finished( void ) ),
+               this,     SLOT  ( norm_finished( void ) ) );
    }
 
-   normstep = 0;
-   int attr_x      = ATTR_S;      // X is s
-   int attr_y      = ATTR_K;      // Y is f/f0
-   int attr_z      = ATTR_V;      // Z is vbar
-   int smask       = ( attr_x << 6 ) | ( attr_y << 3 ) | attr_z;
-DbgLv(1) << "smask_calculate_norms" << smask;
+   US_NormGrid::GridDef gdef;
+   gdef.slo        = ct_lolimits->value() * 1.0e-13;
+   gdef.sup        = ct_uplimits->value() * 1.0e-13;
+   gdef.nss        = (int)ct_nstepss->value();
+   gdef.klo        = ct_lolimitk->value();
+   gdef.kup        = ct_uplimitk->value();
+   gdef.nks        = (int)ct_nstepsk->value();
+   gdef.cff0       = ck_varvbar->isChecked() ? ct_constff0->value() : 0.0;
+   gdef.nthrd      = (int)ct_thrdcnt->value();
 
-   US_2dsa* mainw  = (US_2dsa*)parentw;
-   edata           = mainw->mw_editdata(); // edited data
+   QString errmsg;
 
-
-
-   double slo      = ct_lolimits->value() * 1.0e-13; // s_lower_limit
-   double sup      = ct_uplimits->value() * 1.0e-13; // s_upper_limit
-   int    nss      = (int)ct_nstepss->value(); // steps in s grid
-   double klo      = ct_lolimitk->value(); // k_lower_limit
-   double kup      = ct_uplimitk->value(); // k_upper_limit
-   int    nks      = (int)ct_nstepsk->value();//steps in k grid
-   double cff0     = ck_varvbar->isChecked() ? ct_constff0->value() : 0.0;//constant vbar
-
-DbgLv(1)<< "CN: slo="<<slo << "sup="<<sup <<"nss="<< nss << "klo="<<klo << "kup="<<kup 
- <<"nks="<< nks << "cff0="<<cff0;
-
-   int    nprs     = qMax( 1, ( nss - 1 ) );
-   int    nprk     = qMax( 1, ( nks - 1 ) );
-   double s_step   = qAbs( sup   - slo ) / (double)nprs;
-   double ff0_step = qAbs( kup   - klo ) / (double)nprk;
-   s_step          = ( s_step    > 0.0 ) ? s_step   : ( slo * 1.001 );
-   ff0_step        = ( ff0_step  > 0.0 ) ? ff0_step : ( klo * 1.001 );
-   sup            += (   s_step * 0.001 );
-   kup            += ( ff0_step * 0.001 );
-
-DbgLv(1)<< "CN: nprs nprk" << nprs << nprk << "s_step" << s_step << "ff0_step" << ff0_step;
-
-   solutes         = US_Solute::create_solutes( slo, sup, s_step, klo, kup, ff0_step, cff0 );
-
-   int nsolutes    = solutes.size();
-
-   if ( nsolutes < 1 )
-   {  // Nothing to compute:  the grid limits produced no solute points
-      QMessageBox::warning( this, tr( "Empty Norm Grid" ),
-         tr( "The current s and f/f0 limits produce no grid points.\n"
-             "Adjust the grid limits and step counts, then retry." ) );
+   if ( ! normgrid->start( dsets[ 0 ], gdef, parentw, errmsg ) )
+   {
+      QMessageBox::warning( this, tr( "Norm Grid" ), errmsg );
       pb_anorm->setEnabled( true );
       return;
    }
 
-   // Work out the grid shape actually produced.  create_solutes() steps the
-   //  Y attribute in the outer loop and X (s) in the inner one, so a run of
-   //  entries sharing the first Y value is exactly one grid row.  Deriving
-   //  the shape rather than trusting the requested step counts keeps this
-   //  correct when floating-point stepping yields a different count.
-   bool   varyvbar = ( cff0 > 0.0 );
-   double yfirst   = varyvbar ? solutes[ 0 ].v : solutes[ 0 ].k;
-   int    gnss     = 0;
-
-   while ( gnss < nsolutes )
-   {
-      double yval     = varyvbar ? solutes[ gnss ].v : solutes[ gnss ].k;
-
-      if ( yval != yfirst )
-         break;
-
-      gnss++;
-   }
-
-   int    gnks     = ( gnss > 0 ) ? ( nsolutes / gnss ) : 0;
-
-   if ( gnss < 1  ||  ( gnss * gnks ) != nsolutes )
-   {  // Not a clean rectangular grid:  compute norms without the
-      //  neighbour-coherence diagnostic rather than mis-pairing points
-DbgLv(1) << "CN: irregular grid - coherence disabled" << gnss << gnks
- << nsolutes;
-      gnss            = 0;
-      gnks            = 0;
-   }
-
-DbgLv(1) << "CN: grid gnss gnks" << gnss << gnks << "of" << nsolutes;
-
-   // Never start more threads than there is work to hand out.  With a grid,
-   //  work is handed out as whole rows so that each worker can pair each of
-   //  its points with its grid neighbours.
-   nthrd           = ( gnks > 0 ) ? qMin( nthrd, gnks )
-                                  : qMin( nthrd, nsolutes );
-   kthrdr          = nthrd;          // Threads remaining
-   nrm_nss         = gnss;
-   nrm_nks         = gnks;
-   nrm_coher_x.fill( -1.0, nsolutes );
-   nrm_coher_y.fill( -1.0, nsolutes );
-   nrm_signorm.fill(  0.0, nsolutes );
-   dset            = dsets[ 0 ];
-
-   // Size the column signatures.  Retaining one for every grid point is what
-   //  lets the viewer measure the coherence between any pair of columns, not
-   //  just neighbours, so that it can answer "how far do I have to move
-   //  before the fit can tell the difference".  Cap the total at a memory
-   //  budget, reducing the sampling only when a grid is large enough to
-   //  need it.
-   const qint64 sig_budget = 512LL * 1024LL * 1024LL;   // bytes
-
-   nrm_nrad        = 0;
-   nrm_nscn        = 0;
-   nrm_rstr        = 1;
-   nrm_sstr        = 1;
-   nrm_nsamp       = 0;
-   nrm_sigs.clear();
-
-   if ( gnks > 0 )
-   {
-      int    nscn     = dset->run_data.scanCount();
-      int    npnt     = dset->run_data.pointCount();
-      qint64 fcap     = sig_budget / ( 4LL * (qint64)nsolutes );
-      int    scap     = (int)qBound( (qint64)128, fcap,
-            (qint64)( WorkerThreadCalcNorm::MAX_SIG_RAD *
-                      WorkerThreadCalcNorm::MAX_SIG_SCN ) );
-      double shrink   = qMin( 1.0, sqrt( (double)scap /
-            (double)( WorkerThreadCalcNorm::MAX_SIG_RAD *
-                      WorkerThreadCalcNorm::MAX_SIG_SCN ) ) );
-      int    maxrad   = qMax( 16,
-            (int)( WorkerThreadCalcNorm::MAX_SIG_RAD * shrink ) );
-      int    maxscn   = qMax(  8,
-            (int)( WorkerThreadCalcNorm::MAX_SIG_SCN * shrink ) );
-
-      nrm_rstr        = qMax( 1, ( npnt + maxrad - 1 ) / maxrad );
-      nrm_sstr        = qMax( 1, ( nscn + maxscn - 1 ) / maxscn );
-      nrm_nrad        = ( npnt + nrm_rstr - 1 ) / nrm_rstr;
-      nrm_nscn        = ( nscn + nrm_sstr - 1 ) / nrm_sstr;
-      nrm_nsamp       = nrm_nrad * nrm_nscn;
-
-      nrm_sigs.resize( nsolutes * nrm_nsamp );
-
-DbgLv(1) << "CN: signatures" << nrm_nrad << "x" << nrm_nscn << "=" << nrm_nsamp
- << "for" << nsolutes << "columns," << ( nrm_sigs.size() * 4 / 1048576 ) << "MB";
-   }
-
-DbgLv(1)<< "CN: s0" << solutes[0].s << "sn" << solutes[nsolutes-1].s;
-DbgLv(1)<< "CN: k0" << solutes[0].k << "kn" << solutes[nsolutes-1].k;
- 
-   // Resolve the rotor speed profile into the data set's own simulation
-   //  parameters, exactly as US_SolveSim::calc_residuals() does before a
-   //  fit, and do it once here rather than in each worker:  the workers
-   //  share this data set, and the profile governs the simulation every
-   //  A-matrix column is built from.  Previously this was loaded into a
-   //  local copy that was then discarded, so a norm grid computed before
-   //  any fit had been run used a different speed profile than the fit.
-   if ( dset->simparams.tsobj == NULL  ||
-        dset->simparams.sim_speed_prof.count() < 1 )
-   {
-      dset->simparams.tsobj = NULL;
-      dset->simparams.sim_speed_prof.clear();
-
-      QString   runID      = edata->runID;
-      QString   tmst_fpath = US_Settings::resultDir() + "/" + runID + "/"
-                             + runID + ".time_state.tmst";
-      QFileInfo check_file( tmst_fpath );
-
-      if ( check_file.exists()  &&  check_file.isFile() )
-      {  // Only a one-second-interval time state can be loaded directly
-         US_DataIO::RawData tsimdat;
-         US_AstfemMath::initSimData( tsimdat, dset->run_data, 0.0 );
-
-         if ( US_AstfemMath::timestate_onesec( tmst_fpath, tsimdat ) )
-            dset->simparams.simSpeedsFromTimeState( tmst_fpath );
-
-DbgLv(1) << "CN: timestate" << tmst_fpath << "tsobj"
- << dset->simparams.tsobj << "sspknt"
- << dset->simparams.sim_speed_prof.count();
-      }
-
-      else
-DbgLv(1) << "CN: no timestate file" << tmst_fpath;
-   }
-   model2.components.resize( nsolutes ) ;
+   normstep        = 0;
    b_progress->reset();
-   b_progress->setPBMaximum( nsolutes );
+   b_progress->setPBMaximum( normgrid->total_steps() );
    norm_progress( 1 );                 // Update progress bar
-
-   // Create and start calc-norm worker threads
-   for ( int ii = 0; ii < nthrd; ii++ )
-   {
-      WorkerThreadCalcNorm* wthr = new WorkerThreadCalcNorm( this );
-DbgLv(1) << "aac2:  ii" << ii << "create thread";
-      WorkPacketCN workin;
-      workin.thrn     = ii + 1;
-      workin.nthrd    = nthrd;
-      workin.amask    = smask;
-      workin.nsolutes = nsolutes;
-      workin.nwsols   = 0;
-      workin.cff0     = cff0;
-      workin.isolutes = solutes;
-      workin.dset     = dset;
-      // Contiguous band of grid rows for this worker (zero-length when the
-      //  solute set is not a clean grid, which selects the interleaved
-      //  fallback partition inside the worker)
-      workin.nss      = gnss;
-      workin.row0     = ( gnks > 0 ) ? ( ( ii       * gnks ) / nthrd ) : 0;
-      workin.nrows    = ( gnks > 0 )
-                      ? ( ( ( ( ii + 1 ) * gnks ) / nthrd ) - workin.row0 )
-                      : 0;
-      workin.nsamp    = nrm_nsamp;
-      workin.sig_nrad = nrm_nrad;
-      workin.sig_nscn = nrm_nscn;
-      workin.sig_rstr = nrm_rstr;
-      workin.sig_sstr = nrm_sstr;
-      // Disjoint slice of the shared signature buffer.  Workers only ever
-      //  touch their own rows, so no locking is needed, and nothing may
-      //  resize nrm_sigs while they run.
-      workin.sigbuf   = ( nrm_nsamp > 0 )
-                      ? ( nrm_sigs.data()
-                          + ( (size_t)workin.row0 * gnss * nrm_nsamp ) )
-                      : NULL;
-DbgLv(1) << "aac2:define_work" << workin.thrn << workin.nthrd
- << "row0" << workin.row0 << "nrows" << workin.nrows;
-      
-      wthr->define_work( workin );
-
-      connect( wthr, SIGNAL( work_progress( int ) ),
-               this, SLOT  ( norm_progress( int ) ) );
-
-      connect( wthr, SIGNAL( work_complete( WorkerThreadCalcNorm* ) ),
-               this, SLOT  ( norm_complete( WorkerThreadCalcNorm* ) ) );
-
-      wthr->start();
-   }
 }
 
 //---------------------------------------
@@ -1557,162 +1355,9 @@ DbgLv(1) << "uac2: NP:     kstep" << kstep << "normstep" << normstep;
    b_progress->setValue( normstep );   // Update progress bar
 }
 
-// Handle the completion of a calc_norm worker thread
-void US_AnalysisControl2D::norm_complete( WorkerThreadCalcNorm* wthr )
+// Handle completion of the norm grid calculation
+void US_AnalysisControl2D::norm_finished( void )
 {
-   WorkPacketCN  workout;
-
-   wthr->get_result( workout );
-
-   US_Model::SimulationComponent zcomponent; // Zeroed component to init models
-   zcomponent.s      = 0.0;
-   zcomponent.D      = 0.0;
-   zcomponent.mw     = 0.0;
-   zcomponent.f      = 0.0;
-   zcomponent.f_f0   = 0.0;
-   zcomponent.vbar20 = 0.0;
-   zcomponent.signal_concentration = 0.0;
-   int kk;
-  
-DbgLv(1)<<"norm_complete is called "<<workout.nwsols<< workout.csolutes.size();
-   for ( int ii = 0; ii < workout.nwsols; ii++ )
-   {
-      kk         = workout.solxs[ ii ];
-DbgLv(1)<<"kk="<< kk ;
-      model2.components[ kk ]        = zcomponent;
-      model2.components[ kk ].s      = workout.csolutes[ ii ].s;
-      model2.components[ kk ].f_f0   = workout.csolutes[ ii ].k;
-      model2.components[ kk ].vbar20 = workout.csolutes[ ii ].v;
-      model2.components[ kk ].signal_concentration = workout.csolutes[ ii ].c;
-
-      if ( ii < workout.coher_x.size() )
-      {  // Neighbour coherences, in the same global solute indexing
-         nrm_coher_x[ kk ] = workout.coher_x[ ii ];
-         nrm_coher_y[ kk ] = workout.coher_y[ ii ];
-         nrm_signorm[ kk ] = workout.signorm[ ii ];
-      }
-   }
-
-   wthr->deleteLater();          // Worker has delivered its results
-   kthrdr--;
-
-   if ( kthrdr == 0 )
-   {
-      // Close the Y coherence across the worker band boundaries.  Each
-      //  worker computed the coherences inside its own band; the one row
-      //  where a band meets the next has its +Y neighbour in the other
-      //  band, and is filled in here now that every signature is written.
-      if ( nrm_nsamp > 0 )
-      {
-         for ( int iy = 0; ( iy + 1 ) < nrm_nks; iy++ )
-         {
-            for ( int ix = 0; ix < nrm_nss; ix++ )
-            {
-               int kk            = iy * nrm_nss + ix;
-
-               if ( nrm_coher_y[ kk ] >= 0.0 )
-                  continue;                  // Already done by a worker
-
-               const float* siga = nrm_sigs.constData()
-                                 + ( (size_t)kk * nrm_nsamp );
-               const float* sigb = siga + ( (size_t)nrm_nss * nrm_nsamp );
-               double dotp       = 0.0;
-
-               for ( int jj = 0; jj < nrm_nsamp; jj++ )
-                  dotp             += ( (double)siga[ jj ] *
-                                        (double)sigb[ jj ] );
-
-               nrm_coher_y[ kk ] = qBound( 0.0, dotp, 1.0 );
-            }
-         }
-      }
-
-      // Complete the remaining coefficients only once, when every component
-      //  has been filled in.  Doing this per worker ran it over components
-      //  that were still all-zero, which is not a valid model.
-      model2.update_coefficients();
-
-      double cff0       = ck_varvbar->isChecked() ? ct_constff0->value() : 0.0;
-      bool cnst_vbr     = ( cff0 == 0.0 );
-
-      for ( int ii = 0; ii< model2.components.size(); ii++ )
-      {  // For plotting purposes, scale sedimentation coefficients
-         model2.components[ ii ].s *= 1.0e+13;
-DbgLv(1) << "model2_values_from_norm_complete"
- << "  s,k" << model2.components[ ii ].s << model2.components[ ii ].f_f0
- << "  norm" << model2.components[ ii ].signal_concentration;
-      }
-
-      // Describe the grid for the viewer:  shape, the NNLS column-norm
-      //  cutoff in effect, and the neighbour coherences
-      US_NormGridInfo ginfo;
-      ginfo.nss         = nrm_nss;
-      ginfo.nks         = nrm_nks;
-      ginfo.norm_cut    = US_SolveSim::norm_cutoff();
-      // Data points behind each column norm, so that the viewer can express
-      //  the norm as an RMS signal per point rather than a bare magnitude
-      ginfo.ndpts       = ( edata != NULL )
-                        ? ( edata->scanCount() * edata->pointCount() ) : 0;
-      ginfo.coher_x     = nrm_coher_x;
-      ginfo.coher_y     = nrm_coher_y;
-      ginfo.nsamp       = nrm_nsamp;
-      ginfo.sig_nrad    = nrm_nrad;
-      ginfo.sig_nscn    = nrm_nscn;
-      ginfo.signorm     = nrm_signorm;
-
-      // Radius and elapsed time of the sampled points, so that the viewer
-      //  can plot a signature back as a set of simulated scans
-      if ( nrm_nsamp > 0 )
-      {
-         ginfo.sig_radius.resize( nrm_nrad );
-         ginfo.sig_time  .resize( nrm_nscn );
-
-         for ( int jj = 0; jj < nrm_nrad; jj++ )
-            ginfo.sig_radius[ jj ] = dsets[ 0 ]->run_data.radius(
-                                        jj * nrm_rstr );
-
-         for ( int jj = 0; jj < nrm_nscn; jj++ )
-            ginfo.sig_time  [ jj ] = dsets[ 0 ]->run_data.scanData[
-                                        jj * nrm_sstr ].seconds;
-      }
-
-      // Hand the signatures over rather than sharing them, so that the
-      //  control holds no second reference once the viewer owns them
-      ginfo.sigs.swap( nrm_sigs );
-      ginfo.descr       = tr( "%1  (%2 s x %3 %4 grid points)" )
-                             .arg( edata != NULL ? edata->runID : QString() )
-                             .arg( nrm_nss )
-                             .arg( nrm_nks )
-                             .arg( cnst_vbr ? tr( "f/f0" ) : tr( "vbar" ) );
-
-      // Say which cell configuration the columns were simulated under, so
-      //  that the norms are not read as belonging to a different fit
-      US_SimulationParameters& sparm = dsets[ 0 ]->simparams;
-
-      if ( sparm.band_forming )
-      {
-         US_SolveSim::BandThresholds bthr;
-         bool bdthr        = US_SolveSim::bandform_thresholds( sparm, bthr );
-         ginfo.descr      += tr( "\nBand-forming, %1 uL load%2" )
-                                .arg( sparm.band_volume * 1000.0, 0, 'g', 4 )
-                                .arg( bdthr ? tr( ", data thresholds applied" )
-                                            : tr( ", no threshold config" ) );
-      }
-
-      else
-         ginfo.descr      += tr( "\nStandard sector cell" );
-
-      ginfo.descr      += tr( ",  %1 simulation points" ).arg( sparm.simpoints );
-
-      analcd1  = new US_show_norm( &model2, cnst_vbr, ginfo, parentw );
-      analcd1->setAttribute( Qt::WA_DeleteOnClose );
-
-      analcd1->show();
-//DbgLv(1) << "time_before_kthrd=0" << QDateTime.toString( "hh:mm:ss") ;
-
-      pb_anorm->setEnabled( true );
-   }
-
-DbgLv(1) << "uac2:NC: kthrdr" << kthrdr << "COMPLETE thrn" << workout.thrn;
+   pb_anorm->setEnabled( true );
 }
 

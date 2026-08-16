@@ -4,7 +4,6 @@
 
 #include "us_extern.h"
 #include "us_widgets_dialog.h"
-#include "us_2dsa_process.h"
 #include "us_plot.h"
 #include "us_help.h"
 #include "us_model.h"
@@ -26,7 +25,7 @@
 //! what the model cannot:  the shape of the grid, the NNLS cutoff that the
 //! norms are compared against, and the coherence of each column with its
 //! grid neighbours.
-struct US_NormGridInfo
+struct US_GUI_EXTERN US_NormGridInfo
 {
    US_NormGridInfo() : nss( 0 ), nks( 0 ), ndpts( 0 ), nsamp( 0 ),
                        sig_nrad( 0 ), sig_nscn( 0 ), norm_cut( 0.0 ) {}
@@ -76,7 +75,7 @@ struct US_NormGridInfo
 //! Lookup uses a uniform bucket index over the plotted rectangle, searching
 //! outward from the query position's bucket until no unexamined bucket can
 //! hold anything closer.
-class US_NormRasterData : public QwtRasterData
+class US_GUI_EXTERN US_NormRasterData : public QwtRasterData
 {
    public:
       US_NormRasterData();
@@ -125,7 +124,7 @@ class US_NormRasterData : public QwtRasterData
 //! \brief A window showing the A-matrix column norms of a 2DSA grid,
 //!        together with the conditioning diagnostics that govern whether
 //!        NNLS can separate neighbouring grid points.
-class US_show_norm : public US_WidgetsDialog
+class US_GUI_EXTERN US_show_norm : public US_WidgetsDialog
 {
    Q_OBJECT
 
