@@ -200,6 +200,7 @@ class US_GUI_EXTERN US_show_norm : public US_WidgetsDialog
       QPushButton*  pb_close;
       QPushButton*  pb_reset;
       QPushButton*  pb_refresh;
+      QPushButton*  pb_timedev;
 
       QwtCounter*   ct_nscans;
 
@@ -291,6 +292,7 @@ class US_GUI_EXTERN US_show_norm : public US_WidgetsDialog
       void pick_point      ( const QPointF& );
       void pick_sect_y     ( const QPointF& );
       void pick_sect_x     ( const QPointF& );
+      void show_time_dev   ( void );
 
    private:
       //! \brief Rebuild the plotted point list from the current selections

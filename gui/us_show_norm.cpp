@@ -7,6 +7,7 @@
 #include "us_math2.h"
 #include "us_constants.h"
 #include "qwt_picker_machine.h"
+#include "qwt_legend.h"
 #include <algorithm>
 
 //------------------------------------------------------------------------
@@ -445,6 +446,16 @@ US_show_norm::US_show_norm( US_Model* a_model, bool a_cnst_vbar,
    connect( pb_refresh, SIGNAL( clicked() ),
             this,       SLOT( plot_data() ) );
 
+   pb_timedev    = us_pushbutton( tr( "Development Over Time" ) );
+   pb_timedev->setEnabled( have_sigs );
+   pb_timedev->setToolTip( tr(
+      "Show how the selected column's signal accumulates over the run, and\n"
+      "when it becomes separable from its neighbours.  Two columns start out\n"
+      "identical and only diverge as the boundaries move apart, so this says\n"
+      "how much of the run is actually doing the separating." ) );
+   connect( pb_timedev, SIGNAL( clicked() ),
+            this,       SLOT  ( show_time_dev() ) );
+
    pb_reset      = us_pushbutton( tr( "Reset" ) );
    connect( pb_reset,   SIGNAL( clicked() ),
             this,       SLOT( reset() ) );
@@ -498,6 +509,7 @@ US_show_norm::US_show_norm( US_Model* a_model, bool a_cnst_vbar,
    spec->addWidget( ct_plt_kmax,   s_row++, 4, 1, 4 );
    spec->addWidget( le_cmap_name,  s_row++, 0, 1, 8 );
    spec->addWidget( pb_refresh,    s_row++, 0, 1, 8 );
+   spec->addWidget( pb_timedev,    s_row++, 0, 1, 8 );
    spec->addWidget( pb_ldcolor,    s_row++, 0, 1, 8 );
    spec->addWidget( pb_reset,      s_row++, 0, 1, 8 );
    spec->addWidget( pb_close,      s_row++, 0, 1, 8 );
@@ -1778,6 +1790,184 @@ void US_show_norm::update_nscans( double dval )
 void US_show_norm::select_shapedf()
 {
    plot_scans();
+}
+
+// Show how the selected column's norm accumulates over the run, and when it
+// becomes separable from its neighbours.
+//
+// Two columns are identical at the first scan and only diverge as their
+// boundaries move apart, so a collinearity quoted for the whole run hides
+// when the separation actually happened.  Both curves come straight out of
+// the stored signatures - they are laid out as consecutive scans, so a
+// partial sum over the first n of them is the same quantity restricted to
+// the first n scans.  Nothing is re-simulated.
+void US_show_norm::show_time_dev( void )
+{
+   if ( ! have_sigs  ||  ! have_grid )
+      return;
+
+   int nss        = ginfo.nss;
+   int nks        = ginfo.nks;
+   int nrad       = ginfo.sig_nrad;
+   int nscn       = ginfo.sig_nscn;
+   int nsamp      = ginfo.nsamp;
+   int ixp        = qBound( 0, pick_ix, nss - 1 );
+   int iyp        = qBound( 0, pick_iy, nks - 1 );
+   int kpick      = iyp * nss + ixp;
+
+   // Neighbours to compare against:  prefer the +X and +Y ones, falling
+   //  back to the other side at the far edges of the grid
+   int knbx       = ( ixp + 1 < nss ) ? ( kpick + 1 )
+                  : ( ( ixp > 0 ) ? ( kpick - 1 ) : -1 );
+   int knby       = ( iyp + 1 < nks ) ? ( kpick + nss )
+                  : ( ( iyp > 0 ) ? ( kpick - nss ) : -1 );
+   int kcomp      = have_comp
+                  ? ( qBound( 0, comp_iy, nks - 1 ) * nss
+                      + qBound( 0, comp_ix, nss - 1 ) ) : -1;
+
+   if ( kcomp == kpick )
+      kcomp          = -1;
+
+   const float* sgp = ginfo.sigs.constData() + ( (size_t)kpick * nsamp );
+   const float* sgx = ( knbx  >= 0 ) ? ( ginfo.sigs.constData()
+                      + ( (size_t)knbx  * nsamp ) ) : NULL;
+   const float* sgy = ( knby  >= 0 ) ? ( ginfo.sigs.constData()
+                      + ( (size_t)knby  * nsamp ) ) : NULL;
+   const float* sgc = ( kcomp >= 0 ) ? ( ginfo.sigs.constData()
+                      + ( (size_t)kcomp * nsamp ) ) : NULL;
+
+   QVector< double > tvals( nscn );      // elapsed hours
+   QVector< double > nvals( nscn );      // norm accumulated to that time
+   QVector< double > cvx  ( nscn );      // collinearity with the X neighbour
+   QVector< double > cvy  ( nscn );
+   QVector< double > cvc  ( nscn );
+   double sump    = 0.0;
+   double sumx    = 0.0;
+   double sumy    = 0.0;
+   double sumc    = 0.0;
+   double dotx    = 0.0;
+   double doty    = 0.0;
+   double dotc    = 0.0;
+
+   for ( int is = 0; is < nscn; is++ )
+   {
+      int kk         = is * nrad;
+
+      for ( int jj = 0; jj < nrad; jj++ )
+      {
+         double pv      = (double)sgp[ kk + jj ];
+         sump          += ( pv * pv );
+
+         if ( sgx != NULL )
+         {
+            double xv      = (double)sgx[ kk + jj ];
+            sumx          += ( xv * xv );
+            dotx          += ( pv * xv );
+         }
+
+         if ( sgy != NULL )
+         {
+            double yv      = (double)sgy[ kk + jj ];
+            sumy          += ( yv * yv );
+            doty          += ( pv * yv );
+         }
+
+         if ( sgc != NULL )
+         {
+            double cv      = (double)sgc[ kk + jj ];
+            sumc          += ( cv * cv );
+            dotc          += ( pv * cv );
+         }
+      }
+
+      // The signature is unit length over the whole run, so the running sum
+      //  is the fraction of the column's squared norm acquired by this scan
+      tvals[ is ]    = ginfo.sig_time[ is ] / 3600.0;
+      nvals[ is ]    = gnorm[ kpick ] * sqrt( qMax( sump, 0.0 ) );
+
+      double cohx    = ( sgx != NULL  &&  sump > 0.0  &&  sumx > 0.0 )
+                     ? qBound( 0.0, dotx / sqrt( sump * sumx ), 1.0 ) : -1.0;
+      double cohy    = ( sgy != NULL  &&  sump > 0.0  &&  sumy > 0.0 )
+                     ? qBound( 0.0, doty / sqrt( sump * sumy ), 1.0 ) : -1.0;
+      double cohc    = ( sgc != NULL  &&  sump > 0.0  &&  sumc > 0.0 )
+                     ? qBound( 0.0, dotc / sqrt( sump * sumc ), 1.0 ) : -1.0;
+
+      cvx[ is ]      = ( cohx < 0.0 ) ? 0.0
+                     : -log10( qMax( 1.0 - cohx, 1.0e-9 ) );
+      cvy[ is ]      = ( cohy < 0.0 ) ? 0.0
+                     : -log10( qMax( 1.0 - cohy, 1.0e-9 ) );
+      cvc[ is ]      = ( cohc < 0.0 ) ? 0.0
+                     : -log10( qMax( 1.0 - cohc, 1.0e-9 ) );
+   }
+
+   // A window of its own:  this is a different question from the map, and
+   //  the map is already carrying five plots
+   QDialog* tdlg  = new QDialog( this );
+   tdlg->setAttribute( Qt::WA_DeleteOnClose );
+   tdlg->setWindowTitle( tr( "Norm and collinearity over the run" ) );
+   tdlg->setPalette( US_GuiSettings::frameColor() );
+
+   QVBoxLayout* tlay = new QVBoxLayout( tdlg );
+   QwtPlot* np       = NULL;
+   QwtPlot* cp       = NULL;
+   QBoxLayout* npl   = new US_Plot( np,
+      tr( "Norm accumulated over the run" ), tr( "Elapsed time (hours)" ),
+      tr( "Column norm ||a|| to this time" ) );
+   QBoxLayout* cpl   = new US_Plot( cp,
+      tr( "Collinearity over the run" ), tr( "Elapsed time (hours)" ),
+      tr( "-log10(1-cos), higher = inseparable" ) );
+
+   np->setMinimumSize( 520, 240 );
+   cp->setMinimumSize( 520, 240 );
+   np->setCanvasBackground( Qt::white );
+   cp->setCanvasBackground( Qt::white );
+
+   QwtPlotCurve* ncv = new QwtPlotCurve( tr( "norm" ) );
+   ncv->setPen    ( QPen( Qt::blue, 2 ) );
+   ncv->setSamples( tvals, nvals );
+   ncv->attach    ( np );
+
+   if ( sgx != NULL )
+   {
+      QwtPlotCurve* xcv = new QwtPlotCurve( tr( "X neighbour" ) );
+      xcv->setPen    ( QPen( Qt::darkRed, 2 ) );
+      xcv->setSamples( tvals, cvx );
+      xcv->attach    ( cp );
+   }
+
+   if ( sgy != NULL )
+   {
+      QwtPlotCurve* ycv = new QwtPlotCurve( tr( "Y neighbour" ) );
+      ycv->setPen    ( QPen( Qt::darkGreen, 2, Qt::DashLine ) );
+      ycv->setSamples( tvals, cvy );
+      ycv->attach    ( cp );
+   }
+
+   if ( sgc != NULL )
+   {
+      QwtPlotCurve* ccv = new QwtPlotCurve( tr( "selected comparison" ) );
+      ccv->setPen    ( QPen( Qt::magenta, 2, Qt::DotLine ) );
+      ccv->setSamples( tvals, cvc );
+      ccv->attach    ( cp );
+   }
+
+   cp->insertLegend( new QwtLegend(), QwtPlot::BottomLegend );
+
+   QLabel* lb_head = us_banner( tr( "%1 %2,  %3 %4" )
+      .arg( attr_label( plot_x ) ).arg( xy_distro[ kpick ].s, 0, 'g', 5 )
+      .arg( attr_label( plot_y ) ).arg( xy_distro[ kpick ].k, 0, 'g', 5 ) );
+
+   QPushButton* pb_cl = us_pushbutton( tr( "Close" ) );
+   connect( pb_cl, SIGNAL( clicked() ), tdlg, SLOT( accept() ) );
+
+   tlay->addWidget( lb_head );
+   tlay->addLayout( npl );
+   tlay->addLayout( cpl );
+   tlay->addWidget( pb_cl );
+
+   np->replot();
+   cp->replot();
+   tdlg->show();
 }
 
 void US_show_norm::select_zmode( int ival )
