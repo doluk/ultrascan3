@@ -191,6 +191,20 @@ class US_GUI_EXTERN US_show_norm : public US_WidgetsDialog
       QwtPlot*      data_plot;
       QwtPlot*      xsec_plot_y;
       QwtPlot*      xsec_plot_x;
+      //! Collinearity plot of the time-development window, and the toggle
+      //!  choosing whether it shows per-scan or accumulated values.  Both
+      //!  belong to a dialog that may be closed, so they are guarded.
+      QPointer< QwtPlot >   tdev_cplot;
+      QPointer< QCheckBox > ck_cohscan;
+      //! Time-development curves, index 0 accumulated, 1 per scan
+      QVector< double >     td_tvals;
+      QVector< double >     td_cvx[ 2 ];
+      QVector< double >     td_cvy[ 2 ];
+      QVector< double >     td_cvc[ 2 ];
+      bool                  td_havex;
+      bool                  td_havey;
+      bool                  td_havec;
+
       QwtPlot*      scan_plot;
       QwtPlot*      diff_plot;
 
@@ -308,6 +322,7 @@ class US_GUI_EXTERN US_show_norm : public US_WidgetsDialog
       void pick_sect_y     ( const QPointF& );
       void pick_sect_x     ( const QPointF& );
       void show_time_dev   ( void );
+      void select_cohmode  ( void );
       void update_radlo    ( double );
       void update_radhi    ( double );
 

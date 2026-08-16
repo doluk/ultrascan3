@@ -2100,9 +2100,19 @@ void US_show_norm::show_time_dev( void )
    QVector< double > tvals( nscn );      // elapsed hours
    QVector< double > nvals( nscn );      // norm of the selected column's scan
    QVector< double > nvalc( nscn );      // norm of the compared column's scan
-   QVector< double > cvx  ( nscn );      // collinearity with the X neighbour
-   QVector< double > cvy  ( nscn );
-   QVector< double > cvc  ( nscn );
+   // Collinearity in both flavours:  index 0 uses every scan up to that
+   //  time, index 1 uses that scan alone
+   for ( int mm = 0; mm < 2; mm++ )
+   {
+      td_cvx[ mm ].resize( nscn );
+      td_cvy[ mm ].resize( nscn );
+      td_cvc[ mm ].resize( nscn );
+   }
+
+   td_tvals.resize( nscn );
+   td_havex       = ( sgx != NULL );
+   td_havey       = ( sgy != NULL );
+   td_havec       = ( sgc != NULL );
 
    // The signatures are unit length over the full radial range, so their
    //  totals over the included range give the scale that turns a per-scan
@@ -2136,6 +2146,11 @@ void US_show_norm::show_time_dev( void )
       int kk         = is * nrad;
       double scnp    = 0.0;         // this scan's squared norm, selected
       double scnc    = 0.0;         // this scan's squared norm, compared
+      double scnx    = 0.0;         // this scan's squared norm, X neighbour
+      double scny    = 0.0;
+      double sdtx    = 0.0;         // this scan's dot product, X neighbour
+      double sdty    = 0.0;
+      double sdtc    = 0.0;
 
       for ( int jj = rad_ilo; jj < rad_ihi; jj++ )
       {
@@ -2148,6 +2163,8 @@ void US_show_norm::show_time_dev( void )
             double xv      = (double)sgx[ kk + jj ];
             sumx          += ( xv * xv );
             dotx          += ( pv * xv );
+            scnx          += ( xv * xv );
+            sdtx          += ( pv * xv );
          }
 
          if ( sgy != NULL )
@@ -2155,6 +2172,8 @@ void US_show_norm::show_time_dev( void )
             double yv      = (double)sgy[ kk + jj ];
             sumy          += ( yv * yv );
             doty          += ( pv * yv );
+            scny          += ( yv * yv );
+            sdty          += ( pv * yv );
          }
 
          if ( sgc != NULL )
@@ -2163,6 +2182,7 @@ void US_show_norm::show_time_dev( void )
             sumc          += ( cv * cv );
             scnc          += ( cv * cv );
             dotc          += ( pv * cv );
+            sdtc          += ( pv * cv );
          }
       }
 
@@ -2175,19 +2195,32 @@ void US_show_norm::show_time_dev( void )
       nvalc[ is ]    = ( sgc != NULL  &&  sumtoc > 0.0 )
                      ? ( gnorm[ kcomp ] * sqrt( scnc / sumtoc ) ) : 0.0;
 
-      double cohx    = ( sgx != NULL  &&  sump > 0.0  &&  sumx > 0.0 )
-                     ? qBound( 0.0, dotx / sqrt( sump * sumx ), 1.0 ) : -1.0;
-      double cohy    = ( sgy != NULL  &&  sump > 0.0  &&  sumy > 0.0 )
-                     ? qBound( 0.0, doty / sqrt( sump * sumy ), 1.0 ) : -1.0;
-      double cohc    = ( sgc != NULL  &&  sump > 0.0  &&  sumc > 0.0 )
-                     ? qBound( 0.0, dotc / sqrt( sump * sumc ), 1.0 ) : -1.0;
+      td_tvals[ is ] = tvals[ is ];
 
-      cvx[ is ]      = ( cohx < 0.0 ) ? 0.0
-                     : -log10( qMax( 1.0 - cohx, 1.0e-9 ) );
-      cvy[ is ]      = ( cohy < 0.0 ) ? 0.0
-                     : -log10( qMax( 1.0 - cohy, 1.0e-9 ) );
-      cvc[ is ]      = ( cohc < 0.0 ) ? 0.0
-                     : -log10( qMax( 1.0 - cohc, 1.0e-9 ) );
+      // Accumulated uses the running sums, per-scan only this scan's
+      double cohs[ 2 ][ 3 ];
+      cohs[ 0 ][ 0 ] = ( sgx != NULL  &&  sump > 0.0  &&  sumx > 0.0 )
+                     ? qBound( 0.0, dotx / sqrt( sump * sumx ), 1.0 ) : -1.0;
+      cohs[ 0 ][ 1 ] = ( sgy != NULL  &&  sump > 0.0  &&  sumy > 0.0 )
+                     ? qBound( 0.0, doty / sqrt( sump * sumy ), 1.0 ) : -1.0;
+      cohs[ 0 ][ 2 ] = ( sgc != NULL  &&  sump > 0.0  &&  sumc > 0.0 )
+                     ? qBound( 0.0, dotc / sqrt( sump * sumc ), 1.0 ) : -1.0;
+      cohs[ 1 ][ 0 ] = ( sgx != NULL  &&  scnp > 0.0  &&  scnx > 0.0 )
+                     ? qBound( 0.0, sdtx / sqrt( scnp * scnx ), 1.0 ) : -1.0;
+      cohs[ 1 ][ 1 ] = ( sgy != NULL  &&  scnp > 0.0  &&  scny > 0.0 )
+                     ? qBound( 0.0, sdty / sqrt( scnp * scny ), 1.0 ) : -1.0;
+      cohs[ 1 ][ 2 ] = ( sgc != NULL  &&  scnp > 0.0  &&  scnc > 0.0 )
+                     ? qBound( 0.0, sdtc / sqrt( scnp * scnc ), 1.0 ) : -1.0;
+
+      for ( int mm = 0; mm < 2; mm++ )
+      {
+         td_cvx[ mm ][ is ] = ( cohs[ mm ][ 0 ] < 0.0 ) ? 0.0
+                            : -log10( qMax( 1.0 - cohs[ mm ][ 0 ], 1.0e-9 ) );
+         td_cvy[ mm ][ is ] = ( cohs[ mm ][ 1 ] < 0.0 ) ? 0.0
+                            : -log10( qMax( 1.0 - cohs[ mm ][ 1 ], 1.0e-9 ) );
+         td_cvc[ mm ][ is ] = ( cohs[ mm ][ 2 ] < 0.0 ) ? 0.0
+                            : -log10( qMax( 1.0 - cohs[ mm ][ 2 ], 1.0e-9 ) );
+      }
    }
 
    // A window of its own:  this is a different question from the map, and
@@ -2228,31 +2261,7 @@ void US_show_norm::show_time_dev( void )
       np->insertLegend( new QwtLegend(), QwtPlot::BottomLegend );
    }
 
-   if ( sgx != NULL )
-   {
-      QwtPlotCurve* xcv = new QwtPlotCurve( tr( "X neighbour" ) );
-      xcv->setPen    ( QPen( Qt::darkRed, 2 ) );
-      xcv->setSamples( tvals, cvx );
-      xcv->attach    ( cp );
-   }
 
-   if ( sgy != NULL )
-   {
-      QwtPlotCurve* ycv = new QwtPlotCurve( tr( "Y neighbour" ) );
-      ycv->setPen    ( QPen( Qt::darkGreen, 2, Qt::DashLine ) );
-      ycv->setSamples( tvals, cvy );
-      ycv->attach    ( cp );
-   }
-
-   if ( sgc != NULL )
-   {
-      QwtPlotCurve* ccv = new QwtPlotCurve( tr( "selected comparison" ) );
-      ccv->setPen    ( QPen( Qt::magenta, 2, Qt::DotLine ) );
-      ccv->setSamples( tvals, cvc );
-      ccv->attach    ( cp );
-   }
-
-   cp->insertLegend( new QwtLegend(), QwtPlot::BottomLegend );
 
    QString htxt    = tr( "Selected:  %1 %2,  %3 %4" )
       .arg( attr_label( plot_x ) ).arg( xy_distro[ kpick ].s, 0, 'g', 5 )
@@ -2265,17 +2274,80 @@ void US_show_norm::show_time_dev( void )
 
    QLabel* lb_head = us_banner( htxt );
 
+   // Remember the collinearity plot and let it be switched between the two
+   //  flavours without recomputing anything
+   tdev_cplot     = cp;
+   QCheckBox*   cb_cscan = NULL;
+   QGridLayout* lo_cscan = us_checkbox(
+      tr( "Collinearity of each scan alone, not of all scans to that time" ),
+      cb_cscan, false );
+   ck_cohscan     = cb_cscan;
+   ck_cohscan->setToolTip( tr(
+      "Accumulated is what a fit sees:  how separable the pair is given\n"
+      "everything measured so far.  Per scan is how different they look in\n"
+      "that one scan, which shows where in the run the separation is\n"
+      "actually being earned." ) );
+   connect( ck_cohscan, SIGNAL( clicked() ),
+            this,       SLOT  ( select_cohmode() ) );
+
+   select_cohmode();
+
    QPushButton* pb_cl = us_pushbutton( tr( "Close" ) );
    connect( pb_cl, SIGNAL( clicked() ), tdlg, SLOT( accept() ) );
 
    tlay->addWidget( lb_head );
    tlay->addLayout( npl );
    tlay->addLayout( cpl );
+   tlay->addLayout( lo_cscan );
    tlay->addWidget( pb_cl );
 
    np->replot();
-   cp->replot();
    tdlg->show();
+}
+
+// Draw the collinearity curves of the time-development window in whichever
+//  flavour is selected.  Both were computed when the window was built, so
+//  switching costs nothing.
+void US_show_norm::select_cohmode( void )
+{
+   if ( tdev_cplot.isNull() )
+      return;
+
+   int mx         = ( ! ck_cohscan.isNull()  &&  ck_cohscan->isChecked() )
+                  ? 1 : 0;
+
+   tdev_cplot->detachItems( QwtPlotItem::Rtti_PlotCurve );
+
+   if ( td_havex )
+   {
+      QwtPlotCurve* xcv = new QwtPlotCurve( tr( "X neighbour" ) );
+      xcv->setPen    ( QPen( Qt::darkRed, 2 ) );
+      xcv->setSamples( td_tvals, td_cvx[ mx ] );
+      xcv->attach    ( tdev_cplot );
+   }
+
+   if ( td_havey )
+   {
+      QwtPlotCurve* ycv = new QwtPlotCurve( tr( "Y neighbour" ) );
+      ycv->setPen    ( QPen( Qt::darkGreen, 2, Qt::DashLine ) );
+      ycv->setSamples( td_tvals, td_cvy[ mx ] );
+      ycv->attach    ( tdev_cplot );
+   }
+
+   if ( td_havec )
+   {
+      QwtPlotCurve* ccv = new QwtPlotCurve( tr( "selected comparison" ) );
+      ccv->setPen    ( QPen( Qt::magenta, 2, Qt::DotLine ) );
+      ccv->setSamples( td_tvals, td_cvc[ mx ] );
+      ccv->attach    ( tdev_cplot );
+   }
+
+   tdev_cplot->setTitle( ( mx == 1 )
+      ? tr( "Collinearity within each scan" )
+      : tr( "Collinearity using all scans to that time" ) );
+   tdev_cplot->insertLegend( new QwtLegend(), QwtPlot::BottomLegend );
+   tdev_cplot->setAxisAutoScale( QwtPlot::yLeft );
+   tdev_cplot->replot();
 }
 
 void US_show_norm::select_zmode( int ival )
