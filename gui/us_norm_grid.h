@@ -8,6 +8,8 @@
 #include "us_solve_sim.h"
 #include "us_solute.h"
 #include "us_model.h"
+#include "us_buffer.h"
+#include "us_dataIO.h"
 #include "us_show_norm.h"
 #include "us_worker_calcnorm.h"
 
@@ -53,6 +55,30 @@ class US_GUI_EXTERN US_NormGrid : public QObject
             double cff0;
             int    nthrd;  //!< worker thread count
       };
+
+      //! \brief Build a data set from a simulation, for programs that have
+      //!        no experiment data of their own
+      //!
+      //! The norm columns are simulated onto the radial and scan grid of
+      //! the supplied data, with the buffer corrections and simulation
+      //! parameters that produced it, so the columns match what that
+      //! simulation would contribute to a fit.
+      //! \param dset      Data set to fill in
+      //! \param model     Model whose vbar the corrections are taken from
+      //! \param buffer    Solution buffer
+      //! \param simparams Simulation parameters
+      //! \param simdata   Simulated data defining the radial and scan grid
+      //! \param errmsg    Returned reason when the data cannot be used
+      //! \returns         Flag that the data set was built
+      static bool dataset_from_sim( US_SolveSim::DataSet&, const US_Model&,
+                                    const US_Buffer&,
+                                    const US_SimulationParameters&,
+                                    US_DataIO::RawData&, QString& );
+
+      //! \brief Grid limits spanning a model's own components, padded out
+      //! \param model  Model to take s and f/f0 ranges from
+      //! \param grid   Grid definition whose limits are set
+      static void grid_from_model( US_Model&, GridDef& );
 
       //! \brief Start computing a norm grid
       //!

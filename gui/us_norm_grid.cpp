@@ -4,6 +4,8 @@
 #include "us_settings.h"
 #include "us_astfem_math.h"
 #include "us_math2.h"
+#include "us_constants.h"
+#include "us_buffer.h"
 
 #ifndef DbgLv
 #define DbgLv(a) if(dbg_level>=a)qDebug()
@@ -86,6 +88,123 @@ DbgLv(1) << "NG: no timestate file" << tmst_fpath;
 DbgLv(1) << "NG: timestate" << tmst_fpath << "tsobj"
  << a_dset->simparams.tsobj << "sspknt"
  << a_dset->simparams.sim_speed_prof.count();
+}
+
+// Build a data set from a simulation (class method)
+bool US_NormGrid::dataset_from_sim( US_SolveSim::DataSet& dset,
+      const US_Model& model, const US_Buffer& buffer,
+      const US_SimulationParameters& simparams,
+      US_DataIO::RawData& simdata, QString& errmsg )
+{
+   errmsg         = QString();
+
+   int nscan      = simdata.scanCount();
+   int npoint     = simdata.pointCount();
+
+   if ( nscan < 1  ||  npoint < 2 )
+   {
+      errmsg         = tr( "The simulation has no data to build a grid on.\n"
+                           "Run a simulation first." );
+      return false;
+   }
+
+   // The norm path only needs the radial and scan geometry of the data, not
+   //  its readings:  every column is simulated onto this grid from scratch.
+   US_DataIO::EditedData& edat = dset.run_data;
+   edat.runID        = simdata.description.isEmpty() ? QString( "simulation" )
+                                                     : simdata.description;
+   edat.editID       = "sim";
+   edat.dataType     = "RI";
+   edat.cell         = QString::number( simdata.cell );
+   edat.channel      = QString( QChar( simdata.channel ) );
+   edat.description  = simdata.description;
+   edat.meniscus     = simparams.meniscus;
+   edat.bottom       = simparams.bottom;
+   edat.baseline     = 0.0;
+   edat.plateau      = 0.0;
+   edat.ODlimit      = 1.0e+30;     // A simulation has no OD limit clipping
+   edat.floatingData = false;
+   edat.xvalues      = simdata.xvalues;
+   edat.scanData.resize( nscan );
+
+   for ( int ii = 0; ii < nscan; ii++ )
+   {
+      US_DataIO::Scan* sscan = &simdata.scanData[ ii ];
+      US_DataIO::Scan& escan = edat.scanData[ ii ];
+
+      escan.temperature = sscan->temperature;
+      escan.rpm         = sscan->rpm;
+      escan.seconds     = sscan->seconds;
+      escan.omega2t     = sscan->omega2t;
+      escan.wavelength  = sscan->wavelength;
+      escan.plateau     = sscan->plateau;
+      escan.delta_r     = sscan->delta_r;
+      escan.rvalues.fill( 0.0, npoint );
+   }
+
+   dset.simparams        = simparams;
+   dset.solution_rec.buffer = buffer;
+   dset.viscosity        = buffer.viscosity;
+   dset.density          = buffer.density;
+   dset.compress         = buffer.compressibility;
+   dset.manual           = buffer.manual;
+   dset.temperature      = simparams.temperature;
+   dset.solute_type      = 0;
+   dset.tmst_file        = QString();
+
+   // Buffer corrections, from the model's own vbar where it has one
+   double vbar20         = ( model.components.size() > 0  &&
+                             model.components[ 0 ].vbar20 > 0.0 )
+                         ? model.components[ 0 ].vbar20 : TYPICAL_VBAR;
+
+   US_Math2::SolutionData sd;
+   sd.density            = buffer.density;
+   sd.viscosity          = buffer.viscosity;
+   sd.manual             = buffer.manual;
+   sd.vbar20             = vbar20;
+   sd.vbar               = US_Math2::adjust_vbar20( vbar20,
+                                                    simparams.temperature );
+   US_Math2::data_correction( simparams.temperature, sd );
+
+   dset.vbar20           = vbar20;
+   dset.vbartb           = sd.vbar;
+   dset.s20w_correction  = sd.s20w_correction;
+   dset.D20w_correction  = sd.D20w_correction;
+
+   return true;
+}
+
+// Grid limits spanning a model's own components (class method)
+void US_NormGrid::grid_from_model( US_Model& model, GridDef& grid )
+{
+   int nc         = model.components.size();
+
+   if ( nc < 1 )
+      return;
+
+   double slo     = 1.0e+30;
+   double sup     = -1.0e+30;
+   double klo     = 1.0e+30;
+   double kup     = -1.0e+30;
+
+   for ( int ii = 0; ii < nc; ii++ )
+   {
+      slo            = qMin( slo, model.components[ ii ].s    );
+      sup            = qMax( sup, model.components[ ii ].s    );
+      klo            = qMin( klo, model.components[ ii ].f_f0 );
+      kup            = qMax( kup, model.components[ ii ].f_f0 );
+   }
+
+   // Pad out so that the model's own species sit inside the grid rather
+   //  than on its edge, where they would have no neighbour to compare with
+   double spad    = ( sup > slo ) ? ( ( sup - slo ) * 0.5 )
+                                  : qMax( qAbs( sup ) * 0.5, 1.0e-13 );
+   double kpad    = ( kup > klo ) ? ( ( kup - klo ) * 0.5 ) : 0.5;
+
+   grid.slo       = qMax( slo - spad, 1.0e-15 );
+   grid.sup       = sup + spad;
+   grid.klo       = qMax( klo - kpad, 1.0 );
+   grid.kup       = kup + kpad;
 }
 
 // Start computing a norm grid

@@ -7,6 +7,9 @@
 #include "us_model.h"
 #include "us_simparms.h"
 #include "us_help.h"
+#include "us_solve_sim.h"
+
+class US_NormGrid;
 #include "us_rotor_gui.h"
 #include "us_astfem_rsa.h"
 #include "us_lamm_astfvm.h"
@@ -69,6 +72,9 @@ class US_Astfem_Sim : public US_Widgets
       QCheckBox*     ck_savemovie;        //!< Pointer to QCheckbox for saving movie frames
       QCheckBox*     ck_timeCorr;         //!< Pointer to QCheckbox for applying time correction
       QPushButton*   pb_saveSim;          //!< Pointer to "Save Simulation" button
+      QPushButton*   pb_normgrid;         //!< Pointer to "Norm Grid" button
+      QPointer< US_NormGrid > normgrid;   //!< Norm grid calculator
+      US_SolveSim::DataSet    norm_dset;  //!< Data set describing the simulation
       QPushButton*   pb_buffer;           //!< Pointer to "Define Buffer" button
       QPushButton*   pb_simParms;         //!< Pointer to "Simulation Parameters" button
       QPushButton*   pb_rotor;            //!< Pointer to "Select Rotor" button
@@ -135,6 +141,8 @@ class US_Astfem_Sim : public US_Widgets
       void save_csv_noise   ( US_CSV_Data& );
 
    private slots:
+      void show_norm_grid( void );
+      void norm_grid_done( void );
 
       void new_model       ( void );
       void change_model    ( US_Model );

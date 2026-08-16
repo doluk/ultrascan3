@@ -2,6 +2,10 @@
 
 #include <QApplication>
 
+// Included ahead of us_license.h, whose "spacing" macro collides with
+//  identifiers in the plotting headers this pulls in
+#include "us_norm_grid.h"
+
 #include "us_license.h"
 #include "us_license_t.h"
 #include "us_settings.h"
@@ -221,6 +225,7 @@ US_Astfem_Sim::US_Astfem_Sim( QWidget* p, Qt::WindowFlags f )
    init_simparams();
    meniscus_ar                 = 5.8 + simparams.bottom_position - 7.2;
    stopFlag            = false;
+   normgrid            = NULL;
    movieFlag           = false;
    save_movie          = false;
    time_correctionFlag = false;
@@ -248,6 +253,12 @@ US_Astfem_Sim::US_Astfem_Sim( QWidget* p, Qt::WindowFlags f )
    pb_start              = us_pushbutton( tr( "Start Simulation" ),     false );
    pb_stop               = us_pushbutton( tr( "Stop Simulation" ),      false );
    pb_saveSim            = us_pushbutton( tr( "Save Simulation" ),      false );
+   pb_normgrid           = us_pushbutton( tr( "Norm / Collinearity Grid" ), false );
+   pb_normgrid->setToolTip( tr(
+      "Simulate a grid of single species over this buffer, these simulation\n"
+      "parameters and this solver, and show the norm of each one's signal\n"
+      "together with how nearly parallel neighbouring ones are.  That is\n"
+      "what decides which species a fit to data like this could resolve." ) );
    QPushButton* pb_help  = us_pushbutton( tr( "Help" )  );
    QPushButton* pb_close = us_pushbutton( tr( "Close" ) );
    QPalette pa( pb_close->palette() );
@@ -277,6 +288,7 @@ US_Astfem_Sim::US_Astfem_Sim( QWidget* p, Qt::WindowFlags f )
    buttonbox->addWidget( pb_start );
    buttonbox->addWidget( pb_stop );
    buttonbox->addWidget( pb_saveSim );
+   buttonbox->addWidget( pb_normgrid );
    buttonbox->addWidget( pb_help );
    buttonbox->addWidget( pb_close );
    buttonbox->addWidget( te_status );
@@ -298,6 +310,8 @@ US_Astfem_Sim::US_Astfem_Sim( QWidget* p, Qt::WindowFlags f )
             this,          SLOT(   start_simulation() ) );
    connect( pb_stop,       SIGNAL( clicked()          ),
             this,          SLOT(   stop_simulation()  ) );
+   connect( pb_normgrid,   SIGNAL( clicked()       ),
+            this,          SLOT  ( show_norm_grid() ) );
    connect( pb_saveSim,    SIGNAL( clicked()    ),
             this,          SLOT(   save_scans() ) );
    connect( pb_help,       SIGNAL( clicked()    ),
@@ -1039,6 +1053,7 @@ void US_Astfem_Sim::start_simulation( void )
    pb_stop   ->setEnabled( true  );
    pb_start  ->setEnabled( false );
    pb_saveSim->setEnabled( false );
+   pb_normgrid->setEnabled( false );
 
    // The astfem/astfvm simulation routines expects a dataset structure that
    // is initialized with a time and radius grid, and all concentration points
@@ -1304,6 +1319,7 @@ DbgLv(1) << "FIN:  progress maxsize" << progress->maximum();
    pb_stop   ->setEnabled( false  );
    pb_start  ->setEnabled( true );
    pb_saveSim->setEnabled( true );
+   pb_normgrid->setEnabled( true );
 
    if ( astfem )
    {
@@ -2522,3 +2538,116 @@ void US_Astfem_Sim::dump_mfem_scan( US_DataIO::Scan& /*ms*/ )
 #endif
 }
 
+
+// Show a norm / collinearity grid for the current model, buffer and
+//  simulation parameters.
+//
+// The species a fit can resolve are decided by the experiment, not by the
+// model:  by the buffer, the rotor speed profile, the radial and scan grid,
+// the cell configuration and the solver.  All of those are set here, so the
+// same grid a 2DSA fit would be built on can be examined before any data
+// exist, and the effect of changing a simulation parameter on what is
+// resolvable can be seen directly.
+void US_Astfem_Sim::show_norm_grid( void )
+{
+   QString errmsg;
+
+   if ( ! US_NormGrid::dataset_from_sim( norm_dset, system, buffer,
+                                         simparams, sim_data_all, errmsg ) )
+   {
+      QMessageBox::warning( this, tr( "Norm Grid" ), errmsg );
+      return;
+   }
+
+   // Start from a grid spanning the model's own species, padded so that
+   //  they are not left on the edge with no neighbour to compare against
+   US_NormGrid::GridDef gdef;
+   US_NormGrid::grid_from_model( system, gdef );
+   gdef.nthrd     = qMax( 1, US_Settings::threads() );
+
+   // Let the grid be adjusted before a potentially long calculation
+   QDialog  gdlg( this );
+   gdlg.setWindowTitle( tr( "Norm Grid Definition" ) );
+   gdlg.setPalette( US_GuiSettings::frameColor() );
+
+   QGridLayout* glay = new QGridLayout( &gdlg );
+   QLabel*  lb_slo   = us_label( tr( "Lower Limit (s x 1e-13):" ) );
+   QLabel*  lb_sup   = us_label( tr( "Upper Limit (s x 1e-13):" ) );
+   QLabel*  lb_nss   = us_label( tr( "Number Grid Points (s):"  ) );
+   QLabel*  lb_klo   = us_label( tr( "Lower Limit (f/f0):"      ) );
+   QLabel*  lb_kup   = us_label( tr( "Upper Limit (f/f0):"      ) );
+   QLabel*  lb_nks   = us_label( tr( "Number Grid Points (f/f0):" ) );
+   QLabel*  lb_thr   = us_label( tr( "Thread Count:"            ) );
+   QwtCounter* ct_slo = us_counter( 3, -10000.0, 10000.0,
+                                    gdef.slo * 1.0e+13 );
+   QwtCounter* ct_sup = us_counter( 3, -10000.0, 10000.0,
+                                    gdef.sup * 1.0e+13 );
+   QwtCounter* ct_nss = us_counter( 3, 2.0, 1000.0, 40.0 );
+   QwtCounter* ct_klo = us_counter( 3, 1.0, 50.0, gdef.klo );
+   QwtCounter* ct_kup = us_counter( 3, 1.0, 50.0, gdef.kup );
+   QwtCounter* ct_nks = us_counter( 3, 2.0, 1000.0, 40.0 );
+   QwtCounter* ct_thr = us_counter( 2, 1.0, 64.0, (double)gdef.nthrd );
+   ct_slo->setSingleStep( 0.01 );
+   ct_sup->setSingleStep( 0.01 );
+   ct_nss->setSingleStep( 1 );
+   ct_klo->setSingleStep( 0.01 );
+   ct_kup->setSingleStep( 0.01 );
+   ct_nks->setSingleStep( 1 );
+   ct_thr->setSingleStep( 1 );
+
+   QPushButton* pb_ok  = us_pushbutton( tr( "Compute" ) );
+   QPushButton* pb_can = us_pushbutton( tr( "Cancel"  ) );
+   connect( pb_ok,  SIGNAL( clicked() ), &gdlg, SLOT( accept() ) );
+   connect( pb_can, SIGNAL( clicked() ), &gdlg, SLOT( reject() ) );
+
+   int row = 0;
+   glay->addWidget( lb_slo, row,   0 );  glay->addWidget( ct_slo, row++, 1 );
+   glay->addWidget( lb_sup, row,   0 );  glay->addWidget( ct_sup, row++, 1 );
+   glay->addWidget( lb_nss, row,   0 );  glay->addWidget( ct_nss, row++, 1 );
+   glay->addWidget( lb_klo, row,   0 );  glay->addWidget( ct_klo, row++, 1 );
+   glay->addWidget( lb_kup, row,   0 );  glay->addWidget( ct_kup, row++, 1 );
+   glay->addWidget( lb_nks, row,   0 );  glay->addWidget( ct_nks, row++, 1 );
+   glay->addWidget( lb_thr, row,   0 );  glay->addWidget( ct_thr, row++, 1 );
+   glay->addWidget( pb_can, row,   0 );  glay->addWidget( pb_ok,  row++, 1 );
+
+   if ( gdlg.exec() != QDialog::Accepted )
+      return;
+
+   gdef.slo       = ct_slo->value() * 1.0e-13;
+   gdef.sup       = ct_sup->value() * 1.0e-13;
+   gdef.nss       = (int)ct_nss->value();
+   gdef.klo       = ct_klo->value();
+   gdef.kup       = ct_kup->value();
+   gdef.nks       = (int)ct_nks->value();
+   gdef.cff0      = 0.0;
+   gdef.nthrd     = (int)ct_thr->value();
+
+   if ( normgrid == NULL )
+   {
+      normgrid       = new US_NormGrid( this );
+
+      connect( normgrid, SIGNAL( norm_progress( int  ) ),
+               this,     SLOT  ( update_progress( int ) ) );
+      connect( normgrid, SIGNAL( norm_finished( void ) ),
+               this,     SLOT  ( norm_grid_done( void ) ) );
+   }
+
+   pb_normgrid->setEnabled( false );
+
+   if ( ! normgrid->start( &norm_dset, gdef, this, errmsg ) )
+   {
+      QMessageBox::warning( this, tr( "Norm Grid" ), errmsg );
+      pb_normgrid->setEnabled( true );
+      return;
+   }
+
+   progress->setMaximum( normgrid->total_steps() );
+   progress->setValue  ( 0 );
+}
+
+// Re-enable the norm grid button once its calculation is done
+void US_Astfem_Sim::norm_grid_done( void )
+{
+   pb_normgrid->setEnabled( true );
+   progress->setValue( progress->maximum() );
+}
