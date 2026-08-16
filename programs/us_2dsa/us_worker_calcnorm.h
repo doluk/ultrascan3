@@ -12,6 +12,7 @@
 #include "us_solute.h"
 #include "us_solve_sim.h"
 #include "us_astfem_rsa.h"
+#include "us_lamm_astfvm.h"
 #include "us_math2.h"
 
 #ifndef DbgLv

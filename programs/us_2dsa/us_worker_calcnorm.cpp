@@ -198,6 +198,12 @@ DbgLv(1) << "CN(WT):  CN:  sol_c0.s" << solutes_c[0].s;
 
    simparms       = dset->simparams;       // local simulation parameters
 
+   // The run selects its Lamm-equation solver through the mesh type.  The
+   //  finite volume solver takes the model in 20W space and handles the
+   //  buffer corrections internally, so the two paths differ in more than
+   //  which solver object is constructed.
+   bool usefvm    = ( simparms.meshType == US_SimulationParameters::ASTFVM );
+
    US_DataIO::RawData simdat;              // simulation data set
    US_Model           model1;              // 1-component work model
    model1.components.resize( 1 );
@@ -302,14 +308,16 @@ DbgLv(1) << "CN(WT):  CN:  sig nrad nscn" << sig_nrad << sig_nscn
       // Compute the other coefficients
       model1.update_coefficients();
 
-      // Convert to experiment space.  When vbar varies over the grid the
-      //  buffer corrections depend on each column's own vbar, so they must
-      //  be recomputed per column as calc_residuals does; with vbar fixed
-      //  the data set's own corrections apply to every column.
-      double scorr      = dset->s20w_correction;
-      double dcorr      = dset->D20w_correction;
+      // Convert to experiment space.  The finite volume solver takes the
+      //  model in 20W space and applies the buffer corrections itself, so
+      //  correcting beforehand would apply them twice.  When vbar varies
+      //  over the grid the corrections depend on each column's own vbar, so
+      //  they must be recomputed per column as calc_residuals does; with
+      //  vbar fixed the data set's own corrections apply to every column.
+      double scorr      = usefvm ? 1.0 : dset->s20w_correction;
+      double dcorr      = usefvm ? 1.0 : dset->D20w_correction;
 
-      if ( cff0 > 0.0 )
+      if ( cff0 > 0.0  &&  ! usefvm )
       {
          US_Math2::SolutionData sd;
          sd.viscosity      = dset->viscosity;
@@ -331,11 +339,20 @@ DbgLv(1) << "CN(WT):  CN:  sig nrad nscn" << sig_nrad << sig_nscn
          for ( int kk = 0; kk < npoint; kk++ )
             simdat.setValue( jj, kk, 0.0 );
 
-DbgLv(1) << "CN(WT):  CN:   ii" << ii << "astfem_rsa:";
-      // Perform finite element modeling to compute the simulation
-      US_Astfem_RSA astfem_rsa( model1, simparms );
+DbgLv(1) << "CN(WT):  CN:   ii" << ii << "usefvm" << usefvm;
+      // Solve the Lamm equation with whichever solver the run selects
+      if ( usefvm )
+      {
+         US_LammAstfvm astfvm( model1, simparms );
+         astfvm.set_buffer( dset->solution_rec.buffer );
+         astfvm.calculate( simdat );
+      }
 
-      astfem_rsa.calculate( simdat );
+      else
+      {
+         US_Astfem_RSA astfem_rsa( model1, simparms );
+         astfem_rsa.calculate( simdat );
+      }
 
       if ( banddthr )
       {  // Hold the simulation within the band-forming thresholds.  A
