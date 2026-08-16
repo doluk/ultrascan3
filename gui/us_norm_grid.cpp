@@ -6,6 +6,7 @@
 #include "us_math2.h"
 #include "us_constants.h"
 #include "us_buffer.h"
+#include "us_math_bf.h"
 
 #ifndef DbgLv
 #define DbgLv(a) if(dbg_level>=a)qDebug()
@@ -376,6 +377,39 @@ bool US_NormGrid::launch( QVector< US_Solute >& solutes, int gnss, int gnks,
    // Resolve the speed profile before any worker simulates
    resolve_timestate( dset );
 
+   // Build the band-forming gradient once and share it.  Every column would
+   //  otherwise rebuild it inside set_buffer(), eigenvalues and all, which
+   //  for a grid of thousands of columns dwarfs the simulations themselves.
+   //  This is the same object a fit builds and reuses for the same reason.
+   US_Buffer& buff = dset->solution_rec.buffer;
+
+   if ( bfgrad == NULL  &&  ! buff.cosed_component.isEmpty()  &&
+        dset->simparams.meshType == US_SimulationParameters::ASTFVM )
+   {
+      bfgrad          = new US_Math_BF::Band_Forming_Gradient(
+                              dset->simparams.meniscus, dset->simparams.bottom,
+                              dset->simparams.band_volume,
+                              buff.cosed_component,
+                              dset->simparams.cp_pathlen,
+                              dset->simparams.cp_angle );
+
+      if ( ! bfgrad->upper_comps.isEmpty() )
+      {
+         US_DataIO::RawData gsimdat;
+         US_AstfemMath::initSimData( gsimdat, dset->run_data, 0.0 );
+         bfgrad->get_eigenvalues();
+         bfgrad->calculate_gradient( dset->simparams, &gsimdat );
+DbgLv(1) << "NG: band-forming gradient built, betas"
+ << bfgrad->eigenvalues.count();
+      }
+
+      else
+      {  // No overlaying components:  nothing for a gradient to describe
+         delete bfgrad;
+         bfgrad          = NULL;
+      }
+   }
+
    // Never start more threads than there is work to hand out.  With a grid,
    //  work is handed out as whole rows so that each worker can pair each of
    //  its points with its grid neighbours.
@@ -622,24 +656,22 @@ void US_NormGrid::worker_complete( WorkerThreadCalcNorm* wthr )
                           .arg( usefvm ? tr( "ASTFVM solver" )
                                        : tr( "ASTFEM solver" ) );
 
-   // A fit over a buffer with co-sedimenting or co-diffusing components
-   //  builds a band-forming gradient and a co-sedimenting simulation and
-   //  hands them to the solver.  Say plainly when the columns here were
-   //  built without them, so the difference is not read as a property of
-   //  the grid.
+   // US_LammAstfvm::set_buffer() builds the band-forming gradient itself
+   //  when none is handed to it, and solve_component() builds the
+   //  co-sedimenting simulation once the AUC data are known, so both are
+   //  applied either way.  What a caller-supplied pair buys is reuse:
+   //  without it each column rebuilds them from scratch.
    if ( ! dset->solution_rec.buffer.cosed_component.isEmpty() )
    {
       if ( ! usefvm )
          ginfo.descr      += tr( "\nBuffer has co-sedimenting components,"
                                  " which only the ASTFVM solver applies" );
 
-      else if ( bfgrad == NULL  &&  cosedd == NULL )
-         ginfo.descr      += tr( "\nBuffer has co-sedimenting components, but"
-                                 " no gradient was supplied:\n"
-                                 "  columns simulated in a plain buffer" );
-
       else
-         ginfo.descr      += tr( "\nCo-sedimenting buffer gradient applied" );
+         ginfo.descr      += tr( "\nCo-sedimenting buffer gradient applied%1" )
+                                .arg( bfgrad != NULL
+                                      ? tr( " (shared across columns)" )
+                                      : QString() );
    }
 
    // Radius and elapsed time of the sampled points, so that the viewer can
