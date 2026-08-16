@@ -58,6 +58,21 @@ class US_UTIL_EXTERN US_SolveSim : public QObject
             int               solute_type;        //!< Solute type (0,1,2)
             bool              manual;             //!< visc.,dens. manual
     };
+    //! \brief Data thresholds applied to a band-forming experiment
+    class US_UTIL_EXTERN BandThresholds
+    {
+    public:
+        BandThresholds() : zerothr( 0.020 ), linethr( 0.050 ),
+                           maxod( 1.50 ), minnzsc( 0.005 ),
+                           mfactor( 3.00 ), mfactex( 1.00 ) {}
+
+        double zerothr;   //!< zero threshold OD value
+        double linethr;   //!< linear threshold OD value
+        double maxod;     //!< maximum OD value
+        double minnzsc;   //!< minimum non-zero scale factor
+        double mfactor;   //!< peak multiplier, simulation
+        double mfactex;   //!< peak multiplier, experiment
+    };
 
     //! Class for communicating simulation
     class US_UTIL_EXTERN Simulation
@@ -103,22 +118,6 @@ class US_UTIL_EXTERN US_SolveSim : public QObject
     //! \param smsg      Returned size error message (if return=true)
     //! \returns         Flag of size problem existing
     bool check_grid_size( double, QString& );
-
-    //! \brief Data thresholds applied to a band-forming experiment
-    class US_UTIL_EXTERN BandThresholds
-    {
-        public:
-            BandThresholds() : zerothr( 0.020 ), linethr( 0.050 ),
-                               maxod( 1.50 ), minnzsc( 0.005 ),
-                               mfactor( 3.00 ), mfactex( 1.00 ) {}
-
-            double zerothr;   //!< zero threshold OD value
-            double linethr;   //!< linear threshold OD value
-            double maxod;     //!< maximum OD value
-            double minnzsc;   //!< minimum non-zero scale factor
-            double mfactor;   //!< peak multiplier, simulation
-            double mfactex;   //!< peak multiplier, experiment
-    };
 
     //! \brief Get the band-forming data thresholds in effect for a run.
     //!
