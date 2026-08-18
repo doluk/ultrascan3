@@ -54,11 +54,11 @@ class US_ResidPlotFem : public US_WidgetsDialog
       QwtPlot*      data_plot1;
       QwtPlot*      data_plot2;
 
-      bool          have_ed;
-      bool          have_sd;
-      bool          have_ti;
-      bool          have_ri;
-      bool          have_bm;
+      bool          have_ed; //!< Flag indicating whether experimental data is available
+      bool          have_sd; //!< Flag indicating whether simulation data is available
+      bool          have_ti; //!< Flag indicating whether TI Noise data is available
+      bool          have_ri; //!< Flag indicating whether RI Noise data is available
+      bool          have_bm; //!< Flag indicating whether the residual bitmap data is available
       bool          skip_plot;
 
       int           dbg_level;

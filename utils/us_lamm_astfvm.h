@@ -220,9 +220,40 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
       //! \param every_n_steps  Stride (>=1, default 1 = every step).
       void setTraceStride( int every_n_steps );
 
+      //! \brief Emit a trace record on a wall-clock cadence rather than a step
+      //!        count (overrides stride, overridden by setTraceTimes). Runs that
+      //!        differ only in dt then record at the SAME model times, which is
+      //!        what makes them directly comparable in a convergence study.
+      //! \param seconds  Cadence in model seconds; <=0 (default) => use stride.
+      void setTraceInterval( double seconds );
+
       //! \brief Restrict the trace to specific model times (overrides stride).
       //! \param times  Model times (s); empty (default) => use stride.
       void setTraceTimes( const QVector<double>& times );
+
+      // ---- Non-constant physics extensions (opt-in) ----
+
+      //! \brief Barus pressure-viscosity coefficient for the compressibility
+      //!        case: eta(r) = eta0 * exp(b_eta * P(r)), giving
+      //!        D(r) = D0 * eta0/eta(r) and the eta0/eta(r) factor in s(r).
+      //! \param b_eta  Coefficient in the same (scaled) units as the buffer
+      //!               compressibility. <=0 (default) => no pressure-viscosity
+      //!               (D constant across r, but still run-condition corrected).
+      void setPressureViscosity( double b_eta );
+
+      //! \brief Prescribe a time-varying intrinsic s(t), D(t) (20C-water
+      //!        referenced) via a table; linearly interpolated, ends clamped.
+      //!        Fewer than 2 points (default) => constant s, D (unchanged).
+      void setGrowthSchedule( const QVector<double>& t_s,
+                              const QVector<double>& s20w_of_t,
+                              const QVector<double>& D20w_of_t );
+
+      //! \brief Prescribe diffusion-limited growth R(t)=sqrt(R0^2+2*kappa*t)
+      //!        with s(t) proportional to R^2 and D(t) proportional to 1/R,
+      //!        anchored so R0 corresponds to the component's base s, D.
+      //! \param R0     Initial (t=0) radius (arbitrary length unit).
+      //! \param kappa  Growth rate; R0<=0 or kappa<=0 (default) => no growth.
+      void setGrowthLawDLG( double R0, double kappa );
 
    signals:
       //! \brief Signal calculation start and give maximum steps
@@ -312,6 +343,10 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
       double  param_D20w;       // base D value (diffusion coefficient)
       double  param_s;         // base s value (sedimentation coefficient)
       double  param_D;         // base D value (diffusion coefficient)
+      double  param_s20w_corr = 1.0; // cached s20w_correction (run conditions)
+      double  param_D20w_corr = 1.0; // cached D20w_correction (run conditions)
+      double  param_dens_tb   = 0.0; // run-temp buffer density (rho_ref, case 3)
+      double  param_visc_tb   = 0.0; // run-temp buffer viscosity (eta_ref, case 3)
       double  param_w2;        // rpm-based omega-sq-t, w2=(rpm*pi/30)^2
       double  param_w2_t0;      // rpm-based omega-sq-t at time t0, w2=(rpm(t0)*pi/30)^2
       double  param_w2_t0dt;     // rpm-based omega-sq-t at time t0+dt, w2=(rpm(t0+dt)*pi/30)^2
@@ -335,12 +370,23 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
       bool    errTolSet    = false;  // true => user err_tol override in effect
       double  user_err_tol = 0.0;    // user-supplied err_tol (when errTolSet)
 
+      // ---- Non-constant physics extensions ----
+      double  pviscB       = 0.0;    // >0 => Barus pressure-viscosity coeff (case 3);
+                                     //       same (scaled) units as compressib
+      int             growMode = 0;  // 0=off, 1=tabulated s(t)/D(t), 2=DLG growth law
+      QVector<double> grow_t;        // schedule times (s), growMode==1
+      QVector<double> grow_s20w;     // s20w(t) table, growMode==1
+      QVector<double> grow_D20w;     // D20w(t) table, growMode==1
+      double  dlg_R0    = 0.0;       // initial radius R0, growMode==2
+      double  dlg_kappa = 0.0;       // growth rate in R(t)=sqrt(R0^2+2*kappa*t)
+
       // Solution-trace export state
       bool             traceFlag    = false;   // master on/off (default off)
       QString          traceDir;               // resolved output directory
       QString          traceTag;               // run tag used in filenames
       int              traceStride  = 1;        // emit every Nth step
-      QVector<double>  traceTimes;             // empty => use stride
+      double           traceInterval = 0.0;    // >0 => cadence (s), beats stride
+      QVector<double>  traceTimes;             // empty => interval, else stride
       QFile*           traceNodesFile = nullptr; // per-node-per-step rows
       QFile*           traceStepsFile = nullptr; // per-step scalar rows
       bool             traceHdrDone   = false;   // header written for cur. comp
@@ -358,6 +404,13 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
       //! \brief Get the non-ideal case number from model parameters
       //! \returns Non-zero if multiple non-ideal conditions
       int  nonIdealCaseNo( );
+
+      //! \brief Evaluate the run-corrected base s, D at time t, applying the
+      //!        growth schedule when set. growMode==0 => constant param_s/param_D.
+      //! \param t    Model time (s)
+      //! \param s_t  Output run-condition s at time t
+      //! \param D_t  Output run-condition D at time t
+      void baseSD( double t, double& s_t, double& D_t ) const;
 
       //! \brief Set up non-ideal case type 1 (concentration-dependent)
       //! \param sigma_k Sigma constant to modify sedimentation coefficient

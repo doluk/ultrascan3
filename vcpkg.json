@@ -56,7 +56,11 @@
         "qt5-tools",
         "qt5-multimedia",
         "qwt-6-3-0-qt5",
-        "qwtplot3d-qwt-6-3-0-qt5"
+        "qwtplot3d-qwt-6-3-0-qt5",
+        {
+          "name": "qt5-wayland",
+          "platform": "linux"
+        }
       ]
     },
 
@@ -81,7 +85,11 @@
         },
         "qtmultimedia",
         "qwt-6-3-0-qt6",
-        "qwtplot3d-qwt-6-3-0-qt6"
+        "qwtplot3d-qwt-6-3-0-qt6",
+        {
+          "name": "qtwayland",
+          "platform": "linux"
+        }
       ]
     },
 

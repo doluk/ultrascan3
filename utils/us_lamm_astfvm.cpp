@@ -375,13 +375,14 @@ void US_LammAstfvm::Mesh::Refine( const double beta ) {
 /////////////////////////
 void US_LammAstfvm::Mesh::RefineMesh( const double *u0, const double *u1, const double ErrTol) {
    // Precomputed constants
-   static const double sqrt3 = sqrt(3.0) * 9.0;
+   static const double sqrt3 = sqrt(3.0);
+   static const double inv_sqrt3 = 1.0 / sqrt3;
 
    // refinement threshold: h*|D_3u|^(1/3) > beta
-   const double beta = 6.0 * cbrt(ErrTol / sqrt( 3.0 ));
+   const double beta = 6.0 * cbrt(ErrTol * inv_sqrt3);
 
    // coarsening threshold: h*|D_3u|^(1/3) < alpha
-   const double alpha = 6.0 * cbrt(ErrTol / sqrt( 3.0 )) * 0.25;
+   const double alpha = beta * 0.25;
 
    ComputeMeshDen_D3(u0, u1);
    Smoothing(Ne, MeshDen, SmoothingWt, SmoothingCyl);
@@ -970,6 +971,12 @@ int US_LammAstfvm::solve_component( int compx )
    US_Math2::data_correction( simparams.temperature, sol_data );
    param_s    = param_s20w / sol_data.s20w_correction;
    param_D    = param_D20w / sol_data.D20w_correction;
+   // Cache run-condition references used by the compressibility (case 3) and
+   // growth-seam (baseSD) paths.
+   param_s20w_corr = sol_data.s20w_correction;
+   param_D20w_corr = sol_data.D20w_correction;
+   param_dens_tb   = sol_data.density_tb;
+   param_visc_tb   = sol_data.viscosity_tb;
    double  t0 = 0.;
    double  t1 = 100.;
    // Use QVector instead of raw pointers to avoid repeated heap allocations
@@ -985,18 +992,40 @@ int US_LammAstfvm::solve_component( int compx )
    double* u1;
    double* u1p0;
    double* u1p;
-   double  total_t = ( param_b - param_m ) * 2.0 / ( param_s * param_w2 * param_m );
+   // For a growing solute, size dt from the largest s over the schedule so the
+   // smallest dt covers the fastest (largest-s) part of the run. growMode==0
+   // leaves s_dt == param_s, i.e. unchanged behavior.
+   double  s_dt = param_s;
+   if ( growMode != 0 && !af_data.scan.isEmpty() )
+   {
+      double s20w_max = param_s20w;
+      if ( growMode == 2 )
+      {  // R grows => s ~ R^2 largest at the final time
+         const double t_end = af_data.scan.last().time;
+         const double Rend  = sqrt( dlg_R0 * dlg_R0 + 2.0 * dlg_kappa * qMax( 0.0, t_end ) );
+         const double ratio = ( dlg_R0 > 0.0 ) ? ( Rend / dlg_R0 ) : 1.0;
+         s20w_max = param_s20w * ratio * ratio;
+      }
+      else if ( growMode == 1 )
+      {  // tabulated: take the maximum s over the schedule
+         for ( double sv : grow_s20w ) s20w_max = qMax( s20w_max, sv );
+      }
+      s_dt = s20w_max / param_s20w_corr;
+   }
+   double  total_t = ( param_b - param_m ) * 2.0 / ( s_dt * param_w2 * param_m );
+   qDebug() << "fixed_dt" << fixed_dt;
+   qDebug() << "steps_per_transit" << steps_per_transit;
    if ( fixed_dt > 0.0 )
    {  // user-forced fixed time step (Fig 1 dt sweep)
       dt = fixed_dt;
    }
    else if ( steps_per_transit > 0 )
    {  // controlled steps-per-transit (dt ~ 1/k)
-      dt = log( param_b / param_m ) / ( param_w2 * param_s * static_cast<double>(steps_per_transit) );
+      dt = log( param_b / param_m ) / ( param_w2 * s_dt * static_cast<double>(steps_per_transit) );
    }
    else
    {  // default (unchanged) behavior
-      dt = log( param_b / param_m ) / ( param_w2 * param_s * simparams.simpoints ) / 2.5;
+      dt = log( param_b / param_m ) / ( param_w2 * s_dt * simparams.simpoints ) / 2.5;
    }
    int ntcc = static_cast<int>(total_t / dt) + 1; // nbr. times in calculations
    int jt   = 0;
@@ -1055,6 +1084,11 @@ int US_LammAstfvm::solve_component( int compx )
    const int mesh_Nelem = ( init_Nelem > 0 ) ? init_Nelem : simparams.simpoints;
    Mesh* msh = new Mesh( param_m, param_b, mesh_Nelem, 0 );
 
+   // A uniform-mesh run must skip the setup adaptive refine too, not just the
+   // per-step ones below -- otherwise InitMesh() refines the initial boundary
+   // layers to a fixed tolerance and the requested element count is ignored
+   // (N=25 and N=1600 both landed near 1000-2400 elements).
+   msh->allowInitRefine = !uniformMesh;
    msh->InitMesh( param_s20w, param_D20w, param_w2 );
    int    mesh_refine_option = 1; // mesh refine option;
    double dt_old             = dt;
@@ -1216,6 +1250,16 @@ int US_LammAstfvm::solve_component( int compx )
 
       N0    = N0new;
       N0u   = N0unew;
+      // N1/N1u describe x1_vec/u1_vec, which are re-sized to the new grid just
+      // below, so they must be re-synced too. With MeshRefineOpt==1 the main
+      // loop reassigns N1 from msh->Nv every step and hides this; with
+      // MeshRefineOpt==0 nothing does, and the end-of-loop swap then copies the
+      // stale N1/N1u back into N0/N0u. When RefineMesh() *un*refines here (a
+      // flat non-band-forming initial profile needs far fewer elements than
+      // InitMesh laid down) the stale N1 exceeds the shrunken buffers and
+      // LammStepSedDiff_C writes past the end of x1/u1 -> heap corruption.
+      N1    = N0new;
+      N1u   = N0unew;
       x0_vec = x0new_vec;
       x0     = x0_vec.data();
       x1_vec = x0new_vec;
@@ -2275,11 +2319,12 @@ void US_LammAstfvm::AdjustSD(
    const double  s20w_correction_stem = ( VISC_20W / ( 1.0 - vbar * DENS_20W ) ) * local_s20w;
    switch ( NonIdealCaseNo )
    {
-      case 0: // ideal, s=s_0, D=D_0
+      case 0: // ideal, s=s_0, D=D_0 (or growing s(t)/D(t) via the growth seam)
          {
-            // Use vectorized fill for better performance
-            const double s_val = param_s;
-            const double D_val = param_D;
+            // baseSD applies the growth schedule; growMode==0 => param_s/param_D
+            double s_val;
+            double D_val;
+            baseSD( t, s_val, D_val );
             for ( int jj = 0; jj < Nv; jj++ )
             {
                s_adj[jj] = s_val;
@@ -2455,40 +2500,43 @@ void US_LammAstfvm::AdjustSD(
 
          break;
 
-      case 3: // compressibility
+      case 3: // compressibility (pressure-dependent density AND viscosity)
          {
-            // get param_w2 for the current time
+            // Worked in run-corrected space: at r=m (P=0) s_adj/D_adj reduce
+            // exactly to the temperature/viscosity-corrected param_s/param_D.
+            // rpm at the current time (rho/eta track the speed profile).
             const int tmst_size = rpm_timestate.size();
             const int time_index_t0 = qMax(qMin(static_cast<int>(t), tmst_size - 1), 0);
             const int time_index_t01 = qMin(time_index_t0 + 1, tmst_size - 1);
             const double rpm_prior = rpm_timestate[time_index_t0];
             const double rpm_after = rpm_timestate[time_index_t01];
-            // linear interpolation between for rpm_prior and rpm_after and time_index_t0 and time_index_t01 to t0
+            // linear interpolation between rpm_prior and rpm_after to time t
             const double at = qMin(qMax((t - (static_cast<double>(time_index_t0))),0.0),1.0);
             const double bt = 1.0 - at;
             const double rpm_t0 = rpm_prior * at + rpm_after * bt;
 
-
-            constexpr double rho_w = DENS_20W;
-            const double     phip  = vbar; // apparent specific volume
-            const double     rpm_rad = rpm_t0 * M_PI / 30.0;
-            const double     factn = 0.5 * density * (rpm_rad * rpm_rad) * compressib;
-            const double     msq   = param_m * param_m;
-            const double     sA    = 1.0 - vbar * rho_w;
-            const double     inv_sA = 1.0 / sA;
-
-            const double s_base = param_s20w * inv_sA;
-            const double D_base = param_D20w;
+            const double rpm_rad  = rpm_t0 * M_PI / 30.0;
+            const double dens_ref = param_dens_tb; // run-temp buffer density (rho_ref)
+            const double visc_ref = param_visc_tb; // run-temp buffer viscosity (eta_ref)
+            // Hydrostatic pressure kernel P(r) = 1/2 * rho_ref * omega^2 * (r^2-m^2),
+            // in the same (scaled) units as compressib^-1 and pviscB^-1.
+            const double pcoef    = 0.5 * dens_ref * ( rpm_rad * rpm_rad );
+            const double factn    = pcoef * compressib;
+            const double msq      = param_m * param_m;
+            const double inv_buoy_ref = 1.0 / ( 1.0 - vbar * dens_ref );
             for ( int jj = 0; jj < Nv; jj++ )
             {
-               const double xsq = x[jj] * x[jj];
-               const double denom = 1.0 - factn * ( xsq - msq );
-               const double rho = density / denom;
-               s_adj[jj] = s_base * ( 1.0 - phip * rho );
-               D_adj[jj] = D_base;
+               const double xsq   = x[jj] * x[jj];
+               const double pres  = pcoef * ( xsq - msq );       // hydrostatic pressure
+               const double denom = 1.0 - factn * ( xsq - msq ); // = 1 - compressib*P
+               const double rho   = dens_ref / denom;            // barotropic rho(r)
+               // eta_ref/eta(r) = exp(-b_eta*P): pviscB>0 raises eta with P,
+               // lowering s and D toward the bottom.
+               const double visc_ratio = ( pviscB > 0.0 ) ? exp( -pviscB * pres ) : 1.0;
+               s_adj[jj] = param_s * ( 1.0 - vbar * rho ) * inv_buoy_ref * visc_ratio;
+               D_adj[jj] = param_D * visc_ratio;
             }
-            DbgLv( 3 ) << "AdjSD: compr dens" << compressib << density;
-            DbgLv( 3 ) << "AdjSD:    factn msq sa" << factn << msq << sA;
+            DbgLv( 3 ) << "AdjSD: compr dens visc pviscB" << compressib << dens_ref << visc_ref << pviscB;
             DbgLv( 3 ) << "AdjSD:   s_adj 0 m n" << s_adj[0] << s_adj[Nv / 2] << s_adj[Nv - 1];
             DbgLv( 3 ) << "AdjSD:   D_adj 0 m n" << D_adj[0] << D_adj[Nv / 2] << D_adj[Nv - 1];
          }
@@ -3246,9 +3294,106 @@ void US_LammAstfvm::setTraceStride( const int every_n_steps )
    traceStride = qMax( 1, every_n_steps );
 }
 
+void US_LammAstfvm::setTraceInterval( const double seconds )
+{
+   traceInterval = ( seconds > 0.0 ) ? seconds : 0.0;
+}
+
 void US_LammAstfvm::setTraceTimes( const QVector<double>& times )
 {
    traceTimes = times;
+}
+
+void US_LammAstfvm::setPressureViscosity( const double b_eta )
+{
+   pviscB = ( b_eta > 0.0 ) ? b_eta : 0.0;
+}
+
+void US_LammAstfvm::setGrowthSchedule( const QVector<double>& t_s,
+                                       const QVector<double>& s20w_of_t,
+                                       const QVector<double>& D20w_of_t )
+{
+   if ( t_s.size() >= 2 && t_s.size() == s20w_of_t.size()
+        && t_s.size() == D20w_of_t.size() )
+   {
+      grow_t    = t_s;
+      grow_s20w = s20w_of_t;
+      grow_D20w = D20w_of_t;
+      growMode  = 1;
+   }
+   else
+   {  // invalid/empty schedule => disable (constant s, D)
+      grow_t.clear();
+      grow_s20w.clear();
+      grow_D20w.clear();
+      growMode = 0;
+   }
+}
+
+void US_LammAstfvm::setGrowthLawDLG( const double R0, const double kappa )
+{
+   if ( R0 > 0.0 && kappa > 0.0 )
+   {
+      dlg_R0    = R0;
+      dlg_kappa = kappa;
+      growMode  = 2;
+   }
+   else
+   {
+      growMode = 0;
+   }
+}
+
+// Evaluate the run-condition base s, D at time t (growth schedule applied).
+void US_LammAstfvm::baseSD( const double t, double& s_t, double& D_t ) const
+{
+   if ( growMode == 0 )
+   {  // no growth => the constant run-corrected coefficients
+      s_t = param_s;
+      D_t = param_D;
+      return;
+   }
+
+   double s20w_t = param_s20w;
+   double D20w_t = param_D20w;
+
+   if ( growMode == 2 )
+   {  // diffusion-limited growth: R(t)=sqrt(R0^2+2*kappa*t); s ~ R^2, D ~ 1/R
+      const double Rt    = sqrt( dlg_R0 * dlg_R0 + 2.0 * dlg_kappa * qMax( 0.0, t ) );
+      const double ratio = ( dlg_R0 > 0.0 ) ? ( Rt / dlg_R0 ) : 1.0;
+      s20w_t = param_s20w * ratio * ratio;
+      D20w_t = ( ratio > 0.0 ) ? ( param_D20w / ratio ) : param_D20w;
+   }
+   else if ( growMode == 1 && grow_t.size() >= 2 )
+   {  // tabulated s20w(t), D20w(t): linear interpolation with clamped ends
+      const int n = grow_t.size();
+      if ( t <= grow_t[0] )
+      {
+         s20w_t = grow_s20w[0];
+         D20w_t = grow_D20w[0];
+      }
+      else if ( t >= grow_t[n - 1] )
+      {
+         s20w_t = grow_s20w[n - 1];
+         D20w_t = grow_D20w[n - 1];
+      }
+      else
+      {
+         int k = 1;
+         while ( k < n && grow_t[k] < t )
+         {
+            k++;
+         }
+         const double ta = grow_t[k - 1];
+         const double tb = grow_t[k];
+         const double w  = ( tb > ta ) ? ( t - ta ) / ( tb - ta ) : 0.0;
+         s20w_t = grow_s20w[k - 1] * ( 1.0 - w ) + grow_s20w[k] * w;
+         D20w_t = grow_D20w[k - 1] * ( 1.0 - w ) + grow_D20w[k] * w;
+      }
+   }
+
+   s_t = s20w_t / param_s20w_corr;
+   D_t = D20w_t / param_D20w_corr;
 }
 
 // Decide whether the current step should be recorded in the trace.
@@ -3265,6 +3410,11 @@ bool US_LammAstfvm::traceThisStep( const int jt, const double t0,
          }
       }
       return false;
+   }
+   if ( traceInterval > 0.0 )
+   {  // record the first step that crosses each multiple of the cadence, so
+      // runs differing only in dt record at the same model times
+      return floor( t1 / traceInterval ) > floor( t0 / traceInterval );
    }
    // otherwise use the stride (every Nth calculated step)
    return ( ( jt % traceStride ) == 0 );
@@ -3314,12 +3464,21 @@ void US_LammAstfvm::openTraceFiles( const int compx )
             .arg( param_s, 0, 'g', 10 ).arg( param_D, 0, 'g', 10 )
             .arg( param_w2, 0, 'g', 10 ).arg( rpm, 0, 'g', 10 )
             .arg( vbar, 0, 'g', 10 ).arg( NonIdealCaseNo );
+   sh += QString( "# meta: sigma,%1 delta,%2 compressib,%3 pvisc_b,%4 grow_mode,%5"
+                  " dlg_R0,%6 dlg_kappa,%7 temperature,%8 s20w,%9 D20w,%10 mw,%11\n" )
+            .arg( model.components[compx].sigma, 0, 'g', 10 )
+            .arg( model.components[compx].delta, 0, 'g', 10 )
+            .arg( compressib, 0, 'g', 10 ).arg( pviscB, 0, 'g', 10 )
+            .arg( growMode ).arg( dlg_R0, 0, 'g', 10 )
+            .arg( dlg_kappa, 0, 'g', 10 ).arg( simparams.temperature, 0, 'g', 6 )
+            .arg( param_s20w, 0, 'g', 10 ).arg( param_D20w, 0, 'g', 10 )
+            .arg( model.components[compx].mw, 0, 'g', 10 );
    sh += "step,time,dt,Nv,Ne,total_mass,mass_rel_drift,cmax,r_cmax\n";
    traceStepsFile->write( sh.toUtf8() );
 
    // column header for the per-node file
    traceNodesFile->write(
-      QByteArray( "step,time,node_index,r,U,C,mesh_density,elem_h,is_midpoint\n" ) );
+      QByteArray( "step,time,node_index,r,U,C,mesh_density,elem_h,solv_dens,is_midpoint\n" ) );
 
    traceHdrDone  = true;
    traceMass0Set = false;
@@ -3373,6 +3532,36 @@ void US_LammAstfvm::writeTraceRecord( const int compx, const int jt,
    // per-node rows: vertices (is_midpoint=0) and element midpoints (=1)
    const double* dens = ( msh != nullptr ) ? msh->meshDensity() : nullptr;
    const int     nden = ( msh != nullptr ) ? msh->Ne : 0;
+
+   // per-node solvent density/viscosity of the imposed/co-sed field (for the density trace)
+   QVector<double> vdens( N1, density );
+   QVector<double> vvisc( N1, viscosity );
+   if ( NonIdealCaseNo == 2 )
+   {
+      if ( cosed_needed && saltdata != nullptr )
+      {
+         saltdata->InterpolateCCosed( N1, x1, time, vdens.data(), vvisc.data() );
+      }
+      if ( codiff_needed && bandFormingGradient != nullptr )
+      {
+         bandFormingGradient->interpolateCCodiff( N1, x1, time, simparams.temperature + K0, vdens.data(),
+                                                  vvisc.data() );
+      }
+   }
+   else if ( NonIdealCaseNo == 3 )
+   {
+      const int    tsz     = rpm_timestate.size();
+      const int    i0      = qMax( qMin( static_cast<int>( time ), tsz - 1 ), 0 );
+      const double rpm_rad = rpm_timestate[ i0 ] * M_PI / 30.0;
+      const double dref    = param_dens_tb;
+      const double factn   = 0.5 * dref * rpm_rad * rpm_rad * compressib;
+      const double msq     = param_m * param_m;
+      for ( int j = 0; j < N1; j++ )
+      {
+         vdens[j] = dref / ( 1.0 - factn * ( x1[j] * x1[j] - msq ) );
+      }
+   }
+
    QString nb;
    nb.reserve( N1 * 96 );
    for ( int j = 0; j < N1; j++ )
@@ -3384,20 +3573,22 @@ void US_LammAstfvm::writeTraceRecord( const int compx, const int jt,
                         ? dens[ qMin( j, nden - 1 ) ] : 0.0;
       const double hj   = ( j < Ne ) ? 0.5 * ( x1[j + 1] - x1[j] )
                                      : 0.5 * ( x1[j] - x1[j - 1] );
-      nb += QString( "%1,%2,%3,%4,%5,%6,%7,%8,0\n" )
+      nb += QString( "%1,%2,%3,%4,%5,%6,%7,%8,%9,0\n" )
                .arg( jt ).arg( time, 0, 'g', 10 ).arg( j )
                .arg( r, 0, 'g', 10 ).arg( U, 0, 'g', 12 ).arg( C, 0, 'g', 12 )
-               .arg( md, 0, 'g', 8 ).arg( hj, 0, 'g', 10 );
+               .arg( md, 0, 'g', 8 ).arg( hj, 0, 'g', 10 )
+               .arg( vdens[ j ], 0, 'g', 8 );
 
       if ( j < Ne )
       {  // element midpoint
          const double rm = 0.5 * ( x1[j] + x1[j + 1] );
          const double Um = u1[2 * j + 1];
          const double Cm = ( rm != 0.0 ) ? Um / rm : 0.0;
-         nb += QString( "%1,%2,%3,%4,%5,%6,%7,%8,1\n" )
+         nb += QString( "%1,%2,%3,%4,%5,%6,%7,%8,%9,1\n" )
                   .arg( jt ).arg( time, 0, 'g', 10 ).arg( j )
                   .arg( rm, 0, 'g', 10 ).arg( Um, 0, 'g', 12 ).arg( Cm, 0, 'g', 12 )
-                  .arg( md, 0, 'g', 8 ).arg( hj, 0, 'g', 10 );
+                  .arg( md, 0, 'g', 8 ).arg( hj, 0, 'g', 10 )
+                  .arg( 0.5 * ( vdens[ j ] + vdens[ j + 1 ] ), 0, 'g', 8 );
       }
    }
    traceNodesFile->write( nb.toUtf8() );

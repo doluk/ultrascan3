@@ -407,6 +407,7 @@ void US_FeMatch::initialize_adv_vals()
    adv_vals[ "meshtype"   ] = "ASTFEM";
    adv_vals[ "gridtype"   ] = "Moving";
    adv_vals[ "modelsim"   ] = "mean";
+   adv_vals[ "modified"   ] = "false";
 }
 
 // public function to get pointer to edit data
@@ -2089,6 +2090,16 @@ void US_FeMatch::simulate_model( )
    simparams.meshType          = US_SimulationParameters::ASTFEM;
    simparams.gridType          = US_SimulationParameters::MOVING;
    simparams.radial_resolution = (double)( radhi - radlo ) / ( nconc - 1 );
+   if ( !solution_rec.buffer.cosed_component.isEmpty() )
+   {
+      simparams.meshType = US_SimulationParameters::ASTFVM;
+      simparams.gridType = US_SimulationParameters::MOVING;
+   }
+   else if ( run_name.contains("FVM") || run_name.contains("fvm") || runID.contains("FVM") || runID.contains("fvm") )
+   {
+      simparams.meshType = US_SimulationParameters::ASTFVM;
+      simparams.gridType = US_SimulationParameters::MOVING;
+   }
 //   simparams.bottom            = simparams.bottom_position;
 DbgLv(1) << "SimMdl: simpoints" << simparams.simpoints
  << "rreso" << simparams.radial_resolution
@@ -2107,19 +2118,21 @@ DbgLv(1) << "SimMdl: speed_steps:" << simparams.speed_step.size();
    QString gtyp = adv_vals[ "gridtype"   ];
    QString bvol = adv_vals[ "bandvolume" ];
 
-
-   if ( mtyp.contains( "Claverie" ) )
-      simparams.meshType = US_SimulationParameters::CLAVERIE;
-   else if ( mtyp.contains( "Moving Hat" ) )
-      simparams.meshType = US_SimulationParameters::MOVING_HAT;
-   else if ( mtyp.contains( "File:"      ) )
-      simparams.meshType = US_SimulationParameters::USER;
-   else if ( mtyp.contains( "ASTFVM"     ) )
+   if ( adv_vals[ "modified" ] == "true" )
    {
-      simparams.meshType = US_SimulationParameters::ASTFVM;
+      if ( mtyp.contains( "Claverie" ) )
+         simparams.meshType = US_SimulationParameters::CLAVERIE;
+      else if ( mtyp.contains( "Moving Hat" ) )
+         simparams.meshType = US_SimulationParameters::MOVING_HAT;
+      else if ( mtyp.contains( "File:"      ) )
+         simparams.meshType = US_SimulationParameters::USER;
+      else if ( mtyp.contains( "ASTFVM"     ) )
+      {
+         simparams.meshType = US_SimulationParameters::ASTFVM;
+      }
+      if ( gtyp.contains( "Constant" ) )
+         simparams.gridType = US_SimulationParameters::FIXED;
    }
-   if ( gtyp.contains( "Constant" ) )
-      simparams.gridType = US_SimulationParameters::FIXED;
 
    simparams.firstScanIsConcentration = false;
 

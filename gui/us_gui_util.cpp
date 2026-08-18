@@ -182,48 +182,107 @@ int US_GuiUtil::save_csv( const QString& filename, const QwtPlot* plot )
          qDebug() << item->interval( Qt::YAxis ).minValue() << item->interval( Qt::YAxis ).maxValue();
          qDebug() << item->boundingRect().bottomLeft() << item->boundingRect().topRight();
          US_SpectrogramData* data = dynamic_cast<US_SpectrogramData*>(item->data());
-         // create two Vectors for x and y respective
-         QSize raster_size;
-         QRectF rect;
-         // Get the raster data from US_SpectrogramData
-         data->getRaster( rect, raster_size );
-         QVector<QString> x_data;
-         x_data.clear();
-         QVector<QString> y_data;
-         y_data.clear();
-         QVector<QString> z_data;
-         x_data << QString("\"") + item->title().text() + " " + x_axis_title + QString("\"");
-         y_data << QString("\"") + item->title().text() + " " + y_axis_title + QString("\"");
-         z_data << QString("\"") + item->title().text() + " " + z_axis_title + QString("\"");
-         // Get the matrix data
-         int rows = raster_size.width();
-         int cols = raster_size.height();
+         if ( data )
+         {
+            // create two Vectors for x and y respective
+            QSize raster_size;
+            QRectF rect;
+            // Get the raster data from US_SpectrogramData
+            data->getRaster( rect, raster_size );
+            QVector<QString> x_data;
+            x_data.clear();
+            QVector<QString> y_data;
+            y_data.clear();
+            QVector<QString> z_data;
+            x_data << QString("\"") + item->title().text() + " " + x_axis_title + QString("\"");
+            y_data << QString("\"") + item->title().text() + " " + y_axis_title + QString("\"");
+            z_data << QString("\"") + item->title().text() + " " + z_axis_title + QString("\"");
+            // Get the matrix data
+            int rows = raster_size.width();
+            int cols = raster_size.height();
 
-         for (int row = 0; row < rows; ++row) {
-            for (int col = 0; col < cols; ++col) {
-               double x, y, z;
-               data->value( row, col, x, y, z );
-               x_data << QString::number(x);
-               y_data << QString::number(y);
-               z_data << QString::number(z);
+            for (int row = 0; row < rows; ++row) {
+               for (int col = 0; col < cols; ++col) {
+                  double x, y, z;
+                  data->value( row, col, x, y, z );
+                  x_data << QString::number(x);
+                  y_data << QString::number(y);
+                  z_data << QString::number(z);
+               }
             }
+            if ( max_length < x_data.size() )
+            {
+               max_length = x_data.size();
+            }
+            if ( max_length < y_data.size() )
+            {
+               max_length = y_data.size();
+            }
+            if ( max_length < z_data.size() )
+            {
+               max_length = z_data.size();
+            }
+            if ( x_data.size() > 1 && y_data.size() > 1 && z_data.size() > 1 )
+            { // Only add data if there is data to add
+               export_data << x_data << y_data << z_data;
+            }
+            continue;
          }
-
-         if ( max_length < x_data.size() )
+         QwtMatrixRasterData* matrix = dynamic_cast<QwtMatrixRasterData*>(item->data());
+         if (matrix)
          {
-            max_length = x_data.size();
-         }
-         if ( max_length < y_data.size() )
-         {
-            max_length = y_data.size();
-         }
-         if ( max_length < z_data.size() )
-         {
-            max_length = z_data.size();
-         }
-         if ( x_data.size() > 1 && y_data.size() > 1 && z_data.size() > 1 )
-         { // Only add data if there is data to add
-            export_data << x_data << y_data << z_data;
+            // create two Vectors for x and y respective
+            QSize raster_size;
+            QRectF rect;
+            // Dump the QwtMatrixRasterData
+            const int cols = matrix->numColumns();
+            const int rows = matrix->numRows();
+            const QVector<double>& values = matrix->valueMatrix();
+            if ( cols < 1 || rows < 1 )
+            {
+               continue;
+            }
+            double dx = matrix->interval( Qt::XAxis ).width() / cols;
+            double dy = matrix->interval( Qt::YAxis ).width() / rows;
+            double minX = matrix->interval( Qt::XAxis ).minValue();
+            double minY = matrix->interval( Qt::YAxis ).minValue();
+            QVector<QString> x_data;
+            x_data.clear();
+            QVector<QString> y_data;
+            y_data.clear();
+            QVector<QString> z_data;
+            x_data << QString("\"") + item->title().text() + " " + x_axis_title + QString("\"");
+            y_data << QString("\"") + item->title().text() + " " + y_axis_title + QString("\"");
+            z_data << QString("\"") + item->title().text() + " " + z_axis_title + QString("\"");
+            for ( int row = 0; row < rows; row++ )
+            {
+               double y = minY + (row + 0.5) * dy;
+               for ( int col = 0; col < cols; col++ )
+               {
+                  double x = minX + (col + 0.5) * dx;
+                  double z = values[ row * cols + col ];
+                  x_data << QString::number(x);
+                  y_data << QString::number(y);
+                  z_data << QString::number(z);
+               }
+            }
+            if ( max_length < x_data.size() )
+            {
+               max_length = x_data.size();
+            }
+            if ( max_length < y_data.size() )
+            {
+               max_length = y_data.size();
+            }
+            if ( max_length < z_data.size() )
+            {
+               max_length = z_data.size();
+            }
+            if ( x_data.size() > 1 && y_data.size() > 1 && z_data.size() > 1 )
+            { // Only add data if there is data to add
+               export_data << x_data << y_data << z_data;
+            }
+            continue;
          }
       }
       // iterate over all entries to ensure a proper csv format

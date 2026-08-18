@@ -135,6 +135,7 @@ void US_AdvancedFem::done( void )
    parmap[ "parameter"  ] = QString::number( ct_parameter ->value() );
    parmap[ "meshtype"   ] = cb_mesh->currentText();
    parmap[ "gridtype"   ] = cb_grid->currentText();
+   parmap[ "modified"   ] = "true";
 
    accept();
 }
