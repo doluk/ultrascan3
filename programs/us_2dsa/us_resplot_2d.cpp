@@ -139,8 +139,8 @@ US_ResidPlot2D::US_ResidPlot2D( QWidget* parent )
    connect( pb_close,  &QAbstractButton::clicked,
             this,      &US_ResidPlot2D::close_all );
 
-   connect( pb_save_all,  SIGNAL( clicked()   ),
-      this, SLOT(save_all()));
+   connect( pb_save_all,  &QAbstractButton::clicked,
+      this, &US_ResidPlot2D::save_all);
 
    have_ed   = false;
    have_sd   = false;

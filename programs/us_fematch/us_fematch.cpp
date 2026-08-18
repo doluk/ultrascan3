@@ -1854,6 +1854,11 @@ DbgLv(1) << "post-Load mC" << model.monteCarlo << "is_dmga_mc" << is_dmga_mc
       // Default the used model to a "Mean" model
       US_DmgaMcStats::build_used_model( "mean", 0, imodels, model_used );
    }
+
+   if ( US_Settings::debug_match( "FEMATCH_AUTOSIM" ) )
+   {
+      simulate_model();
+   }
 }
 
 // Adjust model components based on buffer, vbar, and temperature
@@ -2331,7 +2336,7 @@ DbgLv(1) << "SimMdl: (1)trmsd" << trmsd;
 DbgLv(1) << "SimMdl: (fematch:)Finite Volume Solver is called";
          model = model_used;
          US_LammAstfvm *astfvm     = new US_LammAstfvm( model, simparams );
-         connect( astfvm,  SIGNAL( comp_progress( int ) ), this,  SLOT(   update_progress(   int ) ) );
+         connect( astfvm,  &US_LammAstfvm::comp_progress, this,  &US_FeMatch::update_progress );
          //solution_rec.buffer.compressibility = compress;
          //solution_rec.buffer.manual          = manual;
          astfvm->set_buffer( solution_rec.buffer );

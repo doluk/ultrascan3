@@ -99,17 +99,18 @@ US_BufferGuiSelect::US_BufferGuiSelect( int *invID, int *select_db_disk,
    main->addWidget( le_search,       row,   1, 1, 2 );
    main->addWidget( pb_cancel,       row,   3, 1, 1 );
    main->addWidget( pb_accept,       row++, 4, 1, 1 );
-   main->addWidget( lw_buffer_list,  row, 0, 10, 3);
+   main->addWidget( lw_buffer_list,  row, 0, 11, 3);
    main->addWidget( pb_spectrum,     row,   3, 1, 1 );
    main->addWidget( pb_delete,       row++, 4, 1, 1 );
    main->addWidget( pb_info,         row,   3, 1, 1 );
    main->addWidget( pb_help,         row++, 4, 1, 1 );
    main->addWidget(lb_buffer_state, row++, 3, 1, 2);
+   main->addWidget(bn_bcomps, row++, 3, 1, 2);
    main->addWidget(lw_buffer_comps, row, 3, 3, 2);
    row += 3;
    main->addWidget(bn_cosedcomps, row++, 3, 1, 2);
    main->addWidget(lw_cosed_comps, row, 3, 3, 2);
-   row += 2;
+   row += 3;
    main->addLayout( lo_temp,         row++, 0, 1, 5 );
    main->addWidget( lb_density,      row,   0, 1, 2 );
    main->addWidget( le_density,      row,   2, 1, 1 );
@@ -1113,24 +1114,8 @@ US_BufferGuiNew::US_BufferGuiNew( int *invID, int *select_db_disk,
    main->addWidget( pb_cancel,       row,   4, 1, 2 );
    main->addWidget( pb_accept,       row++, 6, 1, 2 );
    main->addLayout( lo_manual,       row,   0, 1, 2 );
-   main->addWidget( lb_bselect,      row,   0, 2, 4 );
    main->addWidget( pb_spectrum,     row,   4, 1, 2 );
    main->addWidget( pb_help,         row++, 6, 1, 2 );
-   main->addWidget( le_concen,       row++, 4, 1, 4 );
-
-   if ( false && US_Settings::us_inv_level()>1){ // "create new" disabled - see issue #275
-      main->addWidget(bn_allcomps, row, 0, 1, 3);
-      main->addWidget(pb_new_bcomp,row, 3,1,1);
-         connect(pb_new_bcomp, &QAbstractButton::clicked, this, &US_BufferGuiNew::create_new_buffer_component);
-   }
-   else{
-      main->addWidget(bn_allcomps, row, 0, 1, 4);
-   }
-   main->addWidget( bn_bufcomps,     row++, 4, 1, 4 );
-   main->addWidget( lw_allcomps,     row,   0, 5, 4 );
-   main->addWidget( lw_bufcomps,     row,   4, 5, 4 );
-   row    += 5;
-   main->addLayout( lo_manual,       row++, 0, 1, 8 );
    main->addLayout( lo_temp,         row++, 0, 1, 8 );
    main->addWidget( lb_density,      row,   0, 1, 2 );
    main->addWidget( le_density,      row,   2, 1, 2 );
@@ -1143,10 +1128,20 @@ US_BufferGuiNew::US_BufferGuiNew( int *invID, int *select_db_disk,
    main->addWidget( lb_bselect,      row,   0, 1, 4 );
    main->addWidget( le_concen,       row++, 4, 1, 4 );
    main->addWidget( bn_buffer,       row++, 0, 1, 8 );
-   main->addWidget( bn_allcomps,     row,   0, 1, 4 );
+
+   if ( false && US_Settings::us_inv_level()>1){ // "create new" disabled - see issue #275
+      main->addWidget( bn_allcomps,  row,   0, 1, 3 );
+      main->addWidget( pb_new_bcomp, row,   3, 1, 1 );
+      connect( pb_new_bcomp, &QAbstractButton::clicked,
+               this,         &US_BufferGuiNew::create_new_buffer_component );
+   }
+   else{
+      main->addWidget( bn_allcomps,  row,   0, 1, 4 );
+   }
    main->addWidget( bn_bufcomps,     row++, 4, 1, 4 );
-   main->addWidget( lw_allcomps,     row,   0, 3, 4 );
-   main->addWidget( lw_bufcomps,     row,   4, 3, 4 );
+   main->addWidget( lw_allcomps,     row,   0, 5, 4 );
+   main->addWidget( lw_bufcomps,     row,   4, 5, 4 );
+   row    += 5;
 
 
    QStringList keys = component_list.keys();
@@ -1322,18 +1317,18 @@ void US_BufferGuiNew::cosed_flag(bool cosed_flag) {
       row += 3;
 
 
-      connect(le_descrip, SIGNAL(editingFinished()), this, SLOT(new_description()));
-      connect(pb_new_lower, SIGNAL(clicked()), this, SLOT(add_lower_cosed_component()));
-      connect(pb_new_upper, SIGNAL(clicked()), this, SLOT(add_upper_cosed_component()));
-      connect(lw_upper_cosedcomps, SIGNAL(itemDoubleClicked(QListWidgetItem*)), this,
-              SLOT(remove_cosedcomp(QListWidgetItem*)));
-      connect(lw_lower_cosedcomps, SIGNAL(itemDoubleClicked(QListWidgetItem*)), this,
-              SLOT(remove_cosedcomp(QListWidgetItem*)));
-      connect(ck_cosed, SIGNAL(toggled(bool)), this, SLOT(cosed_flag(bool)));
-      connect(pb_help, SIGNAL(clicked()), this, SLOT(help()));
-      connect(pb_cancel, SIGNAL(clicked()), this, SLOT(newCanceled()));
-      connect(pb_accept, SIGNAL(clicked()), this, SLOT(newAccepted()));
-      connect(pb_spectrum, SIGNAL(clicked()), this, SLOT  (spectrum_class()));
+      connect(le_descrip, &QLineEdit::editingFinished, this, &US_BufferGuiNew::new_description);
+      connect(pb_new_lower, &QAbstractButton::clicked, this, &US_BufferGuiNew::add_lower_cosed_component);
+      connect(pb_new_upper, &QAbstractButton::clicked, this, &US_BufferGuiNew::add_upper_cosed_component);
+      connect(lw_upper_cosedcomps, &QListWidget::itemDoubleClicked, this,
+              &US_BufferGuiNew::remove_cosedcomp);
+      connect(lw_lower_cosedcomps, &QListWidget::itemDoubleClicked, this,
+              &US_BufferGuiNew::remove_cosedcomp);
+      connect(ck_cosed, &QAbstractButton::toggled, this, &US_BufferGuiNew::cosed_flag);
+      connect(pb_help, &QAbstractButton::clicked, this, &US_BufferGuiNew::help);
+      connect(pb_cancel, &QAbstractButton::clicked, this, &US_BufferGuiNew::newCanceled);
+      connect(pb_accept, &QAbstractButton::clicked, this, &US_BufferGuiNew::newAccepted);
+      connect(pb_spectrum, &QAbstractButton::clicked, this, &US_BufferGuiNew::spectrum_class);
 
    } else {
       cosed = false;
@@ -1346,7 +1341,7 @@ void US_BufferGuiNew::cosed_flag(bool cosed_flag) {
       sl_temp->setMaximum(50);
       sl_temp->setSingleStep(1);
       sl_temp->setValue(20);
-      QPushButton* pb_temp20C = us_pushbutton( tr ( "Rest Temperature" ) );
+      QPushButton* pb_temp20C = us_pushbutton( tr ( "Reset Temperature" ) );
       QHBoxLayout* lo_temp = new QHBoxLayout();
       lo_temp->addWidget(lb_temperature);
       lo_temp->addWidget(sl_temp);
@@ -1371,10 +1366,10 @@ void US_BufferGuiNew::cosed_flag(bool cosed_flag) {
       QLabel *lb_ph = us_label(tr("pH:"));
       QLabel *lb_compress = us_label(tr("Compressibility:"));
       QLabel *bn_buffer = us_banner(tr("Buffer Components"));
-      le_descrip->setText("desc");
-      le_concen->setText("c");
-      le_density->setText("d");
-      le_viscos->setText("v");
+      le_descrip->setText( buffer_name );
+      le_concen->setText( "" );
+      le_density->setText( "" );
+      le_viscos->setText( "" );
       le_ph->setText("7.0000");
       le_compress->setText("0.0000e+0");
 
@@ -1412,6 +1407,7 @@ void US_BufferGuiNew::cosed_flag(bool cosed_flag) {
       main->addLayout( lo_manual,       row,   0, 1, 2 );
       main->addWidget( pb_spectrum,     row,   4, 1, 2 );
       main->addWidget( pb_help,         row++, 6, 1, 2 );
+      main->addLayout( lo_temp,         row++, 0, 1, 8 );
       main->addWidget( lb_density,      row,   0, 1, 2 );
       main->addWidget( le_density,      row,   2, 1, 2 );
       main->addWidget( lb_ph,           row,   4, 1, 2 );
@@ -1423,10 +1419,19 @@ void US_BufferGuiNew::cosed_flag(bool cosed_flag) {
       main->addWidget( lb_bselect,      row,   0, 1, 4 );
       main->addWidget( le_concen,       row++, 4, 1, 4 );
       main->addWidget( bn_buffer,       row++, 0, 1, 8 );
-      main->addWidget( bn_allcomps,     row,   0, 1, 4 );
+      if ( false && US_Settings::us_inv_level()>1){ // "create new" disabled - see issue #275
+         main->addWidget( bn_allcomps,  row,   0, 1, 3 );
+         main->addWidget( pb_new_bcomp, row,   3, 1, 1 );
+         connect( pb_new_bcomp, &QAbstractButton::clicked,
+                  this,         &US_BufferGuiNew::create_new_buffer_component );
+      }
+      else{
+         main->addWidget( bn_allcomps,  row,   0, 1, 4 );
+      }
       main->addWidget( bn_bufcomps,     row++, 4, 1, 4 );
-      main->addWidget( lw_allcomps,     row,   0, 3, 4 );
-      main->addWidget( lw_bufcomps,     row,   4, 3, 4 );
+      main->addWidget( lw_allcomps,     row,   0, 5, 4 );
+      main->addWidget( lw_bufcomps,     row,   4, 5, 4 );
+      row    += 5;
 
 
    connect( pb_help,     &QAbstractButton::clicked,
@@ -1440,7 +1445,7 @@ void US_BufferGuiNew::cosed_flag(bool cosed_flag) {
    connect( sl_temp, &QAbstractSlider::valueChanged, this, &US_BufferGuiNew::calc_visc_dent_temp );
    connect( pb_temp20C, &QAbstractButton::clicked, this, &US_BufferGuiNew::set_temp20 );
 
-   connect(ck_cosed, SIGNAL(toggled(bool)), this, SLOT  (cosed_flag(bool)));
+   connect(ck_cosed, &QAbstractButton::toggled, this, &US_BufferGuiNew::cosed_flag);
    }
    qDebug() << "lb_density" << lb_density << "lb_viscos" << lb_viscos;
    qDebug() << "lb_density" << lb_density->text() << "lb_viscos" << lb_viscos->text();

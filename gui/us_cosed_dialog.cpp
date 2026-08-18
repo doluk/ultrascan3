@@ -53,10 +53,10 @@ US_BaseBufferRequester::US_BaseBufferRequester(QMap<QString, US_CosedComponent> 
    main->addWidget(pb_cancel, row, 0, 1,2);
    main->addWidget(pb_accept, row, 2, 1, 2);
    pb_accept->setEnabled(false);
-   connect(pb_cancel, SIGNAL(clicked()), this, SLOT(cancelled()));
-   connect(pb_accept, SIGNAL(clicked()), this, SLOT(accept()));
-   connect(le_density, SIGNAL(editingFinished()), this, SLOT(edit()));
-   connect(le_viscosity, SIGNAL(editingFinished()), this, SLOT(edit()));
+   connect(pb_cancel, &QAbstractButton::clicked, this, &US_BaseBufferRequester::cancelled);
+   connect(pb_accept, &QAbstractButton::clicked, this, &US_BaseBufferRequester::accept);
+   connect(le_density, &QLineEdit::editingFinished, this, &US_BaseBufferRequester::edit);
+   connect(le_viscosity, &QLineEdit::editingFinished, this, &US_BaseBufferRequester::edit);
 }
 
 void US_BaseBufferRequester::cancelled(void) {
@@ -208,21 +208,21 @@ US_CosedComponentRequester::US_CosedComponentRequester(QMap<QString, US_CosedCom
    main->addWidget(pb_cancel, row, 0, 1, 2);
    main->addWidget(pb_accept, row, 2, 1, 2);
    pb_accept->setEnabled(false);
-   connect(pb_cancel, SIGNAL(clicked()), this, SLOT(cancelled()));
-   connect(pb_accept, SIGNAL(clicked()), this, SLOT(accept()));
-   connect(le_sedimentation, SIGNAL(editingFinished()), this, SLOT(edit()));
-   connect(le_vbar, SIGNAL(editingFinished()), this, SLOT(edit()));
-   connect(le_diffusion, SIGNAL(editingFinished()), this, SLOT(edit()));
-   connect(le_density1, SIGNAL(editingFinished()), this, SLOT(edit()));
-   connect(le_density2, SIGNAL(editingFinished()), this, SLOT(edit()));
-   connect(le_density3, SIGNAL(editingFinished()), this, SLOT(edit()));
-   connect(le_density4, SIGNAL(editingFinished()), this, SLOT(edit()));
-   connect(le_density5, SIGNAL(editingFinished()), this, SLOT(edit()));
-   connect(le_viscosity1, SIGNAL(editingFinished()), this, SLOT(edit()));
-   connect(le_viscosity2, SIGNAL(editingFinished()), this, SLOT(edit()));
-   connect(le_viscosity3, SIGNAL(editingFinished()), this, SLOT(edit()));
-   connect(le_viscosity4, SIGNAL(editingFinished()), this, SLOT(edit()));
-   connect(le_viscosity5, SIGNAL(editingFinished()), this, SLOT(edit()));
+   connect(pb_cancel, &QAbstractButton::clicked, this, &US_CosedComponentRequester::cancelled);
+   connect(pb_accept, &QAbstractButton::clicked, this, &US_CosedComponentRequester::accept);
+   connect(le_sedimentation, &QLineEdit::editingFinished, this, &US_CosedComponentRequester::edit);
+   connect(le_vbar, &QLineEdit::editingFinished, this, &US_CosedComponentRequester::edit);
+   connect(le_diffusion, &QLineEdit::editingFinished, this, &US_CosedComponentRequester::edit);
+   connect(le_density1, &QLineEdit::editingFinished, this, &US_CosedComponentRequester::edit);
+   connect(le_density2, &QLineEdit::editingFinished, this, &US_CosedComponentRequester::edit);
+   connect(le_density3, &QLineEdit::editingFinished, this, &US_CosedComponentRequester::edit);
+   connect(le_density4, &QLineEdit::editingFinished, this, &US_CosedComponentRequester::edit);
+   connect(le_density5, &QLineEdit::editingFinished, this, &US_CosedComponentRequester::edit);
+   connect(le_viscosity1, &QLineEdit::editingFinished, this, &US_CosedComponentRequester::edit);
+   connect(le_viscosity2, &QLineEdit::editingFinished, this, &US_CosedComponentRequester::edit);
+   connect(le_viscosity3, &QLineEdit::editingFinished, this, &US_CosedComponentRequester::edit);
+   connect(le_viscosity4, &QLineEdit::editingFinished, this, &US_CosedComponentRequester::edit);
+   connect(le_viscosity5, &QLineEdit::editingFinished, this, &US_CosedComponentRequester::edit);
 }
 
 void US_CosedComponentRequester::cancelled(void) {
@@ -319,11 +319,11 @@ US_LowerCosedComponentRequester::US_LowerCosedComponentRequester(QList<US_CosedC
    main->addWidget(pb_cancel, row, 0, 1, 2);
    main->addWidget(pb_accept, row, 2, 1, 2);
    pb_accept->setEnabled(true);
-   connect(pb_cancel, SIGNAL(clicked()), this, SLOT(cancelled()));
-   connect(pb_accept, SIGNAL(clicked()), this, SLOT(accept()));
-   connect(le_sedimentation, SIGNAL(editingFinished()), this, SLOT(edit()));
-   connect(le_vbar, SIGNAL(editingFinished()), this, SLOT(edit()));
-   connect(le_diffusion, SIGNAL(editingFinished()), this, SLOT(edit()));
+   connect(pb_cancel, &QAbstractButton::clicked, this, &US_LowerCosedComponentRequester::cancelled);
+   connect(pb_accept, &QAbstractButton::clicked, this, &US_LowerCosedComponentRequester::accept);
+   connect(le_sedimentation, &QLineEdit::editingFinished, this, &US_LowerCosedComponentRequester::edit);
+   connect(le_vbar, &QLineEdit::editingFinished, this, &US_LowerCosedComponentRequester::edit);
+   connect(le_diffusion, &QLineEdit::editingFinished, this, &US_LowerCosedComponentRequester::edit);
 }
 
 void US_LowerCosedComponentRequester::cancelled(void) {

@@ -203,7 +203,7 @@ US_PlotControlFem::US_PlotControlFem( QWidget* p, US_Model* amodel )
    connect( pb_close,  &QAbstractButton::clicked,
             this,      &US_PlotControlFem::close_all );
 
-   plot3d_w = 0;
+   plot3d_w = nullptr;
 
    lb_sedcoeff ->adjustSize();
    ct_zscalefac->setMinimumWidth( lb_sedcoeff->width() );

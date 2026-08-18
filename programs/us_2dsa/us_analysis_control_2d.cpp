@@ -321,14 +321,14 @@ DbgLv(1) << "idealThrCout" << nthr;
             this,       &US_AnalysisControl2D::advanced );
    connect( pb_anorm,   &QAbstractButton::clicked,
             this,       &US_AnalysisControl2D::calculate_norms );
-   connect( cmb_primary, SIGNAL( currentIndexChanged( int ) ),
-            this, SLOT(checkPrimary( int )));
-   connect( cmb_secondary, SIGNAL( currentIndexChanged( int ) ),
-            this, SLOT( checkSecondary( int )));
-   connect( ct_menisrng, SLOT( valueChanged( double ) ),
-            this, SIGNAL( primary_range_changed( double )));
-   connect( ct_angle_range, SLOT( valueChanged( double ) ),
-            this, SIGNAL( secondary_range_changed(double)));
+   connect( cmb_primary, &QComboBox::currentIndexChanged,
+            this, &US_AnalysisControl2D::checkPrimary);
+   connect( cmb_secondary, &QComboBox::currentIndexChanged,
+            this, &US_AnalysisControl2D::checkSecondary);
+   connect( ct_menisrng, &QwtCounter::valueChanged,
+            this, &US_AnalysisControl2D::primary_range_changed);
+   connect( ct_angle_range, &QwtCounter::valueChanged,
+            this, &US_AnalysisControl2D::secondary_range_changed);
    edata          = &dsets[ 0 ]->run_data;
 
    grid_change();
@@ -1430,7 +1430,7 @@ void US_AnalysisControl2D::checkPrimary( int kk )
          {
             ct_menisrng->setEnabled( false );
             ct_menispts->setEnabled( false );
-            connect(ct_menisrng, SIGNAL(valueChanged(double)), this, SLOT(primary_range_changed( double )));
+            connect(ct_menisrng, &QwtCounter::valueChanged, this, &US_AnalysisControl2D::primary_range_changed);
             sparms->primaryFit = fit;
             sparms->primary_variations = 0;
             sparms->primary_range = 0.0;
@@ -1444,7 +1444,7 @@ void US_AnalysisControl2D::checkPrimary( int kk )
             ct_menisrng->setValue( 0.03 );
             ct_menisrng->setMinimum( 0.01 );
             ct_menisrng->setMaximum( 0.65 );
-            connect(ct_menisrng, SIGNAL(valueChanged(double)), this, SLOT(primary_range_changed( double )));
+            connect(ct_menisrng, &QwtCounter::valueChanged, this, &US_AnalysisControl2D::primary_range_changed);
             sparms->primaryFit = fit;
             sparms->primary_variations = 11;
             sparms->primary_range = ct_menisrng->value();
@@ -1458,7 +1458,7 @@ void US_AnalysisControl2D::checkPrimary( int kk )
             ct_menisrng->setValue( 0.03 );
             ct_menisrng->setMinimum( 0.01 );
             ct_menisrng->setMaximum( 0.65 );
-            connect(ct_menisrng, SIGNAL(valueChanged(double)), this, SLOT(primary_range_changed( double )));
+            connect(ct_menisrng, &QwtCounter::valueChanged, this, &US_AnalysisControl2D::primary_range_changed);
             sparms->primaryFit = fit;
             sparms->primary_variations = 11;
             sparms->primary_range = ct_menisrng->value();
@@ -1472,7 +1472,7 @@ void US_AnalysisControl2D::checkPrimary( int kk )
             ct_menisrng->setValue( 0.5 );
             ct_menisrng->setMinimum( 0.1 );
             ct_menisrng->setMaximum( 2.0 );
-            connect(ct_menisrng, SIGNAL(valueChanged(double)), this, SLOT(primary_range_changed( double )));
+            connect(ct_menisrng, &QwtCounter::valueChanged, this, &US_AnalysisControl2D::primary_range_changed);
             sparms->primaryFit = fit;
             sparms->primary_variations = 11;
             sparms->primary_range = ct_menisrng->value();
@@ -1486,7 +1486,7 @@ void US_AnalysisControl2D::checkPrimary( int kk )
             ct_menisrng->setValue( 0.015 );
             ct_menisrng->setMinimum( 0.001 );
             ct_menisrng->setMaximum( 0.1 );
-            connect(ct_menisrng, SIGNAL(valueChanged(double)), this, SLOT(primary_range_changed( double )));
+            connect(ct_menisrng, &QwtCounter::valueChanged, this, &US_AnalysisControl2D::primary_range_changed);
             sparms->primaryFit = fit;
             sparms->primary_variations = 11;
             sparms->primary_range = ct_menisrng->value();
@@ -1500,7 +1500,7 @@ void US_AnalysisControl2D::checkPrimary( int kk )
             ct_menisrng->setValue( 0.5 );
             ct_menisrng->setMinimum( 0.1 );
             ct_menisrng->setMaximum( 2.0 );
-            connect(ct_menisrng, SIGNAL(valueChanged(double)), this, SLOT(primary_range_changed( double )));
+            connect(ct_menisrng, &QwtCounter::valueChanged, this, &US_AnalysisControl2D::primary_range_changed);
             sparms->primaryFit = fit;
             sparms->primary_variations = 11;
             sparms->primary_range = ct_menisrng->value();
@@ -1514,7 +1514,7 @@ void US_AnalysisControl2D::checkPrimary( int kk )
             ct_menisrng->setValue( 0.5 );
             ct_menisrng->setMinimum( 0.1 );
             ct_menisrng->setMaximum( 2.0 );
-            connect(ct_menisrng, SIGNAL(valueChanged(double)), this, SLOT(primary_range_changed( double )));
+            connect(ct_menisrng, &QwtCounter::valueChanged, this, &US_AnalysisControl2D::primary_range_changed);
             sparms->primaryFit = fit;
             sparms->primary_variations = 11;
             sparms->primary_range = ct_menisrng->value();
@@ -1528,7 +1528,7 @@ void US_AnalysisControl2D::checkPrimary( int kk )
             ct_menisrng->setValue( 0.01 );
             ct_menisrng->setMinimum( 0.001 );
             ct_menisrng->setMaximum( 2.0 );
-            connect(ct_menisrng, SIGNAL(valueChanged(double)), this, SLOT(primary_range_changed( double )));
+            connect(ct_menisrng, &QwtCounter::valueChanged, this, &US_AnalysisControl2D::primary_range_changed);
             sparms->primaryFit = fit;
             sparms->primary_variations = 11;
             sparms->primary_range = ct_menisrng->value();
@@ -1547,7 +1547,7 @@ void US_AnalysisControl2D::checkSecondary( int kk )
       cmb_primary->setCurrentIndex( kk );
       cmb_secondary->disconnect(  );
       cmb_secondary->setCurrentIndex( 0 );
-      connect(cmb_secondary, SIGNAL(currentIndexChanged(int)), this, SLOT(checkSecondary( int )));
+      connect(cmb_secondary, &QComboBox::currentIndexChanged, this, &US_AnalysisControl2D::checkSecondary);
       return;
    }
    // prepare the range and points counters
@@ -1557,7 +1557,7 @@ void US_AnalysisControl2D::checkSecondary( int kk )
          {
             ct_angle_range->setEnabled( false );
             ct_angle_points->setEnabled( false );
-            connect(ct_angle_range, SIGNAL(valueChanged(double)), this, SLOT(secondary_range_changed( double )));
+            connect(ct_angle_range, &QwtCounter::valueChanged, this, &US_AnalysisControl2D::secondary_range_changed);
             sparms->secondaryFit = fit;
             sparms->secondary_variations = 0;
             sparms->secondary_range = 0.0;
@@ -1571,7 +1571,7 @@ void US_AnalysisControl2D::checkSecondary( int kk )
             ct_angle_range->setValue( 0.03 );
             ct_angle_range->setMinimum( 0.01 );
             ct_angle_range->setMaximum( 0.65 );
-            connect(ct_angle_range, SIGNAL(valueChanged(double)), this, SLOT(secondary_range_changed( double )));
+            connect(ct_angle_range, &QwtCounter::valueChanged, this, &US_AnalysisControl2D::secondary_range_changed);
             sparms->secondaryFit = fit;
             sparms->secondary_variations = 11;
             sparms->secondary_range = ct_angle_range->value();
@@ -1585,7 +1585,7 @@ void US_AnalysisControl2D::checkSecondary( int kk )
             ct_angle_range->setValue( 0.03 );
             ct_angle_range->setMinimum( 0.01 );
             ct_angle_range->setMaximum( 0.65 );
-            connect(ct_angle_range, SIGNAL(valueChanged(double)), this, SLOT(secondary_range_changed( double )));
+            connect(ct_angle_range, &QwtCounter::valueChanged, this, &US_AnalysisControl2D::secondary_range_changed);
             sparms->secondaryFit = fit;
             sparms->secondary_variations = 11;
             sparms->secondary_range = ct_angle_range->value();
@@ -1599,7 +1599,7 @@ void US_AnalysisControl2D::checkSecondary( int kk )
             ct_angle_range->setValue( 0.5 );
             ct_angle_range->setMinimum( 0.1 );
             ct_angle_range->setMaximum( 2.0 );
-            connect(ct_angle_range, SIGNAL(valueChanged(double)), this, SLOT(secondary_range_changed( double )));
+            connect(ct_angle_range, &QwtCounter::valueChanged, this, &US_AnalysisControl2D::secondary_range_changed);
             sparms->secondaryFit = fit;
             sparms->secondary_variations = 11;
             sparms->secondary_range = ct_angle_range->value();
@@ -1613,7 +1613,7 @@ void US_AnalysisControl2D::checkSecondary( int kk )
             ct_angle_range->setValue( 0.015 );
             ct_angle_range->setMinimum( 0.001 );
             ct_angle_range->setMaximum( 0.1 );
-            connect(ct_angle_range, SIGNAL(valueChanged(double)), this, SLOT(secondary_range_changed( double )));
+            connect(ct_angle_range, &QwtCounter::valueChanged, this, &US_AnalysisControl2D::secondary_range_changed);
             sparms->secondaryFit = fit;
             sparms->secondary_variations = 11;
             sparms->secondary_range = ct_angle_range->value();
@@ -1627,7 +1627,7 @@ void US_AnalysisControl2D::checkSecondary( int kk )
             ct_angle_range->setValue( 0.5 );
             ct_angle_range->setMinimum( 0.1 );
             ct_angle_range->setMaximum( 2.0 );
-            connect(ct_angle_range, SIGNAL(valueChanged(double)), this, SLOT(secondary_range_changed( double )));
+            connect(ct_angle_range, &QwtCounter::valueChanged, this, &US_AnalysisControl2D::secondary_range_changed);
             sparms->secondaryFit = fit;
             sparms->secondary_variations = 11;
             sparms->secondary_range = ct_angle_range->value();
@@ -1641,7 +1641,7 @@ void US_AnalysisControl2D::checkSecondary( int kk )
             ct_angle_range->setValue( 0.5 );
             ct_angle_range->setMinimum( 0.1 );
             ct_angle_range->setMaximum( 2.0 );
-            connect(ct_angle_range, SIGNAL(valueChanged(double)), this, SLOT(secondary_range_changed( double )));
+            connect(ct_angle_range, &QwtCounter::valueChanged, this, &US_AnalysisControl2D::secondary_range_changed);
             sparms->secondaryFit = fit;
             sparms->secondary_variations = 11;
             sparms->secondary_range = ct_angle_range->value();
@@ -1655,7 +1655,7 @@ void US_AnalysisControl2D::checkSecondary( int kk )
             ct_angle_range->setValue( 0.01 );
             ct_angle_range->setMinimum( 0.001 );
             ct_angle_range->setMaximum( 2.0 );
-            connect(ct_angle_range, SIGNAL(valueChanged(double)), this, SLOT(secondary_range_changed( double )));
+            connect(ct_angle_range, &QwtCounter::valueChanged, this, &US_AnalysisControl2D::secondary_range_changed);
             sparms->secondaryFit = fit;
             sparms->secondary_variations = 11;
             sparms->secondary_range = ct_angle_range->value();
@@ -1682,7 +1682,7 @@ void US_AnalysisControl2D::primary_range_changed(double range)
             {
                ct_menisrng->disconnect(  );
                ct_menisrng->setValue( sparms->primary_range );
-               connect(ct_menisrng, SIGNAL(valueChanged(double)), this, SLOT(primary_range_changed( double )));
+               connect(ct_menisrng, &QwtCounter::valueChanged, this, &US_AnalysisControl2D::primary_range_changed);
                QMessageBox::critical( this, tr( "Meniscus-Data Overlap!" ),
                   tr( "The highest meniscus (%1), implied in the range given,\n"
                       "equals or exceeds the low data range radius (%2).\n\n"
@@ -1704,7 +1704,7 @@ void US_AnalysisControl2D::primary_range_changed(double range)
             {
                ct_menisrng->disconnect(  );
                ct_menisrng->setValue( sparms->primary_range );
-               connect(ct_menisrng, SIGNAL(valueChanged(double)), this, SLOT(primary_range_changed( double )));
+               connect(ct_menisrng, &QwtCounter::valueChanged, this, &US_AnalysisControl2D::primary_range_changed);
                QMessageBox::critical( this, tr( "Bottom-Data Overlap!" ),
                   tr( "The lowest bottom (%1), implied in the range given,\n"
                       "equals or exceeds the high data range radius (%2).\n\n"
@@ -1725,7 +1725,7 @@ void US_AnalysisControl2D::primary_range_changed(double range)
             {
                ct_menisrng->disconnect(  );
                ct_menisrng->setValue( sparms->primary_range );
-               connect(ct_menisrng, SIGNAL(valueChanged(double)), this, SLOT(primary_range_changed( double )));
+               connect(ct_menisrng, &QwtCounter::valueChanged, this, &US_AnalysisControl2D::primary_range_changed);
                QMessageBox::critical( this, tr( "Angle-Data Overlap!" ),
                   tr( "The lowest angle (%1), implied in the range given,\n"
                       "is smaller than 0.01.\n\n"
@@ -1744,7 +1744,7 @@ void US_AnalysisControl2D::primary_range_changed(double range)
             {
                ct_menisrng->disconnect(  );
                ct_menisrng->setValue( sparms->primary_range );
-               connect(ct_menisrng, SIGNAL(valueChanged(double)), this, SLOT(primary_range_changed( double )));
+               connect(ct_menisrng, &QwtCounter::valueChanged, this, &US_AnalysisControl2D::primary_range_changed);
                QMessageBox::critical( this, tr( "Band volume-Data Overlap!" ),
                   tr( "The lowest band volume (%1), implied in the range given,\n"
                       "is smaller than 0.001 mL, or the highest band volume (%2), is greater than 0.1 mL.\n\n"
@@ -1776,7 +1776,7 @@ void US_AnalysisControl2D::secondary_range_changed(double range)
             {
                ct_angle_range->disconnect(  );
                ct_angle_range->setValue( sparms->secondary_range );
-               connect(ct_angle_range, SIGNAL(valueChanged(double)), this, SLOT(secondary_range_changed( double )));
+               connect(ct_angle_range, &QwtCounter::valueChanged, this, &US_AnalysisControl2D::secondary_range_changed);
                QMessageBox::critical( this, tr( "Meniscus-Data Overlap!" ),
                   tr( "The highest meniscus (%1), implied in the range given,\n"
                       "equals or exceeds the low data range radius (%2).\n\n"
@@ -1798,7 +1798,7 @@ void US_AnalysisControl2D::secondary_range_changed(double range)
             {
                ct_angle_range->disconnect(  );
                ct_angle_range->setValue( sparms->secondary_range );
-               connect(ct_angle_range, SIGNAL(valueChanged(double)), this, SLOT(secondary_range_changed( double )));
+               connect(ct_angle_range, &QwtCounter::valueChanged, this, &US_AnalysisControl2D::secondary_range_changed);
                QMessageBox::critical( this, tr( "Bottom-Data Overlap!" ),
                   tr( "The lowest bottom (%1), implied in the range given,\n"
                       "equals or exceeds the high data range radius (%2).\n\n"
@@ -1819,7 +1819,7 @@ void US_AnalysisControl2D::secondary_range_changed(double range)
             {
                ct_angle_range->disconnect(  );
                ct_angle_range->setValue( sparms->secondary_range );
-               connect(ct_angle_range, SIGNAL(valueChanged(double)), this, SLOT(secondary_range_changed( double )));
+               connect(ct_angle_range, &QwtCounter::valueChanged, this, &US_AnalysisControl2D::secondary_range_changed);
                QMessageBox::critical( this, tr( "Angle-Data Overlap!" ),
                   tr( "The lowest angle (%1), implied in the range given,\n"
                       "is smaller than 0.01.\n\n"
@@ -1838,7 +1838,7 @@ void US_AnalysisControl2D::secondary_range_changed(double range)
             {
                ct_angle_range->disconnect(  );
                ct_angle_range->setValue( sparms->secondary_range );
-               connect(ct_angle_range, SIGNAL(valueChanged(double)), this, SLOT(secondary_range_changed( double )));
+               connect(ct_angle_range, &QwtCounter::valueChanged, this, &US_AnalysisControl2D::secondary_range_changed);
                QMessageBox::critical( this, tr( "Band volume-Data Overlap!" ),
                   tr( "The lowest band volume (%1), implied in the range given,\n"
                       "is smaller than 0.001 mL, or the highest band volume (%2), is greater than 0.1 mL.\n\n"
