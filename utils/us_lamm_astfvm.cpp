@@ -1,6 +1,5 @@
 //! \file us_lamm_astfvm.cpp
 
-#include <QtWidgets/QFileDialog>
 #include <QDateTime>
 #include <cstring>
 #include <cmath>
