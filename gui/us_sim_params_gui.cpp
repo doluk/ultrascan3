@@ -261,8 +261,8 @@ US_SimParamsGui::US_SimParamsGui(
    cnt_angle->setEnabled(true );
 
    main->addWidget( cnt_angle, row++, 7, 1, 1 );
-   connect( cnt_angle, SIGNAL( valueChanged  ( double ) ),
-                         SLOT  ( update_cell_angle( double ) ) );
+   connect( cnt_angle, &QwtCounter::valueChanged,
+      this, &US_SimParamsGui::update_cell_angle );
 
    // Meniscus position
    QLabel* lb_meniscus = us_label( tr( "Meniscus Position (cm):" ) );

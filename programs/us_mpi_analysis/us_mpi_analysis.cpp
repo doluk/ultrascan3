@@ -2179,22 +2179,26 @@ DbgLv(1) << "wrMo: tripleID" << tripleID << "dates" << dates;
    QString iterID;
 
    if ( mc_iterations > 1 )
-      iterID.sprintf( "mc%04d", mc_iter );
+   {
+      iterID = QString::asprintf( "mc%04d", mc_iter );
+   }
    else if ( primaryFit && secondaryFit )
-      iterID.sprintf( "i%02d-m%05db%05d", 
-              menibott_ndx + 1,
-              (int)( meniscus_value * 10000 ),
-              (int)( bottom_value * 10000 ) );
+   {
+      iterID = QString::asprintf( "i%02d-m%05db%05d", menibott_ndx + 1, (int)( meniscus_value * 10000 ),
+                                  (int)( bottom_value * 10000 ) );
+   }
    else if (  primaryFit )
-      iterID.sprintf( "i%02d-m%05d", 
-              meniscus_run + 1,
-              (int)( meniscus_value * 10000 ) );
+   {
+      iterID = QString::asprintf( "i%02d-m%05d", meniscus_run + 1, (int)( meniscus_value * 10000 ) );
+   }
    else if (  secondaryFit )
-      iterID.sprintf( "i%02d-b%05d", 
-              bottom_run + 1,
-              (int)( bottom_value * 10000 ) );
+   {
+      iterID = QString::asprintf( "i%02d-b%05d", bottom_run + 1, (int)( bottom_value * 10000 ) );
+   }
    else
+   {
       iterID = "i01";
+   }
 
    QString mdlid     = tripleID + "." + iterID;
    QString id        = model.typeText( subtype );
