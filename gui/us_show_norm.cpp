@@ -1344,6 +1344,83 @@ void US_show_norm::plot_sections( void )
 
    QString ztitle = zmode_title();
 
+   if ( ginfo.species )
+   {  // A species list is not a parameter grid.  Its members are in no
+      //  particular order, and two of them may share an s or an f/f0, so a
+      //  section "along Y at fixed X" traces a zig-zag through whatever
+      //  order they happen to be listed in.  Show them against their own
+      //  index instead, and against s without joining them up.
+      QVector< double > sx;
+      QVector< double > sz;
+      QVector< double > vx;
+
+      for ( int ii = 0; ii < nks; ii++ )
+      {
+         if ( ! zvalid[ ii ] )
+            continue;
+
+         sx << (double)( ii + 1 );
+         vx << xy_distro[ ii ].s;
+         sz << zvals[ ii ];
+      }
+
+      QwtPlotCurve* icurve = new QwtPlotCurve( tr( "Per species" ) );
+      icurve->setPen    ( QPen( Qt::blue, 2 ) );
+      icurve->setSymbol ( new QwtSymbol( QwtSymbol::Ellipse,
+         QBrush( Qt::blue ), QPen( Qt::blue, 1 ), QSize( 5, 5 ) ) );
+      icurve->setSamples( sx, sz );
+      icurve->attach    ( xsec_plot_y );
+
+      xsec_plot_y->setTitle( tr( "Value per species" ) );
+      xsec_plot_y->setAxisTitle( QwtPlot::xBottom, tr( "Species number" ) );
+      xsec_plot_y->setAxisTitle( QwtPlot::yLeft,   ztitle );
+      xsec_plot_y->setAxisAutoScale( QwtPlot::xBottom );
+      xsec_plot_y->setAxisAutoScale( QwtPlot::yLeft   );
+
+      // Against s, as points only:  the species are not ordered by s, so a
+      //  line between them would be a path, not a trend
+      QwtPlotCurve* scurve = new QwtPlotCurve( tr( "Species" ) );
+      scurve->setStyle  ( QwtPlotCurve::NoCurve );
+      scurve->setSymbol ( new QwtSymbol( QwtSymbol::Ellipse,
+         QBrush( Qt::darkRed ), QPen( Qt::darkRed, 1 ), QSize( 6, 6 ) ) );
+      scurve->setSamples( vx, sz );
+      scurve->attach    ( xsec_plot_x );
+
+      xsec_plot_x->setTitle( tr( "Value against %1" ).arg(
+                                attr_label( plot_x ) ) );
+      xsec_plot_x->setAxisTitle( QwtPlot::xBottom, anno_title( plot_x ) );
+      xsec_plot_x->setAxisTitle( QwtPlot::yLeft,   ztitle );
+      xsec_plot_x->setAxisAutoScale( QwtPlot::xBottom );
+      xsec_plot_x->setAxisAutoScale( QwtPlot::yLeft   );
+
+      // Mark the selected species, and any comparison, on both
+      for ( int ii = 0; ii < 2; ii++ )
+      {
+         QwtPlot* pl       = ( ii == 0 ) ? xsec_plot_y : xsec_plot_x;
+         QwtPlotMarker* pm = new QwtPlotMarker();
+         pm->setLineStyle( QwtPlotMarker::VLine );
+         pm->setLinePen  ( QPen( Qt::darkGray, 1, Qt::DashLine ) );
+         pm->setXValue   ( ( ii == 0 ) ? (double)( pick_iy + 1 )
+                                       : xy_distro[ pick_iy ].s );
+         pm->attach      ( pl );
+
+         if ( ! have_comp )
+            continue;
+
+         int kcomp         = qBound( 0, comp_iy, nks - 1 );
+         QwtPlotMarker* cm = new QwtPlotMarker();
+         cm->setLineStyle( QwtPlotMarker::VLine );
+         cm->setLinePen  ( QPen( Qt::darkRed, 1, Qt::DashLine ) );
+         cm->setXValue   ( ( ii == 0 ) ? (double)( kcomp + 1 )
+                                       : xy_distro[ kcomp ].s );
+         cm->attach      ( pl );
+      }
+
+      xsec_plot_y->replot();
+      xsec_plot_x->replot();
+      return;
+   }
+
    // Section along Y at the selected X
    QVector< double > yx;
    QVector< double > yz;
@@ -1511,6 +1588,19 @@ void US_show_norm::plot_scans( void )
 
    int    nshow   = qBound( 1, nscans, nscn );
 
+   // Only the included radial range is drawn:  readings left out of the
+   //  norms and collinearities are not part of what is being compared, so
+   //  showing them here would misrepresent the difference plot in
+   //  particular, whose curve is only meaningful where it was measured.
+   int    jlo     = qBound( 0, rad_ilo, nrad - 1 );
+   int    jhi     = qBound( jlo + 1, rad_ihi, nrad );
+   int    nrsh    = jhi - jlo;
+
+   QVector< double > rvals( nrsh );
+
+   for ( int jj = 0; jj < nrsh; jj++ )
+      rvals[ jj ]    = ginfo.sig_radius[ jlo + jj ];
+
    for ( int is = 0; is < nshow; is++ )
    {
       int iscn       = ( nshow > 1 ) ? ( is * ( nscn - 1 ) / ( nshow - 1 ) )
@@ -1520,53 +1610,40 @@ void US_show_norm::plot_scans( void )
       QColor colp    = QColor::fromHsv( 220, 235, vlev );
       QColor colc    = QColor::fromHsv(   0, 235, vlev );
 
-      QVector< double > yp( nrad );
-      QVector< double > yc( nrad );
-      QVector< double > yd( nrad );
+      QVector< double > yp( nrsh );
+      QVector< double > yc( nrsh );
+      QVector< double > yd( nrsh );
 
-      for ( int jj = 0; jj < nrad; jj++ )
-         yp[ jj ]       = (double)sigp[ iscn * nrad + jj ] * normp;
+      for ( int jj = 0; jj < nrsh; jj++ )
+         yp[ jj ]       = (double)sigp[ iscn * nrad + jlo + jj ] * normp;
 
       QwtPlotCurve* pcv = new QwtPlotCurve(
          tr( "selected scan %1" ).arg( iscn ) );
       pcv->setPen    ( QPen( colp, 1 ) );
-      pcv->setSamples( ginfo.sig_radius, yp );
+      pcv->setSamples( rvals, yp );
       pcv->attach    ( scan_plot );
 
       if ( kcomp < 0 )
          continue;
 
-      for ( int jj = 0; jj < nrad; jj++ )
+      for ( int jj = 0; jj < nrsh; jj++ )
       {
-         yc[ jj ]       = (double)sigc[ iscn * nrad + jj ] * normc * cscale;
+         yc[ jj ]       = (double)sigc[ iscn * nrad + jlo + jj ] * normc
+                        * cscale;
          yd[ jj ]       = yc[ jj ] - yp[ jj ];
       }
 
       QwtPlotCurve* ccv = new QwtPlotCurve(
          tr( "compared scan %1" ).arg( iscn ) );
       ccv->setPen    ( QPen( colc, 1, Qt::DashLine ) );
-      ccv->setSamples( ginfo.sig_radius, yc );
+      ccv->setSamples( rvals, yc );
       ccv->attach    ( scan_plot );
 
       QwtPlotCurve* dcv = new QwtPlotCurve(
          tr( "difference scan %1" ).arg( iscn ) );
       dcv->setPen    ( QPen( colc, 1 ) );
-      dcv->setSamples( ginfo.sig_radius, yd );
+      dcv->setSamples( rvals, yd );
       dcv->attach    ( diff_plot );
-   }
-
-   if ( rad_ilo > 0  ||  rad_ihi < nrad )
-   {  // Show where the included radial range begins and ends
-      for ( int ii = 0; ii < 2; ii++ )
-      {
-         QwtPlotMarker* rmark = new QwtPlotMarker();
-         rmark->setLineStyle( QwtPlotMarker::VLine );
-         rmark->setLinePen  ( QPen( Qt::darkGray, 1, Qt::DashDotLine ) );
-         rmark->setXValue   ( ( ii == 0 )
-                              ? ginfo.sig_radius[ rad_ilo ]
-                              : ginfo.sig_radius[ rad_ihi - 1 ] );
-         rmark->attach      ( scan_plot );
-      }
    }
 
    QString ptit   = tr( "Scans at %1 %2, %3 %4" )
@@ -1946,6 +2023,12 @@ void US_show_norm::pick_sect_y( const QPointF& pos )
    int    knear   = -1;
    double dnear   = 1.0e+30;
 
+   if ( ginfo.species )
+   {  // This plot runs against species number, not an attribute value
+      knear          = qBound( 0, qRound( pos.x() ) - 1, ginfo.nks - 1 );
+   }
+
+   else
    for ( int iy = 0; iy < ginfo.nks; iy++ )
    {  // The section runs along Y at the selected X
       int    jj      = iy * nss + qBound( 0, pick_ix, nss - 1 );
@@ -1979,10 +2062,12 @@ void US_show_norm::pick_sect_x( const QPointF& pos )
    int    iyp     = qBound( 0, pick_iy, ginfo.nks - 1 );
    int    knear   = -1;
    double dnear   = 1.0e+30;
+   // With a species list every member is on this plot, not just one row
+   int    klo     = ginfo.species ? 0 : ( iyp * nss );
+   int    khi     = ginfo.species ? ginfo.nks : ( iyp * nss + nss );
 
-   for ( int ix = 0; ix < nss; ix++ )
+   for ( int jj = klo; jj < khi; jj++ )
    {  // The section runs along X at the selected Y
-      int    jj      = iyp * nss + ix;
       double dd      = qAbs( pos.x() - xy_distro[ jj ].s );
 
       if ( dd < dnear )
