@@ -170,7 +170,7 @@ class US_GUI_EXTERN US_Sassoc : public QFrame
       
    private:
    
-      int xpos, buttonh, buttonw, ypos, spacing, border, model;
+      int xpos, buttonh, buttonw, ypos, widget_spacing, border, model;
       unsigned int ARRAY_SIZE;
       unsigned int curve[3];
       double **data;

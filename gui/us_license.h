@@ -15,7 +15,7 @@
 */
 
 //! \note All spacing values are in pixel units.
-#define spacing        5 //!< Spacing between widgets.
+#define widget_spacing        5 //!< Spacing between widgets.
 #define commaWidth    10 //!< Spacing for a simple comma.
 #define buttonw      180 //!< Width of each pushbutton.
 #define full_buttonw 610 //!< Width of large line edit widgets.

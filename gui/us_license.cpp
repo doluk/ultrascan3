@@ -18,25 +18,25 @@ US_License::US_License( QWidget* parent, Qt::WindowFlags flags )
   // (probably anything over 12pt).
 
 
-  const int width = 5 * pushbutton + 4 * spacing;
+  const int width = 5 * pushbutton + 4 * widget_spacing;
 
-  int xpos = spacing;
-  int ypos = spacing;
+  int xpos = widget_spacing;
+  int ypos = widget_spacing;
 
   // Banner
   QLabel* banner = us_banner( 
      tr( "Please enter all fields" ) );
 
   banner->setGeometry( 
-      QRect( xpos, ypos, width, spacing + rowHeight ) );
+      QRect( xpos, ypos, width, widget_spacing + rowHeight ) );
 
   // Row 1 - Name
-  ypos += rowHeight + 2 * spacing;
+  ypos += rowHeight + 2 * widget_spacing;
 
   QLabel* firstname = us_label( tr( "Name (first, last):" ), 0, QFont::Bold );
   firstname->setGeometry( xpos, ypos, buttonw, rowHeight );
 
-  xpos += buttonw + spacing;
+  xpos += buttonw + widget_spacing;
 
   le_firstname = us_lineedit( "" );
   le_firstname->setGeometry( xpos, ypos, half_buttonw, rowHeight );
@@ -44,12 +44,12 @@ US_License::US_License( QWidget* parent, Qt::WindowFlags flags )
   connect( le_firstname, SIGNAL( textChanged     ( const QString& ) ), 
                          SLOT  ( update_firstname( const QString& ) ) );
 
-  xpos += half_buttonw + spacing;
+  xpos += half_buttonw + widget_spacing;
 
   QLabel* comma = new QLabel( ",", this );
   comma->setGeometry( xpos, ypos, 10, rowHeight );
 
-  xpos += spacing + 10;
+  xpos += widget_spacing + 10;
 
   le_lastname = us_lineedit( "" );
   le_lastname->setGeometry( xpos, ypos, half_buttonw, rowHeight );
@@ -58,13 +58,13 @@ US_License::US_License( QWidget* parent, Qt::WindowFlags flags )
                         SLOT  ( update_lastname( const QString& ) ) );
 
   // Row 2 - Email
-  xpos  = spacing;
-  ypos += rowHeight + spacing;
+  xpos  = widget_spacing;
+  ypos += rowHeight + widget_spacing;
 
   QLabel* email = us_label( tr( "E-mail Address:" ), 0, QFont::Bold );
   email->setGeometry( xpos, ypos, buttonw, rowHeight );
 
-  xpos += buttonw + spacing;
+  xpos += buttonw + widget_spacing;
 
   le_email = us_lineedit( "" );
   le_email->setGeometry( xpos, ypos, full_buttonw, rowHeight );
@@ -72,13 +72,13 @@ US_License::US_License( QWidget* parent, Qt::WindowFlags flags )
                      SLOT  ( update_email( const QString& ) ) );
 
   // Row 3 - Institution
-  xpos = spacing;
-  ypos += rowHeight + spacing;
+  xpos = widget_spacing;
+  ypos += rowHeight + widget_spacing;
 
   QLabel* institution = us_label( tr("Institution:" ), 0, QFont::Bold );
   institution->setGeometry( xpos, ypos, buttonw, rowHeight );
 
-  xpos += spacing + buttonw;
+  xpos += widget_spacing + buttonw;
 
   le_institution = us_lineedit( "" );
   le_institution->setGeometry( xpos, ypos, full_buttonw, rowHeight );
@@ -86,25 +86,25 @@ US_License::US_License( QWidget* parent, Qt::WindowFlags flags )
                            SLOT  ( update_institution( const QString& ) ) );
 
   // Row 5 - City/State/Zip
-  xpos = spacing;
-  ypos += rowHeight + spacing;
+  xpos = widget_spacing;
+  ypos += rowHeight + widget_spacing;
 
   QLabel* city = us_label( tr( "City:" ), 0, QFont::Bold );
   city->setGeometry( xpos, ypos, buttonw, rowHeight );
 
-  xpos += spacing + buttonw;
+  xpos += widget_spacing + buttonw;
 
   le_city = us_lineedit( "" );
   le_city->setGeometry( xpos, ypos, buttonw, rowHeight );
   connect( le_city, SIGNAL( textChanged( const QString& ) ), 
                     SLOT  ( update_city( const QString& ) ) );
 
-  xpos += buttonw + spacing;
+  xpos += buttonw + widget_spacing;
 
   QLabel* lb_state = us_label( tr( "State:" ), 0, QFont::Bold );
   lb_state->setGeometry( xpos, ypos, smallColumn, rowHeight );
 
-  xpos += smallColumn + spacing;
+  xpos += smallColumn + widget_spacing;
 
   cbb_state = us_comboBox();
   states << "NON-US" << "AL" << "AR" << "AZ" << "CA" << "CO" << "CT"
@@ -123,7 +123,7 @@ US_License::US_License( QWidget* parent, Qt::WindowFlags flags )
   connect( cbb_state, SIGNAL( currentIndexChanged( const QString& ) ), 
                       SLOT  ( update_state       ( const QString& ) ) );
 
-  xpos += mediumColumn + spacing + 10; // Adjust
+  xpos += mediumColumn + widget_spacing + 10; // Adjust
 
   //xpos  = spacing;
  // ypos += rowHeight + spacing;
@@ -135,7 +135,7 @@ US_License::US_License( QWidget* parent, Qt::WindowFlags flags )
   QLabel* lb_licensetype = us_label( tr( "License:" ), 0, QFont::Bold );
   lb_licensetype->setGeometry( xpos, ypos, smallColumn, rowHeight );
 
-  xpos += smallColumn + spacing;
+  xpos += smallColumn + widget_spacing;
 
   cbb_licensetype = us_comboBox();
   types << "academic" << "commercial";
@@ -146,24 +146,24 @@ US_License::US_License( QWidget* parent, Qt::WindowFlags flags )
   connect( cbb_licensetype, SIGNAL( currentIndexChanged( const QString& ) ), 
                             SLOT  ( update_licensetype ( const QString& ) ) );
   
-  xpos  = spacing;
-  ypos += rowHeight + spacing;
+  xpos  = widget_spacing;
+  ypos += rowHeight + widget_spacing;
 
   QLabel* status = us_banner( tr( "License Status" ) );
-  status->setGeometry( QRect( xpos, ypos, width, spacing + rowHeight ) );
+  status->setGeometry( QRect( xpos, ypos, width, widget_spacing + rowHeight ) );
 
 
   // Very light gray, for read-only line edits
   QPalette gray = US_GuiSettings::readonlyColor();
 
   // Row 7 - Platform
-  xpos  = spacing;
-  ypos += rowHeight + 2 * spacing;
+  xpos  = widget_spacing;
+  ypos += rowHeight + 2 * widget_spacing;
 
   lbl_platform = us_label( "Platform / OS:", 0, QFont::Bold );
   lbl_platform->setGeometry( xpos, ypos, buttonw, rowHeight );
 
-  xpos += buttonw + spacing;
+  xpos += buttonw + widget_spacing;
 
   le_platform = us_lineedit( "", 0 );
   le_platform->setPalette ( gray );
@@ -171,13 +171,13 @@ US_License::US_License( QWidget* parent, Qt::WindowFlags flags )
   le_platform->setGeometry( xpos, ypos, full_buttonw, rowHeight );
 
   // Row 8 - Expiration
-  xpos  = spacing;
-  ypos += rowHeight + spacing;
+  xpos  = widget_spacing;
+  ypos += rowHeight + widget_spacing;
   
   lbl_expiration = us_label( "Expiration:", 0, QFont::Bold );
   lbl_expiration->setGeometry( xpos, ypos, buttonw, rowHeight );
 
-  xpos += buttonw + spacing;
+  xpos += buttonw + widget_spacing;
 
   le_expiration = us_lineedit( "", 0 );
   le_expiration->setPalette ( gray );
@@ -185,13 +185,13 @@ US_License::US_License( QWidget* parent, Qt::WindowFlags flags )
   le_expiration->setGeometry( xpos, ypos, full_buttonw, rowHeight );
 
   // Row 9 - Version
-  xpos  = spacing;
-  ypos += rowHeight + spacing;
+  xpos  = widget_spacing;
+  ypos += rowHeight + widget_spacing;
 
   lbl_valid = us_label( "UltraScan III Version:", 0, QFont::Bold );
   lbl_valid->setGeometry( xpos, ypos, buttonw, rowHeight );
 
-  xpos += buttonw + spacing;
+  xpos += buttonw + widget_spacing;
 
   le_registration = us_lineedit( "", 0 );
   le_registration->setPalette ( gray );
@@ -199,8 +199,8 @@ US_License::US_License( QWidget* parent, Qt::WindowFlags flags )
   le_registration->setGeometry( xpos, ypos, full_buttonw, rowHeight );
 
   // Row 10 - Pushbuttons
-  xpos  = spacing + pushbutton + spacing;
-  ypos += spacing + rowHeight;
+  xpos  = widget_spacing + pushbutton + widget_spacing;
+  ypos += widget_spacing + rowHeight;
   
   pb_update = us_pushbutton( tr( "Register" ) );
   pb_update->setGeometry( xpos, ypos, pushbutton, rowHeight );
@@ -221,13 +221,13 @@ US_License::US_License( QWidget* parent, Qt::WindowFlags flags )
         break;
   }
 
-  xpos += pushbutton + spacing;
+  xpos += pushbutton + widget_spacing;
 
   pb_help = us_pushbutton( tr( "Help" ) );
   pb_help->setGeometry( xpos, ypos, pushbutton, rowHeight );
   connect( pb_help, SIGNAL( clicked() ), SLOT( help() ) );
 
-  xpos += pushbutton + spacing;
+  xpos += pushbutton + widget_spacing;
 
   pb_cancel = us_pushbutton( tr( "Close" ) );
   pb_cancel->setGeometry( xpos, ypos, pushbutton, rowHeight );
@@ -235,7 +235,7 @@ US_License::US_License( QWidget* parent, Qt::WindowFlags flags )
 
   // Finish up
   ypos += 30;    
-  setMinimumSize( spacing + width + spacing, ypos );
+  setMinimumSize( widget_spacing + width + widget_spacing, ypos );
 
   updating_email = false;
   load_current();

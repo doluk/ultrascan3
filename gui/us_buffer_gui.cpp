@@ -1686,7 +1686,7 @@ void US_BufferGuiNew::add_lower_cosed_component() {
 void US_BufferGuiNew::add_cosed_component(bool overlaying) {
    DbgLv(1) << "BufN:SL: add_cosed_component()";
    // escape if not all values are defined (will be reinvoked as soon the next field is field)
-   if (le_concen->text().isEmpty() or le_cosed_name->text().isEmpty()) {
+   if (le_concen->text().isEmpty() || le_cosed_name->text().isEmpty()) {
       DbgLv(2) << "BufN:SL: add_cosed_component() not filled";
       return;
    }
