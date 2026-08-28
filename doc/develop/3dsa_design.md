@@ -273,6 +273,98 @@ design proceeds unchanged apart from the `density_tb` correction above.
 
 ---
 
+## 3B. Phase 2 results — the engine, measured
+
+`utils/us_3dsa_process.{h,cpp}` is the fit engine, GUI-free so the desktop
+program, the MPI back end and the test suite share it.
+`test/utils/test_us_3dsa_process.cpp` drives it end to end over synthetic
+buoyancy-contrast series; all seven tests pass in ~6 s.
+
+### The exit criterion is met
+
+Three datasets (ρ = 0.998, 1.050, 1.105) generated from one species at
+*s* = 4 S, *f/f₀* = 1.5, v̄ = 0.73, with **deliberately different cell
+loadings** of 1.00, 0.70 and 1.40. Grid 5 × 5 × 5 with the truth on a grid
+point:
+
+| quantity | true | recovered |
+|---|---|---|
+| v̄ | 0.7300 | **0.7299** |
+| *s* (S) | 4.0000 | **3.9998** |
+| loading ratios | 1.00 / 0.70 / 1.40 | **1.0000 / 0.7000 / 1.3999** |
+| RMSD | — | 3.1 × 10⁻⁵ |
+
+The recovered v̄ error of 1 × 10⁻⁴ mL/g sits well inside the 0.0049 mL/g the
+contrast implies. Dropping the amplitude factors on the same data moves the
+v̄ error to 0.078 and the RMSD to 0.30 — two thousand times worse — which is
+the measurement behind design decision D5.
+
+### The amplitude loop needed accelerating
+
+Alternating NNLS with the closed-form amplitudes converges, but only
+geometrically: measured contraction was a near-constant **0.79 per pass**,
+needing ~26 passes over the whole grid to settle. Each pass is a full fit, so
+that is not affordable.
+
+A geometric sequence has a known limit, so the loop now takes it — Aitken/
+Steffensen extrapolation in log space over three successive iterates, skipped
+when the sequence is not actually contracting, and always verified by
+re-fitting afterwards. Convergence went from >26 passes to **7**, and the
+RMSD from 9.7 × 10⁻³ to 3.1 × 10⁻⁵.
+
+### Two bugs found, both outside 3DSA
+
+**`US_Math2::nnls` corrupts memory on ill-conditioned systems.** The
+secondary loop of Lawson & Hanson removes coefficients from the active set one
+at a time, re-checking feasibility after each removal. The feasibility flag
+was set once *before* the loop instead of before each re-check, so it could
+only ever go from 1 to 0: one round-off-induced removal makes the loop run
+until the set-P counter and index cursor fall below zero and the routine
+writes outside its index array. It never terminates cleanly once it enters
+that path, so the fix can only change results that were already invalid.
+
+This is the solver under **2DSA, PCSA, GA and DMGA**, not just 3DSA. A 3DSA
+fit over two datasets — only marginally identifiable, hence badly conditioned
+— hits it reliably; `TestUS3dsaProcess.ProducesAStandardSpaceModel` segfaults
+without the fix. Twenty thousand randomly generated near-rank-deficient
+systems did *not* reach it, so the trigger needs the particular structure of
+real Lamm-equation columns. `test/utils/test_us_math2_nnls.cpp` adds the
+general coverage the routine previously lacked entirely.
+
+**`US_SolveSim::DataSet` had no default initialization.** Any caller that
+forgot a scalar handed `calc_residuals` an indeterminate value — and
+`solute_type` selects which branch of the fit runs. Scalars now carry default
+initializers.
+
+### The column cache does not work — D7 is withdrawn
+
+§7 claimed a 3–10× saving from caching columns keyed on quantised
+(*s\**, *D\**), reasoning that the 3-D grid maps onto a 2-D manifold so many
+points must collide. **Measured over a production 64 × 64 × 16 grid, they do
+not:**
+
+| relative tolerance | distinct columns | of total | saving |
+|---|---|---|---|
+| 10⁻⁵ | 65,536 | 100.0 % | 1.00× |
+| 10⁻⁴ | 64,332 | 98.2 % | 1.02× |
+| 10⁻³ | 54,838 | 83.7 % | 1.20× |
+| 10⁻² | 16,270 | 24.8 % | 4.03× |
+
+The inference was wrong. The image of the grid being two-dimensional does not
+make grid points *coincide* — the v̄ axis slides a point **along** the
+manifold rather than onto a neighbour. What that confinement produces is
+near-collinearity, not duplication: a **conditioning** problem, not a
+**redundancy** one. (It is the same conditioning that broke the NNLS routine
+above.) A cache only pays at 10⁻² relative, which is coarser than the data
+noise and would corrupt the fit.
+
+**Consequence for §7.** Without the cache the third axis costs what it looks
+like it costs: *n*<sub>v</sub> × a 2DSA run per dataset — 16× at the default
+— times the series length. The "2–5× per dataset" figure in §7.2 depended on
+the cache and is withdrawn with it. Corrected in §7 below.
+
+---
+
 ## 4. Design decisions
 
 | # | Decision | Rationale |
@@ -283,7 +375,7 @@ design proceeds unchanged apart from the `density_tb` correction above.
 | **D4** | Reuse `US_SolveSim::calc_residuals()` as-is for the inner solve; share grid generation and the identifiability metric via `utils/`. | The `stype > 9` path already does exactly the right thing per dataset. Duplicating a 1,800-line solver would be the single largest source of divergence bugs. |
 | **D5** | Add per-dataset amplitude scale factors, fitted in an alternating outer loop. | §3.6. Small, well-defined, and removes a bias that would otherwise corrupt the headline number. |
 | **D6** | Buoyancy-contrast gate in the GUI *and* in the MPI parser. | Cluster jobs bypass the GUI; the gate has to live where the fit starts, in both paths. |
-| **D7** | Column cache keyed on quantised (*s\**, *D\**), per dataset. | §6.3. This is the main cost mitigation and it follows directly from §3.1: the simulation depends on nothing else. |
+| ~~**D7**~~ | ~~Column cache keyed on quantised (*s\**, *D\**), per dataset.~~ **Withdrawn in Phase 2** — measured saving is 1.00× at usable tolerances (§3B). The grid's image is 2-D but its points do not coincide; the v̄ axis slides them along the manifold. The result is near-collinearity, not redundancy. |
 | **D8** | `US_Model::THREEDSA` appended at the **end** of `AnalysisType`. | The enum is serialised as a bare integer in model XML (`utils/us_model.cpp:707-712`). Inserting in the middle would silently reinterpret every stored model. |
 
 ---
@@ -377,21 +469,26 @@ and re-queues their union at the next depth until a single final pass remains. N
 logic is dimensional. Only `nsubgrid`, `maxtsols` and the progress estimator need cubic-aware
 values.
 
-### 6.3 Column cache keyed on (*s\**, *D\**) — the main cost mitigation
+### 6.3 Column cache keyed on (*s\**, *D\**) — withdrawn on measurement
 
-Follows directly from §3.1: within one dataset, the simulated column depends on *nothing but*
-(*s\**, *D\**). The 3-D grid maps onto a 2-D manifold per dataset, so a large fraction of grid
-points request simulations that are indistinguishable from one already computed.
+The plan proposed caching simulated columns keyed on quantised (*s\**, *D\**),
+reasoning from §3.1 that the 3-D grid maps onto a 2-D manifold per dataset and so a large fraction
+of grid points must request simulations indistinguishable from one already computed. Phase 2
+measured it over a production 64 × 64 × 16 grid and the saving is **1.00× at 10⁻⁵ relative** and
+1.20× at 10⁻³ — see §3B for the full table.
 
-* Quantise (*s\**, *D\**) at the resolution below which the simulated curves differ by less than a
-  fraction of the data noise; use that as a hash key.
-* Cache per dataset, per worker thread, for the lifetime of one task.
-* Across the series the *stacked* column is still unique — which is exactly why the fit works — but
-  each *block* can come from the cache.
+The inference was wrong, in an instructive way. The grid's *image* is two-dimensional, but its
+points do not pile onto each other: moving along the v̄ axis slides a point **along** the manifold,
+not onto a neighbour. Confinement to a surface produces near-*collinearity*, not *duplication* —
+a conditioning problem, not a redundancy one. It is the same conditioning that exposed the NNLS
+bug in §3B.
 
-Expected saving: 3–10× on Lamm-solver calls, concentrated precisely on the degenerate work. The
-quantisation tolerance must be a tunable with a conservative default and must be reported in the
-run log, because it is a genuine approximation.
+A cache only pays at 10⁻² relative, coarser than the data noise, where it would corrupt the fit.
+Design decision D7 is withdrawn.
+
+What the observation *does* suggest, and what is worth investigating instead, is a **coarse-then-
+refine v̄ scan**: because the v̄ axis moves a point smoothly along the manifold, a coarse v̄ pass
+locates the region and a fine pass need only cover it.
 
 A natural companion: extend the existing `_NORM_CUTOFF_` column culling
 (`utils/us_solve_sim.cpp:616`), which currently drops near-*zero* columns, to also drop
@@ -444,16 +541,26 @@ Three independent factors, none of them speculative:
 1. **The v̄ axis is intrinsically coarse (§3.4).** Resolution is 0.005–0.01 mL/g; a 0.60–0.85 range
    needs 16–25 points. Take *n<sub>v</sub>* = 16 as the default → 65,536 columns, a 16× increase,
    not 64×.
-2. **The column cache (§6.3)** removes 3–10× of that, and removes exactly the redundant part.
+2. ~~**The column cache (§6.3)** removes 3–10× of that.~~ **Withdrawn** — measured at 1.00×
+   (§3B, §6.3). The columns are near-collinear, not duplicated.
 3. **Subgridding already bounds the working set.** At `grid_reps` = 8 the 3-D grid yields 512
    subgrids of 128 points — comparable to the 64 subgrids of 64 points that 2DSA handles today. Per
    task, the NNLS matrix stays the same order of magnitude; what grows is the *number* of tasks,
    which is the parallelisable dimension.
 
-Net expectation: **2–5× the wall-clock of a 2DSA run per dataset**, times the number of datasets in
-the series. For a 3-dataset series that is roughly 6–15× a single 2DSA run — well inside what the
-cluster path handles routinely, and at the upper end of, but not beyond, what a desktop run can do
-overnight.
+**Net expectation, corrected after Phase 2.** With the cache withdrawn, the third axis costs what it
+appears to cost: *n<sub>v</sub>* × a 2DSA run per dataset — **16× at the default** — times the
+number of datasets, plus the amplitude iterations (7 measured, each a full pass).
+
+Measured throughput on the Phase 2 test geometry (4 scans × 261 points, 200 simpoints) was ≈ 1,200
+Lamm solves per second across four threads. A production geometry is one to two orders of magnitude
+heavier per solve, which puts a full 64 × 64 × 16 three-dataset fit in the region of several hours
+on four cores and tens of minutes on a cluster: **desktop-marginal, cluster-comfortable**. That is
+now measurement-backed rather than estimated.
+
+Two mitigations remain and both are real — the v̄ axis is intrinsically coarse (§3.4), and only
+depth 0 is proportional to the grid size. A third, the coarse-then-refine v̄ scan of §6.3, is the
+replacement for the cache and should be evaluated before the GUI settles its defaults.
 
 ### 7.3 Memory
 
@@ -527,14 +634,15 @@ Run the existing 2DSA test corpus and diff the output models.
 |---|---|---|---|
 | **0 — Spike** ✅ | `test_us_solve_sim_vbar.cpp` only: demonstrate the single-dataset degeneracy and two-density identifiability numerically. | **Done** — see §3A. Degeneracy exact to machine precision, confirmed through `US_Astfem_RSA`; §3.4 table reproduced; one correction found (`density_tb`). | 2 d |
 | **1 — utils** ✅ | 3-D grid generation, mask validation, `buoyancy_contrast()`, `THREEDSA`, the `attr_z != 3` fix, `fit_vbar`. | **Done** — 27 tests green across `test_us_solute3d.cpp` and `test_us_solve_sim_vbar.cpp`; the full HPC target including `us_mpi_analysis` builds clean; both solver fixes are no-ops for existing single-dataset callers. A second latent bug found and fixed — see §5.1. | 3 d |
-| **2 — Engine** | `US_3dsaProcess`, `WorkerThread3D`, column cache, scale-factor loop. Driven headless from a test harness. | Synthetic 3-dataset fit (§8.2) recovers v̄ to spec, without any GUI. | 2 wk |
+| **2 — Engine** ✅ | `US_3dsaProcess`, the parallel level runner, the amplitude loop. Driven headless from a test harness. | **Done** — see §3B. v̄ recovered to 1×10⁻⁴ mL/g and the loadings to four decimals on a synthetic three-buffer series; 7 engine tests green. The column cache was measured and withdrawn; two bugs outside 3DSA found and fixed. | 2 wk |
 | **3 — GUI** | `us_3dsa` main window + dataset-series manager, control panel, gate, plots, launcher registration. | An analyst can run the §8.2 case end to end from the menu. | 3 wk |
 | **4 — MPI** | `3dsa_master`/`3dsa_worker`, parser, model writer, gate in the parser. LIMS coordination in parallel. | Cluster job completes and returns models equivalent to the desktop run. | 2 wk |
 | **5 — Docs & integration** | `doc/manual/source/3dsa/`, help pages wired to `showHelp`, downstream consumer smoke tests, §8.3 cross-check. | Manual builds; consumers verified; cross-check documented. | 1 wk |
 
 Phases 0–2 are the ones that can invalidate the concept, and they are deliberately front-loaded.
-Phases 0 and 1 have now run: §3.4 reproduced (see §3A) and the shared `utils/` layer is in place,
-so the design stands and Phase 2 can begin.
+Phases 0, 1 and 2 have now run: §3.4 reproduced (§3A), the shared `utils/` layer in place, and the
+engine recovering v̄ from a synthetic series (§3B). The design stands, with D7 withdrawn on
+measurement. Phase 3 can begin.
 
 ### Future work (explicitly out of scope here)
 

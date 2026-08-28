@@ -927,6 +927,26 @@ DbgLv(1) << "CR: sdat:"
                ksols++;
             }
 
+            // Apply this data set's amplitude scale, if one was supplied.
+            // Done here, before the simulation is stored, so that the A
+            // matrix, the returned sim_data and the residuals all see the
+            // same scaled block.
+            if ( ( ee - offset ) < sim_vals.scales.size() )
+            {
+               const double dscale = sim_vals.scales[ ee - offset ];
+
+               if ( dscale != 1.0 )
+               {
+                  const int ksc = simdat.scanCount();
+                  const int kpt = simdat.pointCount();
+
+                  for ( int ss = 0; ss < ksc; ss++ )
+                     for ( int rr = 0; rr < kpt; rr++ )
+                        simdat.setValue( ss, rr,
+                                         simdat.value( ss, rr ) * dscale );
+               }
+            }
+
             simulations << simdat;   // Save simulation (each datset,solute)
 
             // Populate the A matrix for the NNLS routine with simulation

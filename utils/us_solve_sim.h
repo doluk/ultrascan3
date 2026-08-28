@@ -14,6 +14,7 @@
 #include "us_zsolute.h"
 #include "us_astfem_math.h"
 #include "us_astfem_rsa.h"
+#include "us_constants.h"
 
 #define SIMPARAMS US_SimulationParameters
 
@@ -42,21 +43,25 @@ class US_UTIL_EXTERN US_SolveSim : public QObject
             US_Model                model;        //!< Model input and output
             SIMPARAMS               simparams;    //!< Simulation parameters
             US_Solution             solution_rec; //!< Solution record
-            double                  viscosity;    //!< Solution buffer viscosity
-            double                  density;      //!< Solution buffer density
-            double                  compress;     //!< Sol.buff. compressibility
-            double                  temperature;  //!< Average run temperature
+            // Scalars carry default initializers: the class has no
+            // constructor, and a caller that forgets one of these otherwise
+            // hands calc_residuals an indeterminate value.  solute_type in
+            // particular selects which branch of the fit runs.
+            double                  viscosity   = VISC_20W; //!< Buffer viscosity
+            double                  density     = DENS_20W; //!< Buffer density
+            double                  compress    = 0.0;  //!< Sol.buff. compressibility
+            double                  temperature = NORMAL_TEMP; //!< Avg run temperature
 
-            double            vbar20;             //!< VBar at 20 degrees C
-            double            vbartb;             //!< VBar at temperature
-            double            s20w_correction;    //!< s data correction
-            double            D20w_correction;    //!< D data correction
-            double            rotor_stretch[ 2 ]; //!< Stretch coefficients
-            double            centerpiece_bottom; //!< Base bottom
-            double            zcoeffs[ 4 ];       //!< Solute Z coefficients
+            double            vbar20  = TYPICAL_VBAR;     //!< VBar at 20 degrees C
+            double            vbartb  = TYPICAL_VBAR;     //!< VBar at temperature
+            double            s20w_correction = 1.0;      //!< s data correction
+            double            D20w_correction = 1.0;      //!< D data correction
+            double            rotor_stretch[ 2 ] = { 0.0, 0.0 }; //!< Stretch coeffs
+            double            centerpiece_bottom = 0.0;   //!< Base bottom
+            double            zcoeffs[ 4 ] = { 0.0, 0.0, 0.0, 0.0 }; //!< Z coeffs
 
-            int               solute_type;        //!< Solute type (0,1,2)
-            bool              manual;             //!< visc.,dens. manual
+            int               solute_type = 0;      //!< Solute type (0,1,2)
+            bool              manual      = false;  //!< visc.,dens. manual
 
             //! \brief Flag that vbar varies from solute to solute
             //!
@@ -83,6 +88,21 @@ class US_UTIL_EXTERN US_SolveSim : public QObject
          QVector< double >     variances;  //!< Variances for data sets
          QVector< double >     ti_noise;   //!< Time-invariant noise
          QVector< double >     ri_noise;   //!< Radially-invariant noise
+
+         //! \brief Per-data-set amplitude scale factors
+         //!
+         //! One NNLS coefficient multiplies a solute's column across every
+         //! data set, which assumes the same signal concentration in each.
+         //! A buoyancy-contrast series loads each cell separately, so that
+         //! assumption fails and the bias lands in the fitted vbar.  Supply
+         //! one factor per data set (in offset order) to scale each set's
+         //! simulated block before it reaches the A matrix.
+         //!
+         //! Empty, the default, means all ones: every existing caller is
+         //! unaffected.  Honoured by the attribute-mask branch, which is the
+         //! one a global vbar fit uses.
+         QVector< double >     scales;
+
          QVector< US_Solute >  solutes;    //!< Input/Output solutes
          QVector< US_ZSolute > zsolutes;   //!< Input/Output solutes
          long int              maxrss;     //!< Running max rss memory in KB

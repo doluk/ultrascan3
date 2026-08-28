@@ -1108,10 +1108,9 @@ int US_Math2::nnls( double* a, int a_dim1, int m, int n,
          /* Modify A and B and the INDEX arrays to move coefficient i */
          /* from set P to set Z. */
          
-         k     = index[ jj + 1 ]; 
-         pfeas = 1;
+         k     = index[ jj + 1 ];
 
-         do 
+         do
          {
             x[ k ] = 0.0;
             if ( jj != ( nsetp - 1 ) ) 
@@ -1152,7 +1151,17 @@ int US_Math2::nnls( double* a, int a_dim1, int m, int n,
             /* be because of the way alpha was determined. If any are */
             /* infeasible it is due to round-off error. Any that are */
             /* nonpositive will be set to zero and moved from set P to set Z */
-            for( jj = 0; jj < nsetp; jj++ ) 
+
+            /* pfeas must be reset on every pass, as in Lawson & Hanson.  Set
+               once before the loop it can only ever go from 1 to 0, so a
+               single round-off-induced removal makes the loop run until
+               nsetp and iz1 fall below zero and index[ iz1 ] writes outside
+               the array.  Reachable whenever the system is ill-conditioned
+               enough for alpha interpolation to leave a coefficient
+               marginally negative. */
+            pfeas = 1;
+
+            for( jj = 0; jj < nsetp; jj++ )
             {
                k = index[ jj ]; 
                if ( x[ k ] <= 0.0 ) 
