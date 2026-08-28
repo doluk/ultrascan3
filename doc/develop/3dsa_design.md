@@ -188,6 +188,91 @@ real bias. See design decision D5 and algorithm §6.4.
 
 ---
 
+## 3A. Phase 0 results — the analysis, measured
+
+Phase 0 has been run. `test/utils/test_us_solve_sim_vbar.cpp` drives the real
+`US_Model::calc_coefficients()`, `US_Math2::data_correction()` and
+`US_Astfem_RSA::calculate()`; all six tests pass in ~125 ms. The numbers below
+are the measured output, not estimates.
+
+### The fibre is exact
+
+Taking a reference species (4 S, *f/f₀* = 1.5, v̄ = 0.73) in water, and inverting
+the corrections at each v̄ in 0.60–0.85 to recover the (*s*<sub>20,W</sub>, *f/f₀*)
+that reproduces the same observables:
+
+| v̄ (mL/g) | *s*<sub>20,W</sub> (S) | *f/f₀* | *M* (Da) | rel. Δ*s\** | rel. Δ*D\** |
+|---|---|---|---|---|---|
+| 0.600 | 3.9999 | 1.824 | 45,880 | 0 | 0 |
+| 0.700 | 4.0000 | 1.575 | 61,084 | 0 | 0 |
+| 0.730 | 4.0000 | 1.500 | 66,602 | 0 | 0 |
+| 0.800 | 4.0001 | 1.317 | 91,358 | 0 | 0 |
+| 0.850 | 4.0002 | 1.174 | 121,456 | 0 | 0 |
+
+The deviation is not small, it is **exactly zero to machine precision**, and the
+implied molar mass varies by a factor of **2.65** along the fibre. The
+*s*<sub>20,W</sub> spread over the whole fibre is 0.008 %.
+
+### The solver confirms it
+
+The stronger statement, at the level of the Lamm solver rather than the
+coefficient algebra. Two fibre points — v̄ = 0.60 (*M* = 45,880) and v̄ = 0.85
+(*M* = 121,456) — simulated through `US_Astfem_RSA` over 5 scans × 701 radial
+points:
+
+```
+max |A − B| = 0.000000e+00      max |A| = 1.191829e+02
+```
+
+**Bit-identical.** As a control, perturbing *D\** by 0.1 % in one of the two
+simulations raises `max |A − B|` to 0.1155, so the test resolves differences
+five orders of magnitude smaller than the effect it reports as absent.
+
+### Contrast lifts it
+
+Spread in *s\** across that same fibre, evaluated in each buffer:
+
+| Buffer | ρ (g/mL) | *s\** spread across the fibre |
+|---|---|---|
+| H₂O (the one it was built in) | 0.9982 | 0.000 % |
+| 100 % D₂O | 1.1050 | **109.6 %** |
+| ≈ 50 % D₂O | 1.0500 | 30.0 % |
+| Weak contrast | 1.0100 | 5.2 % |
+
+### The sensitivity table is confirmed
+
+Closed form versus a central difference of the actual corrections:
+
+| Second buffer | closed form | numeric | §3.4 table | δv̄ at 1 % |
+|---|---|---|---|---|
+| 1.1050 | −2.0354 | −2.0354 | −2.04 | 0.0049 |
+| 1.0500 | −0.8172 | −0.8172 | −0.82 | 0.0122 |
+| 1.0100 | −0.1651 | −0.1651 | −0.17 | 0.0606 |
+
+### One correction to the design
+
+The gain must be evaluated at the **temperature-corrected** density
+`SolutionData::density_tb`, not the nominal 20 °C buffer density.
+`data_correction()` forms the buoyancy term from
+`density_tb = density · density_wt(T) / DENS_20W`, and `density_wt(20)` is not
+exactly the `DENS_20W` constant. Using the nominal density leaves a systematic
+residual of 3.0 × 10⁻⁶ relative; using `density_tb` brings agreement to
+7 × 10⁻¹¹, i.e. pure finite-difference noise.
+
+At 20 °C this is negligible, but the factor `density_wt(T)/DENS_20W` departs
+from 1 by roughly 0.1 % at 25 °C and 2 % at 40 °C — around 1.7 % on the gain at
+25 °C — which is enough to move a series across the gate threshold. **Phase 1's
+`buoyancy_contrast()` must take `density_tb` from `data_correction()`**, and the
+test asserts that the nominal-density form is measurably worse.
+
+### Exit criterion
+
+Met. The single-dataset degeneracy is exact, the density-series separation is
+large, and the §3.4 sensitivity table reproduces to the precision quoted. The
+design proceeds unchanged apart from the `density_tb` correction above.
+
+---
+
 ## 4. Design decisions
 
 | # | Decision | Rationale |
@@ -214,7 +299,7 @@ real bias. See design decision D5 and algorithm §6.4.
 | `us_solve_sim.h/.cpp` | **bug fix** | `utils/us_solve_sim.cpp:723` selects the "vbar is constant" fast path with `if ( attr_z != 3 )` — i.e. on the *position* of v̄ in the mask. With three genuinely varying axes this is wrong whenever v̄ lands in the z slot: it would apply dataset 0's cached corrections to every solute. Replace the positional test with an explicit flag. |
 | `us_solve_sim.h` | **new field** | `DataSet::fit_vbar` (bool). Set by the caller; drives the fix above. Also lets the existing 2DSA "vary vbar" mode state its intent instead of relying on attribute order. |
 | `us_solve_sim.h/.cpp` | **new field** | `Simulation::scales` — per-dataset amplitude factors (§6.4), defaulting to all-ones so existing callers are unaffected. |
-| `us_solve_sim.h/.cpp` | **new static** | `buoyancy_contrast( QList<DataSet*>&, double vbar_mid, double& dlnR_dvbar, QString& msg )` — the §3.4 metric, used by the GUI gate and the MPI parser. |
+| `us_solve_sim.h/.cpp` | **new static** | `buoyancy_contrast( QList<DataSet*>&, double vbar_mid, double& dlnR_dvbar, QString& msg )` — the §3.4 metric, used by the GUI gate and the MPI parser. Must evaluate at `SolutionData::density_tb`, per §3A. |
 | `us_solve_sim.cpp` | **extend** | `check_grid_size()` messages and limits for 3-D point counts. |
 | `us_model.h/.cpp` | **new enum value** | `THREEDSA` appended to `AnalysisType`; `"3DSA"` added to the `typeText()` map. |
 | `us_zsolute.h/.cpp` | *(no change)* | Already generalised; kept as the PCSA path. |
@@ -325,7 +410,7 @@ only, and it should not ship as the default.
 
 ### 6.5 Identifiability metric (D6 gate)
 
-For the loaded series and the midpoint of the requested v̄ range, compute for every pair (*e₁*, *e₂*)
+For the loaded series and the midpoint of the requested v̄ range, compute for every pair (*e₁*, *e₂*) — with ρ taken from `SolutionData::density_tb`, not the nominal buffer density (§3A) —
 
 $$G_{e_1e_2}=\left|\frac{\rho_{e_1}}{1-\bar v\rho_{e_1}}-\frac{\rho_{e_2}}{1-\bar v\rho_{e_2}}\right|$$
 
@@ -381,15 +466,21 @@ produced the estimate. The existing `US_SolveSim::checkGridSize()` guard needs i
 * `test_us_solute3d.cpp` — grid point counts; subgrid partition covers the box exactly once;
   `grid_reps` = 1 degenerates to a single full grid; mask validation rejects (*D*, *MW*) pairs and
   duplicate attributes; the *f/f₀* ≥ 1 filter on the (*s*, *D*, v̄) mapping.
-* `test_us_solve_sim_vbar.cpp` — **encodes the physics as a test**:
-  1. (*s*, *f/f₀*, v̄) and (*s*, *D*, v̄) parameterisations of the same species yield identical
+* `test_us_solve_sim_vbar.cpp` — **delivered in Phase 0**; results in §3A. Encodes the physics as
+  six executable checks:
+  1. `ParameterisationsAreEquivalent` — (*s*, *f/f₀*, v̄) and (*s*, *D*, v̄) yield identical
      (*s\**, *D\**);
-  2. for a **single** dataset, distinct grid triples produce columns whose pairwise angle is below
-     tolerance — i.e. the degeneracy is real and detected;
-  3. for a **two-density** series, the same triples produce well-separated stacked columns;
-  4. `buoyancy_contrast()` reproduces the §3.4 table to the stated precision.
+  2. `SingleDatasetFibreIsExact` — for a **single** dataset the fibre is reproduced to machine
+     precision across a molar-mass range of 2.65×;
+  3. `LammSolverIgnoresVbar` — two fibre points give bit-identical `US_Astfem_RSA` output;
+  4. `DensityContrastSeparatesTheFibre` — a **second density** spreads the same fibre by > 100 %;
+  5. `BuoyancyGainMatchesCorrections` — the closed form is the derivative of `data_correction()`
+     when evaluated at `density_tb`, and the §3.4 table is reproduced;
+  6. `ContrastGateClassifiesSeries` — the three example series fall on the intended sides of the
+     refuse/warn thresholds, and a single dataset has identically zero gain.
 
-  Test (2) is the guard that stops anyone from "helpfully" re-enabling single-dataset 3DSA later.
+  Checks (2) and (3) are the guard that stops anyone from "helpfully" re-enabling single-dataset
+  3DSA later. Phase 1 re-points check (5) at the real `buoyancy_contrast()` once it exists.
 
 ### 8.2 Synthetic end-to-end
 
@@ -419,16 +510,15 @@ Run the existing 2DSA test corpus and diff the output models.
 
 | Phase | Content | Exit criterion | Est. |
 |---|---|---|---|
-| **0 — Spike** | `test_us_solve_sim_vbar.cpp` only: demonstrate the single-dataset degeneracy and two-density identifiability numerically. | The numbers in §3.4 confirmed against the real solver. De-risks everything downstream and produces the documentation figures. | 2 d |
+| **0 — Spike** ✅ | `test_us_solve_sim_vbar.cpp` only: demonstrate the single-dataset degeneracy and two-density identifiability numerically. | **Done** — see §3A. Degeneracy exact to machine precision, confirmed through `US_Astfem_RSA`; §3.4 table reproduced; one correction found (`density_tb`). | 2 d |
 | **1 — utils** | 3-D grid generation, mask validation, `buoyancy_contrast()`, `THREEDSA`, the `attr_z != 3` fix, `fit_vbar`. | Unit tests green; 2DSA/PCSA regression clean. | 3 d |
 | **2 — Engine** | `US_3dsaProcess`, `WorkerThread3D`, column cache, scale-factor loop. Driven headless from a test harness. | Synthetic 3-dataset fit (§8.2) recovers v̄ to spec, without any GUI. | 2 wk |
 | **3 — GUI** | `us_3dsa` main window + dataset-series manager, control panel, gate, plots, launcher registration. | An analyst can run the §8.2 case end to end from the menu. | 3 wk |
 | **4 — MPI** | `3dsa_master`/`3dsa_worker`, parser, model writer, gate in the parser. LIMS coordination in parallel. | Cluster job completes and returns models equivalent to the desktop run. | 2 wk |
 | **5 — Docs & integration** | `doc/manual/source/3dsa/`, help pages wired to `showHelp`, downstream consumer smoke tests, §8.3 cross-check. | Manual builds; consumers verified; cross-check documented. | 1 wk |
 
-Phases 0–2 are the ones that can invalidate the concept, and they are deliberately front-loaded:
-**if Phase 0 does not reproduce §3.4, the rest of the plan should be reconsidered before any GUI
-work begins.**
+Phases 0–2 are the ones that can invalidate the concept, and they are deliberately front-loaded.
+Phase 0 has now run and reproduced §3.4 (see §3A), so the design stands and Phase 1 can begin.
 
 ### Future work (explicitly out of scope here)
 
