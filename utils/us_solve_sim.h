@@ -57,6 +57,17 @@ class US_UTIL_EXTERN US_SolveSim : public QObject
 
             int               solute_type;        //!< Solute type (0,1,2)
             bool              manual;             //!< visc.,dens. manual
+
+            //! \brief Flag that vbar varies from solute to solute
+            //!
+            //! When the grid fits vbar, the buffer corrections depend on each
+            //! solute's own vbar and must be recomputed per solute, per data
+            //! set.  calc_residuals() historically inferred this from the
+            //! position of vbar in the attribute mask, which is wrong for a
+            //! grid that fits vbar in the Z slot (3DSA).  Callers that fit
+            //! vbar set this; leaving it false preserves the older behaviour
+            //! exactly.
+            bool              fit_vbar = false;
     };
 
     //! Class for communicating simulation
@@ -70,7 +81,7 @@ class US_UTIL_EXTERN US_SolveSim : public QObject
          double                xnormsq;    //!< X-norm squared
          double                alpha;      //!< Tikhonov regularization factor
          QVector< double >     variances;  //!< Variances for data sets
-         QVector< double >     ti_noise;   //!< Time-invariant noise 
+         QVector< double >     ti_noise;   //!< Time-invariant noise
          QVector< double >     ri_noise;   //!< Radially-invariant noise
          QVector< US_Solute >  solutes;    //!< Input/Output solutes
          QVector< US_ZSolute > zsolutes;   //!< Input/Output solutes
@@ -88,6 +99,47 @@ class US_UTIL_EXTERN US_SolveSim : public QObject
     //! \param thrnrank       Thread number or processor rank (1,...)
     //! \param signal_wanted  Flag whether to emit progress signals
     US_SolveSim        ( QList< DataSet* >&, int, bool = false );
+
+    //! \brief Buoyancy contrast of a set of data sets
+    //!
+    //! vbar is only measurable from a series of runs in buffers of differing
+    //! density: the Lamm-equation solver sees a species solely through its
+    //! experimental-space s and D, and vbar reaches s alone, through the
+    //! buoyancy term.  Two data sets therefore constrain vbar in proportion
+    //! to
+    //!
+    //! \f[ \frac{\partial \ln R}{\partial \bar v}
+    //!     = \frac{\rho_1}{1-\bar v \rho_1}-\frac{\rho_2}{1-\bar v \rho_2} \f]
+    //!
+    //! where R is the ratio of their s values for one species.  This returns
+    //! the largest such gain over all pairs of data sets, in (mL/g)^-1.  A
+    //! single data set, or a set of runs in one buffer, gives zero: vbar is
+    //! then not determined at all, however good the data.
+    //!
+    //! The densities used are the temperature-corrected ones that
+    //! US_Math2::data_correction() forms, not the nominal 20 C buffer
+    //! densities; the two differ by the factor density_wt(T)/DENS_20W, which
+    //! reaches a couple of percent away from 20 C.
+    //!
+    //! \param data_sets Data sets in the series
+    //! \param vbar_mid  vbar at which to evaluate, e.g. the middle of the
+    //!                  grid range
+    //! \param msg       Returned human-readable summary of the series
+    //! \returns         Largest pairwise gain, in (mL/g)^-1
+    static double buoyancy_contrast( QList< DataSet* >&, double, QString& );
+
+    //! \brief vbar resolution implied by a buoyancy contrast
+    //! \param gain      Contrast from buoyancy_contrast()
+    //! \param s_precis  Relative precision of the measured s ratio, e.g. 0.01
+    //! \returns         Achievable vbar resolution in mL/g, or a large
+    //!                  sentinel when the gain is zero
+    static double vbar_resolution( double, double );
+
+    //! Below this gain, a fit that varies vbar must be refused: (mL/g)^-1
+    static const double VBAR_CONTRAST_REFUSE;
+
+    //! Below this gain, a fit that varies vbar should warn: (mL/g)^-1
+    static const double VBAR_CONTRAST_WARN;
 
   public slots:
 

@@ -24,6 +24,11 @@
 // If SingleDatasetFibreIsExact or LammSolverIgnoresVbar ever fails, the
 // premise of the 3DSA design has changed and doc/develop/3dsa_design.md needs
 // to be revisited before the gate on single-dataset fits is relaxed.
+//
+// The later tests cover the Phase 1 additions built on that premise:
+// US_SolveSim::buoyancy_contrast(), vbar_resolution(), the gate thresholds,
+// and the DataSet::fit_vbar flag that tells calc_residuals() to recompute the
+// buffer corrections per solute.
 
 #include "qt_test_base.h"
 
@@ -33,8 +38,10 @@
 #include "us_simparms.h"
 #include "us_astfem_rsa.h"
 #include "us_dataIO.h"
+#include "us_solve_sim.h"
 
 #include <cmath>
+#include <memory>
 #include <vector>
 
 namespace {
@@ -62,10 +69,10 @@ const double REF_VBAR = 0.73;
 const double VBAR_LO  = 0.60;
 const double VBAR_HI  = 0.85;
 
-// Gate thresholds from the design document, in (mL/g)^-1.  Phase 1 moves
-// these into US_SolveSim::buoyancy_contrast(); the test then follows.
-const double GATE_REFUSE = 0.5;
-const double GATE_WARN   = 1.0;
+// Gate thresholds, in (mL/g)^-1.  Phase 1 moved these into US_SolveSim, so
+// take them from there rather than restating the design document.
+const double GATE_REFUSE = US_SolveSim::VBAR_CONTRAST_REFUSE;
+const double GATE_WARN   = US_SolveSim::VBAR_CONTRAST_WARN;
 
 // Experimental-space coefficients plus the standard-space values they came
 // from, i.e. everything calc_residuals() derives for one grid point.
@@ -455,4 +462,192 @@ TEST_F( TestSolveSimVbar, ContrastGateClassifiesSeries )
    EXPECT_NEAR( 0.01 / g_full, 0.005, 0.001 );
    EXPECT_NEAR( 0.01 / g_half, 0.012, 0.001 );
    EXPECT_NEAR( 0.01 / g_weak, 0.061, 0.005 );
+}
+
+// ---------------------------------------------------------------------------
+// US_SolveSim::buoyancy_contrast() -- the metric the D6 gate is built on.
+// ---------------------------------------------------------------------------
+namespace {
+
+// A DataSet carrying just the fields buoyancy_contrast() reads.
+US_SolveSim::DataSet* make_dataset( const Buffer& b )
+{
+   US_SolveSim::DataSet* d = new US_SolveSim::DataSet;
+   d->density     = b.density;
+   d->viscosity   = b.viscosity;
+   d->temperature = b.temperature;
+   d->manual      = false;
+   d->vbar20      = REF_VBAR;
+   return d;
+}
+
+// Owns the DataSets for one test and hands out the QList the API wants.
+class Series
+{
+public:
+   explicit Series( std::initializer_list< Buffer > buffers )
+   {
+      for ( const Buffer& b : buffers )
+      {
+         owned_.emplace_back( make_dataset( b ) );
+         list_ << owned_.back().get();
+      }
+   }
+   QList< US_SolveSim::DataSet* >& list() { return list_; }
+
+private:
+   std::vector< std::unique_ptr< US_SolveSim::DataSet > > owned_;
+   QList< US_SolveSim::DataSet* >                         list_;
+};
+
+} // namespace
+
+TEST_F( TestSolveSimVbar, BuoyancyContrastAgreesWithTheClosedForm )
+{
+   struct Case { Buffer second; double expected; };
+   const Case cases[] = {
+      { BUF_D2O,  2.04 },
+      { BUF_HALF, 0.82 },
+      { BUF_WEAK, 0.17 },
+   };
+
+   for ( const Case& c : cases )
+   {
+      Series series { BUF_WATER, c.second };
+      QString msg;
+      const double gain = US_SolveSim::buoyancy_contrast( series.list(),
+                                                          REF_VBAR, msg );
+
+      EXPECT_NEAR( gain, c.expected, 0.01 ) << "density " << c.second.density;
+      EXPECT_FALSE( msg.isEmpty() );
+
+      // Same number the local closed form gives, at density_tb.
+      const double closed = std::fabs(
+         buoyancy_gain( REF_VBAR, density_tb( REF_VBAR, BUF_WATER ),
+                                  density_tb( REF_VBAR, c.second ) ) );
+      EXPECT_LT( std::fabs( gain - closed ) / closed, 1.0e-12 );
+   }
+}
+
+TEST_F( TestSolveSimVbar, BuoyancyContrastTakesTheWidestPair )
+{
+   // A third, intermediate buffer must not lower the reported contrast: the
+   // metric reports the best pair in the series, not the average.
+   Series pair   { BUF_WATER, BUF_D2O };
+   Series triple { BUF_WATER, BUF_HALF, BUF_D2O };
+
+   QString m1, m2;
+   const double g_pair   = US_SolveSim::buoyancy_contrast( pair  .list(),
+                                                           REF_VBAR, m1 );
+   const double g_triple = US_SolveSim::buoyancy_contrast( triple.list(),
+                                                           REF_VBAR, m2 );
+
+   EXPECT_NEAR( g_pair, g_triple, 1.0e-12 );
+}
+
+TEST_F( TestSolveSimVbar, BuoyancyContrastIsZeroWithoutContrast )
+{
+   // One data set: no contrast at all, and the message must say why.
+   Series single { BUF_WATER };
+   QString msg;
+   EXPECT_DOUBLE_EQ( 0.0, US_SolveSim::buoyancy_contrast( single.list(),
+                                                          REF_VBAR, msg ) );
+   EXPECT_FALSE( msg.isEmpty() );
+
+   // Several runs in the same buffer are no better.
+   Series same { BUF_WATER, BUF_WATER, BUF_WATER };
+   QString msg2;
+   EXPECT_DOUBLE_EQ( 0.0, US_SolveSim::buoyancy_contrast( same.list(),
+                                                          REF_VBAR, msg2 ) );
+
+   // Both fall below the refusal threshold, which is what the gate acts on.
+   EXPECT_LT( 0.0, US_SolveSim::VBAR_CONTRAST_REFUSE );
+}
+
+TEST_F( TestSolveSimVbar, ContrastGateThresholdsClassifyTheExampleSeries )
+{
+   auto gain_of = [ & ]( const Buffer& second )
+   {
+      Series series { BUF_WATER, second };
+      QString msg;
+      return US_SolveSim::buoyancy_contrast( series.list(), REF_VBAR, msg );
+   };
+
+   EXPECT_GT( gain_of( BUF_D2O  ), US_SolveSim::VBAR_CONTRAST_WARN   );
+   EXPECT_GT( gain_of( BUF_HALF ), US_SolveSim::VBAR_CONTRAST_REFUSE );
+   EXPECT_LT( gain_of( BUF_HALF ), US_SolveSim::VBAR_CONTRAST_WARN   );
+   EXPECT_LT( gain_of( BUF_WEAK ), US_SolveSim::VBAR_CONTRAST_REFUSE );
+
+   // The thresholds themselves must stay in the order the gate assumes.
+   EXPECT_LT( US_SolveSim::VBAR_CONTRAST_REFUSE,
+              US_SolveSim::VBAR_CONTRAST_WARN );
+}
+
+TEST_F( TestSolveSimVbar, VbarResolutionInvertsTheGain )
+{
+   Series series { BUF_WATER, BUF_D2O };
+   QString msg;
+   const double gain = US_SolveSim::buoyancy_contrast( series.list(),
+                                                       REF_VBAR, msg );
+
+   EXPECT_NEAR( US_SolveSim::vbar_resolution( gain, 0.01 ), 0.005, 0.001 );
+
+   // Halving the s precision halves the resolution.
+   EXPECT_NEAR( US_SolveSim::vbar_resolution( gain, 0.005 ),
+                US_SolveSim::vbar_resolution( gain, 0.010 ) * 0.5, 1.0e-12 );
+
+   // No contrast means no resolution, reported as a large sentinel rather
+   // than a division by zero.
+   EXPECT_GT( US_SolveSim::vbar_resolution( 0.0, 0.01 ), 1.0e+12 );
+}
+
+// ---------------------------------------------------------------------------
+// The corrections path in calc_residuals().  fit_vbar tells it that vbar
+// varies per solute even when vbar sits in the mask's Z slot; without the
+// flag the historical positional rule is preserved exactly.
+// ---------------------------------------------------------------------------
+TEST_F( TestSolveSimVbar, FitVbarDefaultsOffSoBehaviourIsUnchanged )
+{
+   US_SolveSim::DataSet dset;
+   EXPECT_FALSE( dset.fit_vbar )
+      << "fit_vbar must default off, or every existing caller changes"
+         " behaviour";
+}
+
+TEST_F( TestSolveSimVbar, CorrectionsAreVbarSensitiveOnlyUnderContrast )
+{
+   // What fit_vbar controls is whether each solute gets its own corrections
+   // or the data set's cached ones.  That only matters where the corrections
+   // actually depend on vbar -- and the size of the dependence is the same
+   // quantity buoyancy_contrast() measures.
+   const double nominal_vbar = 0.73;   // the data set's vbar
+   const double solute_vbar  = 0.62;   // a grid point elsewhere on the axis
+
+   auto s_corr_shift = [ & ]( const Buffer& b )
+   {
+      const US_Math2::SolutionData cached = corrections( nominal_vbar, b );
+      const US_Math2::SolutionData fresh  = corrections( solute_vbar,  b );
+
+      // D never sees vbar, in any buffer.
+      EXPECT_DOUBLE_EQ( fresh.D20w_correction, cached.D20w_correction );
+
+      return std::fabs( fresh.s20w_correction - cached.s20w_correction )
+             / cached.s20w_correction;
+   };
+
+   // In water the buoyancy ratio is (1 - v*rho_20w)/(1 - v*rho_tb) with the
+   // two densities nearly equal, so vbar very nearly cancels.  Using the
+   // cached corrections there costs almost nothing -- which is exactly why a
+   // single aqueous run cannot determine vbar.
+   EXPECT_LT( s_corr_shift( BUF_WATER ), 1.0e-3 );
+
+   // Under real contrast the same vbar shift moves the correction by more
+   // than 10%, so the cached-versus-recomputed distinction is decisive.
+   EXPECT_GT( s_corr_shift( BUF_D2O  ), 0.05 );
+   EXPECT_GT( s_corr_shift( BUF_HALF ), 0.01 );
+
+   // The ordering follows the contrast, as it must.
+   EXPECT_LT( s_corr_shift( BUF_WATER ), s_corr_shift( BUF_WEAK ) );
+   EXPECT_LT( s_corr_shift( BUF_WEAK  ), s_corr_shift( BUF_HALF ) );
+   EXPECT_LT( s_corr_shift( BUF_HALF  ), s_corr_shift( BUF_D2O  ) );
 }

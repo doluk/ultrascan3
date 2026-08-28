@@ -388,7 +388,8 @@ QString US_Model::typeText( int subtype )
       { PCSA,        QObject::tr( "PCSA"        ) },
       { CUSTOMGRID,  QObject::tr( "CUSTOMGRID"  ) },
       { DMGA,        QObject::tr( "DMGA"        ) },
-      { DMGA_CONSTR, QObject::tr( "DMGA_CONSTR" ) }
+      { DMGA_CONSTR, QObject::tr( "DMGA_CONSTR" ) },
+      { THREEDSA,    QObject::tr( "3DSA"        ) }
    };
 
    const int ntmap = sizeof( tmap ) / sizeof( tmap[ 0 ] );

@@ -294,15 +294,24 @@ design proceeds unchanged apart from the `density_tb` correction above.
 
 | File | Change | Detail |
 |---|---|---|
-| `us_solute.h/.cpp` | **new API** | `init_solutes_3d( xlo, xhi, nx, ylo, yhi, ny, zlo, zhi, nz, grid_reps, s_mask, out )` producing `grid_reps³` interleaved subgrids. Writes values into the `US_Solute` field selected by the mask, matching `US_SolveSim::set_comp_attr()` conventions (`ATTR_S`→`.s`, `ATTR_K`→`.k`, `ATTR_V`→`.v`, `ATTR_W`/`ATTR_D`/`ATTR_F`→`.d`). |
-| `us_solute.h/.cpp` | **new API** | `validate_mask( s_mask, QString& err )` — rejects any mask that puts two axes in the shared `.d` slot (e.g. *D* and *MW* together), and rejects duplicate attributes. |
-| `us_solve_sim.h/.cpp` | **bug fix** | `utils/us_solve_sim.cpp:723` selects the "vbar is constant" fast path with `if ( attr_z != 3 )` — i.e. on the *position* of v̄ in the mask. With three genuinely varying axes this is wrong whenever v̄ lands in the z slot: it would apply dataset 0's cached corrections to every solute. Replace the positional test with an explicit flag. |
-| `us_solve_sim.h` | **new field** | `DataSet::fit_vbar` (bool). Set by the caller; drives the fix above. Also lets the existing 2DSA "vary vbar" mode state its intent instead of relying on attribute order. |
-| `us_solve_sim.h/.cpp` | **new field** | `Simulation::scales` — per-dataset amplitude factors (§6.4), defaulting to all-ones so existing callers are unaffected. |
-| `us_solve_sim.h/.cpp` | **new static** | `buoyancy_contrast( QList<DataSet*>&, double vbar_mid, double& dlnR_dvbar, QString& msg )` — the §3.4 metric, used by the GUI gate and the MPI parser. Must evaluate at `SolutionData::density_tb`, per §3A. |
-| `us_solve_sim.cpp` | **extend** | `check_grid_size()` messages and limits for 3-D point counts. |
-| `us_model.h/.cpp` | **new enum value** | `THREEDSA` appended to `AnalysisType`; `"3DSA"` added to the `typeText()` map. |
+| `us_solute.h/.cpp` | **new API** [done] | `init_solutes_3d( xlo, xhi, nx, ylo, yhi, ny, zlo, zhi, nz, grid_reps, s_mask, out )` producing `grid_reps³` interleaved subgrids. Writes values into the `US_Solute` field selected by the mask, matching `US_SolveSim::set_comp_attr()` conventions (`ATTR_S`→`.s`, `ATTR_K`→`.k`, `ATTR_V`→`.v`, `ATTR_W`/`ATTR_D`/`ATTR_F`→`.d`). Points are indexed rather than accumulated, so counts are exact; returns the effective `grid_reps`, clamped so no subgrid is empty. |
+| `us_solute.h/.cpp` | **new API** [done] | `validate_mask( s_mask, QString& err )` — rejects any mask that puts two axes in the shared `.d` slot (e.g. *D* and *MW* together), duplicate attributes, and the three-bit values that name no attribute. |
+| `us_solute.h/.cpp` | **new API** [done] | `physical_sdv( solute )` and `FF0_SPHERE_TOLER` — the *f/f₀* ≥ 1 filter for the rectangular *s*×*D* grid (§6.1). The tolerance exists because round-tripping an exact sphere through `calc_coefficients()` lands a few ulp below 1.0. |
+| `us_solute.h` | **new enum** [done] | `US_Solute::attr_type`, static-asserted against `US_ZSolute`'s numbering so the two cannot drift apart. |
+| `us_solve_sim.h/.cpp` | **bug fix** [done] | The "vbar is constant" fast path was selected by `if ( attr_z != 3 )` — on the *position* of v̄ in the mask. With three genuinely varying axes that is wrong whenever v̄ lands in the z slot: dataset 0's cached corrections would be applied to every solute. Now `( attr_z != ATTR_V ) or fit_vbar`, identical to the old test whenever `fit_vbar` is false. |
+| `us_solve_sim.cpp` | **bug fix** [done] | The same fast path took `vbartb`, `s20w_correction` and `D20w_correction` from `data_sets[0]` for *every* dataset in the loop. In a global fit each dataset has its own buffer and its own corrections; it now reads them from `dset`. See the note below. |
+| `us_solve_sim.h` | **new field** [done] | `DataSet::fit_vbar` (bool, defaulted false). Set by the caller; drives the fix above. Also lets the existing 2DSA "vary vbar" mode state its intent instead of relying on attribute order. |
+| `us_solve_sim.h/.cpp` | **new static** [done] | `buoyancy_contrast( QList<DataSet*>&, double vbar_mid, QString& msg )` returning the largest pairwise gain over the series, plus `vbar_resolution()` and the `VBAR_CONTRAST_REFUSE` / `VBAR_CONTRAST_WARN` thresholds. Evaluates at `SolutionData::density_tb`, per §3A. |
+| `us_model.h/.cpp` | **new enum value** [done] | `THREEDSA` appended to `AnalysisType`; `"3DSA"` added to the `typeText()` map. |
+| `us_solve_sim.h/.cpp` | *(deferred to Phase 2)* | `Simulation::scales`. A field nothing reads is a trap — a caller sets it and is silently ignored — so it lands with the outer loop that consumes it (§6.4). |
+| `us_solve_sim.cpp` | *(not needed)* | `check_grid_size()` was listed for a 3-D extension, but it bounds Lamm-equation *time steps* from `s_max` alone. That is already dimension-independent. |
 | `us_zsolute.h/.cpp` | *(no change)* | Already generalised; kept as the PCSA path. |
+
+**Note on the second fix.** For a single-dataset fit `dset == data_sets[0]`, so results are
+bit-identical; the change is visible only in a global fit through the mask path, which is precisely
+where the old code was wrong. Callers that do not set `fit_vbar` keep the historical branch
+selection exactly — `ATTR_V` is 3, and `us_solve_sim.cpp` static-asserts it so the equivalence
+cannot silently break.
 
 ### 5.2 `programs/us_3dsa/` — new desktop program
 
@@ -463,9 +472,12 @@ produced the estimate. The existing `US_SolveSim::checkGridSize()` guard needs i
 
 ### 8.1 Unit tests (`test/utils/`, auto-discovered by the existing gtest glob)
 
-* `test_us_solute3d.cpp` — grid point counts; subgrid partition covers the box exactly once;
-  `grid_reps` = 1 degenerates to a single full grid; mask validation rejects (*D*, *MW*) pairs and
-  duplicate attributes; the *f/f₀* ≥ 1 filter on the (*s*, *D*, v̄) mapping.
+* `test_us_solute3d.cpp` — **delivered in Phase 1**, 14 checks: grid point counts; the subgrid
+  partition covers the box exactly once and leaves no subgrid empty; endpoints are hit exactly;
+  `grid_reps` = 1 degenerates to a single full grid and an over-large `grid_reps` is clamped; axis
+  values land in the field the mask names; s ≈ 0 points are omitted; mask validation rejects
+  (*D*, *MW*) pairs, duplicates and unknown attributes; the *f/f₀* ≥ 1 filter drops exactly the
+  unphysical points of the (*s*, *D*, v̄) box and nothing from the (*s*, *f/f₀*, v̄) one.
 * `test_us_solve_sim_vbar.cpp` — **delivered in Phase 0**; results in §3A. Encodes the physics as
   six executable checks:
   1. `ParameterisationsAreEquivalent` — (*s*, *f/f₀*, v̄) and (*s*, *D*, v̄) yield identical
@@ -480,7 +492,10 @@ produced the estimate. The existing `US_SolveSim::checkGridSize()` guard needs i
      refuse/warn thresholds, and a single dataset has identically zero gain.
 
   Checks (2) and (3) are the guard that stops anyone from "helpfully" re-enabling single-dataset
-  3DSA later. Phase 1 re-points check (5) at the real `buoyancy_contrast()` once it exists.
+  3DSA later. Phase 1 added seven more to the same file, exercising the real `buoyancy_contrast()`,
+  `vbar_resolution()`, the gate thresholds, the `fit_vbar` default, and the fact that the
+  corrections are v̄-sensitive only under contrast — which is why the cached-versus-recomputed
+  distinction matters at all.
 
 ### 8.2 Synthetic end-to-end
 
@@ -511,14 +526,15 @@ Run the existing 2DSA test corpus and diff the output models.
 | Phase | Content | Exit criterion | Est. |
 |---|---|---|---|
 | **0 — Spike** ✅ | `test_us_solve_sim_vbar.cpp` only: demonstrate the single-dataset degeneracy and two-density identifiability numerically. | **Done** — see §3A. Degeneracy exact to machine precision, confirmed through `US_Astfem_RSA`; §3.4 table reproduced; one correction found (`density_tb`). | 2 d |
-| **1 — utils** | 3-D grid generation, mask validation, `buoyancy_contrast()`, `THREEDSA`, the `attr_z != 3` fix, `fit_vbar`. | Unit tests green; 2DSA/PCSA regression clean. | 3 d |
+| **1 — utils** ✅ | 3-D grid generation, mask validation, `buoyancy_contrast()`, `THREEDSA`, the `attr_z != 3` fix, `fit_vbar`. | **Done** — 27 tests green across `test_us_solute3d.cpp` and `test_us_solve_sim_vbar.cpp`; the full HPC target including `us_mpi_analysis` builds clean; both solver fixes are no-ops for existing single-dataset callers. A second latent bug found and fixed — see §5.1. | 3 d |
 | **2 — Engine** | `US_3dsaProcess`, `WorkerThread3D`, column cache, scale-factor loop. Driven headless from a test harness. | Synthetic 3-dataset fit (§8.2) recovers v̄ to spec, without any GUI. | 2 wk |
 | **3 — GUI** | `us_3dsa` main window + dataset-series manager, control panel, gate, plots, launcher registration. | An analyst can run the §8.2 case end to end from the menu. | 3 wk |
 | **4 — MPI** | `3dsa_master`/`3dsa_worker`, parser, model writer, gate in the parser. LIMS coordination in parallel. | Cluster job completes and returns models equivalent to the desktop run. | 2 wk |
 | **5 — Docs & integration** | `doc/manual/source/3dsa/`, help pages wired to `showHelp`, downstream consumer smoke tests, §8.3 cross-check. | Manual builds; consumers verified; cross-check documented. | 1 wk |
 
 Phases 0–2 are the ones that can invalidate the concept, and they are deliberately front-loaded.
-Phase 0 has now run and reproduced §3.4 (see §3A), so the design stands and Phase 1 can begin.
+Phases 0 and 1 have now run: §3.4 reproduced (see §3A) and the shared `utils/` layer is in place,
+so the design stands and Phase 2 can begin.
 
 ### Future work (explicitly out of scope here)
 

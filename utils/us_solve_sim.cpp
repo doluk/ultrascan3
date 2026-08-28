@@ -160,6 +160,104 @@ bool US_SolveSim::check_grid_size( double s_max, QString& smsg )
    return checkGridSize( data_sets, s_max, smsg );
 }
 
+// Thresholds on the buoyancy contrast, in (mL/g)^-1.  At 1% precision on a
+// measured s ratio these correspond to vbar resolutions of about 0.02 and
+// 0.01 mL/g respectively; a full H2O/D2O contrast gives roughly 2.0, i.e.
+// about 0.005 mL/g.
+const double US_SolveSim::VBAR_CONTRAST_REFUSE = 0.5;
+const double US_SolveSim::VBAR_CONTRAST_WARN   = 1.0;
+
+// Static function to measure the buoyancy contrast across a set of data sets
+double US_SolveSim::buoyancy_contrast( QList< DataSet* >& data_sets,
+                                       double vbar_mid, QString& msg )
+{
+   msg              = QString( "" );
+   const int ndsets = data_sets.size();
+
+   if ( ndsets < 2 )
+   {
+      msg = tr( "A single data set carries no buoyancy contrast, so vbar is"
+                " not determined by the data at all.  Fitting vbar needs a"
+                " series of runs in buffers of differing density." );
+      return 0.0;
+   }
+
+   // The temperature-corrected density each data set's corrections are built
+   // from.  Reuse data_correction() rather than repeating its water model.
+   QVector< double > rho_tb( ndsets, 0.0 );
+
+   for ( int dd = 0; dd < ndsets; dd++ )
+   {
+      DataSet* dset  = data_sets[ dd ];
+      US_Math2::SolutionData sd;
+      sd.density     = dset->density;
+      sd.viscosity   = dset->viscosity;
+      sd.manual      = dset->manual;
+      sd.vbar20      = vbar_mid;
+      sd.vbar        = US_Math2::adjust_vbar20( vbar_mid, dset->temperature );
+      US_Math2::data_correction( dset->temperature, sd );
+      rho_tb[ dd ]   = sd.density_tb;
+   }
+
+   // Largest pairwise gain.  A buoyancy term at or below zero means the
+   // species would not sediment in that buffer; skip such pairs rather than
+   // reporting a spurious pole.
+   double gain_max  = 0.0;
+   int    jmax      = 0;
+   int    kmax      = 1;
+
+   for ( int jj = 0; jj < ndsets; jj++ )
+   {
+      const double bj = 1.0 - vbar_mid * rho_tb[ jj ];
+      if ( qAbs( bj ) < 1.0e-6 )  continue;
+
+      for ( int kk = jj + 1; kk < ndsets; kk++ )
+      {
+         const double bk = 1.0 - vbar_mid * rho_tb[ kk ];
+         if ( qAbs( bk ) < 1.0e-6 )  continue;
+
+         const double gain = qAbs( rho_tb[ jj ] / bj - rho_tb[ kk ] / bk );
+
+         if ( gain > gain_max )
+         {
+            gain_max = gain;
+            jmax     = jj;
+            kmax     = kk;
+         }
+      }
+   }
+
+   const QString verdict =
+      ( gain_max < VBAR_CONTRAST_REFUSE )
+         ? tr( "Too little contrast: vbar cannot be fitted from this series." )
+      : ( gain_max < VBAR_CONTRAST_WARN )
+         ? tr( "Marginal contrast: vbar will be poorly resolved." )
+         : tr( "Adequate contrast." );
+
+   msg = tr( "%1 data sets; densities %2 to %3 g/mL.  Widest pair is"
+             " %4 / %5, giving a contrast of %6 (mL/g)^-1 and a vbar"
+             " resolution near %7 mL/g at 1% precision on the s ratio.  %8" )
+         .arg( ndsets )
+         .arg( *std::min_element( rho_tb.begin(), rho_tb.end() ), 0, 'f', 4 )
+         .arg( *std::max_element( rho_tb.begin(), rho_tb.end() ), 0, 'f', 4 )
+         .arg( rho_tb[ jmax ], 0, 'f', 4 )
+         .arg( rho_tb[ kmax ], 0, 'f', 4 )
+         .arg( gain_max, 0, 'f', 3 )
+         .arg( vbar_resolution( gain_max, 0.01 ), 0, 'f', 4 )
+         .arg( verdict );
+
+   return gain_max;
+}
+
+// Static function for the vbar resolution a given contrast implies
+double US_SolveSim::vbar_resolution( double gain, double s_precis )
+{
+   const double no_resolution = 1.0e+99;
+
+   return ( qAbs( gain ) > 0.0 ) ? ( qAbs( s_precis ) / qAbs( gain ) )
+                                 : no_resolution;
+}
+
 // Do the real work of a 2dsa/ga thread/processor:  simulation from solutes set
 void US_SolveSim::calc_residuals( int offset, int dataset_count, Simulation& sim_vals,
    bool padAB, QVector< double >* ASave, QVector< double >* BSave,
@@ -669,9 +767,19 @@ DbgLv(1) << "CR: attr_ x,y,z" << attr_x << attr_y << attr_z << stype << smask
          set_comp_attr( zcomponent, sim_vals.solutes[ 0 ], attr_z );
       }
 
-      double vbartb  = data_sets[ 0 ]->vbartb;  // In case Z is vbar
-      double scorre  = data_sets[ 0 ]->s20w_correction;
-      double dcorre  = data_sets[ 0 ]->D20w_correction;
+      // Does vbar vary from solute to solute?
+      //
+      // Historically this was inferred from the position of vbar in the mask:
+      // sitting in the Z slot meant "the fixed attribute", hence constant.
+      // That proxy fails for a grid that fits vbar in the Z slot (3DSA), so a
+      // data set can now say so directly.  With fit_vbar false the test is
+      // exactly the old one.
+      static_assert( (int)ATTR_V == 3,
+                     "the historical test was literally attr_z != 3" );
+      bool   vbar_varies = ( attr_z != ATTR_V )
+                           ||  data_sets[ 0 ]->fit_vbar;
+DbgLv(1) << "CR: vbar_varies" << vbar_varies << "attr_z" << attr_z
+ << "fit_vbar" << data_sets[ 0 ]->fit_vbar;
 
       for ( int cc = 0; cc < ksolutes; cc++ )
       {  // Solve for each solute
@@ -720,16 +828,18 @@ DbgLv(1) << "CR: cc" << cc << " use_zsol" << use_zsol;
             sd.density     = dset->density;
             sd.manual      = dset->manual;
             sd.vbar20      = model.components[ 0 ].vbar20;
-            if ( attr_z != 3 )
-            {  // Vbar not fixed:  temperature adjust vbar20
+            if ( vbar_varies )
+            {  // Vbar differs per solute:  recompute this solute's corrections
                sd.vbar        = US_Math2::adjust_vbar20( sd.vbar20, avtemp );
                US_Math2::data_correction( avtemp, sd );
             }
             else
-            {  // Vbar fixed:  use already computed vbar, corrections
-               sd.vbar        = vbartb;
-               sd.s20w_correction = scorre;
-               sd.D20w_correction = dcorre;
+            {  // Vbar constant:  use this data set's precomputed corrections.
+               // Note these come from dset, not data_sets[ 0 ]:  in a global
+               // fit each data set has its own buffer and its own corrections.
+               sd.vbar            = dset->vbartb;
+               sd.s20w_correction = dset->s20w_correction;
+               sd.D20w_correction = dset->D20w_correction;
             }
 
             model.components[ 0 ].s   /= sd.s20w_correction;

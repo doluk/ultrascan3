@@ -32,8 +32,11 @@ class US_UTIL_EXTERN US_Model
       enum OpticsType{ ABSORBANCE, INTERFERENCE, FLUORESCENCE };
 
       //! The type of analysis used with the model
+      //! Analysis types.  The value is written to model XML as a bare
+      //! integer, so new types must be appended, never inserted.
       enum AnalysisType { MANUAL, TWODSA, TWODSA_MW, GA, GA_MW, PCSA,
-                          COFS, FE, CUSTOMGRID, DMGA, DMGA_CONSTR };
+                          COFS, FE, CUSTOMGRID, DMGA, DMGA_CONSTR,
+                          THREEDSA };
 
       //! The type of global analysis used with the model
       enum GlobalType { NONE, MENISCUS, GLOBAL, SUPERGLOBAL, BOTTOM, MENIBOTT };
