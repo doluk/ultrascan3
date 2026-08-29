@@ -47,7 +47,11 @@ double d2o_viscosity( double pct )
 const double SIM_MENISCUS = 5.85;
 const double SIM_BOTTOM   = 7.15;
 const double SIM_DELTA_R  = 0.005;
-const int    SIM_SCANS    = 12;
+// Thirty scans.  Twelve resolved a boundary but left the fit short of the
+// time information that separates s from D, and a real velocity run collects
+// far more; the noise cases in particular were being asked to separate
+// systematic noise from the model on the strength of a dozen time points.
+const int    SIM_SCANS    = 30;
 const int    SIM_RPM      = 45000;
 const int    SIM_POINTS   = 100;
 const double SIM_TEMP     = 20.0;
@@ -206,6 +210,12 @@ bool US_3dsaCli::read_case( const QString& path, Case& kase, QString& emsg )
       ds.temperature = jnum( o, "temperature", SIM_TEMP );
       ds.loading     = jnum( o, "loading",     1.0 );
       ds.vbar20      = jnum( o, "vbar20",      0.72 );
+      ds.rnoise      = jnum( o, "rnoise",      0.0 );
+      ds.tinoise     = jnum( o, "tinoise",     0.0 );
+      ds.rinoise     = jnum( o, "rinoise",     0.0 );
+      ds.rmsd_max    = jnum( o, "rmsd_max",    0.0 );
+      ds.run_dir     = o.value( "run_dir" ).toString();
+      ds.run_id      = o.value( "run_id"  ).toString();
       kase.datasets << ds;
    }
 
@@ -231,7 +241,11 @@ bool US_3dsaCli::read_case( const QString& path, Case& kase, QString& emsg )
    kase.noisflag        = jint ( fo, "noisflag",        kase.noisflag );
    kase.fit_scales      = jbool( fo, "fit_scales",      kase.fit_scales );
    kase.edit_margin     = jnum ( fo, "edit_margin",     kase.edit_margin );
+   kase.edit_bottom_margin
+                        = jnum ( fo, "edit_bottom_margin",
+                                                        kase.edit_bottom_margin );
    kase.ignore_contrast = jbool( fo, "ignore_contrast", kase.ignore_contrast );
+   kase.decoy_vbar      = jnum ( fo, "decoy_vbar",      kase.decoy_vbar );
 
    const QJsonObject ex = root.value( "expect" ).toObject();
    kase.vbar_tol    = jnum ( ex, "vbar_tol",    kase.vbar_tol );
@@ -255,6 +269,8 @@ bool US_3dsaCli::load_datasets( const Case& kase,
                                 QString& emsg )
 {
    const double edit_margin = kase.edit_margin;
+   const double edit_bmargin = ( kase.edit_bottom_margin > 0.0 )
+                               ? kase.edit_bottom_margin : kase.edit_margin;
 
    for ( int ii = 0; ii < kase.datasets.size(); ii++ )
    {
@@ -306,8 +322,14 @@ bool US_3dsaCli::load_datasets( const Case& kase,
       // writes the full cell, meniscus to bottom inclusive; the fit
       // interpolates its own simulation onto these radii and refuses a range
       // that reaches the ends exactly.  Real edited data never does.
+      //
+      // The bottom margin is the larger of the two: that is where the
+      // boundary piles up, and it matches what us_astfem_sim writes into the
+      // edit profile it registers alongside the data.  The harness rewrites
+      // that profile to exactly this window, so a 2DSA cross-check analyses
+      // the same radii this fit does.
       const double r_lo = d->simparams.meniscus + edit_margin;
-      const double r_hi = d->simparams.bottom   - edit_margin;
+      const double r_hi = d->simparams.bottom   - edit_bmargin;
 
       QVector< int > keep;
       keep.reserve( raw.xvalues.size() );
@@ -320,8 +342,10 @@ bool US_3dsaCli::load_datasets( const Case& kase,
 
       if ( keep.size() < 10 )
       {
-         emsg = QString( "%1: only %2 points survive the %3 cm edit margin" )
-                .arg( spec.auc ).arg( keep.size() ).arg( edit_margin );
+         emsg = QString( "%1: only %2 points survive the %3 / %4 cm edit"
+                         " margins" )
+                .arg( spec.auc ).arg( keep.size() ).arg( edit_margin )
+                .arg( edit_bmargin );
          delete d;
          return false;
       }
@@ -510,13 +534,15 @@ int US_3dsaCli::run_fit( const QStringList& args )
    out() << "\n  GLOBAL RMSD  " << QString::number( result.rmsd, 'e', 6 )
          << "\n\n";
 
-   out() << QString( "  %1 %2 %3 %4 %5 %6\n" )
+   out() << QString( "  %1 %2 %3 %4 %5 %6 %7 %8\n" )
             .arg( "data set",   -22 ).arg( "D2O pct",     8 )
             .arg( "density",     12 ).arg( "RMSD",       12 )
-            .arg( "scale fit",   12 ).arg( "scale true", 12 );
+            .arg( "scale fit",   12 ).arg( "scale true", 12 )
+            .arg( "noise inj",   12 ).arg( "RMSD cap",   12 );
 
    double rmsd_lo = 1.0e+300;
    double rmsd_hi = 0.0;
+   int    ds_over = 0;      // data sets above their own RMSD cap
 
    for ( int ii = 0; ii < kase.datasets.size(); ii++ )
    {
@@ -533,14 +559,27 @@ int US_3dsaCli::run_fit( const QStringList& args )
       rmsd_lo = qMin( rmsd_lo, rmsd );
       rmsd_hi = qMax( rmsd_hi, rmsd );
 
-      out() << QString( "  %1 %2 %3 %4 %5 %6\n" )
+      // What this cell was given.  Random noise is not fitted, so it sets
+      // the floor its residual can reach; TI and RI are fitted, so they
+      // should leave nothing behind.
+      const double injected = ds.rnoise;
+      const bool   ds_ok    = ( ds.rmsd_max <= 0.0 ) || ( rmsd <= ds.rmsd_max );
+
+      if ( ! ds_ok )  ds_over++;
+
+      out() << QString( "  %1 %2 %3 %4 %5 %6 %7 %8%9\n" )
                .arg( ds.label.isEmpty()
                      ? QFileInfo( ds.auc ).fileName() : ds.label, -22 )
                .arg( ds.d2o_percent, 8, 'f', 1 )
                .arg( ds.density,    12, 'f', 6 )
                .arg( QString::number( rmsd, 'e', 4 ), 12 )
                .arg( sc,  12, 'f', 5 )
-               .arg( sct, 12, 'f', 5 );
+               .arg( sct, 12, 'f', 5 )
+               .arg( QString::number( injected, 'e', 2 ), 12 )
+               .arg( ds.rmsd_max > 0.0
+                     ? QString::number( ds.rmsd_max, 'e', 2 ) : QString( "-" ),
+                     12 )
+               .arg( ds_ok ? QString( "" ) : QString( "  ** OVER **" ) );
 
       QJsonObject jd;
       jd[ "label" ]       = ds.label;
@@ -550,6 +589,11 @@ int US_3dsaCli::run_fit( const QStringList& args )
       jd[ "variance" ]    = var;
       jd[ "scale_fit" ]   = sc;
       jd[ "scale_true" ]  = sct;
+      jd[ "rnoise" ]      = ds.rnoise;
+      jd[ "tinoise" ]     = ds.tinoise;
+      jd[ "rinoise" ]     = ds.rinoise;
+      jd[ "rmsd_max" ]    = ds.rmsd_max;
+      jd[ "rmsd_ok" ]     = ds_ok;
       jr[ QString( "dataset_%1" ).arg( ii ) ] = jd;
    }
 
@@ -570,7 +614,10 @@ int US_3dsaCli::run_fit( const QStringList& args )
                           ( result.rmsd <= kase.rmsd_max );
    const bool spread_ok = ( kase.rmsd_spread_max <= 0.0 ) ||
                           ( spread <= kase.rmsd_spread_max );
-   const bool pass      = vbar_ok && s_ok && rmsd_ok && spread_ok
+   // A series whose cells were given different noise has no single meaningful
+   // RMSD and no meaningful spread; it caps each cell separately instead.
+   const bool dssets_ok = ( ds_over == 0 );
+   const bool pass      = vbar_ok && s_ok && rmsd_ok && spread_ok && dssets_ok
                           && ! kase.must_refuse;
 
    out() << QString( "  per-data-set RMSD spread  %1x"
@@ -596,10 +643,17 @@ int US_3dsaCli::run_fit( const QStringList& args )
                         " the fit is treating the data sets unequally\n" )
                .arg( spread, 0, 'f', 1 )
                .arg( kase.rmsd_spread_max, 0, 'f', 1 );
+   if ( ! dssets_ok )
+      out() << QString( "    %1 data set(s) above their own RMSD cap -- with"
+                        " noise varying by cell, each cell's residual has to"
+                        " reach the level that cell was given\n" )
+               .arg( ds_over );
    out() << "\n";
    out().flush();
 
    jr[ "rmsd_spread" ] = spread;
+   jr[ "datasets_over_cap" ] = ds_over;
+   jr[ "decoy_vbar" ] = kase.decoy_vbar;
 
    jr[ "rmsd_global" ]  = result.rmsd;
    jr[ "vbar_fit" ]     = got_vbar;
@@ -637,7 +691,20 @@ int US_3dsaCli::run_fit( const QStringList& args )
 namespace {
 
 struct GenSpecies { double s20w, ff0, vbar20, conc; };
-struct GenDataSet { double d2o_pct, loading; };
+
+// One cell of a series.  The noise fields default to a negative sentinel
+// meaning "whatever the case declares"; a case that varies noise from cell to
+// cell sets them explicitly.  rmsd_max likewise: 0 means "use the case-wide
+// cap", which is the only sensible reading when every cell is alike.
+struct GenDataSet
+{
+   double d2o_pct;
+   double loading;
+   double rnoise   = -1.0;
+   double tinoise  = -1.0;
+   double rinoise  = -1.0;
+   double rmsd_max =  0.0;
+};
 
 struct GenCase
 {
@@ -657,7 +724,47 @@ struct GenCase
    bool                    ignore_contrast = false;
    int                     v_res = 11;
    double                  v_min = 0.60, v_max = 0.85;
+   double                  edit_margin        = 0.02;
+   double                  edit_bottom_margin = 0.10;
 };
+
+// The v-bar to plant in the analyte and solution records in place of the
+// truth, so that a 2DSA cross-check does not start from the answer.
+//
+// Half a tenth of a mL/g away from the truth, in whichever direction leaves
+// more room inside the range a protein plausibly occupies.  Deterministic, so
+// a regenerated case tree is comparable with the last one.
+double decoy_vbar_for( double truth )
+{
+   const double lo    = 0.62;
+   const double hi    = 0.83;
+   const double delta = 0.05;
+
+   const double down  = truth - delta;
+   const double up    = truth + delta;
+
+   // Prefer whichever candidate sits further from the edges of the range.
+   const double down_room = qMin( down - lo, hi - down );
+   const double up_room   = qMin( up   - lo, hi - up   );
+
+   return ( down_room >= up_room ) ? down : up;
+}
+
+// Concentration-weighted v-bar of a case's species: the truth a fit is asked
+// to recover, and what the decoy is measured against.
+double truth_vbar_of( const QVector< GenSpecies >& species )
+{
+   double num = 0.0;
+   double den = 0.0;
+
+   for ( const GenSpecies& sp : species )
+   {
+      num += sp.vbar20 * sp.conc;
+      den += sp.conc;
+   }
+
+   return ( den > 0.0 ) ? ( num / den ) : TYPICAL_VBAR;
+}
 
 // The 24 cases the harness runs.  Between them they cover every axis the
 // request named: species differing in s, in D, in vbar and in combination;
@@ -871,11 +978,107 @@ QVector< GenCase > build_cases()
      c.vbar_tol = 0.03;
      add( c ); }
 
+   // ---- 25-28: unequal random noise, cell by cell ------------------------
+   //
+   // A series is not one experiment: each cell is loaded, scanned and read
+   // separately, so its noise is its own.  These cases inject a different
+   // random level in every cell, which makes the aggregate RMSD cap and the
+   // spread check meaningless -- a spread of 6x is now the correct answer.
+   // Each data set therefore carries its own cap, and the check is that every
+   // cell's residual lands near the noise *it* was given.
+   { GenCase c; c.name = "case25_random_noise_per_dataset";
+     c.description = "One species, random noise 0.001 / 0.003 / 0.006 OD by cell";
+     c.species << A;
+     c.rmsd_spread_max = 0.0;   // a spread is expected here, not a defect
+     c.rmsd_max        = 0.0;   // per data set instead
+     c.datasets << GenDataSet{   0.0, 1.0, 0.001, -1.0, -1.0, 0.0020 }
+                << GenDataSet{  50.0, 1.0, 0.003, -1.0, -1.0, 0.0050 }
+                << GenDataSet{ 100.0, 1.0, 0.006, -1.0, -1.0, 0.0100 };
+     add( c ); }
+
+   { GenCase c; c.name = "case26_random_noise_per_dataset_mixture";
+     c.description = "Two species, 0/30/70% D2O, random noise 0.004 / 0.001 / 0.002";
+     c.species << A << B;
+     c.rmsd_spread_max = 0.0;
+     c.rmsd_max        = 0.0;
+     c.vbar_tol        = 0.025;
+     // The noisiest cell first, so a fit that quietly weights by data set
+     // order rather than by residual shows up.
+     c.datasets << GenDataSet{  0.0, 1.0, 0.004, -1.0, -1.0, 0.0070 }
+                << GenDataSet{ 30.0, 1.0, 0.001, -1.0, -1.0, 0.0020 }
+                << GenDataSet{ 70.0, 1.0, 0.002, -1.0, -1.0, 0.0040 };
+     add( c ); }
+
+   { GenCase c; c.name = "case27_noise_per_dataset_unequal_loading";
+     c.description = "Random noise and loading both varying by cell, 0/20/45/80% D2O";
+     c.species << A;
+     c.rmsd_spread_max = 0.0;
+     c.rmsd_max        = 0.0;
+     // Noise and loading pull the amplitude factors in opposite directions:
+     // the noisiest cell is also the most weakly loaded, which is the worst
+     // case for a scale loop that confuses signal with residual.
+     c.datasets << GenDataSet{  0.0, 1.0, 0.001, -1.0, -1.0, 0.0020 }
+                << GenDataSet{ 20.0, 0.5, 0.005, -1.0, -1.0, 0.0090 }
+                << GenDataSet{ 45.0, 1.6, 0.002, -1.0, -1.0, 0.0040 }
+                << GenDataSet{ 80.0, 0.8, 0.003, -1.0, -1.0, 0.0055 };
+     add( c ); }
+
+   { GenCase c; c.name = "case28_ti_ri_per_dataset";
+     c.description = "TI and RI noise at different levels per cell, 0/35/65/100% D2O";
+     c.species << A << B;
+     c.noisflag        = 3;
+     c.vbar_tol        = 0.025;
+     c.rmsd_spread_max = 0.0;
+     c.rmsd_max        = 0.0;
+     // TI and RI are fitted, so each cell's residual should fall to its own
+     // random level whatever systematic noise it was given.  A shared noise
+     // vector cannot satisfy four different pairs at once.
+     c.datasets << GenDataSet{   0.0, 1.0, 0.001, 0.002, 0.001, 0.0025 }
+                << GenDataSet{  35.0, 1.0, 0.002, 0.008, 0.004, 0.0045 }
+                << GenDataSet{  65.0, 1.0, 0.001, 0.005, 0.002, 0.0025 }
+                << GenDataSet{ 100.0, 1.0, 0.003, 0.003, 0.006, 0.0060 };
+     add( c ); }
+
+   // ---- 29-31: isotope series that are not 0/50/100 ----------------------
+   //
+   // Every earlier multi-buffer case steps the D2O evenly and ends at 100%.
+   // Real series rarely do either: stock runs out, a cell is lost, and the
+   // top of the range costs the most H/D exchange.  These check that the
+   // fit's contrast gate and its v-bar recovery depend on the densities
+   // themselves and not on the series being tidy.
+   { GenCase c; c.name = "case29_series_0_30_50";
+     c.description = "0/30/50% D2O -- no pure-D2O cell, uneven spacing";
+     c.species << A;
+     c.datasets << GenDataSet{ 0.0, 1.0 } << GenDataSet{ 30.0, 1.0 }
+                << GenDataSet{ 50.0, 1.0 };
+     add( c ); }
+
+   { GenCase c; c.name = "case30_series_0_20_40_60";
+     c.description = "0/20/40/60% D2O, mixture -- half the usual contrast";
+     c.species << A << D;
+     c.vbar_tol = 0.03;
+     c.datasets << GenDataSet{ 0.0, 1.0 } << GenDataSet{ 20.0, 1.0 }
+                << GenDataSet{ 40.0, 1.0 } << GenDataSet{ 60.0, 1.0 };
+     add( c ); }
+
+   { GenCase c; c.name = "case31_series_uneven_5_steps";
+     c.description = "10/35/55/70/95% D2O -- unevenly spaced, no H2O cell";
+     c.species << A << G;
+     c.vbar_tol = 0.03;
+     c.datasets << GenDataSet{ 10.0, 1.0 } << GenDataSet{ 35.0, 0.9 }
+                << GenDataSet{ 55.0, 1.2 } << GenDataSet{ 70.0, 1.0 }
+                << GenDataSet{ 95.0, 0.7 };
+     add( c ); }
+
    return cases;
 }
 
 // Write the simulation-parameter XML one data set needs.
-bool write_simparams( const QString& path, const GenCase& c )
+//
+// The noise is the data set's own where it declares any, and the case's
+// otherwise, so a series can carry a different noise level in every cell.
+bool write_simparams( const QString& path, const GenCase& c,
+                      const GenDataSet& ds )
 {
    US_SimulationParameters sp;
    sp.simpoints         = SIM_POINTS;
@@ -884,9 +1087,9 @@ bool write_simparams( const QString& path, const GenCase& c )
    sp.bottom            = SIM_BOTTOM;
    sp.bottom_position   = SIM_BOTTOM;
    sp.temperature       = SIM_TEMP;
-   sp.rnoise            = c.rnoise;
-   sp.tinoise           = c.tinoise;
-   sp.rinoise           = c.rinoise;
+   sp.rnoise            = ( ds.rnoise  >= 0.0 ) ? ds.rnoise  : c.rnoise;
+   sp.tinoise           = ( ds.tinoise >= 0.0 ) ? ds.tinoise : c.tinoise;
+   sp.rinoise           = ( ds.rinoise >= 0.0 ) ? ds.rinoise : c.rinoise;
    sp.baseline          = 0.0;
    sp.sim               = true;
 
@@ -934,7 +1137,7 @@ bool write_buffer( const QString& path, double d2o_pct )
 // The only per-data-set difference is the cell loading, which scales the
 // signal concentrations.
 bool write_model( const QString& path, const GenCase& c,
-                  const GenDataSet& ds )
+                  const GenDataSet& ds, const QStringList& analyte_guids )
 {
    US_Model m;
    m.description = c.name;
@@ -953,7 +1156,18 @@ bool write_model( const QString& path, const GenCase& c,
       comp.mw     = 0.0;
       comp.f      = 0.0;
       comp.signal_concentration = sp.conc * ds.loading;
-      comp.name   = QString::asprintf( "SP%02d", ii + 1 );
+      comp.name   = QString::asprintf( "%s SP%02d",
+                                       qPrintable( c.name ), ii + 1 );
+
+      // One analyte GUID per species, the same in every cell of the series.
+      //
+      // us_astfem_sim registers an analyte per component and names it from
+      // this GUID in the solution it writes.  Left empty, every species of
+      // every case would register as an anonymous analyte and nothing could
+      // be traced back to the run that produced it -- which is what a 2DSA
+      // cross-check has to do to find the record whose vbar it should use.
+      comp.analyteGUID = ( ii < analyte_guids.size() )
+                         ? analyte_guids[ ii ] : US_Util::new_guid();
 
       // Fill in D, mw and f from s, f/f0 and vbar; leave them in 20W space.
       if ( ! US_Model::calc_coefficients( comp ) )  return false;
@@ -1021,6 +1235,17 @@ int US_3dsaCli::run_gen_cases( const QStringList& args )
       // truth would be cheating, so use the conventional protein value.
       const double nominal_vbar = TYPICAL_VBAR;
 
+      // What the analyte and solution records get instead of the truth, so a
+      // 2DSA cross-check has to work for its answer like an analyst would.
+      const double truth_vbar = truth_vbar_of( c.species );
+      const double decoy_vbar = decoy_vbar_for( truth_vbar );
+
+      // The same species in every cell of the series, so the analyte the
+      // simulator registers is one record shared by the whole run.
+      QStringList analyte_guids;
+      for ( int ii = 0; ii < c.species.size(); ii++ )
+         analyte_guids << US_Util::new_guid();
+
       for ( int ii = 0; ii < c.datasets.size(); ii++ )
       {
          const GenDataSet& ds = c.datasets[ ii ];
@@ -1032,7 +1257,7 @@ int US_3dsaCli::run_gen_cases( const QStringList& args )
          const QString spath = QString( "%1/%2_simparams.xml" ).arg( indir ).arg( tag );
          const QString ddir  = QString( "%1/data/%2" ).arg( outdir ).arg( runid );
 
-         if ( ! write_model( mpath, c, ds ) )
+         if ( ! write_model( mpath, c, ds, analyte_guids ) )
          {
             err() << "cannot write " << mpath << "\n";  err().flush();
             return 3;
@@ -1042,7 +1267,7 @@ int US_3dsaCli::run_gen_cases( const QStringList& args )
             err() << "cannot write " << bpath << "\n";  err().flush();
             return 3;
          }
-         if ( ! write_simparams( spath, c ) )
+         if ( ! write_simparams( spath, c, ds ) )
          {
             err() << "cannot write " << spath << "\n";  err().flush();
             return 3;
@@ -1056,6 +1281,14 @@ int US_3dsaCli::run_gen_cases( const QStringList& args )
          step[ "buffer" ]    = bpath;
          step[ "simparams" ] = spath;
          step[ "outdir" ]    = ddir;
+         // What the driver needs to rewrite the edit profile and the analyte
+         // and solution records the simulator registers.
+         step[ "meniscus" ]           = SIM_MENISCUS;
+         step[ "bottom" ]             = SIM_BOTTOM;
+         step[ "edit_margin" ]        = c.edit_margin;
+         step[ "edit_bottom_margin" ] = c.edit_bottom_margin;
+         step[ "decoy_vbar" ]         = decoy_vbar;
+         step[ "truth_vbar" ]         = truth_vbar;
          jsteps << step;
 
          QJsonObject jd;
@@ -1071,6 +1304,12 @@ int US_3dsaCli::run_gen_cases( const QStringList& args )
          jd[ "temperature" ] = SIM_TEMP;
          jd[ "loading" ]     = ds.loading;
          jd[ "vbar20" ]      = nominal_vbar;
+         jd[ "rnoise" ]      = ( ds.rnoise  >= 0.0 ) ? ds.rnoise  : c.rnoise;
+         jd[ "tinoise" ]     = ( ds.tinoise >= 0.0 ) ? ds.tinoise : c.tinoise;
+         jd[ "rinoise" ]     = ( ds.rinoise >= 0.0 ) ? ds.rinoise : c.rinoise;
+         jd[ "rmsd_max" ]    = ds.rmsd_max;
+         jd[ "run_dir" ]     = ddir;
+         jd[ "run_id" ]      = runid;
          jdatasets << jd;
       }
 
@@ -1089,11 +1328,13 @@ int US_3dsaCli::run_gen_cases( const QStringList& args )
       noise[ "ri" ]     = c.rinoise;
 
       QJsonObject fit;
-      fit[ "threads" ]         = 4;
-      fit[ "noisflag" ]        = c.noisflag;
-      fit[ "fit_scales" ]      = true;
-      fit[ "edit_margin" ]     = 0.02;
-      fit[ "ignore_contrast" ] = c.ignore_contrast;
+      fit[ "threads" ]             = 4;
+      fit[ "noisflag" ]            = c.noisflag;
+      fit[ "fit_scales" ]          = true;
+      fit[ "edit_margin" ]         = c.edit_margin;
+      fit[ "edit_bottom_margin" ]  = c.edit_bottom_margin;
+      fit[ "ignore_contrast" ]     = c.ignore_contrast;
+      fit[ "decoy_vbar" ]          = decoy_vbar;
 
       QJsonObject expect;
       expect[ "vbar_tol" ]        = c.vbar_tol;
@@ -1105,6 +1346,9 @@ int US_3dsaCli::run_gen_cases( const QStringList& args )
       QJsonObject jc;
       jc[ "name" ]        = c.name;
       jc[ "description" ] = c.description;
+      jc[ "truth_vbar" ]  = truth_vbar;
+      jc[ "decoy_vbar" ]  = decoy_vbar;
+      jc[ "analyte_guids" ] = QJsonArray::fromStringList( analyte_guids );
       jc[ "species" ]     = jspecies;
       jc[ "datasets" ]    = jdatasets;
       jc[ "noise" ]       = noise;

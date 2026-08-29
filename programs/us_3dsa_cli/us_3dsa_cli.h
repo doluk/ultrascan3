@@ -46,6 +46,27 @@ class US_3dsaCli
          double  temperature;  //!< Run temperature
          double  loading;      //!< Loading relative to the first data set
          double  vbar20;       //!< Nominal vbar for the corrections
+
+         //! The noise this cell was generated with, in OD.  A series need not
+         //! carry the same noise in every cell -- different exposure, different
+         //! windows, a different day -- so these are per data set, and the
+         //! aggregate RMSD checks cannot stand in for them.
+         double  rnoise  = 0.0;
+         double  tinoise = 0.0;
+         double  rinoise = 0.0;
+
+         //! Cap on this data set's own residual RMSD.  0 falls back to the
+         //! case-wide cap.  A series whose cells carry different noise has no
+         //! single meaningful cap and no meaningful spread, so it sets these
+         //! instead.
+         double  rmsd_max = 0.0;
+
+         //! Where us_astfem_sim wrote this data set's run, and the run id it
+         //! used.  The 2DSA cross-check (see the harness README) needs both:
+         //! the edit XML and the experiment XML live there, and the solution
+         //! and analyte the simulator registered are found through them.
+         QString run_dir;
+         QString run_id;
       };
 
       //! A complete case
@@ -65,9 +86,33 @@ class US_3dsaCli
          double v_min = 0.60,    v_max = 0.85;       int v_res = 11;
          int    grid_reps = 1;
 
-         //! Radial margin, in cm, trimmed off each end of the raw data to
-         //! make an edited range strictly inside the meniscus and bottom.
+         //! Radial margin, in cm, trimmed off the meniscus end of the raw
+         //! data to make an edited range strictly inside the cell.
+         //!
+         //! US_AstfemMath's interpolation exits the process outright when the
+         //! simulation grid does not reach the first edited radius, and the
+         //! simulator's own default of meniscus + 0.0005 cm is inside the
+         //! rounding of the radial grid.  The same margin is written into the
+         //! edit XML so that us_2dsa analyses exactly the radii the 3DSA fit
+         //! used.
          double edit_margin = 0.02;
+
+         //! Radial margin trimmed off the bottom end.  Larger than the top
+         //! one: this is where the boundary piles up, and it matches what
+         //! us_astfem_sim writes into its own edit profile.
+         double edit_bottom_margin = 0.10;
+
+         //! Partial specific volume to plant in the analyte and solution
+         //! records the simulator registers, in place of the truth.
+         //!
+         //! us_astfem_sim writes the data with an edit profile, a buffer, a
+         //! solution and one analyte per species, so the run loads as though
+         //! it had come through us_convert and us_edit.  Those analytes carry
+         //! the v̄ the data was generated from, which would hand a 2DSA
+         //! analysis the answer 3DSA is being asked to find.  The harness
+         //! rewrites them to this value, which is what a real analyst would
+         //! have: a plausible guess, not the truth.
+         double decoy_vbar = 0.0;
 
          // Fit
          int    threads         = 4;

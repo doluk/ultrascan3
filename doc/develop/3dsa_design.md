@@ -761,7 +761,7 @@ produced the estimate. The existing `US_SolveSim::checkGridSize()` guard needs i
 reports the **global RMSD and the RMSD of every data set**. `test/3dsa_harness/README.md`
 documents it; `run_harness.py --outdir DIR --bindir BINDIR` runs it.
 
-Twenty-four cases, covering every axis that matters:
+Thirty-one cases, covering every axis that matters:
 
 | group | cases | what they exercise |
 |---|---|---|
@@ -770,6 +770,8 @@ Twenty-four cases, covering every axis that matters:
 | Mixtures | 6–12 | species differing in *s*, in *D*, in v̄ and in combination; two and three components; mixtures sharing a v̄ while differing in *s* and *D* |
 | Noise | 13–19 | random, time-invariant and radially-invariant noise, alone and together, with the fit asked to solve for TI and RI |
 | Gates and edges | 20–24 | weak contrast and a single dataset, both of which **must be refused**; v̄ at both grid edges; a 1.5 S / 8.0 S mixture |
+| Noise per cell | 25–28 | a **different noise level in every cell**, random and fitted, with loading varying against it |
+| Irregular series | 29–31 | 0/30/50, 0/20/40/60 and 10/35/55/70/95 % D₂O — no pure cell at either end, uneven spacing |
 
 Every species is declared in standard (20W) space. `us_astfem_sim` converts to experimental space
 per component using that component's own v̄ and the buffer it is given, and the fit has to invert
@@ -778,6 +780,18 @@ that. The round trip is the point — a harness that pre-converted would only be
 Acceptance per case: recovered concentration-weighted v̄ and *s* within the case's tolerance,
 fitted amplitude factors matching the imposed loading ratios, and the two negative controls
 refused.
+
+Cases 25–28 turn the aggregate RMSD cap and the spread check **off**, because a series whose cells
+carry different noise has neither a meaningful global residual nor a meaningful spread: a 6×
+spread is the correct answer there. Each data set carries its own cap instead, and the check is
+that every cell's residual reaches the level *it* was given. Case 27 arranges for the noisiest cell
+to also be the most weakly loaded, which is the worst case for an amplitude loop that confuses
+signal with residual; it recovers loadings of 1.0 / 0.5 / 1.6 / 0.8 to four decimals.
+
+Runs are thirty scans. Twelve resolved a boundary but left the fit short of the time information
+that separates *s* from *D*, and the noise cases in particular were being asked to separate
+systematic noise from the model on a dozen time points. Thirty cut case 16's residual four-fold
+(8.0 × 10⁻⁴ → 1.9 × 10⁻⁴) and case 18's v̄ error five-fold (0.0082 → 0.0016).
 
 Two caveats stand, both recorded in the harness README: D₂O density and viscosity are interpolated
 linearly (harmless, since the same numbers reach both the simulator and the fit), and H/D exchange
@@ -788,6 +802,33 @@ is not modelled, so the recovered truth is cleaner than a real experiment's (§3
 On real density-series data, 3DSA's fitted v̄ and `us_density_match`'s post-hoc v̄ must agree within
 their combined uncertainty. Disagreement is informative either way and should be understood before
 release.
+
+The harness now prepares its synthetic series for exactly this comparison. `us_astfem_sim` writes
+more than the `.auc`: alongside it goes an experiment XML and an edit XML, and it registers a
+buffer, one analyte per species and a solution tying them together under `$HOME/ultrascan/data`, so
+a run loads as though it had come through `us_convert` and `us_edit`. The driver points `HOME` at a
+directory inside `--outdir`, so a harness run neither reads nor disturbs a real installation, and
+then fixes two things about what was registered:
+
+* **The edit profile's radial range.** The simulator writes `left = meniscus + 0.0005 cm`, inside
+  the rounding of the radial grid; `US_AstfemMath`'s interpolation calls `exit(-3)` — the process
+  dies, it does not return an error — when the simulation grid does not reach the first edited
+  radius. The driver rewrites the range to the same window `us_3dsa_cli` trims to, `[meniscus +
+  0.02, bottom − 0.10]`, and moves the baseline and plateau inside it. Both analyses then see
+  exactly the same radii, which is the only way their results are comparable.
+* **The analytes' v̄.** They carry the value the data was generated from, which would hand a 2DSA
+  analysis the answer 3DSA is being asked to find and leave `us_density_match` nothing to recover.
+  The driver replaces it with a decoy 0.05 mL/g from the truth — in the solution's `commonVbar20`,
+  in each of its `<analyte>` entries, and in each analyte file, since a reader may take any of
+  them.
+
+Each case then gets a `results/<case>.analysis.json` naming the work tree, each run's edit profile
+and radial range, the records now carrying the decoy, and the truth they no longer mention.
+
+The comparison itself is not automated: `us_2dsa` and `us_density_match` are GUI programs, and
+neither they nor `us_astfem_sim` can be built in a headless container (Qwt has no Qt6 package). The
+harness leaves the runs loadable and says where everything is; driving the two programs is manual
+for now.
 
 ### 8.4 Regression
 
