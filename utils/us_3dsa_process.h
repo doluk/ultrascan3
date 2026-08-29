@@ -8,6 +8,7 @@
 #include "us_model.h"
 #include "us_solute.h"
 #include "us_solve_sim.h"
+#include "us_solve_sim_mds.h"
 
 //! \brief 3DSA fit engine
 //!

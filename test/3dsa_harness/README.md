@@ -98,6 +98,14 @@ Cases 20 and 21 pass by being **refused**: neither series carries enough
 buoyancy contrast to determine v̄, and a fit that ran anyway would be reporting
 a grid artefact. They are there to keep the gate honest.
 
+Cases 15–19 are the reason `US_SolveSimMDS` exists. Each cell of a real series
+has its own time- and radially-invariant noise, so these cases inject a
+different profile into every data set and ask the fit to solve for it. Beyond
+the global RMSD they are checked on `rmsd_spread_max`, the ratio of the worst
+per-data-set RMSD to the best: a fit that cleans up one data set and leaves
+the rest passes every aggregate check but fails that one. See §3C of the
+design document.
+
 ## Reading the report
 
 Per case the driver prints the global RMSD, the fitted and true

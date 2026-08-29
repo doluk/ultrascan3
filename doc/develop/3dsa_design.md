@@ -365,11 +365,12 @@ the cache and is withdrawn with it. Corrected in §7 below.
 
 ---
 
-## 3C. What the harness found — the noise path is single-dataset
+## 3C. What the harness found — the noise path was single-dataset
 
 `test/3dsa_harness/` (§8.2) runs 24 synthetic cases through `us_astfem_sim`
-and `us_3dsa_cli`. Nineteen behave as designed. The five that fit noise expose
-a defect that is not in 3DSA at all.
+and `us_3dsa_cli`. On the first run nineteen behaved as designed. The five
+that fit noise exposed a defect that was not in 3DSA at all. All 24 pass now;
+this section records what was wrong and what was done about it.
 
 ### The symptom
 
@@ -422,20 +423,78 @@ through the MPI path, which is the configuration most likely to be hit in
 production. A single-data-set fit is unaffected, which is why it has survived:
 that is the overwhelmingly common case.
 
+### The fix: `US_SolveSimMDS`
+
+`US_SolveSim` is left alone. Making its noise algebra data-set aware would
+change the numerical path of every 2DSA, PCSA, GA and DMGA run in service of a
+case none of them hit today, in a routine GMP analyses depend on. So the
+solver is copied to `utils/us_solve_sim_mds.{h,cpp}` as `US_SolveSimMDS`, and
+only the copy is changed. `US_3dsaProcess::run_task()` constructs the copy;
+nothing else does.
+
+The copy shares `US_SolveSim::DataSet` and `US_SolveSim::Simulation` by
+typedef rather than duplicating them, so the same data sets and the same
+`Simulation` object can be handed to either class, and the static analysis
+helpers (`checkGridSize`, `buoyancy_contrast`, `vbar_resolution`) are called
+on `US_SolveSim` rather than restated.
+
+What changes in the copy, and nothing else:
+
+1. `calc_residuals` builds a small geometry table once — for each data set,
+   its point and scan counts and its offset into three different vectors: the
+   concatenated data (`toffs`), the TI-length vectors (`tioffs`) and the
+   RI-length vectors (`rioffs`). The counting loop it replaces computed only
+   the totals.
+2. Every routine in the noise algebra loops over that table instead of reading
+   `data_sets[ d_offs ]`. Each average is taken **within** a data set: "a~"
+   over that set's radial points, "a-bar" over that set's scans.
+3. The reduced normal equations sum over the whole series but subtract each
+   element's own data set's means. Each data set is a balanced scan × point
+   grid, so its two-way within transform is an exact orthogonal projection;
+   the reduced problem is therefore the exact profile likelihood for the
+   concentrations with every data set's TI and RI vector eliminated, not an
+   approximation.
+4. `small_a` is symmetric, so only one triangle is computed — halving the cost
+   of the step that now does *n*<sub>datasets</sub>× the work of the old one.
+5. Two latent problems in the same block are fixed while it is being restated:
+   columns of *A* are indexed by their real stride (`narows`, which exceeds
+   `ntotal` when Tikhonov regularization pads each column, so noise fitting and
+   regularization were mutually exclusive), and the `BSave` path adds each data
+   set's own noise back rather than the first set's.
+
+### What per-data-set noise does *not* fix
+
+`test/utils/test_us_solve_sim_mds.cpp` measures the recovered noise against
+what was injected. TI alone and RI alone come back to better than 10⁻³ OD in
+every data set. Both together do not: the recovered TI shape is off by around
+5 × 10⁻³ OD.
+
+That floor is not a multi-data-set effect, and the test asserts as much by
+measuring it on a **single** data set first, where `US_SolveSimMDS` is
+bit-identical to `US_SolveSim`. Its cause is the formulation both classes
+inherit: the noise-reduced problem is handed to NNLS as its normal equations
+*AᵀPA x = AᵀPb*, which squares the conditioning of an already ill-conditioned
+Lamm basis. A little concentration leaks onto neighbouring grid points and the
+difference surfaces in the TI vector. Fitting RI as well as TI adds a
+scan-wise degree of freedom that widens the near-null space and makes the leak
+larger.
+
+That is a separate piece of work — feeding NNLS the projected design matrix
+instead of its normal equations — and it belongs with `US_SolveSim`, not with
+a copy made for a different reason. It bounds how exactly a 3DSA run can
+report a TI vector; it does not affect the fitted distribution, whose residual
+stays at the injected noise level in every data set.
+
 ### Status
 
-Not fixed here. The fix is the whole noise-algebra block made data-set aware,
-which is real numerical work in a routine that GMP analyses depend on, and it
-deserves its own validation rather than being folded into 3DSA. It is called
-out because the harness is what surfaced it, and because 3DSA is inherently
-multi-data-set: **3DSA cannot offer TI or RI noise fitting until this is
-fixed.**
-
-The harness asserts the correct behaviour rather than tolerating the current
-one: cases 15–19 carry an `rmsd_max` the fit should reach if noise fitting
-worked, and an `rmsd_spread_max` that catches the "cleaned up one data set,
-left the rest" signature. **They fail today, on purpose** — 19 of 24 cases
-pass, and the five that fail are exactly the five that fit noise.
+Fixed for 3DSA. Cases 15–19 of the harness, which carry an `rmsd_max` the fit
+should reach if noise fitting works and an `rmsd_spread_max` that catches the
+"cleaned up one data set, left the rest" signature, now pass. `US_SolveSim`
+itself is unchanged, so **global 2DSA through the MPI path still has this
+defect**; the test
+`TestSolveSimMDS.US_SolveSimLeavesLaterDataSetsWithoutNoise` asserts the old
+behaviour deliberately, so that if `US_SolveSim` is ever fixed too, it fails
+and says that `US_SolveSimMDS` can be retired.
 
 ---
 
@@ -464,11 +523,14 @@ pass, and the five that fail are exactly the five that fit noise.
 | `us_solute.h/.cpp` | **new API** [done] | `validate_mask( s_mask, QString& err )` — rejects any mask that puts two axes in the shared `.d` slot (e.g. *D* and *MW* together), duplicate attributes, and the three-bit values that name no attribute. |
 | `us_solute.h/.cpp` | **new API** [done] | `physical_sdv( solute )` and `FF0_SPHERE_TOLER` — the *f/f₀* ≥ 1 filter for the rectangular *s*×*D* grid (§6.1). The tolerance exists because round-tripping an exact sphere through `calc_coefficients()` lands a few ulp below 1.0. |
 | `us_solute.h` | **new enum** [done] | `US_Solute::attr_type`, static-asserted against `US_ZSolute`'s numbering so the two cannot drift apart. |
+| `us_solve_sim_mds.h/.cpp` | **new** | `US_SolveSimMDS`: `US_SolveSim` copied, with per-data-set TI and RI noise (§3C). Shares `DataSet` and `Simulation` by typedef so either class takes the same inputs. `US_SolveSim` stays untouched, so 2DSA, PCSA, GA and DMGA are unaffected. |
 | `us_solve_sim.h/.cpp` | **bug fix** [done] | The "vbar is constant" fast path was selected by `if ( attr_z != 3 )` — on the *position* of v̄ in the mask. With three genuinely varying axes that is wrong whenever v̄ lands in the z slot: dataset 0's cached corrections would be applied to every solute. Now `( attr_z != ATTR_V ) or fit_vbar`, identical to the old test whenever `fit_vbar` is false. |
 | `us_solve_sim.cpp` | **bug fix** [done] | The same fast path took `vbartb`, `s20w_correction` and `D20w_correction` from `data_sets[0]` for *every* dataset in the loop. In a global fit each dataset has its own buffer and its own corrections; it now reads them from `dset`. See the note below. |
 | `us_solve_sim.h` | **new field** [done] | `DataSet::fit_vbar` (bool, defaulted false). Set by the caller; drives the fix above. Also lets the existing 2DSA "vary vbar" mode state its intent instead of relying on attribute order. |
+| `us_solve_sim_mds.h/.cpp` | **new** | `US_SolveSimMDS`: `US_SolveSim` copied, with per-data-set TI and RI noise (§3C). Shares `DataSet` and `Simulation` by typedef so either class takes the same inputs. `US_SolveSim` stays untouched, so 2DSA, PCSA, GA and DMGA are unaffected. |
 | `us_solve_sim.h/.cpp` | **new static** [done] | `buoyancy_contrast( QList<DataSet*>&, double vbar_mid, QString& msg )` returning the largest pairwise gain over the series, plus `vbar_resolution()` and the `VBAR_CONTRAST_REFUSE` / `VBAR_CONTRAST_WARN` thresholds. Evaluates at `SolutionData::density_tb`, per §3A. |
 | `us_model.h/.cpp` | **new enum value** [done] | `THREEDSA` appended to `AnalysisType`; `"3DSA"` added to the `typeText()` map. |
+| `us_solve_sim_mds.h/.cpp` | **new** | `US_SolveSimMDS`: `US_SolveSim` copied, with per-data-set TI and RI noise (§3C). Shares `DataSet` and `Simulation` by typedef so either class takes the same inputs. `US_SolveSim` stays untouched, so 2DSA, PCSA, GA and DMGA are unaffected. |
 | `us_solve_sim.h/.cpp` | *(deferred to Phase 2)* | `Simulation::scales`. A field nothing reads is a trap — a caller sets it and is silently ignored — so it lands with the outer loop that consumes it (§6.4). |
 | `us_solve_sim.cpp` | *(not needed)* | `check_grid_size()` was listed for a 3-D extension, but it bounds Lamm-equation *time steps* from `s_max` alone. That is already dimension-independent. |
 | `us_zsolute.h/.cpp` | *(no change)* | Already generalised; kept as the PCSA path. |
@@ -683,6 +745,15 @@ produced the estimate. The existing `US_SolveSim::checkGridSize()` guard needs i
   corrections are v̄-sensitive only under contrast — which is why the cached-versus-recomputed
   distinction matters at all.
 
+* `test_us_solve_sim_mds.cpp` — **delivered with the noise fix** (§3C), 6 checks: on a single data
+  set `US_SolveSimMDS` reproduces `US_SolveSim` bit-for-bit at every noise flag; on a two-data-set
+  series it recovers each cell's own TI and RI vector to better than 10⁻³ OD, and each recovered
+  block matches its own cell's profile rather than the other cell's; a no-noise series is
+  unaffected. The sixth asserts the *old* behaviour of `US_SolveSim` — later blocks left at zero —
+  so that if it is ever fixed too, the test fails and says `US_SolveSimMDS` can be retired. The
+  combined TI+RI test measures the normal-equations floor on one data set first, so that a series
+  failure cannot be blamed on the wrong thing.
+
 ### 8.2 Synthetic end-to-end — the harness
 
 `test/3dsa_harness/` drives the full round trip: `us_3dsa_cli gen-cases` writes the case tree,
@@ -733,14 +804,16 @@ Run the existing 2DSA test corpus and diff the output models.
 | **0 — Spike** ✅ | `test_us_solve_sim_vbar.cpp` only: demonstrate the single-dataset degeneracy and two-density identifiability numerically. | **Done** — see §3A. Degeneracy exact to machine precision, confirmed through `US_Astfem_RSA`; §3.4 table reproduced; one correction found (`density_tb`). | 2 d |
 | **1 — utils** ✅ | 3-D grid generation, mask validation, `buoyancy_contrast()`, `THREEDSA`, the `attr_z != 3` fix, `fit_vbar`. | **Done** — 27 tests green across `test_us_solute3d.cpp` and `test_us_solve_sim_vbar.cpp`; the full HPC target including `us_mpi_analysis` builds clean; both solver fixes are no-ops for existing single-dataset callers. A second latent bug found and fixed — see §5.1. | 3 d |
 | **2 — Engine** ✅ | `US_3dsaProcess`, the parallel level runner, the amplitude loop. Driven headless from a test harness. | **Done** — see §3B. v̄ recovered to 1×10⁻⁴ mL/g and the loadings to four decimals on a synthetic three-buffer series; 7 engine tests green. The column cache was measured and withdrawn; two bugs outside 3DSA found and fixed. | 2 wk |
+| **2a — Noise** ✅ | `US_SolveSimMDS`: the solver copied and its TI/RI noise algebra made data-set aware, so every run of a series carries its own noise. | **Done** — see §3C. All 24 harness cases pass, including the five that fit noise; the worst per-data-set RMSD on the TI case fell 45×, and on the RI case 60×. 6 new tests; `US_SolveSim` untouched. | 3 d |
 | **3 — GUI** | `us_3dsa` main window + dataset-series manager, control panel, gate, plots, launcher registration. | An analyst can run the §8.2 case end to end from the menu. | 3 wk |
 | **4 — MPI** | `3dsa_master`/`3dsa_worker`, parser, model writer, gate in the parser. LIMS coordination in parallel. | Cluster job completes and returns models equivalent to the desktop run. | 2 wk |
 | **5 — Docs & integration** | `doc/manual/source/3dsa/`, help pages wired to `showHelp`, downstream consumer smoke tests, §8.3 cross-check. | Manual builds; consumers verified; cross-check documented. | 1 wk |
 
 Phases 0–2 are the ones that can invalidate the concept, and they are deliberately front-loaded.
-Phases 0, 1 and 2 have now run: §3.4 reproduced (§3A), the shared `utils/` layer in place, and the
-engine recovering v̄ from a synthetic series (§3B). The design stands, with D7 withdrawn on
-measurement. Phase 3 can begin.
+Phases 0, 1, 2 and 2a have now run: §3.4 reproduced (§3A), the shared `utils/` layer in place, the
+engine recovering v̄ from a synthetic series (§3B), and every data set of a series carrying its own
+systematic noise (§3C). The design stands, with D7 withdrawn on measurement. All 24 harness cases
+pass. Phase 3 can begin.
 
 ### Future work (explicitly out of scope here)
 

@@ -143,7 +143,10 @@ void US_3dsaProcess::run_task( int thrx, const Task& task, TaskResult& res,
    // Each solute costs one Lamm-equation solve per data set.
    res.nsimul          = task.isolutes.size() * tdsets.size();
 
-   US_SolveSim solver( tdsets, thrx + 1, false );
+   // US_SolveSimMDS, not US_SolveSim: 3DSA is global over a buoyancy-contrast
+   // series, and each run in that series carries its own TI and RI noise.
+   // US_SolveSim computes noise from the first data set alone.
+   US_SolveSimMDS solver( tdsets, thrx + 1, false );
 
    if ( abort_flag.loadRelaxed() != 0 )
       return;
