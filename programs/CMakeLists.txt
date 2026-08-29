@@ -81,12 +81,18 @@ if(US3_NO_DB)
         target_link_libraries(us_program_common INTERFACE OpenSSL::Crypto)
     endif()
 
-    # HPC: build only us_mpi_analysis
+    # HPC: build us_mpi_analysis, plus the headless programs that carry no
+    # GUI dependency of their own.
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/us_mpi_analysis/CMakeLists.txt")
         add_subdirectory(us_mpi_analysis)
         message(STATUS "[programs] HPC: added us_mpi_analysis")
     else()
         message(WARNING "[programs] HPC: us_mpi_analysis/CMakeLists.txt not found")
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/us_3dsa_cli/CMakeLists.txt")
+        add_subdirectory(us_3dsa_cli)
+        message(STATUS "[programs] HPC: added us_3dsa_cli")
     endif()
 
     return()

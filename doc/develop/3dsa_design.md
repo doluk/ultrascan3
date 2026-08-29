@@ -365,6 +365,80 @@ the cache and is withdrawn with it. Corrected in §7 below.
 
 ---
 
+## 3C. What the harness found — the noise path is single-dataset
+
+`test/3dsa_harness/` (§8.2) runs 24 synthetic cases through `us_astfem_sim`
+and `us_3dsa_cli`. Nineteen behave as designed. The five that fit noise expose
+a defect that is not in 3DSA at all.
+
+### The symptom
+
+Case 15 injects 0.005 OD of time-invariant noise into each of three data sets
+and asks the fit to solve for TI noise. Per-data-set residual RMSD:
+
+| data set | ρ (g/mL) | RMSD |
+|---|---|---|
+| ds00 | 0.9982 | **7.6 × 10⁻⁶** |
+| ds01 | 1.0516 | 4.97 × 10⁻³ |
+| ds02 | 1.1050 | 5.04 × 10⁻³ |
+
+The noise was removed from the **first** data set essentially perfectly, and
+from the other two not at all — their residuals sit at exactly the injected
+level. The harness reports this directly as a per-data-set RMSD spread of
+**609×**.
+
+Radially-invariant noise fails differently and worse. Case 16 injects 0.005 OD
+of RI noise and asks for it to be fitted; the residual comes back at
+**5.0 × 10⁻²** in every data set — an order of magnitude *above* the injected
+level, so the fit is worse than not correcting at all. The spread there is
+only 1.9×, which is why a check on aggregate RMSD alone would have caught case
+16 but not case 15, and a spread check alone the reverse. The harness applies
+both.
+
+Cases 13 and 14, which inject *random* noise and do not ask for it to be
+fitted, behave correctly: the residual lands at the injected level in every
+data set, evenly, and the recovered v̄ is unaffected (error 0.0006 and 0.0011).
+
+### The cause
+
+All six helpers behind the noise algebra in `US_SolveSim::calc_residuals` read
+`data_sets[ d_offs ]` — the first data set — and loop over *that* set's
+`pointCount()` and `scanCount()`:
+
+`compute_a_tilde`, `compute_L_tildes`, `compute_L_tilde`, `compute_a_bar`,
+`compute_L_bars`, `ti_small_a_and_b`, `ri_small_a_and_b`.
+
+The surrounding code sizes the noise vectors for the whole series —
+`ntinois` and `nrinois` accumulate over every data set, and the residual loop
+indexes them per data set with `tinoffs`/`rinoffs`. So the vectors have room
+for the series, but only the first data set's block is ever written; the rest
+stay zero and no noise is subtracted from them.
+
+### Scope
+
+This is **not** a 3DSA regression. It predates this work and affects any
+multi-data-set fit that asks for TI or RI noise — including **global 2DSA**
+through the MPI path, which is the configuration most likely to be hit in
+production. A single-data-set fit is unaffected, which is why it has survived:
+that is the overwhelmingly common case.
+
+### Status
+
+Not fixed here. The fix is the whole noise-algebra block made data-set aware,
+which is real numerical work in a routine that GMP analyses depend on, and it
+deserves its own validation rather than being folded into 3DSA. It is called
+out because the harness is what surfaced it, and because 3DSA is inherently
+multi-data-set: **3DSA cannot offer TI or RI noise fitting until this is
+fixed.**
+
+The harness asserts the correct behaviour rather than tolerating the current
+one: cases 15–19 carry an `rmsd_max` the fit should reach if noise fitting
+worked, and an `rmsd_spread_max` that catches the "cleaned up one data set,
+left the rest" signature. **They fail today, on purpose** — 19 of 24 cases
+pass, and the five that fail are exactly the five that fit noise.
+
+---
+
 ## 4. Design decisions
 
 | # | Decision | Rationale |
@@ -429,6 +503,11 @@ an entry in `programs/us/us_win_data.cpp`, and an `addMenu( P_3DSA, … , veloci
 | `us_mpi_analysis.cpp` | Dispatch on `analysis_type.startsWith( "3DSA" )` (alongside the existing `"2DSA"` branch at `:1078`). |
 | `us_mpi_parse.cpp` | Parse `vbar_min`, `vbar_max`, `vbar_resolution` / `vbar_grid_points`, and the axis mask; set `DataSet::fit_vbar`; apply the D6 gate and abort with a clear message when contrast is insufficient. |
 | `us_mpi_analysis.cpp` (`write_model`) | A `THREEDSA` branch building components through the axis mask, and per-dataset model output carrying the fitted scale factors. |
+
+`programs/us_3dsa_cli/` is the headless driver: `fit` runs a series described by a JSON case file
+and reports the global and per-dataset RMSD, `gen-cases` writes the harness tree (§8.2). It links
+only usutils and Qt Core, so it builds in the HPC profile as well as the application build, and it
+is the entry point the harness and any future batch work use.
 
 **External dependency:** the LIMS / job-submission layer that writes the job XML lives outside this
 repository. It must learn the `3DSA` method and the new parameters, and must be able to submit a
@@ -604,15 +683,34 @@ produced the estimate. The existing `US_SolveSim::checkGridSize()` guard needs i
   corrections are v̄-sensitive only under contrast — which is why the cached-versus-recomputed
   distinction matters at all.
 
-### 8.2 Synthetic end-to-end
+### 8.2 Synthetic end-to-end — the harness
 
-Generate three datasets with `us_astfem_sim` from a known two-species model at ρ = 0.998, 1.05,
-1.10, with (deliberately) different loading concentrations. Run 3DSA. Acceptance: recovered v̄
-within the δv̄ predicted by §6.5 for the imposed noise level; recovered *s* and *D* at least as
-accurate as a per-dataset 2DSA; fitted α<sub>e</sub> matching the imposed loading ratios.
+`test/3dsa_harness/` drives the full round trip: `us_3dsa_cli gen-cases` writes the case tree,
+`us_astfem_sim` produces the data through its own CLI, and `us_3dsa_cli fit` fits each series and
+reports the **global RMSD and the RMSD of every data set**. `test/3dsa_harness/README.md`
+documents it; `run_harness.py --outdir DIR --bindir BINDIR` runs it.
 
-Add a negative control: the same fit on a series with ρ spread of 0.01, which must be **refused**
-by the D6 gate.
+Twenty-four cases, covering every axis that matters:
+
+| group | cases | what they exercise |
+|---|---|---|
+| Series length | 1–3 | two, three and five isotope concentrations |
+| Loading | 4–5 | loadings spread 1.0 / 0.7 / 1.4 and 1.0 / 0.4 / 2.0 |
+| Mixtures | 6–12 | species differing in *s*, in *D*, in v̄ and in combination; two and three components; mixtures sharing a v̄ while differing in *s* and *D* |
+| Noise | 13–19 | random, time-invariant and radially-invariant noise, alone and together, with the fit asked to solve for TI and RI |
+| Gates and edges | 20–24 | weak contrast and a single dataset, both of which **must be refused**; v̄ at both grid edges; a 1.5 S / 8.0 S mixture |
+
+Every species is declared in standard (20W) space. `us_astfem_sim` converts to experimental space
+per component using that component's own v̄ and the buffer it is given, and the fit has to invert
+that. The round trip is the point — a harness that pre-converted would only be testing the NNLS.
+
+Acceptance per case: recovered concentration-weighted v̄ and *s* within the case's tolerance,
+fitted amplitude factors matching the imposed loading ratios, and the two negative controls
+refused.
+
+Two caveats stand, both recorded in the harness README: D₂O density and viscosity are interpolated
+linearly (harmless, since the same numbers reach both the simulator and the fit), and H/D exchange
+is not modelled, so the recovered truth is cleaner than a real experiment's (§3.5).
 
 ### 8.3 Cross-check against `us_density_match`
 
