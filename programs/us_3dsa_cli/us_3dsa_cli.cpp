@@ -44,8 +44,8 @@ double d2o_viscosity( double pct )
 
 // Geometry shared by every generated case.  Small enough to keep the harness
 // runnable in minutes, large enough to resolve a boundary.
-const double SIM_MENISCUS = 5.85;
-const double SIM_BOTTOM   = 7.15;
+const double SIM_MENISCUS = 5.8;
+const double SIM_BOTTOM   = 7.2;
 const double SIM_DELTA_R  = 0.005;
 // Thirty scans.  Twelve resolved a boundary but left the fit short of the
 // time information that separates s from D, and a real velocity run collects
@@ -53,7 +53,7 @@ const double SIM_DELTA_R  = 0.005;
 // systematic noise from the model on the strength of a dozen time points.
 const int    SIM_SCANS    = 30;
 const int    SIM_RPM      = 45000;
-const int    SIM_POINTS   = 100;
+const int    SIM_POINTS   = 200;
 const double SIM_TEMP     = 20.0;
 const int    SIM_HOURS    = 5;
 
@@ -1096,11 +1096,11 @@ bool write_simparams( const QString& path, const GenCase& c,
    sp.speed_step[ 0 ].duration_hours    = SIM_HOURS;
    sp.speed_step[ 0 ].duration_minutes  = 0.0;
    sp.speed_step[ 0 ].delay_hours       = 0;
-   sp.speed_step[ 0 ].delay_minutes     = 0.0;
+   sp.speed_step[ 0 ].delay_minutes     = 4.0;
    sp.speed_step[ 0 ].scans             = SIM_SCANS;
    sp.speed_step[ 0 ].rotorspeed        = SIM_RPM;
    sp.speed_step[ 0 ].acceleration      = 400;
-   sp.speed_step[ 0 ].acceleration_flag = false;
+   sp.speed_step[ 0 ].acceleration_flag = true;
    sp.speed_step[ 0 ].set_speed         = SIM_RPM;
    sp.speed_step[ 0 ].avg_speed         = (double)SIM_RPM;
 

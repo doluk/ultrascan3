@@ -109,12 +109,13 @@ def simulate_one(step, astfem_sim, timeout):
         "--buffer", step["buffer"],
         "--simparams", step["simparams"],
         "--save", outdir,
+        "--rotor", "3",
         "--start",
         "--close",
         "--no-db",
         "--errors-cl",
     ]
-
+    print(f"{step['runid']}: {' '.join(cmd)}")
     ok, output, secs = run(cmd, timeout, step["runid"])
 
     produced = sorted(glob.glob(os.path.join(outdir, "*.auc")))
@@ -416,7 +417,7 @@ def fit_one(case, us_3dsa_cli, resultdir, threads, timeout):
     ]
     if threads:
         cmd += ["--threads", str(threads)]
-
+    print(f"{case['name']} {' '.join(cmd)}")
     ok, output, secs = run(cmd, timeout, case["name"])
 
     parsed = None

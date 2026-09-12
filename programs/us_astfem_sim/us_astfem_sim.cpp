@@ -564,7 +564,10 @@ int US_Astfem_Sim::init_from_args( const QMap<QString, QString>& flags ) {
          {
             // check if path is accessible and writable
             QString save_path = flags["save"];
-            save_simulation( save_path, true );
+            auto saving = save_simulation( save_path, true );
+            if ( !saving ) {
+               error_occured = true;
+            }
          }
       }
    }
@@ -1193,11 +1196,6 @@ DbgLv(1) << "astfem_radial_ranges" << sim_datas[jd].xvalues[0] << sim_datas[jd].
       simparams.meniscus  = meniscus_ar;
       simparams.bottom    = bottom_ar;
       int kscan           = sim_data_all.scanCount();
-      int kpoint          = sim_data_all.pointCount();
-
-      // Initialize reading values to zero for all scans (all speeds)
-      for ( int js = 0; js < kscan; js++ )
-         sim_data_all.scanData[ js ].rvalues.fill( 0.0, kpoint );
 
       // Set the radius values in data sets
       int points          = qRound( ( simparams.bottom - simparams.meniscus ) /
@@ -1205,6 +1203,14 @@ DbgLv(1) << "astfem_radial_ranges" << sim_datas[jd].xvalues[0] << sim_datas[jd].
       // int points          = qCeil( ( simparams.bottom - simparams.meniscus ) /
       //                              simparams.radial_resolution ) + 1;
       sim_data_all.xvalues.resize( points );
+
+      // Initialize reading values to zero for all scans (all speeds).
+      // This must use the final xvalues count, not the pre-resize pointCount().
+      for ( int js = 0; js < kscan; js++ )
+      {
+         sim_data_all.scanData[ js ].rvalues     .fill( 0.0, points );
+         sim_data_all.scanData[ js ].interpolated.fill( 0, ( points + 7 ) / 8 );
+      }
 
       for ( int jd = 0; jd < nstep; jd++ )
       {  // Set radius values for current speed's dataset
@@ -1531,11 +1537,19 @@ DbgLv(1) << "ASIM:svscn: 1-speed file paths"  << odir << tmst_fpath;
          if ( csv_data_ti.rowCount() > 0 ) {
             csv_data_ti.setFilePath( dir.absoluteFilePath( "ASTFEM_TI_NOISE.csv" ) );
             save_csv_noise( csv_data_ti );
+            QFile ti_noise (csv_data_ri[ 0 ].filePath() );
+            if ( !ti_noise.exists() ) {
+               qDebug() << "Saving TI NOISE FAILED";
+            }
          }
          // Save RI noises
          if ( !csv_data_ri.isEmpty() ) {
             csv_data_ri[ 0 ].setFilePath( dir.absoluteFilePath( "ASTFEM_RI_NOISE.csv" ) );
             save_csv_noise( csv_data_ri[ 0 ] );
+            QFile ri_noise (csv_data_ri[ 0 ].filePath() );
+            if ( !ri_noise.exists() ) {
+               qDebug() << "Saving RI NOISE FAILED";
+            }
          }
 
       }  // End:  single-speed case
@@ -2073,15 +2087,16 @@ DbgLv(1) << "Sim:SV: reset s1plat" << s1plat;
       }
 DbgLv(1) << "Sim:SV: OD-Limit nchange nmodscn" << nchange << nmodscn
  << "maxc dthresh" << maxc << dthresh;
-
-      // Report that some readings were threshold-limited
-      QMessageBox::information( this,
-            tr( "OD Values Threshold Limited" ),
-            tr( "%1 readings in %2 scans were reset\n"
-                "to a threshold value of %3 .\n"
-                "The pre-threshold-limit maximum OD\n"
-                "value was %4 ." )
-            .arg( nchange ).arg( nmodscn ).arg( dthresh ).arg( maxc ) );
+      if ( !supress_dialog ) {
+         // Report that some readings were threshold-limited
+         QMessageBox::information( this,
+               tr( "OD Values Threshold Limited" ),
+               tr( "%1 readings in %2 scans were reset\n"
+                   "to a threshold value of %3 .\n"
+                   "The pre-threshold-limit maximum OD\n"
+                   "value was %4 ." )
+               .arg( nchange ).arg( nmodscn ).arg( dthresh ).arg( maxc ) );
+      }
    }
 
 
@@ -2148,7 +2163,8 @@ DbgLv(1) << "Sim:SV:  run_id_from_save_xla" << run_id;
       .arg( dirname ).arg( run_id ).arg( stype ).arg( cell )
       .arg( schann  ).arg( wvlen  );
 
-   US_DataIO::writeRawData( ofname, sim_data );
+   auto result = US_DataIO::writeRawData( ofname, sim_data );
+   qDebug() << "Saving RawData Exit " << result;
 DbgLv(1) << "Sim:SV: after_write_rawdata" << ofname;
    progress->setValue( total_scans );
    lb_progress->setText( tr( "Completed" ) );
