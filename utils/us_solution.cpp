@@ -26,7 +26,12 @@ int US_Solution::readFromDisk( QString& guid )
                << guid;
       return IUS_DB2::NO_SOLUTION;
    }
-   
+
+   return readFromFile( filename );
+}
+
+int US_Solution::readFromFile( const QString& filename, bool resolveRefs )
+{
    QFile file( filename );
    if ( !file.open( QIODevice::ReadOnly | QIODevice::Text) )
    {
@@ -65,6 +70,12 @@ int US_Solution::readFromDisk( QString& guid )
       qDebug() << "Error: xml error: \n"
                << xml.errorString();
       return IUS_DB2::DBERROR;
+   }
+
+   if ( ! resolveRefs )
+   {
+      saveStatus = HD_ONLY;
+      return IUS_DB2::OK;
    }
 
    // Load actual buffer and analyte files if we can find them
@@ -248,12 +259,23 @@ void US_Solution::saveToDisk( void )
    QString filename = US_DataFiles::get_filename( path, solutionGUID,
                          "S", "solution", "guid", newFile );
 
+   if ( ! saveToFile( filename ) )  return;
+
+   // Save the buffer and analytes to disk
+   saveBufferDisk();
+   saveAnalytesDisk();
+
+   saveStatus = ( saveStatus == DB_ONLY ) ? BOTH : HD_ONLY;
+}
+
+bool US_Solution::saveToFile( const QString& filename )
+{
    QFile file( filename );
    if ( !file.open( QIODevice::WriteOnly | QIODevice::Text) )
    {
       qDebug() << "Error: can't open file for writing"
                << filename;
-      return;
+      return false;
    }
 
    // Generate xml
@@ -300,11 +322,7 @@ void US_Solution::saveToDisk( void )
 
    file.close();
 
-   // Save the buffer and analytes to disk
-   saveBufferDisk();
-   saveAnalytesDisk();
-
-   saveStatus = ( saveStatus == DB_ONLY ) ? BOTH : HD_ONLY;
+   return true;
 }
 
 // Function to save solution information to db

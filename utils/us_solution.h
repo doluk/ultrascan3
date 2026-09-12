@@ -71,6 +71,19 @@ class US_UTIL_EXTERN US_Solution
       */
       int readFromDisk( QString& );
 
+      /*! \brief    Function to read a solution structure from a specific
+                    XML file, regardless of its location
+
+          \param    filename    The full path of the solution XML file
+          \param    resolveRefs If true, the referenced buffer and analytes
+                                are additionally loaded from the local disk
+                                store; if false, only the identifying
+                                information held in the solution file itself
+                                is filled in
+          \return   One of the IUS_DB2 error codes
+      */
+      int readFromFile( const QString& filename, bool resolveRefs = true );
+
       /*! \brief    Function to read an entire solution structure from the DB
 
           \param    solutionID The database solutionID of the desired solution
@@ -84,6 +97,14 @@ class US_UTIL_EXTERN US_Solution
 
       //! \brief    Method to save the current solution to disk
       void saveToDisk        ( void );
+
+      /*! \brief    Method to write the solution XML (without the separate
+                    buffer and analyte files) to a specific file
+
+          \param    filename The full path of the solution XML file to write
+          \return   True if the file could be written, false otherwise
+      */
+      bool saveToFile        ( const QString& filename );
 
       /*! \brief    Function to save the solution information to db
 

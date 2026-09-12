@@ -105,6 +105,22 @@ US_SelectRuns::US_SelectRuns( bool dbase, QStringList& runIDs )
    resize( 720, 360 );
 }
 
+// Alternate constructor that offers only the runs of a given list
+
+US_SelectRuns::US_SelectRuns( bool dbase, QStringList& runIDs,
+                              const QStringList& allowed )
+ : US_SelectRuns( dbase, runIDs )
+{
+   runFilter     = allowed;
+
+   if ( runFilter.isEmpty() )  return;
+
+   setWindowTitle( tr( "Select Run(s) as Models Pre-Filter (%1, filtered)" )
+         .arg( sel_db ? "DB" : "Local" ) );
+
+   list_data();
+}
+
 void US_SelectRuns::search( const QString& search_string )
 {
    bool have_search = ! search_string.isEmpty();
@@ -167,6 +183,24 @@ void US_SelectRuns::list_data()
    else                       // Scan local disk data
    {
       scan_local_run();
+   }
+
+   if ( ! runFilter.isEmpty() )
+   {  // Offer only the runs the caller allows
+      QStringList kept;
+
+      for ( int ii = 0; ii < rlabels.size(); ii++ )
+      {
+         if ( runFilter.contains( rlabels.at( ii ) ) )
+         {
+            kept << rlabels.at( ii );
+            continue;
+         }
+
+         runmap.remove( rlabels.at( ii ) );
+      }
+
+      rlabels = kept;
    }
 
    tw_data->clearContents();

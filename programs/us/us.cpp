@@ -299,6 +299,7 @@ US_Win::US_Win( QWidget* parent, Qt::WindowFlags flags )
   addMenu(  P_MANAGESOLN   , tr( "Manage &Solutions"         ), database );
   addMenu(  P_MANAGEPROJ   , tr( "Manage &Projects"          ), database );
   addMenu(  P_MANAGEROTOR  , tr( "Manage &Rotors"            ), database );
+  addMenu(  P_DATAPUB      , tr( "Data &Publication"         ), database );
 
   ///////////////
   QMenu* help        = new QMenu( tr( "&Help" ),        this );

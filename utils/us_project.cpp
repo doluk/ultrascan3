@@ -22,7 +22,12 @@ int US_Project::readFromDisk( QString& guid )
                << guid;
       return IUS_DB2::NO_PROJECT;
    }
-   
+
+   return readFromFile( filename );
+}
+
+int US_Project::readFromFile( const QString& filename )
+{
    QFile file( filename );
    if ( !file.open( QIODevice::ReadOnly | QIODevice::Text) )
    {
@@ -191,12 +196,19 @@ void US_Project::saveToDisk( void )
                          path, 
                          newFile );
 
+   if ( ! saveToFile( filename ) )  return;
+
+   saveStatus = ( saveStatus == DB_ONLY ) ? BOTH : HD_ONLY;
+}
+
+bool US_Project::saveToFile( const QString& filename ) const
+{
    QFile file( filename );
    if ( !file.open( QIODevice::WriteOnly | QIODevice::Text) )
    {
       qDebug() << "Error: can't open file for writing"
                << filename;
-      return;
+      return false;
    }
 
    // Generate xml
@@ -230,7 +242,7 @@ void US_Project::saveToDisk( void )
 
    file.close();
 
-   saveStatus = ( saveStatus == DB_ONLY ) ? BOTH : HD_ONLY;
+   return true;
 }
 
 // Function to save project information to db

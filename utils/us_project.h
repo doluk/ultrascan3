@@ -54,6 +54,14 @@ public:
     */
     int readFromDisk( QString& );
 
+    /*! \brief    Function to read an entire project structure from a
+                  specific XML file, regardless of its location
+
+        \param    filename The full path of the project XML file
+        \return   One of the IUS_DB2 error codes
+    */
+    int readFromFile( const QString& filename );
+
     /*! \brief    Function to read an entire project structure from the DB
 
         \param    projectID The database projectID of the desired project
@@ -67,6 +75,13 @@ public:
 
     //! \brief    Method to save the current project to disk
     void saveToDisk();
+
+    /*! \brief    Method to write the current project to a specific XML file
+
+        \param    filename The full path of the project XML file to write
+        \return   True if the file could be written, false otherwise
+    */
+    bool saveToFile( const QString& filename ) const;
 
     /*! \brief    Function to save the project information to db
 

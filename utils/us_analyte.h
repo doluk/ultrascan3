@@ -61,6 +61,11 @@ class US_UTIL_EXTERN US_Analyte
       //! \param db        - For DB access, an open database connection
       //! \returns         - The \ref IUS_DB2 return code for the operation
       int load( bool, const QString&, IUS_DB2* = 0 );
+
+      //! Read an analyte from a specific XML file, regardless of its location
+      //! \param filename - The full path of the analyte XML file
+      //! \returns        - The \ref IUS_DB2 return code for the operation
+      int readFromFile( const QString& filename );
       
       //! Write an analyte to the disk or database
       //! \param db_access - A flag to indicate if the DB (true) or disk (false)

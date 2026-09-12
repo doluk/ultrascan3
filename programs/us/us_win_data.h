@@ -40,6 +40,7 @@ namespace US_WinData
         P_RMSD,         P_INVESTIGATOR, P_BUFFER,
         P_VBAR,         P_MODEL,        P_MANAGEDATA,
         P_MANAGESOLN,   P_MANAGEPROJ,   P_MANAGEROTOR,
+        P_DATAPUB,
 
         P_END
     };

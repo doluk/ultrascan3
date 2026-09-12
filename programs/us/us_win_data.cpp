@@ -336,6 +336,11 @@ namespace US_WinData
       QObject::tr( "Managing Rotor Management Program" )
     },
 
+    { P_DATAPUB,  1, 0, "us_data_publication",
+      QObject::tr( "Loading Data Publication" ),
+      QObject::tr( "Data Publication Export/Import Program" )
+    },
+
     { P_END, 0, 0, "", "", "" }
   };
 

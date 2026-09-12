@@ -244,6 +244,11 @@ int US_Analyte::load_disk( const QString& guid )
    return error;
 }
 
+int US_Analyte::readFromFile( const QString& filename )
+{
+   return read_analyte( filename );
+}
+
 int US_Analyte::read_analyte( const QString& filename )
 {
    QFile file( filename );
