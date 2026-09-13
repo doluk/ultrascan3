@@ -1544,12 +1544,24 @@ bool US_DataPubImporter::createDisk( const US_DataPubEntity& entity,
       if ( type == US_DataPub::Experiment )
       {
          ExpRemap remap;
-         remap.runID       = runID;
-         remap.expID       = QString( "-1" );
-         remap.projectID   = mappedId  ( entity.depend( US_DataPub::Project ) );
-         remap.projectGUID = mappedGuid( entity.depend( US_DataPub::Project ) );
-         remap.calibrationID = mappedId(
-               entity.depend( US_DataPub::RotorCalibration ) );
+         remap.runID = runID;
+         remap.expID = QString( "-1" );
+
+         // Only what the bundle carried is remapped.  A reference the
+         // bundle left out -- a project that was not exported, say -- keeps
+         // whatever the run's own XML names.
+         QString projGUID = entity.depend( US_DataPub::Project );
+
+         if ( ! projGUID.isEmpty() )
+         {
+            remap.projectID   = mappedId  ( projGUID );
+            remap.projectGUID = mappedGuid( projGUID );
+         }
+
+         QString calGUID = entity.depend( US_DataPub::RotorCalibration );
+
+         if ( ! calGUID.isEmpty()  &&  mappedId( calGUID ).toInt() > 0 )
+            remap.calibrationID = mappedId( calGUID );
 
          QList< US_DataPubEntity > sols = mani.section( US_DataPub::Solution );
 
@@ -1993,18 +2005,59 @@ bool US_DataPubImporter::createDb( const US_DataPubEntity& entity,
             return false;
          }
 
+         // Every experiment in the database belongs to a project.  When the
+         // bundle carries one, the run is attached to the project that was
+         // just imported; when it does not, the project the run's own XML
+         // names is looked up in the target, and created from that
+         // reference only when the target does not have it.
          QString projGUID = entity.depend( US_DataPub::Project );
 
-         exper.project.clear();
-
          if ( ! projGUID.isEmpty() )
-            exper.project.readFromDB( mappedId( projGUID ).toInt(), dbase );
-
-         if ( exper.project.projectID < 1 )
          {
-            error = tr( "The project of run %1 is not in the target database" )
-                    .arg( entity.name );
-            return false;
+            US_Project imported;
+
+            if ( imported.readFromDB( mappedId( projGUID ).toInt(), dbase )
+                 != US_DB2::OK )
+            {
+               error = tr( "The project of run %1 is not in the target"
+                           " database" ).arg( entity.name );
+               return false;
+            }
+
+            exper.project = imported;
+         }
+
+         else
+         {
+            QString named = exper.project.projectGUID;
+
+            if ( named.isEmpty() )
+            {
+               error = tr( "Run %1 names no project, and a database"
+                           " experiment must belong to one" )
+                       .arg( entity.name );
+               return false;
+            }
+
+            QStringList query;
+            query << "get_projectID_from_GUID" << named;
+            dbase->query( query );
+
+            if ( dbase->next()  &&
+                 exper.project.readFromDB( dbase->value( 0 ).toString().toInt(),
+                                           dbase ) == US_DB2::OK )
+               note( tr( "Run %1 is attached to the project \"%2\" the"
+                         " target already has" ).arg( entity.name )
+                     .arg( exper.project.projectDesc ) );
+
+            else
+            {
+               exper.project.projectGUID = named;
+               exper.project.projectID   = 0;
+               note( tr( "The bundle carries no project; a project record"
+                         " \"%1\" is created from what run %2 names" )
+                     .arg( exper.project.projectDesc ).arg( entity.name ) );
+            }
          }
 
          if ( ! resolveHardware( exper, entity ) )

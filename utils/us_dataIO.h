@@ -289,6 +289,26 @@ class US_UTIL_EXTERN US_DataIO
       */
       static int     readRawData ( const QString&, RawData& );
 
+      /*! Read only the header of a US3 binary data file
+
+          The header holds the data type, the cell, the channel, the GUID
+          and the description -- everything that identifies a triple, and
+          nothing that depends on how many scans or readings it has.  Code
+          that only needs to know what a file is, rather than what is in it,
+          should read the header: for a multi-wavelength run that is the
+          difference between reading a few hundred bytes per triple and
+          reading the whole run.
+
+          The scan data is not read and, because the checksum of a US3 data
+          file covers the whole file, the checksum is not verified.
+
+          \param file  The filename to be read
+          \param data  A reference to the data structure for the read data;
+                       its scan data and x values are left empty
+          \return      One of the \ref ioError codes
+      */
+      static int     readRawHeader( const QString&, RawData& );
+
       /*! Read a set of edit parameters in xml format
           \param filename   The filename to be read
           \param parameters A reference to the data structure for the read data

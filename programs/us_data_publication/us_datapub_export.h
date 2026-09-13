@@ -55,6 +55,17 @@ class US_DataPubExporter : public QObject
             bool        noisesExplicit; //!< Use \ref noiseGUIDs as given
 
             bool        includeTimeState; //!< Carry the runs' time state
+
+            /*! \brief Carry the project the runs belong to
+
+                A bundle that leaves the project out still names it in the
+                run's experiment XML, so an import can attach the run to a
+                project the target already has.  Leave it out when the
+                project record itself is not yours to publish, or when the
+                receiving installation keeps its own project list.
+            */
+            bool        includeProject;
+
             QString     comment;          //!< Free-text bundle comment
 
             //! \brief Select exactly these raw triples

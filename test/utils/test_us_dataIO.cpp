@@ -1,6 +1,9 @@
 // test_us_dataio_unit.cpp - Unit tests for US_DataIO class
 #include "qt_test_base.h"
 #include "us_dataIO.h"
+#include "us_util.h"
+#include <QDir>
+#include <QFile>
 #include <QString>
 #include <QVector>
 #include <QByteArray>
@@ -489,4 +492,138 @@ EXPECT_DOUBLE_EQ(spread, 1273.15) << "Should handle extreme temperature range";
 
 double avg = edgeCaseData.average_temperature();
 EXPECT_DOUBLE_EQ(avg, 363.425) << "Should calculate average of extreme values";
+}
+// ---------------------------------------------------------------------------
+// readRawHeader(): identifying a .auc file without reading it whole
+// ---------------------------------------------------------------------------
+
+class TestUSDataIOHeader : public QtTestBase {
+protected:
+    QString dir;
+
+    void SetUp() override {
+        QtTestBase::SetUp();
+        dir = QDir::tempPath() + "/us_dataio_header_"
+              + QString::number(QCoreApplication::applicationPid());
+        QDir().mkpath(dir);
+    }
+
+    void TearDown() override {
+        QDir(dir).removeRecursively();
+        QtTestBase::TearDown();
+    }
+
+    // A .auc file with enough scans that a full read costs real work
+    QString writeFile(const QString& name, const QString& guid,
+                      int nscan, int npoint) {
+        US_DataIO::RawData data;
+        data.type[0] = 'R';
+        data.type[1] = 'A';
+        US_Util::uuid_parse(guid, (unsigned char*)data.rawGUID);
+        data.cell        = 3;
+        data.channel     = 'B';
+        data.description = "Header read test triple";
+
+        for (int ii = 0; ii < npoint; ii++)
+            data.xvalues << 5.8 + 0.001 * ii;
+
+        for (int ss = 0; ss < nscan; ss++) {
+            US_DataIO::Scan scan;
+            scan.temperature = 20.0;
+            scan.rpm         = 45000.0;
+            scan.seconds     = 100.0 * ss;
+            scan.omega2t     = 1.0e10;
+            scan.wavelength  = 280.0;
+            scan.plateau     = 0.5;
+            scan.delta_r     = 0.001;
+            scan.nz_stddev   = false;
+
+            for (int ii = 0; ii < npoint; ii++) {
+                scan.rvalues << 0.001 * ii;
+                scan.stddevs << 0.0;
+            }
+
+            scan.interpolated = QByteArray((npoint + 7) / 8, char(0));
+            data.scanData << scan;
+        }
+
+        QString path = dir + "/" + name;
+        EXPECT_EQ(US_DataIO::writeRawData(path, data), US_DataIO::OK);
+
+        return path;
+    }
+};
+
+TEST_F(TestUSDataIOHeader, MatchesWhatAFullReadFinds) {
+    QString guid = "3f2a1c88-1111-4222-8333-444455556666";
+    QString path = writeFile("hdr.RA.3.B.280.auc", guid, 20, 500);
+
+    US_DataIO::RawData whole;
+    ASSERT_EQ(US_DataIO::readRawData(path, whole), US_DataIO::OK);
+
+    US_DataIO::RawData header;
+    ASSERT_EQ(US_DataIO::readRawHeader(path, header), US_DataIO::OK);
+
+    EXPECT_EQ(QString(US_Util::uuid_unparse((unsigned char*)header.rawGUID)),
+              QString(US_Util::uuid_unparse((unsigned char*)whole.rawGUID)));
+    EXPECT_EQ(QString(US_Util::uuid_unparse((unsigned char*)header.rawGUID)),
+              guid);
+    EXPECT_EQ(header.description, whole.description);
+    EXPECT_EQ(header.cell,        whole.cell);
+    EXPECT_EQ(header.channel,     whole.channel);
+    EXPECT_EQ(QString(QByteArray(header.type, 2)),
+              QString(QByteArray(whole.type, 2)));
+}
+
+TEST_F(TestUSDataIOHeader, LeavesTheScanDataAlone) {
+    QString path = writeFile("empty.RA.3.B.280.auc",
+                             "3f2a1c88-1111-4222-8333-444455556666", 20, 500);
+
+    US_DataIO::RawData header;
+    ASSERT_EQ(US_DataIO::readRawHeader(path, header), US_DataIO::OK);
+
+    EXPECT_EQ(header.scanCount(),  0) << "the scans are deliberately not read";
+    EXPECT_EQ(header.pointCount(), 0);
+}
+
+TEST_F(TestUSDataIOHeader, ReusingAStructDoesNotLeaveStaleValues) {
+    QString one = writeFile("one.RA.3.B.280.auc",
+                            "11111111-1111-4111-8111-111111111111", 5, 100);
+    QString two = writeFile("two.RA.3.B.281.auc",
+                            "22222222-2222-4222-8222-222222222222", 5, 100);
+
+    US_DataIO::RawData data;
+    ASSERT_EQ(US_DataIO::readRawHeader(one, data), US_DataIO::OK);
+    ASSERT_EQ(US_DataIO::readRawHeader(two, data), US_DataIO::OK);
+
+    EXPECT_EQ(QString(US_Util::uuid_unparse((unsigned char*)data.rawGUID)),
+              "22222222-2222-4222-8222-222222222222");
+}
+
+TEST_F(TestUSDataIOHeader, RejectsAFileThatIsNotUltraScanData) {
+    QString path = dir + "/notdata.auc";
+    QFile   file(path);
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    file.write(QByteArray(400, 'x'));
+    file.close();
+
+    US_DataIO::RawData data;
+    EXPECT_EQ(US_DataIO::readRawHeader(path, data), US_DataIO::NOT_USDATA);
+}
+
+TEST_F(TestUSDataIOHeader, RejectsATruncatedFile) {
+    QString path = dir + "/short.auc";
+    QFile   file(path);
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    file.write("UCDA05RA");
+    file.close();
+
+    US_DataIO::RawData data;
+    EXPECT_EQ(US_DataIO::readRawHeader(path, data), US_DataIO::NOT_USDATA);
+}
+
+TEST_F(TestUSDataIOHeader, ReportsAMissingFile) {
+    US_DataIO::RawData data;
+    EXPECT_EQ(US_DataIO::readRawHeader(dir + "/absent.auc", data),
+              US_DataIO::CANTOPEN);
 }

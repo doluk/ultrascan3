@@ -14,6 +14,7 @@ US_DataPubCLI::Args::Args()
    scope          = "noise";
    conflict       = "reuse";
    timeState      = true;
+   project        = true;
    dryRun         = false;
    verbose        = false;
    nonInteractive = false;
@@ -81,6 +82,9 @@ QString US_DataPubCLI::usage( void )
       "  --model-guid <guid>     export only these models; may be repeated\n"
       "  --noise-guid <guid>     export only these noise records; repeatable\n"
       "  --no-timestate          leave the runs' time state out\n"
+      "  --no-project            leave the project record out; the runs still\n"
+      "                          name it, so an import can attach them to a\n"
+      "                          project the target already has\n"
       "  --comment <text>        store a comment in the manifest\n"
       "\n"
       "Import options:\n"
@@ -154,6 +158,7 @@ bool US_DataPubCLI::parse( const QStringList& arguments, QString& error )
       if ( arg == "--non-interactive" ){ args.nonInteractive = true;     continue; }
       if ( arg == "--no-verify" )      { args.verify         = false;    continue; }
       if ( arg == "--no-timestate" )   { args.timeState      = false;    continue; }
+      if ( arg == "--no-project" )     { args.project        = false;    continue; }
       if ( arg == "--list" )           { args.listOnly       = true;     continue; }
 
       if ( arg.startsWith( "--include-" ) )
@@ -320,6 +325,7 @@ int US_DataPubCLI::runExport( void )
    selection.scope            = scope;
    selection.projectGUID      = args.projectGUID;
    selection.includeTimeState = args.timeState;
+   selection.includeProject   = args.project;
    selection.comment          = args.comment;
 
    if ( ! args.modelGUIDs.isEmpty() )  selection.setModels( args.modelGUIDs );

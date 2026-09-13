@@ -345,6 +345,58 @@ TEST_F( DataPubImport, FailPolicyStopsOnAConflict )
    EXPECT_TRUE ( error.contains( "fail" ) ) << error.toStdString();
 }
 
+// A bundle without a project must not blank out the project the run names:
+// the import has nothing to remap it to, so the reference is left alone.
+TEST_F( DataPubImport, BundleWithoutAProjectKeepsTheRunsReference )
+{
+   QString noProject = root + "/no_project.tar.gz";
+   QString error;
+
+   {
+      US_DataPubExporter            exporter;
+      US_DataPubExporter::Selection selection;
+      selection.fromDb         = false;
+      selection.scope          = US_DataPub::ScopeNoise;
+      selection.includeProject = false;
+      selection.runIDs << runID;
+
+      ASSERT_TRUE( exporter.exportBundle( selection, noProject, error ) )
+         << error.toStdString();
+   }
+
+   US_DataPubImporter importer;
+   ASSERT_TRUE( importer.inspect  ( noProject, error ) );
+   ASSERT_TRUE( importer.runImport( diskOptions(), error ) )
+      << error.toStdString();
+
+   QList< US_DataPubImporter::Result > results = importer.results();
+
+   for ( int ii = 0; ii < results.size(); ii++ )
+      EXPECT_NE( results[ ii ].type, US_DataPub::Project );
+
+   EXPECT_FALSE( QDir( targetDir + "/data/projects" )
+                 .entryList( QStringList( "P*.xml" ), QDir::Files ).size() );
+
+   QString expPath = targetDir + "/results/" + runID + "/" + runID + "."
+                     + runType + ".xml";
+   ASSERT_TRUE( QFile::exists( expPath ) );
+
+   QFile file( expPath );
+   ASSERT_TRUE( file.open( QIODevice::ReadOnly ) );
+   QString content = QString::fromUtf8( file.readAll() );
+   file.close();
+
+   EXPECT_TRUE ( content.contains( projectGUID ) ) << content.toStdString();
+   EXPECT_TRUE ( content.contains( "id=\"7\"" ) ) << content.toStdString();
+   EXPECT_FALSE( content.contains( "guid=\"\"" ) );
+
+   // The raw data and edits still arrived
+   EXPECT_TRUE( QFile::exists( targetDir + "/results/" + runID + "/"
+                               + rawFile ) );
+   EXPECT_TRUE( QFile::exists( targetDir + "/results/" + runID + "/"
+                               + editFile ) );
+}
+
 TEST_F( DataPubImport, RoundTripKeepsThePayloadsIdentical )
 {
    QString error;

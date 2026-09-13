@@ -512,6 +512,91 @@ void US_DataIO::write( QDataStream& ds, const char* c, int len, quint32& crc )
    crc = US_Crc::crc32( crc, (unsigned char*) c, len );
 }
 
+int US_DataIO::readRawHeader( const QString& file, RawData& data )
+{
+   // magic(4) + version(2) + type(2) + cell(1) + channel(1) + guid(16)
+   //  + description(240)
+   const qint64 header_size = 266;
+
+   QFile ff( file );
+   if ( ! ff.open( QIODevice::ReadOnly ) ) return CANTOPEN;
+
+   if ( ff.size() < header_size )
+   {
+      ff.close();
+      return NOT_USDATA;
+   }
+
+   QDataStream ds( &ff );
+
+   quint32 crc = 0xffffffffUL;     // Not verified: the header is only part
+                                   //  of what the file's checksum covers
+
+   data.xvalues .clear();
+   data.scanData.clear();
+   data.description.clear();
+   data.cell    = 0;
+   data.channel = ' ';
+   memset( data.type,    '\0', sizeof data.type );
+   memset( data.rawGUID, '\0', sizeof data.rawGUID );
+
+   try
+   {
+      // Read magic number
+      char magic[ 4 ];
+      read( ds, magic, 4, crc );
+      if ( strncmp( magic, "UCDA", 4 ) != 0 ) throw NOT_USDATA;
+
+      // Check the version number
+      unsigned char ver[ 2 ];
+      read( ds, (char*) ver, 2, crc );
+      quint32 version = ( ( ver[ 0 ] & 0x0f ) << 8 ) | ( ver[ 1 ] & 0x0f );
+      if ( version > format_version ) throw BAD_VERSION;
+
+      // Read and get the file type
+      char type[ 3 ];
+      read( ds, type, 2, crc );
+      type[ 2 ] = '\0';
+
+      QStringList types = QStringList() << "RA" << "IP" << "RI" << "FI"
+                                        << "WA" << "WI";
+
+      if ( ! types.contains( QString( type ) ) ) throw BADTYPE;
+      strncpy( data.type, type, 2 );
+
+      // Get the cell
+      union
+      { char c[ 4 ];
+        int  i;
+      } cell;
+
+      cell.i = 0;
+
+      read( ds, cell.c, 1, crc );
+      data.cell = qFromLittleEndian( cell.i );
+
+      // Get the channel
+      read( ds, &data.channel, 1, crc );
+
+      // Get the guid
+      read( ds, data.rawGUID, 16, crc );
+
+      // Get the description
+      char desc[ 240 ];
+      read( ds, desc, 240, crc );
+      data.description = QString( desc );
+   }
+   catch ( ioError error )
+   {
+      ff.close();
+      return error;
+   }
+
+   ff.close();
+
+   return OK;
+}
+
 int US_DataIO::readRawData( const QString& file, RawData& data )
 {
    QFile ff( file );

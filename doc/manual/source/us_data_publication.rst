@@ -43,6 +43,12 @@ bundle can be re-created from records that appear earlier in the same bundle.
 Asking for the models therefore also brings the edits, the solutions, the raw
 data, the experiment and the project.
 
+The project record is the one part that is optional. It is often not the
+exporter's to publish, and the receiving installation usually keeps its own
+project list. With the **Export the project record itself** check box cleared
+the project is left out, but each run still names it, so an import can attach
+the runs to a project the target already has.
+
 Raw data is the one exception to the declared order: it cannot be re-created in
 a target installation without the solutions its cells and channels refer to, so
 a scope that reaches the raw data is automatically raised to the solutions. The
@@ -92,6 +98,11 @@ The Export tab works from the top down.
   Opens the standard :doc:`project <us_project>` dialog. At most one project
   can be chosen. Choosing one drops any already selected run that does not
   belong to it.
+
+**Export the project record itself**
+  Clear this to leave the project out of the bundle. The scope cannot be the
+  project alone *and* leave the project out -- that would make an empty
+  bundle.
 
 **Select Experiment(s)**
   Opens the run selection dialog. When a project is selected the dialog offers
@@ -208,6 +219,16 @@ UltraScan-III data and results directories are used. Set to a folder, the
 import builds ``<folder>/data/...`` and ``<folder>/results/...`` there, which
 is a good way to look at a bundle before committing to anything.
 
+A bundle without a project
+--------------------------
+
+Every experiment in the database belongs to a project, so a bundle exported
+without one still has to land somewhere. The project GUID the run names is
+looked up in the target; when it is there the run is attached to it, and when
+it is not, a project record is created from what the run itself names. A disk
+import needs none of that: the run's experiment XML keeps its project
+reference untouched.
+
 Reference data the import does not create
 -----------------------------------------
 
@@ -250,6 +271,8 @@ Export options
 ``--model-guid <guid>``         Export only these models; repeatable
 ``--noise-guid <guid>``         Export only these noise records; repeatable
 ``--no-timestate``              Leave the runs' time state out
+``--no-project``                Leave the project record out; the runs still
+                                name it
 ``--comment <text>``            Store a comment in the manifest
 ==============================  ==========================================================
 

@@ -61,6 +61,7 @@ class US_DataPubExportPane : public US_Widgets
 
       QComboBox*    cb_scope;
       QCheckBox*    ck_tmst;
+      QCheckBox*    ck_project;
 
       QTreeWidget*  tw_data;
       QTreeWidget*  tw_models;
@@ -106,6 +107,8 @@ class US_DataPubExportPane : public US_Widgets
       void select_project ( void );
       void project_chosen ( US_Project& );
       void clear_project  ( void );
+      void project_export_toggled( bool );
+      void scope_changed  ( int );
       void select_runs    ( void );
       void clear_runs     ( void );
       void all_raw        ( void );

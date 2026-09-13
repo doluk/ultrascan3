@@ -49,14 +49,25 @@ QString US_Util::md5sum_file( const QString& filename )
    if ( ! f.open( QIODevice::ReadOnly ) )
       return "0 0";
 
-   // Otherwise, get the full contents of the file into a QByteArray
-   QByteArray data = f.readAll();
+   // Otherwise, hash the file a block at a time.  Data files run to
+   // hundreds of megabytes, and there is no reason to hold one of them in
+   // memory in one piece just to digest it.
+   QCryptographicHash hash( QCryptographicHash::Md5 );
+
+   while ( ! f.atEnd() )
+   {
+      QByteArray block = f.read( 1024 * 256 );
+
+      if ( block.isEmpty() )  break;
+
+      hash.addData( block );
+   }
+
    f.close();
 
    // Get the md5 hash, convert to hex, get file size;  then format "hash size"
-   QString hashandsize =
-      QString( QCryptographicHash::hash( data, QCryptographicHash::Md5 )
-      .toHex() ) + " " + QString::number( QFileInfo( filename ).size() );
+   QString hashandsize = QString( hash.result().toHex() ) + " "
+                         + QString::number( QFileInfo( filename ).size() );
 
    // Return the "hash size" string
    return hashandsize;

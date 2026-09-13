@@ -66,6 +66,7 @@ class US_DataPubCLI : public QObject
             QString                  comment;
             QString                  dbPassword;
             bool                     timeState;
+            bool                     project;
             bool                     dryRun;
             bool                     verbose;
             bool                     nonInteractive;

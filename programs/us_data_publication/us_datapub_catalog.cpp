@@ -5,6 +5,7 @@
 #include "us_settings.h"
 #include "us_util.h"
 #include "us_time_state.h"
+#include "us_dataIO.h"
 
 US_DataPubCatalog::ExpInfo::ExpInfo()
 {
@@ -639,13 +640,21 @@ bool US_DataPubCatalog::loadRunDetailsDisk( Run& run, QString& error )
       raw.dataType = aucbase.section( ".", -5, -5 );
       raw.triple   = aucbase.section( ".", -4, -2 );
 
-      QMap< QString, QString > attrs = peekAttributes( raw.path, "rawData" );
-      raw.guid = attrs.value( "guid" );
+      // The GUID and the description are in the .auc header, so only the
+      // header is read: a multi-wavelength run holds hundreds of triples,
+      // and none of their scan data is wanted here.
+      US_DataIO::RawData header;
 
-      if ( raw.guid.isEmpty() )
+      if ( US_DataIO::readRawHeader( raw.path, header ) == US_DataIO::OK )
+         raw.guid = US_Util::uuid_unparse( (unsigned char*)header.rawGUID );
+
+      if ( raw.guid.isEmpty()  ||
+           raw.guid == "00000000-0000-0000-0000-000000000000" )
       {
-         // .auc files are binary; the GUID lives in the edit files that
-         // point at them, so fall back to the first edit of this triple.
+         // An older file may carry no GUID of its own; the edit files that
+         // point at it name the one the rest of the store knows it by.
+         raw.guid.clear();
+
          for ( int jj = 0; jj < edtfiles.size(); jj++ )
          {
             QString edtbase = edtfiles[ jj ];

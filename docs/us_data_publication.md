@@ -31,7 +31,17 @@ project → experiment → rawData → rotorCalibration → centerpiece
 An export always carries a **prefix** of that chain, so that every record in a
 bundle can be re-created from records that appear earlier in the same bundle.
 Asking for the models therefore also brings the edits, the solutions, the raw
-data, the experiment and the project.
+data and the experiment.
+
+**The project record is the one part that is optional.** It is often not the
+exporter's to publish, and the receiving installation usually keeps its own
+project list. With `--no-project` (or the **Export the project record itself**
+check box cleared) the project is left out, but each run still names it: the
+experiment entry keeps `projectGUID` and `projectDescription` as plain
+information rather than as a dependency, so an import can attach the runs to a
+project the target already has. The scope cannot be the project alone *and*
+leave the project out — that would make an empty bundle, and the export says
+so.
 
 There is one place where the declared order and the real dependency disagree:
 raw data cannot be re-created in a target installation without the solutions
@@ -213,29 +223,32 @@ The Export tab works top to bottom:
 2. **Select Project** — opens the standard project dialog. At most one project
    can be chosen; choosing one drops any already selected run that does not
    belong to it.
-3. **Select Experiment(s)** — opens the run selection dialog. When a project is
+3. **Export the project record itself** — clear it to leave the project out
+   of the bundle. The runs still name their project, so an import can attach
+   them to a project the target already has.
+4. **Select Experiment(s)** — opens the run selection dialog. When a project is
    selected the dialog offers only that project's runs; without a project it
    offers everything. Selecting runs is enough on its own — a project is not
    required, and one is adopted from the first run when none was picked.
-4. **Experiments, raw data and edits** — a tree of check boxes, `run →
+5. **Experiments, raw data and edits** — a tree of check boxes, `run →
    rawData → edit`. The buttons under it are **All Raw**, **No Raw**,
    **Latest Edit**, **All Edits** and **No Edits**. Checking an edit checks
    its raw data; unchecking raw data unchecks the edits under it.
-5. **Selected models and noise** — a second tree, `run → rawData → edit →
+6. **Selected models and noise** — a second tree, `run → rawData → edit →
    model → noise`, filled by **Select Models…**, which opens the model loader
    pre-filtered to the selected runs. After picking models the program offers
    to select the edits they were fitted to, because a model cannot be imported
    without its edit. Unchecking raw data or an edit that a selected model needs
    asks whether to drop those models or keep the selection.
-6. **Noise** — the noise records of the selected models are selected
+7. **Noise** — the noise records of the selected models are selected
    automatically. When the *noise dialog* preference is set (UltraScan
    Configuration → Advanced), **Select Noise…** opens the noise loader
    instead so the records can be picked by hand.
-7. **Export up to**, **Include time state**, **Comment**, **Bundle file**.
-8. **Summary** — the counts of experiments, raw data, edits, models and noise
+8. **Export up to**, **Include time state**, **Comment**, **Bundle file**.
+9. **Summary** — the counts of experiments, raw data, edits, models and noise
    records; **Details…** shows the manifest that would be written, without
    copying a single byte of experimental data.
-9. **Export Bundle**.
+10. **Export Bundle**.
 
 ### Command line
 
@@ -254,6 +267,7 @@ us_data_publication --mode export --bundle <file.tar.gz> [options]
 | `--model-guid <guid>` | Export only these models; repeatable |
 | `--noise-guid <guid>` | Export only these noise records; repeatable |
 | `--no-timestate` | Leave the runs' time state out |
+| `--no-project` | Leave the project record out; the runs still name it |
 | `--comment <text>` | Store a comment in the manifest |
 
 Without `--experiment-id`, a `--project-id` or `--project-guid` exports every
@@ -329,6 +343,20 @@ them in the order the target's own dependencies require:
   solutions, experiment, raw data, time state, edits, models, noise. The
   solutions go in first because the run's experiment XML names them, and that
   file is rewritten as it is written out to name the records of the target.
+
+### A bundle without a project
+
+Every experiment in the database belongs to a project, so a bundle exported
+with `--no-project` still has to land somewhere:
+
+* The project GUID the run names is looked up in the target. When it is there,
+  the run is attached to it and nothing is changed.
+* When it is not, a project record is created from what the run itself names
+  (GUID and description), and the log says so.
+
+Importing to a disk store needs none of that: the run's experiment XML keeps
+its project reference untouched, exactly as an installation that received the
+data without the project would have it.
 
 ### Reference data the import does not create
 

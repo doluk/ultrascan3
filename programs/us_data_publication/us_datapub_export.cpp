@@ -27,6 +27,7 @@ US_DataPubExporter::Selection::Selection()
    modelsExplicit   = false;
    noisesExplicit   = false;
    includeTimeState = true;
+   includeProject   = true;
 }
 
 void US_DataPubExporter::Selection::setRaws( const QStringList& guids )
@@ -188,6 +189,13 @@ bool US_DataPubExporter::build( const Selection& selection, bool payloads,
       return false;
    }
 
+   if ( scope == US_DataPub::ScopeProject  &&  ! selection.includeProject )
+   {
+      error = tr( "The scope is the project alone, but the project is not"
+                  " being exported: there would be nothing in the bundle" );
+      return false;
+   }
+
    if ( scope != selection.scope )
       note( tr( "Scope raised from \"%1\" to \"%2\":"
                 " raw data cannot be imported without its solutions" )
@@ -227,8 +235,15 @@ bool US_DataPubExporter::build( const Selection& selection, bool payloads,
    // the declared section order, which the sections take care of.
 
    // ---- project -----------------------------------------------------------
-   if ( scope >= US_DataPub::ScopeProject )
+   if ( scope >= US_DataPub::ScopeProject  &&  selection.includeProject )
+   {
       if ( ! addProject( selection, infos, error ) )  return false;
+   }
+
+   else if ( scope >= US_DataPub::ScopeProject )
+      note( tr( "The project is left out of the bundle; the runs still name"
+                " it, so an import can attach them to a project the target"
+                " already has" ) );
 
    // ---- rotor calibration -------------------------------------------------
    if ( scope >= US_DataPub::ScopeRotorCalibration )
@@ -597,7 +612,16 @@ bool US_DataPubExporter::addExperiment( const US_DataPubCatalog::Run& run,
                                                         : info.label );
    entity.attrs.insert( "expType", info.expType.isEmpty() ? run.expType
                                                           : info.expType );
-   entity.setDepend( US_DataPub::Project, info.projectGUID );
+   if ( mani.contains( US_DataPub::Project, info.projectGUID ) )
+      entity.setDepend( US_DataPub::Project, info.projectGUID );
+
+   else if ( ! info.projectGUID.isEmpty() )
+   {  // The project is not in the bundle, so it is not a dependency the
+      // import can resolve; it is recorded for information instead.
+      entity.attrs.insert( "projectGUID", info.projectGUID );
+      entity.attrs.insert( "projectDescription", info.projectDesc );
+   }
+
    entity.setDepend( US_DataPub::RotorCalibration,
                      cal_guids.value( info.runID, QString() ) );
 

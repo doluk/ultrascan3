@@ -174,6 +174,59 @@ TEST_F( DataPubExport, DeselectingTheEditDropsTheModel )
    EXPECT_EQ( exporter.manifest().count( US_DataPub::RawData    ), 1 );
 }
 
+// The project record is often not the exporter's to publish, and the
+// receiving installation may keep its own project list, so it can be left
+// out.  The runs still name it, which is what lets an import reattach them.
+TEST_F( DataPubExport, ProjectCanBeLeftOut )
+{
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection = baseSelection( US_DataPub::ScopeNoise );
+   selection.includeProject = false;
+
+   QString bundle = root + "/no_project.tar.gz";
+   QString error;
+
+   ASSERT_TRUE( exporter.exportBundle( selection, bundle, error ) )
+      << error.toStdString();
+
+   const US_DataPubManifest& mani = exporter.manifest();
+
+   EXPECT_EQ( mani.count( US_DataPub::Project    ), 0 );
+   EXPECT_EQ( mani.count( US_DataPub::Experiment ), 1 );
+   EXPECT_EQ( mani.count( US_DataPub::RawData    ), 1 );
+   EXPECT_EQ( mani.count( US_DataPub::Model      ), 1 );
+
+   US_DataPubEntity exper;
+   ASSERT_TRUE( mani.entity( US_DataPub::Experiment, expGUID, exper ) );
+
+   // Not a dependency any more -- the bundle cannot satisfy it -- but still
+   // recorded, so an import knows which project the run belongs to.
+   EXPECT_TRUE( exper.depend( US_DataPub::Project ).isEmpty() );
+   EXPECT_EQ  ( exper.attrs.value( "projectGUID" ), projectGUID );
+   EXPECT_EQ  ( exper.attrs.value( "projectDescription" ),
+                "Demo publication project" );
+
+   QString verror;
+   EXPECT_TRUE( mani.validate( verror ) ) << verror.toStdString();
+}
+
+TEST_F( DataPubExport, ProjectOnlyScopeWithoutTheProjectIsRefused )
+{
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection;
+   selection.fromDb         = false;
+   selection.scope          = US_DataPub::ScopeProject;
+   selection.projectGUID    = projectGUID;
+   selection.includeProject = false;
+
+   QString error;
+
+   EXPECT_FALSE( exporter.exportBundle( selection, root + "/nothing.tar.gz",
+                                        error ) );
+   EXPECT_TRUE ( error.contains( "nothing in the bundle" ) )
+      << error.toStdString();
+}
+
 TEST_F( DataPubExport, PayloadDigestsMatchTheStagedFiles )
 {
    US_DataPubExporter exporter;

@@ -50,6 +50,16 @@ US_DataPubExportPane::US_DataPubExportPane( QWidget* parent )
    pick->addWidget( le_project,   row, 1, 1, 3 );
    pick->addWidget( pb_clearproj, row++, 4, 1, 1 );
 
+   QGridLayout* projlay = us_checkbox(
+         tr( "Export the project record itself" ), ck_project, true );
+   ck_project->setToolTip( tr(
+      "The project record is what the runs belong to.  Leaving it out still\n"
+      "names the project in each run, so an import can attach the runs to a\n"
+      "project the receiving installation already has." ) );
+   connect( ck_project, &QCheckBox::toggled,
+            this,       &US_DataPubExportPane::project_export_toggled );
+   pick->addLayout( projlay, row++, 1, 1, 3 );
+
    pb_runs      = us_pushbutton( tr( "Select Experiment(s)" ) );
    le_runs      = us_lineedit( tr( "(no run selected)" ), 0, true );
    pb_clearruns = us_pushbutton( tr( "Clear" ) );
@@ -152,6 +162,8 @@ US_DataPubExportPane::US_DataPubExportPane( QWidget* parent )
    cb_scope = us_comboBox();
    cb_scope->addItems( US_DataPub::scopeKeys() );
    cb_scope->setCurrentIndex( cb_scope->count() - 1 );
+   connect( cb_scope, SIGNAL( currentIndexChanged( int ) ),
+            this,     SLOT  ( scope_changed( int ) ) );
    opts->addWidget( cb_scope, row, 1, 1, 1 );
 
    QGridLayout* tmstlay = us_checkbox( tr( "Include time state" ), ck_tmst,
@@ -281,6 +293,25 @@ void US_DataPubExportPane::project_chosen( US_Project& project )
    {
       runs = kept;
       buildDataTree();
+   }
+
+   updateSummary();
+}
+
+void US_DataPubExportPane::scope_changed( int )
+{
+   updateSummary();
+}
+
+void US_DataPubExportPane::project_export_toggled( bool on )
+{
+   if ( ! on  &&  US_DataPub::scopeOfKey( cb_scope->currentText() )
+                  == US_DataPub::ScopeProject )
+   {
+      QMessageBox::information( this, tr( "Nothing Left to Export" ),
+         tr( "The scope is the project alone, so leaving the project out"
+             " would make an empty bundle.  Raise the scope, or export the"
+             " project." ) );
    }
 
    updateSummary();
@@ -1098,6 +1129,7 @@ US_DataPubExporter::Selection US_DataPubExportPane::selection( void ) const
    sel.scope            = US_DataPub::scopeOfKey( cb_scope->currentText() );
    sel.projectGUID      = project_guid;
    sel.includeTimeState = ck_tmst->isChecked();
+   sel.includeProject   = ck_project->isChecked();
    sel.comment          = le_comment->text();
 
    for ( int ii = 0; ii < runs.size(); ii++ )
@@ -1118,12 +1150,21 @@ void US_DataPubExportPane::updateSummary( void )
    int nmods  = sel_models.size();
    int nnois  = sel_noises.size();
 
-   le_summary->setText( tr( "%1 experiment(s), %2 raw data, %3 edit(s),"
-                            " %4 model(s), %5 noise record(s)" )
+   le_summary->setText( tr( "%1 project, %2 experiment(s), %3 raw data,"
+                            " %4 edit(s), %5 model(s), %6 noise record(s)" )
+                        .arg( ck_project->isChecked() ? tr( "1" )
+                                                      : tr( "no" ) )
                         .arg( runs.size() ).arg( nraws ).arg( nedits )
                         .arg( nmods ).arg( nnois ) );
 
-   pb_export->setEnabled( ! runs.isEmpty()  ||  ! project_guid.isEmpty() );
+   // There has to be something to read from, and something to write out:
+   // a scope beyond the project, or the project record itself.
+   bool haveSource = ! runs.isEmpty()  ||  ! project_guid.isEmpty();
+   bool haveOutput = ( US_DataPub::scopeOfKey( cb_scope->currentText() )
+                       > US_DataPub::ScopeProject )
+                     ||  ck_project->isChecked();
+
+   pb_export->setEnabled( haveSource  &&  haveOutput );
 }
 
 void US_DataPubExportPane::show_details( void )
@@ -1275,5 +1316,6 @@ void US_DataPubExportPane::reset( void )
    pgb_progress->setValue( 0 );
    cb_scope->setCurrentIndex( cb_scope->count() - 1 );
    ck_tmst->setChecked( true );
+   ck_project->setChecked( true );
    updateSummary();
 }

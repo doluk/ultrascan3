@@ -12,6 +12,40 @@
 #define timeFmt QString("hh:mm:ss")
 #define nowTime() "T="+QDateTime::currentDateTime().toString(timeFmt)
 
+// Read one attribute of the first matching element of an XML file.
+//
+// Deciding whether a model or noise file belongs to the run being filtered
+// on only needs its description, which is an attribute of the first element.
+// Parsing the whole file to find out means reading every component or noise
+// value in it, and a store holds thousands of those files.
+static QString peek_xml_attribute( const QString& filename,
+                                   const QString& element,
+                                   const QString& attribute )
+{
+   QFile file( filename );
+
+   if ( ! file.open( QIODevice::ReadOnly | QIODevice::Text ) )
+      return QString();
+
+   QXmlStreamReader xml( &file );
+   QString          value;
+
+   while ( ! xml.atEnd() )
+   {
+      xml.readNext();
+
+      if ( ! xml.isStartElement() )                 continue;
+      if ( xml.name().toString() != element )       continue;
+
+      value = xml.attributes().value( attribute ).toString();
+      break;
+   }
+
+   file.close();
+
+   return value;
+}
+
 // Scan the database and local disk for R/E/M/N data sets
 US_DataModel::US_DataModel( QWidget* parwidg /*=0*/ )
 {
@@ -1103,7 +1137,7 @@ void US_DataModel::scan_local( )
 
       for ( int ii = 0; ii < naucd; ii++ )
       {
-         QString     subdir   = rdir + aucdirs.at( ii );
+         QString     subdir   = rdir + "/" + aucdirs.at( ii );
          edtpatt              = tfilt ?
                                 filt_run + ".*" + filt_triple + ".xml" :
                                 filt_run + ".*.xml";
@@ -1120,10 +1154,9 @@ void US_DataModel::scan_local( )
 DbgLv(1) << "BrLoc:  modf size" << modfils.size() << "filt_run" << filt_run;
       for ( int ii = 0; ii < modfils.size(); ii++ )
       {
-         US_Model  model;
          QString   modfil     = dirm + "/" + modfils.at( ii );
-         model.load( modfil );
-         QString   mdesc      = model.description;
+         QString   mdesc      = peek_xml_attribute( modfil, "model",
+                                                    "description" );
 DbgLv(2) << "BrLoc:     ii" << ii << "mdesc" << mdesc;
          if ( ! mdesc.startsWith( filt_run ) )              continue;
          if ( tfilt  &&  ! mdesc.contains( filt_triple ) )  continue;
@@ -1135,10 +1168,9 @@ DbgLv(1) << "BrLoc:    nmodf" << nmodf;
 
       for ( int ii = 0; ii < noifils.size(); ii++ )
       {
-         US_Noise  noise;
          QString   noifil     = dirn + "/" + noifils.at( ii );
-         noise.load( noifil );
-         QString   ndesc      = noise.description;
+         QString   ndesc      = peek_xml_attribute( noifil, "noise",
+                                                    "description" );
          if ( ! ndesc.startsWith( filt_run ) )              continue;
          if ( tfilt  &&  ! ndesc.contains( filt_triple ) )  continue;
          nnoif++;
@@ -1169,6 +1201,28 @@ DbgLv(1) << "BrLoc:     ii naucf" << ii << naucf << "subdir" << subdir;
       US_DataIO::RawData    rdata;
       US_DataIO::EditValues edval;
 
+      // List the edit files of this run once and bucket them by triple.  A
+      // multi-wavelength run holds hundreds of triples in one directory, and
+      // listing the directory again for every one of them is what used to
+      // make this scan grow with the square of the triple count.
+      QStringList alledits = QDir( subdir )
+         .entryList( QStringList( "*.xml" ), QDir::Files, QDir::Name );
+      QMap< QString, QStringList > edits_of_triple;
+
+      for ( int kk = 0; kk < alledits.size(); kk++ )
+      {  // An edit file name is runID.editID.type.cell.channel.wavelength.xml;
+         // the run's own experiment XML has far fewer parts than that.
+         QString efname = alledits.at( kk );
+
+         if ( efname.count( "." ) < 6 )  continue;
+
+         edits_of_triple[ efname.section( ".", -5, -2 ) ] << efname;
+      }
+
+      // The experiment GUID is a property of the run, not of the triple, so
+      // its XML is read once here instead of once per .auc file.
+      QString dirExpGUID;
+
       for ( int jj = 0; jj < naucf; jj++ )
       {  // loop thru .auc files found in a directory
          QString fname    = aucfiles.at( jj );
@@ -1176,11 +1230,17 @@ DbgLv(1) << "BrLoc:     ii naucf" << ii << naucf << "subdir" << subdir;
          QString tripl    = fname.section( ".", -5, -2 );
          QString aucfile  = subdir + "/" + fname;
          QString descr    = "";
-         QString expGUID  = expGUIDauc( aucfile );
 DbgLv(2) << "BrLoc: ii jj file" << ii << jj << aucfile;
 
-         // read in the raw data and build description record
-         US_DataIO::readRawData( aucfile, rdata );
+         if ( dirExpGUID.isEmpty() )
+            dirExpGUID    = expGUIDauc( aucfile );
+
+         QString expGUID  = dirExpGUID;
+
+         // Read the .auc header to build the description record.  Only the
+         // GUID and the description are wanted, and both are in the header;
+         // reading the scan data as well would mean reading the whole run.
+         US_DataIO::readRawHeader( aucfile, rdata );
 
          contents         = US_Util::md5sum_file( aucfile );
 DbgLv(2) << "BrLoc:      contents" << contents;
@@ -1212,13 +1272,14 @@ DbgLv(2) << "BrLoc:      contents" << contents;
 
          ldescs << cdesc;
 
-         // now load edit files associated with this auc file
-         edtfilt.clear();
-         edtfilt << runid + ".*." + tripl + ".xml";
-DbgLv(2) << "BrLoc:  edtfilt" << edtfilt;
+         // now take the edit files associated with this auc file
+         QStringList edtfiles;
+         QStringList tredits  = edits_of_triple.value( tripl );
 
-         QStringList edtfiles = QDir( subdir )
-            .entryList( edtfilt, QDir::Files, QDir::Name );
+         for ( int kk = 0; kk < tredits.size(); kk++ )
+            if ( tredits.at( kk ).startsWith( runid + "." ) )
+               edtfiles << tredits.at( kk );
+DbgLv(2) << "BrLoc:  tripl edits" << tripl << edtfiles.size();
 
          for ( int kk = 0; kk < edtfiles.size(); kk++ )
          {
