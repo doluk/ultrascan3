@@ -12,6 +12,7 @@
 #include "us_help.h"
 #include "us_dataIO.h"
 #include "us_data_catalog.h"
+#include "us_disk_scan.h"
 
 #ifndef DbgLv
 #define DbgLv(a) if(dbg_level>=a)qDebug()  //!< debug-level-conditioned qDebug()
@@ -27,6 +28,9 @@ class US_DataModel : public QObject
         //! \brief Constructor for US_DataModel
         //! \param parent Optional parent widget
         US_DataModel( QWidget* parent = 0 );
+
+        //! \brief Stop the disk worker and release the catalogs
+        ~US_DataModel() override;
 
         //! \enum State
         //! \brief Enumeration for data record states
@@ -288,7 +292,13 @@ class US_DataModel : public QObject
     private:
         US_DB2*       db;               //!< Pointer to opened DB connection
         US_DataCatalog* cat_db;         //!< Catalog of the database records
-        US_DataCatalog* cat_lo;         //!< Catalog of the local records
+
+        //! Catalog of the local records.  It belongs to \ref scanner and
+        //! is only looked at through \ref await_disk, which waits for the
+        //! worker to be between jobs first.
+        US_DataCatalog* cat_lo;
+
+        US_DiskScan*    scanner;        //!< Reads the local store off-thread
         bool          use_db;           //!< True when the database is scanned
         bool          use_lo;           //!< True when the local disk is scanned
         QProgressBar* progress;         //!< Progress bar on main window
@@ -334,9 +344,20 @@ class US_DataModel : public QObject
         //! \brief Slot to merge database and local data
         void merge_dblocal( void );
 
+        //! \brief Put a note from the local scan on the status line
+        //! \param note The note
+        void scanner_note( const QString& note );
+
     private:
         //! \brief Open the catalogs the current source filter calls for
         void open_catalogs( void );
+
+        //! \brief Wait for the disk worker to be between jobs
+        //!
+        //! Everything read out of the local catalog goes through here
+        //! first: the worker publishes what it read before it goes idle,
+        //! so what is read afterwards is what it wrote.
+        void await_disk( void );
 
         //! \brief Build the experiment record of one run entry
         //! \param entry The run entry to describe

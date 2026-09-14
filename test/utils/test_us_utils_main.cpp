@@ -27,6 +27,11 @@ private:
 };
 
 int main(int argc, char **argv) {
+    // Before anything reads or writes US_Settings: give this process its
+    // own settings file, so parallel test processes do not overwrite each
+    // other's scratch directory
+    isolateTestSettings();
+
     // Initialize Google Test
     ::testing::InitGoogleTest(&argc, argv);
 

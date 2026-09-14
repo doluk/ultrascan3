@@ -56,6 +56,7 @@ add_executable(test_us_utils
         ${AUTO_TEST_HEADERS}
         ../../utils/ius_db2.h
         ../common/qt_test_base.cpp
+        ../common/us_test_settings.cpp
         test_us_vector.cpp
         test_us_timer.cpp
         )
@@ -101,6 +102,7 @@ if(TARGET MySQL::Client AND NOT US3_NO_DB)
             test_us_utils_main.cpp
             ${DB_TEST_SOURCES}
             ../common/qt_test_base.cpp
+        ../common/us_test_settings.cpp
             )
 
     target_link_libraries(test_us_utils_db

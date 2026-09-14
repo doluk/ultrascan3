@@ -28,12 +28,23 @@ US_DataModel::US_DataModel( QWidget* parwidg /*=0*/ )
    db         = NULL;
    cat_db     = NULL;
    cat_lo     = NULL;
+   scanner    = NULL;
    use_db     = false;
    use_lo     = false;
    kdb_recs   = 0;
    klo_recs   = 0;
 
    dbg_level  = US_Settings::us_debug();
+}
+
+US_DataModel::~US_DataModel()
+{
+   // The worker has to be stopped before its catalog goes away, and the
+   // catalog is the worker's, so deleting the scanner does both
+   delete scanner;
+
+   scanner = NULL;
+   cat_lo  = NULL;
 }
 
 // Set database related pointers
@@ -338,12 +349,21 @@ bool US_DataModel::RunEntry::inBoth( void ) const
 }
 
 // Open the catalogs the current source filter calls for
+/* Open the sources the current filter calls for.
+
+   The local store is read on a worker thread, so that walking thousands of
+   files overlaps the database queries instead of following them.  The
+   catalog it reads into belongs to that worker: this class only ever looks
+   at it through await_disk(), which waits for the worker to be between
+   jobs first.
+*/
 void US_DataModel::open_catalogs( )
 {
    delete cat_db;
-   delete cat_lo;
+   delete scanner;
    cat_db     = NULL;
    cat_lo     = NULL;
+   scanner    = NULL;
 
    use_db     = ( db != NULL  &&  filt_source != "Local Only" );
    use_lo     = ( filt_source != "DB Only" );
@@ -365,23 +385,51 @@ void US_DataModel::open_catalogs( )
 
    if ( use_lo )
    {
-      cat_lo     = new US_DataCatalog( this );
+      scanner    = new US_DiskScan( this );
 
-      // Listing a store does not hash its files.  Reading every file of a
-      // multi-wavelength store to find out whether it still matches the
-      // database is the slowest thing this program can do, and it only
-      // means anything for a run that is in both places, so it waits for
-      // verify_run().
-      cat_lo->setChecksums( false );
-
-      if ( ! cat_lo->open( US_DataCatalog::Disk, "", error ) )
-      {
-         DbgLv(1) << "ScnR: local catalog" << error;
-         delete cat_lo;
-         cat_lo     = NULL;
-         use_lo     = false;
-      }
+      connect( scanner, &US_DiskScan::message,
+               this,    &US_DataModel::scanner_note );
    }
+}
+
+// What the local scan has to say goes on the status line
+void US_DataModel::scanner_note( const QString& note )
+{
+   if ( lb_status != NULL )
+      lb_status->setText( note );
+}
+
+/* Wait for the disk worker to be between jobs, keeping the window alive.
+
+   Everything this class reads out of the local catalog goes through here
+   first, which is what makes reading it safe: the worker publishes what it
+   read before it goes idle.
+*/
+void US_DataModel::await_disk( void )
+{
+   if ( scanner == NULL )   return;
+
+   bool waited = scanner->busy();
+
+   if ( waited  &&  progress != NULL )
+      progress->setMaximum( 0 );   // a bar with no range: something is going
+                                   // on, and how far along is not knowable
+
+   while ( scanner->busy() )
+   {
+      // User input is left out on purpose: it is what would call back into
+      // this object, and this object is between two threads just now
+      qApp->processEvents( QEventLoop::ExcludeUserInputEvents, 10 );
+      QThread::msleep( 1 );
+   }
+
+   if ( waited  &&  progress != NULL )
+   {
+      progress->setMaximum( 1 );
+      progress->setValue  ( 1 );
+   }
+
+   cat_lo = scanner->catalog();
 }
 
 // Whether the source filter excludes a tree in the given state
@@ -434,6 +482,11 @@ void US_DataModel::scan_runs( )
    bool    rfilt = ( ! filt_run.isEmpty()  &&  filt_run != "ALL" );
    QString error;
 
+   // The local store is walked on the worker thread while the database is
+   // queried here, so the two passes overlap
+   if ( scanner != NULL )
+      scanner->list();
+
    // Both sources meet in one map, keyed by run identifier, which also
    // gives the experiments a stable alphabetic order
    QMap< QString, RunEntry > byRun;
@@ -460,26 +513,25 @@ void US_DataModel::scan_runs( )
          DbgLv(1) << "ScnR: db runs" << error;
    }
 
-   if ( use_lo )
+   await_disk();                  // the worker has finished its listing
+
+   if ( use_lo  &&  scanner != NULL  &&  ! scanner->ok() )
+      DbgLv(1) << "ScnR: local runs" << scanner->error();
+
+   if ( use_lo  &&  cat_lo != NULL )
    {
-      if ( cat_lo->loadRuns( error ) )
+      for ( int ii = 0; ii < cat_lo->runCount(); ii++ )
       {
-         for ( int ii = 0; ii < cat_lo->runCount(); ii++ )
-         {
-            const US_DataCatalog::Run& run = cat_lo->run( ii );
+         const US_DataCatalog::Run& run = cat_lo->run( ii );
 
-            if ( rfilt  &&  run.runID != filt_run )   continue;
+         if ( rfilt  &&  run.runID != filt_run )   continue;
 
-            RunEntry entry  = byRun.value( run.runID );
-            entry.runID     = run.runID;
-            entry.loIndex   = ii;
-            entry.loCount   = run_record_count( run );
-            byRun.insert( run.runID, entry );
-         }
+         RunEntry entry  = byRun.value( run.runID );
+         entry.runID     = run.runID;
+         entry.loIndex   = ii;
+         entry.loCount   = run_record_count( run );
+         byRun.insert( run.runID, entry );
       }
-
-      else
-         DbgLv(1) << "ScnR: local runs" << error;
    }
 
    QStringList runIDs = byRun.keys();
@@ -601,16 +653,25 @@ bool US_DataModel::scan_all( void )
 {
    QString error;
 
+   // Again the local store is walked on the worker thread while the
+   // database is queried here
+   if ( scanner != NULL )
+      scanner->readChain();
+
+   bool ok = true;
+
    if ( cat_db != NULL  &&  ! cat_db->loadAll( error ) )
    {
       DbgLv(1) << "ScnA: db" << error;
-      return false;           // an older server: one experiment at a time
+      ok = false;             // an older server: one experiment at a time
    }
 
-   if ( cat_lo != NULL  &&  ! cat_lo->loadAll( error ) )
-      DbgLv(1) << "ScnA: local" << error;
+   await_disk();
 
-   return true;
+   if ( scanner != NULL  &&  ! scanner->ok() )
+      DbgLv(1) << "ScnA: local" << scanner->error();
+
+   return ok;
 }
 
 /* Merge one experiment's records into the tree.
@@ -784,13 +845,19 @@ bool US_DataModel::verify_run( int index )
 
    QString error;
 
+   // The local files are hashed on the worker thread while the database
+   // hashes its blobs, so the two halves of the comparison overlap
+   if ( entry.loIndex >= 0  &&  scanner != NULL )
+      scanner->verify( entry.loIndex );
+
    if ( entry.dbIndex >= 0  &&  cat_db != NULL  &&
         ! cat_db->verifyRun( entry.dbIndex, error ) )
       DbgLv(1) << "VfyR: db" << entry.runID << error;
 
-   if ( entry.loIndex >= 0  &&  cat_lo != NULL  &&
-        ! cat_lo->verifyRun( entry.loIndex, error ) )
-      DbgLv(1) << "VfyR: local" << entry.runID << error;
+   await_disk();
+
+   if ( entry.loIndex >= 0  &&  scanner != NULL  &&  ! scanner->ok() )
+      DbgLv(1) << "VfyR: local" << entry.runID << scanner->error();
 
    QMap< QString, QString > dbDigests = run_digests( cat_db, entry.dbIndex );
    QMap< QString, QString > loDigests = run_digests( cat_lo, entry.loIndex );

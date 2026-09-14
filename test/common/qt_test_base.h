@@ -14,6 +14,8 @@
 #include <QWidget>
 #include <memory>
 
+#include "us_test_settings.h"
+
 /**
  * Base class for all Qt-related tests
  */

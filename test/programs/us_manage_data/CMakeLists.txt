@@ -38,6 +38,7 @@ add_executable(test_us_manage_data
         ${CMAKE_CURRENT_SOURCE_DIR}/test_us_manage_data_main.cpp
         ${MANAGE_TEST_SOURCES}
         ${MANAGE_SOURCES}
+        ${CMAKE_SOURCE_DIR}/test/common/us_test_settings.cpp
         )
 
 target_include_directories(test_us_manage_data

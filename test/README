@@ -111,6 +111,15 @@ The Docker container provides:
 3. Use Google Test macros (TEST, TEST_F, EXPECT_*)
 4. Run `./test-docker.sh` to automatically discover and run your tests
 
+## Settings Isolation
+
+The tests point UltraScan at a scratch data store, which means writing the
+`workBaseDir` setting that says where that store is.  `isolateTestSettings()`
+(in `test/common/`) gives each test process its own QSettings file, called from
+`main` before anything reads `US_Settings`.  Without it, `ctest -j` has the
+parallel processes overwriting each other's scratch directory -- and a test run
+would change the settings of whoever ran it.
+
 ## Database Integration Tests
 
 Most tests run without a database: `test_us_utils` is built with `NO_DB`, so
