@@ -319,3 +319,241 @@ TEST_F( DataPubExport, AnUnknownRunIsAnError )
                                         error ) );
    EXPECT_TRUE ( error.contains( "no_such_run" ) ) << error.toStdString();
 }
+
+// ------------------------------------------------------------ borrowed noise
+
+// Noise is fitted to an edit.  A model made after it, with no noise of its
+// own, is still reproducible with the noise that was there at the time, so
+// that is what the bundle carries for it.
+TEST_F( DataPubExport, AModelWithNoNoiseTakesTheEditsLatest )
+{
+   // a second model of the same edit, written after the noise record
+   QString  laterGUID = US_Util::new_guid();
+   US_Model later;
+   later.modelGUID   = laterGUID;
+   later.editGUID    = editGUID;
+   later.description = "demo_run.1A280.2dsa-mc.model";
+   later.write( US_Settings::dataDir() + "/models/M0000002.xml" );
+
+   US_DataPubCatalog catalog;
+   QString           error;
+
+   ASSERT_TRUE( catalog.open( false, QString(), error ) )
+      << error.toStdString();
+
+   QList< US_DataPubCatalog::Run > runs = catalog.runs( QString(), error );
+   ASSERT_EQ  ( runs.size(), 1 );
+   ASSERT_TRUE( catalog.loadRunDetails( runs[ 0 ], error ) );
+
+   QList< US_DataPubCatalog::Model > models = catalog.models( runs, error );
+   ASSERT_EQ( models.size(), 2 ) << error.toStdString();
+
+   QList< US_DataPubCatalog::Model > chosen;
+
+   for ( int ii = 0; ii < models.size(); ii++ )
+      if ( models[ ii ].guid == laterGUID )  chosen << models[ ii ];
+
+   ASSERT_EQ  ( chosen.size(), 1 );
+   ASSERT_TRUE( chosen[ 0 ].noises.isEmpty() );
+
+   QList< US_DataPubCatalog::Noise > noises = catalog.noises( chosen, error );
+
+   ASSERT_EQ( noises.size(), 1 ) << error.toStdString();
+   EXPECT_EQ( noises[ 0 ].guid,         noiseGUID );
+   EXPECT_EQ( noises[ 0 ].modelGUID,    laterGUID );  // carried for this model
+   EXPECT_EQ( noises[ 0 ].borrowedFrom, modelGUID );  // fitted to the other
+   EXPECT_EQ( noises[ 0 ].editGUID,     editGUID  );
+}
+
+// Every selected model keeps its own noise.  Picking several at once used
+// to answer for the first one only.
+TEST_F( DataPubExport, EverySelectedModelKeepsItsOwnNoise )
+{
+   QString  secondModel = US_Util::new_guid();
+   QString  secondNoise = US_Util::new_guid();
+
+   US_Model model;
+   model.modelGUID   = secondModel;
+   model.editGUID    = editGUID;
+   model.description = "demo_run.1A280.2dsa-mc.model";
+   model.write( US_Settings::dataDir() + "/models/M0000002.xml" );
+
+   US_Noise noise;
+   noise.noiseGUID   = secondNoise;
+   noise.modelGUID   = secondModel;
+   noise.description = "demo_run.1A280.2dsa-mc.ri_noise";
+   noise.type        = US_Noise::RI;
+   noise.values << 0.004 << 0.005;
+   noise.count  = 2;
+   noise.write( US_Settings::dataDir() + "/noises/N0000002.xml" );
+
+   US_DataPubCatalog catalog;
+   QString           error;
+
+   ASSERT_TRUE( catalog.open( false, QString(), error ) )
+      << error.toStdString();
+
+   QList< US_DataPubCatalog::Run > runs = catalog.runs( QString(), error );
+   ASSERT_EQ  ( runs.size(), 1 );
+   ASSERT_TRUE( catalog.loadRunDetails( runs[ 0 ], error ) );
+
+   QList< US_DataPubCatalog::Model > models = catalog.models( runs, error );
+   ASSERT_EQ( models.size(), 2 ) << error.toStdString();
+
+   QList< US_DataPubCatalog::Noise > noises = catalog.noises( models, error );
+
+   ASSERT_EQ( noises.size(), 2 ) << error.toStdString();
+
+   QStringList guids;
+   QStringList owners;
+
+   for ( int ii = 0; ii < noises.size(); ii++ )
+   {
+      guids  << noises[ ii ].guid;
+      owners << noises[ ii ].modelGUID;
+
+      // neither of them is borrowed: each model has its own
+      EXPECT_TRUE( noises[ ii ].borrowedFrom.isEmpty() );
+   }
+
+   EXPECT_TRUE( guids .contains( noiseGUID   ) );
+   EXPECT_TRUE( guids .contains( secondNoise ) );
+   EXPECT_TRUE( owners.contains( modelGUID   ) );
+   EXPECT_TRUE( owners.contains( secondModel ) );
+}
+
+// A bundle of several models carries the noise of each of them.
+TEST_F( DataPubExport, ABundleOfSeveralModelsCarriesAllTheirNoise )
+{
+   QString  secondModel = US_Util::new_guid();
+   QString  secondNoise = US_Util::new_guid();
+
+   US_Model model;
+   model.modelGUID   = secondModel;
+   model.editGUID    = editGUID;
+   model.description = "demo_run.1A280.2dsa-mc.model";
+   model.write( US_Settings::dataDir() + "/models/M0000002.xml" );
+
+   US_Noise noise;
+   noise.noiseGUID   = secondNoise;
+   noise.modelGUID   = secondModel;
+   noise.description = "demo_run.1A280.2dsa-mc.ri_noise";
+   noise.type        = US_Noise::RI;
+   noise.values << 0.004 << 0.005;
+   noise.count  = 2;
+   noise.write( US_Settings::dataDir() + "/noises/N0000002.xml" );
+
+   US_DataPubExporter::Selection selection = baseSelection(
+         US_DataPub::ScopeNoise );
+
+   US_DataPubExporter exporter;
+   QString            error;
+
+   ASSERT_TRUE( exporter.previewManifest( selection, error ) )
+      << error.toStdString();
+
+   const US_DataPubManifest& mani = exporter.manifest();
+
+   EXPECT_EQ( mani.section( US_DataPub::Model ).size(), 2 );
+   ASSERT_EQ( mani.section( US_DataPub::Noise ).size(), 2 );
+
+   US_DataPubEntity first;
+   US_DataPubEntity second;
+
+   ASSERT_TRUE( mani.entity( US_DataPub::Noise, noiseGUID,   first  ) );
+   ASSERT_TRUE( mani.entity( US_DataPub::Noise, secondNoise, second ) );
+
+   EXPECT_EQ( first .depend( US_DataPub::Model ), modelGUID   );
+   EXPECT_EQ( second.depend( US_DataPub::Model ), secondModel );
+}
+
+// The rule itself: the newest record of each type that already existed.
+TEST_F( DataPubExport, NoiseBeforePicksTheLatestOfEachTypeInTime )
+{
+   QList< US_DataCatalog::Noise > candidates;
+
+   US_DataCatalog::Noise oldTi;
+   oldTi.guid        = "ti-old";
+   oldTi.noiseType   = "ti";
+   oldTi.lastUpdated = "2024-01-01 10:00:00 UTC";
+
+   US_DataCatalog::Noise newTi;
+   newTi.guid        = "ti-new";
+   newTi.noiseType   = "ti";
+   newTi.lastUpdated = "2024-01-01 11:00:00 UTC";
+
+   US_DataCatalog::Noise laterTi;          // made after the model
+   laterTi.guid        = "ti-later";
+   laterTi.noiseType   = "ti";
+   laterTi.lastUpdated = "2024-01-02 09:00:00 UTC";
+
+   US_DataCatalog::Noise ri;
+   ri.guid        = "ri-one";
+   ri.noiseType   = "ri";
+   ri.lastUpdated = "2024-01-01 09:30:00 UTC";
+
+   candidates << oldTi << newTi << laterTi << ri;
+
+   QList< US_DataCatalog::Noise > picked = US_DataPubCatalog::noiseBefore(
+         candidates, "2024-01-01 12:00:00 UTC" );
+
+   ASSERT_EQ( picked.size(), 2 );          // one of each type
+
+   QStringList guids;
+
+   for ( int ii = 0; ii < picked.size(); ii++ )
+      guids << picked[ ii ].guid;
+
+   guids.sort();
+
+   EXPECT_EQ( guids.join( "," ).toStdString(), "ri-one,ti-new" );
+}
+
+TEST_F( DataPubExport, NoiseBeforeLeavesOutEverythingNewerThanTheModel )
+{
+   QList< US_DataCatalog::Noise > candidates;
+
+   US_DataCatalog::Noise after;
+   after.guid        = "ti-after";
+   after.noiseType   = "ti";
+   after.lastUpdated = "2024-06-01 00:00:00 UTC";
+
+   candidates << after;
+
+   EXPECT_EQ( US_DataPubCatalog::noiseBefore(
+                 candidates, "2024-01-01 00:00:00 UTC" ).size(), 0 );
+
+   // the database hands its time stamps back without the UTC suffix
+   EXPECT_EQ( US_DataPubCatalog::noiseBefore(
+                 candidates, "2024-12-01 00:00:00" ).size(), 1 );
+}
+
+// A record whose time stamp cannot be read is a last resort, not a winner.
+TEST_F( DataPubExport, NoiseBeforePrefersARecordThatHasATimeStamp )
+{
+   QList< US_DataCatalog::Noise > candidates;
+
+   US_DataCatalog::Noise undated;
+   undated.guid      = "ti-undated";
+   undated.noiseType = "ti";
+
+   US_DataCatalog::Noise dated;
+   dated.guid        = "ti-dated";
+   dated.noiseType   = "ti";
+   dated.lastUpdated = "2024-01-01 10:00:00 UTC";
+
+   candidates << undated << dated;
+
+   QList< US_DataCatalog::Noise > picked = US_DataPubCatalog::noiseBefore(
+         candidates, "2024-01-01 12:00:00 UTC" );
+
+   ASSERT_EQ( picked.size(), 1 );
+   EXPECT_EQ( picked[ 0 ].guid.toStdString(), std::string( "ti-dated" ) );
+
+   // with nothing else to go on, the undated record is used
+   QList< US_DataCatalog::Noise > only;
+   only << undated;
+
+   ASSERT_EQ( US_DataPubCatalog::noiseBefore(
+                 only, "2024-01-01 12:00:00 UTC" ).size(), 1 );
+}

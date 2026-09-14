@@ -479,6 +479,52 @@ TEST_F( TestUSDataCatalog, NoiseOfOneModelIsFoundWithoutTheChain )
    EXPECT_EQ  ( noises.size(), 0 );
 }
 
+TEST_F( TestUSDataCatalog, NoiseOfAnEditIsTheNoiseOfAllItsModels )
+{
+   // a second model of the same edit, with its own noise record
+   QString  otherModel = US_Util::new_guid();
+   QString  otherNoise = US_Util::new_guid();
+
+   US_Model model;
+   model.modelGUID   = otherModel;
+   model.editGUID    = editOneGUID;
+   model.description = runOne + ".1A280.2dsa-mc.model";
+   model.write( US_Settings::dataDir() + "/models/M0000003.xml" );
+
+   US_Noise noise;
+   noise.noiseGUID   = otherNoise;
+   noise.modelGUID   = otherModel;
+   noise.description = runOne + ".1A280.2dsa-mc.ri_noise";
+   noise.type        = US_Noise::RI;
+   noise.values << 0.003;
+   noise.count  = 1;
+   noise.write( US_Settings::dataDir() + "/noises/N0000003.xml" );
+
+   US_DataCatalog catalog;
+   QString        error;
+
+   ASSERT_TRUE( catalog.open( US_DataCatalog::Disk, QString(), error ) );
+
+   QList< US_DataCatalog::Noise > noises =
+      catalog.noisesOfEdit( editOneGUID, QString(), error );
+
+   ASSERT_TRUE( error.isEmpty() ) << error.toStdString();
+   ASSERT_EQ  ( noises.size(), 2 );
+
+   QStringList guids;
+
+   for ( int ii = 0; ii < noises.size(); ii++ )
+      guids << noises[ ii ].guid;
+
+   EXPECT_TRUE( guids.contains( noiseGUID  ) );
+   EXPECT_TRUE( guids.contains( otherNoise ) );
+
+   // an edit nobody fitted anything to answers with nothing, not an error
+   noises = catalog.noisesOfEdit( US_Util::new_guid(), QString(), error );
+   EXPECT_TRUE( error.isEmpty() );
+   EXPECT_EQ  ( noises.size(), 0 );
+}
+
 TEST_F( TestUSDataCatalog, DiskCatalogHasNoDatabaseConnection )
 {
    US_DataCatalog catalog;

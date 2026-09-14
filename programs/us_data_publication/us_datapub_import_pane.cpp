@@ -3,6 +3,7 @@
 #include "us_datapub_manifest.h"
 
 #include "us_gui_settings.h"
+#include "us_project_gui.h"
 #include "us_settings.h"
 #include "us_passwd.h"
 #include "us_editor.h"
@@ -137,12 +138,27 @@ US_DataPubImportPane::US_DataPubImportPane( QWidget* parent )
    pick->addWidget( pb_outdir, row, 0, 1, 1 );
    pick->addWidget( le_outdir, row++, 1, 1, 4 );
 
+   // The receiving installation keeps its own project list, so the data can
+   // be filed under a project of this user's choosing.
+   pb_project   = us_pushbutton( tr( "Import into Project..." ) );
+   le_project   = us_lineedit( "", 0, true );
+   le_project->setPlaceholderText(
+         tr( "empty: the project the bundle names" ) );
+   pb_clearproj = us_pushbutton( tr( "Clear" ) );
+   pick->addWidget( pb_project,   row, 0, 1, 1 );
+   pick->addWidget( le_project,   row, 1, 1, 3 );
+   pick->addWidget( pb_clearproj, row++, 4, 1, 1 );
+
    main->addLayout( pick );
 
    connect( pb_browse,  &QPushButton::clicked,
             this,       &US_DataPubImportPane::browse_bundle );
    connect( pb_outdir,  &QPushButton::clicked,
             this,       &US_DataPubImportPane::browse_outdir );
+   connect( pb_project, &QPushButton::clicked,
+            this,       &US_DataPubImportPane::select_project );
+   connect( pb_clearproj, &QPushButton::clicked,
+            this,       &US_DataPubImportPane::clear_project );
    connect( pb_inspect, &QPushButton::clicked,
             this,       &US_DataPubImportPane::inspect );
 
@@ -246,6 +262,47 @@ void US_DataPubImportPane::browse_bundle( void )
 
    le_bundle->setText( path );
    inspect();
+}
+
+/* Pick the project of the target the imported runs should belong to.
+
+   A bundle names the project its runs came from, but that is the exporting
+   installation's project.  Choosing one here files the data under a project
+   this installation already has, and the bundle's own project record is
+   then reused instead of created.
+*/
+void US_DataPubImportPane::select_project( void )
+{
+   int state = dkdb_cntrls->db() ? US_Disk_DB_Controls::DB
+                                 : US_Disk_DB_Controls::Disk;
+   US_ProjectGui* dialog = new US_ProjectGui( true, state );
+
+   connect( dialog, &US_ProjectGui::updateProjectGuiSelection,
+            this,   &US_DataPubImportPane::project_chosen );
+
+   dialog->exec();
+   qApp->processEvents();
+
+   delete dialog;
+}
+
+void US_DataPubImportPane::project_chosen( US_Project& project )
+{
+   project_guid = project.projectGUID;
+   project_desc = project.projectDesc;
+
+   le_project->setText( QString( "%1  [%2]" ).arg( project_desc )
+                        .arg( project_guid ) );
+
+   emit status( tr( "The imported runs will be attached to \"%1\"" )
+                .arg( project_desc ) );
+}
+
+void US_DataPubImportPane::clear_project( void )
+{
+   project_guid.clear();
+   project_desc.clear();
+   le_project->clear();
 }
 
 void US_DataPubImportPane::browse_outdir( void )
@@ -428,6 +485,7 @@ void US_DataPubImportPane::run_import( void )
    options.target       = dkdb_cntrls->db() ? US_DataPub::TargetDb
                                             : US_DataPub::TargetDisk;
    options.outputDir    = le_outdir->text().trimmed();
+   options.projectGUID  = project_guid;
    options.dryRun       = ck_dryrun->isChecked();
    options.verifyHashes = ck_verify->isChecked();
    options.policy       = US_DataPub::ConflictPolicy(

@@ -1404,6 +1404,16 @@ bool US_DataPubExporter::addNoises(
       entity.attrs.insert( "noiseType", noise.noiseType );
       entity.setDepend( US_DataPub::Model, noise.modelGUID );
 
+      if ( ! noise.borrowedFrom.isEmpty() )
+      {  // Noise of the edit, carried for a model that has none of its own
+         entity.attrs.insert( "fittedToModelGUID", noise.borrowedFrom );
+
+         note( tr( "Model %1 has no noise of its own; the %2 noise of its"
+                   " edit travels with it" ).arg( noise.modelGUID )
+               .arg( noise.noiseType.isEmpty() ? tr( "latest" )
+                                               : noise.noiseType ) );
+      }
+
       if ( ! noise.filename.isEmpty() )
          entity.filename = noise.filename;
 

@@ -8,6 +8,7 @@
 
 #include "us_datapub_defs.h"
 #include "us_datapub_import.h"
+#include "us_project.h"
 
 /*! \class US_DataPubConflictDialog
     \brief Asks the user what to do about one name conflict
@@ -97,12 +98,15 @@ class US_DataPubImportPane : public US_Widgets,
       QPushButton*  pb_browse;
       QPushButton*  pb_inspect;
       QPushButton*  pb_outdir;
+      QPushButton*  pb_project;
+      QPushButton*  pb_clearproj;
       QPushButton*  pb_details;
       QPushButton*  pb_reset;
       QPushButton*  pb_import;
 
       QLineEdit*    le_bundle;
       QLineEdit*    le_outdir;
+      QLineEdit*    le_project;
       QLineEdit*    le_summary;
 
       QComboBox*    cb_policy;
@@ -119,6 +123,11 @@ class US_DataPubImportPane : public US_Widgets,
       US_DataPubImporter importer;
       bool               inspected;
 
+      //! The project of the target the runs are attached to; empty means
+      //! the bundle decides
+      QString            project_guid;
+      QString            project_desc;
+
       QMap< int, US_DataPub::ConflictPolicy > sticky;
 
       void buildTree    ( void );
@@ -128,6 +137,9 @@ class US_DataPubImportPane : public US_Widgets,
       void target_changed( bool );
       void browse_bundle ( void );
       void browse_outdir ( void );
+      void select_project( void );
+      void project_chosen( US_Project& );
+      void clear_project ( void );
       void inspect       ( void );
       void show_details  ( void );
       void run_import    ( void );

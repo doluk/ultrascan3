@@ -422,3 +422,100 @@ TEST_F( DataPubImport, RoundTripKeepsThePayloadsIdentical )
    EXPECT_EQ( US_DataPubHash::fileHash( sourceEdit ),
               US_DataPubHash::fileHash( targetEdit ) );
 }
+
+// ------------------------------------------------ importing into a project
+
+// The receiving installation keeps its own projects, so an import can be
+// pointed at one of them.  The bundle's own project record is then reused
+// rather than created, and every run is filed under the chosen one.
+TEST_F( DataPubImport, TheRunsAreAttachedToTheChosenProject )
+{
+   QString error;
+
+   QString projDir = targetDir + "/data/projects";
+   QDir().mkpath( projDir );
+
+   QString    mineGUID = US_Util::new_guid();
+   US_Project mine;
+   mine.projectGUID = mineGUID;
+   mine.projectID   = 77;
+   mine.projectDesc = "A project of my own";
+   ASSERT_TRUE( mine.saveToFile( projDir + "/P0000009.xml" ) );
+
+   US_DataPubImporter          importer;
+   US_DataPubImporter::Options options = diskOptions();
+   options.projectGUID = mineGUID;
+
+   ASSERT_TRUE( importer.inspect  ( bundlePath, error ) );
+   ASSERT_TRUE( importer.runImport( options, error ) ) << error.toStdString();
+
+   // the bundle's project was not created; the chosen one stands in for it
+   QList< US_DataPubImporter::Result > results = importer.results();
+   bool sawProject = false;
+
+   for ( int ii = 0; ii < results.size(); ii++ )
+   {
+      if ( results[ ii ].type != US_DataPub::Project )  continue;
+
+      sawProject = true;
+      EXPECT_EQ( results[ ii ].resolution,
+                 US_DataPub::ResolvedReused );
+      EXPECT_EQ( results[ ii ].targetGUID, mineGUID );
+   }
+
+   EXPECT_TRUE( sawProject );
+
+   QStringList written = QDir( projDir ).entryList( QStringList( "P*.xml" ),
+                                                    QDir::Files );
+   EXPECT_EQ( written.size(), 1 ) << written.join( "," ).toStdString();
+
+   // and the run's own XML names it
+   QString expPath = targetDir + "/results/" + runID + "/" + runID + "."
+                     + runType + ".xml";
+   ASSERT_TRUE( QFile::exists( expPath ) );
+
+   QFile file( expPath );
+   ASSERT_TRUE( file.open( QIODevice::ReadOnly ) );
+   QString content = QString::fromUtf8( file.readAll() );
+   file.close();
+
+   EXPECT_TRUE ( content.contains( mineGUID    ) ) << content.toStdString();
+   EXPECT_TRUE ( content.contains( "A project of my own" ) );
+   EXPECT_FALSE( content.contains( projectGUID ) );
+}
+
+// A project the target does not have is refused rather than created: being
+// told which project to use only means anything if it is really there.
+TEST_F( DataPubImport, AnUnknownTargetProjectIsRefused )
+{
+   QString error;
+
+   US_DataPubImporter          importer;
+   US_DataPubImporter::Options options = diskOptions();
+   options.projectGUID = US_Util::new_guid();
+
+   ASSERT_TRUE ( importer.inspect  ( bundlePath, error ) );
+   EXPECT_FALSE( importer.runImport( options, error ) );
+   EXPECT_TRUE ( error.contains( options.projectGUID ) )
+      << error.toStdString();
+}
+
+// Without a chosen project nothing changes: the bundle still decides.
+TEST_F( DataPubImport, WithoutAChosenProjectTheBundleStillDecides )
+{
+   QString error;
+
+   US_DataPubImporter importer;
+   ASSERT_TRUE( importer.inspect  ( bundlePath, error ) );
+   ASSERT_TRUE( importer.runImport( diskOptions(), error ) )
+      << error.toStdString();
+
+   QString expPath = targetDir + "/results/" + runID + "/" + runID + "."
+                     + runType + ".xml";
+   QFile file( expPath );
+   ASSERT_TRUE( file.open( QIODevice::ReadOnly ) );
+   QString content = QString::fromUtf8( file.readAll() );
+   file.close();
+
+   EXPECT_TRUE( content.contains( projectGUID ) ) << content.toStdString();
+}

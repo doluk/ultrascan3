@@ -67,6 +67,16 @@ class US_DataPubImporter : public QObject
             QString dbPassword;            //!< Master password, for database access
             QString outputDir;             //!< Disk store root; empty for the default
 
+            /*! The project in the target the runs should belong to.
+
+                A bundle names the project its runs came from, but the
+                receiving installation usually has projects of its own, so
+                an import can be told which one to attach the data to.  The
+                bundle's own project record is then reused rather than
+                created.  Empty means the bundle decides, as before.
+            */
+            QString projectGUID;
+
             //! The policy for records whose name is already taken
             US_DataPub::ConflictPolicy policy;
 
@@ -166,6 +176,11 @@ class US_DataPubImporter : public QObject
       QList< Result >            reslist;
       int                        step_count;
 
+      // The project the import was told to attach the runs to
+      QString                    tproj_guid;
+      QString                    tproj_id;
+      QString                    tproj_desc;
+
       // bundle GUID -> target GUID / ID / name
       QMap< QString, QString >   guidMap;
       QMap< QString, QString >   idMap;
@@ -173,6 +188,10 @@ class US_DataPubImporter : public QObject
 
       bool    openTarget ( QString& error );
       void    closeTarget( void );
+
+      //! \brief Look up the project the import was told to use
+      //! \param error Filled in when the target does not have it
+      bool    findTargetProject( QString& error );
       void    note       ( const QString& );
 
       QString payloadPath( const US_DataPubEntity& ) const;

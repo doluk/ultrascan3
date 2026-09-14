@@ -82,8 +82,14 @@ class US_DataPubExportPane : public US_Widgets
       QList< US_DataPubCatalog::Run >   runs;
       QList< US_DataPubCatalog::Model > models;
       QList< US_DataPubCatalog::Noise > noises;
+      //! The models the user picked; every one of them is in the tree
       QStringList                       sel_models;
-      QStringList                       sel_noises;
+
+      //! The models and noise records the user unticked there.  What the
+      //! bundle carries is what is still ticked, so a rebuild of the tree
+      //! does not quietly bring back something that was taken out.
+      QStringList                       unsel_models;
+      QStringList                       unsel_noises;
 
       bool    openCatalog( void );
       QString password   ( void );
@@ -92,8 +98,11 @@ class US_DataPubExportPane : public US_Widgets
       void    buildModelTree( void );
       void    updateSummary ( void );
 
-      QStringList checkedRaws ( void ) const;
-      QStringList checkedEdits( void ) const;
+      QStringList checkedRaws  ( void ) const;
+      QStringList checkedEdits ( void ) const;
+      QStringList checkedModels( void ) const;
+      QStringList checkedNoises( void ) const;
+      QStringList checkedGuids ( const QString& kind ) const;
 
       QTreeWidgetItem* itemFor( QTreeWidget*, const QString& guid ) const;
 

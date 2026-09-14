@@ -121,6 +121,70 @@ bool US_DataPubCatalog::ExpInfo::readFromFile( const QString& filename )
    return ! failed;
 }
 
+namespace
+{
+   // An UltraScan3 time stamp, whichever of the two shapes it has: the
+   // database hands back "yyyy-MM-dd HH:mm:ss" and a local file's time is
+   // the same with a " UTC" suffix.
+   QDateTime stamp_of( const QString& text )
+   {
+      QString trimmed = text.trimmed();
+
+      if ( trimmed.endsWith( " UTC" ) )
+         trimmed.chop( 4 );
+
+      trimmed.replace( "T", " " );
+
+      QDateTime when = QDateTime::fromString( trimmed, "yyyy-MM-dd HH:mm:ss" );
+
+      if ( ! when.isValid() )
+         when = QDateTime::fromString( trimmed, Qt::ISODate );
+
+      return when;
+   }
+
+}
+
+QList< US_DataCatalog::Noise > US_DataPubCatalog::noiseBefore(
+      const QList< US_DataCatalog::Noise >& candidates,
+      const QString& modelStamp )
+{
+   QMap< QString, US_DataCatalog::Noise > latest;
+   QMap< QString, QDateTime >             latestWhen;
+   QDateTime made = stamp_of( modelStamp );
+
+   for ( int ii = 0; ii < candidates.size(); ii++ )
+   {
+      const US_DataCatalog::Noise& noise = candidates[ ii ];
+
+      if ( noise.guid.isEmpty() )  continue;
+
+      QDateTime when = stamp_of( noise.lastUpdated );
+
+      // A record with no readable time stamp cannot be ruled out by the
+      // model's; it is only used when nothing better is there.
+      if ( made.isValid()  &&  when.isValid()  &&  when > made )  continue;
+
+      QString type = noise.noiseType.isEmpty() ? QString( "ti" )
+                                               : noise.noiseType.toLower();
+
+      if ( latest.contains( type ) )
+      {
+         QDateTime have = latestWhen.value( type );
+
+         if ( have.isValid()  &&  when.isValid()  &&  when <= have )
+            continue;
+
+         if ( have.isValid()  &&  ! when.isValid() )  continue;
+      }
+
+      latest    .insert( type, noise );
+      latestWhen.insert( type, when  );
+   }
+
+   return latest.values();
+}
+
 QMap< QString, QString > US_DataPubCatalog::peekAttributes(
       const QString& filename, const QString& element )
 {
@@ -480,7 +544,7 @@ QList< US_DataPubCatalog::Noise > US_DataPubCatalog::noises(
       // A model that came out of the chain carries its noise already; one
       // the user picked by hand, whose edit was not among those read, has
       // to be looked up in the source.
-      QList< Noise > found = model.noises;
+      QList< US_DataCatalog::Noise > found = model.noises;
 
       if ( found.isEmpty() )
       {
@@ -490,15 +554,37 @@ QList< US_DataPubCatalog::Noise > US_DataPubCatalog::noises(
          if ( ! message.isEmpty() )  error = message;
       }
 
+      bool borrowed = false;
+
+      if ( found.isEmpty() )
+      {  // Nothing was fitted to this model, so the noise of its edit that
+         // was there when the model was made travels with it instead
+         QString message;
+         QList< US_DataCatalog::Noise > siblings =
+            cat->noisesOfEdit( model.editGUID, model.editID, message );
+
+         if ( ! message.isEmpty() )  error = message;
+
+         found    = noiseBefore( siblings, model.lastUpdated );
+         borrowed = ! found.isEmpty();
+      }
+
       for ( int jj = 0; jj < found.size(); jj++ )
       {
-         Noise noise = found[ jj ];
+         Noise noise( found[ jj ] );
 
          if ( noise.guid.isEmpty() )         continue;
          if ( seen.contains( noise.guid ) )  continue;
 
          if ( noise.editGUID.isEmpty() )
             noise.editGUID = model.editGUID;
+
+         if ( borrowed )
+         {  // It belongs to another model of the same edit.  The bundle
+            // carries it for this one, and says where it came from.
+            noise.borrowedFrom = noise.modelGUID;
+            noise.modelGUID    = model.guid;
+         }
 
          seen << noise.guid;
          list << noise;

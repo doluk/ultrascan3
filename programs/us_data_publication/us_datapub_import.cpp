@@ -378,6 +378,16 @@ bool US_DataPubImporter::runImport( const Options& options, QString& error )
 
    if ( ! openTarget( error ) )  return false;
 
+   tproj_guid.clear();
+   tproj_id  .clear();
+   tproj_desc.clear();
+
+   if ( ! findTargetProject( error ) )
+   {
+      closeTarget();
+      return false;
+   }
+
    emit steps( mani.total() );
 
    // The manifest lists the records in the declared section order; they are
@@ -406,10 +416,102 @@ bool US_DataPubImporter::runImport( const Options& options, QString& error )
    return true;
 }
 
+/* Look up the project the import was told to attach the runs to.
+
+   The bundle names the project its runs came from, but the receiving
+   installation usually keeps its own project list, so a user can point an
+   import at one of theirs.  It has to exist in the target already: creating
+   it here would defeat the point of choosing it.
+*/
+bool US_DataPubImporter::findTargetProject( QString& error )
+{
+   QString wanted = opts.projectGUID.trimmed();
+
+   if ( wanted.isEmpty() )  return true;
+
+   if ( opts.target == US_DataPub::TargetDb )
+   {
+      if ( dbase == nullptr )
+      {
+         error = tr( "No database connection" );
+         return false;
+      }
+
+      QStringList query;
+      query << "get_projectID_from_GUID" << wanted;
+      dbase->query( query );
+
+      if ( dbase->next() )
+         tproj_id = dbase->value( 0 ).toString();
+
+      if ( tproj_id.isEmpty()  ||  tproj_id.toInt() < 1 )
+      {
+         error = tr( "The project %1 the import was told to use is not in"
+                     " the target database" ).arg( wanted );
+         return false;
+      }
+
+      US_Project project;
+
+      if ( project.readFromDB( tproj_id.toInt(), dbase ) != US_DB2::OK )
+      {
+         error = tr( "The project %1 could not be read from the target"
+                     " database" ).arg( wanted );
+         return false;
+      }
+
+      tproj_guid = project.projectGUID;
+      tproj_desc = project.projectDesc;
+   }
+
+   else
+   {
+      QString     path  = diskDir( US_DataPub::Project );
+      QStringList files = QDir( path ).entryList(
+                          QStringList( "P???????.xml" ), QDir::Files,
+                          QDir::Name );
+
+      for ( int ii = 0; ii < files.size(); ii++ )
+      {
+         US_Project project;
+
+         if ( project.readFromFile( path + "/" + files[ ii ] ) != US_DB2::OK )
+            continue;
+
+         if ( project.projectGUID != wanted )  continue;
+
+         tproj_guid = project.projectGUID;
+         tproj_desc = project.projectDesc;
+         tproj_id   = QString::number( project.projectID );
+         break;
+      }
+
+      if ( tproj_guid.isEmpty() )
+      {
+         error = tr( "The project %1 the import was told to use is not in"
+                     " the target disk store" ).arg( wanted );
+         return false;
+      }
+   }
+
+   note( tr( "The imported runs are attached to the project \"%1\"" )
+         .arg( tproj_desc.isEmpty() ? tproj_guid : tproj_desc ) );
+
+   return true;
+}
+
 bool US_DataPubImporter::importEntity( const US_DataPubEntity& entity,
                                        QString& error )
 {
    US_DataPub::EntityType type = entity.type;
+
+   // ---- a project the import was told to use ------------------------------
+   if ( type == US_DataPub::Project  &&  ! tproj_guid.isEmpty() )
+   {
+      record( entity, US_DataPub::ResolvedReused, tproj_guid, tproj_desc,
+              tproj_id, tr( "the import attaches the data to this project" ) );
+      return true;
+   }
 
    // ---- a run-directory payload that is already on disk -------------------
    if ( opts.target == US_DataPub::TargetDisk  &&
@@ -1331,6 +1433,7 @@ namespace
          QString expID;            // The experiment ID in the target
          QString projectID;        // The project ID in the target
          QString projectGUID;      // The project GUID in the target
+         QString projectDesc;      // The project description in the target
          QMap< QString, QString > solutionGUIDs;  // old GUID -> new GUID
          QMap< QString, QString > solutionIDs;    // new GUID -> new ID
          QMap< QString, QString > centerpieceIDs; // old serial -> new serial
@@ -1389,6 +1492,8 @@ namespace
                values.insert( "id",   remap.projectID   );
             if ( ! remap.projectGUID.isEmpty() )
                values.insert( "guid", remap.projectGUID );
+            if ( ! remap.projectDesc.isEmpty() )
+               values.insert( "desc", remap.projectDesc );
          }
 
          else if ( ename == "calibration" )
@@ -1552,7 +1657,14 @@ bool US_DataPubImporter::createDisk( const US_DataPubEntity& entity,
          // whatever the run's own XML names.
          QString projGUID = entity.depend( US_DataPub::Project );
 
-         if ( ! projGUID.isEmpty() )
+         if ( ! tproj_guid.isEmpty() )
+         {  // The import was told which project to attach the runs to
+            remap.projectID   = tproj_id;
+            remap.projectGUID = tproj_guid;
+            remap.projectDesc = tproj_desc;
+         }
+
+         else if ( ! projGUID.isEmpty() )
          {
             remap.projectID   = mappedId  ( projGUID );
             remap.projectGUID = mappedGuid( projGUID );
@@ -2012,7 +2124,21 @@ bool US_DataPubImporter::createDb( const US_DataPubEntity& entity,
          // reference only when the target does not have it.
          QString projGUID = entity.depend( US_DataPub::Project );
 
-         if ( ! projGUID.isEmpty() )
+         if ( ! tproj_guid.isEmpty() )
+         {  // The import was told which project to attach the runs to
+            US_Project chosen;
+
+            if ( chosen.readFromDB( tproj_id.toInt(), dbase ) != US_DB2::OK )
+            {
+               error = tr( "The project %1 the import was told to use could"
+                           " not be read" ).arg( tproj_desc );
+               return false;
+            }
+
+            exper.project = chosen;
+         }
+
+         else if ( ! projGUID.isEmpty() )
          {
             US_Project imported;
 

@@ -302,6 +302,23 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
       QList< Noise > noisesOfModel( const QString& modelGUID,
                                     QString& error );
 
+      /*! \brief The noise records of one edit profile
+
+          Noise is fitted to an edit and recorded against the model it was
+          fitted with, so the noise of an edit is the noise of all of that
+          edit's models.  A model with no noise of its own can still be run
+          with the noise of its edit, and this is how a caller finds it.
+
+          The two sources identify an edit differently: the database looks
+          it up by its numeric editedDataID, a local store by its GUID, so
+          both are taken and whichever one the open source needs is used.
+          \param editGUID The editGUID, for a local store
+          \param editID   The editedDataID, for the database
+          \param error    Filled in with a message when the lookup fails
+      */
+      QList< Noise > noisesOfEdit( const QString& editGUID,
+                                   const QString& editID, QString& error );
+
       //! \brief Forget everything that was read
       void clear( void );
 

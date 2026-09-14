@@ -124,17 +124,25 @@ The Export tab works from the top down.
   below it.
 
 **Selected models and noise**
-  A second tree, ``run -> rawData -> edit -> model -> noise``, filled by
-  **Select Models...**, which opens the model loader pre-filtered to the
-  selected runs. After models are picked the module offers to select the edits
-  they were fitted to, because a model cannot be imported without its edit.
-  Unchecking raw data or an edit that a selected model needs asks whether to
-  drop those models or to keep the selection.
+  A second tree of check boxes, ``run -> rawData -> edit -> model -> noise``,
+  filled by **Select Models...**, which opens the model loader pre-filtered to
+  the selected runs. After models are picked the module offers to select the
+  edits they were fitted to, because a model cannot be imported without its
+  edit. Unchecking raw data or an edit that a selected model needs asks whether
+  to drop those models or to keep the selection.
 
-  The noise records of the selected models are selected automatically. When the
-  *noise dialog* preference is set (:doc:`UltraScan Configuration <config>`,
-  Advanced), **Select Noise...** opens the noise loader instead so that the
-  records can be picked by hand.
+  Every noise record of every selected model is checked automatically; uncheck
+  the ones that should stay out. Unchecking a model unchecks its noise with it,
+  and checking a noise record checks its model back on, because noise cannot
+  travel without the model it belongs to. **Reload Noise** looks the records up
+  again.
+
+  A model with no noise of its own is not left without any. Noise is fitted to
+  an edit, and a model made afterwards is run with the noise that was already
+  there, so such a model travels with the newest noise of its edit that existed
+  when the model was made -- one record of each type, since a run can carry a
+  time-invariant and a radially-invariant record at once. Those rows are marked
+  *(of this edit)* in the tree.
 
 **Export up to**, **Include time state**, **Comment**, **Bundle file**
   The scope, whether the runs' time state travels along, a free-text comment
@@ -226,15 +234,27 @@ UltraScan-III data and results directories are used. Set to a folder, the
 import builds ``<folder>/data/...`` and ``<folder>/results/...`` there, which
 is a good way to look at a bundle before committing to anything.
 
+Which project the data lands in
+-------------------------------
+
+A bundle names the project its runs came from, but that is the *exporting*
+installation's project. **Import into Project...** files the data under a
+project this installation already has: every run is attached to it, and the
+bundle's own project record -- when it carries one -- is reused rather than
+created. The project has to be in the target already; being told which project
+to use only means something if it is really there, so an unknown one stops the
+import rather than being created. **Clear** goes back to letting the bundle
+decide.
+
 A bundle without a project
 --------------------------
 
 Every experiment in the database belongs to a project, so a bundle exported
-without one still has to land somewhere. The project GUID the run names is
-looked up in the target; when it is there the run is attached to it, and when
-it is not, a project record is created from what the run itself names. A disk
-import needs none of that: the run's experiment XML keeps its project
-reference untouched.
+without one still has to land somewhere. Without a project chosen, the project
+GUID the run names is looked up in the target; when it is there the run is
+attached to it, and when it is not, a project record is created from what the
+run itself names. A disk import needs none of that: the run's experiment XML
+keeps its project reference untouched.
 
 Reference data the import does not create
 -----------------------------------------
@@ -290,6 +310,8 @@ Import options
 ``--target db|disk``                   Where the records are written (default: ``db``)
 ``--output-dir <dir>``                 Disk target root; without it the UltraScan-III
                                        data and results directories are used
+``--project-guid <guid>``              Attach the imported runs to this project of the
+                                       target; it has to be there already
 ``--on-conflict <policy>``             ``reuse``, ``rename`` or ``fail``
 ``--on-conflict-<type> <policy>``      The policy for one record type
 ``--rename-suffix <text>``             Suffix for auto-renamed records

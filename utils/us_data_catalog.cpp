@@ -353,6 +353,76 @@ QList< US_DataCatalog::Noise > US_DataCatalog::noisesOfModel(
    return list;
 }
 
+QList< US_DataCatalog::Noise > US_DataCatalog::noisesOfEdit(
+      const QString& editGUID, const QString& editID, QString& error )
+{
+   QList< Noise > list;
+
+   error.clear();
+
+   if ( ! isDb() )
+   {
+      if ( editGUID.isEmpty() )  return list;
+
+      buildDiskIndex();
+
+      // The noise of an edit is the noise of every model of that edit
+      QList< int > mdlxs = index->modelsByEdit.values( editGUID );
+      std::sort( mdlxs.begin(), mdlxs.end() );
+
+      for ( int ii = 0; ii < mdlxs.size(); ii++ )
+      {
+         const DiskIndex::ModelFile& mf = index->models[ mdlxs[ ii ] ];
+
+         QString message;
+         list << noisesOfModel( mf.guid, message );
+
+         if ( ! message.isEmpty() )  error = message;
+      }
+
+      return list;
+   }
+
+   if ( dbase == nullptr )
+   {
+      error = tr( "No database connection" );
+      return list;
+   }
+
+   if ( editID.isEmpty()  ||  editID.toInt() < 1 )  return list;
+
+   QStringList query;
+   query << "get_noise_desc_by_editID" << QString::number( inv_id ) << editID;
+   dbase->query( query );
+
+   int status = dbase->lastErrno();
+
+   if ( status == US_DB2::NOROWS )  return list;
+
+   if ( status != US_DB2::OK )
+   {
+      error = dbase->lastError();
+      return list;
+   }
+
+   while ( dbase->next() )
+   {
+      Noise noise;
+      noise.id          = dbase->value( 0 ).toString();
+      noise.guid        = dbase->value( 1 ).toString();
+      noise.noiseType   = dbase->value( 4 ).toString().left( 2 );
+      noise.modelGUID   = dbase->value( 5 ).toString();
+      noise.lastUpdated = dbase->value( 6 ).toString();
+      noise.checksum    = dbase->value( 7 ).toString();
+      noise.size        = dbase->value( 8 ).toString();
+      noise.description = dbase->value( 9 ).toString();
+
+      list << noise;
+   }
+
+   return list;
+}
+
 void US_DataCatalog::setBulkQueries( bool on )
 {
    bulk_ok = on;

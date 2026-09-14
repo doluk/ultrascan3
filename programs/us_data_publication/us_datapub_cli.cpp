@@ -92,6 +92,10 @@ QString US_DataPubCLI::usage( void )
       " (default: db)\n"
       "  --output-dir <dir>      disk target root; the UltraScan3 data and\n"
       "                          results directories are used without it\n"
+      "  --project-guid <guid>   attach the imported runs to this project of\n"
+      "                          the target; it has to exist there already,\n"
+      "                          and the bundle\'s own project record is then\n"
+      "                          reused rather than created\n"
       "  --on-conflict <policy>  reuse, rename or fail (default: reuse)\n"
       "  --on-conflict-<type> <policy>   the policy for one record type\n"
       "  --rename-suffix <text>  suffix for auto-renamed records\n"
@@ -460,6 +464,7 @@ int US_DataPubCLI::runImport( void )
                                                   : US_DataPub::TargetDisk;
    options.dbPassword   = password( options.target == US_DataPub::TargetDb );
    options.outputDir    = args.outputDir;
+   options.projectGUID  = args.projectGUID;
    options.dryRun       = args.dryRun;
    options.verifyHashes = args.verify;
    options.policy       = US_DataPub::policyOfKey( args.conflict, &ok );

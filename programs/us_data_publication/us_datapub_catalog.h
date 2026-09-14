@@ -41,8 +41,25 @@ class US_DataPubCatalog
             QString filename;      //!< Local file, when read from disk
       };
 
-      //! \brief A noise record available for export
-      typedef US_DataCatalog::Noise Noise;
+      /*! \class Noise
+          \brief A noise record available for export
+
+          The record itself is the catalog's.  What an export adds is where
+          it came from when it is not the model's own: noise is fitted to an
+          edit, and a model with none of its own travels with the noise of
+          its edit that was there when it was made.
+      */
+      class Noise : public US_DataCatalog::Noise
+      {
+         public:
+            Noise() {}
+            Noise( const US_DataCatalog::Noise& base )
+               : US_DataCatalog::Noise( base ) {}
+
+            //! GUID of the model this record was really fitted to, when it
+            //! is carried for a different model of the same edit
+            QString borrowedFrom;
+      };
 
       //! \brief A model record available for export
       typedef US_DataCatalog::Model Model;
@@ -163,6 +180,24 @@ class US_DataPubCatalog
       //! \returns True when a time state exists for the run
       bool timeState( const Run& run, const QString& workDir,
                       QString& tmstPath, QString& xdefPath );
+
+      /*! \brief The noise a model with none of its own is exported with
+
+          Noise is fitted to an edit, and a model made afterwards is run
+          with the noise that was already there, so what travels with such
+          a model is the newest noise of its edit that existed when the
+          model was made -- one record of each type, because a run can
+          carry a time-invariant and a radially-invariant record at once.
+
+          A candidate whose time stamp cannot be read is not ruled out by
+          the model's, but it loses to any candidate that has one.
+          \param candidates The noise records of the model's edit
+          \param modelStamp The model's time stamp
+          \returns At most one record per noise type
+      */
+      static QList< US_DataCatalog::Noise > noiseBefore(
+            const QList< US_DataCatalog::Noise >& candidates,
+            const QString& modelStamp );
 
       //! \brief Read the attributes of the first element of an XML file
       //! \param filename The full path of the XML file to peek into

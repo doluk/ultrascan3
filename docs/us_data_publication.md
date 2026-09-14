@@ -245,16 +245,27 @@ The Export tab works top to bottom:
    rawData → edit`. The buttons under it are **All Raw**, **No Raw**,
    **Latest Edit**, **All Edits** and **No Edits**. Checking an edit checks
    its raw data; unchecking raw data unchecks the edits under it.
-6. **Selected models and noise** — a second tree, `run → rawData → edit →
-   model → noise`, filled by **Select Models…**, which opens the model loader
-   pre-filtered to the selected runs. After picking models the program offers
-   to select the edits they were fitted to, because a model cannot be imported
-   without its edit. Unchecking raw data or an edit that a selected model needs
-   asks whether to drop those models or keep the selection.
-7. **Noise** — the noise records of the selected models are selected
-   automatically. When the *noise dialog* preference is set (UltraScan
-   Configuration → Advanced), **Select Noise…** opens the noise loader
-   instead so the records can be picked by hand.
+6. **Selected models and noise** — a second tree of check boxes, `run →
+   rawData → edit → model → noise`, filled by **Select Models…**, which opens
+   the model loader pre-filtered to the selected runs. After picking models the
+   program offers to select the edits they were fitted to, because a model
+   cannot be imported without its edit. Unchecking raw data or an edit that a
+   selected model needs asks whether to drop those models or keep the
+   selection.
+7. **Noise** — every noise record of every selected model is ticked
+   automatically; untick the ones that should stay out. Unticking a model
+   unticks its noise with it, and ticking a noise record ticks its model back
+   on, because noise cannot travel without the model it belongs to.
+   **Reload Noise** looks the records up again.
+
+   A model with **no noise of its own** is not left without any. Noise is
+   fitted to an edit, and a model made afterwards is run with the noise that
+   was already there, so such a model travels with the newest noise of its
+   edit that existed when the model was made — one record of each type, since
+   a run can carry a time-invariant and a radially-invariant record at once.
+   Those rows are marked *(of this edit)* in the tree, and the manifest keeps
+   the GUID of the model the record was really fitted to in
+   `fittedToModelGUID`.
 8. **Export up to**, **Include time state**, **Comment**, **Bundle file**.
 9. **Summary** — the counts of experiments, raw data, edits, models and noise
    records; **Details…** shows the manifest that would be written, without
@@ -314,6 +325,21 @@ which. The database connection is the one already configured in UltraScan.
 
 **Nothing in the target is ever overwritten.** A record that is already there
 is either pointed at or imported again under a new name.
+
+### Which project the data lands in
+
+A bundle names the project its runs came from, but that is the *exporting*
+installation's project. **Import into Project…** (or `--project-guid`) files
+the data under a project this installation already has: every run is attached
+to it, and the bundle's own project record — when it carries one — is reused
+rather than created. The project has to exist in the target already; being
+told which project to use only means something if it is really there, so an
+unknown one stops the import rather than being created.
+
+Left empty, the bundle decides as before: its project record is imported when
+it carries one, and otherwise each run is attached to the project its own
+experiment XML names, which is created from that reference only when the
+target does not have it.
 
 ### How a record is matched
 
@@ -411,6 +437,7 @@ us_data_publication --mode import --bundle <file.tar.gz> [options]
 |---|---|
 | `--target db\|disk` | Where the records are written (default: `db`) |
 | `--output-dir <dir>` | Disk target root; without it the UltraScan3 data and results directories are used |
+| `--project-guid <guid>` | Attach the imported runs to this project of the target; it has to be there already |
 | `--on-conflict <policy>` | `reuse`, `rename` or `fail` (default: `reuse`) |
 | `--on-conflict-<type> <policy>` | The policy for one record type |
 | `--rename-suffix <text>` | Suffix for auto-renamed records (default: `imported`) |
@@ -427,6 +454,10 @@ us_data_publication --mode import --bundle run3_full.tar.gz \
 # Into a fresh folder, to look at before committing to anything
 us_data_publication --mode import --bundle run3_full.tar.gz \
     --target disk --output-dir ~/inspect/run3
+
+# Into a project of this installation, whatever the bundle names
+us_data_publication --mode import --bundle run3_full.tar.gz --target db \
+    --project-guid 6f1d2b7e-5c44-4f0a-9a01-2b8e7c3d4f55
 
 # Reuse matching solutions and buffers, but never reuse a model
 us_data_publication --mode import --bundle project7.tar.gz --target db \

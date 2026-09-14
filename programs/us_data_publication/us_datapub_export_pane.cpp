@@ -8,7 +8,6 @@
 #include "us_project_gui.h"
 #include "us_select_runs.h"
 #include "us_model_loader.h"
-#include "us_noise_loader.h"
 #include "us_editor.h"
 
 // The roles the tree items carry
@@ -18,6 +17,7 @@
 #define KIND_RAW    "raw"
 #define KIND_EDIT   "edit"
 #define KIND_MODEL  "model"
+#define KIND_NOISE  "noise"
 
 US_DataPubExportPane::US_DataPubExportPane( QWidget* parent )
    : US_Widgets( true, parent )
@@ -124,7 +124,7 @@ US_DataPubExportPane::US_DataPubExportPane( QWidget* parent )
 
    QHBoxLayout* mbtns = new QHBoxLayout;
    pb_models      = us_pushbutton( tr( "Select Models..." ) );
-   pb_noises      = us_pushbutton( tr( "Select Noise..." ) );
+   pb_noises      = us_pushbutton( tr( "Reload Noise" ) );
    pb_clearmodels = us_pushbutton( tr( "Clear Models" ) );
    mbtns->addWidget( pb_models );
    mbtns->addWidget( pb_noises );
@@ -152,6 +152,8 @@ US_DataPubExportPane::US_DataPubExportPane( QWidget* parent )
    connect( pb_clearmodels, &QPushButton::clicked,
             this,        &US_DataPubExportPane::clear_models );
    connect( tw_data,     &QTreeWidget::itemChanged,
+            this,        &US_DataPubExportPane::item_changed );
+   connect( tw_models,   &QTreeWidget::itemChanged,
             this,        &US_DataPubExportPane::item_changed );
 
    // ---- scope, bundle and summary ----------------------------------------
@@ -401,10 +403,11 @@ void US_DataPubExportPane::select_runs( void )
                               .arg( runs[ 0 ].runID ) );
    }
 
-   models.clear();
-   noises.clear();
-   sel_models.clear();
-   sel_noises.clear();
+   models      .clear();
+   noises      .clear();
+   sel_models  .clear();
+   unsel_models.clear();
+   unsel_noises.clear();
 
    buildDataTree();
    latest_edits();
@@ -414,11 +417,12 @@ void US_DataPubExportPane::select_runs( void )
 
 void US_DataPubExportPane::clear_runs( void )
 {
-   runs.clear();
-   models.clear();
-   noises.clear();
-   sel_models.clear();
-   sel_noises.clear();
+   runs        .clear();
+   models      .clear();
+   noises      .clear();
+   sel_models  .clear();
+   unsel_models.clear();
+   unsel_noises.clear();
    buildDataTree();
    buildModelTree();
    updateSummary();
@@ -482,6 +486,7 @@ void US_DataPubExportPane::buildDataTree( void )
 
 void US_DataPubExportPane::buildModelTree( void )
 {
+   updating = true;
    tw_models->clear();
 
    for ( int ii = 0; ii < runs.size(); ii++ )
@@ -536,19 +541,37 @@ void US_DataPubExportPane::buildModelTree( void )
                QStringList mtext;
                mtext << model.description << model.guid;
                QTreeWidgetItem* mitem = new QTreeWidgetItem( mtext );
-               mitem->setData( 0, ROLE_GUID, model.guid );
-               mitem->setData( 0, ROLE_KIND, QString( KIND_MODEL ) );
+               mitem->setData ( 0, ROLE_GUID, model.guid );
+               mitem->setData ( 0, ROLE_KIND, QString( KIND_MODEL ) );
+               mitem->setFlags( mitem->flags() | Qt::ItemIsUserCheckable );
+               mitem->setCheckState( 0, unsel_models.contains( model.guid )
+                                     ? Qt::Unchecked : Qt::Checked );
                eitem->addChild( mitem );
 
                for ( int nn = 0; nn < noises.size(); nn++ )
                {
-                  if ( noises[ nn ].modelGUID != model.guid )        continue;
-                  if ( ! sel_noises.contains( noises[ nn ].guid ) )  continue;
+                  const US_DataPubCatalog::Noise& noise = noises[ nn ];
+
+                  if ( noise.modelGUID != model.guid )  continue;
+
+                  QString label = tr( "%1 noise" ).arg( noise.noiseType );
+
+                  if ( ! noise.borrowedFrom.isEmpty() )
+                     label = tr( "%1 noise (of this edit)" )
+                             .arg( noise.noiseType );
 
                   QStringList ntext;
-                  ntext << tr( "%1 noise" ).arg( noises[ nn ].noiseType )
-                        << noises[ nn ].guid;
-                  mitem->addChild( new QTreeWidgetItem( ntext ) );
+                  ntext << label << noise.guid;
+
+                  QTreeWidgetItem* nitem = new QTreeWidgetItem( ntext );
+                  nitem->setData ( 0, ROLE_GUID, noise.guid );
+                  nitem->setData ( 0, ROLE_KIND, QString( KIND_NOISE ) );
+                  nitem->setFlags( nitem->flags() | Qt::ItemIsUserCheckable );
+                  nitem->setCheckState( 0,
+                        ( unsel_models.contains( model.guid )  ||
+                          unsel_noises.contains( noise.guid ) )
+                        ? Qt::Unchecked : Qt::Checked );
+                  mitem->addChild( nitem );
                }
 
                mitem->setExpanded( true );
@@ -558,6 +581,42 @@ void US_DataPubExportPane::buildModelTree( void )
    }
 
    tw_models->resizeColumnToContents( 0 );
+   updating = false;
+}
+
+// The models and the noise records that are still ticked in the tree
+QStringList US_DataPubExportPane::checkedModels( void ) const
+{
+   return checkedGuids( KIND_MODEL );
+}
+
+QStringList US_DataPubExportPane::checkedNoises( void ) const
+{
+   return checkedGuids( KIND_NOISE );
+}
+
+QStringList US_DataPubExportPane::checkedGuids( const QString& kind ) const
+{
+   QStringList guids;
+   QList< QTreeWidgetItem* > stack;
+
+   for ( int ii = 0; ii < tw_models->topLevelItemCount(); ii++ )
+      stack << tw_models->topLevelItem( ii );
+
+   while ( ! stack.isEmpty() )
+   {
+      QTreeWidgetItem* item = stack.takeFirst();
+
+      for ( int ii = 0; ii < item->childCount(); ii++ )
+         stack << item->child( ii );
+
+      if ( item->data( 0, ROLE_KIND ).toString() != kind )  continue;
+      if ( item->checkState( 0 ) != Qt::Checked )           continue;
+
+      guids << item->data( 0, ROLE_GUID ).toString();
+   }
+
+   return guids;
 }
 
 QStringList US_DataPubExportPane::checkedRaws( void ) const
@@ -773,8 +832,10 @@ void US_DataPubExportPane::no_edits( void )
 
       if ( answer == QMessageBox::No )  return;
 
-      sel_models.clear();
-      sel_noises.clear();
+      sel_models  .clear();
+      unsel_models.clear();
+      unsel_noises.clear();
+      noises      .clear();
       buildModelTree();
    }
 
@@ -790,8 +851,9 @@ bool US_DataPubExportPane::modelsNeeding( const QString& editGUID,
 
    for ( int ii = 0; ii < models.size(); ii++ )
    {
-      if ( models[ ii ].editGUID != editGUID )            continue;
-      if ( ! sel_models.contains( models[ ii ].guid ) )   continue;
+      if ( models[ ii ].editGUID != editGUID )              continue;
+      if ( ! sel_models  .contains( models[ ii ].guid ) )   continue;
+      if (   unsel_models.contains( models[ ii ].guid ) )   continue;
 
       users << models[ ii ].guid;
    }
@@ -805,6 +867,52 @@ void US_DataPubExportPane::item_changed( QTreeWidgetItem* item, int column )
 
    QString kind = item->data( 0, ROLE_KIND ).toString();
    QString guid = item->data( 0, ROLE_GUID ).toString();
+
+   if ( kind == KIND_MODEL )
+   {  // Unticking a model takes its noise with it
+      bool on = ( item->checkState( 0 ) == Qt::Checked );
+
+      unsel_models.removeAll( guid );
+
+      if ( ! on )  unsel_models << guid;
+
+      updating = true;
+
+      for ( int ii = 0; ii < item->childCount(); ii++ )
+      {
+         QTreeWidgetItem* nitem = item->child( ii );
+         QString          nguid = nitem->data( 0, ROLE_GUID ).toString();
+
+         nitem->setCheckState( 0, ( on  &&  ! unsel_noises.contains( nguid ) )
+                                  ? Qt::Checked : Qt::Unchecked );
+      }
+
+      updating = false;
+      updateSummary();
+      return;
+   }
+
+   if ( kind == KIND_NOISE )
+   {
+      bool on = ( item->checkState( 0 ) == Qt::Checked );
+
+      unsel_noises.removeAll( guid );
+
+      if ( ! on )  unsel_noises << guid;
+
+      if ( on  &&  item->parent() != nullptr  &&
+           item->parent()->checkState( 0 ) != Qt::Checked )
+      {  // Noise cannot travel without the model it belongs to
+         updating = true;
+         item->parent()->setCheckState( 0, Qt::Checked );
+         updating = false;
+         unsel_models.removeAll(
+               item->parent()->data( 0, ROLE_GUID ).toString() );
+      }
+
+      updateSummary();
+      return;
+   }
 
    if ( kind == KIND_RAW  &&  item->checkState( 0 ) != Qt::Checked )
    {  // Dropping raw data drops the edits below it
@@ -944,6 +1052,9 @@ void US_DataPubExportPane::select_models( void )
       sel_models << guid;
       added      << guid;
 
+      // A model picked again comes back ticked
+      unsel_models.removeAll( guid );
+
       // A model the catalog did not list is still exportable
       bool known = false;
 
@@ -1019,10 +1130,20 @@ void US_DataPubExportPane::select_models( void )
    select_noises();
 }
 
+/* Find the noise of every selected model.
+
+   Noise is part of a model's result, so all of it is taken; what a user
+   does not want to publish they untick in the tree.  An earlier version
+   asked the noise loader to pick one time-invariant and one
+   radially-invariant record, which is a question about a single model --
+   with several models selected it answered for the first one and threw the
+   rest away.
+*/
 void US_DataPubExportPane::select_noises( void )
 {
    if ( sel_models.isEmpty() )
    {
+      noises.clear();
       buildModelTree();
       updateSummary();
       return;
@@ -1042,71 +1163,37 @@ void US_DataPubExportPane::select_noises( void )
    if ( ! error.isEmpty() )
       te_status->append( error );
 
-   sel_noises.clear();
+   // A record the user has already unticked stays unticked
+   QStringList found;
+   int         borrowed = 0;
 
    for ( int ii = 0; ii < noises.size(); ii++ )
-      sel_noises << noises[ ii ].guid;
+   {
+      found << noises[ ii ].guid;
+
+      if ( ! noises[ ii ].borrowedFrom.isEmpty() )  borrowed++;
+   }
+
+   for ( int ii = unsel_noises.size() - 1; ii >= 0; ii-- )
+      if ( ! found.contains( unsel_noises[ ii ] ) )
+         unsel_noises.removeAt( ii );
 
    if ( noises.isEmpty() )
+      te_status->append( tr( "No noise records belong to the selected"
+                             " model(s)." ) );
+
+   else
    {
-      buildModelTree();
-      updateSummary();
-      return;
+      te_status->append( tr( "%1 noise record(s) selected for %2 model(s);"
+                             " untick any that should stay out." )
+                         .arg( noises.size() ).arg( chosen.size() ) );
+
+      if ( borrowed > 0 )
+         te_status->append( tr( "%1 of them were fitted to another model of"
+                                " the same edit and are carried because the"
+                                " model has none of its own." )
+                            .arg( borrowed ) );
    }
-
-   if ( US_Settings::noise_dialog() == 0 )
-   {  // Auto-select: every noise record of every selected model travels
-      te_status->append( tr( "%1 noise record(s) selected automatically." )
-                         .arg( noises.size() ) );
-      buildModelTree();
-      updateSummary();
-      return;
-   }
-
-   // The noise-dialog flag is set, so let the user choose
-   QStringList mieGUIDs;
-   QStringList nieGUIDs;
-
-   for ( int ii = 0; ii < chosen.size(); ii++ )
-      mieGUIDs << chosen[ ii ].guid;
-
-   for ( int ii = 0; ii < noises.size(); ii++ )
-   {
-      int modelx = mieGUIDs.indexOf( noises[ ii ].modelGUID );
-
-      if ( modelx < 0 )  continue;
-
-      nieGUIDs << QString( "%1:%2:%3" ).arg( noises[ ii ].guid )
-                  .arg( noises[ ii ].noiseType.isEmpty() ? QString( "ti" )
-                                                         : noises[ ii ].noiseType )
-                  .arg( modelx, 4, 10, QChar( '0' ) );
-   }
-
-   if ( nieGUIDs.isEmpty() )
-   {
-      buildModelTree();
-      updateSummary();
-      return;
-   }
-
-   US_Noise ti_noise;
-   US_Noise ri_noise;
-   US_NoiseLoader* dialog = new US_NoiseLoader( catalog.db(), mieGUIDs,
-                                                nieGUIDs, ti_noise, ri_noise );
-   dialog->exec();
-   qApp->processEvents();
-   delete dialog;
-
-   QStringList picked;
-
-   if ( ti_noise.count > 0  &&  ! ti_noise.noiseGUID.isEmpty() )
-      picked << ti_noise.noiseGUID;
-
-   if ( ri_noise.count > 0  &&  ! ri_noise.noiseGUID.isEmpty() )
-      picked << ri_noise.noiseGUID;
-
-   if ( ! picked.isEmpty() )
-      sel_noises = picked;
 
    buildModelTree();
    updateSummary();
@@ -1114,8 +1201,10 @@ void US_DataPubExportPane::select_noises( void )
 
 void US_DataPubExportPane::clear_models( void )
 {
-   sel_models.clear();
-   sel_noises.clear();
+   sel_models  .clear();
+   unsel_models.clear();
+   unsel_noises.clear();
+   noises      .clear();
    buildModelTree();
    updateSummary();
 }
@@ -1137,18 +1226,18 @@ US_DataPubExporter::Selection US_DataPubExportPane::selection( void ) const
 
    sel.setRaws  ( checkedRaws () );
    sel.setEdits ( checkedEdits() );
-   sel.setModels( sel_models );
-   sel.setNoises( sel_noises );
+   sel.setModels( checkedModels() );
+   sel.setNoises( checkedNoises() );
 
    return sel;
 }
 
 void US_DataPubExportPane::updateSummary( void )
 {
-   int nraws  = checkedRaws ().size();
-   int nedits = checkedEdits().size();
-   int nmods  = sel_models.size();
-   int nnois  = sel_noises.size();
+   int nraws  = checkedRaws  ().size();
+   int nedits = checkedEdits ().size();
+   int nmods  = checkedModels().size();
+   int nnois  = checkedNoises().size();
 
    le_summary->setText( tr( "%1 project, %2 experiment(s), %3 raw data,"
                             " %4 edit(s), %5 model(s), %6 noise record(s)" )
