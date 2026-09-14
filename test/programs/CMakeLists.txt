@@ -4,3 +4,4 @@
 # target compiles the program sources it needs directly.
 
 add_subdirectory(us_data_publication)
+add_subdirectory(us_manage_data)

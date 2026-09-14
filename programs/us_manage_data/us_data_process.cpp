@@ -56,7 +56,7 @@ DbgLv(1) << "REC_ULD: row" << row+1;
    //if      ( cdesc.recType == 1 )
    if      ( cdesc.recType == 1  &&  cdesc.recType != 1 )  // never upload raw
    {  // upload a Raw record
-      QString runID    = filename.section( ".",  0,  0 );
+      QString runID    = US_DataCatalog::runIdOfFile( filename, false );
       QString tripl    = filename.section( ".", -4, -2 )
                          .replace( ".", " / " );
 DbgLv(1) << "REC_ULD:RAW: runID" << runID << "  tripl" << tripl;
@@ -78,7 +78,7 @@ DbgLv(1) << "REC_ULD:RAW: parentGUID" << cdesc.parentGUID;
 
    else if ( cdesc.recType == 2 )
    {  // upload an EditedData record
-      QString runID    = filename.section( ".",  0,  0 );
+      QString runID    = US_DataCatalog::runIdOfFile( filename, true );
       QString label    = runID;
       QString comment  = filename.section( ".",  0,  2 );
       QString editGUID = cdesc.dataGUID;
@@ -197,7 +197,11 @@ int US_DataProcess::record_download( int row )
    QString filepath = cdesc.filename;
    QString dataGUID = cdesc.dataGUID;
    QString filename = filepath.section( "/", -1, -1 );
-   QString runID    = filename.section( ".",  0,  0 );
+
+   // A run identifier may itself contain dots, so the run a file belongs to
+   // is what is left after the fixed trailing parts of the name
+   QString runID    = US_DataCatalog::runIdOfFile(
+                      filename, cdesc.recType == US_DataModel::EDIT );
 
    filepath         = ( filepath == filename ) ?
                      US_Settings::resultDir() + "/" + runID + "/" + filename :

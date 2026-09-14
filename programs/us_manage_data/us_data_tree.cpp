@@ -49,28 +49,81 @@ DbgLv(1) << "DT: togl_exp str show" << c1str << show;
       listi.at( ii )->setExpanded( show );
 }
 
-// build the data tree from descriptions read
+// The color, type name and source text of one record, and its type counters
+void US_DataTree::classify_row( const US_DataModel::DataDesc& desc,
+                                QBrush& fbru, QString& rtyp, QString& rsrc )
+{
+   static const char* names[] =
+      { "Experiment", "Raw", "Edited", "Model", "Noise" };
+
+   int  ityp  = desc.recType;
+   bool isDba = ( ( desc.recState & US_DataModel::REC_DB ) != 0 );
+   bool isLoc = ( ( desc.recState & US_DataModel::REC_LO ) != 0 );
+   int  kind  = 2;                     // 0 = local only, 1 = DB only, 2 = both
+
+   rtyp       = ( ityp >= 0  &&  ityp <= 4 ) ? names[ ityp ] : "none";
+
+   if ( desc.recordID < 0  &&  isLoc )
+   {  // local only
+      fbru    = QBrush( colorBrown );
+      rsrc    = "Local";
+      kind    = 0;
+   }
+
+   else if ( isDba  &&  ! isLoc )
+   {  // database only
+      fbru    = QBrush( colorBlue );
+      rsrc    = "DB";
+      kind    = 1;
+   }
+
+   else
+   {  // both local and database
+      fbru    = QBrush( colorGreen );
+      rsrc    = "In Sync";
+
+      if ( ! desc.contents.isEmpty() )
+      {
+         QString cont1 = desc.contents.section( " ", 0, 1 ).simplified();
+         QString cont2 = desc.contents.section( " ", 2, 4 ).simplified();
+
+         if ( cont1 != cont2  &&  da_model->dbase() != NULL  &&
+              significant_diffs( desc, da_model->dbase() ) )
+         {
+            fbru    = QBrush( colorRed );
+            rsrc    = "Conflict";
+DbgLv(1) << "CONFLICT cont1 cont2" << cont1 << cont2;
+         }
+      }
+   }
+
+   if ( desc.recState == US_DataModel::NOSTAT )
+   {  // mark artificial record with color and source text
+      fbru    = QBrush( colorGray );
+      rsrc    = "dummy";
+   }
+
+   if ( ityp < 1  ||  ityp > 4 )   return;      // an experiment counts as none
+
+   int* dcnts[] = { &ndraws, &ndedts, &ndmods, &ndnois };
+   int* lcnts[] = { &nlraws, &nledts, &nlmods, &nlnois };
+   int* ccnts[] = { &ncraws, &ncedts, &ncmods, &ncnois };
+
+   if ( kind != 1 )   ( *lcnts[ ityp - 1 ] )++;
+   if ( kind != 0 )   ( *dcnts[ ityp - 1 ] )++;
+
+   ( *ccnts[ ityp - 1 ] )++;
+}
+
+// build the first layer of the data tree:  one row per experiment
+//
+// The rows below an experiment are added by fill_run(), when the scan
+// reaches that experiment or when the user opens it.  A store of
+// multi-wavelength runs holds hundreds of triples per experiment, so
+// building all of that before showing anything is what made this window
+// feel slow.
 void US_DataTree::build_dtree( )
 {
-   QString rtyp;
-   QString subt;
-   QString labl;
-   QString dguid;
-   QString rsrc;
-   QString anch;
-   QString ande;
-   int     ityp  = 1;
-   int     nchdb = 0;
-   int     nchlo = 0;
-   int     ndedb = 0;
-   int     ndelo = 0;
-   QBrush  fbru( colorBrown );
-   QBrush  bbru( colorWhite );
-   QTreeWidgetItem* pitems[4];
-   US_Passwd pw;
-   US_DB2    db( pw.getPasswd() );
-   US_DB2*   dbP = &db;
-
    da_process = (US_DataProcess*)da_model->procobj();
 
    ncrecs     = da_model->recCount();
@@ -80,201 +133,179 @@ void US_DataTree::build_dtree( )
    ncraws     = ncedts = ncmods = ncnois = 0;
    ndraws     = ndedts = ndmods = ndnois = 0;
    nlraws     = nledts = nlmods = nlnois = 0;
+
    tw_recs->clear();
-   QProgressBar* progress = da_model->progrBar();
-   progress->setMaximum( ncrecs );
-   progress->setValue  ( 0 );
+   runitems.clear();
 
-   for ( int ii = 0; ii < ncrecs; ii++ )
+   int nruns  = da_model->runCount();
+
+   for ( int ii = 0; ii < nruns; ii++ )
    {
-      cdesc      = da_model->row_datadesc( ii );
-      ityp       = cdesc.recType;
+      US_DataModel::RunEntry entry = da_model->run_entry( ii );
+      US_DataModel::DataDesc desc  = da_model->row_datadesc( entry.row );
+
+      QBrush  fbru( colorBrown );
+      QString rtyp;
+      QString rsrc;
+      classify_row( desc, fbru, rtyp, rsrc );
+
+      // A source that could not count the chain yet says so with a question
+      // mark rather than a zero that is not true
+      QString counts = ( entry.dbCount < 0 ? QString( "?" )
+                                           : QString::number( entry.dbCount ) )
+                       + ", "
+                       + ( entry.loCount < 0 ? QString( "?" )
+                                             : QString::number( entry.loCount ) );
+
       QStringList cvals;
-      bool isDba = ( ( cdesc.recState & US_DataModel::REC_DB ) != 0 );
-      bool isLoc = ( ( cdesc.recState & US_DataModel::REC_LO ) != 0 );
+      cvals << rtyp << desc.label << desc.subType << rsrc << "" << counts;
 
-      if ( cdesc.recordID < 0  &&  isLoc )
-      { // local only
-         fbru    = QBrush( colorBrown );
-         rsrc    = "Local";
-
-         if      ( ityp == 1 )
-         {
-            nlraws++; ncraws++;
-            rtyp    = "Raw";
-         }
-         else if ( ityp == 2 )
-         {
-            nledts++; ncedts++;
-            rtyp    = "Edited";
-         }
-         else if ( ityp == 3 )
-         {
-            nlmods++; ncmods++;
-            rtyp    = "Model";
-         }
-         else if ( ityp == 4 )
-         {
-            nlnois++; ncnois++;
-            rtyp    = "Noise";
-         }
-         else
-         {
-            rtyp    = "none";
-            ityp    = 0;
-         }
-      }
-
-      else if ( isDba  &&  !isLoc )
-      { // database only
-         fbru    = QBrush( colorBlue );
-         rsrc    = "DB";
-
-         if      ( ityp == 1 )
-         {
-            ndraws++; ncraws++;
-            rtyp    = "Raw";
-         }
-         else if ( ityp == 2 )
-         {
-            ndedts++; ncedts++;
-            rtyp    = "Edited";
-         }
-         else if ( ityp == 3 )
-         {
-            ndmods++; ncmods++;
-            rtyp    = "Model";
-         }
-         else if ( ityp == 4 )
-         {
-            ndnois++; ncnois++;
-            rtyp    = "Noise";
-         }
-         else
-         {
-            rtyp    = "none";
-            ityp    = 0;
-         }
-      }
-
-      else
-      { // both local and database
-         fbru    = QBrush( colorGreen );
-         rsrc    = "In Sync";
-
-         if ( ! cdesc.contents.isEmpty() )
-         {
-            QString cont1 = cdesc.contents.section( " ", 0, 1 ).simplified();
-            QString cont2 = cdesc.contents.section( " ", 2, 4 ).simplified();
-            if ( cont1 != cont2  &&  significant_diffs( cdesc, dbP ) )
-            {
-               fbru    = QBrush( colorRed );
-               rsrc    = "Conflict";
-DbgLv(1) << "CONFLICT cont1 cont2" << cont1 << cont2;
-            }
-         }
-
-         if      ( ityp == 1 )
-         {
-            nlraws++; ndraws++; ncraws++;
-            rtyp    = "Raw";
-         }
-         else if ( ityp == 2 )
-         {
-            nledts++; ndedts++; ncedts++;
-            rtyp    = "Edited";
-         }
-         else if ( ityp == 3 )
-         {
-            nlmods++; ndmods++; ncmods++;
-            rtyp    = "Model";
-         }
-         else if ( ityp == 4 )
-         {
-            nlnois++; ndnois++; ncnois++;
-            rtyp    = "Noise";
-         }
-         else
-         {
-            rtyp    = "none";
-            ityp    = 0;
-            rsrc    = "Conflict";
-         }
-      }
-
-      labl       = cdesc.label;
-      dguid      = cdesc.dataGUID;
-      subt       = cdesc.subType;
-      nchdb      = nchlo = ndedb = ndelo = 0;
-
-      if ( cdesc.recState == US_DataModel::NOSTAT )
-      {  // mark artificial record with color and source text
-         fbru       = QBrush( colorGray );
-         rsrc       = "dummy";
-      }
-
-      for ( int jj = ( ii + 1 ); jj < ncrecs; jj++ )
-      {  // count children and descendants from next-row until back-to-level
-         US_DataModel::DataDesc ddesc = da_model->row_datadesc( jj );
-
-         if ( ddesc.recType <= ityp )
-            break;   // once we've reached or passed same level, break
-
-         // from database?
-         bool isDba = ( ( ddesc.recState & US_DataModel::REC_DB ) != 0 );
-         // from local?
-         bool isLoc = ( ( ddesc.recState & US_DataModel::REC_LO ) != 0 );
-         // direct child?
-         //bool child = ( ddesc.parentGUID == dguid );
-         bool child = ( ( ddesc.recType - ityp ) == 1 );
-
-         ndedb   += ( isDba          ) ? 1 : 0;  // bump db descendant count
-         nchdb   += ( isDba && child ) ? 1 : 0;  // bump db child count
-         ndelo   += ( isLoc          ) ? 1 : 0;  // bump local descendant count
-         nchlo   += ( isLoc && child ) ? 1 : 0;  // bump local child count
-      }
-
-      anch = ( ityp < 4 ) ?
-         QString( "%1, %2" ).arg( nchdb ).arg( nchlo ) : "";  // children
-      ande = ( ityp < 3 ) ?
-         QString( "%1, %2" ).arg( ndedb ).arg( ndelo ) : "";  // descendants
-
-      QTreeWidgetItem* item;
-      int wiutype = (int)QTreeWidgetItem::UserType + ii; // type: encoded index
-
-      cvals << rtyp << labl << subt << rsrc << anch << ande;
-
-      if ( ityp == 1 )
-      {  // Raws are children of the root
-         item = new QTreeWidgetItem( tw_recs,            cvals, wiutype );
-      }
-
-      else
-      {  // others are children of the next level up
-         item = new QTreeWidgetItem( pitems[ ityp - 2 ], cvals, wiutype );
-      }
-
-      pitems[ ityp - 1 ] = item;  // save next parent of this type
+      QTreeWidgetItem* item = new QTreeWidgetItem(
+         tw_recs, cvals, (int)QTreeWidgetItem::UserType + entry.row );
 
       for ( int jj = 0; jj < ntcols; jj++ )
       {
          item->setForeground( jj, fbru );
-         item->setBackground( jj, bbru );
+         item->setBackground( jj, QBrush( colorWhite ) );
       }
 
-      progress->setValue( ii + 1 );
-      qApp->processEvents();
-   }
+      if ( ! entry.loaded )
+         item->setChildIndicatorPolicy( QTreeWidgetItem::ShowIndicator );
 
-   // resize so all of columns are shown
-   tw_recs->expandAll();                      // expand the entire tree
+      runitems << item;
+
+      if ( entry.loaded )
+         fill_run( ii );
+   }
 
    for ( int jj = 0; jj < ntcols; jj++ )
+      tw_recs->resizeColumnToContents( jj );
+}
+
+// add the records of one experiment under its row
+void US_DataTree::fill_run( int runIndex )
+{
+   if ( runIndex < 0  ||  runIndex >= runitems.size() )   return;
+
+   US_DataModel::RunEntry entry = da_model->run_entry( runIndex );
+
+   if ( ! entry.loaded )                                  return;
+
+   QTreeWidgetItem* runitem = runitems[ runIndex ];
+
+   if ( runitem->childCount() > 0 )                       return;
+
+   runitem->setChildIndicatorPolicy(
+            QTreeWidgetItem::DontShowIndicatorWhenChildless );
+
+   QTreeWidgetItem* pitems[ 5 ];
+   pitems[ 0 ] = runitem;
+   pitems[ 1 ] = runitem;
+   pitems[ 2 ] = runitem;
+   pitems[ 3 ] = runitem;
+   pitems[ 4 ] = runitem;
+
+   int nchdb  = 0;
+   int nchlo  = 0;
+
+   for ( int row = entry.firstRow; row >= 0  &&  row <= entry.lastRow; row++ )
    {
-      tw_recs->resizeColumnToContents( jj );  // resize to fit contents
+      US_DataModel::DataDesc desc = da_model->row_datadesc( row );
+      int     ityp = desc.recType;
+
+      if ( ityp < 1  ||  ityp > 4 )   continue;
+
+      QBrush  fbru( colorBrown );
+      QString rtyp;
+      QString rsrc;
+      classify_row( desc, fbru, rtyp, rsrc );
+
+      // count the children and the descendants of this record
+      int kchdb = 0;
+      int kchlo = 0;
+      int kdedb = 0;
+      int kdelo = 0;
+
+      for ( int jj = row + 1; jj <= entry.lastRow; jj++ )
+      {
+         US_DataModel::DataDesc ddesc = da_model->row_datadesc( jj );
+
+         if ( ddesc.recType <= ityp )   break;
+
+         bool isDba = ( ( ddesc.recState & US_DataModel::REC_DB ) != 0 );
+         bool isLoc = ( ( ddesc.recState & US_DataModel::REC_LO ) != 0 );
+         bool child = ( ( ddesc.recType - ityp ) == 1 );
+
+         kdedb   += ( isDba          ) ? 1 : 0;
+         kchdb   += ( isDba && child ) ? 1 : 0;
+         kdelo   += ( isLoc          ) ? 1 : 0;
+         kchlo   += ( isLoc && child ) ? 1 : 0;
+      }
+
+      if ( ityp == US_DataModel::RAW )
+      {  // the raws are the children of the experiment
+         nchdb  += ( ( desc.recState & US_DataModel::REC_DB ) != 0 ) ? 1 : 0;
+         nchlo  += ( ( desc.recState & US_DataModel::REC_LO ) != 0 ) ? 1 : 0;
+      }
+
+      QString anch = ( ityp < 4 ) ?
+         QString( "%1, %2" ).arg( kchdb ).arg( kchlo ) : "";
+      QString ande = ( ityp < 3 ) ?
+         QString( "%1, %2" ).arg( kdedb ).arg( kdelo ) : "";
+
+      QStringList cvals;
+      cvals << rtyp << desc.label << desc.subType << rsrc << anch << ande;
+
+      QTreeWidgetItem* item = new QTreeWidgetItem(
+         pitems[ ityp - 1 ], cvals, (int)QTreeWidgetItem::UserType + row );
+
+      pitems[ ityp ] = item;
+
+      for ( int jj = 0; jj < ntcols; jj++ )
+      {
+         item->setForeground( jj, fbru );
+         item->setBackground( jj, QBrush( colorWhite ) );
+      }
    }
 
-   tw_recs->collapseAll();                    // collapse the entire tree
+   // the counts on the experiment row are now what is really under it
+   US_DataModel::DataDesc rdesc = da_model->row_datadesc( entry.row );
+   int   kdedb = 0;
+   int   kdelo = 0;
+
+   for ( int jj = entry.firstRow; jj >= 0  &&  jj <= entry.lastRow; jj++ )
+   {
+      US_DataModel::DataDesc ddesc = da_model->row_datadesc( jj );
+
+      kdedb   += ( ( ddesc.recState & US_DataModel::REC_DB ) != 0 ) ? 1 : 0;
+      kdelo   += ( ( ddesc.recState & US_DataModel::REC_LO ) != 0 ) ? 1 : 0;
+   }
+
+   runitem->setText( 4, QString( "%1, %2" ).arg( nchdb ).arg( nchlo ) );
+   runitem->setText( 5, QString( "%1, %2" ).arg( kdedb ).arg( kdelo ) );
+
+   ncrecs     = da_model->recCount();
+   ndrecs     = da_model->recCountDB();
+   nlrecs     = da_model->recCountLoc();
+   ntrows     = ncrecs;
+}
+
+// read an experiment the user opened, if the scan has not reached it yet
+void US_DataTree::item_opened( QTreeWidgetItem* item )
+{
+   if ( item == NULL )                            return;
+   if ( item->parent() != NULL )                  return;  // not an experiment
+
+   int runIndex = runitems.indexOf( item );
+
+   if ( runIndex < 0 )                            return;
+   if ( da_model->run_entry( runIndex ).loaded )  return;
+
+   // The experiment the user just opened is the one to read next
+   da_model->request_run( runIndex );
+   da_model->scan_run   ( runIndex );
+
+   fill_run( runIndex );
 }
 
 // set up and display a row context menu
@@ -319,8 +350,8 @@ DbgLv(2) << "    context_menu RTN current_datadesc";
       tshdeta.replace( tr( "record" ), tr( "records"  ) );
    }
 
-   if ( cdesc.recType == 1 )
-   {  // Raw:  "record/branches" to "descendants"
+   if ( cdesc.recType <= US_DataModel::RAW )
+   {  // Experiment or Raw:  "record/branches" to "descendants"
       tupload.replace( tr( "record"   ), tr( "descendants" ) );
       tupload.replace( tr( "branches" ), tr( "descendants" ) );
       tdnload.replace( tr( "record"   ), tr( "descendants" ) );
@@ -655,7 +686,8 @@ void US_DataTree::item_details(  )
       return;
    }
 
-   const char* rtyps[]  = { "RawData", "EditedData", "Model", "Noise" };
+   const char* rtyps[]  = { "Experiment", "RawData", "EditedData",
+                            "Model", "Noise" };
    QString     fileexts = tr( "Text,Log files (*.txt *.log)"
                               ";;All files (*)" );
    int         irow     = tw_item->type() - (int)QTreeWidgetItem::UserType;
@@ -667,7 +699,7 @@ DbgLv(2) << "DT: i_details row" << irow;
    QString mtext =
       tr( "Data Tree Item at Row %1 -- \n\n" ).arg( irow ) +
       tr( "  Type           : %1 (%2)\n" )
-         .arg( cdesc.recType ).arg( rtyps[ cdesc.recType - 1 ] ) +
+         .arg( cdesc.recType ).arg( rtyps[ cdesc.recType ] ) +
       tr( "  SubType        : " ) + cdesc.subType + "\n" +
       tr( "  Label          : " ) + cdesc.label + "\n" +
       tr( "  Description    : " ) + cdesc.description + "\n" +
@@ -732,7 +764,8 @@ model2.write(fname4);
 // Perform multiple-items details action
 void US_DataTree::items_details(  )
 {
-   const char* rtyps[]  = { "RawData", "EditedData", "Model", "Noise" };
+   const char* rtyps[]  = { "Experiment", "RawData", "EditedData",
+                            "Model", "Noise" };
    QString     fileexts = tr( "Text,Log files (*.txt *.log)"
                               ";;All files (*)" );
 
@@ -750,14 +783,14 @@ DbgLv(2) << "DT: i_details row" << irow;
    QString mtext =
       tr( "Data Tree Items from Rows %1 to %2 -- \n\n" )
          .arg( irow ).arg( krow ) +
-      tr( "  Type   (first) : %1\n" ).arg( rtyps[ cdesc.recType - 1 ] ) +
+      tr( "  Type   (first) : %1\n" ).arg( rtyps[ cdesc.recType ] ) +
       tr( "    Description    : " ) + cdesc.description + "\n" +
       tr( "    DB record ID   : %1\n" ).arg( cdesc.recordID ) +
       tr( "    File Directory : " )
          + cdesc.filename.section( "/",  0, -2 ) + "\n" +
       tr( "    File Name      : " )
          + cdesc.filename.section( "/", -1, -1 ) + "\n" +
-      tr( "  Type    (last) : %1\n" ).arg( rtyps[ kdesc.recType - 1 ] ) +
+      tr( "  Type    (last) : %1\n" ).arg( rtyps[ kdesc.recType ] ) +
       tr( "    Description    : " ) + kdesc.description + "\n" +
       tr( "    DB record ID   : %1\n" ).arg( kdesc.recordID ) +
       tr( "    File Directory : " )
@@ -782,12 +815,13 @@ DbgLv(2) << "DT: i_details row" << irow;
 // Prepend a record type string to an item action
 void US_DataTree::record_type( int recType, QString& item_act )
 {
-   const char* rtyps[]  = { "RawData", "EditedData", "Model", "Noise" };
+   const char* rtyps[]  = { "Experiment", "RawData", "EditedData",
+                            "Model", "Noise" };
    int sizert = sizeof( rtyps ) / sizeof( rtyps[ 0 ] );
 
-   if ( recType > 0  &&  recType <= sizert )
+   if ( recType >= 0  &&  recType < sizert )
    {
-      item_act = QString( rtyps[ recType - 1 ] ) + " " + item_act;
+      item_act = QString( rtyps[ recType ] ) + " " + item_act;
    }
 }
 
@@ -1207,6 +1241,12 @@ DbgLv(1) << "acrow:    jrow jtyp" << jrow << ddesc.recType;
 
          if ( selrows.contains( jrow ) )
             continue;  // if descendant already in select list, don't add
+
+         if ( ddesc.recType <= US_DataModel::RAW )
+         {  // a Raw under a selected experiment is not acted on itself
+            rawrows << jrow;
+            continue;
+         }
 
          actrows << jrow;
       }

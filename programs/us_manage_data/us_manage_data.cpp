@@ -315,6 +315,10 @@ DbgLv(1) << "GUI setup complete";
 
    // Set needed pointers to sibling classes in model object
    da_model->setSiblings( (QObject*)da_process, (QObject*)da_tree   );
+
+   // An experiment the user opens is read before the ones still queued
+   connect( tw_recs, &QTreeWidget::itemExpanded,
+            da_tree, &US_DataTree::item_opened );
 DbgLv(1) << "classes setup complete";
 
    // Set up initial state of GUI
@@ -349,6 +353,9 @@ void US_ManageData::toggle_edits()
 {
    bool show = pb_hsedit->text().startsWith( "Show" ); // show or hide?
 
+   if ( show )                                  // experiments hold the raws
+      da_tree->toggle_expand( "Experiment", show );
+
    da_tree->toggle_expand( "Raw",    show );    // expand/collapse one level up
 
    if ( show )
@@ -374,6 +381,7 @@ void US_ManageData::toggle_models()
 
    if ( show )
    { // for show models, must expand levels above; reset edit,model buttons
+      da_tree->toggle_expand( "Experiment", show );
       da_tree->toggle_expand( "Raw",    show );
 
       reset_hsbuttons( show, false, true, true );
@@ -397,8 +405,9 @@ void US_ManageData::toggle_noises()
 
    if ( show )
    {  // for show noise, must expand above; reset edit,model,noise buttons
-      da_tree->toggle_expand( "Edited", show );
+      da_tree->toggle_expand( "Experiment", show );
       da_tree->toggle_expand( "Raw",    show );
+      da_tree->toggle_expand( "Edited", show );
 
       reset_hsbuttons( show, true, true, true );
    }
@@ -475,29 +484,57 @@ void US_ManageData::scan_data()
 DbgLv(1) << "ScnDM:  Start          " << nowTime();
    da_model->setFilters( rF, tF, sF );  // Set any run,triple,source filters
 
-   da_model->scan_data();          // Scan the data
-DbgLv(1) << "ScnDM:  Scan Done      " << nowTime();
+   // First layer:  list the experiments and show them straight away
+   da_model->scan_runs();
+DbgLv(1) << "ScnDM:  Runs Listed    " << nowTime();
 
    lb_status->setText( tr( "Building Data Tree..." ) );
    qApp->processEvents();
 
-   da_tree ->build_dtree();        // Rebuild the data tree with present data
+   da_tree ->build_dtree();
 DbgLv(1) << "ScnDM:  Tree Built     " << nowTime();
 
-   lb_status->setText( tr( "Data Tree Build Complete" ) );
-   qApp->processEvents();
-
-   // resize so all of columns are shown
-   tw_recs->expandAll();                      // expand the entire tree
-
    for ( int jj = 0; jj < ntcols; jj++ )
-   {
-      tw_recs->resizeColumnToContents( jj );  // resize to fit contents
-   }
-
-   tw_recs->collapseAll();                    // collapse the entire tree
+      tw_recs->resizeColumnToContents( jj );
 
    this->resize( 1000, 500 );
+   reportDataStatus();
+   qApp->processEvents();
+
+   // Second layer:  read one experiment at a time, filling the tree in as
+   // they arrive.  An experiment the user opens meanwhile moves to the
+   // front of the queue, so what they are looking at is read first.
+   int nruns = da_model->runCount();
+
+   progress->setMaximum( qMax( nruns, 1 ) );
+   progress->setValue  ( 0 );
+
+   for ( int ii = 0; ii < nruns; ii++ )
+   {
+      int index = da_model->next_pending_run();
+
+      if ( index < 0 )   break;
+
+      lb_status->setText( tr( "Reading %1 ..." )
+                          .arg( da_model->run_entry( index ).runID ) );
+      qApp->processEvents();
+
+      da_model->scan_run( index );
+      da_tree ->fill_run( index );
+
+      progress->setValue( ii + 1 );
+
+      if ( ( ii % 8 ) == 7  ||  ii == ( nruns - 1 ) )
+         reportDataStatus();
+
+      qApp->processEvents();
+   }
+DbgLv(1) << "ScnDM:  Scan Done      " << nowTime();
+
+   for ( int jj = 0; jj < ntcols; jj++ )
+      tw_recs->resizeColumnToContents( jj );
+
+   lb_status->setText( tr( "Data Scan Complete" ) );
 
    reset_hsbuttons( false, true, true, true );  // hs button labels,tooltips
 
@@ -539,6 +576,11 @@ void US_ManageData::clickedItem( QTreeWidgetItem* item )
    if ( QApplication::mouseButtons() == Qt::RightButton )
    {  // only bring up context menu if right-mouse-button was clicked
       da_tree->row_context_menu( item );
+   }
+
+   else
+   {  // selecting an experiment the scan has not reached reads it now
+      da_tree->item_opened( item );
    }
 }
 
@@ -648,6 +690,8 @@ void US_ManageData::reportDataStatus()
 
    // Reformat and display report on record counts
    te_status->setText(
+      QString::asprintf( "%5d", da_model->runCount() ) +
+      tr( " Experiments;\n"                    ) +
       QString::asprintf( "%5d", ncrecs ) +
       tr( " Combined Total data sets;\n  "    ) +
       QString::asprintf( "%5d", ncraws ) +

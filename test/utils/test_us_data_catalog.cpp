@@ -113,24 +113,38 @@ class TestUSDataCatalog : public QtTestBase
          ASSERT_EQ( US_DataIO::writeRawData( path, data ), US_DataIO::OK );
       }
 
+      // An edit file as us_edit writes one, so the GUIDs sit where every
+      // reader of an edit expects them
       void writeEdit( const QString& path, const QString& editGUID,
                       const QString& rawGUID )
       {
-         QFile file( path );
+         QString runID = path.section( "/", -1, -1 ).section( ".", 0, -7 );
+         QFile   file( path );
          ASSERT_TRUE( file.open( QIODevice::WriteOnly | QIODevice::Text ) );
 
          QXmlStreamWriter xml( &file );
          xml.setAutoFormatting( true );
          xml.writeStartDocument();
+         xml.writeDTD         ( "<!DOCTYPE UltraScanEdits>" );
          xml.writeStartElement( "experiment" );
-         xml.writeAttribute( "type", "velocity" );
+         xml.writeAttribute   ( "type", "velocity" );
+         xml.writeStartElement( "identification" );
+         xml.writeStartElement( "runid" );
+         xml.writeAttribute   ( "value", runID );
+         xml.writeEndElement();
          xml.writeStartElement( "editGUID" );
-         xml.writeAttribute( "value", editGUID );
+         xml.writeAttribute   ( "value", editGUID );
          xml.writeEndElement();
          xml.writeStartElement( "rawDataGUID" );
-         xml.writeAttribute( "value", rawGUID );
+         xml.writeAttribute   ( "value", rawGUID );
          xml.writeEndElement();
+         xml.writeEndElement();               // identification
+         xml.writeStartElement( "run" );
+         xml.writeAttribute   ( "cell",       "1"   );
+         xml.writeAttribute   ( "channel",    "A"   );
+         xml.writeAttribute   ( "wavelength", "280" );
          xml.writeEndElement();
+         xml.writeEndElement();               // experiment
          xml.writeEndDocument();
          file.close();
       }

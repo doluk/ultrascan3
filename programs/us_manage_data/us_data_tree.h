@@ -31,8 +31,16 @@ class US_DataTree : public QObject
         //! \param expand True to expand, false to collapse
         void toggle_expand( QString text, bool expand );
 
-        //! \brief Build the data tree
+        //! \brief Build the first layer of the data tree
+        //!
+        //! Only the experiment rows are built.  What hangs off an
+        //! experiment is added by \ref fill_run when the scan reaches it,
+        //! or when the user opens it.
         void build_dtree( void );
+
+        //! \brief Add the records of one experiment under its row
+        //! \param runIndex The position of the experiment
+        void fill_run( int runIndex );
 
     public slots:
                 //! \brief Show help information for the data tree
@@ -41,6 +49,14 @@ class US_DataTree : public QObject
         //! \brief Show context menu for a tree item
         //! \param item Pointer to the tree widget item
         void row_context_menu( QTreeWidgetItem* item );
+
+        //! \brief Read an experiment the user opened
+        //!
+        //! An experiment the layered scan has not reached yet is read now,
+        //! ahead of the ones still queued, so opening a row never shows an
+        //! empty branch.
+        //! \param item The tree item that was opened or selected
+        void item_opened( QTreeWidgetItem* item );
 
     private:
         US_DataModel*    da_model;     //!< Data model object
@@ -51,6 +67,7 @@ class US_DataTree : public QObject
         QWidget*         parentw;      //!< Pointer to parent widget
         US_DataProcess*  da_process;   //!< Data processor object
         QTreeWidgetItem* tw_item;      //!< Current tree widget item
+        QList< QTreeWidgetItem* > runitems; //!< One item per experiment
         US_DataModel::DataDesc cdesc;  //!< Current record description
         QList< QTreeWidgetItem* > selitems; //!< All selected items
         QVector< int > selrows;        //!< All selected rows
@@ -84,6 +101,15 @@ class US_DataTree : public QObject
         int nlnois;                    //!< Number of local noise records
         int kdmy;                      //!< Dummy variable
         int dbg_level;                 //!< Debug level
+
+    private:
+        //! \brief The color, type name, source text and counters of a record
+        //! \param desc The record to classify
+        //! \param fbru Filled in with the foreground brush
+        //! \param rtyp Filled in with the record type name
+        //! \param rsrc Filled in with the source text
+        void classify_row( const US_DataModel::DataDesc& desc, QBrush& fbru,
+                           QString& rtyp, QString& rsrc );
 
     private slots:
                 //! \brief Upload a tree item
