@@ -290,6 +290,18 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
       //! \brief How many experiments are still waiting to be read
       int  pendingCount( void ) const;
 
+      /*! \brief The noise records of one model, by GUID
+
+          The chain read by \ref loadRunDetail already carries the noise of
+          every model under an experiment, and that is where noise normally
+          comes from.  This answers for a model that is not in the chain --
+          one picked by hand, whose edit was not among the ones read.
+          \param modelGUID The GUID of the model whose noise is wanted
+          \param error     Filled in with a message when the lookup fails
+      */
+      QList< Noise > noisesOfModel( const QString& modelGUID,
+                                    QString& error );
+
       //! \brief Forget everything that was read
       void clear( void );
 

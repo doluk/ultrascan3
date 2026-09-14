@@ -277,6 +277,82 @@ void US_DataCatalog::clear( void )
    }
 }
 
+QList< US_DataCatalog::Noise > US_DataCatalog::noisesOfModel(
+      const QString& modelGUID, QString& error )
+{
+   QList< Noise > list;
+
+   error.clear();
+
+   if ( modelGUID.isEmpty() )  return list;
+
+   if ( ! isDb() )
+   {  // The index of the local store already knows which noise is whose
+      buildDiskIndex();
+
+      QList< int > noixs = index->noisesByModel.values( modelGUID );
+      std::sort( noixs.begin(), noixs.end() );
+
+      for ( int ii = 0; ii < noixs.size(); ii++ )
+      {
+         const DiskIndex::NoiseFile& nf = index->noises[ noixs[ ii ] ];
+
+         Noise noise;
+         noise.guid        = nf.guid;
+         noise.modelGUID   = nf.modelGUID;
+         noise.description = nf.description;
+         noise.noiseType   = nf.noiseType;
+         noise.filename    = nf.base;
+         noise.path        = nf.path;
+
+         QString contents  = US_Util::md5sum_file( nf.path );
+         noise.checksum    = contents.section( " ", 0, 0 );
+         noise.size        = contents.section( " ", 1, 1 );
+         noise.lastUpdated = utc_of_file( nf.path );
+
+         list << noise;
+      }
+
+      return list;
+   }
+
+   if ( dbase == nullptr )
+   {
+      error = tr( "No database connection" );
+      return list;
+   }
+
+   // The database offers noise lookups by investigator and by edit, but not
+   // by model, so the investigator's noise records are listed and filtered
+   QStringList query;
+   query << "get_noise_desc" << QString::number( inv_id );
+   dbase->query( query );
+
+   int status = dbase->lastErrno();
+
+   if ( status != US_DB2::OK  &&  status != US_DB2::NOROWS )
+   {
+      error = dbase->lastError();
+      return list;
+   }
+
+   while ( dbase->next() )
+   {
+      if ( dbase->value( 5 ).toString() != modelGUID )  continue;
+
+      Noise noise;
+      noise.id          = dbase->value( 0 ).toString();
+      noise.guid        = dbase->value( 1 ).toString();
+      noise.noiseType   = dbase->value( 4 ).toString().left( 2 );
+      noise.modelGUID   = modelGUID;
+      noise.description = dbase->value( 9 ).toString();
+
+      list << noise;
+   }
+
+   return list;
+}
+
 void US_DataCatalog::setBulkQueries( bool on )
 {
    bulk_ok = on;

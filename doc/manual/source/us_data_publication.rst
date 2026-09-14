@@ -85,6 +85,13 @@ model or noise record.
 Exporting
 =========
 
+An export walks the record chain -- experiment, raw data, edit, model, noise --
+with the same catalog :doc:`Manage Data <manage_data>` browses with, so a
+bundle sees exactly what the data manager sees. The experiments are listed
+first and the chain of one experiment is read when the export needs it, which
+is what keeps a multi-wavelength run from having to be read in full before the
+first selection can be made.
+
 The Export tab works from the top down.
 
 **Export data from**

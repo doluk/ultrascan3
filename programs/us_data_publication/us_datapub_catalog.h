@@ -5,6 +5,7 @@
 #include <QtCore>
 
 #include "us_datapub_defs.h"
+#include "us_data_catalog.h"
 #include "us_db2.h"
 
 /*! \class US_DataPubCatalog
@@ -19,6 +20,12 @@
     recognizes it by.  Records read from a local disk store frequently have
     no meaningful ID (the placeholder "-1" is used then), so callers must
     key on the GUID.
+
+    The record chain itself -- experiment, raw data, edit, model, noise --
+    comes from \ref US_DataCatalog, so a bundle is built from the same walk
+    every other program browses with.  What is added here is what only a
+    publication needs: the projects, the experiment XML of a run, and its
+    time state.
 */
 class US_DataPubCatalog
 {
@@ -35,81 +42,19 @@ class US_DataPubCatalog
       };
 
       //! \brief A noise record available for export
-      class Noise
-      {
-         public:
-            Noise() : id( "-1" ) {}
-            QString id;            //!< noiseID
-            QString guid;          //!< noiseGUID
-            QString description;   //!< Noise description
-            QString noiseType;     //!< "ti" or "ri"
-            QString modelGUID;     //!< GUID of the parent model
-            QString editGUID;      //!< GUID of the grandparent edit
-            QString filename;      //!< Local file name, when known
-      };
+      typedef US_DataCatalog::Noise Noise;
 
       //! \brief A model record available for export
-      class Model
-      {
-         public:
-            Model() : id( "-1" ) {}
-            QString id;            //!< modelGUID's database ID
-            QString guid;          //!< modelGUID
-            QString description;   //!< Model description
-            QString editGUID;      //!< GUID of the parent edit
-            QString filename;      //!< Local file name, when known
-            QList< Noise > noises; //!< Noise records of this model
-      };
+      typedef US_DataCatalog::Model Model;
 
       //! \brief An edit profile available for export
-      class Edit
-      {
-         public:
-            Edit() : id( "-1" ) {}
-            QString id;            //!< editedDataID
-            QString guid;          //!< editedDataGUID
-            QString editID;        //!< The edit time stamp part of the name
-            QString filename;      //!< Base name of the edit XML file
-            QString path;          //!< Full path of the edit XML file
-            QString triple;        //!< cell.channel.wavelength
-            QString runID;         //!< The run this edit belongs to
-            QString rawGUID;       //!< GUID of the parent raw-data triple
-            QString label;         //!< A label for lists and trees
-      };
+      typedef US_DataCatalog::Edit  Edit;
 
       //! \brief A raw-data triple available for export
-      class Raw
-      {
-         public:
-            Raw() : id( "-1" ) {}
-            QString id;            //!< rawDataID
-            QString guid;          //!< rawDataGUID
-            QString filename;      //!< Base name of the .auc file
-            QString path;          //!< Full path of the .auc file
-            QString triple;        //!< cell.channel.wavelength
-            QString dataType;      //!< RA, RI, IP, FI, WA, WI
-            QString runID;         //!< The run this triple belongs to
-            QList< Edit > edits;   //!< Edit profiles of this triple
-      };
+      typedef US_DataCatalog::Raw   Raw;
 
       //! \brief An experiment (run) available for export
-      class Run
-      {
-         public:
-            Run() : id( "-1" ) {}
-            QString id;            //!< experimentID
-            QString guid;          //!< experimentGUID
-            QString runID;         //!< The run identifier, the run's name
-            QString label;         //!< The experiment label
-            QString expType;       //!< velocity, equilibrium, ...
-            QString runType;       //!< RA, RI, IP, FI, WA, WI
-            QString date;          //!< Last-updated date
-            QString projectID;     //!< projectID of the owning project
-            QString projectGUID;   //!< projectGUID of the owning project
-            QString projectDesc;   //!< Description of the owning project
-            QString dirPath;       //!< Local run directory, when on disk
-            QList< Raw > raws;     //!< Raw-data triples of this run
-      };
+      typedef US_DataCatalog::Run   Run;
 
       /*! \class ExpInfo
           \brief The parts of a run's experiment XML an export needs
@@ -246,19 +191,19 @@ class US_DataPubCatalog
       static QString expFilePath( const Run& run );
 
    private:
-      bool    from_db;
-      US_DB2* dbase;
-      int     inv_id;
+      bool            from_db;
+      US_DB2*         dbase;
+      int             inv_id;
+      US_DataCatalog* cat;
+      QString         listed_project;
+      bool            listed;
+
+      //! \brief Make sure the first layer of the shared catalog is read
+      //! \param projectGUID When not empty, only runs of that project
+      //! \param error       Filled in with a message when the scan fails
+      bool ensureListed( const QString& projectGUID, QString& error );
 
       QList< Project > projectsDb  ( QString& );
       QList< Project > projectsDisk( QString& );
-      QList< Run > runsDb  ( const QString&, QString& );
-      QList< Run > runsDisk( const QString&, QString& );
-      bool loadRunDetailsDb  ( Run&, QString& );
-      bool loadRunDetailsDisk( Run&, QString& );
-      QList< Model > modelsDb  ( const QList< Run >&, QString& );
-      QList< Model > modelsDisk( const QList< Run >&, QString& );
-      QList< Noise > noisesDb  ( const QList< Model >&, QString& );
-      QList< Noise > noisesDisk( const QList< Model >&, QString& );
 };
 #endif

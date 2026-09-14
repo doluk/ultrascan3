@@ -57,6 +57,33 @@ TEST_F( DataPubExport, CatalogSeesTheWholeChain )
    EXPECT_EQ( noises[ 0 ].modelGUID, modelGUID );
 }
 
+// A model the user picks by hand -- one whose edit is not among those the
+// catalog walked -- still brings its noise records along.
+TEST_F( DataPubExport, NoiseIsFoundForAModelOutsideTheChain )
+{
+   US_DataPubCatalog catalog;
+   QString           error;
+
+   ASSERT_TRUE( catalog.open( false, QString(), error ) )
+      << error.toStdString();
+
+   // as the export pane builds it: a GUID and an edit, but no chain
+   US_DataPubCatalog::Model model;
+   model.guid     = modelGUID;
+   model.editGUID = editGUID;
+   ASSERT_TRUE( model.noises.isEmpty() );
+
+   QList< US_DataPubCatalog::Model > models;
+   models << model;
+
+   QList< US_DataPubCatalog::Noise > noises = catalog.noises( models, error );
+
+   ASSERT_EQ( noises.size(), 1 ) << error.toStdString();
+   EXPECT_EQ( noises[ 0 ].guid,      noiseGUID );
+   EXPECT_EQ( noises[ 0 ].modelGUID, modelGUID );
+   EXPECT_EQ( noises[ 0 ].editGUID,  editGUID );
+}
+
 // "Data only" means the chain down to the raw data.  Raw data cannot be
 // re-created without the solutions its channels refer to, so the scope is
 // raised to the solutions and the edits, models and noise stay out.

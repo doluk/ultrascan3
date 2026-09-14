@@ -457,6 +457,28 @@ TEST_F( TestUSDataCatalog, TheStoreIsReadOncePerScan )
    EXPECT_EQ( catalog.runCount(), 3 );
 }
 
+TEST_F( TestUSDataCatalog, NoiseOfOneModelIsFoundWithoutTheChain )
+{
+   US_DataCatalog catalog;
+   QString        error;
+
+   ASSERT_TRUE( catalog.open( US_DataCatalog::Disk, QString(), error ) );
+
+   QList< US_DataCatalog::Noise > noises =
+      catalog.noisesOfModel( modelGUID, error );
+
+   ASSERT_TRUE( error.isEmpty() ) << error.toStdString();
+   ASSERT_EQ  ( noises.size(), 1 );
+   EXPECT_EQ  ( noises[ 0 ].guid     .toStdString(), noiseGUID.toStdString() );
+   EXPECT_EQ  ( noises[ 0 ].modelGUID.toStdString(), modelGUID.toStdString() );
+   EXPECT_FALSE( noises[ 0 ].checksum.isEmpty() );
+
+   // a model nobody fitted noise to answers with nothing, not an error
+   noises = catalog.noisesOfModel( US_Util::new_guid(), error );
+   EXPECT_TRUE( error.isEmpty() );
+   EXPECT_EQ  ( noises.size(), 0 );
+}
+
 TEST_F( TestUSDataCatalog, DiskCatalogHasNoDatabaseConnection )
 {
    US_DataCatalog catalog;

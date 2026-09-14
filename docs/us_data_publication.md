@@ -213,6 +213,17 @@ the database: edits, models and noise are downloaded from their database
 records rather than picked up from whatever happens to be lying in the local
 directories.
 
+The walk of the record chain — experiment, raw data, edit, model, noise — is
+`US_DataCatalog` in `utils/`, the same one `us_manage_data` browses with, so a
+bundle sees exactly what the data manager sees. It is read in two layers: the
+experiments are listed first, and the chain of one experiment is read when the
+export needs it. Against the database that is a handful of per-experiment
+queries; on disk it is one pass over the store, with the model and noise
+directories read once rather than once per triple. What `us_data_publication`
+adds on top is what only a publication needs: the project list, the experiment
+XML of a run — which is where a disk store records its rotor calibration,
+centerpieces and solutions — and the run's time state.
+
 ### The window
 
 The Export tab works top to bottom:

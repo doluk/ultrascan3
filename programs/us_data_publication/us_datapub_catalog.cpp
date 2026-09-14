@@ -3,9 +3,7 @@
 #include "us_datapub_hash.h"
 
 #include "us_settings.h"
-#include "us_util.h"
 #include "us_time_state.h"
-#include "us_dataIO.h"
 
 US_DataPubCatalog::ExpInfo::ExpInfo()
 {
@@ -158,12 +156,15 @@ US_DataPubCatalog::US_DataPubCatalog()
    from_db = false;
    dbase   = nullptr;
    inv_id  = US_Settings::us_inv_ID();
+   cat     = new US_DataCatalog();
+   listed  = false;
 }
 
 US_DataPubCatalog::~US_DataPubCatalog()
 {
-   if ( dbase != nullptr )  delete dbase;
+   delete cat;
 
+   cat   = nullptr;
    dbase = nullptr;
 }
 
@@ -171,41 +172,38 @@ bool US_DataPubCatalog::open( bool fromDb, const QString& dbPassword,
                               QString& error )
 {
    from_db = fromDb;
-   inv_id  = US_Settings::us_inv_ID();
+   listed  = false;
+   listed_project.clear();
 
-   if ( dbase != nullptr )
+   if ( ! cat->open( fromDb ? US_DataCatalog::Db : US_DataCatalog::Disk,
+                     dbPassword, error ) )
    {
-      delete dbase;
-      dbase = nullptr;
-   }
-
-   if ( ! from_db )
-   {
-      QString rdir = US_Settings::resultDir();
-
-      if ( ! QDir( rdir ).exists() )
-      {
-         error = QObject::tr( "The local results directory does not exist: %1" )
-                 .arg( rdir );
-         return false;
-      }
-
-      error.clear();
-      return true;
-   }
-
-   dbase = new US_DB2( dbPassword );
-
-   if ( dbase->lastErrno() != US_DB2::OK )
-   {
-      error = QObject::tr( "Cannot connect to the database: %1" )
-              .arg( dbase->lastError() );
-      delete dbase;
       dbase = nullptr;
       return false;
    }
 
+   dbase  = cat->db();
+   inv_id = cat->investigatorID();
+
    error.clear();
+
+   return true;
+}
+
+// Read the first layer of the shared catalog, once per project filter
+bool US_DataPubCatalog::ensureListed( const QString& projectGUID,
+                                      QString& error )
+{
+   if ( listed  &&  listed_project == projectGUID )
+   {
+      error.clear();
+      return true;
+   }
+
+   if ( ! cat->loadRuns( projectGUID, error ) )  return false;
+
+   listed         = true;
+   listed_project = projectGUID;
 
    return true;
 }
@@ -334,178 +332,48 @@ QList< US_DataPubCatalog::Project > US_DataPubCatalog::projectsDisk(
 }
 
 // -------------------------------------------------------------------- runs
+//
+// The record chain comes from the shared catalog.  The first layer lists
+// the experiments; the second reads one experiment's triples, edits, models
+// and noise records, and an export harvests what it needs from that.
 
 QList< US_DataPubCatalog::Run > US_DataPubCatalog::runs(
       const QString& projectGUID, QString& error )
 {
-   return from_db ? runsDb( projectGUID, error ) : runsDisk( projectGUID, error );
-}
-
-QList< US_DataPubCatalog::Run > US_DataPubCatalog::runsDb(
-      const QString& projectGUID, QString& error )
-{
    QList< Run > list;
 
-   if ( dbase == nullptr )
-   {
-      error = QObject::tr( "No database connection" );
-      return list;
-   }
+   if ( ! ensureListed( projectGUID, error ) )  return list;
 
-   QString     invID = QString::number( inv_id );
-   QStringList query;
-   query << "get_experiment_desc" << invID;
-   dbase->query( query );
-
-   if ( dbase->lastErrno() != US_DB2::OK  &&
-        dbase->lastErrno() != US_DB2::NOROWS )
-   {
-      error = dbase->lastError();
-      return list;
-   }
-
-   QList< Run > headers;
-
-   while ( dbase->next() )
-   {
-      Run run;
-      run.id      = dbase->value( 0 ).toString();
-      run.runID   = dbase->value( 1 ).toString();
-      run.expType = dbase->value( 2 ).toString();
-      run.label   = dbase->value( 4 ).toString();
-      run.date    = dbase->value( 5 ).toString();
-
-      headers << run;
-   }
-
-   // Fill in the experiment GUID and the owning project of each run.  The
-   // project descriptions are cached: a project usually owns many runs.
-   QMap< QString, QString > projGUIDs;
-   QMap< QString, QString > projDescs;
-
-   for ( int ii = 0; ii < headers.size(); ii++ )
-   {
-      Run run = headers[ ii ];
-
-      query.clear();
-      query << "get_experiment_info_by_runID" << run.runID << invID;
-      dbase->query( query );
-
-      if ( dbase->next() )
-      {
-         run.projectID = dbase->value(  0 ).toString();
-         run.id        = dbase->value(  1 ).toString();
-         run.guid      = dbase->value(  2 ).toString();
-         run.expType   = dbase->value(  8 ).toString();
-         run.label     = dbase->value( 10 ).toString();
-         run.date      = dbase->value( 13 ).toString();
-      }
-
-      if ( ! projGUIDs.contains( run.projectID ) )
-      {
-         QString pguid;
-         QString pdesc;
-
-         query.clear();
-         query << "get_project_info" << run.projectID;
-         dbase->query( query );
-
-         if ( dbase->next() )
-         {
-            pguid = dbase->value(  1 ).toString();
-            pdesc = dbase->value( 10 ).toString();
-         }
-
-         projGUIDs.insert( run.projectID, pguid );
-         projDescs.insert( run.projectID, pdesc );
-      }
-
-      run.projectGUID = projGUIDs.value( run.projectID );
-      run.projectDesc = projDescs.value( run.projectID );
-
-      if ( ! projectGUID.isEmpty()  &&  run.projectGUID != projectGUID )
-         continue;
-
-      list << run;
-   }
-
-   error.clear();
-
-   return list;
-}
-
-QList< US_DataPubCatalog::Run > US_DataPubCatalog::runsDisk(
-      const QString& projectGUID, QString& error )
-{
-   QList< Run > list;
-   QString      rdir    = US_Settings::resultDir();
-   QStringList  subdirs = QDir( rdir ).entryList(
-                          QDir::AllDirs | QDir::NoDotAndDotDot, QDir::Name );
-
-   for ( int ii = 0; ii < subdirs.size(); ii++ )
-   {
-      QString     subdir   = rdir + "/" + subdirs[ ii ];
-      QStringList aucfiles = QDir( subdir ).entryList(
-                             QStringList( "*.auc" ), QDir::Files, QDir::Name );
-
-      if ( aucfiles.isEmpty() )  continue;
-
-      QString aucbase = aucfiles[ 0 ];
-      Run     run;
-      run.runID   = aucbase.section( ".",  0, -6 );
-      run.runType = aucbase.section( ".", -5, -5 );
-      run.dirPath = subdir;
-      run.label   = run.runID;
-
-      ExpInfo info;
-
-      if ( info.readFromFile( expFilePath( run ) ) )
-      {
-         run.id          = info.expID;
-         run.guid        = info.expGUID;
-         run.expType     = info.expType;
-         run.projectID   = info.projectID;
-         run.projectGUID = info.projectGUID;
-         run.projectDesc = info.projectDesc;
-
-         if ( ! info.label.isEmpty() )  run.label = info.label;
-         if ( ! info.runID.isEmpty() )  run.runID = info.runID;
-      }
-
-      run.date = US_Util::toUTCDatetimeText(
-                 QFileInfo( subdir + "/" + aucbase ).lastModified().toUTC()
-                 .toString( Qt::ISODate ), true );
-
-      if ( ! projectGUID.isEmpty()  &&  run.projectGUID != projectGUID )
-         continue;
-
-      list << run;
-   }
-
-   error.clear();
-
-   return list;
+   return cat->runs();
 }
 
 bool US_DataPubCatalog::runByID( const QString& runID, Run& found,
                                  QString& error )
 {
-   QList< Run > list = runs( QString(), error );
+   if ( ! ensureListed( listed ? listed_project : QString(), error ) )
+      return false;
 
-   for ( int ii = 0; ii < list.size(); ii++ )
-   {
-      if ( list[ ii ].runID != runID )  continue;
+   int index = cat->indexOfRun( runID );
 
-      found = list[ ii ];
-      return true;
+   if ( index < 0  &&  ! listed_project.isEmpty() )
+   {  // Not in the project that was listed; look through all of them
+      if ( ! ensureListed( QString(), error ) )  return false;
+
+      index = cat->indexOfRun( runID );
    }
 
-   if ( error.isEmpty() )
+   if ( index < 0 )
+   {
       error = QObject::tr( "No run \"%1\" was found in the %2" ).arg( runID )
               .arg( from_db ? QObject::tr( "database" )
                             : QObject::tr( "local results directory" ) );
+      return false;
+   }
 
-   return false;
+   found = cat->run( index );
+   error.clear();
+
+   return true;
 }
 
 QString US_DataPubCatalog::expFilePath( const Run& run )
@@ -519,184 +387,36 @@ QString US_DataPubCatalog::expFilePath( const Run& run )
 
 bool US_DataPubCatalog::loadRunDetails( Run& run, QString& error )
 {
-   return from_db ? loadRunDetailsDb( run, error )
-                  : loadRunDetailsDisk( run, error );
-}
+   if ( ! ensureListed( listed ? listed_project : QString(), error ) )
+      return false;
 
-bool US_DataPubCatalog::loadRunDetailsDb( Run& run, QString& error )
-{
-   if ( dbase == nullptr )
+   int index = cat->indexOfRun( run.runID );
+
+   if ( index < 0  &&  ! listed_project.isEmpty() )
    {
-      error = QObject::tr( "No database connection" );
+      if ( ! ensureListed( QString(), error ) )  return false;
+
+      index = cat->indexOfRun( run.runID );
+   }
+
+   if ( index < 0 )
+   {
+      error = QObject::tr( "No run \"%1\" was found in the %2" )
+              .arg( run.runID )
+              .arg( from_db ? QObject::tr( "database" )
+                            : QObject::tr( "local results directory" ) );
       return false;
    }
 
-   run.raws.clear();
+   if ( ! cat->loadRunDetail( index, error ) )  return false;
 
-   QStringList query;
-   QStringList rawIDs;
-   QStringList rawNames;
+   run = cat->run( index );
 
-   query << "get_rawDataIDs" << run.id;
-   dbase->query( query );
-
-   if ( dbase->lastErrno() != US_DB2::OK  &&
-        dbase->lastErrno() != US_DB2::NOROWS )
+   if ( run.raws.isEmpty() )
    {
-      error = dbase->lastError();
+      error = QObject::tr( "No raw data was found for run \"%1\"" )
+              .arg( run.runID );
       return false;
-   }
-
-   while ( dbase->next() )
-   {
-      rawIDs   << dbase->value( 0 ).toString();
-      rawNames << dbase->value( 2 ).toString().replace( "\\", "/" )
-                  .section( "/", -1, -1 );
-   }
-
-   for ( int ii = 0; ii < rawIDs.size(); ii++ )
-   {
-      Raw raw;
-      raw.id       = rawIDs  [ ii ];
-      raw.filename = rawNames[ ii ];
-      raw.runID    = run.runID;
-      raw.dataType = raw.filename.section( ".", -5, -5 );
-      raw.triple   = raw.filename.section( ".", -4, -2 );
-
-      query.clear();
-      query << "get_rawData" << raw.id;
-      dbase->query( query );
-
-      if ( dbase->next() )
-         raw.guid  = dbase->value( 0 ).toString();
-
-      QStringList edtIDs;
-
-      query.clear();
-      query << "get_editedDataIDs" << raw.id;
-      dbase->query( query );
-
-      while ( dbase->next() )
-         edtIDs << dbase->value( 0 ).toString();
-
-      for ( int jj = 0; jj < edtIDs.size(); jj++ )
-      {
-         Edit edit;
-         edit.id      = edtIDs[ jj ];
-         edit.runID   = run.runID;
-         edit.rawGUID = raw.guid;
-
-         query.clear();
-         query << "get_editedData" << edit.id;
-         dbase->query( query );
-
-         if ( ! dbase->next() )  continue;
-
-         edit.guid     = dbase->value( 1 ).toString();
-         edit.filename = dbase->value( 3 ).toString().replace( "\\", "/" )
-                         .section( "/", -1, -1 );
-         edit.editID   = edit.filename.section( ".", -6, -6 );
-         edit.triple   = edit.filename.section( ".", -4, -2 );
-         edit.label    = edit.editID + " (" + edit.triple + ")";
-
-         raw.edits << edit;
-      }
-
-      run.raws << raw;
-   }
-
-   error.clear();
-
-   return true;
-}
-
-bool US_DataPubCatalog::loadRunDetailsDisk( Run& run, QString& error )
-{
-   run.raws.clear();
-
-   if ( run.dirPath.isEmpty() )
-      run.dirPath = US_Settings::resultDir() + "/" + run.runID;
-
-   QDir        rundir( run.dirPath );
-   QStringList aucfiles = rundir.entryList( QStringList( "*.auc" ),
-                                            QDir::Files, QDir::Name );
-
-   if ( aucfiles.isEmpty() )
-   {
-      error = QObject::tr( "No .auc files were found in %1" ).arg( run.dirPath );
-      return false;
-   }
-
-   QStringList edtfiles = rundir.entryList( QStringList( "*.xml" ),
-                                            QDir::Files, QDir::Name );
-
-   for ( int ii = 0; ii < aucfiles.size(); ii++ )
-   {
-      QString aucbase = aucfiles[ ii ];
-      Raw     raw;
-      raw.filename = aucbase;
-      raw.path     = run.dirPath + "/" + aucbase;
-      raw.runID    = aucbase.section( ".",  0, -6 );
-      raw.dataType = aucbase.section( ".", -5, -5 );
-      raw.triple   = aucbase.section( ".", -4, -2 );
-
-      // The GUID and the description are in the .auc header, so only the
-      // header is read: a multi-wavelength run holds hundreds of triples,
-      // and none of their scan data is wanted here.
-      US_DataIO::RawData header;
-
-      if ( US_DataIO::readRawHeader( raw.path, header ) == US_DataIO::OK )
-         raw.guid = US_Util::uuid_unparse( (unsigned char*)header.rawGUID );
-
-      if ( raw.guid.isEmpty()  ||
-           raw.guid == "00000000-0000-0000-0000-000000000000" )
-      {
-         // An older file may carry no GUID of its own; the edit files that
-         // point at it name the one the rest of the store knows it by.
-         raw.guid.clear();
-
-         for ( int jj = 0; jj < edtfiles.size(); jj++ )
-         {
-            QString edtbase = edtfiles[ jj ];
-
-            if ( edtbase.section( ".", -4, -2 ) != raw.triple )    continue;
-            if ( edtbase.section( ".", -5, -5 ) != raw.dataType )  continue;
-
-            QMap< QString, QString > eattrs = peekAttributes(
-                  run.dirPath + "/" + edtbase, "rawDataGUID" );
-            raw.guid = eattrs.value( "value" );
-
-            if ( ! raw.guid.isEmpty() )  break;
-         }
-      }
-
-      for ( int jj = 0; jj < edtfiles.size(); jj++ )
-      {
-         QString edtbase = edtfiles[ jj ];
-
-         // Edit file names carry six dot-separated parts before the
-         // extension; the run's experiment XML carries two.
-         if ( edtbase.count( "." ) < 6 )                        continue;
-         if ( edtbase.section( ".", -4, -2 ) != raw.triple )    continue;
-         if ( edtbase.section( ".", -5, -5 ) != raw.dataType )  continue;
-
-         Edit edit;
-         edit.filename = edtbase;
-         edit.path     = run.dirPath + "/" + edtbase;
-         edit.runID    = edtbase.section( ".",  0, -7 );
-         edit.editID   = edtbase.section( ".", -6, -6 );
-         edit.triple   = raw.triple;
-         edit.rawGUID  = raw.guid;
-
-         QMap< QString, QString > eattrs = peekAttributes( edit.path,
-                                                           "editGUID" );
-         edit.guid     = eattrs.value( "value" );
-         edit.label    = edit.editID + " (" + edit.triple + ")";
-
-         raw.edits << edit;
-      }
-
-      run.raws << raw;
    }
 
    error.clear();
@@ -709,23 +429,8 @@ bool US_DataPubCatalog::loadRunDetailsDisk( Run& run, QString& error )
 QList< US_DataPubCatalog::Model > US_DataPubCatalog::models(
       const QList< Run >& runList, QString& error )
 {
-   return from_db ? modelsDb( runList, error ) : modelsDisk( runList, error );
-}
-
-QList< US_DataPubCatalog::Model > US_DataPubCatalog::modelsDb(
-      const QList< Run >& runList, QString& error )
-{
    QList< Model > list;
-
-   if ( dbase == nullptr )
-   {
-      error = QObject::tr( "No database connection" );
-      return list;
-   }
-
-   QString     invID = QString::number( inv_id );
-   QStringList query;
-   QStringList seen;
+   QStringList    seen;
 
    for ( int ii = 0; ii < runList.size(); ii++ )
    {
@@ -739,21 +444,11 @@ QList< US_DataPubCatalog::Model > US_DataPubCatalog::modelsDb(
          {
             const Edit& edit = raw.edits[ kk ];
 
-            if ( edit.id == "-1"  ||  edit.id.isEmpty() )  continue;
-
-            query.clear();
-            query << "get_model_desc_by_editID" << invID << edit.id;
-            dbase->query( query );
-
-            while ( dbase->next() )
+            for ( int mm = 0; mm < edit.models.size(); mm++ )
             {
-               Model model;
-               model.id          = dbase->value( 0 ).toString();
-               model.guid        = dbase->value( 1 ).toString();
-               model.description = dbase->value( 2 ).toString();
-               model.editGUID    = dbase->value( 5 ).toString();
+               const Model& model = edit.models[ mm ];
 
-               if ( model.editGUID.isEmpty() )  model.editGUID = edit.guid;
+               if ( model.guid.isEmpty() )       continue;
                if ( seen.contains( model.guid ) )  continue;
 
                seen << model.guid;
@@ -768,150 +463,47 @@ QList< US_DataPubCatalog::Model > US_DataPubCatalog::modelsDb(
    return list;
 }
 
-QList< US_DataPubCatalog::Model > US_DataPubCatalog::modelsDisk(
-      const QList< Run >& runList, QString& error )
-{
-   QList< Model > list;
-   QStringList    editGUIDs;
-
-   for ( int ii = 0; ii < runList.size(); ii++ )
-      for ( int jj = 0; jj < runList[ ii ].raws.size(); jj++ )
-         for ( int kk = 0; kk < runList[ ii ].raws[ jj ].edits.size(); kk++ )
-            editGUIDs << runList[ ii ].raws[ jj ].edits[ kk ].guid;
-
-   QString     path  = US_Settings::dataDir() + "/models";
-   QStringList files = QDir( path ).entryList( QStringList( "M???????.xml" ),
-                                               QDir::Files, QDir::Name );
-
-   for ( int ii = 0; ii < files.size(); ii++ )
-   {
-      QString                  fpath = path + "/" + files[ ii ];
-      QMap< QString, QString > attrs = peekAttributes( fpath, "model" );
-
-      if ( attrs.isEmpty() )  continue;
-
-      QString editGUID = attrs.value( "editGUID" );
-
-      if ( ! editGUIDs.contains( editGUID ) )  continue;
-
-      Model model;
-      model.guid        = attrs.value( "modelGUID" );
-      model.description = attrs.value( "description" );
-      model.editGUID    = editGUID;
-      model.filename    = files[ ii ];
-
-      list << model;
-   }
-
-   error.clear();
-
-   return list;
-}
-
 // ------------------------------------------------------------------ noises
 
 QList< US_DataPubCatalog::Noise > US_DataPubCatalog::noises(
       const QList< Model >& modelList, QString& error )
 {
-   return from_db ? noisesDb( modelList, error )
-                  : noisesDisk( modelList, error );
-}
-
-QList< US_DataPubCatalog::Noise > US_DataPubCatalog::noisesDb(
-      const QList< Model >& modelList, QString& error )
-{
    QList< Noise > list;
-
-   if ( dbase == nullptr )
-   {
-      error = QObject::tr( "No database connection" );
-      return list;
-   }
-
-   QStringList modelGUIDs;
-
-   for ( int ii = 0; ii < modelList.size(); ii++ )
-      modelGUIDs << modelList[ ii ].guid;
-
-   // The database offers noise lookups by investigator and by edit, but not
-   // by model, so the investigator's noise records are listed once and
-   // filtered on the model GUIDs of the selected models.
-   QStringList query;
-   query << "get_noise_desc" << QString::number( inv_id );
-   dbase->query( query );
-
-   if ( dbase->lastErrno() != US_DB2::OK  &&
-        dbase->lastErrno() != US_DB2::NOROWS )
-   {
-      error = dbase->lastError();
-      return list;
-   }
-
-   QStringList seen;
-
-   while ( dbase->next() )
-   {
-      QString modelGUID = dbase->value( 5 ).toString();
-      int     modelx    = modelGUIDs.indexOf( modelGUID );
-
-      if ( modelx < 0 )  continue;
-
-      Noise noise;
-      noise.id          = dbase->value( 0 ).toString();
-      noise.guid        = dbase->value( 1 ).toString();
-      noise.noiseType   = dbase->value( 4 ).toString();
-      noise.modelGUID   = modelGUID;
-      noise.description = dbase->value( 9 ).toString();
-      noise.editGUID    = modelList[ modelx ].editGUID;
-
-      if ( seen.contains( noise.guid ) )  continue;
-
-      seen << noise.guid;
-      list << noise;
-   }
+   QStringList    seen;
 
    error.clear();
 
-   return list;
-}
-
-QList< US_DataPubCatalog::Noise > US_DataPubCatalog::noisesDisk(
-      const QList< Model >& modelList, QString& error )
-{
-   QList< Noise > list;
-   QStringList    modelGUIDs;
-
    for ( int ii = 0; ii < modelList.size(); ii++ )
-      modelGUIDs << modelList[ ii ].guid;
-
-   QString     path  = US_Settings::dataDir() + "/noises";
-   QStringList files = QDir( path ).entryList( QStringList( "N???????.xml" ),
-                                               QDir::Files, QDir::Name );
-
-   for ( int ii = 0; ii < files.size(); ii++ )
    {
-      QString                  fpath = path + "/" + files[ ii ];
-      QMap< QString, QString > attrs = peekAttributes( fpath, "noise" );
+      const Model& model = modelList[ ii ];
 
-      if ( attrs.isEmpty() )  continue;
+      // A model that came out of the chain carries its noise already; one
+      // the user picked by hand, whose edit was not among those read, has
+      // to be looked up in the source.
+      QList< Noise > found = model.noises;
 
-      QString modelGUID = attrs.value( "modelGUID" );
-      int     modelx    = modelGUIDs.indexOf( modelGUID );
+      if ( found.isEmpty() )
+      {
+         QString message;
+         found = cat->noisesOfModel( model.guid, message );
 
-      if ( modelx < 0 )  continue;
+         if ( ! message.isEmpty() )  error = message;
+      }
 
-      Noise noise;
-      noise.guid        = attrs.value( "noiseGUID" );
-      noise.description = attrs.value( "description" );
-      noise.noiseType   = attrs.value( "type" );
-      noise.modelGUID   = modelGUID;
-      noise.editGUID    = modelList[ modelx ].editGUID;
-      noise.filename    = files[ ii ];
+      for ( int jj = 0; jj < found.size(); jj++ )
+      {
+         Noise noise = found[ jj ];
 
-      list << noise;
+         if ( noise.guid.isEmpty() )         continue;
+         if ( seen.contains( noise.guid ) )  continue;
+
+         if ( noise.editGUID.isEmpty() )
+            noise.editGUID = model.editGUID;
+
+         seen << noise.guid;
+         list << noise;
+      }
    }
-
-   error.clear();
 
    return list;
 }
