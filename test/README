@@ -111,6 +111,35 @@ The Docker container provides:
 3. Use Google Test macros (TEST, TEST_F, EXPECT_*)
 4. Run `./test-docker.sh` to automatically discover and run your tests
 
+## Database Integration Tests
+
+Most tests run without a database: `test_us_utils` is built with `NO_DB`, so
+`US_DB2` is a stub there.  The tests that have to talk to a real server live in
+their own executable, `test_us_utils_db`, which is built without `NO_DB` (and
+only when MySQL/MariaDB was found).  They skip themselves unless the
+environment says where the server is, so an ordinary build and an ordinary
+`ctest` run need no database at all.
+
+To run them, load the UltraScan3 schema and stored procedures (from the
+[us3_sql](https://github.com/doluk/us3_sql) repository) into a scratch
+database, add the fixture, and point the tests at it:
+
+```bash
+mysql -u root us3test < us3_schema.sql
+mysql -u root us3test < us3_procedures.sql
+mysql -u root us3test < test/utils/data/us3_db_fixture.sql
+
+US3_TEST_DB_HOST=127.0.0.1:3306 US3_TEST_DB_NAME=us3test \
+US3_TEST_DB_USER=us3test        US3_TEST_DB_PASS=us3testpw \
+US3_TEST_DB_PERSON_GUID=aaaaaaaa-0000-0000-0000-00000000user \
+US3_TEST_DB_PERSON_PW=secret    US3_TEST_DB_PERSON_ID=2 \
+US3_TEST_DB_EMAIL=test@example.org ./bin/test_us_utils_db
+```
+
+`US_DB2` always connects over TLS, so the server needs a certificate, and the
+client certificate, key and CA it presents are read from
+`<build>/etc/mysql/{server-cert.pem,server-key.pem,ca-cert.pem}`.
+
 ## Debugging Failed Tests
 
 When tests fail, the framework automatically:

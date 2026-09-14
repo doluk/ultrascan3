@@ -39,6 +39,12 @@ file(GLOB_RECURSE AUTO_TEST_HEADERS "test_us_*.h" "test_mock_*.h")
 # Remove main file from auto-discovery
 list(REMOVE_ITEM AUTO_TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/test_us_utils_main.cpp")
 
+# Tests that talk to a live database belong to their own executable: this one
+# is compiled with NO_DB, which gives US_DB2 a different layout than the utils
+# library it links against.
+set(DB_TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/test_us_data_catalog_db.cpp")
+list(REMOVE_ITEM AUTO_TEST_SOURCES ${DB_TEST_SOURCES})
+
 # Print what we found (for debugging)
 list(LENGTH AUTO_TEST_SOURCES num_sources)
 message(STATUS "Auto-discovered ${num_sources} test source files")
@@ -87,6 +93,30 @@ else()
     message(WARNING "MySQL not found - database tests may not work")
 endif()
 
+# Database integration tests.  They skip unless US3_TEST_DB_* is set in the
+# environment, so they are harmless in a normal build, but they must be built
+# *without* NO_DB so US_DB2 matches the library.
+if(TARGET MySQL::Client AND NOT US3_NO_DB)
+    add_executable(test_us_utils_db
+            test_us_utils_main.cpp
+            ${DB_TEST_SOURCES}
+            ../common/qt_test_base.cpp
+            )
+
+    target_link_libraries(test_us_utils_db
+            PRIVATE
+            ${US_UTILS_LINK_TARGET}
+            Qt::Core
+            Qt::Network
+            Qt::Sql
+            Qt::Test
+            Qt::Xml
+            Qt::Widgets
+            MySQL::Client
+            ${GTEST_LIBRARIES}
+            )
+endif()
+
 # ENABLE Google Test discovery - this will register individual test cases
 include(GoogleTest)
 gtest_discover_tests(test_us_utils
@@ -95,6 +125,15 @@ gtest_discover_tests(test_us_utils
         TIMEOUT 60
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
         )
+
+if(TARGET test_us_utils_db)
+    gtest_discover_tests(test_us_utils_db
+            PROPERTIES
+            LABELS "gtest;integration;utils;database"
+            TIMEOUT 120
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+            )
+endif()
 
 # Create convenience targets for different test categories
 add_custom_target(test_utils
