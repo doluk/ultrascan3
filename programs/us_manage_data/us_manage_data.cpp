@@ -234,12 +234,26 @@ DbgLv(1) << "te_status maxw maxh" << maxsw << maxsh;
 DbgLv(1) << "te_status size" << te_status->size();
 
    row  = 0;
-   QLabel* lb_progr  = us_label( tr( "% Completed:" ) );
+   QLabel* lb_progr  = us_label( tr( "Overall:" ) );
    progress          = us_progressBar( 0, 100, 0 );
    statLayout->addWidget( lb_progr,  row,   0, 1, 4 );
    statLayout->addWidget( progress,  row++, 4, 1, 4 );
 
+   // The second bar is the step inside the phase the first one counts, so
+   // neither of them ever runs to the end and starts over
+   QLabel* lb_sprogr = us_label( tr( "This experiment:" ) );
+   pgb_step          = us_progressBar( 0, 100, 0 );
+   statLayout->addWidget( lb_sprogr, row,   0, 1, 4 );
+   statLayout->addWidget( pgb_step,  row++, 4, 1, 4 );
+
    lb_status         = us_label( tr( "Status" ) );
+
+   // The status line says what a scan is doing, and what it says includes
+   // run identifiers.  Ignored means its text cannot push the window wider
+   // than the user sized it, which is what made the window jump about
+   // while a scan ran.
+   lb_status->setSizePolicy( QSizePolicy::Ignored, QSizePolicy::Preferred );
+   lb_status->setMinimumWidth( 0 );
    statLayout->addWidget( lb_status, row,   0, 1, 8 );
 
    // set up data tree; populate with sample data
@@ -258,6 +272,13 @@ DbgLv(1) << "te_status size" << te_status->size();
    tw_recs->setObjectName( QString( "tree-widget" ) );
    tw_recs->setAutoFillBackground( true );
    tw_recs->setSelectionMode( QAbstractItemView::ExtendedSelection );
+
+   // Fitting the columns to their contents widens the header, and a wider
+   // header asks for a wider window.  The tree takes whatever room the
+   // layout gives it instead, and scrolls when the columns need more.
+   tw_recs->setSizePolicy( QSizePolicy::Ignored, QSizePolicy::Expanding );
+   tw_recs->setSizeAdjustPolicy( QAbstractScrollArea::AdjustIgnored );
+   tw_recs->setMinimumWidth( 0 );
 
    connect( tw_recs, &QTreeWidget::itemPressed,
             this,    &US_ManageData::clickedItem );
@@ -305,7 +326,9 @@ DbgLv(1) << "GUI setup complete";
 
    // Set needed pointers for class interaction in model object
    da_model->setDatabase( db );
-   da_model->setProgress( progress,   lb_status );
+   // The model reports the work inside one experiment, which is the
+   // second bar; the first one counts the experiments
+   da_model->setProgress( pgb_step,   lb_status );
 
    // Create an object to handle processing the data (upload,download,remove)
    da_process     = new US_DataProcess( da_model,          this );
@@ -474,8 +497,44 @@ void US_ManageData::reset_hsbuttons( bool show,
       }
    }
 }
+// Start a phase of the scan: what it is doing, and how many steps it has
+void US_ManageData::scan_phase( const QString& text, int steps )
+{
+   progress->setMaximum( qMax( steps, 1 ) );
+   progress->setValue  ( 0 );
+   pgb_step->setMaximum( 1 );
+   pgb_step->setValue  ( 0 );
 
-// Scan the database and local disk for R/E/M/N data sets
+   status_text( text );
+   qApp->processEvents();
+}
+
+// Put a message on the status line, cut to what the line can show
+void US_ManageData::status_text( const QString& text )
+{
+   int width = qMax( lb_status->width() - 4, 80 );
+
+   lb_status->setText( lb_status->fontMetrics().elidedText(
+                       text, Qt::ElideMiddle, width ) );
+}
+
+/* Scan the database and the local disk.
+
+   The scan runs in three phases, and the overall bar counts the steps of
+   whichever phase is running while the second bar counts the work inside
+   one step:
+
+     1. the experiments, which is one query or one pass over the results
+        directory, and is enough to draw the top of the tree;
+     2. the chain below them, read in bulk -- four queries for the whole
+        store rather than four per experiment -- and merged one experiment
+        at a time so the tree fills in as it goes;
+     3. the checksums, for the experiments that are in both places, since
+        those are the only ones that can be out of step with themselves.
+
+   An experiment the user opens meanwhile moves to the front of whichever
+   queue is running.
+*/
 void US_ManageData::scan_data()
 {
    QString rF = cb_runid ->currentText();
@@ -484,30 +543,36 @@ void US_ManageData::scan_data()
 DbgLv(1) << "ScnDM:  Start          " << nowTime();
    da_model->setFilters( rF, tF, sF );  // Set any run,triple,source filters
 
-   // First layer:  list the experiments and show them straight away
+   pb_scanda->setEnabled( false );
+
+   // ---- the experiments --------------------------------------------------
+   scan_phase( tr( "Listing experiments..." ), 1 );
+
    da_model->scan_runs();
 DbgLv(1) << "ScnDM:  Runs Listed    " << nowTime();
 
-   lb_status->setText( tr( "Building Data Tree..." ) );
+   status_text( tr( "Building the data tree..." ) );
    qApp->processEvents();
 
    da_tree ->build_dtree();
 DbgLv(1) << "ScnDM:  Tree Built     " << nowTime();
 
-   for ( int jj = 0; jj < ntcols; jj++ )
-      tw_recs->resizeColumnToContents( jj );
-
-   this->resize( 1000, 500 );
+   fit_tree_columns();
    reportDataStatus();
+   progress->setValue( progress->maximum() );
    qApp->processEvents();
 
-   // Second layer:  read one experiment at a time, filling the tree in as
-   // they arrive.  An experiment the user opens meanwhile moves to the
-   // front of the queue, so what they are looking at is read first.
-   int nruns = da_model->runCount();
+   // ---- the chain below them ---------------------------------------------
+   int  nruns = da_model->runCount();
+   bool bulk  = false;
 
-   progress->setMaximum( qMax( nruns, 1 ) );
-   progress->setValue  ( 0 );
+   if ( nruns > 0 )
+   {
+      scan_phase( tr( "Reading %1 experiment(s)..." ).arg( nruns ), nruns );
+
+      bulk = da_model->scan_all();
+DbgLv(1) << "ScnDM:  Bulk Read" << bulk << nowTime();
+   }
 
    for ( int ii = 0; ii < nruns; ii++ )
    {
@@ -515,11 +580,12 @@ DbgLv(1) << "ScnDM:  Tree Built     " << nowTime();
 
       if ( index < 0 )   break;
 
-      lb_status->setText( tr( "Reading %1 ..." )
-                          .arg( da_model->run_entry( index ).runID ) );
-      qApp->processEvents();
+      status_text( tr( "Reading %1 ..." )
+                   .arg( da_model->run_entry( index ).runID ) );
 
-      da_model->scan_run( index );
+      if ( bulk )  da_model->merge_run( index );
+      else         da_model->scan_run ( index );
+
       da_tree ->fill_run( index );
 
       progress->setValue( ii + 1 );
@@ -531,20 +597,64 @@ DbgLv(1) << "ScnDM:  Tree Built     " << nowTime();
    }
 DbgLv(1) << "ScnDM:  Scan Done      " << nowTime();
 
-   for ( int jj = 0; jj < ntcols; jj++ )
-      tw_recs->resizeColumnToContents( jj );
+   // ---- the checksums, where they can tell us anything -------------------
+   int nver = da_model->queue_verifies();
 
-   lb_status->setText( tr( "Data Scan Complete" ) );
+   if ( nver > 0 )
+   {
+      scan_phase( tr( "Comparing %1 experiment(s) held in both places..." )
+                  .arg( nver ), nver );
+
+      for ( int ii = 0; ii < nver; ii++ )
+      {
+         int index = da_model->next_pending_verify();
+
+         if ( index < 0 )   break;
+
+         status_text( tr( "Comparing %1 ..." )
+                      .arg( da_model->run_entry( index ).runID ) );
+
+         da_model->verify_run ( index );
+         da_tree ->refresh_run( index );
+
+         progress->setValue( ii + 1 );
+         qApp->processEvents();
+      }
+   }
+DbgLv(1) << "ScnDM:  Compare Done   " << nowTime();
+
+   fit_tree_columns();
+
+   pgb_step ->setValue( pgb_step->maximum() );
+   status_text( tr( "Data scan complete" ) );
 
    reset_hsbuttons( false, true, true, true );  // hs button labels,tooltips
 
    // reformat and display report on record counts
    reportDataStatus();
 
-   pb_reset->setEnabled( true );
+   pb_scanda->setEnabled( true );
+   pb_reset ->setEnabled( true );
+   qApp->processEvents();
 DbgLv(1) << "ScnDM:  Scan All Done  " << nowTime();
 }
 
+/* Fit the tree columns to what is in them, without letting that decide how
+   wide the window is: a column is never given more than a third of the
+   tree, and the rest scrolls.
+*/
+void US_ManageData::fit_tree_columns()
+{
+   int limit = qMax( tw_recs->viewport()->width() / 3, 120 );
+
+   for ( int jj = 0; jj < ntcols; jj++ )
+   {
+      tw_recs->resizeColumnToContents( jj );
+
+      if ( tw_recs->columnWidth( jj ) > limit )
+         tw_recs->setColumnWidth( jj, limit );
+   }
+}
 
 // Open dialog and get investigator when button clicked
 void US_ManageData::sel_investigator()

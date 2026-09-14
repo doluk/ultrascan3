@@ -303,3 +303,156 @@ TEST_F( TestUSDataCatalogDb, BulkAndLegacyPathsAgree )
       }
    }
 }
+
+// Listing the whole store in four queries has to give what asking one
+// experiment at a time gives, or the fast path is not the same scan.
+TEST_F( TestUSDataCatalogDb, LoadAllGivesTheSameChainAsOneAtATime )
+{
+   US_DataCatalog oneAtATime;
+   US_DataCatalog allAtOnce;
+   QString        error;
+
+   ASSERT_TRUE( oneAtATime.attach( db, error ) ) << error.toStdString();
+   ASSERT_TRUE( allAtOnce .attach( db, error ) ) << error.toStdString();
+   ASSERT_TRUE( oneAtATime.loadRuns( error ) )   << error.toStdString();
+   ASSERT_TRUE( allAtOnce .loadRuns( error ) )   << error.toStdString();
+
+   for ( int ii = 0; ii < oneAtATime.runCount(); ii++ )
+      ASSERT_TRUE( oneAtATime.loadRunDetail( ii, error ) )
+         << error.toStdString();
+
+   ASSERT_TRUE( allAtOnce.loadAll( error ) ) << error.toStdString();
+
+   ASSERT_EQ( allAtOnce.runCount(), oneAtATime.runCount() );
+   ASSERT_GT( allAtOnce.runCount(), 0 );
+
+   for ( int ii = 0; ii < allAtOnce.runCount(); ii++ )
+   {
+      const US_DataCatalog::Run& one = oneAtATime.run( ii );
+      const US_DataCatalog::Run& all = allAtOnce .run( ii );
+
+      ASSERT_TRUE( all.isLoaded() );
+      ASSERT_EQ  ( all.runID.toStdString(), one.runID.toStdString() );
+      EXPECT_EQ  ( all.rawCount,   one.rawCount   );
+      EXPECT_EQ  ( all.editCount,  one.editCount  );
+      EXPECT_EQ  ( all.modelCount, one.modelCount );
+      EXPECT_EQ  ( all.noiseCount, one.noiseCount );
+      ASSERT_EQ  ( all.raws.size(), one.raws.size() );
+
+      for ( int jj = 0; jj < all.raws.size(); jj++ )
+      {
+         const US_DataCatalog::Raw& ar = all.raws[ jj ];
+         const US_DataCatalog::Raw& or_ = one.raws[ jj ];
+
+         EXPECT_EQ( ar.guid    .toStdString(), or_.guid    .toStdString() );
+         EXPECT_EQ( ar.filename.toStdString(), or_.filename.toStdString() );
+         ASSERT_EQ( ar.edits.size(), or_.edits.size() );
+
+         for ( int kk = 0; kk < ar.edits.size(); kk++ )
+         {
+            EXPECT_EQ( ar.edits[ kk ].guid.toStdString(),
+                       or_.edits[ kk ].guid.toStdString() );
+            ASSERT_EQ( ar.edits[ kk ].models.size(),
+                       or_.edits[ kk ].models.size() );
+
+            for ( int mm = 0; mm < ar.edits[ kk ].models.size(); mm++ )
+            {
+               EXPECT_EQ( ar.edits[ kk ].models[ mm ].guid.toStdString(),
+                          or_.edits[ kk ].models[ mm ].guid.toStdString() );
+               EXPECT_EQ( ar.edits[ kk ].models[ mm ].noises.size(),
+                          or_.edits[ kk ].models[ mm ].noises.size() );
+            }
+         }
+      }
+   }
+}
+
+// The bulk listing does not hash the data blobs; verifying one experiment
+// is what fills the checksums in, and they are the ones the
+// per-experiment procedures report.
+TEST_F( TestUSDataCatalogDb, VerifyFillsInTheChecksumsTheBulkListingLeftOut )
+{
+   US_DataCatalog catalog;
+   QString        error;
+
+   ASSERT_TRUE( catalog.attach  ( db, error ) );
+   ASSERT_TRUE( catalog.loadRuns( error ) );
+   ASSERT_TRUE( catalog.loadAll ( error ) ) << error.toStdString();
+
+   int index = -1;
+
+   for ( int ii = 0; ii < catalog.runCount(); ii++ )
+      if ( catalog.run( ii ).raws.size() > 0 )  index = ii;
+
+   ASSERT_GE( index, 0 );
+
+   const US_DataCatalog::Run& listed = catalog.run( index );
+
+   EXPECT_FALSE( catalog.isRunVerified( index ) );
+   EXPECT_TRUE ( listed.raws[ 0 ].checksum.isEmpty() );
+
+   // models and noise carry theirs already: their payloads are small XML
+   for ( int jj = 0; jj < listed.raws.size(); jj++ )
+      for ( int kk = 0; kk < listed.raws[ jj ].edits.size(); kk++ )
+         for ( int mm = 0; mm < listed.raws[ jj ].edits[ kk ].models.size();
+               mm++ )
+            EXPECT_FALSE(
+               listed.raws[ jj ].edits[ kk ].models[ mm ].checksum.isEmpty() );
+
+   ASSERT_TRUE( catalog.verifyRun( index, error ) ) << error.toStdString();
+   EXPECT_TRUE( catalog.isRunVerified( index ) );
+
+   const US_DataCatalog::Run& done = catalog.run( index );
+   EXPECT_FALSE( done.raws[ 0 ].checksum.isEmpty() );
+   EXPECT_FALSE( done.raws[ 0 ].size    .isEmpty() );
+
+   // and they agree with what the per-experiment path reports
+   US_DataCatalog perExperiment;
+   ASSERT_TRUE( perExperiment.attach  ( db, error ) );
+   ASSERT_TRUE( perExperiment.loadRuns( error ) );
+   ASSERT_TRUE( perExperiment.loadRunDetail( index, error ) );
+
+   const US_DataCatalog::Run& one = perExperiment.run( index );
+   ASSERT_EQ( one.raws.size(), done.raws.size() );
+
+   for ( int jj = 0; jj < done.raws.size(); jj++ )
+   {
+      EXPECT_EQ( done.raws[ jj ].checksum.toStdString(),
+                 one .raws[ jj ].checksum.toStdString() );
+      EXPECT_EQ( done.raws[ jj ].size.toStdString(),
+                 one .raws[ jj ].size.toStdString() );
+
+      ASSERT_EQ( done.raws[ jj ].edits.size(), one.raws[ jj ].edits.size() );
+
+      for ( int kk = 0; kk < done.raws[ jj ].edits.size(); kk++ )
+         EXPECT_EQ( done.raws[ jj ].edits[ kk ].checksum.toStdString(),
+                    one .raws[ jj ].edits[ kk ].checksum.toStdString() );
+   }
+}
+
+// A server without the whole-store procedures still has the per-experiment
+// ones, so the fall-back is one experiment at a time rather than all the
+// way down to one record at a time.
+TEST_F( TestUSDataCatalogDb, WithoutTheBulkProceduresOneExperimentAtATimeWorks )
+{
+   US_DataCatalog catalog;
+   QString        error;
+
+   ASSERT_TRUE( catalog.attach  ( db, error ) );
+   catalog.setBulkQueries( false );
+   ASSERT_TRUE( catalog.loadRuns( error ) )  << error.toStdString();
+
+   EXPECT_FALSE( catalog.loadAll( error ) );     // refused, with a reason
+   EXPECT_FALSE( error.isEmpty() );
+
+   ASSERT_GT( catalog.runCount(), 0 );
+
+   int index = -1;
+
+   for ( int ii = 0; ii < catalog.runCount(); ii++ )
+      if ( catalog.run( ii ).rawCount != 0 )  index = ii;
+
+   ASSERT_GE  ( index, 0 );
+   ASSERT_TRUE( catalog.loadRunDetail( index, error ) ) << error.toStdString();
+   EXPECT_TRUE( catalog.run( index ).isLoaded() );
+}

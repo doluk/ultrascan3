@@ -525,6 +525,134 @@ TEST_F( TestUSDataCatalog, NoiseOfAnEditIsTheNoiseOfAllItsModels )
    EXPECT_EQ  ( noises.size(), 0 );
 }
 
+// Listing the whole store in one go gives the same chain reading it one
+// experiment at a time does.
+TEST_F( TestUSDataCatalog, LoadAllGivesTheSameChainAsOneAtATime )
+{
+   US_DataCatalog oneAtATime;
+   US_DataCatalog allAtOnce;
+   QString        error;
+
+   ASSERT_TRUE( oneAtATime.open( US_DataCatalog::Disk, QString(), error ) );
+   ASSERT_TRUE( allAtOnce .open( US_DataCatalog::Disk, QString(), error ) );
+   ASSERT_TRUE( oneAtATime.loadRuns( error ) );
+   ASSERT_TRUE( allAtOnce .loadRuns( error ) );
+
+   for ( int ii = 0; ii < oneAtATime.runCount(); ii++ )
+      ASSERT_TRUE( oneAtATime.loadRunDetail( ii, error ) );
+
+   ASSERT_TRUE( allAtOnce.loadAll( error ) ) << error.toStdString();
+
+   ASSERT_EQ( allAtOnce.runCount(), oneAtATime.runCount() );
+   EXPECT_EQ( allAtOnce.pendingCount(), 0 );
+
+   for ( int ii = 0; ii < allAtOnce.runCount(); ii++ )
+   {
+      const US_DataCatalog::Run& one = oneAtATime.run( ii );
+      const US_DataCatalog::Run& all = allAtOnce .run( ii );
+
+      ASSERT_TRUE( all.isLoaded() );
+      ASSERT_EQ  ( all.runID.toStdString(), one.runID.toStdString() );
+      EXPECT_EQ  ( all.rawCount,   one.rawCount   );
+      EXPECT_EQ  ( all.editCount,  one.editCount  );
+      EXPECT_EQ  ( all.modelCount, one.modelCount );
+      EXPECT_EQ  ( all.noiseCount, one.noiseCount );
+      ASSERT_EQ  ( all.raws.size(), one.raws.size() );
+
+      for ( int jj = 0; jj < all.raws.size(); jj++ )
+      {
+         EXPECT_EQ( all.raws[ jj ].guid.toStdString(),
+                    one.raws[ jj ].guid.toStdString() );
+         ASSERT_EQ( all.raws[ jj ].edits.size(),
+                    one.raws[ jj ].edits.size() );
+
+         for ( int kk = 0; kk < all.raws[ jj ].edits.size(); kk++ )
+            EXPECT_EQ( all.raws[ jj ].edits[ kk ].models.size(),
+                       one.raws[ jj ].edits[ kk ].models.size() );
+      }
+   }
+}
+
+// Hashing every file in a store is the expensive half of a scan and answers
+// only whether a record that is in two places still matches, so a listing
+// can leave it out and ask for it per experiment.
+TEST_F( TestUSDataCatalog, ChecksumsAreLeftOutUntilAnExperimentIsVerified )
+{
+   US_DataCatalog catalog;
+   QString        error;
+
+   ASSERT_TRUE( catalog.open( US_DataCatalog::Disk, QString(), error ) );
+   ASSERT_TRUE( catalog.checksums() );          // on unless a caller says no
+
+   catalog.setChecksums( false );
+   EXPECT_FALSE( catalog.checksums() );
+
+   ASSERT_TRUE( catalog.loadRuns( error ) );
+   ASSERT_TRUE( catalog.loadAll ( error ) ) << error.toStdString();
+
+   int index = catalog.indexOfRun( runOne );
+   ASSERT_GE( index, 0 );
+
+   const US_DataCatalog::Run& run = catalog.run( index );
+   ASSERT_GT( run.raws.size(), 0 );
+
+   EXPECT_FALSE( catalog.isRunVerified( index ) );
+   EXPECT_TRUE ( run.raws[ 0 ].checksum.isEmpty() );
+   EXPECT_TRUE ( run.raws[ 0 ].size    .isEmpty() );
+
+   ASSERT_TRUE( catalog.verifyRun( index, error ) ) << error.toStdString();
+   EXPECT_TRUE( catalog.isRunVerified( index ) );
+
+   const US_DataCatalog::Run& done = catalog.run( index );
+   EXPECT_FALSE( done.raws[ 0 ].checksum.isEmpty() );
+   EXPECT_FALSE( done.raws[ 0 ].size    .isEmpty() );
+
+   ASSERT_GT   ( done.raws[ 0 ].edits.size(), 0 );
+   EXPECT_FALSE( done.raws[ 0 ].edits[ 0 ].checksum.isEmpty() );
+
+   // the checksum is the one the file really has
+   QString expect = US_Util::md5sum_file( done.raws[ 0 ].path );
+   EXPECT_EQ( done.raws[ 0 ].checksum.toStdString(),
+              expect.section( " ", 0, 0 ).toStdString() );
+}
+
+TEST_F( TestUSDataCatalog, TheVerifyQueueTakesTheRequestedExperimentFirst )
+{
+   US_DataCatalog catalog;
+   QString        error;
+
+   ASSERT_TRUE( catalog.open( US_DataCatalog::Disk, QString(), error ) );
+   catalog.setChecksums( false );
+   ASSERT_TRUE( catalog.loadRuns( error ) );
+   ASSERT_TRUE( catalog.loadAll ( error ) );
+
+   QList< int > all;
+
+   for ( int ii = 0; ii < catalog.runCount(); ii++ )  all << ii;
+
+   catalog.queueVerify( all );
+   ASSERT_EQ( catalog.verifyPendingCount(), catalog.runCount() );
+
+   int last = catalog.runCount() - 1;
+   ASSERT_GT( last, 0 );
+
+   catalog.requestVerify( last );
+
+   int index = -1;
+   ASSERT_TRUE( catalog.verifyNextPending( index, error ) )
+      << error.toStdString();
+   EXPECT_EQ  ( index, last );
+   EXPECT_TRUE( catalog.isRunVerified( last ) );
+
+   int knt = 1;
+
+   while ( catalog.verifyNextPending( index, error ) )  knt++;
+
+   EXPECT_TRUE( error.isEmpty() ) << error.toStdString();
+   EXPECT_EQ  ( knt, catalog.runCount() );
+   EXPECT_EQ  ( catalog.verifyPendingCount(), 0 );
+}
+
 TEST_F( TestUSDataCatalog, DiskCatalogHasNoDatabaseConnection )
 {
    US_DataCatalog catalog;

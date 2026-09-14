@@ -180,6 +180,13 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
 
             Detail  detail;       //!< How much of this experiment was read
 
+            //! True once the checksums of this experiment's records have
+            //! been read.  Listing a store does not read them: on the
+            //! database side that means hashing every data blob, and on
+            //! disk it means reading every file, and all it answers is
+            //! whether a record that exists in both places still matches.
+            bool    verified;
+
             QList< Raw > raws;    //!< Raw-data triples, once loaded
 
             //! \brief True when the whole chain below this experiment is read
@@ -253,6 +260,65 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
       //! \param runID The run identifier to look for
       //! \returns -1 when there is no such experiment
       int  indexOfRun( const QString& runID ) const;
+
+      /*! \brief Read the whole chain of every experiment at once
+
+          The second layer in bulk.  Against the database this is four
+          queries for the whole store rather than four per experiment, and
+          on disk it is the one pass \ref loadRunDetail would make anyway.
+          Neither reads a checksum -- see \ref verifyRun -- so what this
+          costs is the structure of the store and nothing else.
+          \param error Filled in with a message when the scan fails
+          \returns True when every experiment now has its records
+      */
+      bool loadAll( QString& error );
+
+      /*! \brief Read the checksums of one experiment's records
+
+          This is the expensive half of a scan and the only part that needs
+          the record contents, so it is asked for one experiment at a time
+          and only where it means something: a record that is in one place
+          only has nothing to compare against.
+          \param index The position of the experiment
+          \param error Filled in with a message when the read fails
+      */
+      bool verifyRun( int index, QString& error );
+
+      //! \brief True when the checksums of an experiment have been read
+      //! \param index The position of the experiment
+      bool isRunVerified( int index ) const;
+
+      //! \brief Ask for an experiment to be verified before the others
+      //! \param index The position of the experiment
+      void requestVerify( int index );
+
+      //! \brief Verify the next experiment that is still waiting
+      //! \param index Filled in with the position that was read, or -1
+      //! \param error Filled in with a message when the read fails
+      //! \returns True when an experiment was verified; false when none is
+      //!          left or the read failed -- \a error says which
+      bool verifyNextPending( int& index, QString& error );
+
+      //! \brief How many experiments are still waiting to be verified
+      int  verifyPendingCount( void ) const;
+
+      //! \brief Put every experiment in the verify queue
+      //! \param bothSourcesOnly Unused here; the caller decides what is
+      //!        worth verifying and queues those
+      void queueVerify( const QList< int >& indexes );
+
+      /*! \brief Whether reading records also reads their checksums
+
+          On by default, which is what a caller that wants a complete
+          picture in one pass expects.  A caller that reads a whole store
+          turns it off and asks \ref verifyRun for the experiments it
+          actually compares.
+          \param on True to read the checksums as the records are read
+      */
+      void setChecksums( bool on );
+
+      //! \brief True when reading records also reads their checksums
+      bool checksums( void ) const;
 
       //! \brief Read the second layer of one experiment
       //!
@@ -355,6 +421,10 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
       //! \param index The position of the experiment
       void runLoaded   ( int index );
 
+      //! \brief The checksums of one experiment have been read
+      //! \param index The position of the experiment
+      void runVerified ( int index );
+
       //! \brief A human readable note about what the catalog is doing
       //! \param message The note
       void message     ( const QString& message );
@@ -367,6 +437,7 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
       int          inv_id;
       QList< Run > run_list;
       QList< int > pending;
+      QList< int > verify_queue;
       DiskIndex*   index;
       bool         owns_db;
       QString      proj_guid;
@@ -375,6 +446,24 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
       //! catalog procedures, so an older server still works -- one record
       //! at a time, the way it always did
       bool         bulk_ok;
+
+      //! False once the database turns out not to have the whole-store
+      //! catalog procedures, so a scan reads one experiment at a time
+      bool         bulk_all_ok;
+
+      bool         do_checksums;
+
+      bool loadAllDb  ( QString& );
+      bool loadAllDisk( QString& );
+      bool verifyRunDb  ( Run&, QString& );
+      bool verifyRunDisk( Run&, QString& );
+
+      //! \brief The checksum and length of a local file, when wanted
+      void fileDigest( const QString& path, QString& checksum, QString& size );
+
+      //! \brief Recompute an experiment's counts from the chain just read
+      //! \param run The experiment to finish
+      void finishRun( Run& run );
 
       bool loadRunsDb      ( QString& );
       bool loadRunsDbBulk  ( QString& );

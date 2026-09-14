@@ -160,6 +160,7 @@ US_DataCatalog::Run::Run()
    modelCount = -1;
    noiseCount = -1;
    detail     = US_DataCatalog::Listed;
+   verified   = false;
 }
 
 bool US_DataCatalog::Run::isLoaded( void ) const
@@ -174,9 +175,11 @@ US_DataCatalog::US_DataCatalog( QObject* parent ) : QObject( parent )
    src     = US_DataCatalog::Disk;
    dbase   = nullptr;
    inv_id  = US_Settings::us_inv_ID();
-   index   = new DiskIndex();
-   bulk_ok = true;
-   owns_db = false;
+   index        = new DiskIndex();
+   bulk_ok      = true;
+   bulk_all_ok  = true;
+   owns_db      = false;
+   do_checksums = true;
 }
 
 US_DataCatalog::~US_DataCatalog()
@@ -192,10 +195,11 @@ bool US_DataCatalog::open( Source source, const QString& dbPassword,
 {
    close();
 
-   src     = source;
-   inv_id  = US_Settings::us_inv_ID();
-   bulk_ok = true;
-   owns_db = false;
+   src         = source;
+   inv_id      = US_Settings::us_inv_ID();
+   bulk_ok     = true;
+   bulk_all_ok = true;
+   owns_db     = false;
 
    if ( src == US_DataCatalog::Disk )
    {
@@ -240,11 +244,12 @@ bool US_DataCatalog::attach( US_DB2* a_db, QString& error )
       return false;
    }
 
-   src     = US_DataCatalog::Db;
-   dbase   = a_db;
-   owns_db = false;
-   inv_id  = US_Settings::us_inv_ID();
-   bulk_ok = true;
+   src         = US_DataCatalog::Db;
+   dbase       = a_db;
+   owns_db     = false;
+   inv_id      = US_Settings::us_inv_ID();
+   bulk_ok     = true;
+   bulk_all_ok = true;
 
    error.clear();
 
@@ -423,9 +428,33 @@ QList< US_DataCatalog::Noise > US_DataCatalog::noisesOfEdit(
    return list;
 }
 
+void US_DataCatalog::setChecksums( bool on )
+{
+   do_checksums = on;
+}
+
+bool US_DataCatalog::checksums( void ) const
+{
+   return do_checksums;
+}
+
+void US_DataCatalog::fileDigest( const QString& path, QString& checksum,
+                                 QString& size )
+{
+   checksum.clear();
+   size    .clear();
+
+   if ( ! do_checksums )  return;
+
+   QString contents = US_Util::md5sum_file( path );
+   checksum = contents.section( " ", 0, 0 );
+   size     = contents.section( " ", 1, 1 );
+}
+
 void US_DataCatalog::setBulkQueries( bool on )
 {
-   bulk_ok = on;
+   bulk_ok     = on;
+   bulk_all_ok = on;
 }
 
 bool US_DataCatalog::bulkQueries( void ) const
@@ -927,8 +956,18 @@ bool US_DataCatalog::loadRunDetail( int index, QString& error )
 
    if ( ! ok )  return false;
 
-   // Once the chain is read the counts are no longer what the first layer
-   // guessed, or -1 where it could not say: they are what is there.
+   finishRun( run );
+   pending.removeAll( index );
+
+   emit runLoaded( index );
+
+   return true;
+}
+
+// Once the chain of an experiment is read the counts are no longer what the
+// first layer guessed, or -1 where it could not say: they are what is there.
+void US_DataCatalog::finishRun( Run& run )
+{
    run.rawCount   = run.raws.size();
    run.editCount  = 0;
    run.modelCount = 0;
@@ -952,9 +991,484 @@ bool US_DataCatalog::loadRunDetail( int index, QString& error )
    }
 
    run.detail = US_DataCatalog::Loaded;
-   pending.removeAll( index );
+}
 
-   emit runLoaded( index );
+// ------------------------------------------------------- the whole store
+
+namespace
+{
+   // Where a record sits in the tree of runs
+   class Slot
+   {
+      public:
+         Slot() : run( -1 ), raw( -1 ), edit( -1 ), model( -1 ) {}
+
+         int run;
+         int raw;
+         int edit;
+         int model;
+   };
+}
+
+bool US_DataCatalog::loadAll( QString& error )
+{
+   if ( run_list.isEmpty() )
+   {
+      error.clear();
+      return true;
+   }
+
+   if ( isDb()  &&  ! bulk_all_ok )
+   {
+      error = tr( "This database has no whole-store catalog procedures" );
+      return false;
+   }
+
+   bool ok = isDb() ? loadAllDb( error ) : loadAllDisk( error );
+
+   if ( ! ok )  return false;
+
+   for ( int ii = 0; ii < run_list.size(); ii++ )
+   {
+      finishRun( run_list[ ii ] );
+      pending.removeAll( ii );
+
+      emit runLoaded( ii );
+   }
+
+   error.clear();
+
+   return true;
+}
+
+/* Read the whole store in four queries.
+
+   Asking for the chain one experiment at a time is four round trips per
+   experiment, and each of those asks the server to hash the experiment's
+   data blobs.  The bulk procedures list everything the investigator can
+   see without hashing anything, and the records are attached to their
+   parents here by GUID -- the same thing the local index does with the
+   file system.
+*/
+bool US_DataCatalog::loadAllDb( QString& error )
+{
+   if ( dbase == nullptr )
+   {
+      error = tr( "No database connection" );
+      return false;
+   }
+
+   QString     invID = QString::number( inv_id );
+   QStringList query;
+
+   QHash< QString, int >   runById;      // experimentID -> run
+   QHash< QString, Slot >  rawSlot;      // rawDataGUID  -> raw
+   QHash< QString, Slot >  editSlot;     // editGUID     -> edit
+   QHash< QString, Slot >  modelSlot;    // modelGUID    -> model
+
+   for ( int ii = 0; ii < run_list.size(); ii++ )
+   {
+      run_list[ ii ].raws.clear();
+      runById.insert( run_list[ ii ].id, ii );
+   }
+
+   // ---- the triples ------------------------------------------------------
+   query << "get_rawData_by_person" << invID;
+   dbase->query( query );
+
+   if ( missingProcedure() )
+   {
+      // Only the whole-store procedures are missing.  The per-experiment
+      // ones may well be there, so that is what the caller falls back to,
+      // not the record-at-a-time path.
+      bulk_all_ok = false;
+      emit message( tr( "This database does not have the whole-store catalog"
+                        " procedures; falling back to one experiment at a"
+                        " time" ) );
+      return false;
+   }
+
+   int status = dbase->lastErrno();
+
+   if ( status != US_DB2::OK  &&  status != US_DB2::NOROWS )
+   {
+      error = dbase->lastError();
+      return false;
+   }
+
+   while ( dbase->next() )
+   {
+      QString expID = dbase->value( 5 ).toString();
+
+      if ( ! runById.contains( expID ) )  continue;   // not in this listing
+
+      int  rx = runById.value( expID );
+      Run& run = run_list[ rx ];
+
+      Raw raw;
+      raw.id          = dbase->value(  0 ).toString();
+      raw.guid        = dbase->value(  1 ).toString();
+      raw.filename    = dbase->value(  3 ).toString().replace( "\\", "/" )
+                        .section( "/", -1, -1 );
+      raw.description = dbase->value(  4 ).toString();
+      raw.solutionID  = dbase->value(  6 ).toString();
+      raw.lastUpdated = dbase->value(  8 ).toString();
+      raw.checksum    = dbase->value(  9 ).toString();
+      raw.size        = dbase->value( 10 ).toString();
+      raw.runID       = run.runID;
+      raw.dataType    = raw.filename.section( ".", -5, -5 );
+      raw.triple      = raw.filename.section( ".", -4, -2 );
+
+      run.raws << raw;
+
+      Slot slot;
+      slot.run = rx;
+      slot.raw = run.raws.size() - 1;
+      rawSlot.insert( raw.guid, slot );
+   }
+
+   // ---- the edits, attached to their triple by GUID ----------------------
+   query.clear();
+   query << "get_editedData_by_person" << invID;
+   dbase->query( query );
+
+   status = dbase->lastErrno();
+
+   if ( status != US_DB2::OK  &&  status != US_DB2::NOROWS )
+   {
+      error = dbase->lastError();
+      return false;
+   }
+
+   while ( dbase->next() )
+   {
+      QString rawGUID = dbase->value( 2 ).toString();
+
+      if ( ! rawSlot.contains( rawGUID ) )  continue;
+
+      Slot where = rawSlot.value( rawGUID );
+      Raw& raw   = run_list[ where.run ].raws[ where.raw ];
+
+      Edit edit;
+      edit.id          = dbase->value( 0 ).toString();
+      edit.rawGUID     = rawGUID;
+      edit.guid        = dbase->value( 3 ).toString();
+      edit.filename    = dbase->value( 5 ).toString().replace( "\\", "/" )
+                         .section( "/", -1, -1 );
+      edit.lastUpdated = dbase->value( 7 ).toString();
+      edit.checksum    = dbase->value( 8 ).toString();
+      edit.size        = dbase->value( 9 ).toString();
+      edit.runID       = raw.runID;
+      edit.editID      = edit.filename.section( ".", -6, -6 );
+      edit.triple      = edit.filename.section( ".", -4, -2 );
+      edit.label       = edit.editID + " (" + edit.triple + ")";
+
+      raw.edits << edit;
+
+      Slot slot  = where;
+      slot.edit  = raw.edits.size() - 1;
+      editSlot.insert( edit.guid, slot );
+   }
+
+   // ---- the models, attached to their edit by GUID -----------------------
+   query.clear();
+   query << "get_model_desc" << invID;
+   dbase->query( query );
+
+   status = dbase->lastErrno();
+
+   if ( status != US_DB2::OK  &&  status != US_DB2::NOROWS )
+   {
+      error = dbase->lastError();
+      return false;
+   }
+
+   while ( dbase->next() )
+   {
+      QString editGUID = dbase->value( 5 ).toString();
+
+      if ( ! editSlot.contains( editGUID ) )  continue;
+
+      Slot  where = editSlot.value( editGUID );
+      Edit& edit  = run_list[ where.run ].raws[ where.raw ].edits[ where.edit ];
+
+      Model model;
+      model.id          = dbase->value( 0 ).toString();
+      model.guid        = dbase->value( 1 ).toString();
+      model.description = dbase->value( 2 ).toString();
+      model.editGUID    = editGUID;
+      model.editID      = dbase->value( 6 ).toString();
+      model.lastUpdated = dbase->value( 7 ).toString();
+      model.checksum    = dbase->value( 8 ).toString();
+      model.size        = dbase->value( 9 ).toString();
+      model.subType     = model.description.section( ".", -2, -2 );
+
+      edit.models << model;
+
+      Slot slot  = where;
+      slot.model = edit.models.size() - 1;
+      modelSlot.insert( model.guid, slot );
+   }
+
+   // ---- the noise records, attached to their model by GUID ---------------
+   query.clear();
+   query << "get_noise_desc" << invID;
+   dbase->query( query );
+
+   status = dbase->lastErrno();
+
+   if ( status != US_DB2::OK  &&  status != US_DB2::NOROWS )
+   {
+      error = dbase->lastError();
+      return false;
+   }
+
+   while ( dbase->next() )
+   {
+      QString modelGUID = dbase->value( 5 ).toString();
+
+      if ( ! modelSlot.contains( modelGUID ) )  continue;
+
+      Slot   where = modelSlot.value( modelGUID );
+      Model& model = run_list[ where.run ].raws[ where.raw ]
+                     .edits[ where.edit ].models[ where.model ];
+
+      Noise noise;
+      noise.id          = dbase->value( 0 ).toString();
+      noise.guid        = dbase->value( 1 ).toString();
+      noise.noiseType   = dbase->value( 4 ).toString().left( 2 );
+      noise.modelGUID   = modelGUID;
+      noise.lastUpdated = dbase->value( 6 ).toString();
+      noise.checksum    = dbase->value( 7 ).toString();
+      noise.size        = dbase->value( 8 ).toString();
+      noise.description = dbase->value( 9 ).toString();
+      noise.editGUID    = model.editGUID;
+
+      model.noises << noise;
+   }
+
+   error.clear();
+
+   return true;
+}
+
+bool US_DataCatalog::loadAllDisk( QString& error )
+{
+   buildDiskIndex();
+
+   for ( int ii = 0; ii < run_list.size(); ii++ )
+   {
+      QString message;
+
+      if ( ! loadDetailDisk( run_list[ ii ], message ) )
+         emit US_DataCatalog::message( message );
+   }
+
+   error.clear();
+
+   return true;
+}
+
+// ------------------------------------------------------------ verification
+
+bool US_DataCatalog::isRunVerified( int index ) const
+{
+   if ( index < 0  ||  index >= run_list.size() )  return false;
+
+   return run_list.at( index ).verified;
+}
+
+void US_DataCatalog::queueVerify( const QList< int >& indexes )
+{
+   verify_queue = indexes;
+}
+
+void US_DataCatalog::requestVerify( int index )
+{
+   if ( index < 0  ||  index >= run_list.size() )  return;
+   if ( run_list.at( index ).verified )            return;
+
+   verify_queue.removeAll( index );
+   verify_queue.prepend  ( index );
+}
+
+int US_DataCatalog::verifyPendingCount( void ) const
+{
+   return verify_queue.size();
+}
+
+bool US_DataCatalog::verifyNextPending( int& index, QString& error )
+{
+   index = -1;
+
+   while ( ! verify_queue.isEmpty() )
+   {
+      int next = verify_queue.first();
+
+      if ( next >= 0  &&  next < run_list.size()  &&
+           ! run_list.at( next ).verified )
+      {
+         index = next;
+         return verifyRun( next, error );
+      }
+
+      verify_queue.removeFirst();
+   }
+
+   error.clear();
+
+   return false;
+}
+
+bool US_DataCatalog::verifyRun( int index, QString& error )
+{
+   if ( index < 0  ||  index >= run_list.size() )
+   {
+      error = tr( "There is no experiment at position %1" ).arg( index );
+      return false;
+   }
+
+   Run& run = run_list[ index ];
+
+   if ( run.verified )
+   {
+      verify_queue.removeAll( index );
+      error.clear();
+      return true;
+   }
+
+   bool ok = isDb() ? verifyRunDb( run, error ) : verifyRunDisk( run, error );
+
+   verify_queue.removeAll( index );
+
+   if ( ! ok )  return false;
+
+   run.verified = true;
+   error.clear();
+
+   emit runVerified( index );
+
+   return true;
+}
+
+/* Read the checksums of one experiment from the database.
+
+   This is what the bulk listing left out, and it is the expensive half:
+   the server hashes the experiment's raw-data and edit blobs to answer it.
+   Models and noise carry their checksums already -- their payloads are
+   small XML, so the listing hashes those as it goes.
+*/
+bool US_DataCatalog::verifyRunDb( Run& run, QString& error )
+{
+   if ( dbase == nullptr )
+   {
+      error = tr( "No database connection" );
+      return false;
+   }
+
+   QStringList query;
+   query << "get_rawData_by_experiment" << run.id;
+   dbase->query( query );
+
+   int status = dbase->lastErrno();
+
+   if ( status != US_DB2::OK  &&  status != US_DB2::NOROWS )
+   {
+      error = dbase->lastError();
+      return false;
+   }
+
+   QHash< QString, QPair< QString, QString > > digests;   // GUID -> md5, size
+
+   while ( dbase->next() )
+      digests.insert( dbase->value( 1 ).toString(),
+                      qMakePair( dbase->value(  9 ).toString(),
+                                 dbase->value( 10 ).toString() ) );
+
+   query.clear();
+   query << "get_editedData_by_experiment" << run.id;
+   dbase->query( query );
+
+   status = dbase->lastErrno();
+
+   if ( status != US_DB2::OK  &&  status != US_DB2::NOROWS )
+   {
+      error = dbase->lastError();
+      return false;
+   }
+
+   while ( dbase->next() )
+      digests.insert( dbase->value( 3 ).toString(),
+                      qMakePair( dbase->value( 8 ).toString(),
+                                 dbase->value( 9 ).toString() ) );
+
+   for ( int ii = 0; ii < run.raws.size(); ii++ )
+   {
+      Raw& raw = run.raws[ ii ];
+
+      if ( digests.contains( raw.guid ) )
+      {
+         raw.checksum = digests.value( raw.guid ).first;
+         raw.size     = digests.value( raw.guid ).second;
+      }
+
+      for ( int jj = 0; jj < raw.edits.size(); jj++ )
+      {
+         Edit& edit = raw.edits[ jj ];
+
+         if ( ! digests.contains( edit.guid ) )  continue;
+
+         edit.checksum = digests.value( edit.guid ).first;
+         edit.size     = digests.value( edit.guid ).second;
+      }
+   }
+
+   error.clear();
+
+   return true;
+}
+
+// Read the checksums of one experiment's local files
+bool US_DataCatalog::verifyRunDisk( Run& run, QString& error )
+{
+   bool saved   = do_checksums;
+   do_checksums = true;
+
+   for ( int ii = 0; ii < run.raws.size(); ii++ )
+   {
+      Raw& raw = run.raws[ ii ];
+
+      if ( ! raw.path.isEmpty() )
+         fileDigest( raw.path, raw.checksum, raw.size );
+
+      for ( int jj = 0; jj < raw.edits.size(); jj++ )
+      {
+         Edit& edit = raw.edits[ jj ];
+
+         if ( ! edit.path.isEmpty() )
+            fileDigest( edit.path, edit.checksum, edit.size );
+
+         for ( int kk = 0; kk < edit.models.size(); kk++ )
+         {
+            Model& model = edit.models[ kk ];
+
+            if ( ! model.path.isEmpty() )
+               fileDigest( model.path, model.checksum, model.size );
+
+            for ( int mm = 0; mm < model.noises.size(); mm++ )
+            {
+               Noise& noise = model.noises[ mm ];
+
+               if ( noise.path.isEmpty() )  continue;
+
+               fileDigest( noise.path, noise.checksum, noise.size );
+            }
+         }
+      }
+   }
+
+   do_checksums = saved;
+   error.clear();
 
    return true;
 }
@@ -1341,9 +1855,7 @@ bool US_DataCatalog::loadDetailDisk( Run& run, QString& error )
          raw.description = header.description;
       }
 
-      QString contents = US_Util::md5sum_file( raw.path );
-      raw.checksum     = contents.section( " ", 0, 0 );
-      raw.size         = contents.section( " ", 1, 1 );
+      fileDigest( raw.path, raw.checksum, raw.size );
       raw.lastUpdated  = utc_of_file( raw.path );
 
       QStringList edits = editsOfTriple.values( aucName.section( ".", -5, -2 ) );
@@ -1366,9 +1878,7 @@ bool US_DataCatalog::loadDetailDisk( Run& run, QString& error )
 
          edit.label    = edit.editID + " (" + edit.triple + ")";
 
-         contents         = US_Util::md5sum_file( edit.path );
-         edit.checksum    = contents.section( " ", 0, 0 );
-         edit.size        = contents.section( " ", 1, 1 );
+         fileDigest( edit.path, edit.checksum, edit.size );
          edit.lastUpdated = utc_of_file( edit.path );
 
          // The models fitted to this edit, from the index
@@ -1387,9 +1897,7 @@ bool US_DataCatalog::loadDetailDisk( Run& run, QString& error )
             model.path        = mf.path;
             model.subType     = mf.description.section( ".", -2, -2 );
 
-            contents          = US_Util::md5sum_file( mf.path );
-            model.checksum    = contents.section( " ", 0, 0 );
-            model.size        = contents.section( " ", 1, 1 );
+            fileDigest( mf.path, model.checksum, model.size );
             model.lastUpdated = utc_of_file( mf.path );
 
             QList< int > noixs = index->noisesByModel.values( mf.guid );
@@ -1408,9 +1916,7 @@ bool US_DataCatalog::loadDetailDisk( Run& run, QString& error )
                noise.filename    = nf.base;
                noise.path        = nf.path;
 
-               contents          = US_Util::md5sum_file( nf.path );
-               noise.checksum    = contents.section( " ", 0, 0 );
-               noise.size        = contents.section( " ", 1, 1 );
+               fileDigest( nf.path, noise.checksum, noise.size );
                noise.lastUpdated = utc_of_file( nf.path );
 
                model.noises << noise;

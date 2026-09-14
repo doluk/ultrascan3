@@ -164,8 +164,8 @@ US_DataPubExportPane::US_DataPubExportPane( QWidget* parent )
    cb_scope = us_comboBox();
    cb_scope->addItems( US_DataPub::scopeKeys() );
    cb_scope->setCurrentIndex( cb_scope->count() - 1 );
-   connect( cb_scope, SIGNAL( currentIndexChanged( int ) ),
-            this,     SLOT  ( scope_changed( int ) ) );
+   connect( cb_scope, QOverload< int >::of( &QComboBox::currentIndexChanged ),
+            this,     &US_DataPubExportPane::scope_changed );
    opts->addWidget( cb_scope, row, 1, 1, 1 );
 
    QGridLayout* tmstlay = us_checkbox( tr( "Include time state" ), ck_tmst,

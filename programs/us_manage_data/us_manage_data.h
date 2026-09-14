@@ -60,7 +60,8 @@ class US_ManageData : public US_Widgets
         US_DataProcess*     da_process; //!< Data processing handler
         US_DataTree*        da_tree;    //!< Data tree display handler
         US_SyncExperiment*  syncExper;  //!< Experiment synchronizer
-        QProgressBar*       progress;   //!< Progress bar
+        QProgressBar*       progress;   //!< Overall progress of a scan
+        QProgressBar*       pgb_step;   //!< Progress within the current step
         US_Help             showHelp;   //!< Help display
         US_Buffer           buffer;     //!< Buffer object
         US_Analyte          analyte;    //!< Analyte object
@@ -107,6 +108,19 @@ class US_ManageData : public US_Widgets
         QStringList         triples;    //!< List of triples
         QStringList         runIDs;     //!< List of run IDs
         QList< QStringList > runid_data; //!< List of run ID data
+
+    private:
+        //! \brief Start a phase of the scan
+        //! \param text  What the phase is doing
+        //! \param steps How many steps the phase has
+        void scan_phase( const QString& text, int steps );
+
+        //! \brief Put a message on the status line, cut to fit
+        //! \param text The message
+        void status_text( const QString& text );
+
+        //! \brief Fit the tree columns without widening the window
+        void fit_tree_columns( void );
 
     private slots:
         //! \brief Toggle the display of edits

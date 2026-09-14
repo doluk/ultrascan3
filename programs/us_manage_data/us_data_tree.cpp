@@ -49,9 +49,9 @@ DbgLv(1) << "DT: togl_exp str show" << c1str << show;
       listi.at( ii )->setExpanded( show );
 }
 
-// The color, type name and source text of one record, and its type counters
-void US_DataTree::classify_row( const US_DataModel::DataDesc& desc,
-                                QBrush& fbru, QString& rtyp, QString& rsrc )
+// The color, type name and source text of one record
+void US_DataTree::row_look( const US_DataModel::DataDesc& desc,
+                            QBrush& fbru, QString& rtyp, QString& rsrc )
 {
    static const char* names[] =
       { "Experiment", "Raw", "Edited", "Model", "Noise" };
@@ -103,7 +103,22 @@ DbgLv(1) << "CONFLICT cont1 cont2" << cont1 << cont2;
       rsrc    = "dummy";
    }
 
+   Q_UNUSED( kind );
+}
+
+// Add one record to the per-type counters
+void US_DataTree::count_row( const US_DataModel::DataDesc& desc )
+{
+   int  ityp  = desc.recType;
+
    if ( ityp < 1  ||  ityp > 4 )   return;      // an experiment counts as none
+
+   bool isDba = ( ( desc.recState & US_DataModel::REC_DB ) != 0 );
+   bool isLoc = ( ( desc.recState & US_DataModel::REC_LO ) != 0 );
+   int  kind  = 2;                     // 0 = local only, 1 = DB only, 2 = both
+
+   if      ( desc.recordID < 0  &&  isLoc )   kind = 0;
+   else if ( isDba  &&  ! isLoc )             kind = 1;
 
    int* dcnts[] = { &ndraws, &ndedts, &ndmods, &ndnois };
    int* lcnts[] = { &nlraws, &nledts, &nlmods, &nlnois };
@@ -113,6 +128,14 @@ DbgLv(1) << "CONFLICT cont1 cont2" << cont1 << cont2;
    if ( kind != 0 )   ( *dcnts[ ityp - 1 ] )++;
 
    ( *ccnts[ ityp - 1 ] )++;
+}
+
+// The look of a record, and the record added to the counters
+void US_DataTree::classify_row( const US_DataModel::DataDesc& desc,
+                                QBrush& fbru, QString& rtyp, QString& rsrc )
+{
+   row_look ( desc, fbru, rtyp, rsrc );
+   count_row( desc );
 }
 
 // build the first layer of the data tree:  one row per experiment
@@ -290,6 +313,51 @@ void US_DataTree::fill_run( int runIndex )
    ntrows     = ncrecs;
 }
 
+/* Colour one experiment's rows again.
+
+   A scan reads the checksums after the tree is built, so a row that read
+   as in sync may turn out to be a conflict once its records have actually
+   been compared.
+*/
+void US_DataTree::refresh_run( int runIndex )
+{
+   if ( runIndex < 0  ||  runIndex >= runitems.size() )   return;
+
+   US_DataModel::RunEntry entry = da_model->run_entry( runIndex );
+
+   if ( ! entry.loaded  ||  entry.firstRow < 0 )          return;
+
+   QList< QTreeWidgetItem* > stack;
+   stack << runitems[ runIndex ];
+
+   while ( ! stack.isEmpty() )
+   {
+      QTreeWidgetItem* item = stack.takeFirst();
+
+      for ( int ii = 0; ii < item->childCount(); ii++ )
+         stack << item->child( ii );
+
+      int row = item->type() - (int)QTreeWidgetItem::UserType;
+
+      if ( row < 0  ||  row >= da_model->recCount() )   continue;
+
+      US_DataModel::DataDesc desc = da_model->row_datadesc( row );
+
+      QBrush  fbru( colorBrown );
+      QString rtyp;
+      QString rsrc;
+
+      // The counters were added up when the row was built, so this asks
+      // only what the row should look like now
+      row_look( desc, fbru, rtyp, rsrc );
+
+      item->setText( 3, rsrc );
+
+      for ( int jj = 0; jj < ntcols; jj++ )
+         item->setForeground( jj, fbru );
+   }
+}
+
 // read an experiment the user opened, if the scan has not reached it yet
 void US_DataTree::item_opened( QTreeWidgetItem* item )
 {
@@ -299,13 +367,22 @@ void US_DataTree::item_opened( QTreeWidgetItem* item )
    int runIndex = runitems.indexOf( item );
 
    if ( runIndex < 0 )                            return;
-   if ( da_model->run_entry( runIndex ).loaded )  return;
 
-   // The experiment the user just opened is the one to read next
-   da_model->request_run( runIndex );
-   da_model->scan_run   ( runIndex );
+   if ( ! da_model->run_entry( runIndex ).loaded )
+   {  // The experiment the user just opened is the one to read next
+      da_model->request_run( runIndex );
+      da_model->scan_run   ( runIndex );
 
-   fill_run( runIndex );
+      fill_run( runIndex );
+   }
+
+   if ( ! da_model->run_verified( runIndex ) )
+   {  // ... and the one to compare next
+      da_model->request_verify( runIndex );
+
+      if ( da_model->verify_run( runIndex ) )
+         refresh_run( runIndex );
+   }
 }
 
 // set up and display a row context menu

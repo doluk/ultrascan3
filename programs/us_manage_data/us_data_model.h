@@ -82,6 +82,15 @@ class US_DataModel : public QObject
                 int       loCount;     //!< Records the local store holds,
                                        //!< or -1 when it cannot say yet
                 bool      loaded;      //!< True once the chain has been read
+
+                //! True once the checksums have been read.  Only an
+                //! experiment that is in both the database and the local
+                //! store is worth verifying: a record that is in one place
+                //! only has nothing to be compared against.
+                bool      verified;
+
+                //! \brief True when both sources hold this experiment
+                bool      inBoth( void ) const;
         };
 
         //! \brief Set the database connection
@@ -165,6 +174,53 @@ class US_DataModel : public QObject
         //! \param runID The run identifier to look for
         //! \returns -1 when there is no such experiment
         int  index_of_run( const QString& runID ) const;
+
+        /*! \brief Read the chain of every experiment at once
+
+            The second layer in bulk.  Against the database this is four
+            queries for the whole store instead of four per experiment, and
+            neither source reads a checksum -- see \ref verify_run.
+            \returns False when the source cannot do it, and the caller
+                     should fall back to \ref scan_run per experiment
+        */
+        bool scan_all( void );
+
+        /*! \brief Merge one experiment's records into the tree
+
+            The records have to be in the catalogs already, which \ref
+            scan_all put them there.
+            \param index The position of the experiment
+        */
+        bool merge_run( int index );
+
+        /*! \brief Read the checksums of one experiment and re-compare
+
+            This is the expensive half of a scan -- the database hashes the
+            experiment's data blobs and the local files are read -- and all
+            it answers is whether records that exist in both places still
+            match, so it is only worth doing for an experiment that is in
+            both.
+            \param index The position of the experiment
+        */
+        bool verify_run( int index );
+
+        //! \brief True when the checksums of an experiment have been read
+        //! \param index The position of the experiment
+        bool run_verified( int index ) const;
+
+        //! \brief Queue every experiment that is worth verifying
+        //! \returns The number of experiments queued
+        int  queue_verifies( void );
+
+        //! \brief Ask for an experiment to be verified before the others
+        //! \param index The position of the experiment
+        void request_verify( int index );
+
+        //! \brief The next experiment waiting to be verified, or -1
+        int  next_pending_verify( void ) const;
+
+        //! \brief How many experiments are still waiting to be verified
+        int  pending_verifies( void ) const;
 
         //! \brief Read the chain of one experiment and merge it in
         //!
@@ -250,6 +306,7 @@ class US_DataModel : public QObject
         QVector< int >      chgrows;    //!< Changed rows
         QVector< RunEntry > runents;    //!< Experiment entries of the scan
         QList< int >        run_queue;  //!< Experiments still to be read
+        QList< int >        ver_queue;  //!< Experiments still to be verified
         int                 kdb_recs;   //!< Database records merged so far
         int                 klo_recs;   //!< Local records merged so far
 
@@ -298,6 +355,13 @@ class US_DataModel : public QObject
         //! \param run The catalog entry of the experiment
         //! \returns -1 when the source cannot say without walking the chain
         int run_record_count( const US_DataCatalog::Run& run );
+
+        //! \brief The checksum of every record of one catalog run
+        //! \param catalog The catalog the run was read from
+        //! \param index   The position of the run in that catalog
+        //! \returns GUID -> "checksum length", for records that have one
+        QMap< QString, QString > run_digests( US_DataCatalog* catalog,
+                                              int index );
 
         //! \brief Whether the source filter excludes this tree
         //! \param state The record state flags of the head of the tree

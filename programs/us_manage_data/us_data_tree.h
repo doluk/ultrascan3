@@ -42,6 +42,14 @@ class US_DataTree : public QObject
         //! \param runIndex The position of the experiment
         void fill_run( int runIndex );
 
+        //! \brief Colour one experiment's rows again
+        //!
+        //! A scan compares the records of an experiment after its rows are
+        //! already in the tree, so this is how a row that turns out to be a
+        //! conflict stops reading as in sync.
+        //! \param runIndex The position of the experiment
+        void refresh_run( int runIndex );
+
     public slots:
                 //! \brief Show help information for the data tree
                 void dtree_help( void );
@@ -103,7 +111,19 @@ class US_DataTree : public QObject
         int dbg_level;                 //!< Debug level
 
     private:
-        //! \brief The color, type name, source text and counters of a record
+        //! \brief The color, type name and source text of a record
+        //! \param desc The record to look at
+        //! \param fbru Filled in with the foreground brush
+        //! \param rtyp Filled in with the record type name
+        //! \param rsrc Filled in with the source text
+        void row_look( const US_DataModel::DataDesc& desc, QBrush& fbru,
+                       QString& rtyp, QString& rsrc );
+
+        //! \brief Add one record to the per-type counters
+        //! \param desc The record to count
+        void count_row( const US_DataModel::DataDesc& desc );
+
+        //! \brief The look of a record, and the record counted
         //! \param desc The record to classify
         //! \param fbru Filled in with the foreground brush
         //! \param rtyp Filled in with the record type name

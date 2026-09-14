@@ -205,27 +205,57 @@ void US_DataModel::setFilters( QString a_runf, QString a_tripf, QString a_srcf )
    filt_source = a_srcf;   // Filter string for source (DB/local)
 }
 
-// Scan the database and local disk for R/E/M/N data sets
+/* Scan the database and local disk for R/E/M/N data sets.
+
+   This is the whole scan for a caller that does not want to drive the
+   phases itself; us_manage_data drives them so it can fill the tree in as
+   the experiments arrive.
+*/
 void US_DataModel::scan_data()
 {
 DbgLv(1) << "ScnD: start scan   " << nowTime();
    scan_runs();            // First layer:  list the experiments
 DbgLv(1) << "ScnD: runs listed  " << nowTime();
 
-   int nruns  = runents.size();
+   int  nruns = runents.size();
+   bool bulk  = ( nruns > 0 )  &&  scan_all();
+DbgLv(1) << "ScnD: bulk read" << bulk << nowTime();
 
    progress->setMaximum( qMax( nruns, 1 ) );
    progress->setValue  ( 0 );
 
    for ( int ii = 0; ii < nruns; ii++ )
-   {  // Second layer:  read one experiment at a time
+   {  // Second layer:  merge one experiment at a time
       int index  = next_pending_run();
 
       if ( index < 0 )   break;
 
       lb_status->setText( tr( "Reading %1 ..." )
                           .arg( runents.at( index ).runID ) );
-      scan_run( index );
+
+      if ( bulk )  merge_run( index );
+      else         scan_run ( index );
+
+      progress->setValue( ii + 1 );
+      qApp->processEvents();
+   }
+DbgLv(1) << "ScnD: chain read   " << nowTime();
+
+   // Third layer:  compare the experiments that are in both places
+   int nver = queue_verifies();
+
+   progress->setMaximum( qMax( nver, 1 ) );
+   progress->setValue  ( 0 );
+
+   for ( int ii = 0; ii < nver; ii++ )
+   {
+      int index = next_pending_verify();
+
+      if ( index < 0 )   break;
+
+      lb_status->setText( tr( "Comparing %1 ..." )
+                          .arg( runents.at( index ).runID ) );
+      verify_run( index );
 
       progress->setValue( ii + 1 );
       qApp->processEvents();
@@ -299,6 +329,12 @@ US_DataModel::RunEntry::RunEntry()
    dbCount  = 0;
    loCount  = 0;
    loaded   = false;
+   verified = false;
+}
+
+bool US_DataModel::RunEntry::inBoth( void ) const
+{
+   return ( dbIndex >= 0  &&  loIndex >= 0 );
 }
 
 // Open the catalogs the current source filter calls for
@@ -330,6 +366,13 @@ void US_DataModel::open_catalogs( )
    if ( use_lo )
    {
       cat_lo     = new US_DataCatalog( this );
+
+      // Listing a store does not hash its files.  Reading every file of a
+      // multi-wavelength store to find out whether it still matches the
+      // database is the slowest thing this program can do, and it only
+      // means anything for a run that is in both places, so it waits for
+      // verify_run().
+      cat_lo->setChecksums( false );
 
       if ( ! cat_lo->open( US_DataCatalog::Disk, "", error ) )
       {
@@ -544,15 +587,64 @@ bool US_DataModel::scan_run( int index )
          DbgLv(1) << "ScnR: local detail" << entry.runID << error;
    }
 
+   return merge_run( index );
+}
+
+/* Read the chain of every experiment at once.
+
+   Asking the database one experiment at a time is four round trips per
+   experiment, each of which asks the server to hash that experiment's data
+   blobs.  The bulk form lists the whole store in four queries and hashes
+   nothing; the local store is the single pass it always was.
+*/
+bool US_DataModel::scan_all( void )
+{
+   QString error;
+
+   if ( cat_db != NULL  &&  ! cat_db->loadAll( error ) )
+   {
+      DbgLv(1) << "ScnA: db" << error;
+      return false;           // an older server: one experiment at a time
+   }
+
+   if ( cat_lo != NULL  &&  ! cat_lo->loadAll( error ) )
+      DbgLv(1) << "ScnA: local" << error;
+
+   return true;
+}
+
+/* Merge one experiment's records into the tree.
+
+   The records are appended, so rows already in the tree keep their
+   position and the tree can be filled in as the experiments arrive.
+*/
+bool US_DataModel::merge_run( int index )
+{
+   if ( index < 0  ||  index >= runents.size() )   return false;
+
+   RunEntry entry = runents.at( index );
+
+   if ( entry.loaded )
+   {
+      run_queue.removeAll( index );
+      return true;
+   }
+
+   ddescs.clear();
+   ldescs.clear();
+
+   if ( entry.dbIndex >= 0  &&  cat_db != NULL )
+      catalog_descs( cat_db, entry.dbIndex, REC_DB, ddescs );
+
+   if ( entry.loIndex >= 0  &&  cat_lo != NULL )
+      catalog_descs( cat_lo, entry.loIndex, REC_LO, ldescs );
+
    sort_descs( ddescs );
    sort_descs( ldescs );
 
    kdb_recs      += ddescs.size();
    klo_recs      += ldescs.size();
 
-   // Merge this experiment's records, then append them.  Rows already in
-   // the tree keep their position, so the tree can be filled in as the
-   // experiments arrive.
    int  base  = adescs.size();
    bool exctr = false;
 
@@ -576,6 +668,154 @@ bool US_DataModel::scan_run( int index )
    runents[ index ] = entry;
 
    run_queue.removeAll( index );
+
+   return true;
+}
+
+// ------------------------------------------------------------ verification
+
+bool US_DataModel::run_verified( int index ) const
+{
+   if ( index < 0  ||  index >= runents.size() )   return false;
+
+   return runents.at( index ).verified;
+}
+
+int US_DataModel::queue_verifies( void )
+{
+   ver_queue.clear();
+
+   for ( int ii = 0; ii < runents.size(); ii++ )
+   {
+      const RunEntry& entry = runents.at( ii );
+
+      // Only a run that is in both places can be out of step with itself
+      if ( ! entry.inBoth()  ||  entry.verified )   continue;
+
+      ver_queue << ii;
+   }
+
+   return ver_queue.size();
+}
+
+void US_DataModel::request_verify( int index )
+{
+   if ( index < 0  ||  index >= runents.size() )   return;
+   if ( runents.at( index ).verified )             return;
+   if ( ! runents.at( index ).inBoth() )           return;
+
+   ver_queue.removeAll( index );
+   ver_queue.prepend  ( index );
+}
+
+int US_DataModel::next_pending_verify( void ) const
+{
+   return ver_queue.isEmpty() ? -1 : ver_queue.first();
+}
+
+int US_DataModel::pending_verifies( void ) const
+{
+   return ver_queue.size();
+}
+
+// The checksum of every record of one catalog run, by GUID
+QMap< QString, QString > US_DataModel::run_digests( US_DataCatalog* catalog,
+                                                    int index )
+{
+   QMap< QString, QString > digests;
+
+   if ( catalog == NULL  ||  index < 0 )   return digests;
+
+   const US_DataCatalog::Run& run = catalog->run( index );
+
+   for ( int ii = 0; ii < run.raws.size(); ii++ )
+   {
+      const US_DataCatalog::Raw& raw = run.raws.at( ii );
+
+      if ( ! raw.checksum.isEmpty() )
+         digests.insert( raw.guid, raw.checksum + " " + raw.size );
+
+      for ( int jj = 0; jj < raw.edits.size(); jj++ )
+      {
+         const US_DataCatalog::Edit& edit = raw.edits.at( jj );
+
+         if ( ! edit.checksum.isEmpty() )
+            digests.insert( edit.guid, edit.checksum + " " + edit.size );
+
+         for ( int kk = 0; kk < edit.models.size(); kk++ )
+         {
+            const US_DataCatalog::Model& model = edit.models.at( kk );
+
+            if ( ! model.checksum.isEmpty() )
+               digests.insert( model.guid,
+                               model.checksum + " " + model.size );
+
+            for ( int mm = 0; mm < model.noises.size(); mm++ )
+            {
+               const US_DataCatalog::Noise& noise = model.noises.at( mm );
+
+               if ( noise.checksum.isEmpty() )  continue;
+
+               digests.insert( noise.guid,
+                               noise.checksum + " " + noise.size );
+            }
+         }
+      }
+   }
+
+   return digests;
+}
+
+/* Read the checksums of one experiment and compare them again.
+
+   Listing a store leaves the checksums out, so up to here a record that is
+   in both places reads as in sync.  This is what decides whether it really
+   is.
+*/
+bool US_DataModel::verify_run( int index )
+{
+   if ( index < 0  ||  index >= runents.size() )   return false;
+
+   RunEntry entry = runents.at( index );
+
+   ver_queue.removeAll( index );
+
+   if ( entry.verified  ||  ! entry.loaded )       return false;
+
+   QString error;
+
+   if ( entry.dbIndex >= 0  &&  cat_db != NULL  &&
+        ! cat_db->verifyRun( entry.dbIndex, error ) )
+      DbgLv(1) << "VfyR: db" << entry.runID << error;
+
+   if ( entry.loIndex >= 0  &&  cat_lo != NULL  &&
+        ! cat_lo->verifyRun( entry.loIndex, error ) )
+      DbgLv(1) << "VfyR: local" << entry.runID << error;
+
+   QMap< QString, QString > dbDigests = run_digests( cat_db, entry.dbIndex );
+   QMap< QString, QString > loDigests = run_digests( cat_lo, entry.loIndex );
+
+   for ( int row = entry.firstRow; row >= 0  &&  row <= entry.lastRow; row++ )
+   {
+      DataDesc desc = adescs.at( row );
+
+      bool isDba = ( ( desc.recState & REC_DB ) != 0 );
+      bool isLoc = ( ( desc.recState & REC_LO ) != 0 );
+
+      if ( ! isDba  ||  ! isLoc )   continue;   // nothing to compare
+
+      QString dbc = dbDigests.value( desc.dataGUID );
+      QString loc = loDigests.value( desc.dataGUID );
+
+      // One side without a checksum is still nothing to compare
+      desc.contents = ( dbc.isEmpty()  ||  loc.isEmpty() )
+                      ? QString() : dbc + " " + loc;
+
+      adescs[ row ] = desc;
+   }
+
+   entry.verified   = true;
+   runents[ index ] = entry;
 
    return true;
 }
@@ -676,7 +916,8 @@ void US_DataModel::catalog_descs( US_DataCatalog* catalog, int index,
       desc.parentGUID  = run.guid.simplified();
       desc.parentID    = isDb ? run.id.toInt() : -1;
       desc.filename    = isDb ? raw.filename : raw.path;
-      desc.contents    = raw.checksum + " " + raw.size;
+      desc.contents    = raw.checksum.isEmpty() ? QString()
+                         : raw.checksum + " " + raw.size;
       desc.label       = run.runID + "." + raw.triple;
       desc.description = raw.description.isEmpty()
                          ? raw.filename.section( ".", 0, -2 )
@@ -705,7 +946,8 @@ void US_DataModel::catalog_descs( US_DataCatalog* catalog, int index,
          edesc.parentGUID  = desc.dataGUID;
          edesc.parentID    = isDb ? raw.id.toInt() : -1;
          edesc.filename    = isDb ? edit.filename : edit.path;
-         edesc.contents    = edit.checksum + " " + edit.size;
+         edesc.contents    = edit.checksum.isEmpty() ? QString()
+                             : edit.checksum + " " + edit.size;
          edesc.label       = run.runID + "." + edit.filename.section( ".", 1, 3 );
          edesc.description = edit.filename.section( ".", 0, -2 );
          edesc.filemodDate = isDb ? QString() : edit.lastUpdated;
@@ -734,7 +976,8 @@ void US_DataModel::catalog_descs( US_DataCatalog* catalog, int index,
             mdesc.parentGUID  = edesc.dataGUID;
             mdesc.parentID    = isDb ? edit.id.toInt() : -1;
             mdesc.filename    = isDb ? QString() : model.path;
-            mdesc.contents    = model.checksum + " " + model.size;
+            mdesc.contents    = model.checksum.isEmpty() ? QString()
+                                : model.checksum + " " + model.size;
             mdesc.label       = label;
             mdesc.description = model.description;
             mdesc.filemodDate = isDb ? QString() : model.lastUpdated;
@@ -763,7 +1006,8 @@ void US_DataModel::catalog_descs( US_DataCatalog* catalog, int index,
                ndesc.parentGUID  = mdesc.dataGUID;
                ndesc.parentID    = isDb ? model.id.toInt() : -1;
                ndesc.filename    = isDb ? QString() : noise.path;
-               ndesc.contents    = noise.checksum + " " + noise.size;
+               ndesc.contents    = noise.checksum.isEmpty() ? QString()
+                                   : noise.checksum + " " + noise.size;
                ndesc.label       = nlabel;
                ndesc.description = noise.description;
                ndesc.filemodDate = isDb ? QString() : noise.lastUpdated;
@@ -833,7 +1077,13 @@ DbgLv(1) << "MERGE: nd nl dlab llab"
 // modell.debug();
 // DbgLv(1) << " ++DB Model:";
 // modeld.debug(); }
-         descd.contents     = descd.contents + " " + descl.contents;
+         // A checksum on one side only is nothing to compare, so the
+         // combined contents stays empty and the record reads as in sync
+         // until verify_run() has read both
+         descd.contents     = ( descd.contents.isEmpty()  ||
+                                descl.contents.isEmpty() )
+                              ? QString()
+                              : descd.contents + " " + descl.contents;
 
          mdescs << descd;                  // output combo record
 DbgLv(2) << "MERGE:  kar jdr jlr (1)GID" << kar << jdr << jlr << descd.dataGUID;

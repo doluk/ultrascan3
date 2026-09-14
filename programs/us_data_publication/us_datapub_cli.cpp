@@ -393,8 +393,8 @@ int US_DataPubCLI::runExport( void )
    }
 
    US_DataPubExporter exporter;
-   connect( &exporter, SIGNAL( message( const QString& ) ),
-            this,      SLOT  ( onMessage( const QString& ) ) );
+   connect( &exporter, &US_DataPubExporter::message,
+            this,      &US_DataPubCLI::onMessage );
 
    if ( args.dryRun )
    {
@@ -435,8 +435,8 @@ int US_DataPubCLI::runImport( void )
    }
 
    US_DataPubImporter importer;
-   connect( &importer, SIGNAL( message( const QString& ) ),
-            this,      SLOT  ( onMessage( const QString& ) ) );
+   connect( &importer, &US_DataPubImporter::message,
+            this,      &US_DataPubCLI::onMessage );
 
    QString error;
 

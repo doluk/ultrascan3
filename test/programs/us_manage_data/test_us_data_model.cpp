@@ -389,3 +389,98 @@ TEST_F( TestUSDataModel, ExcludingLocalOnlyTreesLeavesNothingOfALocalStore )
    EXPECT_EQ( model.runCount(), 0 );
    EXPECT_EQ( model.recCount(), 0 );
 }
+
+// -------------------------------------------------------- the bulk second layer
+
+// Reading the whole store at once has to put the same rows in the tree as
+// reading one experiment at a time does.
+TEST_F( TestUSDataModel, ScanAllGivesTheSameRowsAsOneAtATime )
+{
+   US_DataModel oneAtATime;
+   US_DataModel allAtOnce;
+
+   prepare( oneAtATime );
+   prepare( allAtOnce  );
+
+   oneAtATime.scan_runs();
+   allAtOnce .scan_runs();
+
+   for ( int ii = 0; ii < oneAtATime.runCount(); ii++ )
+      ASSERT_TRUE( oneAtATime.scan_run( ii ) );
+
+   ASSERT_TRUE( allAtOnce.scan_all() );
+
+   for ( int ii = 0; ii < allAtOnce.runCount(); ii++ )
+      ASSERT_TRUE( allAtOnce.merge_run( ii ) );
+
+   ASSERT_EQ( allAtOnce.runCount(), oneAtATime.runCount() );
+   ASSERT_EQ( allAtOnce.recCount(), oneAtATime.recCount() );
+
+   for ( int row = 0; row < allAtOnce.recCount(); row++ )
+   {
+      US_DataModel::DataDesc all = allAtOnce .row_datadesc( row );
+      US_DataModel::DataDesc one = oneAtATime.row_datadesc( row );
+
+      EXPECT_EQ( all.recType, one.recType );
+      EXPECT_EQ( all.label.toStdString(), one.label.toStdString() );
+      EXPECT_EQ( all.dataGUID.toStdString(), one.dataGUID.toStdString() );
+   }
+
+   EXPECT_EQ( allAtOnce.recCountLoc(), oneAtATime.recCountLoc() );
+}
+
+// A local-only store has nothing to compare against, so there is nothing
+// worth verifying and no file is read to find that out.
+TEST_F( TestUSDataModel, NothingIsVerifiedWhenOnlyOneSourceHoldsTheData )
+{
+   US_DataModel model;
+   prepare( model );
+
+   model.scan_runs();
+   ASSERT_TRUE( model.scan_all() );
+
+   for ( int ii = 0; ii < model.runCount(); ii++ )
+      ASSERT_TRUE( model.merge_run( ii ) );
+
+   EXPECT_EQ( model.queue_verifies(), 0 );
+   EXPECT_EQ( model.pending_verifies(), 0 );
+
+   for ( int ii = 0; ii < model.runCount(); ii++ )
+   {
+      EXPECT_FALSE( model.run_verified( ii ) );
+      EXPECT_FALSE( model.run_entry( ii ).inBoth() );
+   }
+
+   // and asking for one anyway is refused rather than wasted
+   model.request_verify( 0 );
+   EXPECT_EQ( model.next_pending_verify(), -1 );
+}
+
+// Listing a store does not read its files, so a row carries no checksum
+// until its experiment has been verified.
+TEST_F( TestUSDataModel, ListingCarriesNoChecksums )
+{
+   US_DataModel model;
+   prepare( model );
+
+   model.scan_runs();
+   ASSERT_TRUE( model.scan_all() );
+
+   for ( int ii = 0; ii < model.runCount(); ii++ )
+      ASSERT_TRUE( model.merge_run( ii ) );
+
+   int rows = 0;
+
+   for ( int row = 0; row < model.recCount(); row++ )
+   {
+      US_DataModel::DataDesc desc = model.row_datadesc( row );
+
+      if ( desc.recType == US_DataModel::EXPERIMENT )  continue;
+
+      EXPECT_TRUE( desc.contents.isEmpty() )
+         << desc.label.toStdString() << ": " << desc.contents.toStdString();
+      rows++;
+   }
+
+   EXPECT_GT( rows, 0 );
+}
