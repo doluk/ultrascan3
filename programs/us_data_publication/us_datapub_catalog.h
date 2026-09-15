@@ -134,6 +134,16 @@ class US_DataPubCatalog
       //! \brief True when the catalog reads from the database
       bool isDb( void ) const;
 
+      /*! \brief Whether to use the catalog procedures added for this
+
+          They read a whole experiment in a handful of queries, and the
+          catalog already falls back by itself on the procedures UltraScan
+          has always had when a server does not have them, so the only
+          reason to turn them off is to exercise that fallback.
+          \param on True to use them
+      */
+      void setBulkQueries( bool on );
+
       //! \brief The open database connection, or null for a disk catalog
       US_DB2* db( void );
 

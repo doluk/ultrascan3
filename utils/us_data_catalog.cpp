@@ -1082,6 +1082,9 @@ bool US_DataCatalog::loadAllDb( QString& error )
       // ones may well be there, so that is what the caller falls back to,
       // not the record-at-a-time path.
       bulk_all_ok = false;
+      error       = tr( "This database has no whole-store catalog"
+                        " procedures" );
+
       emit message( tr( "This database does not have the whole-store catalog"
                         " procedures; falling back to one experiment at a"
                         " time" ) );

@@ -92,6 +92,12 @@ first and the chain of one experiment is read when the export needs it, which
 is what keeps a multi-wavelength run from having to be read in full before the
 first selection can be made.
 
+A database that has not been updated still works. The catalog prefers stored
+procedures added for it, and against a server that does not have them it
+notices, says so on the status line, and falls back on the procedures UltraScan
+has always had -- one query per record. The bundle is identical; collecting it
+simply takes longer.
+
 The Export tab works from the top down.
 
 **Export data from**

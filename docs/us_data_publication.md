@@ -224,6 +224,15 @@ adds on top is what only a publication needs: the project list, the experiment
 XML of a run — which is where a disk store records its rotor calibration,
 centerpieces and solutions — and the run's time state.
 
+**A database that has not been updated still works.** Those per-experiment
+queries are stored procedures added for the catalog; against a server that does
+not have them the catalog notices, says so, and falls back on the procedures
+UltraScan has always had — one query per record. The bundle that comes out is
+identical, it just takes longer to collect. Exporting one run of a
+multi-wavelength experiment from the test database took 5.5 s with the new
+procedures and 54 s without them; for a publication, which is a handful of runs
+rather than a whole store, that is a wait rather than a problem.
+
 ### The window
 
 The Export tab works top to bottom:

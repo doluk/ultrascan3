@@ -277,6 +277,11 @@ bool US_DataPubCatalog::isDb( void ) const
    return from_db;
 }
 
+void US_DataPubCatalog::setBulkQueries( bool on )
+{
+   cat->setBulkQueries( on );
+}
+
 US_DB2* US_DataPubCatalog::db( void )
 {
    return dbase;

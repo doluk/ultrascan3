@@ -85,6 +85,21 @@ class TestUSDataCatalogDb : public QtTestBase
          US_Settings::set_us_inv_ID( personID );
       }
 
+      /* True when the server has the catalog procedures.
+
+         They are an optimization: the catalog falls back on the procedures
+         UltraScan has always had when a server does not have them, and
+         these tests are meant to pass either way, so the ones that are
+         about the fast path ask first.
+      */
+      bool hasCatalogProcedures()
+      {
+         db->rawQuery( "CALL get_experiment_summary( '', '', 0 )" );
+
+         return ! db->lastError().contains( "does not exist",
+                                            Qt::CaseInsensitive );
+      }
+
       void TearDown() override
       {
          if ( db != nullptr )
@@ -106,6 +121,7 @@ class TestUSDataCatalogDb : public QtTestBase
 
 TEST_F( TestUSDataCatalogDb, FirstLayerListsExperimentsWithCounts )
 {
+   bool           bulk = hasCatalogProcedures();
    US_DataCatalog catalog;
    QString        error;
 
@@ -114,10 +130,13 @@ TEST_F( TestUSDataCatalogDb, FirstLayerListsExperimentsWithCounts )
 
    ASSERT_GT( catalog.runCount(), 0 );
 
+   // An older server cannot count the chain without walking it and says
+   // so with -1, so what is looked for here is an experiment that has not
+   // been said to be empty
    int found = -1;
 
    for ( int ii = 0; ii < catalog.runCount(); ii++ )
-      if ( catalog.run( ii ).rawCount > 0 )  found = ii;
+      if ( catalog.run( ii ).rawCount != 0 )  found = ii;
 
    ASSERT_GE( found, 0 ) << "expected at least one experiment with raw data";
 
@@ -126,14 +145,26 @@ TEST_F( TestUSDataCatalogDb, FirstLayerListsExperimentsWithCounts )
    EXPECT_FALSE( run.id   .isEmpty() );
    EXPECT_FALSE( run.guid .isEmpty() );
    EXPECT_FALSE( run.runID.isEmpty() );
-   EXPECT_GE   ( run.editCount,  0 );
-   EXPECT_GE   ( run.modelCount, 0 );
-   EXPECT_GE   ( run.noiseCount, 0 );
    EXPECT_FALSE( run.isLoaded() );
+
+   if ( bulk )
+   {  // the summary counts the chain without walking it
+      EXPECT_GE( run.editCount,  0 );
+      EXPECT_GE( run.modelCount, 0 );
+      EXPECT_GE( run.noiseCount, 0 );
+   }
+
+   else
+   {  // an older server cannot say without walking it, and says so
+      EXPECT_EQ( run.editCount,  -1 );
+      EXPECT_EQ( run.modelCount, -1 );
+      EXPECT_EQ( run.noiseCount, -1 );
+   }
 }
 
 TEST_F( TestUSDataCatalogDb, SecondLayerMatchesTheCounts )
 {
+   bool           bulk = hasCatalogProcedures();
    US_DataCatalog catalog;
    QString        error;
 
@@ -143,7 +174,7 @@ TEST_F( TestUSDataCatalogDb, SecondLayerMatchesTheCounts )
    int found = -1;
 
    for ( int ii = 0; ii < catalog.runCount(); ii++ )
-      if ( catalog.run( ii ).rawCount > 0 )  found = ii;
+      if ( catalog.run( ii ).rawCount != 0 )  found = ii;
 
    ASSERT_GE( found, 0 );
 
@@ -156,8 +187,16 @@ TEST_F( TestUSDataCatalogDb, SecondLayerMatchesTheCounts )
    const US_DataCatalog::Run& run = catalog.run( found );
    ASSERT_TRUE( run.isLoaded() );
 
-   // what the summary promised is what the detail delivers
-   EXPECT_EQ( run.raws.size(), rawCount );
+   if ( bulk )
+      // what the summary promised is what the detail delivers
+      EXPECT_EQ( run.raws.size(), rawCount );
+
+   else
+   {  // an older server promised nothing: it cannot count without walking
+      EXPECT_EQ( rawCount,   -1 );
+      EXPECT_EQ( editCount,  -1 );
+      EXPECT_EQ( modelCount, -1 );
+   }
 
    int edits  = 0;
    int models = 0;
@@ -190,8 +229,15 @@ TEST_F( TestUSDataCatalogDb, SecondLayerMatchesTheCounts )
       }
    }
 
-   EXPECT_EQ( edits,  editCount );
-   EXPECT_EQ( models, modelCount );
+   if ( bulk )
+   {
+      EXPECT_EQ( edits,  editCount  );
+      EXPECT_EQ( models, modelCount );
+   }
+
+   // whatever the server, the counts are right once the chain is read
+   EXPECT_EQ( edits,  run.editCount  );
+   EXPECT_EQ( models, run.modelCount );
 }
 
 TEST_F( TestUSDataCatalogDb, PendingQueueWorksThroughEveryExperiment )
@@ -308,6 +354,10 @@ TEST_F( TestUSDataCatalogDb, BulkAndLegacyPathsAgree )
 // experiment at a time gives, or the fast path is not the same scan.
 TEST_F( TestUSDataCatalogDb, LoadAllGivesTheSameChainAsOneAtATime )
 {
+   if ( ! hasCatalogProcedures() )
+      GTEST_SKIP() << "this server has no whole-store procedures; "
+                      "OldServerRefusesLoadAllAndReadsOneAtATime covers it";
+
    US_DataCatalog oneAtATime;
    US_DataCatalog allAtOnce;
    QString        error;
@@ -372,6 +422,9 @@ TEST_F( TestUSDataCatalogDb, LoadAllGivesTheSameChainAsOneAtATime )
 // per-experiment procedures report.
 TEST_F( TestUSDataCatalogDb, VerifyFillsInTheChecksumsTheBulkListingLeftOut )
 {
+   if ( ! hasCatalogProcedures() )
+      GTEST_SKIP() << "this server has no whole-store procedures";
+
    US_DataCatalog catalog;
    QString        error;
 
@@ -455,4 +508,70 @@ TEST_F( TestUSDataCatalogDb, WithoutTheBulkProceduresOneExperimentAtATimeWorks )
    ASSERT_GE  ( index, 0 );
    ASSERT_TRUE( catalog.loadRunDetail( index, error ) ) << error.toStdString();
    EXPECT_TRUE( catalog.run( index ).isLoaded() );
+}
+
+// A server that really does not have the procedures -- as opposed to one
+// told to pretend -- has to be recognised as such, and the scan has to go
+// on working through the procedures UltraScan has always had.
+TEST_F( TestUSDataCatalogDb, OldServerRefusesLoadAllAndReadsOneAtATime )
+{
+   if ( hasCatalogProcedures() )
+      GTEST_SKIP() << "this server has the catalog procedures";
+
+   US_DataCatalog catalog;
+   QString        error;
+
+   ASSERT_TRUE( catalog.attach( db, error ) ) << error.toStdString();
+
+   // The listing falls back on its own: nothing told it to
+   ASSERT_TRUE( catalog.loadRuns( error ) ) << error.toStdString();
+   ASSERT_GT  ( catalog.runCount(), 0 )
+      << "the fall-back listing found nothing";
+
+   // The whole-store read is refused, with a reason
+   EXPECT_FALSE( catalog.loadAll( error ) );
+   EXPECT_FALSE( error.isEmpty() );
+
+   // ... and the chain still comes back one experiment at a time
+   int index = -1;
+
+   for ( int ii = 0; ii < catalog.runCount(); ii++ )
+      if ( catalog.run( ii ).rawCount != 0 )  index = ii;
+
+   ASSERT_GE  ( index, 0 );
+   ASSERT_TRUE( catalog.loadRunDetail( index, error ) ) << error.toStdString();
+
+   const US_DataCatalog::Run& run = catalog.run( index );
+
+   ASSERT_TRUE( run.isLoaded() );
+   ASSERT_GT  ( run.raws.size(), 0 );
+
+   for ( int ii = 0; ii < run.raws.size(); ii++ )
+      EXPECT_FALSE( run.raws[ ii ].guid.isEmpty() );
+}
+
+// The root of it: a statement the server cannot run is reported as an
+// error, not as a query that returned nothing.  Reporting OK here is what
+// kept the catalog from ever noticing that it should fall back.
+TEST_F( TestUSDataCatalogDb, AMissingProcedureIsReportedAsAnError )
+{
+   db->rawQuery( "SELECT 1" );          // a good statement first
+
+   QStringList query;
+   query << "no_such_procedure_at_all" << "1";
+   db->query( query );
+
+   EXPECT_NE  ( db->lastErrno(), US_DB2::OK );
+   EXPECT_TRUE( db->lastError().contains( "does not exist",
+                                          Qt::CaseInsensitive ) )
+      << db->lastError().toStdString();
+
+   // and the connection is still usable afterwards
+   query.clear();
+   query << "get_experiment_desc" << QString::number( personID );
+   db->query( query );
+
+   EXPECT_TRUE( db->lastErrno() == US_DB2::OK  ||
+                db->lastErrno() == US_DB2::NOROWS )
+      << db->lastErrno() << ": " << db->lastError().toStdString();
 }

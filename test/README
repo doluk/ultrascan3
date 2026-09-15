@@ -149,6 +149,34 @@ US3_TEST_DB_EMAIL=test@example.org ./bin/test_us_utils_db
 client certificate, key and CA it presents are read from
 `<build>/etc/mysql/{server-cert.pem,server-key.pem,ca-cert.pem}`.
 
+`test_us_datapub` takes the same variables and runs its own `DataPubDb` cases
+against the database.
+
+### Testing the fall-back
+
+The catalog prefers stored procedures added for it and falls back on the ones
+UltraScan has always had when a server does not have them.  Both paths have to
+work, so point the same suites at a database with those procedures dropped:
+
+```bash
+mysqldump -u root --routines --databases us3test | sed 's/us3test/us3old/g' \
+    | mysql -u root
+mysql -u root us3old -e "
+  DROP PROCEDURE get_experiment_summary;
+  DROP PROCEDURE get_rawData_by_experiment;
+  DROP PROCEDURE get_editedData_by_experiment;
+  DROP PROCEDURE get_model_desc_by_experiment;
+  DROP PROCEDURE get_noise_desc_by_experiment;
+  DROP PROCEDURE get_rawData_by_person;
+  DROP PROCEDURE get_editedData_by_person;"
+
+US3_TEST_DB_NAME=us3old ... ./bin/test_us_utils_db
+US3_TEST_DB_NAME=us3old ... ./bin/test_us_datapub
+```
+
+The cases that are about the fast path ask the server what it has and skip;
+the rest are expected to pass against either.
+
 ## Debugging Failed Tests
 
 When tests fail, the framework automatically:

@@ -440,6 +440,19 @@ void US_DB2::query( const QString& ) {}
 void US_DB2::query( const QString& sqlQuery )
 {
    this->rawQuery( sqlQuery );
+
+   if ( ! result  &&  mysql_errno( db ) != 0 )
+   {
+      // The statement itself failed -- a procedure this server does not
+      // have, say -- so there is no status result set to read and no US3
+      // code to read from it.  rawQuery has recorded what MySQL said;
+      // falling through from here would report OK and wipe that message,
+      // which makes a query that never ran look like one that returned
+      // nothing.
+      db_errno = DBERROR;
+      return;
+   }
+
    if ( result )
    {
       // This is a 2-set result: status, then data
