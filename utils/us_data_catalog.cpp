@@ -487,6 +487,19 @@ int US_DataCatalog::investigatorID( void ) const
    return inv_id;
 }
 
+bool US_DataCatalog::refreshInvestigator( void )
+{
+   int now_id = US_Settings::us_inv_ID();
+
+   if ( now_id == inv_id )  return false;
+
+   inv_id = now_id;
+
+   // Every database query names the person, so a listing read for the
+   // previous one describes records the user is no longer looking at
+   return isDb();
+}
+
 const QList< US_DataCatalog::Run >& US_DataCatalog::runs( void ) const
 {
    return run_list;
@@ -578,6 +591,8 @@ bool US_DataCatalog::loadRuns( QString& error )
 
 bool US_DataCatalog::loadRuns( const QString& projectGUID, QString& error )
 {
+   refreshInvestigator();
+
    run_list.clear();
    pending .clear();
    proj_guid = projectGUID;

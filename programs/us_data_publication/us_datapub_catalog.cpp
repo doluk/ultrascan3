@@ -254,10 +254,28 @@ bool US_DataPubCatalog::open( bool fromDb, const QString& dbPassword,
    return true;
 }
 
+/* The investigator can be switched from a dialog while this catalog is
+   open -- the run selection dialog offers one -- and the database holds one
+   person's records at a time.  What was listed under the person selected
+   before then describes records the user is no longer looking at, so the
+   run they just picked would be reported as missing.  Forgetting the
+   listing makes the next query read the person who is selected now.
+*/
+void US_DataPubCatalog::syncInvestigator( void )
+{
+   if ( ! cat->refreshInvestigator() )  return;
+
+   inv_id = cat->investigatorID();
+   listed = false;
+   listed_project.clear();
+}
+
 // Read the first layer of the shared catalog, once per project filter
 bool US_DataPubCatalog::ensureListed( const QString& projectGUID,
                                       QString& error )
 {
+   syncInvestigator();
+
    if ( listed  &&  listed_project == projectGUID )
    {
       error.clear();
@@ -297,6 +315,8 @@ int US_DataPubCatalog::investigatorID( void ) const
 QList< US_DataPubCatalog::Project > US_DataPubCatalog::projects(
       QString& error )
 {
+   syncInvestigator();
+
    return from_db ? projectsDb( error ) : projectsDisk( error );
 }
 
@@ -604,6 +624,8 @@ QList< US_DataPubCatalog::Noise > US_DataPubCatalog::noises(
 bool US_DataPubCatalog::expInfo( const Run& run, ExpInfo& info,
                                  QString& error )
 {
+   syncInvestigator();
+
    if ( ! from_db )
    {
       QString fpath = expFilePath( run );

@@ -665,3 +665,29 @@ TEST_F( TestUSDataCatalog, DiskCatalogHasNoDatabaseConnection )
    EXPECT_EQ   ( catalog.db(), nullptr );
    EXPECT_EQ   ( catalog.source(), US_DataCatalog::Disk );
 }
+
+/* The investigator is chosen from a dialog any window may open, so the one
+   a catalog was built with can be out of date by the time the next query
+   goes out.  A local store holds the same work whoever is selected, so the
+   catalog picks the change up without calling the listing stale.
+*/
+TEST_F( TestUSDataCatalog, TheSelectedInvestigatorIsPickedUp )
+{
+   int savedInv = US_Settings::us_inv_ID();
+
+   US_Settings::set_us_inv_ID( 11 );
+
+   US_DataCatalog catalog;
+   QString        error;
+
+   ASSERT_TRUE( catalog.open( US_DataCatalog::Disk, QString(), error ) );
+   EXPECT_EQ  ( catalog.investigatorID(), 11 );
+   EXPECT_FALSE( catalog.refreshInvestigator() );
+
+   US_Settings::set_us_inv_ID( 12 );
+
+   EXPECT_FALSE( catalog.refreshInvestigator() );
+   EXPECT_EQ   ( catalog.investigatorID(), 12 );
+
+   US_Settings::set_us_inv_ID( savedInv );
+}

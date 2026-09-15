@@ -243,6 +243,9 @@ class US_DataPubCatalog
       QString         listed_project;
       bool            listed;
 
+      //! \brief Drop what was listed when the investigator has changed
+      void syncInvestigator( void );
+
       //! \brief Make sure the first layer of the shared catalog is read
       //! \param projectGUID When not empty, only runs of that project
       //! \param error       Filled in with a message when the scan fails

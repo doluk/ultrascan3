@@ -236,6 +236,20 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
       //! \brief The investigator whose records the catalog reads
       int investigatorID( void ) const;
 
+      //! \brief Pick up the investigator that is selected now
+      //!
+      //! The investigator can be changed from a dialog that any window may
+      //! open, so the one this catalog was built with can be out of date by
+      //! the time the next query goes out.  loadRuns() calls this, and a
+      //! caller that caches a listing of its own should call it too.
+      //!
+      //! \returns True when a different person is selected now and that
+      //!          changes what the catalog would read -- which is the case
+      //!          for the database, whose records belong to one person at a
+      //!          time.  The local results directory holds the same work
+      //!          whoever is selected, so nothing there goes stale.
+      bool refreshInvestigator( void );
+
       //! \brief Read the first layer: one entry per experiment
       //! \param projectGUID When not empty, only experiments of that project
       //! \param error       Filled in with a message when the scan fails

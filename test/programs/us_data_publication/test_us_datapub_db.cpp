@@ -12,6 +12,13 @@
 //   US3_TEST_DB_PERSON_GUID=... US3_TEST_DB_PERSON_PW=... \
 //   US3_TEST_DB_PERSON_ID=2 ./bin/test_us_datapub
 //
+// The test about a changed investigator needs a second person to switch to,
+// and an administrator login, since only an administrator may read another
+// person's records.  Without these it skips:
+//
+//   US3_TEST_DB_ADMIN_GUID=... US3_TEST_DB_ADMIN_PW=... \
+//   US3_TEST_DB_OTHER_ID=3
+//
 // Without those they skip, so an ordinary build needs no database.
 #include <gtest/gtest.h>
 
@@ -99,6 +106,29 @@ class DataPubDb : public ::testing::Test
 
          return ! db->lastError().contains( "does not exist",
                                             Qt::CaseInsensitive );
+      }
+
+      // Log in as an administrator, who alone may ask the database for
+      // another person's records, and say whether that was possible
+      bool loginAsAdmin()
+      {
+         QString guid = qEnvironmentVariable( "US3_TEST_DB_ADMIN_GUID" );
+         QString pass = qEnvironmentVariable( "US3_TEST_DB_ADMIN_PW"   );
+
+         if ( guid.isEmpty() )  return false;
+
+         QStringList cipher = US_Crypto::encrypt( pass, master );
+         QStringList entry  = US_Settings::defaultDB();
+
+         if ( entry.size() < 10 )  return false;
+
+         entry.replace( 7, cipher.at( 0 ) );
+         entry.replace( 8, cipher.at( 1 ) );
+         entry.replace( 9, guid );
+
+         US_Settings::set_defaultDB( entry );
+
+         return true;
       }
 
       // The run of the store that has the most under it
@@ -401,4 +431,92 @@ TEST_F( DataPubDb, ABundleIsExportedFromTheDatabase )
             << exporter.manifest().total() << "records from the database";
 
    QDir( root ).removeRecursively();
+}
+
+/* Switching the investigator has to reach the queries.
+
+   The investigator is chosen from a dialog while a catalog is open -- the
+   run selection dialog offers one of its own -- and the database holds one
+   person's records at a time.  A listing read for the person who was
+   selected before is no answer about the run the user has just picked out
+   of the dialog, which is how a run that is plainly there came back as
+   "No run was found in the database".
+*/
+TEST_F( DataPubDb, SwitchingTheInvestigatorChangesWhatIsFound )
+{
+   if ( ! loginAsAdmin() )
+      GTEST_SKIP() << "no administrator login configured";
+
+   int first  = qEnvironmentVariable( "US3_TEST_DB_PERSON_ID" ).toInt();
+   int second = qEnvironmentVariable( "US3_TEST_DB_OTHER_ID"  ).toInt();
+
+   if ( second == 0  ||  second == first )
+      GTEST_SKIP() << "no second investigator configured";
+
+   US_Settings::set_us_inv_ID( first );
+
+   US_DataPubCatalog catalog;
+   QString           error;
+
+   ASSERT_TRUE( catalog.open( true, master, error ) ) << error.toStdString();
+
+   QList< US_DataPubCatalog::Run > mine = catalog.runs( QString(), error );
+
+   ASSERT_TRUE( error.isEmpty() ) << error.toStdString();
+   ASSERT_GT  ( mine.size(), 0 ) << "the first investigator has no runs";
+
+   // That listing is what the catalog now has to hand
+   US_DataPubCatalog::Run found;
+
+   ASSERT_TRUE( catalog.runByID( mine[ 0 ].runID, found, error ) )
+      << error.toStdString();
+
+   // The user picks the other investigator in the dialog, which lists that
+   // person's runs with a query of its own
+   US_Settings::set_us_inv_ID( second );
+
+   US_DataPubCatalog dialog;
+
+   ASSERT_TRUE( dialog.open( true, master, error ) ) << error.toStdString();
+
+   QList< US_DataPubCatalog::Run > theirs = dialog.runs( QString(), error );
+
+   ASSERT_TRUE( error.isEmpty() ) << error.toStdString();
+   ASSERT_GT  ( theirs.size(), 0 ) << "the second investigator has no runs";
+
+   QStringList ids;
+
+   for ( int ii = 0; ii < theirs.size(); ii++ )
+      ids << theirs[ ii ].runID;
+
+   ASSERT_FALSE( ids.contains( mine[ 0 ].runID ) )
+      << "the two investigators share a run, so nothing is being told apart";
+
+   // The run the dialog is showing is the one the open catalog has to find
+   ASSERT_TRUE( catalog.runByID( theirs[ 0 ].runID, found, error ) )
+      << error.toStdString();
+
+   EXPECT_EQ( found.runID.toStdString(), theirs[ 0 ].runID.toStdString() );
+   EXPECT_EQ( catalog.investigatorID(), second );
+
+   // ... and what it lists is that person's work, not the previous one's
+   QStringList listed;
+   QList< US_DataPubCatalog::Run > now = catalog.runs( QString(), error );
+
+   for ( int ii = 0; ii < now.size(); ii++ )
+      listed << now[ ii ].runID;
+
+   EXPECT_FALSE( listed.contains( mine[ 0 ].runID ) )
+      << "the listing of the person selected before is still being shown";
+
+   // A run of the person no longer selected is not theirs to publish
+   EXPECT_FALSE( catalog.runByID( mine[ 0 ].runID, found, error ) );
+
+   // ... and switching back brings the first person's work back
+   US_Settings::set_us_inv_ID( first );
+
+   ASSERT_TRUE( catalog.runByID( mine[ 0 ].runID, found, error ) )
+      << error.toStdString();
+
+   EXPECT_EQ( catalog.investigatorID(), first );
 }

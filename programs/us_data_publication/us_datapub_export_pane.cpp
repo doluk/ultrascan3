@@ -357,6 +357,7 @@ void US_DataPubExportPane::select_runs( void )
    }
 
    QStringList     runIDs;
+   int             person = US_Settings::us_inv_ID();
    US_SelectRuns*  dialog = allowed.isEmpty()
                             ? new US_SelectRuns( dkdb_cntrls->db(), runIDs )
                             : new US_SelectRuns( dkdb_cntrls->db(), runIDs,
@@ -364,6 +365,16 @@ void US_DataPubExportPane::select_runs( void )
    dialog->exec();
    qApp->processEvents();
    delete dialog;
+
+   // The dialog has an investigator button of its own, and the database
+   // holds one person's records at a time, so a project and runs picked
+   // for the person selected before it came up do not belong with what
+   // was just selected
+   if ( US_Settings::us_inv_ID() != person )
+   {
+      if ( ! project_guid.isEmpty() )  clear_project();
+      if ( ! runs        .isEmpty() )  clear_runs();
+   }
 
    if ( runIDs.isEmpty() )  return;
 

@@ -13,8 +13,13 @@
 --   US3_TEST_DB_PERSON_PW=secret    US3_TEST_DB_PERSON_ID=2 \
 --   US3_TEST_DB_EMAIL=test@example.org  ./bin/test_us_utils_db
 --
+--   US3_TEST_DB_ADMIN_GUID=aaaaaaaa-0000-0000-0000-0000000admin \
+--   US3_TEST_DB_ADMIN_PW=adminpw  US3_TEST_DB_OTHER_ID=3
+--
 -- The investigator here is deliberately an ordinary user, not an admin, so
--- the tests go through the same permission checks a real user does.
+-- the tests go through the same permission checks a real user does.  The
+-- administrator at the foot of this file is for the tests that switch
+-- between investigators, which no ordinary user is allowed to do.
 
 -- an ordinary user: userlevel 2 is below @US3_ADMIN
 INSERT INTO people (personID, personGUID, fname, lname, address, city, state, zip,
@@ -84,3 +89,46 @@ INSERT INTO noise (noiseID, noiseGUID, editedDataID, modelID, modelGUID, noiseTy
 VALUES (400, 'aaaaaaaa-0000-0000-0000-000000noise1', 200, 300,
         'aaaaaaaa-0000-0000-0000-000000model1', 'ti_noise',
         'MWL_demo_run.1A280.2dsa.ti_noise', '<noise/>');
+
+-- ----------------------------------------------------------------------
+-- A second investigator, and an administrator who can read both of them.
+--
+-- The investigator is chosen in the GUI and goes into every catalog query
+-- as a parameter, while the login stays the same, so switching between
+-- these two is what the tests about a changed investigator need.  Only an
+-- administrator may ask for another person's records, which is why one is
+-- here; the ordinary user above still exercises the permission checks.
+-- ----------------------------------------------------------------------
+INSERT INTO people (personID, personGUID, fname, lname, address, city, state, zip,
+                    phone, email, organization, password, activated, signup,
+                    lastLogin, userlevel, account_enabled, authenticatePAM, userNamePAM)
+VALUES (1, 'aaaaaaaa-0000-0000-0000-0000000admin', 'Test', 'Admin', 'x','x','TX','00000',
+        '000', 'admin@example.org', 'Lab', MD5('adminpw'), 1, NOW(), NOW(), 3, 1, 0,
+        'test_admin'),
+       (3, 'aaaaaaaa-0000-0000-0000-0000000user3', 'Other', 'User', 'x','x','TX','00000',
+        '000', 'other@example.org', 'Lab', MD5('secret3'), 1, NOW(), NOW(), 2, 1, 0,
+        'test_other');
+
+INSERT INTO project (projectID, projectGUID, goals, molecules, purity, expense,
+                     bufferComponents, saltInformation, AUC_questions, expDesign,
+                     notes, description, status)
+VALUES (6, 'aaaaaaaa-0000-0000-0000-000000proj2', 'g','m','95','e','b','s','q','d','n',
+        'Other person project', 'submitted');
+INSERT INTO projectPerson (projectID, personID) VALUES (6, 3);
+
+INSERT INTO experiment (experimentID, projectID, runID, labID, instrumentID, operatorID,
+                        rotorID, rotorCalibrationID, experimentGUID, type, runType,
+                        dateBegin, runTemp, label, comment)
+VALUES (12, 6, 'Other_run', 1, 1, 3, NULL, NULL,
+        'aaaaaaaa-0000-0000-0000-00000000exp3', 'velocity', 'RA', CURDATE(), 20.0,
+        'other', 'c');
+INSERT INTO experimentPerson (experimentID, personID) VALUES (12, 3);
+
+INSERT INTO rawData (rawDataID, rawDataGUID, label, filename, data, comment,
+                     experimentID, solutionID, channelID)
+VALUES (110,'aaaaaaaa-0000-0000-0000-00000000raw4','Other_run','Other_run.RA.1.A.280.auc',
+        'RAWBYTES-4','c',12,7,1);
+
+INSERT INTO editedData (editedDataID, rawDataID, editGUID, label, data, filename, comment)
+VALUES (210,110,'aaaaaaaa-0000-0000-0000-0000000edit4','Other_run','EDITBYTES-4',
+        'Other_run.2401011200.RA.1.A.280.xml','c');
