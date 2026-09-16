@@ -849,7 +849,8 @@ bool US_DataPubExporter::addTimeState( const US_DataPubCatalog::Run& run,
       return true;
    }
 
-   QString workDir = bundle.stagingPath() + "/.tmst";
+   // Hidden, so pack() leaves it out even if removing it below is missed
+   QString workDir = bundle.stagingPath() + "/.timestate";
    QString tmstPath;
    QString xdefPath;
 

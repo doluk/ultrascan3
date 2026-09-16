@@ -557,3 +557,52 @@ TEST_F( DataPubExport, NoiseBeforePrefersARecordThatHasATimeStamp )
    ASSERT_EQ( US_DataPubCatalog::noiseBefore(
                  only, "2024-01-01 12:00:00 UTC" ).size(), 1 );
 }
+
+/* A time state is no use without its field definitions, so the bundle has
+   to carry both files.  The definitions of a run exported from the database
+   are fetched into a working directory of their own, and the path of the
+   XML used to be built by rewriting ".tmst" wherever it appeared in the
+   path of the binary -- which rewrote the working directory's name too, so
+   the definitions were written into a directory that did not exist and
+   never reached the archive.
+*/
+TEST_F( DataPubExport, TheTimeStateCarriesItsDefinitions )
+{
+   ASSERT_TRUE( QFile::exists( timeStatePath( "tmst" ) ) );
+   ASSERT_TRUE( QFile::exists( timeStatePath( "xml"  ) ) );
+
+   US_DataPubExporter exporter;
+   QString            bundle = root + "/time_state.tar.gz";
+   QString            error;
+
+   ASSERT_TRUE( exporter.exportBundle( baseSelection( US_DataPub::ScopeNoise ),
+                bundle, error ) ) << error.toStdString();
+
+   QList< US_DataPubEntity > states =
+      exporter.manifest().section( US_DataPub::TimeState );
+
+   ASSERT_EQ( states.size(), 1 );
+
+   QString defs = states[ 0 ].attrs.value( "definitionsPayload" );
+
+   ASSERT_FALSE( defs.isEmpty() )
+      << "the manifest names no field definitions";
+
+   US_DataPubBundle unpacked;
+
+   ASSERT_TRUE( unpacked.unpack( bundle, error ) ) << error.toStdString();
+
+   QString tmst = unpacked.rootPath() + "/" + states[ 0 ].payload;
+   QString xdef = unpacked.rootPath() + "/" + defs;
+
+   EXPECT_TRUE( QFile::exists( tmst ) ) << states[ 0 ].payload.toStdString();
+   ASSERT_TRUE( QFile::exists( xdef ) ) << defs.toStdString();
+
+   // US_TimeState looks for the definitions beside the binary, under the
+   // same name, so the two have to land together
+   EXPECT_EQ( QFileInfo( xdef ).path().toStdString(),
+              QFileInfo( tmst ).path().toStdString() );
+
+   EXPECT_EQ( US_DataPubHash::fileHash( xdef ).toStdString(),
+              states[ 0 ].attrs.value( "definitionsSha256" ).toStdString() );
+}

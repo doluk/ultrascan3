@@ -24,12 +24,16 @@
 
 #include <QtCore>
 
+#include "datapub_test_env.h"
+
 #include "us_datapub_catalog.h"
 #include "us_datapub_export.h"
+#include "us_datapub_import.h"
 #include "us_datapub_manifest.h"
 #include "us_db2.h"
 #include "us_crypto.h"
 #include "us_settings.h"
+#include "us_time_state.h"
 
 class DataPubDb : public ::testing::Test
 {
@@ -519,4 +523,260 @@ TEST_F( DataPubDb, SwitchingTheInvestigatorChangesWhatIsFound )
       << error.toStdString();
 
    EXPECT_EQ( catalog.investigatorID(), first );
+}
+
+/* A time state is a pair of files, and the archive has to carry both.
+
+   The binary readings mean nothing without the XML that says what the
+   fields in them are, and US_TimeState looks for that XML beside the
+   binary, under the same name.  A database export fetches the two into a
+   working directory of its own; the path of the XML used to be built by
+   rewriting ".tmst" wherever it appeared in the path of the binary, which
+   rewrote the name of that working directory too, so the definitions were
+   written into a directory that did not exist and never reached the
+   archive.  An import then had nothing to rebuild the record from.
+*/
+TEST_F( DataPubDb, TheExportedTimeStateCarriesItsDefinitions )
+{
+   US_DataPubCatalog catalog;
+   QString           error;
+
+   ASSERT_TRUE( catalog.open( true, master, error ) ) << error.toStdString();
+
+   QList< US_DataPubCatalog::Run > runs = catalog.runs( QString(), error );
+   ASSERT_GT( runs.size(), 0 );
+
+   QString chosen;
+
+   for ( int ii = 0; ii < runs.size()  &&  chosen.isEmpty(); ii++ )
+   {
+      int       tmstID = 0;
+      int       expID  = runs[ ii ].id.toInt();
+      QString   fname;
+      QString   xdefs;
+      QString   cksum;
+      QDateTime updated;
+
+      US_TimeState::dbExamine( db, &tmstID, &expID, &fname, &xdefs, &cksum,
+                               &updated );
+
+      if ( tmstID > 0 )  chosen = runs[ ii ].runID;
+   }
+
+   if ( chosen.isEmpty() )
+      GTEST_SKIP() << "no experiment of this database has a time state";
+
+   QString root = QDir::tempPath() + "/us_datapub_db_tmst_"
+                  + QString::number( QCoreApplication::applicationPid() );
+   QDir().mkpath( root );
+
+   QString bundle = root + "/time_state.tar.gz";
+
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection;
+   selection.fromDb     = true;
+   selection.dbPassword = master;
+   selection.scope      = US_DataPub::ScopeRawData;
+   selection.runIDs << chosen;
+
+   bool made = exporter.exportBundle( selection, bundle, error );
+
+   if ( ! made )
+   {  // The fixture may not carry the hardware an experiment record needs
+      QString why = error;
+      QDir( root ).removeRecursively();
+      GTEST_SKIP() << "the run could not be exported: " << why.toStdString();
+   }
+
+   QList< US_DataPubEntity > states =
+      exporter.manifest().section( US_DataPub::TimeState );
+
+   ASSERT_EQ( states.size(), 1 );
+
+   QString defs = states[ 0 ].attrs.value( "definitionsPayload" );
+
+   EXPECT_FALSE( defs.isEmpty() )
+      << "the manifest names no field definitions";
+
+   US_DataPubBundle unpacked;
+
+   ASSERT_TRUE( unpacked.unpack( bundle, error ) ) << error.toStdString();
+
+   QString tmst = unpacked.rootPath() + "/" + states[ 0 ].payload;
+   QString xdef = unpacked.rootPath() + "/" + defs;
+
+   EXPECT_TRUE( QFile::exists( tmst ) ) << states[ 0 ].payload.toStdString();
+   EXPECT_TRUE( QFile::exists( xdef ) ) << defs.toStdString();
+
+   // US_TimeState::dbCreate() takes the path of the binary and reads the
+   // definitions from beside it, so the two have to land together
+   EXPECT_EQ( QFileInfo( xdef ).path().toStdString(),
+              QFileInfo( tmst ).path().toStdString() );
+
+   unpacked.cleanup();
+   QDir( root ).removeRecursively();
+}
+
+/* Writing a whole bundle into a database.
+
+   The store this exports is the synthetic one on disk, so the payloads are
+   real files an import can rebuild records from -- which the read-only
+   fixture in the database is not meant to be.  It writes, so it needs a
+   scratch database of its own and skips without one:
+
+     US3_TEST_DB_IMPORT_NAME=us3imp
+
+   It has to be a database with the UltraScan3 schema and procedures, one
+   person matching US3_TEST_DB_PERSON_GUID, and the lab, instrument, rotor
+   and operator permit an experiment record needs.
+*/
+class DataPubDbImport : public DataPubTestEnv
+{
+   protected:
+      QString     master;
+      QStringList savedDB;
+      int         savedInv  = 0;
+      bool        restore   = false;
+      US_DB2*     db        = nullptr;
+
+      void SetUp() override
+      {
+         QString host = qEnvironmentVariable( "US3_TEST_DB_HOST" );
+         QString name = qEnvironmentVariable( "US3_TEST_DB_IMPORT_NAME" );
+         QString user = qEnvironmentVariable( "US3_TEST_DB_USER" );
+         QString guid = qEnvironmentVariable( "US3_TEST_DB_PERSON_GUID" );
+
+         if ( host.isEmpty()  ||  name.isEmpty()  ||
+              user.isEmpty()  ||  guid.isEmpty() )
+            GTEST_SKIP() << "no scratch import database configured";
+
+         master = "us3-datapub-import";
+
+         QStringList dbCipher   = US_Crypto::encrypt(
+               qEnvironmentVariable( "US3_TEST_DB_PASS" ), master );
+         QStringList userCipher = US_Crypto::encrypt(
+               qEnvironmentVariable( "US3_TEST_DB_PERSON_PW" ), master );
+
+         QStringList entry;
+         entry << "us3 import database" << user << name << host
+               << dbCipher.at( 0 ) << dbCipher.at( 1 )
+               << qEnvironmentVariable( "US3_TEST_DB_EMAIL" )
+               << userCipher.at( 0 ) << userCipher.at( 1 ) << guid;
+
+         savedDB  = US_Settings::defaultDB();
+         savedInv = US_Settings::us_inv_ID();
+         restore  = true;
+
+         US_Settings::set_defaultDB( entry );
+         US_Settings::set_us_inv_ID(
+               qEnvironmentVariable( "US3_TEST_DB_PERSON_ID" ).toInt() );
+
+         db = new US_DB2();
+         QString error;
+
+         if ( ! db->connect( master, error ) )
+         {
+            delete db;
+            db = nullptr;
+            US_Settings::set_defaultDB( savedDB );
+            restore = false;
+            GTEST_SKIP() << "cannot reach the import database: "
+                         << error.toStdString();
+         }
+
+         // The store on disk comes last: it moves workBaseDir, and the
+         // settings above have to be in place whether or not it is built
+         DataPubTestEnv::SetUp();
+      }
+
+      void TearDown() override
+      {
+         delete db;
+         db = nullptr;
+
+         if ( restore )
+         {
+            US_Settings::set_defaultDB ( savedDB  );
+            US_Settings::set_us_inv_ID ( savedInv );
+            restore = false;
+
+            DataPubTestEnv::TearDown();
+         }
+      }
+};
+
+/* A time state comes back out of the database it was imported into.
+
+   US_TimeState keeps the field definitions in a file beside the binary
+   readings, and rebuilds the record from the pair.  The import copies one
+   payload at a time into a work directory, so unless the definitions are
+   put there too the pair is incomplete and the record cannot be written.
+*/
+TEST_F( DataPubDbImport, ATimeStateIsImportedWithItsDefinitions )
+{
+   ASSERT_TRUE( QFile::exists( timeStatePath( "tmst" ) ) );
+
+   QString bundle = root + "/to_db.tar.gz";
+   QString error;
+
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection;
+   selection.fromDb = false;
+   selection.scope  = US_DataPub::ScopeNoise;
+   selection.runIDs << runID;
+
+   ASSERT_TRUE( exporter.exportBundle( selection, bundle, error ) )
+      << error.toStdString();
+
+   ASSERT_EQ( exporter.manifest().count( US_DataPub::TimeState ), 1 );
+
+   US_DataPubImporter importer;
+
+   ASSERT_TRUE( importer.inspect( bundle, error ) ) << error.toStdString();
+
+   US_DataPubImporter::Options options;
+   options.target       = US_DataPub::TargetDb;
+   options.dbPassword   = master;
+   options.verifyHashes = true;
+   options.dryRun       = false;
+   options.policy       = US_DataPub::PolicyRename;
+
+   ASSERT_TRUE( importer.runImport( options, error ) )
+      << error.toStdString() << "\n" << importer.log().join( "\n" )
+                                                      .toStdString();
+
+   // Find what the experiment and the time state became in the database
+   QList< US_DataPubImporter::Result > results = importer.results();
+   QString expID;
+   QString tmstID;
+
+   for ( int ii = 0; ii < results.size(); ii++ )
+   {
+      if ( results[ ii ].type == US_DataPub::Experiment )
+         expID  = results[ ii ].targetID;
+
+      if ( results[ ii ].type == US_DataPub::TimeState )
+         tmstID = results[ ii ].targetID;
+   }
+
+   ASSERT_FALSE( expID .isEmpty() ) << "the experiment was not imported";
+   ASSERT_FALSE( tmstID.isEmpty() ) << "the time state was not imported";
+   EXPECT_GT   ( tmstID.toInt(), 0 );
+
+   // ... and that it is a whole record: the definitions came with it
+   int       readID = 0;
+   int       readExp = expID.toInt();
+   QString   fname;
+   QString   xdefs;
+   QString   cksum;
+   QDateTime updated;
+
+   US_TimeState::dbExamine( db, &readID, &readExp, &fname, &xdefs, &cksum,
+                            &updated );
+
+   EXPECT_EQ   ( readID, tmstID.toInt() );
+   EXPECT_FALSE( fname.isEmpty() );
+   EXPECT_FALSE( xdefs.isEmpty() )
+      << "the record holds no field definitions";
+   EXPECT_TRUE ( xdefs.contains( "TimeState" ) ) << xdefs.toStdString();
 }

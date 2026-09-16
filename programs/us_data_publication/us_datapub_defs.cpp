@@ -1,6 +1,8 @@
 //! \file us_datapub_defs.cpp
 #include "us_datapub_defs.h"
 
+#include <QtCore>
+
 namespace
 {
    struct TypeInfo
@@ -124,6 +126,20 @@ QString US_DataPub::payloadDir( US_DataPub::EntityType type )
 {
    const TypeInfo* ti = info_of( type );
    return ti ? QString( ti->dir ) : QString( "other" );
+}
+
+QString US_DataPub::timeStateDefs( const QString& tmstPath )
+{
+   if ( tmstPath.isEmpty() )  return QString();
+
+   QFileInfo info( tmstPath );
+   QString   base = info.completeBaseName();
+
+   if ( base.isEmpty() )  return QString();
+
+   QString dir = info.path();
+
+   return dir.isEmpty() ? base + ".xml" : dir + "/" + base + ".xml";
 }
 
 US_DataPub::EntityType US_DataPub::scopeType( US_DataPub::Scope scope )

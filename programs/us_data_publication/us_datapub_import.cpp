@@ -355,6 +355,7 @@ bool US_DataPubImporter::runImport( const Options& options, QString& error )
    guidMap.clear();
    idMap  .clear();
    nameMap.clear();
+   held_names.clear();
    step_count = 0;
 
    if ( mani.total() < 1 )
@@ -602,6 +603,7 @@ bool US_DataPubImporter::importEntity( const US_DataPubEntity& entity,
 
       if ( opts.dryRun )
       {
+         nameTaken( type, name, entity.guid, QString( "-1" ) );
          record( entity, US_DataPub::ResolvedRenamed, entity.guid, name,
                  QString( "-1" ), details );
          return true;
@@ -625,6 +627,7 @@ bool US_DataPubImporter::importEntity( const US_DataPubEntity& entity,
       if ( ! createRecord( entity, workPath, name, newID, error ) )
          return false;
 
+      nameTaken( type, name, entity.guid, newID );
       record( entity, US_DataPub::ResolvedRenamed, entity.guid, name, newID,
               details );
       return true;
@@ -633,6 +636,7 @@ bool US_DataPubImporter::importEntity( const US_DataPubEntity& entity,
    // ---- a plain new record ------------------------------------------------
    if ( opts.dryRun )
    {
+      nameTaken( type, name, entity.guid, QString( "-1" ) );
       record( entity, US_DataPub::ResolvedCreated, entity.guid, name,
               QString( "-1" ), QString() );
       return true;
@@ -646,6 +650,7 @@ bool US_DataPubImporter::importEntity( const US_DataPubEntity& entity,
 
    if ( ! createRecord( entity, workPath, name, newID, error ) )  return false;
 
+   nameTaken( type, name, entity.guid, newID );
    record( entity, US_DataPub::ResolvedCreated, entity.guid, name, newID,
            QString() );
 
@@ -928,6 +933,13 @@ bool US_DataPubImporter::findByGuid( US_DataPub::EntityType type,
    return false;
 }
 
+/* Look a name up among the records the target already holds.
+
+   The listing this needs is read once per record type and kept in an index,
+   because the lookup is repeated: a rename walks one candidate name after
+   another until it finds a free one, and reading the whole buffer, analyte
+   or solution list again for each attempt is what made an import crawl.
+*/
 bool US_DataPubImporter::findByName( US_DataPub::EntityType type,
                                      const QString& name, QString& guid,
                                      QString& id )
@@ -937,168 +949,123 @@ bool US_DataPubImporter::findByName( US_DataPub::EntityType type,
 
    if ( name.isEmpty() )  return false;
 
+   if ( ! indexedByName( type ) )
+      return findOneByName( type, name, guid, id );
+
+   QHash< QString, Named >&          held = namesHeld( type );
+   QHash< QString, Named >::iterator it   = held.find( name );
+
+   if ( it == held.end() )  return false;
+
+   if ( ! it->resolved )
+   {  // The listing gave the name and the ID; the GUID costs one more query
+      it->guid     = guidOfRecord( type, it->id );
+      it->resolved = true;
+   }
+
+   guid = it->guid;
+   id   = it->id;
+
+   return true;
+}
+
+bool US_DataPubImporter::indexedByName( US_DataPub::EntityType type )
+{
+   switch ( type )
+   {
+      // One run identifier can be asked about directly, which beats
+      // listing every experiment of the target
+      case US_DataPub::Experiment:  return false;
+
+      // These are named by their file inside the run directory
+      case US_DataPub::RawData:
+      case US_DataPub::EditedData:
+      case US_DataPub::TimeState:   return false;
+
+      default:                      return true;
+   }
+}
+
+QHash< QString, US_DataPubImporter::Named >& US_DataPubImporter::namesHeld(
+      US_DataPub::EntityType type )
+{
+   int key = int( type );
+
+   if ( ! held_names.contains( key ) )
+   {
+      QHash< QString, Named > index;
+
+      readNames( type, index );
+
+      held_names.insert( key, index );
+   }
+
+   return held_names[ key ];
+}
+
+void US_DataPubImporter::nameTaken( US_DataPub::EntityType type,
+                                    const QString& name, const QString& guid,
+                                    const QString& id )
+{
+   if ( name.isEmpty()  ||  ! indexedByName( type ) )  return;
+
+   int key = int( type );
+
+   if ( ! held_names.contains( key ) )  return;   // Nothing read yet to add to
+
+   Named entry;
+   entry.id       = id;
+   entry.guid     = guid;
+   entry.resolved = true;
+
+   held_names[ key ].insert( name, entry );
+}
+
+// Read every record the target holds of one type, by the name it goes under.
+// The first record of a given name is the one a lookup finds, which is the
+// order the listings themselves come back in.
+void US_DataPubImporter::readNames( US_DataPub::EntityType type,
+                                    QHash< QString, Named >& index )
+{
    if ( opts.target == US_DataPub::TargetDb )
    {
-      if ( dbase == nullptr )  return false;
+      if ( dbase == nullptr )  return;
 
       QString     invID = QString::number( US_Settings::us_inv_ID() );
       QStringList query;
 
+      // How the listing of each type is read: the procedure, the columns
+      // holding the name and the ID, and the column holding the GUID when
+      // the listing carries one (-1 when it has to be looked up later).
+      int nameCol = -1;
+      int idCol   =  0;
+      int guidCol = -1;
+
       switch ( type )
       {
          case US_DataPub::Project:
-         {
             query << "get_project_desc" << invID;
-            dbase->query( query );
-            QStringList ids;
-
-            while ( dbase->next() )
-               ids << dbase->value( 0 ).toString();
-
-            for ( int ii = 0; ii < ids.size(); ii++ )
-            {
-               query.clear();
-               query << "get_project_info" << ids[ ii ];
-               dbase->query( query );
-
-               if ( ! dbase->next() )  continue;
-               if ( dbase->value( 10 ).toString() != name )  continue;
-
-               guid = dbase->value( 1 ).toString();
-               id   = ids[ ii ];
-               return true;
-            }
-
-            return false;
-         }
-
-         case US_DataPub::Experiment:
-         {
-            query << "get_experiment_info_by_runID" << name << invID;
-            dbase->query( query );
-
-            if ( ! dbase->next() )  return false;
-
-            id   = dbase->value( 1 ).toString();
-            guid = dbase->value( 2 ).toString();
-
-            return ! id.isEmpty();
-         }
+            nameCol = 1;                        break;
 
          case US_DataPub::Solution:
-         {
-            query << "all_solutionIDs" << invID;
-            dbase->query( query );
-            QStringList ids;
-
-            while ( dbase->next() )
-               ids << dbase->value( 0 ).toString();
-
-            for ( int ii = 0; ii < ids.size(); ii++ )
-            {
-               US_Solution solution;
-
-               if ( solution.readFromDB( ids[ ii ].toInt(), dbase )
-                    != US_DB2::OK )                        continue;
-               if ( solution.solutionDesc != name )        continue;
-
-               guid = solution.solutionGUID;
-               id   = ids[ ii ];
-               return true;
-            }
-
-            return false;
-         }
+            query << "all_solutionIDs"  << invID;
+            nameCol = 1;                        break;
 
          case US_DataPub::Buffer:
-         {
-            query << "get_buffer_desc" << invID;
-            dbase->query( query );
-            QString bufID;
-
-            while ( dbase->next() )
-            {
-               if ( dbase->value( 1 ).toString() != name )  continue;
-
-               bufID = dbase->value( 0 ).toString();
-               break;
-            }
-
-            if ( bufID.isEmpty() )  return false;
-
-            query.clear();
-            query << "get_buffer_info" << bufID;
-            dbase->query( query );
-
-            if ( dbase->next() )
-               guid = dbase->value( 0 ).toString();
-
-            id = bufID;
-
-            return true;
-         }
+            query << "get_buffer_desc"  << invID;
+            nameCol = 1;                        break;
 
          case US_DataPub::Analyte:
-         {
             query << "get_analyte_desc" << invID;
-            dbase->query( query );
-            QString anaID;
-
-            while ( dbase->next() )
-            {
-               if ( dbase->value( 1 ).toString() != name )  continue;
-
-               anaID = dbase->value( 0 ).toString();
-               break;
-            }
-
-            if ( anaID.isEmpty() )  return false;
-
-            query.clear();
-            query << "get_analyte_info" << anaID;
-            dbase->query( query );
-
-            if ( dbase->next() )
-               guid = dbase->value( 0 ).toString();
-
-            id = anaID;
-
-            return true;
-         }
+            nameCol = 1;                        break;
 
          case US_DataPub::Model:
-         {
-            query << "get_model_desc" << invID;
-            dbase->query( query );
-
-            while ( dbase->next() )
-            {
-               if ( dbase->value( 2 ).toString() != name )  continue;
-
-               id   = dbase->value( 0 ).toString();
-               guid = dbase->value( 1 ).toString();
-               return true;
-            }
-
-            return false;
-         }
+            query << "get_model_desc"   << invID;
+            nameCol = 2;  guidCol = 1;          break;
 
          case US_DataPub::Noise:
-         {
-            query << "get_noise_desc" << invID;
-            dbase->query( query );
-
-            while ( dbase->next() )
-            {
-               if ( dbase->value( 9 ).toString() != name )  continue;
-
-               id   = dbase->value( 0 ).toString();
-               guid = dbase->value( 1 ).toString();
-               return true;
-            }
-
-            return false;
-         }
+            query << "get_noise_desc"   << invID;
+            nameCol = 9;  guidCol = 1;          break;
 
          case US_DataPub::RotorCalibration:
          {
@@ -1118,16 +1085,19 @@ bool US_DataPubImporter::findByName( US_DataPub::EntityType type,
 
                   for ( int kk = 0; kk < cals.size(); kk++ )
                   {
-                     if ( cals[ kk ].label != name )  continue;
+                     if ( index.contains( cals[ kk ].label ) )  continue;
 
-                     guid = cals[ kk ].GUID;
-                     id   = QString::number( cals[ kk ].ID );
-                     return true;
+                     Named entry;
+                     entry.id       = QString::number( cals[ kk ].ID );
+                     entry.guid     = cals[ kk ].GUID;
+                     entry.resolved = true;
+
+                     index.insert( cals[ kk ].label, entry );
                   }
                }
             }
 
-            return false;
+            return;
          }
 
          case US_DataPub::Centerpiece:
@@ -1137,53 +1107,50 @@ bool US_DataPubImporter::findByName( US_DataPub::EntityType type,
 
             for ( int ii = 0; ii < centerpieces.size(); ii++ )
             {
-               if ( centerpieces[ ii ].name != name )  continue;
+               if ( index.contains( centerpieces[ ii ].name ) )  continue;
 
-               guid = centerpieces[ ii ].guid;
-               id   = QString::number( centerpieces[ ii ].serial_number );
-               return true;
+               Named entry;
+               entry.id       = QString::number(
+                                centerpieces[ ii ].serial_number );
+               entry.guid     = centerpieces[ ii ].guid;
+               entry.resolved = true;
+
+               index.insert( centerpieces[ ii ].name, entry );
             }
 
-            return false;
+            return;
          }
 
          default:
-            return false;       // Raw data and edits are named by their file
+            return;
       }
+
+      dbase->query( query );
+
+      if ( dbase->lastErrno() != US_DB2::OK )  return;
+
+      while ( dbase->next() )
+      {
+         QString rname = dbase->value( nameCol ).toString();
+
+         if ( rname.isEmpty()  ||  index.contains( rname ) )  continue;
+
+         Named entry;
+         entry.id       = dbase->value( idCol ).toString();
+
+         if ( guidCol >= 0 )
+         {
+            entry.guid     = dbase->value( guidCol ).toString();
+            entry.resolved = true;
+         }
+
+         index.insert( rname, entry );
+      }
+
+      return;
    }
 
    // ---- disk target -------------------------------------------------------
-   if ( type == US_DataPub::Experiment )
-   {
-      QString base = opts.outputDir.trimmed().isEmpty()
-                     ? US_Settings::resultDir()
-                     : opts.outputDir.trimmed() + "/results";
-      QDir    dir( base + "/" + name );
-
-      if ( ! dir.exists() )  return false;
-
-      QStringList xmls = dir.entryList( QStringList( name + ".*.xml" ),
-                                        QDir::Files, QDir::Name );
-
-      for ( int ii = 0; ii < xmls.size(); ii++ )
-      {
-         if ( xmls[ ii ].count( "." ) != 2 )  continue;
-
-         QMap< QString, QString > attrs = first_attributes(
-               dir.absoluteFilePath( xmls[ ii ] ), "experiment" );
-         guid = attrs.value( "guid" );
-         id   = attrs.value( "id", QString( "-1" ) );
-
-         return true;
-      }
-
-      // A run directory without an experiment XML still occupies the name
-      guid = QString();
-      id   = QString( "-1" );
-
-      return true;
-   }
-
    if ( type == US_DataPub::Centerpiece )
    {
       QList< US_AbstractCenterpiece > centerpieces;
@@ -1191,23 +1158,22 @@ bool US_DataPubImporter::findByName( US_DataPub::EntityType type,
 
       for ( int ii = 0; ii < centerpieces.size(); ii++ )
       {
-         if ( centerpieces[ ii ].name != name )  continue;
+         if ( index.contains( centerpieces[ ii ].name ) )  continue;
 
-         guid = centerpieces[ ii ].guid;
-         id   = QString::number( centerpieces[ ii ].serial_number );
-         return true;
+         Named entry;
+         entry.id       = QString::number( centerpieces[ ii ].serial_number );
+         entry.guid     = centerpieces[ ii ].guid;
+         entry.resolved = true;
+
+         index.insert( centerpieces[ ii ].name, entry );
       }
 
-      return false;
+      return;
    }
-
-   if ( type == US_DataPub::RawData  ||  type == US_DataPub::EditedData  ||
-        type == US_DataPub::TimeState )
-      return false;              // Named by their file inside the run directory
 
    DiskLayout layout = disk_layout( type );
 
-   if ( layout.prefix.isEmpty() )  return false;
+   if ( layout.prefix.isEmpty() )  return;
 
    QString     dir   = diskDir( type );
    QStringList files = QDir( dir ).entryList(
@@ -1216,19 +1182,120 @@ bool US_DataPubImporter::findByName( US_DataPub::EntityType type,
 
    for ( int ii = 0; ii < files.size(); ii++ )
    {
-      QString path = dir + "/" + files[ ii ];
+      QString path  = dir + "/" + files[ ii ];
+      QString rname = US_DataPubRecords::recordName( path, type );
 
-      if ( US_DataPubRecords::recordName( path, type ) != name )  continue;
+      if ( rname.isEmpty()  ||  index.contains( rname ) )  continue;
 
       QMap< QString, QString > attrs = first_attributes( path,
                                                          layout.element );
-      guid = attrs.value( layout.guidAttr );
+      Named entry;
+      entry.id       = attrs.value( "id", QString( "-1" ) );
+      entry.guid     = attrs.value( layout.guidAttr );
+      entry.resolved = true;
+
+      index.insert( rname, entry );
+   }
+}
+
+// The GUID of a record the listing named only by its ID
+QString US_DataPubImporter::guidOfRecord( US_DataPub::EntityType type,
+                                          const QString& id )
+{
+   if ( opts.target != US_DataPub::TargetDb  ||  dbase == nullptr )
+      return QString();
+
+   QStringList query;
+   int         guidCol = 0;
+
+   switch ( type )
+   {
+      case US_DataPub::Project:
+         query << "get_project_info" << id;
+         guidCol = 1;                     break;
+
+      case US_DataPub::Buffer:
+         query << "get_buffer_info"  << id;
+         guidCol = 0;                     break;
+
+      case US_DataPub::Analyte:
+         query << "get_analyte_info" << id;
+         guidCol = 0;                     break;
+
+      case US_DataPub::Solution:
+      {
+         US_Solution solution;
+
+         if ( solution.readFromDB( id.toInt(), dbase ) != US_DB2::OK )
+            return QString();
+
+         return solution.solutionGUID;
+      }
+
+      default:
+         return QString();
+   }
+
+   dbase->query( query );
+
+   if ( dbase->lastErrno() != US_DB2::OK )  return QString();
+   if ( ! dbase->next() )                   return QString();
+
+   return dbase->value( guidCol ).toString();
+}
+
+// The types the index leaves out are looked up one name at a time
+bool US_DataPubImporter::findOneByName( US_DataPub::EntityType type,
+                                        const QString& name, QString& guid,
+                                        QString& id )
+{
+   if ( type != US_DataPub::Experiment )
+      return false;              // Named by their file inside the run directory
+
+   if ( opts.target == US_DataPub::TargetDb )
+   {
+      if ( dbase == nullptr )  return false;
+
+      QStringList query;
+      query << "get_experiment_info_by_runID" << name
+            << QString::number( US_Settings::us_inv_ID() );
+      dbase->query( query );
+
+      if ( ! dbase->next() )  return false;
+
+      id   = dbase->value( 1 ).toString();
+      guid = dbase->value( 2 ).toString();
+
+      return ! id.isEmpty();
+   }
+
+   QString base = opts.outputDir.trimmed().isEmpty()
+                  ? US_Settings::resultDir()
+                  : opts.outputDir.trimmed() + "/results";
+   QDir    dir( base + "/" + name );
+
+   if ( ! dir.exists() )  return false;
+
+   QStringList xmls = dir.entryList( QStringList( name + ".*.xml" ),
+                                     QDir::Files, QDir::Name );
+
+   for ( int ii = 0; ii < xmls.size(); ii++ )
+   {
+      if ( xmls[ ii ].count( "." ) != 2 )  continue;
+
+      QMap< QString, QString > attrs = first_attributes(
+            dir.absoluteFilePath( xmls[ ii ] ), "experiment" );
+      guid = attrs.value( "guid" );
       id   = attrs.value( "id", QString( "-1" ) );
 
       return true;
    }
 
-   return false;
+   // A run directory without an experiment XML still occupies the name
+   guid = QString();
+   id   = QString( "-1" );
+
+   return true;
 }
 
 QString US_DataPubImporter::targetFingerprint( US_DataPub::EntityType type,
@@ -1713,7 +1780,7 @@ bool US_DataPubImporter::createDisk( const US_DataPubEntity& entity,
          if ( ! defs.isEmpty() )
          {
             QString source = bundle.rootPath() + "/" + defs;
-            QString target = QString( path ).replace( ".tmst", ".xml" );
+            QString target = US_DataPub::timeStateDefs( path );
 
             if ( QFile::exists( source )  &&  ! QFile::exists( target ) )
                QFile::copy( source, target );
@@ -1912,6 +1979,66 @@ bool US_DataPubImporter::resolveHardware( US_Experiment& exper,
    exper.invID = US_Settings::us_inv_ID();
 
    return complete;
+}
+
+/* Put a time state's field definitions beside its work copy.
+
+   A time state is a pair of files and US_TimeState works on the pair: given
+   the path of the binary it reads the definitions from the file of the same
+   name with an .xml extension.  The work copy holds the payload of one
+   record, so the definitions the bundle carries alongside have to be copied
+   in next to it.
+*/
+bool US_DataPubImporter::stageTimeStateDefs( const US_DataPubEntity& entity,
+                                             const QString& workPath,
+                                             QString& error )
+{
+   QString defs = entity.attrs.value( "definitionsPayload" );
+
+   if ( defs.isEmpty() )
+   {
+      error = tr( "The bundle carries no field definitions for the time"
+                  " state of run %1, so it cannot be rebuilt" )
+              .arg( runIdFor( entity ) );
+      return false;
+   }
+
+   QString source = bundle.rootPath() + "/" + defs;
+
+   if ( ! QFile::exists( source ) )
+   {
+      error = tr( "The field definitions of the time state of run %1 are"
+                  " missing from the bundle" ).arg( runIdFor( entity ) );
+      return false;
+   }
+
+   QString target = US_DataPub::timeStateDefs( workPath );
+
+   if ( target.isEmpty() )
+   {
+      error = tr( "The time state payload %1 has no name to go by" )
+              .arg( entity.payload );
+      return false;
+   }
+
+   if ( QFile::exists( target )  &&  ! QFile::remove( target ) )
+   {
+      error = tr( "Cannot replace %1" ).arg( target );
+      return false;
+   }
+
+   if ( ! QFile::copy( source, target ) )
+   {
+      error = tr( "Cannot copy the field definitions of the time state of"
+                  " run %1" ).arg( runIdFor( entity ) );
+      return false;
+   }
+
+   QFile::setPermissions( target, QFileDevice::ReadOwner
+                                  | QFileDevice::WriteOwner );
+   error.clear();
+
+   return true;
 }
 
 bool US_DataPubImporter::createDb( const US_DataPubEntity& entity,
@@ -2303,6 +2430,11 @@ bool US_DataPubImporter::createDb( const US_DataPubEntity& entity,
             error = tr( "The experiment of the time state was not imported" );
             return false;
          }
+
+         // US_TimeState reads the field definitions from beside the binary,
+         // and the work copy holds the binary alone, so the definitions
+         // have to be put there first
+         if ( ! stageTimeStateDefs( entity, workPath, error ) )  return false;
 
          int tmstID = US_TimeState::dbCreate( dbase, expID.toInt(), workPath );
 

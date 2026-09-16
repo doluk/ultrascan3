@@ -400,6 +400,17 @@ int US_DB2::statusQuery( const QString& sqlQuery )
    db_errno = DBERROR;
 
    this->rawQuery( sqlQuery );
+
+   if ( ! result  &&  mysql_errno( db ) != 0 )
+   {
+      // The statement itself failed, so the procedure never reached the
+      // point of recording a US3 message.  What rawQuery has already put
+      // in error is all there is to say; asking the server for
+      // last_error() would replace it with the empty string and leave the
+      // caller reporting a failure with no reason.
+      return db_errno;
+   }
+
    if ( result )
    {
       row       = mysql_fetch_row( result );

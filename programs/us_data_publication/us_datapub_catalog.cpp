@@ -758,7 +758,7 @@ bool US_DataPubCatalog::timeState( const Run& run, const QString& workDir,
                         ? US_Settings::resultDir() + "/" + run.runID
                         : run.dirPath;
       tmstPath = dirPath + "/" + base;
-      xdefPath = QString( tmstPath ).replace( ".tmst", ".xml" );
+      xdefPath = US_DataPub::timeStateDefs( tmstPath );
 
       return QFile( tmstPath ).exists();
    }
@@ -782,7 +782,7 @@ bool US_DataPubCatalog::timeState( const Run& run, const QString& workDir,
    QDir().mkpath( workDir );
 
    tmstPath = workDir + "/" + fname;
-   xdefPath = QString( tmstPath ).replace( ".tmst", ".xml" );
+   xdefPath = US_DataPub::timeStateDefs( tmstPath );
 
    if ( US_TimeState::dbDownload( dbase, tmstID, tmstPath ) != US_DB2::OK )
       return false;

@@ -114,6 +114,7 @@ class DataPubTestEnv : public ::testing::Test
          writeEditXml();
          writeModel();
          writeNoise();
+         writeTimeState();
       }
 
       void writeProject()
@@ -297,6 +298,10 @@ class DataPubTestEnv : public ::testing::Test
 
          xml.writeEndElement();      // dataset
 
+         xml.writeStartElement( "runTemp" );
+         xml.writeAttribute( "value", "20.0" );
+         xml.writeEndElement();
+
          xml.writeStartElement( "opticalSystem" );
          xml.writeAttribute( "value", runType );
          xml.writeEndElement();
@@ -366,5 +371,57 @@ class DataPubTestEnv : public ::testing::Test
 
          noise.count = noise.values.size();
          noise.write( dataDir( "noises" ) + "/N0000001.xml" );
+      }
+
+      // A time state is a pair of files -- the binary readings and the XML
+      // that says what the fields in them are.  One is no use without the
+      // other, so a run always has both.
+      void writeTimeState()
+      {
+         QString base = runDir() + "/" + runID + ".time_state";
+
+         QFile tmst( base + ".tmst" );
+
+         if ( tmst.open( QIODevice::WriteOnly ) )
+         {
+            QDataStream ds( &tmst );
+            ds.writeRawData( "USTS", 4 );
+            ds.writeRawData( "2.1",  3 );
+            int record = 42;
+            ds.writeRawData( reinterpret_cast< const char* >( &record ), 4 );
+            tmst.close();
+         }
+
+         QFile defs( base + ".xml" );
+
+         if ( defs.open( QIODevice::WriteOnly | QIODevice::Text ) )
+         {
+            QXmlStreamWriter xml( &defs );
+            xml.setAutoFormatting( true );
+            xml.writeStartDocument();
+            xml.writeDTD( "<!DOCTYPE US_TimeState>" );
+            xml.writeStartElement( "TimeState" );
+            xml.writeAttribute( "version",     "2.1" );
+            xml.writeAttribute( "import_type", "XLA" );
+            xml.writeStartElement( "file" );
+            xml.writeAttribute( "time_count",     "1"   );
+            xml.writeAttribute( "constant_incr",  "1"   );
+            xml.writeAttribute( "time_increment", "1.0" );
+            xml.writeAttribute( "first_time",     "0.0" );
+            xml.writeAttribute( "ss_reso",        "100" );
+            xml.writeStartElement( "value" );
+            xml.writeAttribute( "key",    "testkey" );
+            xml.writeAttribute( "format", "I4" );
+            xml.writeEndElement();
+            xml.writeEndElement();
+            xml.writeEndElement();
+            xml.writeEndDocument();
+            defs.close();
+         }
+      }
+
+      QString timeStatePath( const QString& ext )
+      {
+         return runDir() + "/" + runID + ".time_state." + ext;
       }
 };

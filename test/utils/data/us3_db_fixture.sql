@@ -132,3 +132,12 @@ VALUES (110,'aaaaaaaa-0000-0000-0000-00000000raw4','Other_run','Other_run.RA.1.A
 INSERT INTO editedData (editedDataID, rawDataID, editGUID, label, data, filename, comment)
 VALUES (210,110,'aaaaaaaa-0000-0000-0000-0000000edit4','Other_run','EDITBYTES-4',
         'Other_run.2401011200.RA.1.A.280.xml','c');
+
+-- A time state for the first experiment.  It is a pair: the binary readings
+-- in "data" and the field definitions that say what is in them, which
+-- US_TimeState needs to make sense of the binary.  An export has to carry
+-- both, so there is one here to export.
+INSERT INTO timestate (timestateID, experimentID, filename, definitions, data)
+VALUES (500, 10, 'MWL_demo_run.time_state.tmst',
+        '<?xml version="1.0"?>\n<!DOCTYPE US_TimeState>\n<TimeState version="2.1" import_type="XLA">\n <file time_count="1" constant_incr="1" time_increment="1.0" first_time="0.0" ss_reso="100">\n  <value key="testkey" format="I4"/>\n </file>\n</TimeState>\n',
+        'USTS2.1TMSTBYTES');

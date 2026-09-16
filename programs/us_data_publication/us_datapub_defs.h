@@ -108,6 +108,16 @@ namespace US_DataPub
    //! \brief The bundle sub-directory holding the payloads of a record type
    QString payloadDir    ( EntityType );
 
+   //! \brief The field definitions file that goes with a time state file
+   //!
+   //! A time state is a pair of files: the binary \c .tmst and an \c .xml
+   //! of the same name holding the field definitions, which US_TimeState
+   //! needs to read it.  Only the extension changes, so the name is built
+   //! from the last dot rather than by rewriting ".tmst" wherever it
+   //! appears -- a directory may be called that too.
+   //! \param tmstPath The path of the time state file
+   QString timeStateDefs ( const QString& tmstPath );
+
    //! \brief The record type a given scope level adds
    EntityType scopeType  ( Scope );
 

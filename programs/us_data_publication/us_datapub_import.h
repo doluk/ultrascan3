@@ -181,10 +181,24 @@ class US_DataPubImporter : public QObject
       QString                    tproj_id;
       QString                    tproj_desc;
 
+      //! \brief A record of the target, found by the name it is known by
+      class Named
+      {
+         public:
+            QString id;         //!< The record ID in the target
+            QString guid;       //!< The record GUID, once it is known
+            bool    resolved;   //!< True when the GUID has been looked up
+
+            Named() { resolved = false; }
+      };
+
       // bundle GUID -> target GUID / ID / name
       QMap< QString, QString >   guidMap;
       QMap< QString, QString >   idMap;
       QMap< QString, QString >   nameMap;
+
+      //! The name indexes read so far, one per record type
+      QMap< int, QHash< QString, Named > > held_names;
 
       bool    openTarget ( QString& error );
       void    closeTarget( void );
@@ -203,6 +217,38 @@ class US_DataPubImporter : public QObject
                           QString& id, QString& name );
       bool    findByName( US_DataPub::EntityType, const QString& name,
                           QString& guid, QString& id );
+
+      /*! \brief The names of one record type that the target already holds
+
+         The target has no "is this name taken" query, so the answer comes
+         from a listing of every record of the type.  A rename tries one
+         candidate name after another, so reading that listing per lookup
+         meant reading the whole buffer, analyte or solution list again for
+         every attempt.  It is read once per type per import instead, and
+         kept up to date as records are created.
+      */
+      QHash< QString, Named >& namesHeld( US_DataPub::EntityType );
+
+      //! \brief Read the target's records of one type into a name index
+      void    readNames ( US_DataPub::EntityType, QHash< QString, Named >& );
+
+      //! \brief Whether a type is looked up through the name index
+      //!
+      //! An experiment is not: the target can be asked about one run
+      //! identifier directly, which beats listing every experiment.
+      static bool indexedByName( US_DataPub::EntityType );
+
+      //! \brief Look one name up in the target, without the index
+      bool    findOneByName( US_DataPub::EntityType, const QString& name,
+                             QString& guid, QString& id );
+
+      //! \brief The GUID of a record the name index found by its ID
+      QString guidOfRecord( US_DataPub::EntityType, const QString& id );
+
+      //! \brief Note that a name is now taken in the target
+      void    nameTaken ( US_DataPub::EntityType, const QString& name,
+                          const QString& guid, const QString& id );
+
       QString targetFingerprint( US_DataPub::EntityType, const QString& guid,
                                  const QString& id );
       QString uniqueName( US_DataPub::EntityType, const QString& name );
@@ -210,6 +256,13 @@ class US_DataPubImporter : public QObject
       bool    createRecord( const US_DataPubEntity&, const QString& workPath,
                             const QString& name, QString& newID,
                             QString& error );
+
+      //! \brief Put a time state's field definitions beside its work copy
+      //! \param entity   The time state being imported
+      //! \param workPath The work copy of its binary payload
+      //! \param error    Filled in when the definitions cannot be placed
+      bool    stageTimeStateDefs( const US_DataPubEntity& entity,
+                                  const QString& workPath, QString& error );
 
       bool    createDb    ( const US_DataPubEntity&, const QString& workPath,
                             const QString& name, QString& newID,
