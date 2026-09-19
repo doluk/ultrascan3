@@ -36,10 +36,46 @@ CASES = [
 ]
 
 
-def condition_number(y):
-    H = hankel(y)
+def _fmt(v):
+    return "n/a" if v is None else f"{v:.2e}"
+
+
+def rescale(y, model):
+    """
+    Express moments with s in units of the support midpoint, y~_k = y_k/s_c^k.
+
+    Without this the Hankel condition number just reports the s^m dynamic
+    range (1e38 for s ~ 15 S and m up to 14) rather than anything about how
+    hard the inverse problem is.
+    """
+    a, b = models.support_bounds(model)
+    s_c = 0.5 * (a + b)
+    return np.asarray(y, float) / s_c ** np.arange(len(y))
+
+
+def hankel_conditioning(y, model, R):
+    """
+    Conditioning of the noise-free Hankel matrix, on rescaled moments.
+
+    Two numbers, because they answer different questions:
+      full_spectrum -- normalised singular values of the whole Hankel matrix;
+                       for an exactly atomic truth these drop to round-off
+                       past index R, which is the rank certificate in the
+                       noise-free limit
+      cond_RxR      -- condition number of the leading R x R block, which is
+                       finite and is the number that actually governs how
+                       well R atoms can be separated
+    """
+    yr = rescale(y, model)
+    H = hankel(yr)
     sv = np.linalg.svd(H, compute_uv=False)
-    return float(sv[0] / sv[-1]) if sv[-1] > 0 else float("inf")
+    out = dict(full_spectrum=[float(v) for v in sv / sv[0]])
+    if R is not None and 1 <= R <= H.shape[0]:
+        svR = np.linalg.svd(H[:R, :R], compute_uv=False)
+        out["cond_RxR"] = float(svR[0] / svR[-1]) if svR[-1] > 0 else float("inf")
+    else:
+        out["cond_RxR"] = None
+    return out
 
 
 def write_case(outdir, mid, model, geom, res, tag):
@@ -54,6 +90,8 @@ def write_case(outdir, mid, model, geom, res, tag):
     atoms = [dict(s_svedberg=c["s"] / SV, D_cm2_s=c["D"], conc=c["c"],
                   f_f0=c["f_f0"], mw_Da=c["mw"])
              for c in model["components"] if c["c"] > 0]
+    R = len(atoms) if model["atomic"] else None
+    cond = hankel_conditioning(res["y_true"], model, R)
     lo, hi = models.support_bounds(model)
     corr = correlation(res["Sigma"])
     off = corr - np.eye(corr.shape[0])
@@ -61,7 +99,7 @@ def write_case(outdir, mid, model, geom, res, tag):
     meta = dict(
         model_id=mid, case=tag, note=model["note"],
         atomic=bool(model["atomic"]),
-        R=len(atoms) if model["atomic"] else None,
+        R=R,
         atoms=atoms,
         support_svedberg=[float(lo), float(hi)],
         rpm=geom.rpm, meniscus=geom.meniscus, bottom=geom.bottom,
@@ -73,7 +111,8 @@ def write_case(outdir, mid, model, geom, res, tag):
         rel_error_by_order=[float(v) for v in rel],
         rel_bias_by_order=[float(b / t) if t != 0 else None
                            for b, t in zip(res["bias"], res["y_true"])],
-        hankel_condition_noise_free=condition_number(res["y_true"]),
+        hankel_cond_RxR_rescaled=cond["cond_RxR"],
+        hankel_spectrum_rescaled=cond["full_spectrum"],
         max_abs_offdiagonal_correlation=float(np.abs(off).max()),
         median_abs_offdiagonal_correlation=float(
             np.median(np.abs(off[~np.eye(corr.shape[0], dtype=bool)]))),
@@ -112,7 +151,7 @@ def main():
             summary.append(meta)
             print(f"{mid:12s} {tag:22s} scans={meta['n_scans_usable']:3d} "
                   f"N_eff={meta['N_eff']:3d} R_max={meta['R_max']:2d} "
-                  f"cond(H)={meta['hankel_condition_noise_free']:.2e} "
+                  f"cond(H_RxR)={_fmt(meta['hankel_cond_RxR_rescaled'])} "
                   f"max|corr_offdiag|={meta['max_abs_offdiagonal_correlation']:.3f}")
 
     with open(os.path.join(args.out, "summary.json"), "w") as f:

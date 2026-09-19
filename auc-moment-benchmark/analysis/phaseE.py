@@ -238,11 +238,14 @@ def e2_rank_gap(m_max=12, preset="absorbance", ti_mode="oracle", seed=3,
         if ti_mode == "oracle":
             noisy = noisy - ti[None, :]
         y = estimate_moments(noisy, model, geom, m_max, windows=windows)
-        y_true = truth_moments(model, m_max + 1)
+        # A reacting system has no true atomic decomposition, so
+        # truth_moments() would describe the loading state, not the boundary.
+        y_true = None if model["reaction"] else truth_moments(model, m_max + 1)
         # normalise the support to [-1,1] before forming the Hankel matrix,
         # otherwise the s^m dynamic range alone dictates the spectrum
         out[mid] = dict(noisy=hankel_spectrum(_rescale(y, model)),
-                        clean=hankel_spectrum(_rescale(y_true, model)),
+                        clean=(hankel_spectrum(_rescale(y_true, model))
+                               if y_true is not None else None),
                         atomic=model["atomic"],
                         n_atoms=sum(1 for c in model["components"] if c["c"] > 0))
     return out
@@ -250,20 +253,21 @@ def e2_rank_gap(m_max=12, preset="absorbance", ti_mode="oracle", seed=3,
 
 def _rescale(y, model, n=None):
     """
-    Re-express moments on a support rescaled to [-1, 1].
+    Re-express moments with s measured in units of the support midpoint,
+    x = s / s_c, so that y~_k = y_k / s_c^k.
 
-    y_k = sum c_i s_i^k on [a,b] -> moments of the pushforward under
-    x = (2s - (a+b))/(b-a), computed by the binomial transform.
+    Pure scaling, NOT an affine map onto [-1, 1].  Shifting the support to be
+    centred at zero needs a binomial transform whose terms grow like
+    ((a+b)/(b-a))^k; for a support such as (14.6, 16.9) that reaches ~1e14 by
+    k = 12, and the cancellation destroys the very singular values the rank
+    test is looking at -- it manufactured sigma_3/sigma_1 ~ 0.17 for an
+    exactly rank-2 truth.  Scaling alone is exact and keeps entries O(1).
     """
-    from math import comb
     a, b = models.support_bounds(model)
-    alpha, beta = 2.0 / (b - a), -(a + b) / (b - a)
+    s_c = 0.5 * (a + b)
     N = len(y) if n is None else n
-    out = np.zeros(N)
-    for k in range(N):
-        out[k] = sum(comb(k, j) * (alpha ** j) * (beta ** (k - j)) * y[j]
-                     for j in range(k + 1))
-    return out
+    k = np.arange(N)
+    return np.asarray(y, float)[:N] / s_c ** k
 
 
 if __name__ == "__main__":
@@ -280,8 +284,9 @@ if __name__ == "__main__":
             print(f"  {mid:12s} no usable window")
             continue
         kind = f"atomic R={d['n_atoms']}" if d["atomic"] else "NON-ATOMIC"
-        sv = " ".join(f"{v:.1e}" for v in d["noisy"][:7])
-        svc = " ".join(f"{v:.1e}" for v in d["clean"][:7])
         print(f"  {mid:12s} {kind:14s}")
-        print(f"       truth {svc}")
-        print(f"       noisy {sv}")
+        if d["clean"] is not None:
+            print("       truth " + " ".join(f"{v:.1e}" for v in d["clean"][:7]))
+        else:
+            print("       truth  (no atomic decomposition exists)")
+        print("       noisy " + " ".join(f"{v:.1e}" for v in d["noisy"][:7]))

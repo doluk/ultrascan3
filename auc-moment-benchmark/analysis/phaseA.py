@@ -48,10 +48,9 @@ def usable_scans(geom, model, **kw):
 
 
 def a2_grid_convergence(m_max=10, levels=(1500, 3000, 6000, 12000)):
-    """Moment error vs refinement, on noise-free S1 output."""
-    ts = models.test_set()
-    model = ts["S1"]
-    geom = models.RunGeometry()
+    """Moment error vs refinement, on noise-free single-species output."""
+    model = models.feasible_test_set()["F-S1"]
+    geom = models.RunGeometry(rpm=40000)
     usable = usable_scans(geom, model)
     idx = [u[0] for u in usable]
     wins = {u[0]: u[2] for u in usable}
@@ -73,11 +72,16 @@ def a2_grid_convergence(m_max=10, levels=(1500, 3000, 6000, 12000)):
     return table, results, usable
 
 
-def g0_weak_vs_naive(m_max=8, n_cells=12000):
-    """Gate G0: by-parts and naive extraction must agree on noise-free data."""
-    ts = models.test_set()
-    model = ts["S1"]
-    geom = models.RunGeometry()
+def g0_weak_vs_naive(m_max=8, n_cells=12000, radial_resolution=1.0e-3):
+    """
+    Gate G0: by-parts and naive extraction must agree on noise-free data.
+
+    The residual is the NAIVE estimator's finite-difference error, so it
+    shrinks with the radial sampling; `radial_resolution` is exposed so that
+    can be demonstrated rather than asserted.
+    """
+    model = models.feasible_test_set()["F-S1"]
+    geom = models.RunGeometry(rpm=40000, radial_resolution=radial_resolution)
     scans = models.simulate(model, geom, n_cells=n_cells)
     usable = usable_scans(geom, model)
     rels = []
@@ -94,7 +98,8 @@ if __name__ == "__main__":
     print("A.1  FV solver vs Faxen analytical")
     a1_faxen()
 
-    print("\nB.3  usable scans (window plateau must cover the s* support)")
+    print("\nB.3  usable scans (window plateau must cover support + 4 sigma)")
+    print("     the spec's 4 S test set, at its stated 45 krpm:")
     geom = models.RunGeometry()
     for mid, model in models.test_set().items():
         u = usable_scans(geom, model)
@@ -104,7 +109,22 @@ if __name__ == "__main__":
         else:
             print(f"  {mid:10s}   0/{geom.n_scans} scans  <-- NO USABLE WINDOW")
 
-    print("\nG0  weak form vs naive differentiation (noise-free, S1)")
+    print("\n     the feasible 15 S set, at 40 krpm:")
+    geom40 = models.RunGeometry(rpm=40000)
+    for mid, model in models.feasible_test_set().items():
+        u = usable_scans(geom40, model)
+        if u:
+            print(f"  {mid:12s} {len(u):3d}/{geom40.n_scans} scans, "
+                  f"t = {u[0][1]:.0f}..{u[-1][1]:.0f} s")
+        else:
+            print(f"  {mid:12s}   0/{geom40.n_scans} scans  <-- NO USABLE WINDOW")
+
+    print("\nG0  weak form vs naive differentiation (noise-free, F-S1)")
     rels, usable = g0_weak_vs_naive()
     for m in range(rels.shape[1]):
         print(f"   m={m:2d}  max rel diff = {rels[:, m].max():.3e}")
+
+    print("\n     and the same gap vs radial sampling (it is the naive side):")
+    for res in (2.0e-3, 1.0e-3, 5.0e-4):
+        r, _ = g0_weak_vs_naive(radial_resolution=res)
+        print(f"   radial_resolution={res:.1e}  max rel diff = {r.max():.3e}")
