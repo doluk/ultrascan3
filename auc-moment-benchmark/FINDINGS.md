@@ -10,7 +10,7 @@ evaluated. Every number here is reproducible from `analysis/`.
 | **G0** | Weak-form and naive extraction agree on noise-free data | **PASS** |
 | **G1** | `sigma(t)` scaling determined and reproducible | **PASS** — and the proposal's formula is wrong |
 | **G2** | `N_eff >= 5` with realistic TI/RI noise | **FAIL as specified**; passes only under assumptions that are not met |
-| **G3** | Crossover separation above ~5% vs 2DSA | **FAIL** — no crossover at any separation tested |
+| **G3** | Crossover separation above ~5% vs 2DSA | **FAIL** — no crossover at any separation tested (margin inflated; see the asymmetry note) |
 | **G4** | `BROAD`/`RA-fast` do not produce false clean rank gaps | **FAIL** — both produce confident false certificates |
 
 **The spec says: stop at the first failure. That is G2, and G3 and G4 confirm
@@ -231,6 +231,49 @@ limited by the blur model and the window, not by the separation.
 There is no crossover above 5%, and none at 3%. Per the spec's gate table:
 *no competitive advantage.*
 
+### The comparison is not symmetric, and the asymmetry favours the comparator
+
+This must be stated plainly, because it is the main threat to the conclusion
+above.
+
+**The NNLS comparator commits an inverse crime.** Its basis is built from
+`lamm.solve_species` — the *same solver that generated the data*. It is
+therefore fitting with a forward model that is exactly correct, which no real
+analysis ever has. Its 0.06–0.9% errors are a floor no instrument could
+reproduce.
+
+The moment route does not commit that crime: `estimate_moments` touches the
+solver nowhere. It applies the weak form to the raw scans and deconvolves
+with the analytic blur law, so its 1.5–3% error is intrinsic to the method
+rather than inherited from a perfect model.
+
+Running against that, the moment route was given two pieces of oracle
+knowledge the comparator was not:
+
+* the true `D` values, used both to place the observable window
+  (`windowing.observable_window` reads `D_max` from the truth) and to set the
+  deconvolution width (`_representative` reads the concentration-weighted
+  mean `D`). In practice both would have to be iterated;
+* exact removal of the dominant systematic (the `oracle` TI mode), and
+  absorbance rather than interference optics.
+
+So neither side is being judged fairly, and the errors run in opposite
+directions. What can and cannot be concluded:
+
+* **Not trustworthy:** the *size* of the gap. A 40x margin at 15% separation
+  is certainly inflated by the comparator's perfect forward model.
+* **Still supported:** the *direction*. For the comparator to lose, model
+  mismatch alone would have to degrade it by 3–25x, and `c(s)`/2DSA is known
+  to resolve 10–15% separations routinely on real data. Meanwhile the moment
+  route's 1.5–3% is set by the blur model and window truncation — both
+  measured independently in C.2 and §B.3 — so it does not improve if the
+  simulator improves.
+
+The clean way to settle it is open item 2 below: generate `.auc` files with
+UltraScan's ASTFEM and run the real `us_2dsa` against them, so that both
+sides face a forward model they did not author. Until that is done, **G3
+should be read as "no evidence of an advantage", not as a measured margin.**
+
 Note also that the proposal's Phase-1 milestone (15%, <1% error) is met by the
 comparator at **0.06%**, and missed by the moment route at 2.5%.
 
@@ -270,17 +313,36 @@ This is the method's worst failure mode and it is not a corner case.
 Things this prototype did **not** do, which a reader should not assume were
 done:
 
-1. **Layer 1 was never compiled or run.** `generate/generate.cpp` is written
-   against the UltraScan APIs on this branch (`us_astfem_rsa.h`,
-   `us_model.h`, `us_simparms.h`, `us_dataIO.h`, `us_noise.h`) and reviewed
-   against them, but this container has no Qt. All numbers here come from the
-   independent solver in `forward/lamm.py`, validated against Faxén (A.1) and
-   converged in space and time (A.2). Cross-validating ASTFEM/ASTFVM against
-   it is the first thing to do if the project continues.
-2. **The 2DSA comparator is a stand-in**, not `us_2dsa`. It is a fair one (the
+1. **Layer 1 was never compiled or run, and produced none of this data.**
+   `generate/generate.cpp` is written against the UltraScan APIs on this
+   branch (`us_astfem_rsa.h`, `us_model.h`, `us_simparms.h`, `us_dataIO.h`,
+   `us_noise.h`) and reviewed against them, but this container has no Qt, so
+   it is an untested draft that generated nothing. **UltraScan's ASTFEM /
+   ASTFVM was never executed in this study.**
+
+   Every number in this document comes from `forward/lamm.py`, an
+   independent finite-volume solver written for this prototype. The spec's
+   architecture (Layer 1 generates, Layer 2 analyses) was inverted: a Layer-0
+   reference solver was written and used throughout instead.
+
+   What stands in for the missing cross-validation: agreement with the Faxén
+   closed form to 0.6–1.5%, improving with time (A.1); mass conservation to
+   5e-14 and space/time convergence to ~1e-6, four orders below the noise
+   floor (A.2); and two independent estimators agreeing on the same data
+   (G0). That is good evidence the solver is correct, but it is not the same
+   as agreeing with the solver the field actually uses.
+
+   **Cross-validating ASTFEM/ASTFVM against `forward/lamm.py` is the first
+   thing to do if the project continues**, and it is a precondition for
+   trusting the G3 margin (see above).
+2. **The 2DSA comparator is a stand-in**, not `us_2dsa`, and it fits with the
+   same solver that generated the data — an inverse crime that flatters it
+   (see the G3 asymmetry note above). It is the right *kind* of baseline (the
    `c(s)` analogue with TI/RI eliminated, recovering both peaks of `F-M2-10`
    to 0.02% on noise-free data), but running the real `us_2dsa`, `us_dcdt`
-   and `us_vhw_enhanced` on the same `.auc` files is unfinished.
+   and `us_vhw_enhanced` on UltraScan-generated `.auc` files is unfinished,
+   and is what would turn G3 from "no evidence of an advantage" into a
+   measured margin.
 3. **TI/RI vectors are synthetic.** They are built to have the right character
    — smooth window distortion plus narrow scratches, not white — but real
    vectors harvested from instrument runs via `US_Noise` would make the study

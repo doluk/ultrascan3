@@ -99,10 +99,14 @@ G0 and G1 pass, and **G2, G3 and G4 fail**.
 
 The most important one for a mathematician deciding whether to engage is
 **G3**: a conventional non-negative least-squares fit to the raw data
-recovers the atoms 5–40x more accurately than inverting these moments does, at
-every separation from 15% down to 3% — and that comparison already gives the
-moment route advantages the real experiment cannot (favourable optics, exact
-removal of the dominant systematic).
+recovers the atoms more accurately than inverting these moments does, at
+every separation from 15% down to 3%.
+
+That comparison is not symmetric, and FINDINGS.md sets out both directions of
+bias — the fit is handed a forward model that is exactly correct, while the
+moment route is handed the true diffusion coefficients and exact removal of
+the dominant systematic. The margin is therefore not a measured number. The
+direction survives the caveats; the size does not.
 
 **G4** is the one that should worry anyone planning to certify `R`: on a
 measure with no atomic decomposition at all, the estimated Hankel spectrum
@@ -117,6 +121,11 @@ matter, and the honest question to ask first is whether any of the noise cases
 above is one where recovery is even possible.
 
 ## Provenance
+
+All data here was produced by the reference solver in `forward/lamm.py`,
+written for this prototype. The domain package's own solvers were never run —
+see open item 1 in FINDINGS.md for what was validated instead, and for why
+that matters to G3.
 
 `y_hat` and `Sigma` come from 400 Monte Carlo noise realizations pushed
 through the complete physical pipeline: simulate the experiment, add noise,
