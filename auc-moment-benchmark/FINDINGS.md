@@ -103,10 +103,52 @@ Supporting validation:
 * **A.2** Mass is conserved to 5e-14. Time-step refinement converges cleanly
   (4e-3 → 4e-4 → 2.7e-5 → 1.6e-6 as `cfl` halves); the production setting
   sits at 1.6e-6, four orders below the 8e-3 white-noise floor.
+* **A.2 against the real solver** — see the cross-validation section below.
+  UltraScan's ASTFEM and `forward/lamm.py` agree to 0.01% of plateau, and
+  their moment vectors agree to 1e-7 (`m=0`) through 6.6e-4 (`m=12`),
+  which is >100x below the noise-induced error at every order. The spec
+  asked for 10x. **A.2 passes.**
 * Scharfetter–Gummel face fluxes are used rather than upwinding. Plain upwind
   injects numerical diffusion of order `v*dr/2`, which is indistinguishable
   from real diffusion and would corrupt every second and higher moment — the
   exact failure the spec warns about.
+
+## Cross-validation against UltraScan's own solver
+
+The Layer-1 generator was built and run (see "How Layer 1 was built" below),
+so every result here now rests on two independent solvers rather than one.
+`analysis/crossvalidate.py` reproduces this.
+
+Concentration profiles, inside the observable window:
+
+| model | usable scans | max abs difference | relative to plateau |
+|---|---|---|---|
+| F-S1 | 18 | 5.0e-5 | 0.01% |
+| F-M2-10 | 15 | 4.4e-5 | 0.01% |
+| F-M3 | 14 | 4.5e-5 | 0.01% |
+
+Moment vectors, which is what actually propagates:
+
+| model | m=0 | m=4 | m=8 | m=12 |
+|---|---|---|---|---|
+| F-S1 | 1.0e-7 | 4.9e-5 | 2.5e-4 | 6.6e-4 |
+| F-M2-10 | 7.1e-8 | 5.0e-5 | 2.6e-4 | 6.6e-4 |
+| F-M3 | 6.9e-8 | 5.1e-5 | 2.6e-4 | 6.8e-4 |
+
+Against a white-noise relative error of ~7e-2 at `m=12`, solver disagreement
+is more than **100x below the noise floor at every order**.
+
+And G1 reproduces on ASTFEM output with a completely different numerical
+method — finite element with a moving grid, against the finite-volume
+Scharfetter-Gummel scheme in `lamm.py`:
+
+| | exponent of `sigma^2` | measured / vHW prefactor |
+|---|---|---|
+| `forward/lamm.py` | -1.073 +- 0.004 | 1.090 |
+| **UltraScan ASTFEM** | **-1.071 +- 0.003** | **1.087** |
+| proposal | -3 | — |
+
+No conclusion in this document is a solver artefact.
 
 ## G1 — the `sigma(t)` scaling — PASS, and the proposal is wrong
 
@@ -269,10 +311,34 @@ directions. What can and cannot be concluded:
   measured independently in C.2 and §B.3 — so it does not improve if the
   simulator improves.
 
-The clean way to settle it is open item 2 below: generate `.auc` files with
-UltraScan's ASTFEM and run the real `us_2dsa` against them, so that both
-sides face a forward model they did not author. Until that is done, **G3
+An earlier draft of this document claimed the fix was to generate the data
+with UltraScan's ASTFEM instead, so the comparator would no longer be fitting
+its own solver's output. **That has now been tested, and it is not the fix.**
+Re-running E.1 on ASTFEM-generated scans, with the NNLS basis still built
+from `lamm.py`, leaves the comparator essentially unchanged:
+
+| delta-s/s | c(s) on lamm data | c(s) on ASTFEM data |
+|---|---|---|
+| 10% | 0.11% / 0.09% | 0.10% / 0.08% |
+| 5% | 0.31% / 0.42% | 0.31% / 0.35% |
+
+The reason is the cross-validation above: the two solvers agree to ~1e-5 in
+concentration, far below the noise, so which one generated the data is
+immaterial. Swapping generators does not relieve the inverse crime.
+
+The crime is therefore not "the comparator's Lamm solver wrote the data". It
+is that **both solvers produce idealised Lamm solutions with no physical
+model error** — no rotor wobble, no temperature drift, no non-ideality or
+concentration-dependent `s`, no optical distortion. A basis built from clean
+Lamm solutions matches such data almost exactly, and no amount of
+cross-solver work changes that.
+
+Settling the margin therefore needs one of: real experimental data, or
+simulation with deliberate physical model error injected. Until then, **G3
 should be read as "no evidence of an advantage", not as a measured margin.**
+Note that the moment route is *not* similarly flattered — it never fits a
+forward model at all — so model error would, if anything, widen the gap
+rather than close it.
 
 Note also that the proposal's Phase-1 milestone (15%, <1% error) is met by the
 comparator at **0.06%**, and missed by the moment route at 2.5%.
@@ -313,36 +379,36 @@ This is the method's worst failure mode and it is not a corner case.
 Things this prototype did **not** do, which a reader should not assume were
 done:
 
-1. **Layer 1 was never compiled or run, and produced none of this data.**
-   `generate/generate.cpp` is written against the UltraScan APIs on this
-   branch (`us_astfem_rsa.h`, `us_model.h`, `us_simparms.h`, `us_dataIO.h`,
-   `us_noise.h`) and reviewed against them, but this container has no Qt, so
-   it is an untested draft that generated nothing. **UltraScan's ASTFEM /
-   ASTFVM was never executed in this study.**
+1. **Layer 1 is built, run, and cross-validated. (Closed.)**
+   `generate/generate.cpp` now compiles against real UltraScan `libus_utils`
+   and `US_Astfem_RSA`, and the data it produces agrees with
+   `forward/lamm.py` to >100x below the noise floor at every moment order
+   (see the cross-validation section). Compiling it caught a member this file
+   had invented from memory (`US_Model::compressibility`, which does not
+   exist) and a speed-profile setup that left `avg_speed`, `set_speed` and
+   the omega^2t values unpopulated, which made the solver emit NaNs and write
+   nothing.
 
-   Every number in this document comes from `forward/lamm.py`, an
-   independent finite-volume solver written for this prototype. The spec's
-   architecture (Layer 1 generates, Layer 2 analyses) was inverted: a Layer-0
-   reference solver was written and used throughout instead.
+   Two caveats on the build, both recorded in `generate/CMakeLists.txt`:
+   it builds only `libus_utils` in the no-database configuration rather than
+   going through the top-level CMakeLists (which pulls in OpenGL, qwt,
+   qwtplot3d and X11 for the GUI); and it was built against Ubuntu's Qt 6.4.2
+   rather than the Qt 6.9 the project pins, which needs the small shim in
+   `generate/qt_compat.h`. The pinned toolchain image
+   (`ghcr.io/ehb54/us3-toolchain-ubuntu2404`) could not be pulled here:
+   `ghcr.io` is reachable but the layer host
+   `pkg-containers.githubusercontent.com` is refused by this environment's
+   egress policy. Building inside that image would remove the shim.
 
-   What stands in for the missing cross-validation: agreement with the Faxén
-   closed form to 0.6–1.5%, improving with time (A.1); mass conservation to
-   5e-14 and space/time convergence to ~1e-6, four orders below the noise
-   floor (A.2); and two independent estimators agreeing on the same data
-   (G0). That is good evidence the solver is correct, but it is not the same
-   as agreeing with the solver the field actually uses.
+2. **The 2DSA comparator is a stand-in**, not `us_2dsa`. It is the right
+   *kind* of baseline (the `c(s)` analogue with TI/RI eliminated, recovering
+   both peaks of `F-M2-10` to 0.02% on noise-free data) and it now runs
+   against ASTFEM-generated data, but it is still NNLS over a Lamm basis
+   rather than UltraScan's own 2DSA implementation, and it still fits data
+   that carries no physical model error (see the G3 asymmetry note). Running
+   the real `us_2dsa`, `us_dcdt` and `us_vhw_enhanced` on the `.auc` files
+   the generator now writes is the remaining unfinished comparison.
 
-   **Cross-validating ASTFEM/ASTFVM against `forward/lamm.py` is the first
-   thing to do if the project continues**, and it is a precondition for
-   trusting the G3 margin (see above).
-2. **The 2DSA comparator is a stand-in**, not `us_2dsa`, and it fits with the
-   same solver that generated the data — an inverse crime that flatters it
-   (see the G3 asymmetry note above). It is the right *kind* of baseline (the
-   `c(s)` analogue with TI/RI eliminated, recovering both peaks of `F-M2-10`
-   to 0.02% on noise-free data), but running the real `us_2dsa`, `us_dcdt`
-   and `us_vhw_enhanced` on UltraScan-generated `.auc` files is unfinished,
-   and is what would turn G3 from "no evidence of an advantage" into a
-   measured margin.
 3. **TI/RI vectors are synthetic.** They are built to have the right character
    — smooth window distortion plus narrow scratches, not white — but real
    vectors harvested from instrument runs via `US_Noise` would make the study
@@ -353,6 +419,32 @@ done:
 5. `F-RA-fast` has only 4 usable scans, so its Phase-D numbers are thin. Its
    G4 result does not depend on that (it is a single-realization spectrum).
 
+## How Layer 1 was built
+
+For the record, since the environment mattered:
+
+* The pinned toolchain image `ghcr.io/ehb54/us3-toolchain-ubuntu2404` is
+  public and its manifest resolves, but its layers are served from
+  `pkg-containers.githubusercontent.com`, which this environment's egress
+  policy refuses (403 at CONNECT). The image could not be pulled.
+* The generator was instead built against Ubuntu 24.04's Qt 6.4.2, compiling
+  only `libus_utils` with `NO_DB` (the HPC profile's subset), which avoids
+  the GUI dependency chain entirely.
+* UltraScan targets Qt 6.9. The one incompatibility that bites under 6.4 is
+  comparing the `QStringView` from `QXmlStreamReader::name()` against a
+  string literal, which the utils XML readers do in ~146 places.
+  `generate/qt_compat.h` supplies the missing operator and is force-included
+  into the `us_utils` compilation only, so **no upstream source file was
+  modified**. It compiles to nothing on Qt >= 6.5.
+
+Reproduce with:
+
+```
+cd generate && cmake -S . -B build && cmake --build build -j
+./build/generate /tmp/us3out
+python3 ../analysis/crossvalidate.py /tmp/us3out
+```
+
 ## What is worth keeping
 
 If the project stops here, three things are still worth writing up:
@@ -361,6 +453,9 @@ If the project stops here, three things are still worth writing up:
 * The exact annihilation of radially-invariant noise by any compactly
   supported weak form — useful to anyone computing moment-like functionals of
   AUC scans, independently of this inversion scheme.
+* The cross-validation itself: an independent, dependency-free reference
+  solver that agrees with ASTFEM to 0.01% of plateau is a useful regression
+  check for UltraScan in its own right.
 * The observable-window constraint of §B.3, which applies to *any* method
   that works in `s*`-space and needs unbiased high moments, and which appears
   not to be stated anywhere in the `g*(s)` literature.

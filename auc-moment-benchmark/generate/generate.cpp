@@ -22,11 +22,13 @@
 
 #include <QtCore>
 
+#include "us_astfem_math.h"
 #include "us_astfem_rsa.h"
 #include "us_dataIO.h"
 #include "us_model.h"
 #include "us_noise.h"
 #include "us_simparms.h"
+#include "us_util.h"
 
 namespace {
 
@@ -88,7 +90,6 @@ US_Model build_model( const TestModel& tm )
 {
    US_Model model;
    model.description  = tm.id;
-   model.compressibility = 0.0;
    model.wavelength   = 280.0;
 
    for ( const Species& sp : tm.species )
@@ -111,59 +112,112 @@ US_SimulationParameters build_params( const TestModel& tm, int n_scans,
                                       double t_start, double t_end )
 {
    US_SimulationParameters sp;
-   sp.meniscus          = 5.90;
-   sp.bottom            = 7.20;
-   sp.bottom_position   = 7.20;
-   sp.rnoise            = 0.0;   // noise is injected afterwards, not here
-   sp.tinoise           = 0.0;
-   sp.rinoise           = 0.0;
-   sp.band_forming      = false;
 
-   // Phase A.2 showed the GUI defaults are too coarse for high moments.
+   // Populates bottom_position and the rotor stretch coefficients.  Without
+   // it calc_bottom() has nothing to work from.
+   sp.setHardware( NULL, "0", 0, 0 );
+
+   US_SimulationParameters::SpeedProfile prof;
+   prof.rotorspeed        = qRound( tm.rpm );
+   prof.set_speed         = qRound( tm.rpm );
+   prof.avg_speed         = tm.rpm;
+   prof.scans             = n_scans;
+   // A high acceleration keeps the run at constant speed for all but the
+   // first second of 22000, so the comparison against forward/lamm.py --
+   // which assumes the speed is reached instantly -- is not confounded by
+   // the acceleration zone.
+   prof.acceleration      = 40000;
+   prof.acceleration_flag = true;
+   prof.delay_hours       = 0;
+   prof.delay_minutes     = t_start / 60.0;
+   prof.duration_hours    = int( t_end / 3600.0 );
+   prof.duration_minutes  = ( t_end - prof.duration_hours * 3600.0 ) / 60.0;
+   sp.speed_step.clear();
+   sp.speed_step << prof;
+
+   // Phase A.2 showed the GUI default (200) is far too coarse for high
+   // moments; see FINDINGS.md.
    sp.simpoints         = 6000;
    sp.radial_resolution = 1.0e-3;
    sp.meshType          = US_SimulationParameters::ASTFEM;
    sp.gridType          = US_SimulationParameters::MOVING;
 
-   US_SimulationParameters::SpeedProfile prof;
-   prof.rotorspeed      = qRound( tm.rpm );
-   prof.acceleration    = 400;
-   prof.scans           = n_scans;
-   prof.time_first      = qRound( t_start );
-   prof.time_last       = qRound( t_end );
-   prof.duration_hours  = int( t_end / 3600.0 );
-   prof.duration_minutes= ( t_end - prof.duration_hours * 3600.0 ) / 60.0;
-   prof.delay_hours     = 0;
-   prof.delay_minutes   = t_start / 60.0;
-   sp.speed_step << prof;
+   // Fixed geometry, matching forward/models.py RunGeometry.  simparams
+   // meniscus/bottom take precedence over the hardware-derived values, which
+   // is what we want: both solvers must see the same cell.
+   sp.meniscus          = 5.90;
+   sp.bottom            = 7.20;
+   sp.temperature       = 20.0;
+
+   sp.rnoise            = 0.0;   // noise is injected in Layer 2, not here
+   sp.lrnoise           = 0.0;
+   sp.tinoise           = 0.0;
+   sp.rinoise           = 0.0;
+   sp.baseline          = 0.0;
+   sp.band_forming      = false;
+   sp.band_volume       = 0.0;
+   sp.rotorCalID        = "0";
 
    return sp;
 }
 
-// Allocate the RawData container the solver fills in.
-US_DataIO::RawData make_container( const US_SimulationParameters& sp,
-                                   const TestModel& tm,
+// Allocate and time-stamp the RawData container the solver fills in.
+//
+// US_Astfem_RSA::calculate() writes into an existing grid: the caller owns
+// the radial grid, the scan times and the omega^2t values.  Getting the
+// omega^2t values from US_AstfemMath::calc_omega2t rather than computing
+// w^2*t by hand is what makes the acceleration zone consistent with what the
+// solver expects.
+US_DataIO::RawData make_container( US_SimulationParameters& sp,
+                                   const TestModel& tm, const US_Model& model,
                                    int n_scans, double t_start, double t_end )
 {
    US_DataIO::RawData data;
-   data.type[ 0 ] = 'R';  data.type[ 1 ] = 'I';
-   data.cell      = 1;
-   data.channel   = 'A';
+   data.type[ 0 ] = 'R';  data.type[ 1 ] = 'A';
+   US_Util::uuid_parse( US_Util::new_guid(), (uchar*)data.rawGUID );
+   data.cell        = 1;
+   data.channel     = 'S';
    data.description = tm.id;
 
-   const int n_r = int( ( sp.bottom - sp.meniscus ) / sp.radial_resolution ) + 1;
-   for ( int j = 0; j < n_r; j++ )
-      data.xvalues << sp.meniscus + j * sp.radial_resolution;
+   const int points = int( ( sp.bottom - sp.meniscus ) / sp.radial_resolution ) + 1;
+   data.xvalues.resize( points );
+   for ( int jp = 0; jp < points; jp++ )
+      data.xvalues[ jp ] = sp.meniscus + jp * sp.radial_resolution;
 
-   const double omega = tm.rpm * M_PI / 30.0;
-   for ( int i = 0; i < n_scans; i++ )
+   const int terpsize = ( points + 7 ) / 8;
+
+   US_SimulationParameters::SpeedProfile* prof = &sp.speed_step[ 0 ];
+   const double target_speed = prof->set_speed;
+   const double delay    = qRound( prof->delay_hours    * 3600.0
+                                 + prof->delay_minutes  * 60.0 );
+   const double duration = qRound( prof->duration_hours * 3600.0
+                                 + prof->duration_minutes * 60.0 );
+   const double dt       = ( duration - delay ) / double( prof->scans - 1 );
+
+   for ( int js = 0; js < prof->scans; js++ )
    {
       US_DataIO::Scan scan;
-      scan.seconds = t_start + ( t_end - t_start ) * i / double( n_scans - 1 );
-      scan.rpm     = tm.rpm;
-      scan.omega2t = omega * omega * scan.seconds;
-      scan.wavelength = 280.0;
-      scan.rvalues.fill( 0.0, n_r );
+      scan.temperature = sp.temperature;
+      scan.rpm         = target_speed;
+      scan.wavelength  = model.wavelength;
+      scan.plateau     = 0.0;
+      scan.delta_r     = sp.radial_resolution;
+      scan.seconds     = double( qRound( delay + dt * js ) );
+      scan.omega2t     = US_AstfemMath::calc_omega2t( 0.0, 0.0, 0.0,
+                            target_speed, prof->acceleration, scan.seconds );
+      scan.rvalues     .fill( 0.0, points );
+      scan.interpolated.fill( 0,   terpsize );
+
+      if ( js == 0 )
+      {
+         prof->time_first = scan.seconds;
+         prof->w2t_first  = scan.omega2t;
+      }
+      else if ( js == prof->scans - 1 )
+      {
+         prof->time_last  = scan.seconds;
+         prof->w2t_last   = scan.omega2t;
+      }
       data.scanData << scan;
    }
    return data;
@@ -205,8 +259,8 @@ int main( int argc, char* argv[] )
    {
       US_Model                model  = build_model( tm );
       US_SimulationParameters params = build_params( tm, n_scans, t_start, t_end );
-      US_DataIO::RawData      data   = make_container( params, tm, n_scans,
-                                                       t_start, t_end );
+      US_DataIO::RawData      data   = make_container( params, tm, model,
+                                                       n_scans, t_start, t_end );
 
       US_Astfem_RSA solver( model, params );
       solver.setTimeCorrection( false );
