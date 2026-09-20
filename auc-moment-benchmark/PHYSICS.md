@@ -224,3 +224,128 @@ For a **single species** this recovers `(s, D)` by linear least squares with
 no Gaussian assumption anywhere, and so validates the `s*`-space pipeline
 independently. For mixtures it becomes a linear constraint on the unknown
 decomposition rather than a direct estimator — a diagnostic, not the method.
+
+---
+
+# 7. Band forming (zonal) sedimentation
+
+A different experiment, not a parameter change. A thin lamella of sample is
+layered on a dense buffer, so the scan is a migrating **peak with zero
+baseline** rather than a boundary with a plateau. Three of the four
+structural difficulties in §1–§5 change character.
+
+## 7.1 The lamella
+
+UltraScan builds it as (`utils/us_astfem_rsa.cpp:1483`)
+
+```
+base = r_m^2 + V * 360 / (angle * pathlen * pi)
+w    = sqrt(base) - r_m
+phi(r) = exp( -((r - r_m)/w)^4 )
+```
+
+a super-Gaussian of width `w`. For `V = 0.015 mL`, `angle = 2.5 deg`,
+`pathlen = 1.2 cm`, `r_m = 5.9`: `w = 0.0484 cm`, and its standard deviation
+is `0.3145 w = 0.0152 cm`. `forward/band.py` reproduces this exactly.
+
+## 7.2 The moments need no derivative at all
+
+For a non-diffusing band, each species maps `r_0 -> r = r_0 e^{s w^2 t}`, and
+sector mass conservation `c r dr = c_0 r_0 dr_0` gives
+
+```
+c_s(r,t) = c_0(r_0) (r_0/r)(dr_0/dr) = c_0(r_0) e^{-2 s w^2 t} ,
+```
+
+the same square-dilution factor as SV. Now take
+
+```
+mu_m(t) = \int u^m (r/r_m) a(r,t) dr                                 (9)
+```
+
+and substitute `r_0 = r e^{-s w^2 t}` for the species at `s`. Then
+`u = s + ln(r_0/r_m)/(w^2 t)`, `(r/r_m) = (r_0/r_m) e^{s w^2 t}` and
+`dr = e^{s w^2 t} dr_0`, so the two factors of `e^{s w^2 t}` cancel the
+dilution exactly:
+
+```
+mu_m(t) = sum_i c_i \int [ s_i + eps(r_0) ]^m dnu(r_0) ,              (10)
+    dnu(r_0) = (r_0/r_m) phi(r_0) dr_0 ,   eps(r_0) = ln(r_0/r_m)/(w^2 t) .
+```
+
+**(9) is a direct weighted integral of the raw scan.** The integration by
+parts of §2 — introduced solely to avoid differentiating noisy data — is not
+needed, because there is no derivative to begin with. The kernel is just
+`W(r) u^m (r/r_m)`.
+
+Setting `m = 0` in (10) gives `mu_0 = sum_i c_i Phi'` with
+`Phi' = \int (r_0/r_m) phi(r_0) dr_0 = 0.0440 cm`. So the weight of a species
+in the moment vector is `c_i Phi'`, not `c_i`: `c_i` is the *peak* of the
+lamella, `Phi'` converts it to integrated mass. `Phi'` is a geometric
+constant shared by all species, so it rescales `y_0` and leaves the atom
+locations untouched.
+
+## 7.3 The lamella blur is known, so it deconvolves exactly
+
+(10) says the atoms are convolved with the pushforward of the lamella under
+`eps` — a distribution fixed entirely by the band volume and cell geometry,
+both known *before* the run. Its normalised moments `e_j(t)` can be computed
+directly, and the convolution undone by forward substitution:
+
+```
+mu_m = sum_j C(m,j) e_j y_{m-j}   =>   y_m = mu_m - sum_{j>=1} C(m,j) e_j y_{m-j}
+```
+
+This is **exact for any blur shape**, with no Gaussian assumption (round-trip
+error 0.0). Only the diffusion part is left for the Hermite step of §5.
+Compare SV, where the entire blur must be approximated as a single Gaussian
+and the species-dependence of `D` is an uncontrolled 6% model error (C.2).
+
+## 7.4 Blur scaling
+
+The lamella and diffusion add in quadrature in `r`, then map to `s*`-space
+through the same Jacobian as §4:
+
+```
+sigma_total^2(t) = ( sigma_{r0}^2 + 2 D t ) / ( w^4 t^2 r_b(t)^2 ) .    (11)
+```
+
+The lamella term falls off as `t^-2` and diffusion as `t^-1`, so in principle
+the exponent runs from `-2` to `-1`. **Measured: `-1.175 +- 0.001`,
+essentially constant across the observable window** (early half `-1.178`,
+late half `-1.176`), because within that window the lamella contributes only
+about 10% of the variance. So band mode does show a single clean power law,
+just steeper than SV's `-1.073`. Equation (11) fits with prefactor **1.093**,
+the same ~9% sector correction found for SV.
+
+## 7.5 What is gained and what is lost
+
+**Gained — systematic noise becomes removable.** In SV the plateau carries
+signal at every radius for the whole run, so TI noise cannot be separated
+from signal without a model fit to all `n_t x n_r` points (§2.1, FINDINGS D.1).
+In band mode each radius is empty for most of the run, so TI can be read from
+the scans in which the band is elsewhere, and RI from the radii the band is
+not at. This needs only the a priori support and a bound on `D` — it is an
+**achievable** estimator, not an oracle (`band.denoise`).
+
+Two exclusions are essential and non-obvious: once the band reaches the
+bottom the material pellets and stays, so that region is permanently occupied
+and, because it stays occupied for every later scan, a median cannot reject
+it. Scans after the band arrives at the bottom must be dropped outright. The
+pellet is the largest signal in the whole run; mistaking it for background
+makes the estimate worse than no correction at all.
+
+**Lost — RI is no longer annihilated.** The SV weak-form kernel integrates to
+zero (§2.1) and so kills any additive function of `t` exactly. The band
+kernel `W u^m (r/r_m)` does not. This shows up directly in the measurements:
+band mode with *oracle* TI removal (44–62% error at `m=0`) is **worse** than
+band mode with the achievable band-gated removal (11–14%), because the latter
+also removes RI and the former leaves it.
+
+**Lost — integrated signal.** At equal optical peak concentration,
+`mu_0 = c Phi' = 0.022` for a band against `0.5` for SV: a band integrates
+about **23x less signal**. This is fundamental, not a tuning artefact, and it
+is why band mode loses under realistic systematics despite having 3–4x more
+usable scans. Enlarging the lamella recovers some of it (`Phi'` scales with
+`V`) but widens the window requirement, and past `V ~ 0.03 mL` the observable
+window collapses.

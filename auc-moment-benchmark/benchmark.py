@@ -35,6 +35,11 @@ CASES = [
     ("interference", "oracle"),    # upper bound on any TI-removal scheme
 ]
 
+# Band forming additionally supports an ACHIEVABLE systematic-noise estimator,
+# because the baseline away from the band is zero.  See forward/band.py.
+BAND_CASES = CASES + [("interference", "band-gated"),
+                      ("absorbance", "band-gated")]
+
 
 def _fmt(v):
     return "n/a" if v is None else f"{v:.2e}"
@@ -87,17 +92,24 @@ def write_case(outdir, mid, model, geom, res, tag):
     np.save(os.path.join(d, "realizations.npy"), res["realizations"])
 
     N, rel = n_eff(res)
+    band_mode = bool(getattr(geom, "band", False))
     atoms = [dict(s_svedberg=c["s"] / SV, D_cm2_s=c["D"], conc=c["c"],
                   f_f0=c["f_f0"], mw_Da=c["mw"])
              for c in model["components"] if c["c"] > 0]
     R = len(atoms) if model["atomic"] else None
     cond = hankel_conditioning(res["y_true"], model, R)
+    # In band mode the atom weights are c_i * Phi', not c_i; truth_moments
+    # applies that, and it is recorded here so the two data sets stay
+    # comparable.
+
     lo, hi = models.support_bounds(model)
     corr = correlation(res["Sigma"])
     off = corr - np.eye(corr.shape[0])
 
     meta = dict(
         model_id=mid, case=tag, note=model["note"],
+        run_mode="band-forming" if band_mode else "sedimentation-velocity",
+        band_volume=(geom.band_volume if band_mode else None),
         atomic=bool(model["atomic"]),
         R=R,
         atoms=atoms,
@@ -129,9 +141,13 @@ def main():
     ap.add_argument("--out", default=os.path.join(os.path.dirname(
         os.path.abspath(__file__)), "data"))
     ap.add_argument("--rpm", type=int, default=40000)
+    ap.add_argument("--band", action="store_true",
+                    help="band-forming (zonal) run instead of sedimentation velocity")
     args = ap.parse_args()
 
-    geom = models.RunGeometry(rpm=args.rpm)
+    geom = (models.band_run_geometry(rpm=args.rpm) if args.band
+            else models.RunGeometry(rpm=args.rpm))
+    cases = BAND_CASES if args.band else CASES
     ts = models.feasible_test_set()
     os.makedirs(args.out, exist_ok=True)
 
@@ -143,7 +159,7 @@ def main():
                                 note=model["note"]))
             continue
         clean = models.simulate(model, geom)
-        for preset, ti_mode in CASES:
+        for preset, ti_mode in cases:
             res = monte_carlo(model, geom, m_max=args.m_max, n_mc=args.n_mc,
                               preset=preset, ti_mode=ti_mode, clean=clean)
             tag = f"{preset}-{ti_mode}"

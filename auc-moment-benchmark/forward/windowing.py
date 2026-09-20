@@ -48,7 +48,7 @@ def blur_sigma(t, s, D, rpm, rm):
 
 
 def place_window(geom, s_lo, s_hi, t, D_max, s_ref, k_sigma=4.0,
-                 taper_frac=0.25, margin=0.03):
+                 taper_frac=0.25, margin=0.03, band=False):
     """
     Window whose plateau covers the support padded by k_sigma blur widths.
 
@@ -60,7 +60,10 @@ def place_window(geom, s_lo, s_hi, t, D_max, s_ref, k_sigma=4.0,
     Returns a Window, or None if no admissible window fits in the cell.
     """
     w2 = geom.omega2
-    sig = blur_sigma(t, s_ref, D_max, geom.rpm, geom.meniscus)
+    if band:
+        sig = band_sigma_total(t, s_ref, D_max, geom.rpm, geom.meniscus, geom)
+    else:
+        sig = blur_sigma(t, s_ref, D_max, geom.rpm, geom.meniscus)
     lo = (s_lo - k_sigma * sig) * SV
     hi = (s_hi + k_sigma * sig) * SV
 
@@ -74,6 +77,16 @@ def place_window(geom, s_lo, s_hi, t, D_max, s_ref, k_sigma=4.0,
     if r_lo < geom.meniscus + margin or r_hi > geom.bottom - margin:
         return None
     return Window(r_lo, r_hi, taper)
+
+
+def band_sigma_total(t, s, D, rpm, rm, geom):
+    """Observed band width (lamella and diffusion in quadrature)."""
+    from band import blur_sigma_band_total, lamella_width
+    import numpy as _np
+    # sigma of the exp(-x^4) lamella in r, as a fraction of its width w
+    w = lamella_width(rm, band_volume=geom.band_volume)
+    sigma_r0 = 0.3145 * w          # sqrt(Var) of exp(-x^4) on x>=0, in units of w
+    return blur_sigma_band_total(t, s, D, rpm, rm, sigma_r0)
 
 
 def observable_window(geom, model, k_sigma=4.0, **kw):
@@ -93,9 +106,11 @@ def observable_window(geom, model, k_sigma=4.0, **kw):
     if s_ref <= 0:
         s_ref = np.mean([c["s"] for c in comps])
 
+    band = getattr(geom, "band", False)
     out = []
     for i, t in enumerate(geom.times):
-        w = place_window(geom, s_lo, s_hi, t, D_max, s_ref, k_sigma=k_sigma, **kw)
+        w = place_window(geom, s_lo, s_hi, t, D_max, s_ref, k_sigma=k_sigma,
+                         band=band, **kw)
         if w is not None:
             out.append((i, t, w))
     return out

@@ -31,6 +31,9 @@ def monte_carlo(model, geom, m_max=10, n_mc=500, preset="interference",
       "timemean" subtract the time-mean of the scans.  This annihilates TI
                  exactly, but it also removes a large part of the signal, so
                  it is biased unless the forward map is projected identically
+      "band-gated" estimate TI and RI from the band-free regions (band mode
+                 only).  Unlike "oracle" this is ACHIEVABLE: it needs only
+                 the a priori support bounds and an upper bound on D
 
     Returns dict with y_true, realizations, y_hat (mean), bias, Sigma.
     """
@@ -46,10 +49,13 @@ def monte_carlo(model, geom, m_max=10, n_mc=500, preset="interference",
         noisy, ti_vec = gen.draw(clean, return_parts=True)
         if ti_mode == "oracle":
             noisy = noisy - ti_vec[None, :]
+        elif ti_mode == "band-gated":
+            import band as _band
+            noisy = _band.denoise(noisy, geom, model)[0]
         reals[k] = estimate_moments(noisy, model, geom, m_max,
                                     ti_project=(ti_mode == "timemean"),
                                     windows=windows)
-    y_true = truth_moments(model, m_max + 1)
+    y_true = truth_moments(model, m_max + 1, geom=geom)
     y_hat = reals.mean(axis=0)
     Sigma = np.cov(reals, rowvar=False)
     return dict(y_true=y_true, realizations=reals, y_hat=y_hat,

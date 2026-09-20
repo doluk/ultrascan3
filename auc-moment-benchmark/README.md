@@ -32,6 +32,36 @@ differ only by a smooth power of the integration variable, so their errors are
 almost perfectly correlated. Any formulation that assumes isotropic or
 independent moment noise is solving a different problem from this one.
 
+## Two experiments, not one
+
+The package ships the same problem derived from two different physical
+experiments, in `data/` and `data-band/`. They are worth comparing, because
+the answer to "is this solvable?" differs between them in an instructive way:
+
+| | `data/` (sedimentation velocity) | `data-band/` (band forming) |
+|---|---|---|
+| measurements per instance | 13–18 | **45–63** |
+| `N_eff`, white noise only | 12 | **14** |
+| `N_eff`, realistic noise, achievable denoising | -1 | **14** (favourable optics) |
+| best relative error at `m=0` | 7.8e-4, but only with an **unachievable** oracle | **2.5e-3, achievable** |
+| blur model | entirely approximated as one Gaussian | instrument part removed **exactly**, only diffusion approximated |
+
+Band forming is the cleaner of the two mathematically: the moment functional
+needs no derivative of the data, part of the blur is known a priori and
+deconvolved exactly, and its systematic noise can be estimated without
+fitting a model. It is also intrinsically noisier, because a layered band
+integrates ~23x less signal than a filled cell at the same optical peak.
+
+Those pull in opposite directions, and which wins depends on the detector.
+With the favourable of the two optical systems the band data reaches
+**`N_eff = 14`, `R_max = 6` with a fully achievable noise estimator** — the
+velocity data reaches that only with an oracle nobody can build. With the
+noisier detector neither works.
+
+**If you want one instance to look at first, take
+`data-band/F-M2-10__absorbance-band-gated/`.** It is the most favourable
+honest case in the package: 15 moments, two atoms, everything achievable.
+
 ## Realistic values
 
 `N = 15` moments are supplied (`m = 0..14`). What is actually usable depends
@@ -39,10 +69,11 @@ entirely on the noise assumption, which is the point:
 
 | case | `N_eff` | `R_max` |
 |---|---|---|
-| white noise only (the assumption the proposal makes) | 11–12 | 5 |
-| a realistic favourable instrument | 3–5 | 1–2 |
-| a realistic interference instrument | **-1** | — |
-| interference with *oracle* systematic-noise removal | 12 | 5 |
+| white noise only (the assumption the proposal makes) | 11–14 | 5–6 |
+| favourable instrument, velocity | 3–5 | 1–2 |
+| **favourable instrument, band forming, achievable denoising** | **14** | **6** |
+| noisier instrument, either experiment | **-1** | — |
+| noisier instrument with an *oracle* denoiser, velocity | 12 | 5 |
 
 `N_eff` is the largest `m` for which the total relative error
 `sqrt(Sigma_mm + bias_m^2)/|y_m|` stays below 10%; `R_max = floor((N_eff-1)/2)`.
@@ -65,7 +96,8 @@ rescaled so `s` is O(1)):
 ## Layout
 
 ```
-data/<model_id>__<optics>-<systematic-noise-handling>/
+data/<model_id>__<optics>-<systematic-noise-handling>/          # velocity
+data-band/<model_id>__<optics>-<systematic-noise-handling>/     # band forming
     y_true.npy        ground truth, y_k = sum_i c_i s_i^k          (N,)
     y_hat.npy         mean of the Monte Carlo estimates            (N,)
     Sigma.npy         full covariance of y_hat                     (N,N)
@@ -88,14 +120,17 @@ generate/                Layer 1, C++/UltraScan, for reproducibility only
 the systematic-noise cases the bias dominates the variance by orders of
 magnitude.
 
-Four noise cases are shipped per model rather than one, because the answer to
-"is this solvable?" is different for each, and choosing on your behalf would
-hide the finding.
+Four noise cases are shipped per model rather than one (six in band mode,
+which supports two additional achievable-denoising cases), because the answer
+to "is this solvable?" is different for each, and choosing on your behalf
+would hide the finding. `truth.json` carries `run_mode` and, for band data,
+`band_volume`.
 
 ## Please read FINDINGS.md before investing time
 
 The honest summary: of the five go/no-go gates the physics side set itself,
-G0 and G1 pass, and **G2, G3 and G4 fail**.
+G0 and G1 pass. **G2 fails for the velocity experiment but passes for the
+band-forming one**; **G3 and G4 fail for both**.
 
 The most important one for a mathematician deciding whether to engage is
 **G3**: a conventional non-negative least-squares fit to the raw data
@@ -115,10 +150,14 @@ chemically reacting system) — larger than the gap shown by a genuinely rank-2
 instance. A rank certificate computed from these moments at this noise level
 would be wrong, and would look convincing while being wrong.
 
-None of that makes the truncated moment problem itself uninteresting. It does
-mean the physics does not currently deliver moments good enough for it to
-matter, and the honest question to ask first is whether any of the noise cases
-above is one where recovery is even possible.
+None of that makes the truncated moment problem itself uninteresting. But
+note what the band-forming result does to the shape of the objection. It is
+no longer "the moments are too noisy to invert" — with that experiment and
+that detector, they are not. It is that **clean moments still lose to a
+direct fit of the raw data, and the rank certificate is still unsafe on
+exactly the measures one would want to test it on**. Those are properties of
+the inverse problem rather than of the instrument, which is why they are the
+interesting ones to look at first.
 
 ## Provenance
 
@@ -149,7 +188,8 @@ is biased.
 
 ```
 pip install numpy scipy
-python3 benchmark.py --n-mc 400 --m-max 14     # regenerate data/
+python3 benchmark.py --n-mc 400 --m-max 14                       # data/
+python3 benchmark.py --band --n-mc 300 --m-max 14 --out data-band
 python3 analysis/phaseA.py                     # solver validation, gate G0
 python3 analysis/phaseC.py                     # blur scaling, gate G1
 python3 analysis/phaseD.py                     # covariance, gate G2

@@ -47,10 +47,22 @@ def moments_of_measure(s, c, n_moments):
     return (c[:, None] * s[:, None] ** k[None, :]).sum(axis=0)
 
 
-def truth_moments(model, n_moments):
-    """Ground-truth moment vector for a test-set model."""
+def truth_moments(model, n_moments, geom=None):
+    """
+    Ground-truth moment vector for a test-set model.
+
+    In band mode the weight carried by a species is not its signal
+    concentration (which is the PEAK of the lamella) but the mass the
+    estimator actually integrates, c_i * Phi' with
+    Phi' = \int (r0/rm) phi(r0) dr0.  Phi' is a geometric constant shared by
+    every species, so it rescales y_0 and leaves the atom locations alone.
+    """
     s = [comp["s"] / SV for comp in model["components"]]
     c = [comp["c"] for comp in model["components"]]
+    if geom is not None and getattr(geom, "band", False):
+        from band import lamella_mass
+        phi = lamella_mass(geom.r, geom.meniscus, band_volume=geom.band_volume)
+        c = [ci * phi for ci in c]
     return moments_of_measure(s, c, n_moments)
 
 
@@ -99,6 +111,11 @@ def estimate_moments(scans, model, geom, m_max, k_sigma=4.0,
 
     s_ref, D_ref = _representative(model)
     idx = [i for i, _, _ in windows]
+
+    if getattr(geom, "band", False):
+        return _estimate_band(scans, model, geom, m_max, windows, s_ref, D_ref,
+                              per_scan)
+
     ys = []
     for i, t, w in windows:
         if ti_project:
@@ -109,6 +126,34 @@ def estimate_moments(scans, model, geom, m_max, k_sigma=4.0,
         mu = M.extract_moments(row, geom.r, [t], geom.rpm, geom.meniscus,
                                w, m_max)[0]
         sig = blur_sigma(t, s_ref, D_ref, geom.rpm, geom.meniscus)
+        ys.append(M.hermite_deconvolve(mu, sig))
+    ys = np.array(ys)
+    return ys if per_scan else ys.mean(axis=0)
+
+
+def _estimate_band(scans, model, geom, m_max, windows, s_ref, D_ref, per_scan):
+    """
+    Band-mode pipeline.
+
+    Two differences from SV, both of them simplifications:
+
+      * moments come straight from the scan (band.band_moment_kernel), with
+        no integration by parts and no derivative;
+      * the lamella's footprint is removed EXACTLY by its own known moments
+        before the Gaussian diffusion blur is undone by the Hermite step.
+    """
+    import band as B
+
+    ys = []
+    for i, t, w in windows:
+        mu = B.extract_moments_band(scans[i:i + 1], geom.r, [t], geom.rpm,
+                                    geom.meniscus, w, m_max)[0]
+        # exact: the lamella shape and width are known before the experiment
+        e = B.lamella_eps_moments(geom.r, geom.meniscus, t, geom.rpm,
+                                  m_max + 1, band_volume=geom.band_volume)
+        mu = B.deconvolve_known(mu, e)
+        # approximate: diffusion, assumed Gaussian with the measured law
+        sig = B.blur_sigma_band(t, s_ref, D_ref, geom.rpm, geom.meniscus, 0.0)
         ys.append(M.hermite_deconvolve(mu, sig))
     ys = np.array(ys)
     return ys if per_scan else ys.mean(axis=0)

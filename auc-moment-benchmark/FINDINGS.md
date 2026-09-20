@@ -13,6 +13,13 @@ evaluated. Every number here is reproducible from `analysis/`.
 | **G3** | Crossover separation above ~5% vs 2DSA | **FAIL** — no crossover at any separation tested (margin inflated; see the asymmetry note) |
 | **G4** | `BROAD`/`RA-fast` do not produce false clean rank gaps | **FAIL** — both produce confident false certificates |
 
+Re-run for **band-forming (zonal)** data as well; see "Band forming" below.
+There **G2 passes** — `N_eff = 14`, `R_max = 6` with absorbance optics and an
+achievable noise estimator, where SV needs an unbuildable oracle. G3 and G4
+still fail, and G4 fails worse. The project verdict is unchanged but the
+reason moves: the obstacle is no longer noisy moments, it is that clean
+moments still lose to a direct fit and still certify ranks that do not exist.
+
 **The spec says: stop at the first failure. That is G2, and G3 and G4 confirm
 it independently.** G3 is the one that settles the project: there is no
 separation at which the moment route beats a `c(s)`-style fit, even when the
@@ -373,6 +380,213 @@ both certify a rank they do not have.
 This is the method's worst failure mode and it is not a corner case.
 
 ---
+
+---
+
+# Band forming (zonal) run
+
+The whole study re-run with the sample layered as a lamella rather than
+filling the cell. Derivations in PHYSICS.md §7; everything below is
+reproducible from `forward/band.py` and the same analysis scripts with
+`models.band_run_geometry()`.
+
+## The run schedule has to change first
+
+A band pellets the moment it reaches the bottom, and every scan after that is
+useless — for moments, and for the band-gated noise estimate whose whole
+premise is that most radii are empty. Inheriting the SV schedule
+(600–22000 s) leaves only 19 of 100 scans usable. Scheduling to the band's
+transit time (300–6000 s at 40 krpm) gives:
+
+| model | SV usable scans | band usable scans |
+|---|---|---|
+| F-S1 | 18 | **63** |
+| F-M2-15 | 13 | **45** |
+| F-M2-10 | 15 | **51** |
+| F-M2-05 | 17 | **57** |
+| F-M3 | 14 | **48** |
+| F-BROAD | 9 | **28** |
+| F-RA-fast | 4 | **12** |
+
+3–4x more data in every case. This is the one unambiguous win.
+
+## Cross-validation (band)
+
+`generate --band` produces band data through `US_Astfem_RSA`, and it agrees
+with `forward/lamm.py` to the same standard as SV: **0.03% of band peak**
+inside the observable window, and moment vectors agreeing from 4.0e-6 (`m=0`)
+to 5.9e-4 (`m=12`). The lamella initial condition matches exactly.
+
+## G0 — does not arise
+
+There is nothing to check. The SV gate existed because the moments are a
+functional of `da/dr` and the by-parts rearrangement had to be verified.
+In band mode the estimator is a direct weighted integral of the raw scan
+(PHYSICS.md §7.2) — no derivative, no rearrangement. Noise-free bias runs
+from 1.6e-6 at `m=0` to 2.7e-2 at `m=10`, comparable to SV's 1.1e-5 to 3.5e-2.
+
+Band mode also removes the **lamella** blur exactly rather than approximating
+it, because its shape is fixed by the band volume and known before the run
+(PHYSICS.md §7.3, round-trip error 0.0). Only diffusion is left to the
+Gaussian Hermite step. SV has no equivalent — its entire blur is approximated.
+
+## G1 — blur scaling — PASS, with a different exponent
+
+| | exponent of `sigma^2` | measured / predicted prefactor |
+|---|---|---|
+| SV | -1.073 +- 0.004 | 1.090 |
+| **band** | **-1.175 +- 0.001** | **1.093** (lamella + diffusion law) |
+| proposal | -3 | — |
+
+Equation (11) of PHYSICS.md fits band mode with the *same* ~9% sector
+correction as SV. I expected the lamella to make the exponent run visibly
+from -2 to -1 across the window; it does not — early half -1.178, late half
+-1.176 — because the lamella supplies only ~10% of the variance there. The
+net effect is a modest steepening, not a transition. Either way the
+proposal's `-3` is wrong in both modes.
+
+## G2 — `N_eff >= 5` — **PASS**, with absorbance optics
+
+This is the one gate band forming moves, and it moves it from fail to pass.
+
+`N_eff` (`R_max` in brackets), 300-realization Monte Carlo, `m_max = 14`:
+
+| model | white only | absorbance raw | **absorbance + band-gated** | interference raw | interference + band-gated | interference + oracle |
+|---|---|---|---|---|---|---|
+| F-S1 | 14 (6) | -1 | **14 (6)** | -1 | -1 | -1 |
+| F-M2-15 | 14 (6) | -1 | **14 (6)** | -1 | -1 | -1 |
+| F-M2-10 | 14 (6) | -1 | **14 (6)** | -1 | -1 | -1 |
+| F-M2-05 | 14 (6) | -1 | **14 (6)** | -1 | -1 | -1 |
+| F-M2-03 | 14 (6) | -1 | **14 (6)** | -1 | -1 | -1 |
+| F-M3 | 14 (6) | -1 | **14 (6)** | -1 | -1 | -1 |
+| F-BROAD | 11 (5) | -1 | 11 (5) | -1 | -1 | -1 |
+| F-M2+AGG | 2 (0) | -1 | 2 (0) | -1 | -1 | -1 |
+| F-RA-fast | 0 | -1 | 0 | -1 | -1 | -1 |
+
+Relative error at `m = 0` under absorbance optics, before and after
+band-gated removal:
+
+| model | raw | band-gated |
+|---|---|---|
+| F-S1 | 0.181 | **0.0025** |
+| F-M2-10 | 0.211 | **0.0031** |
+| F-M3 | 0.218 | **0.0032** |
+
+A **70x** reduction, which recovers essentially the white-noise-only result.
+
+**`N_eff = 14`, `R_max = 6`, with an achievable estimator and a standard
+detector. G2 passes in band mode.** Compare SV, where the same gate needs an
+oracle that cannot be built (D.1).
+
+(I missed this in the first pass: the initial Phase D sweep paired band-gated
+removal only with interference optics and left absorbance raw, so the one
+combination that works was never run. The full benchmark matrix caught it.)
+
+### Why absorbance and not interference
+
+Three quantities decide it. At equal optical peak a band integrates
+`mu_0 = c Phi' = 0.022` against `0.5` for SV -- **23x less signal**
+(PHYSICS.md §7.5). Absorbance optics carries TI ~0.02 and no RI;
+interference carries TI ~0.25 and RI ~0.07 per scan. Against a 23x smaller
+signal, absorbance systematics are removable and interference systematics
+are not.
+
+The band-gated estimator removes what it can see. Its TI residual is
+0.017 RMS against an injected 0.25 -- a 14x reduction -- but 0.017 is still
+comparable to the band's own integrated signal, so interference stays out of
+reach. Under absorbance the residual falls below the white-noise floor and
+the gate is met.
+
+### The achievable estimator beats the oracle
+
+Band-gated removal (0.13 at `m=0`, interference) is **4.5x better than exact
+TI removal** (0.59). The reason is structural: the SV weak-form kernel
+integrates to zero and annihilates RI exactly, and the band kernel does not
+(PHYSICS.md §7.5). An oracle that removes TI perfectly still leaves RI, which
+is then dominant. The band-gated estimator removes both, because in band mode
+each scan has band-free radii to read RI from.
+
+### Lamella volume is a real but bounded lever
+
+At equal peak concentration a larger lamella carries more material, and its
+extra blur is exactly deconvolvable (PHYSICS.md §7.3) rather than a cost:
+
+| band volume | lamella width | `Phi'` | usable scans | rel. err at `m=0` (interference) |
+|---|---|---|---|---|
+| 0.015 mL | 0.048 cm | 0.044 | 51 | 0.13 |
+| **0.030 mL** | 0.096 cm | 0.088 | 41 | **0.11** |
+| 0.060 mL | 0.191 cm | 0.176 | 14 | 0.67 |
+| 0.100 mL | — | — | 0 | no window |
+
+The optimum is near 0.03 mL; beyond it the window requirement grows faster
+than the signal and the observable window collapses. Not enough to rescue
+interference optics.
+
+## G3 — crossover — FAIL
+
+Absorbance optics with band-gated removal, i.e. the achievable configuration:
+
+| delta-s/s | c(s) NNLS `s1` | `s2` | Prony `s1` | `s2` |
+|---|---|---|---|---|
+| 10% | 0.12% | 0.09% | 2.91% | 0.90% |
+| 5% | 0.46% | 0.27% | 5.86% | 0.94% |
+
+This is the configuration that passes G2, so the comparison is being made
+where the moment route is at its best. The comparator still wins at both
+separations, and the same caveat about its inverse crime applies unchanged.
+No crossover.
+
+## G4 — false rank certificates — FAIL, and worse than SV
+
+Largest Hankel gap and the rank it would certify:
+
+| model | true R | SV certifies | band certifies | band gap |
+|---|---|---|---|---|
+| F-S1 | 1 | 1 | **1** | 477x |
+| F-M2-10 | 2 | 5 | 1 | 117x |
+| F-M3 | 3 | 5 | 2 | 200x |
+| **F-BROAD** | **none** | 2 (144x) | **4** | **492x** |
+| **F-RA-fast** | **none** | 3 (260x) | **3** | **217x** |
+
+Four of five wrong again, and `F-BROAD` — a smooth unimodal measure with no
+atomic decomposition — now returns a 492x rank-4 gap, more confident than SV's
+already-false 144x. More data does not make the rank certificate safer; it
+makes the wrong answer look better supported.
+
+## Band forming: verdict
+
+**Band forming moves G2 from fail to pass, and leaves G3 and G4 failing.**
+
+Gained, and these are real:
+
+* `N_eff = 14`, `R_max = 6` with absorbance optics and an **achievable**
+  systematic-noise estimator. SV reaches that only with an oracle that cannot
+  be built. This was the structural blocker in SV and band forming removes it.
+* No derivative of the data anywhere — the integration-by-parts machinery of
+  §2 is unnecessary.
+* The instrument's contribution to the blur is known a priori and removed
+  **exactly**; only diffusion is approximated. SV approximates all of it.
+* 3–4x more usable scans, once the run is scheduled to the band's transit.
+
+Not gained:
+
+* 23x less integrated signal at equal optical peak, which is fundamental and
+  keeps interference optics out of reach whatever the lamella volume.
+* Loss of the exact RI annihilation the SV weak form provides.
+* **G3 unchanged**: no separation at which the moment route beats `c(s)`,
+  even in the configuration where G2 passes.
+* **G4 worse**: `F-BROAD`, a smooth measure with no atomic decomposition,
+  returns a 492x rank-4 gap against SV's already-false 144x. More and better
+  data makes the wrong rank certificate look *better* supported, not safer.
+
+So the project verdict is unchanged, but the reason is now sharper. The
+objection is no longer "the moments are too noisy to invert" — with band
+forming and absorbance optics they are not. It is that **even clean moments
+do not beat a direct fit (G3), and the rank certificate is unsafe on exactly
+the samples people care about (G4)**. Those are properties of the inverse
+problem, not of the instrument, and no experimental redesign addresses them.
+
+If any part of this continues, band forming is the experiment to build it on.
 
 ## Open items
 

@@ -9,7 +9,7 @@ UltraScan Layer-1 generator, and the two must agree.
 
 import numpy as np
 
-from lamm import LammGrid, simulate_model, omega
+from lamm import LammGrid, simulate_model, solve_species, omega
 
 # Water at 20 C, the standard s20,w reference condition
 ETA_20W = 0.0100194      # g / (cm s)
@@ -52,13 +52,17 @@ def species(s_svedberg, conc, f_f0=1.25, vbar20=0.73):
 class RunGeometry:
     def __init__(self, meniscus=5.90, bottom=7.20, rpm=45000,
                  n_scans=100, t_start=600.0, t_end=22000.0,
-                 radial_resolution=1.0e-3):
+                 radial_resolution=1.0e-3, band=False, band_volume=0.015):
         self.meniscus = meniscus
         self.bottom = bottom
         self.rpm = rpm
         self.n_scans = n_scans
         self.times = np.linspace(t_start, t_end, n_scans)
         self.radial_resolution = radial_resolution
+        # Band-forming (zonal) run: sample layered as a lamella at the
+        # meniscus rather than filling the cell.  See forward/band.py.
+        self.band = bool(band)
+        self.band_volume = float(band_volume)
         # measured radial grid, odd count so Simpson is exact-order
         n = int(np.floor((bottom - meniscus) / radial_resolution)) + 1
         if n % 2 == 0:
@@ -161,6 +165,21 @@ def support_bounds(model, pad=0.25):
 # Simulation, including the rapid-equilibrium reacting case
 # --------------------------------------------------------------------------
 
+def initial_condition(grid, geom, signal_concentration):
+    """
+    Starting profile for one species.
+
+    Sedimentation velocity: the cell is filled uniformly.
+    Band forming: a lamella layered at the meniscus, with the shape and
+    width US_Astfem_RSA uses (see forward/band.py).
+    """
+    if not getattr(geom, "band", False):
+        return signal_concentration
+    from band import lamella_profile
+    return signal_concentration * lamella_profile(
+        grid.r, geom.meniscus, band_volume=geom.band_volume)
+
+
 def simulate(model, geom, n_cells=6000):
     """
     Simulate a model and return readings on the measured radial grid,
@@ -168,7 +187,10 @@ def simulate(model, geom, n_cells=6000):
     """
     grid = LammGrid(geom.meniscus, geom.bottom, n_cells)
     if model["reaction"] is None:
-        c = simulate_model(grid, model["components"], geom.rpm, geom.times)
+        c = np.zeros((len(geom.times), grid.n))
+        for comp in model["components"]:
+            c += solve_species(grid, comp["s"], comp["D"], geom.rpm, geom.times,
+                               c0=initial_condition(grid, geom, comp["c"]))
     else:
         c = _simulate_rapid_monomer_dimer(grid, model, geom)
     # interpolate solver cells onto the measured radial grid
@@ -202,8 +224,9 @@ def _simulate_rapid_monomer_dimer(grid, model, geom, sub_per_scan=8):
 
     mono, dimer = model["components"]
     K = model["reaction"]["K"]
-    c_tot0 = mono["c"] + dimer["c"]
-    cM, cD = _equilibrate(np.full(grid.n, c_tot0), K)
+    tot0 = initial_condition(grid, geom, mono["c"] + dimer["c"])
+    tot0 = np.full(grid.n, tot0) if np.ndim(tot0) == 0 else tot0
+    cM, cD = _equilibrate(tot0, K)
 
     times = geom.times
     out = np.zeros((times.size, grid.n))
@@ -268,3 +291,19 @@ def feasible_test_set(s0=S0_FEASIBLE, rel=None):
         note="rapid monomer-dimer equilibrium",
         support=(s0 * 0.95, s0 * 2 ** (2 / 3) * 1.05))
     return ms
+
+
+def band_run_geometry(rpm=40000, n_scans=100, t_start=300.0, t_end=6000.0,
+                      band_volume=0.015, **kw):
+    """
+    Run geometry for a band-forming experiment.
+
+    The schedule is deliberately NOT the SV one.  A band pellets as soon as
+    it reaches the bottom, and every scan after that is useless -- both for
+    moments and for the band-gated noise estimate, whose whole premise is
+    that most radii are empty.  Scheduling to the band's transit time rather
+    than to a fixed 22000 s turns 15 usable scans into ~50 and cuts the
+    residual TI noise by an order of magnitude.
+    """
+    return RunGeometry(rpm=rpm, n_scans=n_scans, t_start=t_start, t_end=t_end,
+                       band=True, band_volume=band_volume, **kw)

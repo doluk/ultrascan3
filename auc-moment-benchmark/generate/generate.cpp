@@ -32,6 +32,9 @@
 
 namespace {
 
+// Selected by the --band command-line flag; see main().
+static bool g_band = false;
+
 struct Species { double s_svedberg; double conc; double f_f0; };
 
 struct TestModel
@@ -154,9 +157,16 @@ US_SimulationParameters build_params( const TestModel& tm, int n_scans,
    sp.tinoise           = 0.0;
    sp.rinoise           = 0.0;
    sp.baseline          = 0.0;
-   sp.band_forming      = false;
-   sp.band_volume       = 0.0;
    sp.rotorCalID        = "0";
+
+   // Band forming (zonal) vs sedimentation velocity.  US_Astfem_RSA builds
+   // the lamella from band_volume together with the centrepiece angle and
+   // pathlength (us_astfem_rsa.cpp:1483), so those must be set too --
+   // leaving them zero makes it fall back to defaults silently.
+   sp.band_forming      = g_band;
+   sp.band_volume       = g_band ? 0.015 : 0.0;
+   sp.cp_angle          = 2.5;
+   sp.cp_pathlen        = 1.2;
 
    return sp;
 }
@@ -248,12 +258,24 @@ int main( int argc, char* argv[] )
 {
    QCoreApplication app( argc, argv );
 
-   const QString outdir = ( argc > 1 ) ? QString( argv[ 1 ] ) : QString( "out" );
+   QString outdir = "out";
+   for ( int i = 1; i < argc; i++ )
+   {
+      const QString arg = QString( argv[ i ] );
+      if ( arg == "--band" ) g_band = true;
+      else                   outdir = arg;
+   }
    QDir().mkpath( outdir );
 
    const int    n_scans = 100;
-   const double t_start = 600.0;
-   const double t_end   = 22000.0;
+   // A band run is scheduled to the band's transit time: every scan after it
+   // reaches the bottom is useless, for moments and for the band-gated noise
+   // estimate alike.  See models.band_run_geometry().
+   const double t_start = g_band ?  300.0 :   600.0;
+   const double t_end   = g_band ? 6000.0 : 22000.0;
+
+   qInfo() << ( g_band ? "band-forming run" : "sedimentation velocity run" )
+           << "->" << outdir;
 
    for ( const TestModel& tm : frozen_test_set() )
    {
