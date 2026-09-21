@@ -31,9 +31,10 @@ jobs:
   #   4. The `nightly` tag does not exist.
   #   5. The `nightly` tag does not resolve to the current origin/main commit.
   #
-  # has_changes=false (skip) only when ALL of these hold:
-  #   - No commits in the last 24 hours.
-  #   - The `nightly` tag exists and resolves to the current origin/main HEAD.
+  # has_changes=false (skip) when either:
+  #   - The scheduled run is in a fork (forks build nightlies on dispatch only).
+  #   - ALL of these hold: no commits in the last 24 hours, and the `nightly`
+  #     tag exists and resolves to the current origin/main HEAD.
   # =========================================================================
   check-changes:
     name: "Gate: decide whether nightly build is needed"
@@ -59,6 +60,19 @@ jobs:
           MAIN_SHA=$(git rev-parse origin/main)
           echo "Current origin/main SHA: ${MAIN_SHA}"
           echo "build_sha=${MAIN_SHA}" >> "$GITHUB_OUTPUT"
+
+          # --- 0. The schedule belongs to the upstream repository ------------
+          #
+          # A fork inherits this cron the moment its owner enables Actions, and
+          # then rebuilds every platform daily to publish a `nightly` release
+          # nobody reads. Only a deliberate dispatch builds a fork's nightly.
+          if [[ "${{ github.event_name }}" == "schedule" ]] \
+             && [[ "$(gh repo view "${{ github.repository }}" --json isFork --jq .isFork)" == "true" ]]; then
+            echo "${{ github.repository }} is a fork — skipping the scheduled nightly."
+            echo "Run this workflow manually to build a nightly for this fork."
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           # --- 1. workflow_dispatch always proceeds --------------------------
           if [[ "${{ github.event_name }}" != "schedule" ]]; then

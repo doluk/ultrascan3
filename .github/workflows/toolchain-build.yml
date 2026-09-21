@@ -46,6 +46,17 @@ jobs:
   # Resolve the pin once so every job agrees on tag and image names.
   plan:
     name: "Plan"
+    # Automatic builds are for the repository that owns the toolchain only.
+    #
+    # Syncing a fork replays upstream's commits onto the fork's main, which
+    # matches the path filters above and starts a toolchain build the fork
+    # owner never asked for: hours of their Actions budget, images pushed to
+    # their GHCR namespace, and -- the part that does not undo itself -- a pin
+    # commit on their main, leaving it permanently ahead of upstream.
+    #
+    # A fork that genuinely needs its own toolchain still builds one by
+    # dispatching this workflow from the Actions tab, which this does not gate.
+    if: github.event_name != 'push' || github.event.repository.fork != true
     runs-on: ubuntu-24.04
     outputs:
       release_tag:    ${{ steps.lock.outputs.release_tag }}
