@@ -19,6 +19,18 @@
     "part of the cache fingerprint, so a rebuild is triggered by content rather",
     "than by a number someone has to remember to bump.",
     "",
+    "'inputs_digest' is that fingerprint, recorded per target by the run that",
+    "published the target's artifacts. scripts/toolchain-fingerprint.py computes",
+    "it from the manifest, ports, triplets and build scripts that go into that",
+    "one target; the toolchain workflow rebuilds a target only when its digest",
+    "no longer matches. Run that script to see what a change would cost.",
+    "",
+    "An empty 'inputs_digest' means nobody has recorded what the pinned",
+    "artifacts were built from, so the next run rebuilds the target and fills",
+    "it in. That is the honest default: it costs one build, where a wrong value",
+    "would leave application builds on a toolchain that no longer matches the",
+    "sources it is pinned beside.",
+    "",
     "Container 'image' is the bare package name, NOT a full registry path.",
     "The owner is supplied at runtime from github.repository_owner so this",
     "file is identical in ehb54/ultrascan3 and in any fork: each publishes to",
@@ -51,27 +63,32 @@
     "macos-arm64": {
       "kind": "archive",
       "asset": "us3-toolchain-macos-arm64-qt6-34031578244.1.tar.zst",
-      "sha256": "7f84d88ad173c97e433ad8cd54b9b353ae1dde8619109236563c70432d64b394"
+      "sha256": "7f84d88ad173c97e433ad8cd54b9b353ae1dde8619109236563c70432d64b394",
+      "inputs_digest": ""
     },
     "macos-x64": {
       "kind": "archive",
       "asset": "us3-toolchain-macos-x64-qt6-34031578244.1.tar.zst",
-      "sha256": "10eb794306c1487d08d57c9d23e8a4a653f051ffbe4bcba98d4aef532c507c67"
+      "sha256": "10eb794306c1487d08d57c9d23e8a4a653f051ffbe4bcba98d4aef532c507c67",
+      "inputs_digest": ""
     },
     "windows-x64": {
       "kind": "archive",
       "asset": "us3-toolchain-windows-x64-qt6-34031578244.1.tar.zst",
-      "sha256": "7cf25fb12a0527ee4f6fce15cb4cdbcf4b5279aa7fcb92b84a7f3fd9c1065ba6"
+      "sha256": "7cf25fb12a0527ee4f6fce15cb4cdbcf4b5279aa7fcb92b84a7f3fd9c1065ba6",
+      "inputs_digest": ""
     },
     "ubuntu2404-x64": {
       "kind": "container",
       "image": "us3-toolchain-ubuntu2404",
-      "digest": "sha256:2a22a8387d47766e36271fa37f3c423f9dc67390714e6468bec001469cca1512"
+      "digest": "sha256:2a22a8387d47766e36271fa37f3c423f9dc67390714e6468bec001469cca1512",
+      "inputs_digest": ""
     },
     "oraclelinux8-x64": {
       "kind": "container",
       "image": "us3-toolchain-oraclelinux8",
-      "digest": "sha256:369cc80d4cb81b3b01acc5f884046eac2f8b637553b54154e58b5aa6edc9db32"
+      "digest": "sha256:369cc80d4cb81b3b01acc5f884046eac2f8b637553b54154e58b5aa6edc9db32",
+      "inputs_digest": ""
     }
   }
 }

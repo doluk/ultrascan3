@@ -20,7 +20,12 @@ on:
   push:
     branches: [main]
     paths:
-      # Rebuild only for inputs that affect dependency binaries.
+      # Start a run for anything that could affect dependency binaries. Which
+      # targets actually rebuild is decided in `plan` from the per-target
+      # fingerprint, so this list only has to be complete, not precise -- but
+      # it does have to stay a superset of the inputs in
+      # scripts/toolchain-fingerprint.py, because a run has to start before it
+      # can decide anything.
       - "vcpkg.json"
       - "vcpkg-configuration.json"
       - "buildsys/vcpkg/overlay-ports/**"
@@ -30,6 +35,10 @@ on:
       - "buildsys/docker/**"
       - "scripts/build-toolchain.sh"
       - "scripts/build-toolchain.ps1"
+      - "scripts/bootstrap-linux.sh"
+      - "scripts/bootstrap-macos.sh"
+      - "scripts/bootstrap-windows.ps1"
+      - "scripts/toolchain-fingerprint.py"
       - ".github/workflows/toolchain-build.yml"
 
 permissions:
@@ -63,27 +72,37 @@ jobs:
       vcpkg_commit:   ${{ steps.lock.outputs.vcpkg_commit }}
       archive_matrix: ${{ steps.lock.outputs.archive_matrix }}
       image_matrix:   ${{ steps.lock.outputs.image_matrix }}
+      fingerprints:   ${{ steps.lock.outputs.fingerprints }}
+      build_any:      ${{ steps.lock.outputs.build_any }}
     steps:
       - uses: actions/checkout@v5
         with: { fetch-depth: 1 }
 
-      - name: Read toolchain pin
+      - name: Decide what to build
         id: lock
         shell: bash
         env:
           SELECTED: ${{ inputs.targets || 'all' }}
+          EVENT: ${{ github.event_name }}
         run: |
           set -euo pipefail
           # The matrix is built in Python rather than selected with a job-level `if:`.
           # This is a GitHub Actions constraint, not a preference: a job's `if:` is
           # evaluated before its matrix expands, so it cannot read matrix context.
           # Filtering the matrix itself is the only form that works.
-          python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import json, os
+          python3 - <<'PY'
+          import json, os, subprocess
 
           lock = json.load(open("buildsys/toolchain.lock.json"))
           manifest = json.load(open("vcpkg.json"))
           sel = os.environ["SELECTED"]
+          event = os.environ["EVENT"]
+
+          # What each target would be built from, right now.
+          current = json.loads(subprocess.run(
+              ["python3", "scripts/toolchain-fingerprint.py", "--json"],
+              check=True, capture_output=True, text=True,
+          ).stdout)
 
           archives = [
               {"target": "macos-arm64",  "os": "macos-15",       "group": "macos"},
@@ -99,16 +118,61 @@ jobs:
                "image": "us3-toolchain-ubuntu2404", "group": "linux"},
           ]
 
-          keep = lambda rows: [r for r in rows if sel in ("all", r["group"])]
+          def published(target, kind):
+              """Has this repository ever published artifacts for the target?"""
+              entry = lock["targets"].get(target) or {}
+              if kind == "archive":
+                  return bool(entry.get("asset") and entry.get("sha256"))
+              return bool(entry.get("digest"))
 
-          print(f"release_tag={lock['release_tag']}")
-          print(f"vcpkg_commit={manifest['builtin-baseline']}")
-          print("archive_matrix=" + json.dumps({"include": keep(archives)}))
-          print("image_matrix="   + json.dumps({"include": keep(images)}))
+          def decide(row, kind):
+              target = row["target"]
+              if sel not in ("all", row["group"]):
+                  return False, "not selected"
+              if not published(target, kind):
+                  return True, "nothing published for this target yet"
+              # A manual run rebuilds whatever it selected. It is the only way
+              # to refresh a target whose inputs are unchanged but whose base
+              # image or SDK has moved on, and a human asked for it by hand.
+              if event != "push":
+                  return True, "manual run"
+              recorded = (lock["targets"].get(target) or {}).get("inputs_digest")
+              if not recorded:
+                  return True, "pinned toolchain has no recorded inputs"
+              if recorded != current[target]:
+                  return True, "inputs changed"
+              return False, "inputs unchanged since the pinned toolchain"
+
+          def select(rows, kind):
+              wanted = []
+              for row in rows:
+                  build, why = decide(row, kind)
+                  verdict = "build" if build else "skip"
+                  report.append(f"| `{row['target']}` | {verdict} | {why} |")
+                  print(f"{row['target']:<18} {verdict:<5}  {why}")
+                  if build:
+                      wanted.append(row)
+              return wanted
+
+          report = ["### Toolchain plan", "",
+                    "| Target | Decision | Why |", "| --- | --- | --- |"]
+          print("--- plan ---")
+          wanted_archives = select(archives, "archive")
+          wanted_images   = select(images, "container")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write(f"release_tag={lock['release_tag']}\n")
+              fh.write(f"vcpkg_commit={manifest['builtin-baseline']}\n")
+              fh.write("archive_matrix=" + json.dumps({"include": wanted_archives}) + "\n")
+              fh.write("image_matrix="   + json.dumps({"include": wanted_images}) + "\n")
+              fh.write("fingerprints=" + json.dumps(current) + "\n")
+              fh.write(f"build_any={'true' if wanted_archives or wanted_images else 'false'}\n")
+
+          # Why a push did or did not cost a toolchain build, without digging
+          # through the log.
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as fh:
+              fh.write("\n".join(report) + "\n")
           PY
-
-          echo "--- plan ---"
-          cat "$GITHUB_OUTPUT"
 
   # macOS and Windows: build a vcpkg binary cache, archive it.
   archive:
@@ -312,7 +376,9 @@ jobs:
   publish:
     name: "Publish and pin"
     needs: [plan, archive, image]
-    if: always() && needs.plan.result == 'success' && !cancelled()
+    # always(), so a partially successful run still publishes what it built --
+    # but nothing to build means nothing to publish or pin.
+    if: always() && needs.plan.result == 'success' && needs.plan.outputs.build_any == 'true' && !cancelled()
     runs-on: ubuntu-24.04
     outputs:
       pin_any:    ${{ steps.pin.outputs.any }}
@@ -358,6 +424,8 @@ jobs:
       - name: Update toolchain pin
         id: pin
         shell: bash
+        env:
+          FINGERPRINTS: ${{ needs.plan.outputs.fingerprints }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -365,30 +433,39 @@ jobs:
 
           lock_path = pathlib.Path("buildsys/toolchain.lock.json")
           lock = json.loads(lock_path.read_text())
+          fingerprints = json.loads(os.environ["FINGERPRINTS"])
           changed = []
+
+          def record(target, **fields):
+              """Pin one rebuilt target, reporting whether it moved."""
+              entry = lock["targets"].get(target)
+              if entry is None:
+                  return
+
+              # The fingerprint is written whenever a target is rebuilt, even
+              # when the artifacts came out identical to the pinned ones. It is
+              # what tells the next push that this target is current: leave it
+              # behind and the target rebuilds on every push from here on.
+              if target in fingerprints:
+                  fields["inputs_digest"] = fingerprints[target]
+              else:
+                  print(f"::warning::no fingerprint for {target}; "
+                        "it will rebuild until scripts/toolchain-fingerprint.py knows it")
+
+              if any(entry.get(key) != value for key, value in fields.items()):
+                  entry.update(fields)
+                  changed.append(target)
 
           # Archive targets: read the checksum recorded beside each archive.
           for sums in glob.glob("incoming/toolchain-*/*.sha256"):
               digest, asset = pathlib.Path(sums).read_text().split()
-              target = pathlib.Path(sums).stem
-              entry = lock["targets"].get(target)
-              if entry is None:
-                  continue
-              if entry.get("sha256") != digest or entry.get("asset") != asset:
-                  entry["sha256"] = digest
-                  entry["asset"] = asset
-                  changed.append(target)
+              record(pathlib.Path(sums).stem, sha256=digest, asset=asset)
 
           # Container targets: read the pushed manifest digest.
           for dpath in glob.glob("incoming/digest-*/*.digest"):
-              target = pathlib.Path(dpath).stem
               digest = pathlib.Path(dpath).read_text().strip()
-              entry = lock["targets"].get(target)
-              if entry is None or not digest:
-                  continue
-              if entry.get("digest") != digest:
-                  entry["digest"] = digest
-                  changed.append(target)
+              if digest:
+                  record(pathlib.Path(dpath).stem, digest=digest)
 
           lock_path.write_text(json.dumps(lock, indent=2) + "\n")
 
