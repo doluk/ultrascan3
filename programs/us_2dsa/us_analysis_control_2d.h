@@ -21,6 +21,7 @@
 #include "qwt_scale_draw.h"
 #include "qwt_color_map.h"
 #include "us_show_norm.h"
+#include "us_grid_view_2d.h"
 
 #define PA_TMDIS_MS 0
 
@@ -84,6 +85,7 @@ class US_AnalysisControl2D : public US_WidgetsDialog
       QPointer< QTextEdit    >         mw_stattext;
       int*                             mw_baserss;
       QPointer< US_show_norm >         analcd1;
+      QPointer< US_GridView2D >        gridview;
 
       QWidget*                         parentw;
       US_2dsaProcess*                  processor;
@@ -144,6 +146,7 @@ class US_AnalysisControl2D : public US_WidgetsDialog
       QPushButton*  pb_plot;
       QPushButton*  pb_save;
       QPushButton*  pb_ldmodel;
+      QPushButton*  pb_showgrid;
 
    protected:
       US_Help       showHelp;
@@ -176,6 +179,9 @@ class US_AnalysisControl2D : public US_WidgetsDialog
       void advanced(         void );
       void load_model(       void );
       int  memory_check(     void );
+      void show_grid(        void );
+      void update_grid_view( void );
+      bool build_grid(       QList< QVector< US_Solute > >&, QString& );
       void help     ( void )
       { showHelp.show_help( "manual/2dsa/2dsa_analys.html" ); };
 };

@@ -14,6 +14,7 @@ HEADERS       = us_2dsa.h                \
                 us_2dsa_process.h        \
                 us_worker_2d.h           \
                 us_show_norm.h           \
+                us_grid_view_2d.h        \
                 us_worker_calcnorm.h
 
 SOURCES       = us_2dsa.cpp              \
@@ -24,5 +25,6 @@ SOURCES       = us_2dsa.cpp              \
                 us_2dsa_process.cpp      \
                 us_worker_2d.cpp         \
                 us_show_norm.cpp         \
+                us_grid_view_2d.cpp      \
                 us_worker_calcnorm.cpp
 

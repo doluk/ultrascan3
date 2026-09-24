@@ -95,6 +95,7 @@ US_AnalysisControl2D::US_AnalysisControl2D( QList< SS_DATASET* >& dsets,
    QPushButton* pb_close   = us_pushbutton( tr( "Close" ) );
    QPushButton* pb_advance = us_pushbutton( tr( "Advanced Analysis Controls" ) );
    QPushButton* pb_anorm   = us_pushbutton( tr( "Plot Norm Grid" ) );
+                pb_showgrid= us_pushbutton( tr( "Show Grid" ) );
 
    te_status               = us_textedit();
    us_setReadOnly( te_status, true );
@@ -237,7 +238,8 @@ DbgLv(1) << "idealThrCout" << nthr;
    optimizeLayout->addLayout( lo_iters,      row++, 0, 1, 4 );
    optimizeLayout->addWidget( lb_iters,      row,   0, 1, 2 );
    optimizeLayout->addWidget( ct_iters,      row++, 2, 1, 2 );
-   optimizeLayout->addWidget( pb_anorm,      row++, 0, 1, 4 );
+   optimizeLayout->addWidget( pb_showgrid,   row,   0, 1, 2 );
+   optimizeLayout->addWidget( pb_anorm,      row++, 2, 1, 2 );
    optimizeLayout->addWidget( lb_tolnorm,    row ,  0, 1, 1 );
    optimizeLayout->addWidget( ct_tol,        row++, 1, 1, 3 );
 
@@ -307,6 +309,18 @@ DbgLv(1) << "idealThrCout" << nthr;
             this,       &US_AnalysisControl2D::advanced );
    connect( pb_anorm,   &QAbstractButton::clicked,
             this,       &US_AnalysisControl2D::calculate_norms );
+   connect( pb_showgrid, &QAbstractButton::clicked,
+            this,        &US_AnalysisControl2D::show_grid );
+
+   // Keep any open grid display current with grid parameter changes
+   QList< QwtCounter* > gridcts;
+   gridcts << ct_lolimits << ct_uplimits << ct_lolimitk
+           << ct_uplimitk << ct_constff0;
+   for ( int ii = 0; ii < gridcts.size(); ii++ )
+      connect( gridcts[ ii ], &QwtCounter::valueChanged,
+               this,          &US_AnalysisControl2D::update_grid_view );
+   connect( ck_varvbar, &QAbstractButton::toggled,
+            this,       &US_AnalysisControl2D::update_grid_view );
 
    edata          = &dsets[ 0 ]->run_data;
 
@@ -378,6 +392,8 @@ void US_AnalysisControl2D::checkUniGrid(  bool checked )
    pb_ldmodel->setEnabled( ! checked );
    connect( ck_custgr, &QAbstractButton::toggled,
             this,  &US_AnalysisControl2D::checkCusGrid );
+
+   update_grid_view();
 }
 
 // Handle custom grid checked
@@ -768,6 +784,8 @@ DbgLv(0) << "Subgrid size adjusted from" << kssiz << "to" << sgsize;
 
       if ( cnst_ff0 )
          ct_constff0->setValue( cusmodel.components[ 0 ].f_f0 );
+
+      update_grid_view();
    }
 }
 
@@ -891,6 +909,8 @@ DbgLv(1) << "GC:  ngrrep nsteps nstepk" << ngrrep << nsteps << nstepk;
    // Save grid points to detect any further user resets
    ksteps        = nsteps;
    kstepk        = nstepk;
+
+   update_grid_view();
 }
 
 // Adjust s-limit ranges when s-limit value changes
@@ -1323,6 +1343,8 @@ DbgLv(0) << "Subgrid size adjusted from" << kssiz << "to" << sgsize;
 else
 DbgLv(1) << "Adv REJECT";
 
+   update_grid_view();
+
    qApp->processEvents();
 
    delete aadiag;
@@ -1471,3 +1493,115 @@ DbgLv(1) << "model2_values_from_norm_complete"
 DbgLv(1) << "uac2:NC: kthrdr" << kthrdr << "COMPLETE thrn" << workout.thrn;
 }
 
+
+// Build the list of subgrid solutes that a fit with current settings uses
+bool US_AnalysisControl2D::build_grid( QList< QVector< US_Solute > >& subgrids,
+                                       QString& desc )
+{
+   subgrids.clear();
+
+   if ( grtype < 0 )
+   {  // Grid from a loaded model (custom grid, model grid or model-ratio)
+      US_Model& gmodel = dsets[ 0 ]->model;
+      int  ncomps      = gmodel.components.size();
+      int  nsubg       = gmodel.subGrids;
+
+      if ( ncomps == 0 )
+         return false;
+
+      bool custgrid    = ( grtype == (-1)  &&
+                           gmodel.analysis == US_Model::CUSTOMGRID  &&
+                           nsubg > 0 );
+      nsubg            = custgrid ? nsubg : 1;
+      desc             = custgrid         ? tr( "Custom Grid" )
+                       : ( grtype == (-1) ? tr( "Model Grid" )
+                                          : tr( "Model-Ratio Grid" ) );
+
+      // Custom grid subgrids are interleaved, as in the 2DSA processor
+      for ( int ii = 0; ii < nsubg; ii++ )
+      {
+         QVector< US_Solute > solvec;
+
+         for ( int jj = ii; jj < ncomps; jj += nsubg )
+         {
+            US_Model::SimulationComponent& comp = gmodel.components[ jj ];
+            solvec << US_Solute( comp.s, comp.f_f0, 0.0, comp.vbar20, comp.D );
+         }
+
+         subgrids << solvec;
+      }
+   }
+
+   else
+   {  // Uniform grid with subgrid repetitions
+      double slo    = ct_lolimits->value();
+      double sup    = ct_uplimits->value();
+      int    nss    = (int)ct_nstepss->value();
+      double klo    = ct_lolimitk->value();
+      double kup    = ct_uplimitk->value();
+      int    nks    = (int)ct_nstepsk->value();
+      double cff0   = ck_varvbar->isChecked() ? ct_constff0->value() : 0.0;
+      double vbar20 = dsets[ 0 ]->vbar20;
+      int    ngrr   = US_Math2::best_grid_reps( nss, nks );
+      nss           = ( ( nss + ngrr / 2 ) / ngrr ) * ngrr;
+      nks           = ( ( nks + ngrr / 2 ) / ngrr ) * ngrr;
+      desc          = tr( "Uniform Grid" );
+
+      US_Solute::init_solutes( slo * 1.0e-13, sup * 1.0e-13, nss,
+                               klo, kup, nks, ngrr, cff0, subgrids );
+
+      for ( int ii = 0; ii < subgrids.count(); ii++ )
+      {
+         for ( int jj = 0; jj < subgrids[ ii ].count(); jj++ )
+         {
+            if ( cff0 == 0.0 )
+               subgrids[ ii ][ jj ].v  = vbar20;
+            else
+               subgrids[ ii ][ jj ].k  = cff0;
+         }
+      }
+   }
+DbgLv(1) << "AC:BG: grtype" << grtype << "nsubgrids" << subgrids.count();
+
+   return ( subgrids.count() > 0 );
+}
+
+// Show Grid button clicked:  open a display of the grid and its subgrids
+void US_AnalysisControl2D::show_grid()
+{
+   QList< QVector< US_Solute > > subgrids;
+   QString desc;
+
+   if ( ! build_grid( subgrids, desc ) )
+   {
+      QMessageBox::warning( this, tr( "No Grid" ),
+         tr( "No grid could be generated from the current settings." ) );
+      return;
+   }
+
+   if ( gridview.isNull() )
+   {
+      gridview = new US_GridView2D( subgrids, desc, this );
+      gridview->show();
+   }
+
+   else
+   {
+      gridview->set_grid( subgrids, desc );
+      gridview->raise();
+      gridview->activateWindow();
+   }
+}
+
+// Refresh an open grid display after a grid parameter change
+void US_AnalysisControl2D::update_grid_view()
+{
+   if ( gridview.isNull()  ||  ! gridview->isVisible() )
+      return;
+
+   QList< QVector< US_Solute > > subgrids;
+   QString desc;
+
+   if ( build_grid( subgrids, desc ) )
+      gridview->set_grid( subgrids, desc );
+}
