@@ -17,6 +17,7 @@ WorkerThread2D::WorkerThread2D( QObject* parent )
    dbg_level  = US_Settings::us_debug();
    abort      = false;
    solvesim   = NULL;
+   simcache   = nullptr;
    thrn       = -1;
 DbgLv(1) << "2P(WT): Thread created";
 }
@@ -51,6 +52,7 @@ void WorkerThread2D::define_work( WorkPacket2D& workin )
    typeref     = workin.typeref;
 
    solutes_i   = workin.isolutes;
+   simcache    = workin.simcache;
 
    //dsets << workin.dsets[ 0 ];
    dset_wk              = *(workin.dsets[ 0 ]);  // local copy of data set
@@ -129,6 +131,7 @@ void WorkerThread2D::calc_residuals()
    }
 
    solvesim            = new US_SolveSim( dsets, thrn, true );
+   solvesim->set_sim_cache( simcache );
 
    connect( solvesim, &US_SolveSim::work_progress,
             this,     &WorkerThread2D::forward_progress );

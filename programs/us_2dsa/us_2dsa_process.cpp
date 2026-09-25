@@ -15,6 +15,7 @@
 US_2dsaProcess::US_2dsaProcess( QList< SS_DATASET* >& dsets,
    QObject* parent /*=0*/ ) : QObject( parent ), dsets( dsets )
 {
+   simcache         = 0;                      // no simulation cache yet
    bdata            = &dsets[ 0 ]->run_data;  // pointer to base experiment data
    edata            = bdata;          // working pointer to experiment
    parentw          = parent; 
@@ -60,6 +61,12 @@ US_2dsaProcess::US_2dsaProcess( QList< SS_DATASET* >& dsets,
 long int US_2dsaProcess::max_rss( void )
 {
    return US_Memory::rss_max( maxrss );
+}
+
+// Destructor:  free any simulation cache
+US_2dsaProcess::~US_2dsaProcess()
+{
+   delete simcache;
 }
 
 // Start a specified 2DSA fit run
@@ -123,6 +130,18 @@ DbgLv(1) << "2P(2dsaProc): start_fit()";
    ord_merge   = US_Settings::debug_match( "2DSA-OrderedMerge" );
    pool_set    = qMax( 0, US_Settings::debug_value( "2DSA-MergePool" ).toInt() );
    reset_merge();
+
+   // Debug settings for a cache of solute simulations, reused within the fit:
+   //  "2DSA-SimCache"          use the cache;
+   //  "2DSA-SimCacheMB=N"      its memory cap in MB (default 2048).
+   delete simcache;
+   simcache    = 0;
+
+   if ( US_Settings::debug_match( "2DSA-SimCache" ) )
+   {
+      qint64 capmb   = US_Settings::debug_value( "2DSA-SimCacheMB" ).toLongLong();
+      simcache       = new US_SimCache2D( capmb > 0 ? capmb : 2048 );
+   }
 
 DbgLv(1) << "2P:SF: sll sul nss" << slolim << suplim << nssteps
  << " kll kul nks" << klolim << kuplim << nksteps
@@ -343,6 +362,9 @@ DbgLv(1) << "2P:SF:   kstask nthreads" << kstask << nthreads << job_queue.size()
       tr( "Starting computations of %1 subgrids\n using %2 threads ..." )
       .arg( nsubgrid ).arg( nthreads ), false );
 
+   if ( simcache != 0 )
+      emit message_update( tr( "(Debug: simulation cache enabled)" ), true );
+
    if ( ord_merge  ||  pool_set > 0 )
    {
       emit message_update( tr( "(Debug: %1 merge; merge pool size %2)" )
@@ -471,6 +493,7 @@ DbgLv(1) << "2P:FC:  abort" << abort;
    wtask.depth    = maxdepth;
    wtask.noisf    = noisflag;    // in this case, we use the noise flag
    wtask.dsets    = dsets;
+   wtask.simcache = simcache;
    wtask.csolutes.clear();
    wtask.ti_noise.clear();
    wtask.ri_noise.clear();
@@ -852,6 +875,9 @@ DbgLv(1) << "done: vari bvol" << vari << bvol
 
    pmsg += tr( "Maximum memory used:  " )
            + QString::number( qRound( memmb ) ) + " MB";
+
+   if ( simcache != 0 )
+      pmsg += "\n" + simcache->stats();
 
    emit message_update( pmsg, false );          // signal final message
 
@@ -1366,6 +1392,7 @@ void US_2dsaProcess::queue_task( WorkPacket2D& wtask, double llss, double llsk,
    wtask.ll_s     = llss;          // lower limit s (x 1e13)
    wtask.ll_k     = llsk;          // lower limit k
    wtask.dsets    = dsets;         // pointer to experiment data
+   wtask.simcache = simcache;      // simulation cache (or 0)
    wtask.isolutes = isolutes;      // solutes for calc_residuals task
 
    if ( jgrefine == (-2) )

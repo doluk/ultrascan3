@@ -13,6 +13,7 @@
 #include "us_db2.h"
 #include "us_solute.h"
 #include "us_worker_2d.h"
+#include "us_sim_cache_2d.h"
 
 #ifndef DbgLv
 #define DbgLv(a) if(dbg_level>=a)qDebug()
@@ -59,6 +60,10 @@ class US_2dsaProcess : public QObject
       //! \param dsets     Pointer to input experiment data
       //! \param parent    Pointer to parent object
       US_2dsaProcess( QList< SS_DATASET* >&, QObject* = 0 );
+      ~US_2dsaProcess();
+
+      //! \brief Get the simulation cache of the current fit (or 0)
+      US_SimCache2D* sim_cache( void ) { return simcache; }
 
       //! \brief Start the fit calculations
       //! \param sll     s lower limit
@@ -220,6 +225,8 @@ private:
       bool       ord_merge;    // debug flag: merge results in task order
       int        pool_set;     // debug merge pool size (0 for default)
       int        pool_lim;     // working merge pool size override
+
+      US_SimCache2D* simcache; // debug simulation cache (or 0)
 
       double     slolim;       // s lower limit
       double     suplim;       // s upper limit

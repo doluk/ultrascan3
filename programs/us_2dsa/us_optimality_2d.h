@@ -46,6 +46,9 @@ class US_OptimalityWorker : public QThread
       //!        fit's noise) and record its residual sum of squares
       void set_refit( const QList< int >& );
 
+      //! \brief Use a simulation cache (or none with 0)
+      void set_cache( US_SolveSim::SimCache* cache ) { simcache = cache; }
+
       QList< QPair< int, double > > refits; //!< Refit (batch id, ssq)
 
       //! \brief Flag the worker to stop after the current batch
@@ -77,6 +80,7 @@ class US_OptimalityWorker : public QThread
       bool                           abort;
       bool                           refit;
       QList< int >                   bids;
+      US_SolveSim::SimCache*         simcache = nullptr;
 };
 
 //! \brief Test how close a final 2DSA fit is to the optimum of the full
@@ -109,7 +113,7 @@ class US_OptimalityCheck2D : public QObject
                             const QVector< US_Solute >&,
                             const QVector< double >&,
                             const QVector< double >&, int,
-                            QObject* = 0 );
+                            QObject* = 0, US_SolveSim::SimCache* = 0 );
       ~US_OptimalityCheck2D();
 
       //! \brief Start the check (asynchronous)
@@ -145,6 +149,7 @@ class US_OptimalityCheck2D : public QObject
       QVector< double >              resid;
       QVector< double >              qbasis;
       QList< US_OptimalityWorker* >  workers;
+      US_SolveSim::SimCache*         simcache;
       int                            nthreads;
       int                            noisflag;
       int                            nbatches;

@@ -83,6 +83,7 @@ bool US_OptimalityWorker::simulate( const QVector< US_Solute >& sols,
    QList< SS_DATASET* > dsets;
    dsets << &dset_wk;
    US_SolveSim solvesim( dsets, thrn, false );
+   solvesim.set_sim_cache( simcache );
    US_SolveSim::Simulation sim_vals;
    sim_vals.noisflag   = 0;     // Columns only; noise handled here
    sim_vals.dbg_level  = 0;
@@ -111,6 +112,7 @@ void US_OptimalityWorker::run()
          QList< SS_DATASET* > dsets;
          dsets << &dset_wk;
          US_SolveSim solvesim( dsets, thrn, false );
+   solvesim.set_sim_cache( simcache );
          US_SolveSim::Simulation sim_vals;
          sim_vals.noisflag   = noisflag;
          sim_vals.dbg_level  = 0;
@@ -258,9 +260,10 @@ US_OptimalityCheck2D::US_OptimalityCheck2D( SS_DATASET* dset,
       const QList< QVector< US_Solute > >& grid,
       const QVector< US_Solute >& finals,
       const QVector< double >& ti_noise, const QVector< double >& ri_noise,
-      int nthreads, QObject* parent )
+      int nthreads, QObject* parent, US_SolveSim::SimCache* cache )
    : QObject( parent ), dset( dset ), grid( grid ), finals( finals ),
-     ti_noise( ti_noise ), ri_noise( ri_noise ), nthreads( nthreads )
+     ti_noise( ti_noise ), ri_noise( ri_noise ), simcache( cache ),
+     nthreads( nthreads )
 {
    dset_cp        = *dset;
    noisflag       = ( ti_noise.isEmpty() ? 0 : 1 )
@@ -302,6 +305,7 @@ void US_OptimalityCheck2D::start()
    fbatch << finals;
    US_OptimalityWorker* wrk = new US_OptimalityWorker( &dset_cp, fbatch,
                                  QVector< double >(), noisflag, 1 );
+   wrk->set_cache( simcache );
    workers << wrk;
    connect( wrk, &QThread::finished,
             this, &US_OptimalityCheck2D::final_done );
@@ -453,6 +457,7 @@ void US_OptimalityCheck2D::final_done()
       US_OptimalityWorker* gwrk = new US_OptimalityWorker( &dset_cp,
                                      wbatches, resid, noisflag, ww + 1,
                                      qbasis );
+      gwrk->set_cache( simcache );
       workers << gwrk;
       connect( gwrk, &US_OptimalityWorker::batch_done,
                this, &US_OptimalityCheck2D::batch_done );
@@ -542,6 +547,7 @@ void US_OptimalityCheck2D::worker_done()
                                      wbatches, QVector< double >(),
                                      noisflag, ww + 1 );
       rwrk->set_refit( wids );
+      rwrk->set_cache( simcache );
       workers << rwrk;
       connect( rwrk, &QThread::finished,
                this, &US_OptimalityCheck2D::refit_done );

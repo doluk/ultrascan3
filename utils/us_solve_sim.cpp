@@ -31,6 +31,7 @@ US_SolveSim::US_SolveSim( QList< DataSet* >& data_sets, int thrnrank,
    thrnrank( thrnrank ), signal_wanted( signal_wanted )
 {
    abort        = false;     // Default: no abort
+   simcache     = 0;         // Default: no simulation cache
    dbg_level    = 0;         // Default: no debug prints
    dbg_timing   = false;     // Default: no debug timing prints
    banddthr     = false;     // Default: no bandform data_threshold
@@ -488,7 +489,17 @@ DbgLv(2) << "   CR:113  rss now" << US_Memory::rss_now() << "cc" << cc;
 
             astfem_rsa.set_debug_flag( dbg_level );
 
-            astfem_rsa.calculate( simdat );
+            // Use a cached simulation of this component if available
+            if ( simcache == 0  ||
+                 ! simcache->fetch( model.components[ 0 ], dset->simparams,
+                                    simdat ) )
+            {
+               astfem_rsa.calculate( simdat );
+
+               if ( simcache != 0 )
+                  simcache->store( model.components[ 0 ], dset->simparams,
+                                   simdat );
+            }
 //DebugTime("END: clcr-NA-astfem");
 DbgLv(2) << "   CR:114  rss now" << US_Memory::rss_now() << "cc" << cc;
             if ( abort ) return;
@@ -790,7 +801,17 @@ DbgLv(1) << "solve_sim_2: timestate file does not exist" << tmst_fpath << dset->
 
             astfem_rsa.set_debug_flag( dbg_level );
 
-            astfem_rsa.calculate( simdat );
+            // Use a cached simulation of this component if available
+            if ( simcache == 0  ||
+                 ! simcache->fetch( model.components[ 0 ], dset->simparams,
+                                    simdat ) )
+            {
+               astfem_rsa.calculate( simdat );
+
+               if ( simcache != 0 )
+                  simcache->store( model.components[ 0 ], dset->simparams,
+                                   simdat );
+            }
 #if 0
 int nsc=simdat.scanCount();
 int npt=simdat.pointCount();
@@ -1003,7 +1024,17 @@ DbgLv(1) << "solve_sim_3: timestate file does not exist" << tmst_fpath << dset->
 
             astfem_rsa.set_debug_flag( dbg_level );
 
-            astfem_rsa.calculate( simdat );
+            // Use a cached simulation of this component if available
+            if ( simcache == 0  ||
+                 ! simcache->fetch( model.components[ 0 ], dset->simparams,
+                                    simdat ) )
+            {
+               astfem_rsa.calculate( simdat );
+
+               if ( simcache != 0 )
+                  simcache->store( model.components[ 0 ], dset->simparams,
+                                   simdat );
+            }
             if ( abort ) return;
 
             if ( banddthr )

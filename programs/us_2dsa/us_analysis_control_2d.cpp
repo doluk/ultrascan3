@@ -1694,7 +1694,8 @@ void US_AnalysisControl2D::check_optimality()
    optiter        = recs[ kfinal ].iter;
    optcheck       = new US_OptimalityCheck2D( dsets[ 0 ], subgrids.values(),
                        recs[ kfinal ].csolutes, tinoise, rinoise,
-                       (int)ct_thrdcnt->value(), this );
+                       (int)ct_thrdcnt->value(), this,
+                       processor->sim_cache() );
    connect( optcheck, &US_OptimalityCheck2D::progress,
             this,     &US_AnalysisControl2D::optimality_progress );
    connect( optcheck, &US_OptimalityCheck2D::finished,

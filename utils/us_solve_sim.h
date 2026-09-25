@@ -82,6 +82,30 @@ class US_UTIL_EXTERN US_SolveSim : public QObject
          US_DataIO::RawData    residuals;  //!< Residuals data (run-sim-noi)
     };
 
+    //! \brief Optional cache of single-component simulations. A program
+    //!        may give one to a SolveSim to reuse simulations it has already
+    //!        computed; implementations must be thread-safe.
+    class US_UTIL_EXTERN SimCache
+    {
+      public:
+         virtual ~SimCache() {}
+
+         //! \brief Get a cached simulation
+         //! \param comp    Single component (experimental space)
+         //! \param sparms  Simulation parameters of the data set
+         //! \param simdat  Simulation data, initialized to the data grid;
+         //!                filled with the cached values when found
+         //! \returns       Flag whether the simulation was found
+         virtual bool fetch( const US_Model::SimulationComponent&,
+                             const US_SimulationParameters&,
+                             US_DataIO::RawData& ) = 0;
+
+         //! \brief Store a computed simulation (if there is room)
+         virtual void store( const US_Model::SimulationComponent&,
+                             const US_SimulationParameters&,
+                             const US_DataIO::RawData& ) = 0;
+    };
+
     //! Constructor for the SolveSim class
     //!
     //! \param data_sets      The set of data sets for which to solve
@@ -120,6 +144,9 @@ class US_UTIL_EXTERN US_SolveSim : public QObject
     //! \brief Set a flag so that the worker aborts at the earliest opportunity
     void abort_work    ( void );
 
+    //! \brief Use a simulation cache (or none, the default, with 0)
+    void set_sim_cache ( SimCache* cache ) { simcache = cache; }
+
   signals:
     //! \brief emit a signal that includes a progress step count
     void work_progress ( int );
@@ -140,6 +167,7 @@ class US_UTIL_EXTERN US_SolveSim : public QObject
     bool               abort;         // Flag to abort at next opportunity
     bool               calc_ti;       // Calculate-TI-noise flag
     bool               calc_ri;       // Calculate-RI-noise flag
+    SimCache*          simcache;      // Optional simulation cache (or 0)
     bool               banddthr;      // Band-forming data threshold peak enhance
     QDateTime          startCalc;     // Start calc time for elapsed time prints
 

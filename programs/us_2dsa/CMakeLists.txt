@@ -13,6 +13,7 @@ add_executable(us_2dsa
     ${src_dir}/us_show_norm.cpp
     ${src_dir}/us_grid_view_2d.cpp
     ${src_dir}/us_optimality_2d.cpp
+    ${src_dir}/us_sim_cache_2d.cpp
     ${src_dir}/us_analysis_control_2d.cpp
 )
 

@@ -41,6 +41,7 @@ typedef struct work_packet_2d_s
    QList< US_SolveSim::DataSet* > dsets; //!< list of data set object pointers
    US_SolveSim::Simulation  sim_vals;  //!< simulation values
 
+   US_SolveSim::SimCache*   simcache = nullptr; //!< simulation cache (or 0)
 
 } WorkPacket2D;
 
@@ -102,6 +103,8 @@ class WorkerThread2D : public QThread
       int     dbg_level;     // debug flag
 
       bool    abort;         // should this thread be aborted?
+
+      US_SolveSim::SimCache*  simcache;    // simulation cache (or 0)
 
       US_DataIO::EditedData*  edata;       // experiment data (pointer)
       US_DataIO::RawData      sdata;       // simulation data
