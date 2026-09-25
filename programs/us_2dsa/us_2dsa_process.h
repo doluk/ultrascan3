@@ -22,6 +22,19 @@
 #define SS_DATASET US_SolveSim::DataSet
 #endif
 
+//! \brief Record of one 2DSA fit task, kept for grid visualization
+struct US_2dsaTaskRecord
+{
+   int    iter;                      //!< Refinement iteration index (0,...)
+   int    depth;                     //!< Task depth (0 for subgrid tasks)
+   int    taskx;                     //!< Task index (subgrid index, depth 0)
+   bool   final;                     //!< Flag: final NNLS of an iteration
+   bool   done;                      //!< Flag: results have been received
+   double variance;                  //!< Fit variance (when done)
+   QVector< US_Solute > isolutes;    //!< Input solutes of the task
+   QVector< US_Solute > csolutes;    //!< Calculated (non-zero) solutes
+};
+
 //! \brief 2DSA Processor object
 
 /*! \class US_2dsaProcess
@@ -102,6 +115,12 @@ class US_2dsaProcess : public QObject
       //! \returns       Message about last error
       QString lastError( void ) { return errMsg; }
 
+      //! \brief Get the records of all fit tasks of the current
+      //!        (or last) meniscus/Monte Carlo iteration
+      //! \returns  List of task records in the order queued
+      QList< US_2dsaTaskRecord > task_records( void ) const
+      { return task_recs; }
+
       // Number of doubles in a solute object
       static const int solute_doubles = sizeof( US_Solute ) / sizeof( double );
 
@@ -112,6 +131,7 @@ private:
       void process_complete( int  );
       void stage_complete(   int,     int  );
       void message_update(   QString, bool );
+      void task_recorded(    void );
 
 private:
       QList< SS_DATASET* >&      dsets;      // List of dataset pointers
@@ -134,6 +154,7 @@ private:
       QList< QVector< US_Solute > > c_solutes;  // calculated solutes
       QList< QVector< US_Solute > > orig_sols;  // original solutes
       QList< QVector< US_Solute > > ical_sols;  // iteration calculated solutes
+      QList< US_2dsaTaskRecord >    task_recs;  // records of fit tasks
 
       US_DataIO::EditedData*     edata;      // experimental data (mc_iter)
       US_DataIO::EditedData*     bdata;      // base experimental data
@@ -231,6 +252,7 @@ private:
       QString pmessage_head( void );
       WorkPacket2D next_job( void );
       bool memory_check    ( void );
+      void record_result   ( const WorkPacket2D&, bool );
 };
 #endif
 

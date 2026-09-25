@@ -115,6 +115,7 @@ DbgLv(1) << "2P(2dsaProc): start_fit()";
    orig_sols.clear();
    itvaris  .clear();
    ical_sols.clear();
+   task_recs.clear();
 
 DbgLv(1) << "2P:SF: sll sul nss" << slolim << suplim << nssteps
  << " kll kul nks" << klolim << kuplim << nksteps
@@ -421,6 +422,7 @@ void US_2dsaProcess::clear_data()
    c_solutes.clear();
    orig_sols.clear();
    ical_sols.clear();
+   task_recs.clear();
    wdata .scanData.clear();
    sdata .scanData.clear();
    sdata1.scanData.clear();
@@ -474,6 +476,18 @@ DbgLv(1) << "2P:FC:  szSoluC" << c_solutes[ depth ].size();
 
    c_solutes[ depth ].clear();
 
+   // Record the final task input for grid visualization
+   US_2dsaTaskRecord trec;
+   trec.iter      = r_iter;
+   trec.depth     = wtask.depth;
+   trec.taskx     = wtask.taskx;
+   trec.final     = true;
+   trec.done      = false;
+   trec.variance  = 0.0;
+   trec.isolutes  = wtask.isolutes;
+   task_recs << trec;
+   emit task_recorded();
+
    WorkerThread2D* wthr = new WorkerThread2D( this );
 
    int thrx = wkstates.indexOf( READY );
@@ -512,6 +526,7 @@ DbgLv(1) << "2P:PF: abort" << abort;
       c_solutes << QVector< US_Solute >();
 
    c_solutes[ maxdepth ] =  wresult.csolutes;  // final iter calc'd solutes
+   record_result( wresult, true );
    int nsolutes = c_solutes[ maxdepth ].size();
 
    QVector< double > tinvec( npoints,  0.0 );
@@ -1118,6 +1133,8 @@ DbgLv(1) << "PJ:DA DTOT" << dtot << "thr,tsk,ncso" << thrn << taskx << nrcso
    if ( abort )                    // Abort if so flagged
       return;
 
+   record_result( wresult, false );
+
    // This loop should only execute, at most, once per result
    while( c_solutes.size() < ( depth + 1 ) )
       c_solutes << QVector< US_Solute >();
@@ -1335,6 +1352,18 @@ DbgLv(1) << "QT: taskx" << taskx << " isolutes size tot" << nrisols << ntisols;
    tkdepths << depth;              // record work task depth
 
    job_queue << wtask;             // put the task on the queue
+
+   // Record the task input for grid visualization
+   US_2dsaTaskRecord trec;
+   trec.iter      = r_iter;
+   trec.depth     = depth;
+   trec.taskx     = taskx;
+   trec.final     = false;
+   trec.done      = false;
+   trec.variance  = 0.0;
+   trec.isolutes  = isolutes;
+   task_recs << trec;
+   emit task_recorded();
 
    if ( tkdepths.count( depth ) == 1 )
    {  // if first task at this depth, report it
@@ -1638,6 +1667,8 @@ DbgLv(1) << "MCARLO: mm_iter" << mm_iter << " sigma0 c0 v0 cn vn"
 void US_2dsaProcess::requeue_tasks()
 {
    kcsteps   = 0;
+   r_iter    = 0;
+   task_recs.clear();             // Keep records of this iteration only
    emit stage_complete( kcsteps, nctotal );
    int jdpth = 0;
    int jnois = 0;
@@ -1801,3 +1832,32 @@ DbgLv(0) << "MCk:MEM: *** AvailPercent < 10 ***";
    return stopfit;
 }
 
+
+// Record the results of a completed task for grid visualization
+void US_2dsaProcess::record_result( const WorkPacket2D& wresult, bool final )
+{
+   for ( int ii = task_recs.size() - 1; ii >= 0; ii-- )
+   {
+      US_2dsaTaskRecord& trec = task_recs[ ii ];
+
+      if ( trec.done  ||  trec.final != final  ||  trec.iter != r_iter )
+         continue;
+
+      if ( final  ||
+           ( trec.depth == wresult.depth  &&  trec.taskx == wresult.taskx ) )
+      {
+         trec.csolutes.clear();
+
+         for ( int jj = 0; jj < wresult.csolutes.size(); jj++ )
+         {
+            if ( wresult.csolutes[ jj ].c > 0.0 )
+               trec.csolutes << wresult.csolutes[ jj ];
+         }
+
+         trec.variance  = wresult.sim_vals.variance;
+         trec.done      = true;
+         emit task_recorded();
+         break;
+      }
+   }
+}

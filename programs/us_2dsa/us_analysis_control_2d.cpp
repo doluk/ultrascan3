@@ -41,6 +41,11 @@ US_AnalysisControl2D::US_AnalysisControl2D( QList< SS_DATASET* >& dsets,
    dbg_level      = US_Settings::us_debug();
    grtype         = US_2dsaProcess::UGRID;
    baserss        = 0;
+   gridtimer      = new QTimer( this );
+   gridtimer->setSingleShot( true );
+   gridtimer->setInterval( 250 );
+   connect( gridtimer, &QTimer::timeout,
+            this,      &US_AnalysisControl2D::update_grid_records );
 
    setObjectName( "US_AnalysisControl2D" );
    setAttribute( Qt::WA_DeleteOnClose, true );
@@ -665,6 +670,8 @@ DbgLv(1) << "AnaC:St:MEM (2)rssnow" << US_Memory::rss_now();
             this,      &US_AnalysisControl2D::reset_steps );
    connect( processor, &US_2dsaProcess::process_complete,
             this,      &US_AnalysisControl2D::completed_process );
+   connect( processor, &US_2dsaProcess::task_recorded,
+            this,      &US_AnalysisControl2D::grid_records_changed );
 
    int mxiter    = (int)ct_iters->value();
    int mniter    = ( ck_menisc->isChecked() ||
@@ -690,6 +697,7 @@ DbgLv(1) << "AnaC:St:MEM (2)rssnow" << US_Memory::rss_now();
 
    processor->start_fit( slo, sup, nss, klo, kup, nks,
          ngrr, nthr, noif );
+   update_grid_records();
 
    pb_strtfit->setEnabled( false );
    pb_stopfit->setEnabled( true  );
@@ -704,6 +712,7 @@ DbgLv(1) << "AC:SF:StopFit";
      if ( processor != 0 )
      {
 DbgLv(1) << "AC:SF: processor stopping...";
+        fitrecs   = processor->task_records();   // Keep for grid display
         processor->disconnect();
         processor->stop_fit();
 DbgLv(1) << "AC:SF: processor stopped";
@@ -712,6 +721,7 @@ DbgLv(1) << "AC:SF: processor deleted";
      }
      //delete processor;
      processor = 0;
+     update_grid_records();
 //DbgLv(1) << "AC:SF: processor deleted";
      qApp->processEvents();
      b_progress->reset();
@@ -1582,12 +1592,14 @@ void US_AnalysisControl2D::show_grid()
    if ( gridview.isNull() )
    {
       gridview = new US_GridView2D( subgrids, desc, this );
+      update_grid_records();
       gridview->show();
    }
 
    else
    {
       gridview->set_grid( subgrids, desc );
+      update_grid_records();
       gridview->raise();
       gridview->activateWindow();
    }
@@ -1604,4 +1616,24 @@ void US_AnalysisControl2D::update_grid_view()
 
    if ( build_grid( subgrids, desc ) )
       gridview->set_grid( subgrids, desc );
+}
+
+// Fit task records changed:  schedule a (rate-limited) grid display update
+void US_AnalysisControl2D::grid_records_changed()
+{
+   if ( ! gridview.isNull()  &&  gridview->isVisible()  &&
+        ! gridtimer->isActive() )
+      gridtimer->start();
+}
+
+// Pass the current fit task records to an open grid display
+void US_AnalysisControl2D::update_grid_records()
+{
+   if ( gridview.isNull() )
+      return;
+
+   if ( processor != 0 )
+      fitrecs   = processor->task_records();
+
+   gridview->set_fit_records( fitrecs );
 }

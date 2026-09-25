@@ -86,6 +86,8 @@ class US_AnalysisControl2D : public US_WidgetsDialog
       int*                             mw_baserss;
       QPointer< US_show_norm >         analcd1;
       QPointer< US_GridView2D >        gridview;
+      QTimer*                          gridtimer;
+      QList< US_2dsaTaskRecord >       fitrecs;
 
       QWidget*                         parentw;
       US_2dsaProcess*                  processor;
@@ -181,6 +183,8 @@ class US_AnalysisControl2D : public US_WidgetsDialog
       int  memory_check(     void );
       void show_grid(        void );
       void update_grid_view( void );
+      void grid_records_changed( void );
+      void update_grid_records ( void );
       bool build_grid(       QList< QVector< US_Solute > >&, QString& );
       void help     ( void )
       { showHelp.show_help( "manual/2dsa/2dsa_analys.html" ); };
