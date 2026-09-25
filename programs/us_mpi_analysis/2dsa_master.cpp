@@ -5,6 +5,7 @@
 #include "us_astfem_rsa.h"
 #include "us_simparms.h"
 #include "us_constants.h"
+#include "us_settings.h"
 
 void US_MPI_Analysis::_2dsa_master( void )
 {
@@ -439,7 +440,24 @@ void US_MPI_Analysis::fill_queue( void )
                                   orig_solutes[ i ].size() );
       Sa_Job job;
       job.solutes         = orig_solutes[ i ];
+      job.taskx           = i;
       job_queue << job;
+   }
+
+   // Debug settings to investigate the merging of task results:
+   //  "2DSA-OrderedMerge"   merge results in task order, not arrival order;
+   //  "2DSA-MergePool=N"    use N as the maximum solutes of a merge task.
+   ord_merge           = US_Settings::debug_match( "2DSA-OrderedMerge" );
+   pool_set            = qMax( 0, US_Settings::debug_value( "2DSA-MergePool" )
+                                  .toInt() );
+   worker_taskx.fill( -1, gcores_count );
+   reset_merge();
+
+   if ( my_rank == 0  &&  ( ord_merge  ||  pool_set > 0 ) )
+   {
+      DbgLv(0) << "2DSA merge debug:" << ( ord_merge ? "task-ordered"
+                                                     : "arrival-ordered" )
+               << "merge; pool size" << pool_set;
    }
 }
 
@@ -614,9 +632,12 @@ DbgLv(0) << "FMB:set_meniscus:  mb_ndx men_run bot_run"
    {
       Sa_Job job;
       job.solutes = orig_solutes[ i ];
+      job.taskx   = i;
 
       job_queue << job;
    }
+
+   reset_merge();
 
    worker_depth.fill( 0 );
    max_depth = 0;
@@ -903,6 +924,7 @@ void US_MPI_Analysis::iterate( void )
    for ( int i = 0; i < orig_solutes.size(); i++ )
    {
       job.solutes = orig_solutes[ i ];
+      job.taskx   = i;
 
       // Add back all non-zero Solutes to each job
       // Ensure there are no duplicates
@@ -926,6 +948,7 @@ void US_MPI_Analysis::iterate( void )
    max_depth = 0;
    for ( int ii = 0; ii < calculated_solutes.size(); ii++ )
       calculated_solutes[ ii ].clear();
+   reset_merge();
 
    return;
 }
@@ -933,6 +956,9 @@ void US_MPI_Analysis::iterate( void )
 // Submit a queued job
 void US_MPI_Analysis::submit( Sa_Job& job, int worker )
 {
+   if ( worker_taskx.size() <= worker )
+      worker_taskx.resize( worker + 1 );
+   worker_taskx[ worker ]     = job.taskx;
    job.mpi_job.command        = MPI_Job::PROCESS;
    job.mpi_job.length         = job.solutes.size();
    job.mpi_job.meniscus_value = meniscus_value;
@@ -1050,6 +1076,14 @@ if (depth == 0) { DbgLv(1) << "Mast:  process_results: worker" << worker
  << " solsize" << size[0] << "depth" << depth; }
 else { DbgLv(1) << "Mast:  process_results:      worker" << worker
  << " solsize" << size[0] << "depth" << depth; }
+    if ( ord_merge )
+    {  // Debug mode:  merge results in task order
+       int taskx      = ( worker < worker_taskx.size() )
+                        ? worker_taskx[ worker ] : -1;
+       process_ordered( depth, taskx, simulation_values.solutes );
+       return;
+    }
+
     Result result;
     result.depth   = depth;
     result.worker  = worker;
@@ -1105,7 +1139,7 @@ DbgLv(1) << "Mast:    process_solutes:      worker" << worker
    int new_size   = csol_size + rsol_size;
 
    // Submit with previous solutes if new size would be too big
-   if ( new_size > max_experiment_size )
+   if ( new_size > merge_limit() )
    {
       // Put current solutes on queue at depth + 1
       Sa_Job job;
@@ -1124,9 +1158,12 @@ DbgLv(1) << "Mast:   queue NEW DEPTH sols" << job.solutes.size() << " d="
 
    new_size            = rsol_size * 2;
 
-   if ( next_depth > 1  &&  new_size > max_experiment_size )
+   if ( next_depth > 1  &&  new_size > merge_limit() )
    { // Adjust max_experiment_size if it is only large enough for one output
-      max_experiment_size = ( new_size * 11 + 9 ) / 10;  // 10% above
+      if ( pool_lim > 0 )
+         pool_lim            = ( new_size * 11 + 9 ) / 10;
+      else
+         max_experiment_size = ( new_size * 11 + 9 ) / 10;  // 10% above
 DbgLv(1) << "Mast:    NEW max_exp_size" << max_experiment_size
  << "from new_size rsol_size" << new_size << rsol_size;
    }
@@ -1292,3 +1329,119 @@ void US_MPI_Analysis::cache_result( Result& result )
    return;
 }
 
+
+// Maximum solutes of a merge job:  debug override or maximum experiment size
+int US_MPI_Analysis::merge_limit( void )
+{
+   return ( pool_lim > 0 ) ? pool_lim : max_experiment_size;
+}
+
+// Reset merge state for a new pass of subgrid jobs
+void US_MPI_Analysis::reset_merge( void )
+{
+   pool_lim            = pool_set;
+   ord_results.clear();
+   ord_ntasks.clear();
+   ord_ntasks << orig_solutes.size();
+}
+
+// Debug alternative to process_solutes merging:  when all jobs of a depth are
+// complete, pool their results in task (subgrid) order, so that the jobs of
+// the next depth do not depend on the order in which worker results arrive.
+// Each pool holds at least two job results; a pool is closed when the next
+// result would push it past the merge limit. When a single job remains at a
+// depth, its result is the final result of the pass.
+void US_MPI_Analysis::process_ordered( int depth, int taskx,
+                                       QVector< US_Solute >& result_solutes )
+{
+   while ( ord_results.size() <= depth )
+      ord_results << QMap< int, QVector< US_Solute > >();
+   while ( ord_ntasks.size() <= depth )
+      ord_ntasks  << 0;
+   while ( calculated_solutes.size() <= depth )
+      calculated_solutes << QVector< US_Solute >();
+
+   if ( taskx < 0 )
+   {  // Unexpected job without task index:  keep arrival order
+      taskx          = 100000 + ord_results[ depth ].size();
+DbgLv(0) << "Mast: ORDMERGE: result without task index at depth" << depth;
+   }
+
+   ord_results[ depth ][ taskx ] = result_solutes;
+   int ntasks     = ord_ntasks[ depth ];
+DbgLv(1) << "Mast: ORDMERGE: depth" << depth << "taskx" << taskx
+ << "nres ntasks" << ord_results[ depth ].size() << ntasks;
+
+   if ( ord_results[ depth ].size() < ntasks )
+      return;                    // Wait for the remaining jobs of this depth
+
+   // All jobs of this depth are complete:  results in task order
+   QList< QVector< US_Solute > > results = ord_results[ depth ].values();
+   ord_results[ depth ].clear();
+
+   if ( ntasks == 1 )
+   {  // The single job of this depth gives the final solutes
+      calculated_solutes[ depth ] = results[ 0 ];
+      max_depth      = depth;
+      return;
+   }
+
+   int mlimit     = merge_limit();
+   QList< QVector< US_Solute > > pools;
+   QVector< US_Solute > pool;
+   int nrpool     = 0;
+
+   for ( int ii = 0; ii < results.size(); ii++ )
+   {
+      if ( nrpool > 1  &&  ( pool.size() + results[ ii ].size() ) > mlimit )
+      {  // Close the current pool
+         pools << pool;
+         pool.clear();
+         nrpool         = 0;
+      }
+
+      pool          += results[ ii ];
+      nrpool++;
+   }
+
+   if ( nrpool == 1  &&  ! pools.isEmpty() )
+      pools.last() += pool;     // Do not leave a single result on its own
+   else
+      pools << pool;
+
+   // Queue the merge jobs of the next depth
+   int next_depth = depth + 1;
+   int njobs      = 0;
+
+   for ( int ii = 0; ii < pools.size(); ii++ )
+   {
+      if ( pools[ ii ].isEmpty() )
+         continue;
+
+      Sa_Job job;
+      job.solutes                = pools[ ii ];
+      job.mpi_job.depth          = next_depth;
+      job.mpi_job.dataset_offset = current_dataset;
+      job.mpi_job.dataset_count  = datasets_to_process;
+      job.taskx                  = njobs++;
+      std::sort( job.solutes.begin(), job.solutes.end() );
+      add_to_queue( job );
+   }
+DbgLv(1) << "Mast: ORDMERGE: depth" << depth << "results" << results.size()
+ << "mlimit" << mlimit << "next-depth jobs" << njobs;
+
+   if ( njobs == 0 )
+   {  // No solutes at all:  nothing more to compute
+      max_depth      = depth;
+      return;
+   }
+
+   while ( ord_ntasks.size() <= next_depth )
+      ord_ntasks << 0;
+   ord_ntasks[ next_depth ] = njobs;
+   max_depth      = qMax( max_depth, next_depth );
+
+   // Force an abort if we are in a run-away situation
+   if ( max_depth > 20 )
+      abort( "Max Depth is exceeding 20" );
+}

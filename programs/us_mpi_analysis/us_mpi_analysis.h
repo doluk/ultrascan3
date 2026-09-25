@@ -224,6 +224,10 @@ class US_MPI_Analysis : public QObject
                 MPI_Job mpi_job;                 //!< MPI job
                 QVector< US_Solute > solutes;    //!< Solutes list
                 QVector< US_ZSolute > zsolutes;  //!< Z solutes list
+                int taskx;                       //!< Task index at its depth
+
+                //! \brief Constructor for Sa_Job
+                Sa_Job() : taskx( -1 ) {}
         };
 
         QList< Sa_Job > job_queue; //!< Job queue
@@ -256,6 +260,15 @@ class US_MPI_Analysis : public QObject
         };
 
         QList< Result > cached_results; //!< Cached results list
+
+        // Debug controls of 2DSA result merging
+        bool ord_merge;                  //!< Merge results in task order
+        int  pool_set;                   //!< Debug merge pool size (0=none)
+        int  pool_lim;                   //!< Working merge pool size override
+        QVector< int > worker_taskx;     //!< Task index of each worker's job
+        QVector< int > ord_ntasks;       //!< Tasks queued at each depth
+        QList< QMap< int, QVector< US_Solute > > > ord_results;
+                                         //!< Task results by depth, index
 
         //! \class Bucket
         //! \brief Class representing a bucket for genetic algorithm.
@@ -395,6 +408,9 @@ class US_MPI_Analysis : public QObject
         int      low_working_depth ( void );
         void     cache_result      ( Result& );
         void     process_solutes   ( int&, int&, QVector< US_Solute >& );
+        void     process_ordered   ( int, int, QVector< US_Solute >& );
+        void     reset_merge       ( void );
+        int      merge_limit       ( void );
         void     dset_matrices     ( int, int*,
                                      QVector< double >&, QVector< double >&,
                                      QVector< int >& );

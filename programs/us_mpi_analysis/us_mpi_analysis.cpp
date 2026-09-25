@@ -82,6 +82,9 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
    minimize_opt = 2;
    in_gsm       = false;
    min_experiment_size = def_experiment_size;
+   ord_merge           = false;
+   pool_set            = 0;
+   pool_lim            = 0;
    QString tarfile;
    QString jxmlfili;
    task_params[ "walltime"    ] = "1440";

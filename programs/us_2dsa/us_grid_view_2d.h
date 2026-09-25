@@ -93,12 +93,15 @@ class US_GridView2D : public US_WidgetsDialog
       QCheckBox*       ck_allsols;
       QCheckBox*       ck_finalsols;
       QCheckBox*       ck_addsols;
+      QCheckBox*       ck_poolsols;
+      QCheckBox*       ck_origgrid;
 
       QColor           color_base;
       QColor           color_subgrid;
       QColor           color_tasksol;
       QColor           color_final;
       QColor           color_added;
+      QColor           color_pool;
 
       int              dbg_level;
 
@@ -116,7 +119,8 @@ class US_GridView2D : public US_WidgetsDialog
       void             add_sol_curves( const QVector< US_Solute >&,
                                        QwtSymbol::Style, const QColor&,
                                        bool, bool, const QString&,
-                                       const QString&, double );
+                                       const QString&, double,
+                                       bool = true, int = 0 );
       QwtPlotCurve*    point_curve  ( const QString&, bool );
       GridPt           make_point   ( const US_Solute& );
       QString          attr_title   ( int );

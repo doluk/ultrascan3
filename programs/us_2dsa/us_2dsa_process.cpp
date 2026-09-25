@@ -117,6 +117,13 @@ DbgLv(1) << "2P(2dsaProc): start_fit()";
    ical_sols.clear();
    task_recs.clear();
 
+   // Debug settings to investigate the merging of task results:
+   //  "2DSA-OrderedMerge"   merge results in task order, not arrival order;
+   //  "2DSA-MergePool=N"    use N as the maximum solutes of a merge task.
+   ord_merge   = US_Settings::debug_match( "2DSA-OrderedMerge" );
+   pool_set    = qMax( 0, US_Settings::debug_value( "2DSA-MergePool" ).toInt() );
+   reset_merge();
+
 DbgLv(1) << "2P:SF: sll sul nss" << slolim << suplim << nssteps
  << " kll kul nks" << klolim << kuplim << nksteps
  << " ngref nthr noif" << ngrefine << nthreads << noisflag;
@@ -336,6 +343,14 @@ DbgLv(1) << "2P:SF:   kstask nthreads" << kstask << nthreads << job_queue.size()
       tr( "Starting computations of %1 subgrids\n using %2 threads ..." )
       .arg( nsubgrid ).arg( nthreads ), false );
 
+   if ( ord_merge  ||  pool_set > 0 )
+   {
+      emit message_update( tr( "(Debug: %1 merge; merge pool size %2)" )
+         .arg( ord_merge ? tr( "task-ordered" ) : tr( "arrival-ordered" ) )
+         .arg( pool_set > 0 ? QString::number( pool_set ) : tr( "default" ) ),
+         true );
+   }
+
    memory_check();
 }
 
@@ -406,6 +421,7 @@ DbgLv(1) << "  STOPTHR:  thread deleted";
    job_queue.clear();
    tkdepths .clear();
    c_solutes.clear();
+   ord_results.clear();
    maxdepth  = 0;
    ntisols   = 0;
    ntcsols   = 0;
@@ -420,6 +436,7 @@ void US_2dsaProcess::clear_data()
    sigmas   .clear();
    itvaris  .clear();
    c_solutes.clear();
+   ord_results.clear();
    orig_sols.clear();
    ical_sols.clear();
    task_recs.clear();
@@ -1135,6 +1152,12 @@ DbgLv(1) << "PJ:DA DTOT" << dtot << "thr,tsk,ncso" << thrn << taskx << nrcso
 
    record_result( wresult, false );
 
+   if ( ord_merge )
+   {  // Debug mode:  merge results in task order
+      process_ordered( wresult );
+      return;
+   }
+
    // This loop should only execute, at most, once per result
    while( c_solutes.size() < ( depth + 1 ) )
       c_solutes << QVector< US_Solute >();
@@ -1145,13 +1168,20 @@ DbgLv(1) << "PJ:DA DTOT" << dtot << "thr,tsk,ncso" << thrn << taskx << nrcso
    int jnois    = fnoionly ? 0 : noisflag;
    int depthn   = depth + 1;
 
-   if ( depthn > 4  &&  nextc > maxtsols  &&
+   int mlimit   = merge_limit();
+
+   if ( depthn > 4  &&  nextc > mlimit  &&
         ( ( cs_size / wr_size ) == 1  ||  ( wr_size / cs_size ) == 1 ) )
    { // Adjust max solutes per task if it is only large enough for one output
-      maxtsols     = ( nextc * 11 + 9 ) / 10;
+      mlimit       = ( nextc * 11 + 9 ) / 10;
+
+      if ( pool_lim > 0 )
+         pool_lim     = mlimit;
+      else
+         maxtsols     = mlimit;
    }
 
-   if ( nextc > maxtsols )
+   if ( nextc > mlimit )
    {  // if new solutes push count over limit, queue a job at next depth
       WorkPacket2D wtask = wresult;
       int taskx    = tkdepths.size();
@@ -1201,7 +1231,7 @@ DbgLv(1) << "THR_FIN:   (new)kcst ncto" <<  kcsteps << nctotal
          int maxdepsv   = maxdepth;
          maxdepth       = 1;
 
-         if ( nextc <= maxtsols  &&  maxdepsv < 1 )
+         if ( nextc <= mlimit  &&  maxdepsv < 1 )
             maxdepth       = 0;  // handle no depth 1 jobs yet submitted
       }
    }
@@ -1460,6 +1490,7 @@ if(ktadd<ncsol) {
    // Make sure calculated solutes are cleared out for new iteration
    for ( int ii = 0; ii < c_solutes.size(); ii++ )
       c_solutes[ ii ].clear();
+   reset_merge();
 
    // Start the first threads. This will begin the first work units (subgrids).
    // Thereafter, work units are started in new threads when threads signal
@@ -1669,6 +1700,7 @@ void US_2dsaProcess::requeue_tasks()
    kcsteps   = 0;
    r_iter    = 0;
    task_recs.clear();             // Keep records of this iteration only
+   tkdepths .clear();             // Task depths of this pass only
    emit stage_complete( kcsteps, nctotal );
    int jdpth = 0;
    int jnois = 0;
@@ -1686,6 +1718,7 @@ void US_2dsaProcess::requeue_tasks()
    // Make sure calculated solutes are cleared out for new iteration
    for ( int ii = 0; ii < c_solutes.size(); ii++ )
       c_solutes[ ii ].clear();
+   reset_merge();
 
    // Start the first threads
    for ( int ii = 0; ii < nthreads; ii++ )
@@ -1860,4 +1893,136 @@ void US_2dsaProcess::record_result( const WorkPacket2D& wresult, bool final )
          break;
       }
    }
+}
+
+// Maximum solutes of a merge task:  debug override or task solutes maximum
+int US_2dsaProcess::merge_limit()
+{
+   return ( pool_lim > 0 ) ? pool_lim : maxtsols;
+}
+
+// Reset merge state for a new pass of subgrid tasks
+void US_2dsaProcess::reset_merge()
+{
+   pool_lim     = pool_set;
+   ord_results.clear();
+}
+
+// Submit queued tasks while there are ready worker threads
+void US_2dsaProcess::submit_ready()
+{
+   int thrx;
+
+   while ( ! job_queue.isEmpty()  &&  ( thrx = wkstates.indexOf( READY ) ) >= 0 )
+   {
+      WorkPacket2D wtask = next_job();
+      submit_job( wtask, thrx );
+      kstask++;
+   }
+}
+
+// Debug alternative to process_job merging:  when all tasks of a depth are
+// complete, pool their results in task (subgrid) order, so that the tasks
+// of the next depth do not depend on the order in which threads finish.
+// Each pool holds at least two task results; a pool is closed when the next
+// result would push it past the merge limit.
+void US_2dsaProcess::process_ordered( const WorkPacket2D& wresult )
+{
+   int depth    = wresult.depth;
+
+   while ( ord_results.size() <= depth )
+      ord_results << QMap< int, QVector< US_Solute > >();
+   while ( c_solutes.size() <= depth )
+      c_solutes   << QVector< US_Solute >();
+
+   ord_results[ depth ][ wresult.taskx ] = wresult.csolutes;
+
+   if ( depth == 0 )
+   {  // A subgrid task is complete
+      kctask++;
+      emit message_update( pmessage_head() +
+         tr( "Computations for %1 of %2 subgrids are complete" )
+         .arg( kctask ).arg( nsubgrid ), false );
+
+      if ( kctask == nsubgrid )
+      {
+         if ( r_iter == 0 )
+            nctotal       = kcsteps + estimate_steps( ntcsols );
+
+         emit stage_complete( kcsteps, nctotal );
+         emit message_update( pmessage_head() +
+            tr( "Computing depth 1 solutions and beyond ..." ), false );
+      }
+   }
+
+   int ntasks   = tkdepths.count( depth );
+
+   if ( ord_results[ depth ].size() < ntasks )
+   {  // Wait for the remaining tasks of this depth
+      submit_ready();
+      return;
+   }
+
+   // All tasks of this depth are complete:  results in task order
+   QList< QVector< US_Solute > > results = ord_results[ depth ].values();
+   ord_results[ depth ].clear();
+   int mlimit   = merge_limit();
+   int jnois    = fnoionly ? 0 : noisflag;
+   QList< QVector< US_Solute > > pools;
+   QVector< US_Solute > pool;
+   int nrpool   = 0;
+
+   for ( int ii = 0; ii < results.size(); ii++ )
+   {
+      if ( nrpool > 1  &&  ( pool.size() + results[ ii ].size() ) > mlimit )
+      {  // Close the current pool
+         pools << pool;
+         pool.clear();
+         nrpool       = 0;
+      }
+
+      pool        += results[ ii ];
+      nrpool++;
+   }
+
+   if ( nrpool == 1  &&  ! pools.isEmpty() )
+      pools.last() += pool;      // Do not leave a single result on its own
+   else
+      pools << pool;
+
+DbgLv(1) << "2P:PO: depth" << depth << "ntasks" << ntasks << "mlimit" << mlimit
+ << "npools" << pools.size();
+
+   if ( ntasks == 1  ||  pools.size() == 1 )
+   {  // A single task or pool remains:  compute the final fit
+      c_solutes[ depth ] = ( ntasks == 1 ) ? results[ 0 ] : pools[ 0 ];
+      maxdepth     = depth;
+      final_computes();
+      return;
+   }
+
+   // Queue the merge tasks of the next depth
+   int depthn   = depth + 1;
+
+   for ( int ii = 0; ii < pools.size(); ii++ )
+   {
+      if ( pools[ ii ].isEmpty() )
+         continue;
+
+      std::sort( pools[ ii ].begin(), pools[ ii ].end() );
+      WorkPacket2D wtask;
+      queue_task( wtask, slolim, klolim, tkdepths.size(), depthn, jnois,
+                  pools[ ii ] );
+   }
+
+   maxdepth     = qMax( maxdepth, depthn );
+
+   if ( job_queue.isEmpty() )
+   {  // All pools were empty
+      maxdepth     = depth;
+      final_computes();
+      return;
+   }
+
+   submit_ready();
 }

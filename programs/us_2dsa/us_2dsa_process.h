@@ -155,6 +155,8 @@ private:
       QList< QVector< US_Solute > > orig_sols;  // original solutes
       QList< QVector< US_Solute > > ical_sols;  // iteration calculated solutes
       QList< US_2dsaTaskRecord >    task_recs;  // records of fit tasks
+      QList< QMap< int, QVector< US_Solute > > > ord_results;
+                                  // task results by depth, taskx (ordered)
 
       US_DataIO::EditedData*     edata;      // experimental data (mc_iter)
       US_DataIO::EditedData*     bdata;      // base experimental data
@@ -215,6 +217,9 @@ private:
       bool       ff_menbot;    // fit flag: fit-meniscus+bottom
       bool       ff_meni;      // fit flag: fit-meniscus (omeni or menbot)
       bool       ff_bott;      // fit flag: fit-bottom (obott or menbot)
+      bool       ord_merge;    // debug flag: merge results in task order
+      int        pool_set;     // debug merge pool size (0 for default)
+      int        pool_lim;     // working merge pool size override
 
       double     slolim;       // s lower limit
       double     suplim;       // s upper limit
@@ -253,6 +258,10 @@ private:
       WorkPacket2D next_job( void );
       bool memory_check    ( void );
       void record_result   ( const WorkPacket2D&, bool );
+      void process_ordered ( const WorkPacket2D& );
+      void submit_ready    ( void );
+      int  merge_limit     ( void );
+      void reset_merge     ( void );
 };
 #endif
 

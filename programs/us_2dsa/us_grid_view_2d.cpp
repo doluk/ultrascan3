@@ -64,7 +64,7 @@ US_GridView2D::US_GridView2D( const QList< QVector< US_Solute > >& subgrids,
    QGridLayout* lo_highlight =
       us_checkbox( tr( "Highlight Input" ),         ck_highlight, true  );
    QGridLayout* lo_colorall  =
-      us_checkbox( tr( "Color All Subgrids" ),      ck_colorall,  false );
+      us_checkbox( tr( "Color by Subgrid / Task" ), ck_colorall,  false );
    QGridLayout* lo_tasksols  =
       us_checkbox( tr( "Selected Task Solutes" ),   ck_tasksols,  true  );
    QGridLayout* lo_allsols   =
@@ -73,6 +73,10 @@ US_GridView2D::US_GridView2D( const QList< QVector< US_Solute > >& subgrids,
       us_checkbox( tr( "Final Fit Solutes" ),       ck_finalsols, true  );
    QGridLayout* lo_addsols   =
       us_checkbox( tr( "Refinement-Added Points" ), ck_addsols,   true  );
+   QGridLayout* lo_poolsols  =
+      us_checkbox( tr( "Previous Depth Solutes" ),  ck_poolsols,  true  );
+   QGridLayout* lo_origgrid  =
+      us_checkbox( tr( "Original Grid" ),           ck_origgrid,  true  );
    ck_fitres->setEnabled( false );
 
    cb_stage        = us_comboBox();
@@ -122,6 +126,8 @@ US_GridView2D::US_GridView2D( const QList< QVector< US_Solute > >& subgrids,
    left->addLayout( lo_allsols,       row++, 2, 1, 2 );
    left->addLayout( lo_finalsols,     row,   0, 1, 2 );
    left->addLayout( lo_addsols,       row++, 2, 1, 2 );
+   left->addLayout( lo_poolsols,      row,   0, 1, 2 );
+   left->addLayout( lo_origgrid,      row++, 2, 1, 2 );
    left->addWidget( lb_nearest,       row,   0, 1, 1 );
    left->addWidget( le_nearest,       row++, 1, 1, 3 );
    left->addWidget( lb_hint,          row++, 0, 1, 4 );
@@ -151,6 +157,7 @@ US_GridView2D::US_GridView2D( const QList< QVector< US_Solute > >& subgrids,
    color_tasksol   = QColor( 255,  69,   0 );
    color_final     = QColor( 255,   0, 255 );
    color_added     = QColor( 0,   229, 255 );
+   color_pool      = QColor( 220, 220, 220 );
    hl_curve        = point_curve( tr( "Selected Input" ), true );
    hl_curve->setZ( 1 );
 
@@ -242,6 +249,10 @@ US_GridView2D::US_GridView2D( const QList< QVector< US_Solute > >& subgrids,
             this,         &US_GridView2D::plot_subgrid );
    connect( ck_finalsols, &QCheckBox::toggled,
             this,         &US_GridView2D::plot_subgrid );
+   connect( ck_poolsols,  &QCheckBox::toggled,
+            this,         &US_GridView2D::plot_subgrid );
+   connect( ck_origgrid,  &QCheckBox::toggled,
+            this,         &US_GridView2D::plot_points );
    connect( ck_addsols,   &QCheckBox::toggled,
             this,         &US_GridView2D::plot_subgrid );
    connect( pick,         QOverload< const QPointF& >::of( &QwtPlotPicker::selected ),
@@ -371,6 +382,7 @@ void US_GridView2D::refresh_all()
    ck_allsols  ->setEnabled( fitres );
    ck_finalsols->setEnabled( fitres );
    ck_addsols  ->setEnabled( fitres );
+   ck_poolsols ->setEnabled( fitres );
 
    build_grid();
    fill_stages();
@@ -645,7 +657,10 @@ void US_GridView2D::plot_points()
    double py1      =  1e99;
    double py2      = -1e99;
    int    ss       = (int)ct_size->value();
-   bool   colorall = ck_colorall->isChecked();
+   // Subgrid colors apply to the grid only when tasks are subgrids
+   bool   colorall = ck_colorall->isChecked()  &&
+                     ( ! show_fit()  ||  cb_stage->currentData().toInt() == 0 );
+   bool   showgrid = ck_origgrid->isChecked();
 
    for ( int ii = 0; ii < grid.size(); ii++ )
    {
@@ -664,6 +679,9 @@ void US_GridView2D::plot_points()
          py1             = qMin( py1, yy );
          py2             = qMax( py2, yy );
       }
+
+      if ( ! showgrid )
+         continue;            // Grid only sets the plot ranges
 
       QColor color    = colorall ? subgrid_color( ii ) : color_base;
       QwtSymbol* symbol = new QwtSymbol( QwtSymbol::Ellipse, QBrush( color ),
@@ -798,6 +816,24 @@ void US_GridView2D::plot_overlays()
 
    int stage       = cb_stage->currentData().toInt();
 
+   if ( stage != 0  &&  ck_poolsols->isChecked() )
+   {  // Inputs of merge (or final) tasks:  the solutes selected by the
+      // previous depth, grouped (and optionally colored) by receiving task
+      bool colorall   = ck_colorall->isChecked();
+
+      for ( int ii = 0; ii < stage_recs.size(); ii++ )
+      {
+         const US_2dsaTaskRecord& trec = recs[ stage_recs[ ii ] ];
+         QString kind    = ( stage < 0 )
+            ? tr( "Final fit input" )
+            : tr( "Depth %1 solute -> task %2" ).arg( stage - 1 ).arg( ii + 1 );
+         add_sol_curves( trec.isolutes, QwtSymbol::Ellipse,
+                         colorall ? subgrid_color( ii ) : color_pool,
+                         true, true, tr( "Previous Depth Solutes" ),
+                         kind, 0.5, ( ii == 0 ), ii );
+      }
+   }
+
    if ( stage >= 0 )
    {  // Task solutes (the final fit's solutes are shown separately)
       QVector< US_Solute > tsols;
@@ -827,7 +863,8 @@ void US_GridView2D::plot_overlays()
 // Add curves for a set of solutes, sized by relative concentration
 void US_GridView2D::add_sol_curves( const QVector< US_Solute >& sols,
       QwtSymbol::Style style, const QColor& color, bool filled, bool scaled,
-      const QString& title, const QString& kind, double zval )
+      const QString& title, const QString& kind, double zval,
+      bool legend, int tag )
 {
    const int nbins = 5;
    int    nsols    = sols.size();
@@ -864,8 +901,6 @@ void US_GridView2D::add_sol_curves( const QVector< US_Solute >& sols,
       over_kind    << kind;
    }
 
-   bool legend     = true;
-
    for ( int bb = 0; bb < nbins; bb++ )
    {
       int np          = xarrs[ bb ].size();
@@ -878,7 +913,7 @@ void US_GridView2D::add_sol_curves( const QVector< US_Solute >& sols,
       QwtSymbol* symbol = new QwtSymbol( style, brush, QPen( color, 2 ),
                                          QSize( sz, sz ) );
       QwtPlotCurve* curve = point_curve( legend ? title
-                                   : QString( "%1_%2" ).arg( title ).arg( bb ),
+                        : QString( "%1_%2_%3" ).arg( title ).arg( tag ).arg( bb ),
                                          legend );
       curve->setSymbol ( symbol );
       curve->setSamples( xarrs[ bb ].data(), yarrs[ bb ].data(), np );
@@ -916,7 +951,7 @@ void US_GridView2D::iter_changed( double )
 void US_GridView2D::stage_changed( int )
 {
    fill_tasks();
-   plot_subgrid();
+   plot_points();          // Grid coloring depends on the stage
 }
 
 // Turn display of fit results on or off
@@ -938,7 +973,9 @@ void US_GridView2D::point_clicked( const QPointF& pos )
    int    minsgx   = -1;
    int    minptx   = -1;
 
-   for ( int ii = 0; ii < grid.size(); ii++ )
+   int    ngrid    = ck_origgrid->isChecked() ? grid.size() : 0;
+
+   for ( int ii = 0; ii < ngrid; ii++ )
    {
       for ( int jj = 0; jj < grid[ ii ].size(); jj++ )
       {
