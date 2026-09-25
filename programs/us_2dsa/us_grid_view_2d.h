@@ -8,6 +8,7 @@
 #include "us_help.h"
 #include "us_solute.h"
 #include "us_2dsa_process.h"
+#include "us_optimality_2d.h"
 #include "qwt_plot_curve.h"
 #include "qwt_symbol.h"
 #include "qwt_plot_picker.h"
@@ -41,6 +42,24 @@ class US_GridView2D : public US_WidgetsDialog
       //! \param records  Task records from the 2DSA processor
       void set_fit_records( const QList< US_2dsaTaskRecord >& );
 
+      //! \brief Show the results of a final fit optimality check
+      //! \param points   Results for all grid points
+      //! \param ssq      Residual sum of squares of the final fit
+      //! \param iter     Refinement iteration (0,...) of the final fit
+      //! \param summary  Text summary of the check
+      void set_optimality( const QList< US_OptimalityPoint >&, double, int,
+                           const QString& );
+
+      //! \brief Show a message about the optimality check (and clear it)
+      void set_optimality_message( const QString& );
+
+      //! \brief Show the optimality check progress
+      void set_optimality_progress( int, int );
+
+   signals:
+      //! \brief The user asked for an optimality check of the final fit
+      void optimality_requested( void );
+
    private:
       //! \brief Point values for all attribute types
       struct GridPt
@@ -58,6 +77,9 @@ class US_GridView2D : public US_WidgetsDialog
       QVector< US_Solute >          added_sols;  //!< Refinement-added
       QVector< US_Solute >          final_sols;  //!< Final fit solutes
       QList< QwtPlotCurve* >        point_curves; //!< Grid curves
+      QList< US_OptimalityPoint >   opt_pts;      //!< Optimality results
+      double                        opt_ssq;      //!< Fit sum of squares
+      int                           opt_iter;     //!< Checked iteration
       QList< QwtPlotCurve* >        over_curves;  //!< Overlay curves
       QwtPlotCurve*                 hl_curve;     //!< Highlight curve
       QVector< US_Solute >          over_sols;    //!< Overlaid solutes
@@ -94,6 +116,9 @@ class US_GridView2D : public US_WidgetsDialog
       QCheckBox*       ck_finalsols;
       QCheckBox*       ck_addsols;
       QCheckBox*       ck_poolsols;
+      QCheckBox*       ck_optmap;
+      QPushButton*     pb_optcheck;
+      QTextEdit*       te_optinfo;
       QCheckBox*       ck_origgrid;
 
       QColor           color_base;
@@ -115,6 +140,7 @@ class US_GridView2D : public US_WidgetsDialog
       void             fill_stages  ( void );
       void             fill_tasks   ( void );
       void             plot_overlays( void );
+      void             plot_optimality( void );
       void             refresh_all  ( void );
       void             add_sol_curves( const QVector< US_Solute >&,
                                        QwtSymbol::Style, const QColor&,

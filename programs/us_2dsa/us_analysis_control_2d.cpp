@@ -41,6 +41,7 @@ US_AnalysisControl2D::US_AnalysisControl2D( QList< SS_DATASET* >& dsets,
    dbg_level      = US_Settings::us_debug();
    grtype         = US_2dsaProcess::UGRID;
    baserss        = 0;
+   optiter        = -1;
    gridtimer      = new QTimer( this );
    gridtimer->setSingleShot( true );
    gridtimer->setInterval( 250 );
@@ -622,6 +623,8 @@ DbgLv(1) << "AnaC: edata" << edata;
    }
 
 DbgLv(1) << "AnaC:St:MEM (1)rssnow,proc" << US_Memory::rss_now() << processor;
+   stop_optimality();
+
    // Start a processing object if need be
    if ( processor == 0 )
       processor   = new US_2dsaProcess( dsets, this );
@@ -712,6 +715,7 @@ DbgLv(1) << "AC:SF:StopFit";
      if ( processor != 0 )
      {
 DbgLv(1) << "AC:SF: processor stopping...";
+        stop_optimality();
         fitrecs   = processor->task_records();   // Keep for grid display
         processor->disconnect();
         processor->stop_fit();
@@ -1592,6 +1596,8 @@ void US_AnalysisControl2D::show_grid()
    if ( gridview.isNull() )
    {
       gridview = new US_GridView2D( subgrids, desc, this );
+      connect( gridview, &US_GridView2D::optimality_requested,
+               this,     &US_AnalysisControl2D::check_optimality );
       update_grid_records();
       gridview->show();
    }
@@ -1636,4 +1642,106 @@ void US_AnalysisControl2D::update_grid_records()
       fitrecs   = processor->task_records();
 
    gridview->set_fit_records( fitrecs );
+}
+
+// Grid display asked for an optimality check of the last completed final fit
+void US_AnalysisControl2D::check_optimality()
+{
+   if ( gridview.isNull() )
+      return;
+
+   if ( processor == 0  ||  ! pb_plot->isEnabled() )
+   {
+      gridview->set_optimality_message(
+         tr( "The optimality check is available after a fit has completed." ) );
+      return;
+   }
+
+   stop_optimality();
+
+   // Grid:  the subgrid inputs of the first refinement iteration
+   QList< US_2dsaTaskRecord > recs = processor->task_records();
+   QMap< int, QVector< US_Solute > > subgrids;
+   int kfinal     = -1;
+
+   for ( int ii = 0; ii < recs.size(); ii++ )
+   {
+      const US_2dsaTaskRecord& trec = recs[ ii ];
+
+      if ( trec.iter == 0  &&  trec.depth == 0  &&  ! trec.final )
+         subgrids[ trec.taskx ] = trec.isolutes;
+
+      if ( trec.final  &&  trec.done  &&
+           ( kfinal < 0  ||  trec.iter >= recs[ kfinal ].iter ) )
+         kfinal         = ii;
+   }
+
+   if ( subgrids.isEmpty()  ||  kfinal < 0 )
+   {
+      gridview->set_optimality_message(
+         tr( "No completed final fit is available to check." ) );
+      return;
+   }
+
+   // Noise of the final fit (if any was fitted)
+   QVector< double > tinoise;
+   QVector< double > rinoise;
+   if ( ti_noise != 0  &&  ti_noise->count > 0 )
+      tinoise        = ti_noise->values;
+   if ( ri_noise != 0  &&  ri_noise->count > 0 )
+      rinoise        = ri_noise->values;
+
+   optiter        = recs[ kfinal ].iter;
+   optcheck       = new US_OptimalityCheck2D( dsets[ 0 ], subgrids.values(),
+                       recs[ kfinal ].csolutes, tinoise, rinoise,
+                       (int)ct_thrdcnt->value(), this );
+   connect( optcheck, &US_OptimalityCheck2D::progress,
+            this,     &US_AnalysisControl2D::optimality_progress );
+   connect( optcheck, &US_OptimalityCheck2D::finished,
+            this,     &US_AnalysisControl2D::optimality_done );
+DbgLv(1) << "AC:OPT: subgrids" << subgrids.size() << "finals"
+ << recs[ kfinal ].csolutes.size() << "iter" << optiter
+ << "noise ti ri" << tinoise.size() << rinoise.size();
+   optcheck->start();
+}
+
+// Forward optimality check progress to the grid display
+void US_AnalysisControl2D::optimality_progress( int done, int total )
+{
+   if ( ! gridview.isNull() )
+      gridview->set_optimality_progress( done, total );
+}
+
+// Deliver optimality check results to the grid display
+void US_AnalysisControl2D::optimality_done()
+{
+   if ( optcheck.isNull() )
+      return;
+
+   if ( ! gridview.isNull() )
+   {
+      if ( optcheck->error.isEmpty() )
+         gridview->set_optimality( optcheck->points, optcheck->ssq_fit,
+                                   optiter, optcheck->summary() );
+      else
+         gridview->set_optimality_message( optcheck->summary() );
+   }
+
+   optcheck->deleteLater();
+   optcheck       = 0;
+}
+
+// Stop and discard any running optimality check
+void US_AnalysisControl2D::stop_optimality()
+{
+   if ( ! optcheck.isNull() )
+   {
+      optcheck->disconnect();
+      optcheck->stop();
+      delete optcheck;
+      optcheck       = 0;
+
+      if ( ! gridview.isNull() )
+         gridview->set_optimality_message( tr( "Optimality check cancelled." ) );
+   }
 }

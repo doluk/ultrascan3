@@ -88,6 +88,8 @@ class US_AnalysisControl2D : public US_WidgetsDialog
       QPointer< US_GridView2D >        gridview;
       QTimer*                          gridtimer;
       QList< US_2dsaTaskRecord >       fitrecs;
+      QPointer< US_OptimalityCheck2D > optcheck;
+      int                              optiter;
 
       QWidget*                         parentw;
       US_2dsaProcess*                  processor;
@@ -185,6 +187,10 @@ class US_AnalysisControl2D : public US_WidgetsDialog
       void update_grid_view( void );
       void grid_records_changed( void );
       void update_grid_records ( void );
+      void check_optimality    ( void );
+      void optimality_progress ( int, int );
+      void optimality_done     ( void );
+      void stop_optimality     ( void );
       bool build_grid(       QList< QVector< US_Solute > >&, QString& );
       void help     ( void )
       { showHelp.show_help( "manual/2dsa/2dsa_analys.html" ); };

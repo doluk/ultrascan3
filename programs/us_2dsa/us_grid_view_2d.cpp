@@ -46,6 +46,17 @@ US_GridView2D::US_GridView2D( const QList< QVector< US_Solute > >& subgrids,
    QLabel* lb_task_rmsd    = us_label(  tr( "Task Fit RMSD:" ) );
    QLabel* lb_overlay      = us_banner( tr( "Solute Overlays" ) );
    QLabel* lb_nearest      = us_label(  tr( "Clicked:" ) );
+   QLabel* lb_optimal      = us_banner( tr( "Final Fit Optimality" ) );
+   pb_optcheck             = us_pushbutton( tr( "Check Final Fit" ) );
+   te_optinfo              = us_textedit();
+   us_setReadOnly( te_optinfo, true );
+   te_optinfo->setMinimumHeight( fontMetrics().lineSpacing() * 8 );
+   te_optinfo->setText( tr( "Tests whether any grid point could still lower "
+                            "the RMSD of the last completed final fit." ) );
+   QGridLayout* lo_optmap  =
+      us_checkbox( tr( "Improvement Map" ), ck_optmap, true );
+   opt_ssq                 = 0.0;
+   opt_iter                = -1;
    QLabel* lb_hint         = us_label(
       tr( "Click on a grid point to select its subgrid;"
           " the nearest point or solute is described above." ) );
@@ -131,6 +142,10 @@ US_GridView2D::US_GridView2D( const QList< QVector< US_Solute > >& subgrids,
    left->addWidget( lb_nearest,       row,   0, 1, 1 );
    left->addWidget( le_nearest,       row++, 1, 1, 3 );
    left->addWidget( lb_hint,          row++, 0, 1, 4 );
+   left->addWidget( lb_optimal,       row++, 0, 1, 4 );
+   left->addWidget( pb_optcheck,      row,   0, 1, 2 );
+   left->addLayout( lo_optmap,        row++, 2, 1, 2 );
+   left->addWidget( te_optinfo,       row++, 0, 1, 4 );
    QSpacerItem* spacer = new QSpacerItem( 0, 0, QSizePolicy::Minimum,
                                           QSizePolicy::Expanding );
    left->addItem  ( spacer,           row++, 0, 1, 4 );
@@ -257,6 +272,10 @@ US_GridView2D::US_GridView2D( const QList< QVector< US_Solute > >& subgrids,
             this,         &US_GridView2D::plot_subgrid );
    connect( pick,         QOverload< const QPointF& >::of( &QwtPlotPicker::selected ),
             this,         &US_GridView2D::point_clicked );
+   connect( pb_optcheck,  &QPushButton::clicked,
+            this,         &US_GridView2D::optimality_requested );
+   connect( ck_optmap,    &QCheckBox::toggled,
+            this,         &US_GridView2D::plot_subgrid );
    connect( pb_help,      &QPushButton::clicked,
             this,         &US_GridView2D::help );
    connect( pb_close,     &QPushButton::clicked,
@@ -789,6 +808,7 @@ void US_GridView2D::plot_subgrid()
    hl_curve->setSamples( xarr.data(), yarr.data(), np );
 
    plot_overlays();
+   plot_optimality();
    data_plot->replot();
 }
 
@@ -1054,4 +1074,100 @@ void US_GridView2D::point_clicked( const QPointF& pos )
       plot_subgrid();
    else
       ck_highlight->setChecked( true );      // Triggers plot_subgrid
+}
+
+// Show the results of a final fit optimality check
+void US_GridView2D::set_optimality( const QList< US_OptimalityPoint >& points,
+      double ssq, int iter, const QString& summary )
+{
+   opt_pts         = points;
+   opt_ssq         = ssq;
+   opt_iter        = iter;
+   pb_optcheck->setEnabled( true );
+   te_optinfo ->setText( tr( "Iteration %1:  " ).arg( iter + 1 ) + summary );
+   plot_subgrid();
+}
+
+// Show a message about the optimality check, clearing previous results
+void US_GridView2D::set_optimality_message( const QString& msg )
+{
+   opt_pts.clear();
+   opt_iter        = -1;
+   pb_optcheck->setEnabled( true );
+   te_optinfo ->setText( msg );
+   plot_subgrid();
+}
+
+// Show the optimality check progress
+void US_GridView2D::set_optimality_progress( int done, int total )
+{
+   pb_optcheck->setEnabled( done >= total );
+   te_optinfo ->setText( tr( "Checking all grid points against the final "
+                             "fit residual ...  %1 of %2 subgrids" )
+                         .arg( qMax( 0, done - 1 ) ).arg( total - 1 ) );
+}
+
+// Plot grid points that could lower the final fit residual, colored by how
+// much:  yellow (tiny) to red (at least 1% of the residual sum of squares)
+void US_GridView2D::plot_optimality()
+{
+   if ( opt_pts.isEmpty()  ||  ! ck_optmap->isChecked()  ||  ! show_fit()  ||
+        (int)ct_iter->value() - 1 != opt_iter  ||  opt_ssq <= 0.0 )
+      return;
+
+   const int    nbins   = 5;
+   const double limits[ nbins ] = { 1.0e-9, 1.0e-6, 1.0e-4, 1.0e-3, 1.0e-2 };
+   const QColor colors[ nbins ] = { QColor( 255, 255,   0 ),
+                                    QColor( 255, 200,   0 ),
+                                    QColor( 255, 140,   0 ),
+                                    QColor( 255,  70,   0 ),
+                                    QColor( 255,   0,   0 ) };
+   int    xattr    = x_axis->checkedId();
+   int    yattr    = y_axis->checkedId();
+   int    ss       = (int)ct_size->value();
+   QVector< QVector< double > > xarrs( nbins );
+   QVector< QVector< double > > yarrs( nbins );
+
+   for ( int ii = 0; ii < opt_pts.size(); ii++ )
+   {
+      double rgain    = opt_pts[ ii ].gain / opt_ssq;
+
+      if ( opt_pts[ ii ].insol  ||  rgain < limits[ 0 ] )
+         continue;
+
+      int bin         = 0;
+      while ( bin < nbins - 1  &&  rgain >= limits[ bin + 1 ] )
+         bin++;
+
+      GridPt gpt      = make_point( opt_pts[ ii ].sol );
+      xarrs[ bin ] << gpt.vals[ xattr ];
+      yarrs[ bin ] << gpt.vals[ yattr ];
+      over_sols    << opt_pts[ ii ].sol;
+      over_kind    << tr( "Estimated gain %1% of squared residual" )
+                      .arg( rgain * 100.0, 0, 'g', 3 );
+   }
+
+   bool legend     = true;
+
+   for ( int bb = 0; bb < nbins; bb++ )
+   {
+      int np          = xarrs[ bb ].size();
+
+      if ( np == 0 )
+         continue;
+
+      int sz          = ss + 3 + bb * 2;
+      QwtSymbol* symbol = new QwtSymbol( QwtSymbol::Rect,
+                                         QBrush( colors[ bb ] ),
+                                         QPen( colors[ bb ], 1 ),
+                                         QSize( sz, sz ) );
+      QwtPlotCurve* curve = point_curve( legend ? tr( "Could Improve Fit" )
+                                         : QString( "OPTIMAL_%1" ).arg( bb ),
+                                         legend );
+      curve->setSymbol ( symbol );
+      curve->setSamples( xarrs[ bb ].data(), yarrs[ bb ].data(), np );
+      curve->setZ      ( 2.5 );
+      over_curves << curve;
+      legend          = false;
+   }
 }
