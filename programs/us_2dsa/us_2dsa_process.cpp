@@ -1181,8 +1181,10 @@ DbgLv(1) << "THR_FIN:   (new)kcst ncto" <<  kcsteps << nctotal
          emit message_update( pmessage_head() +
             tr( "Computing depth 1 solutions and beyond ..." ), false );
 
+         // (Merge tasks at depth 2 or more may already be queued:  lowering
+         //  maxdepth below their depth would leave their results unmerged)
          int maxdepsv   = maxdepth;
-         maxdepth       = 1;
+         maxdepth       = qMax( maxdepth, 1 );
 
          if ( nextc <= maxtsols  &&  maxdepsv < 1 )
             maxdepth       = 0;  // handle no depth 1 jobs yet submitted
