@@ -1072,7 +1072,8 @@ int US_Math2::nnls( double* a, int a_dim1, int m, int n,
       }
 
       /* Secondary loop begins here */
-      while ( ++iter < itmax ) 
+      /* (at most itmax iterations, as in Lawson & Hanson) */
+      while ( ++iter <= itmax )
       {
          /* See if all new constrained coeffs are feasible; 
             if not, compute alpha */
@@ -1152,12 +1153,13 @@ int US_Math2::nnls( double* a, int a_dim1, int m, int n,
             /* be because of the way alpha was determined. If any are */
             /* infeasible it is due to round-off error. Any that are */
             /* nonpositive will be set to zero and moved from set P to set Z */
-            for( jj = 0; jj < nsetp; jj++ ) 
+            for( jj = 0, pfeas = 1; jj < nsetp; jj++ )
             {
                k = index[ jj ]; 
                if ( x[ k ] <= 0.0 ) 
-               {
+               {  /* Leave jj one below the position of k, as set above */
                   pfeas = 0; 
+                  jj--;
                   break;
                }
             }
@@ -1180,7 +1182,7 @@ int US_Math2::nnls( double* a, int a_dim1, int m, int n,
       } /* end of secondary loop */
 
       if ( iter > itmax ) 
-      {
+      {  /* Iteration limit:  quit with the last feasible X */
          ret = 1; 
          break;
       }

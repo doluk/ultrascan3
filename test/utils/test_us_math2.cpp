@@ -8,6 +8,7 @@
 #include <QTime>
 #include <cmath>
 #include <limits>
+#include <random>
 
 using namespace qt_matchers;
 
@@ -553,4 +554,72 @@ int reps = US_Math2::best_grid_reps(ngrid_s, ngrid_k);
 EXPECT_GT(reps, 0) << "Should return valid repetitions for equal values";
 EXPECT_EQ(ngrid_s % reps, 0) << "Final s grid should be divisible by reps";
 EXPECT_EQ(ngrid_k % reps, 0) << "Final k grid should be divisible by reps";
+}
+
+// ============================================================================
+// NNLS TESTS
+// ============================================================================
+
+TEST_F(TestUSMath2Unit, NnlsTiedCoefficientsReturnExactSolution) {
+    // Two passive coefficients reach zero in the same step (a tie), which
+    // runs the round-off branch that moves more coefficients to set Z
+    double amat[ 12 ] = { 1.0,  0.0,  0.0,   0.0,    // Column-major 4 x 3
+                          0.0,  1.0,  0.0,   0.0,
+                          0.25, 0.25, 0.125, 0.0 };
+    double bvec[ 4 ]  = { 1.0, 1.0, 1.0, 0.0 };
+    double xvec[ 3 ]  = { -1.0, -1.0, -1.0 };
+    double rnorm      = -1.0;
+
+    int ret = US_Math2::nnls( amat, 4, 4, 3, bvec, xvec, &rnorm );
+
+    EXPECT_EQ(ret, 0);
+    EXPECT_NEAR(xvec[ 0 ], 0.0, 1e-12);
+    EXPECT_NEAR(xvec[ 1 ], 0.0, 1e-12);
+    EXPECT_NEAR(xvec[ 2 ], 40.0 / 9.0, 1e-12);
+    EXPECT_NEAR(rnorm, sqrt( 2.0 ) / 3.0, 1e-12);
+}
+
+TEST_F(TestUSMath2Unit, NnlsSatisfiesKuhnTuckerConditions) {
+    // Random over- and underdetermined problems:  x >= 0, zero gradient
+    // for positive x, non-positive dual A^T (b - A x) for zero x
+    std::mt19937 gen( 20260928 );
+    std::uniform_real_distribution< double > uni( -1.0, 1.0 );
+
+    for ( int trial = 0; trial < 300; trial++ ) {
+        int mrows = 2 + trial % 11;
+        int ncols = 1 + ( trial / 11 ) % 10;
+        QVector< double > amat( mrows * ncols );
+        QVector< double > bvec( mrows );
+        for ( double& val : amat ) val = uni( gen );
+        for ( double& val : bvec ) val = uni( gen );
+        QVector< double > awork = amat;   // nnls overwrites A and b
+        QVector< double > bwork = bvec;
+        QVector< double > xvec( ncols, -1.0 );
+        double rnorm = -1.0;
+
+        ASSERT_EQ(US_Math2::nnls( awork.data(), mrows, mrows, ncols,
+                                  bwork.data(), xvec.data(), &rnorm ), 0)
+            << "trial " << trial;
+
+        QVector< double > resid = bvec;   // b - A x
+        for ( int jj = 0; jj < ncols; jj++ )
+            for ( int ii = 0; ii < mrows; ii++ )
+                resid[ ii ] -= amat[ jj * mrows + ii ] * xvec[ jj ];
+
+        double rsumsq = 0.0;
+        for ( double val : resid ) rsumsq += val * val;
+        EXPECT_NEAR(rnorm, sqrt( rsumsq ), 1e-10) << "trial " << trial;
+
+        for ( int jj = 0; jj < ncols; jj++ ) {
+            double dual = 0.0;
+            for ( int ii = 0; ii < mrows; ii++ )
+                dual += amat[ jj * mrows + ii ] * resid[ ii ];
+
+            EXPECT_GE(xvec[ jj ], 0.0) << "trial " << trial << " col " << jj;
+            if ( xvec[ jj ] > 0.0 )
+                EXPECT_NEAR(dual, 0.0, 1e-9) << "trial " << trial << " col " << jj;
+            else
+                EXPECT_LE(dual, 1e-9) << "trial " << trial << " col " << jj;
+        }
+    }
 }
