@@ -83,6 +83,7 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
    in_gsm       = false;
    min_experiment_size = def_experiment_size;
    ord_merge           = false;
+   uniq_sols           = false;
    pool_set            = 0;
    pool_lim            = 0;
    QString tarfile;
