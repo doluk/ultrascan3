@@ -488,6 +488,70 @@ TEST_F(TestUSSolveSimCalcResiduals, RemovesTiAndRiNoise) {
     EXPECT_LT(maxDiff( fittedConc( input.solutes, sim.solutes ), conc ), 1e-8);
 }
 
+TEST_F(TestUSSolveSimCalcResiduals, ConstantOffsetIsAbsorbedByFittedNoise) {
+    // A constant baseline offset is TI noise and RI noise at once:  with TI,
+    // RI or TI+RI noise fitted, it must not change the concentrations or the
+    // residuals, only shift the fitted noise (for TI+RI, their sum) by itself
+    US_SolveSim::Simulation input;
+    for ( double sval : { 2.0, 4.0, 6.0 } )
+        for ( double kval : { 1.2, 2.0 } )
+            input.solutes << US_Solute( sval * 1.0e-13, kval );
+    std::sort( input.solutes.begin(), input.solutes.end() );
+
+    QVector< double > amatrix = basis( input );
+    ASSERT_EQ(amatrix.size(), input.solutes.size() * NTOTAL);
+
+    // Random noise on top of TI and RI noise, so that the fit is not exact
+    QVector< double > conc = { 0.3, 0.0, 0.5, 0.0, 0.0, 0.2 };
+    QVector< double > tinoi, rinoi;
+    makeNoise( tinoi, rinoi );
+    setData( amatrix, conc, tinoi, rinoi );
+    std::mt19937 gen( 17 );
+    std::normal_distribution< double > gauss( 0.0, 0.003 );
+    for ( int ss = 0; ss < NSCANS; ss++ )
+        for ( int rr = 0; rr < NPOINTS; rr++ )
+            dset.run_data.scanData[ ss ].rvalues[ rr ] += gauss( gen );
+    const US_DataIO::EditedData base = dset.run_data;
+
+    for ( int noisflag = 1; noisflag <= 3; noisflag++ ) {
+        SCOPED_TRACE( noisflag );
+        dset.run_data = base;
+        US_SolveSim::Simulation sim0 = fit( input, noisflag, 0.0 );
+        QVector< double > conc0 = fittedConc( input.solutes, sim0.solutes );
+
+        for ( double offset : { 0.05, -0.05, 0.5 } ) {
+            SCOPED_TRACE( offset );
+            dset.run_data = base;
+            for ( int ss = 0; ss < NSCANS; ss++ )
+                for ( int rr = 0; rr < NPOINTS; rr++ )
+                    dset.run_data.scanData[ ss ].rvalues[ rr ] += offset;
+
+            US_SolveSim::Simulation sim = fit( input, noisflag, 0.0 );
+
+            EXPECT_NEAR(sim.variance, sim0.variance, 1e-10 * sim0.variance);
+            EXPECT_LT(maxDiff( fittedConc( input.solutes, sim.solutes ), conc0 ), 1e-10);
+
+            if ( noisflag & 1 ) {
+                ASSERT_EQ(sim.ti_noise.size(), NPOINTS);
+            }
+            if ( noisflag & 2 ) {
+                ASSERT_EQ(sim.ri_noise.size(), NSCANS);
+            }
+            double nshift = 0.0;
+            for ( int ss = 0; ss < NSCANS; ss++ )
+                for ( int rr = 0; rr < NPOINTS; rr++ ) {
+                    double dnoise = 0.0;
+                    if ( noisflag & 1 )
+                        dnoise += sim.ti_noise[ rr ] - sim0.ti_noise[ rr ];
+                    if ( noisflag & 2 )
+                        dnoise += sim.ri_noise[ ss ] - sim0.ri_noise[ ss ];
+                    nshift = qMax( nshift, fabs( dnoise - offset ) );
+                }
+            EXPECT_LT(nshift, 1e-10);
+        }
+    }
+}
+
 TEST_F(TestUSSolveSimCalcResiduals, TikhonovWithNoiseKeepsColumnsAligned) {
     // Regularization rows lengthen each A column; the noise removal must
     // step over them (a small alpha barely changes the exact fit)
