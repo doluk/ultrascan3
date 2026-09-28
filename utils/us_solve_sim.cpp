@@ -24,8 +24,21 @@
 // whenever constraints are active.  With G = L L' (Cholesky) and L d = g,
 // NNLS on (L', d) minimizes x'G x - 2 x'g + const, the least-squares
 // objective.  L is stored row-major, which is L' in the column-major layout
-// that US_Math2::nnls expects.  A tiny ridge keeps the factorization defined
-// when columns are (nearly) linearly dependent.
+// that US_Math2::nnls expects.
+//
+// G is often numerically singular (neighboring grid points have nearly
+// identical simulations, and noise elimination removes most of what tells
+// them apart), and rounding can make it slightly indefinite.  A ridge of
+// 1e-9 of each diagonal element (plus 1e-14 of the mean diagonal) keeps the
+// factorization defined:  it exceeds the rounding errors of the pivots by
+// orders of magnitude and changes the objective negligibly.  Where the
+// remaining pivot of a column does not exceed its ridge, the column is (to
+// that precision) a combination of the columns before it:  its pivot is set
+// to the square root of the ridge and the elements below it to zero.
+// Dividing the (rounding-sized) remainders by such a pivot instead would
+// amplify rounding errors from one row to the next until they overflow.
+// Should the result still not be finite, NNLS is applied to (G, g) as
+// without this option.
 // Used with the debug option "SolveSim-ExactNoise".
 static void nnls_normal_eqs( const QVector< double >& G,
                              const QVector< double >& g, int n, double* x )
@@ -33,33 +46,58 @@ static void nnls_normal_eqs( const QVector< double >& G,
    double trace = 0.0;
    for ( int ii = 0; ii < n; ii++ )
       trace += G[ ii * n + ii ];
-   double ridge = 1.0e-12 * qMax( trace / qMax( n, 1 ), 1.0e-300 );
+   double rfloor = 1.0e-14 * qMax( trace / qMax( n, 1 ), 1.0e-300 );
    QVector< double > L( n * n, 0.0 );
+   QVector< char >   dep( n, 0 );    // flags of dependent columns
 
    for ( int ii = 0; ii < n; ii++ )
    {
-      for ( int jj = 0; jj <= ii; jj++ )
+      for ( int jj = 0; jj < ii; jj++ )
       {
+         if ( dep[ jj ] )
+            continue;                // L[ ii ][ jj ] stays zero
          double sum = G[ ii * n + jj ];
          for ( int kk = 0; kk < jj; kk++ )
             sum -= L[ ii * n + kk ] * L[ jj * n + kk ];
-         if ( ii == jj )
-            L[ ii * n + ii ] = sqrt( qMax( sum + ridge, ridge ) );
-         else
-            L[ ii * n + jj ] = sum / L[ jj * n + jj ];
+         L[ ii * n + jj ] = sum / L[ jj * n + jj ];
+      }
+
+      double piv   = G[ ii * n + ii ];
+      for ( int kk = 0; kk < ii; kk++ )
+         piv -= L[ ii * n + kk ] * L[ ii * n + kk ];
+      double ridge = 1.0e-9 * qMax( G[ ii * n + ii ], 0.0 ) + rfloor;
+
+      if ( piv > ridge )
+         L[ ii * n + ii ] = sqrt( piv + ridge );
+      else
+      {  // Dependent column
+         L[ ii * n + ii ] = sqrt( ridge );
+         dep[ ii ]        = 1;
       }
    }
 
    QVector< double > d( n, 0.0 );
+   bool finite  = true;
    for ( int ii = 0; ii < n; ii++ )
    {
       double sum = g[ ii ];
       for ( int kk = 0; kk < ii; kk++ )
          sum -= L[ ii * n + kk ] * d[ kk ];
       d[ ii ] = sum / L[ ii * n + ii ];
+      finite  = finite  &&  qIsFinite( d[ ii ] );
    }
 
-   US_Math2::nnls( L.data(), n, n, n, d.data(), x );
+   if ( finite )
+      US_Math2::nnls( L.data(), n, n, n, d.data(), x );
+
+   else
+   {
+      qDebug() << "nnls_normal_eqs: factorization not finite, n" << n
+               << "- using NNLS on the normal equations";
+      QVector< double > Gw = G;
+      QVector< double > gw = g;
+      US_Math2::nnls( Gw.data(), n, n, n, gw.data(), x );
+   }
 }
 
 
@@ -254,7 +292,7 @@ if(thrnrank<2) DbgLv(1) << "CR: NORMCUT=" << norm_cut;
    // the least-squares objective (see nnls_normal_eqs).  Default:  the
    // original calculation (per-scan means are not removed from the
    // concentration solve; NNLS is applied to the normal equations directly).
-   bool exact_noise = dbgtxt.contains( "SolveSim-ExactNoise" );
+   bool exact_noise = US_Settings::debug_match( "SolveSim-ExactNoise" );
 
 //   double norm_cs   = norm_cut;
 
