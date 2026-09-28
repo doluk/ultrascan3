@@ -17,6 +17,51 @@
 // Define the default norm cutoff value
 #define _NORM_CUTOFF_   1.00
 
+// Solve  min | Pi (A x - b) |  for x >= 0, given the normal equations
+// G = A' Pi' Pi A and g = A' Pi' Pi b (the "small_a", "small_b" of the noise
+// calculations).  Lawson-Hanson NNLS applied to (G, g) as a design matrix
+// minimizes | G x - g |, which differs from the least-squares problem
+// whenever constraints are active.  With G = L L' (Cholesky) and L d = g,
+// NNLS on (L', d) minimizes x'G x - 2 x'g + const, the least-squares
+// objective.  L is stored row-major, which is L' in the column-major layout
+// that US_Math2::nnls expects.  A tiny ridge keeps the factorization defined
+// when columns are (nearly) linearly dependent.
+// Used with the debug option "SolveSim-ExactNoise".
+static void nnls_normal_eqs( const QVector< double >& G,
+                             const QVector< double >& g, int n, double* x )
+{
+   double trace = 0.0;
+   for ( int ii = 0; ii < n; ii++ )
+      trace += G[ ii * n + ii ];
+   double ridge = 1.0e-12 * qMax( trace / qMax( n, 1 ), 1.0e-300 );
+   QVector< double > L( n * n, 0.0 );
+
+   for ( int ii = 0; ii < n; ii++ )
+   {
+      for ( int jj = 0; jj <= ii; jj++ )
+      {
+         double sum = G[ ii * n + jj ];
+         for ( int kk = 0; kk < jj; kk++ )
+            sum -= L[ ii * n + kk ] * L[ jj * n + kk ];
+         if ( ii == jj )
+            L[ ii * n + ii ] = sqrt( qMax( sum + ridge, ridge ) );
+         else
+            L[ ii * n + jj ] = sum / L[ jj * n + jj ];
+      }
+   }
+
+   QVector< double > d( n, 0.0 );
+   for ( int ii = 0; ii < n; ii++ )
+   {
+      double sum = g[ ii ];
+      for ( int kk = 0; kk < ii; kk++ )
+         sum -= L[ ii * n + kk ] * d[ kk ];
+      d[ ii ] = sum / L[ ii * n + ii ];
+   }
+
+   US_Math2::nnls( L.data(), n, n, n, d.data(), x );
+}
+
 
 double zerothr = 0.020;    //!< zero threshold OD value
 double linethr = 0.050;    //!< linear threshold OD value
@@ -201,6 +246,15 @@ if(thrnrank<2) DbgLv(1) << "CR:   NORMCUT  ii" << ii << "dbgtii" << dbgtxt[ii]
  << "norm_cut" << norm_cut;
    }
 if(thrnrank<2) DbgLv(1) << "CR: NORMCUT=" << norm_cut;
+
+   // Debug option "SolveSim-ExactNoise":  compute concentrations with TI and
+   // RI noise eliminated exactly.  With both noise types the concentration
+   // solve then uses doubly centered data and simulations (per-radius and
+   // per-scan means removed), and the NNLS of the normal equations minimizes
+   // the least-squares objective (see nnls_normal_eqs).  Default:  the
+   // original calculation (per-scan means are not removed from the
+   // concentration solve; NNLS is applied to the normal equations directly).
+   bool exact_noise = dbgtxt.contains( "SolveSim-ExactNoise" );
 
 //   double norm_cs   = norm_cut;
 
@@ -1288,12 +1342,52 @@ DbgLv(1)<<"subha_nnls_a size: " << nnls_a.size() << nscans << npoints << "nsolut
 
       // Set up small_a, small_b for alternate nnls
 DbgLv(1) << "  set SMALL_A+B";
-      ti_small_a_and_b( nsolutes, ntotal, ntinois, small_a, small_b, a_bar, L_bars, nnls_a, nnls_b );
+      // With exact noise elimination and RI noise, also remove the per-scan
+      // means (a_tilde, L_tildes), so that the vectors of the solve are
+      // b - a_tilde - a_bar and A - L_tilde - L_bar (doubly centered)
+      QVector< double > nnls_ap;
+      QVector< double > nnls_bp;
+      const QVector< double >* pnnls_a = &nnls_a;
+      const QVector< double >* pnnls_b = &nnls_b;
+
+      if ( exact_noise  &&  calc_ri )
+      {  // (dimensions as in compute_a_tilde and compute_L_tildes)
+         US_DataIO::EditedData* edata = &data_sets[ d_offs ]->run_data;
+         int npts       = edata->pointCount();
+         int nscn       = edata->scanCount();
+         nnls_ap        = nnls_a;
+         nnls_bp        = nnls_b;
+
+         for ( int ss = 0; ss < nscn; ss++ )
+            for ( int rr = 0; rr < npts; rr++ )
+               nnls_bp[ ss * npts + rr ] -= a_tilde[ ss ];
+
+         for ( int cc = 0; cc < nsolutes; cc++ )
+         {
+            for ( int ss = 0; ss < nscn; ss++ )
+            {
+               double ltil    = L_tildes[ cc * nrinois + ss ];
+               int    ja      = cc * ntotal + ss * npts;
+               for ( int rr = 0; rr < npts; rr++ )
+                  nnls_ap[ ja + rr ] -= ltil;
+            }
+         }
+
+         pnnls_a        = &nnls_ap;
+         pnnls_b        = &nnls_bp;
+      }
+
+      ti_small_a_and_b( nsolutes, ntotal, ntinois, small_a, small_b, a_bar, L_bars, *pnnls_a, *pnnls_b );
+      nnls_ap.clear();
+      nnls_bp.clear();
       if ( abort ) return;
 
       // Do NNLS to compute concentrations (nnls_x)
 DbgLv(1) << "  noise small NNLS";
-      US_Math2::nnls( small_a.data(), nsolutes, nsolutes, nsolutes, small_b.data(), nnls_x.data() );
+      if ( exact_noise )
+         nnls_normal_eqs( small_a, small_b, nsolutes, nnls_x.data() );
+      else
+         US_Math2::nnls( small_a.data(), nsolutes, nsolutes, nsolutes, small_b.data(), nnls_x.data() );
 
       if ( abort ) return;
 
@@ -1346,8 +1440,11 @@ DbgLv(1) << "  noise small NNLS";
                         small_a, small_b, a_tilde, L_tildes, nnls_a, nnls_b );
       if ( abort ) return;
 
-      US_Math2::nnls( small_a.data(), nsolutes, nsolutes, nsolutes,
-                      small_b.data(), nnls_x.data() );
+      if ( exact_noise )
+         nnls_normal_eqs( small_a, small_b, nsolutes, nnls_x.data() );
+      else
+         US_Math2::nnls( small_a.data(), nsolutes, nsolutes, nsolutes,
+                         small_b.data(), nnls_x.data() );
       if ( abort ) return;
 
       // This is sum( concentration * Lamm ) for the models after NNLS

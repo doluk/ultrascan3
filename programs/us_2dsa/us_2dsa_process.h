@@ -223,6 +223,7 @@ private:
       bool       ff_meni;      // fit flag: fit-meniscus (omeni or menbot)
       bool       ff_bott;      // fit flag: fit-bottom (obott or menbot)
       bool       ord_merge;    // debug flag: merge results in task order
+      bool       uniq_sols;    // debug flag: no duplicate solutes in merges
       int        pool_set;     // debug merge pool size (0 for default)
       int        pool_lim;     // working merge pool size override
 

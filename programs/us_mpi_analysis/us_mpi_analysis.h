@@ -263,6 +263,7 @@ class US_MPI_Analysis : public QObject
 
         // Debug controls of 2DSA result merging
         bool ord_merge;                  //!< Merge results in task order
+        bool uniq_sols;                  //!< No duplicate solutes in merges
         int  pool_set;                   //!< Debug merge pool size (0=none)
         int  pool_lim;                   //!< Working merge pool size override
         QVector< int > worker_taskx;     //!< Task index of each worker's job
@@ -411,6 +412,7 @@ class US_MPI_Analysis : public QObject
         void     process_ordered   ( int, int, QVector< US_Solute >& );
         void     reset_merge       ( void );
         int      merge_limit       ( void );
+        void     unique_merge_solutes( QVector< US_Solute >& );
         void     dset_matrices     ( int, int*,
                                      QVector< double >&, QVector< double >&,
                                      QVector< int >& );

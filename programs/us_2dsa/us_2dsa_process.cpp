@@ -128,6 +128,12 @@ DbgLv(1) << "2P(2dsaProc): start_fit()";
    //  "2DSA-OrderedMerge"   merge results in task order, not arrival order;
    //  "2DSA-MergePool=N"    use N as the maximum solutes of a merge task.
    ord_merge   = US_Settings::debug_match( "2DSA-OrderedMerge" );
+
+   // With the debug setting "SolveSim-ExactNoise" (exact TI/RI noise
+   // elimination in US_SolveSim), merge and final tasks drop duplicate
+   // solutes:  after refinement iterations every subgrid returns the same
+   // added solutes, and the exact solve keeps duplicates rather than one.
+   uniq_sols   = US_Settings::debug_match( "SolveSim-ExactNoise" );
    pool_set    = qMax( 0, US_Settings::debug_value( "2DSA-MergePool" ).toInt() );
    reset_merge();
 
@@ -509,8 +515,13 @@ DbgLv(1) << "2P:FC:  szSoluC" << c_solutes[ depth ].size();
    for ( int ii = 0; ii < c_solutes[ depth ].size(); ii++ )
    {
       if ( c_solutes[ depth ][ ii ].c > 0.0 )
+      {
+         if ( uniq_sols  &&  ! wtask.isolutes.isEmpty()  &&
+              c_solutes[ depth ][ ii ] == wtask.isolutes.last() )
+            continue;       // skip a duplicate solute (sorted input)
+
          wtask.isolutes << c_solutes[ depth ][ ii ];
-         
+      }
    }
 //DbgLv(1) << "norm_size_final_compute" << wtask.isolutes.size() << wtask.Anorm.size();
 
@@ -1395,13 +1406,21 @@ void US_2dsaProcess::queue_task( WorkPacket2D& wtask, double llss, double llsk,
    wtask.simcache = simcache;      // simulation cache (or 0)
    wtask.isolutes = isolutes;      // solutes for calc_residuals task
 
+   if ( uniq_sols  &&  depth > 0 )
+   {  // Merge task:  drop duplicate solutes
+      std::sort( wtask.isolutes.begin(), wtask.isolutes.end() );
+      wtask.isolutes.erase( std::unique( wtask.isolutes.begin(),
+                                         wtask.isolutes.end() ),
+                            wtask.isolutes.end() );
+   }
+
    if ( jgrefine == (-2) )
       wtask.typeref  = jgrefine;   // mark if model-ratio grid refinement
 
    wtask.csolutes.clear();         // clear output vectors
    wtask.ti_noise.clear();
    wtask.ri_noise.clear();
-   int nrisols    = isolutes.size();
+   int nrisols    = wtask.isolutes.size();
    ntisols       += nrisols;
 if ( taskx < 9 || taskx > (nsubgrid-4) )
 DbgLv(1) << "QT: taskx" << taskx << " isolutes size tot" << nrisols << ntisols;

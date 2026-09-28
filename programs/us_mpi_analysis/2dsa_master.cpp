@@ -448,6 +448,12 @@ void US_MPI_Analysis::fill_queue( void )
    //  "2DSA-OrderedMerge"   merge results in task order, not arrival order;
    //  "2DSA-MergePool=N"    use N as the maximum solutes of a merge task.
    ord_merge           = US_Settings::debug_match( "2DSA-OrderedMerge" );
+
+   // With the debug setting "SolveSim-ExactNoise" (exact TI/RI noise
+   // elimination in US_SolveSim), merge jobs drop duplicate solutes:  after
+   // refinement iterations every subgrid returns the same added solutes, and
+   // the exact solve keeps duplicates rather than one.
+   uniq_sols           = US_Settings::debug_match( "SolveSim-ExactNoise" );
    pool_set            = qMax( 0, US_Settings::debug_value( "2DSA-MergePool" )
                                   .toInt() );
    worker_taskx.fill( -1, gcores_count );
@@ -1148,6 +1154,7 @@ DbgLv(1) << "Mast:    process_solutes:      worker" << worker
       job.mpi_job.dataset_offset = current_dataset;
       job.mpi_job.dataset_count  = datasets_to_process;
       std::sort( job.solutes.begin(), job.solutes.end() );
+      unique_merge_solutes( job.solutes );
       add_to_queue( job );
 
 DbgLv(1) << "Mast:   queue NEW DEPTH sols" << job.solutes.size() << " d="
@@ -1214,6 +1221,7 @@ DbgLv(1) << "Mast:    NEW max_exp_size" << max_experiment_size
          job.mpi_job.dataset_count  = datasets_to_process;
          max_depth                  = qMax( next_d, max_depth );
          std::sort( job.solutes.begin(), job.solutes.end() );
+         unique_merge_solutes( job.solutes );
          add_to_queue( job );
 DbgLv(1) << "Mast:   queue REMAINDER" << remainder << " d=" << d+1;
 
@@ -1253,6 +1261,7 @@ DbgLv(1) << "Mast:   queue REMAINDER" << remainder << " d=" << d+1;
                            ? data_sets[ current_dataset ]->run_data.bottom
                            : bottom_values  [ bottom_run   ];
       std::sort( job.solutes.begin(), job.solutes.end() );
+      unique_merge_solutes( job.solutes );
 DbgLv(1) << "Mast:   queue LAST ns=" << job.solutes.size() << "  d=" << depth+1
  << max_depth << "  nsvs=" << simulation_values.solutes.size();
 
@@ -1329,6 +1338,15 @@ void US_MPI_Analysis::cache_result( Result& result )
    return;
 }
 
+
+// Drop duplicate solutes from a sorted merge-job solute vector, if the
+// debug setting "SolveSim-ExactNoise" is in effect
+void US_MPI_Analysis::unique_merge_solutes( QVector< US_Solute >& solutes )
+{
+   if ( uniq_sols )
+      solutes.erase( std::unique( solutes.begin(), solutes.end() ),
+                     solutes.end() );
+}
 
 // Maximum solutes of a merge job:  debug override or maximum experiment size
 int US_MPI_Analysis::merge_limit( void )
@@ -1425,6 +1443,7 @@ DbgLv(1) << "Mast: ORDMERGE: depth" << depth << "taskx" << taskx
       job.mpi_job.dataset_count  = datasets_to_process;
       job.taskx                  = njobs++;
       std::sort( job.solutes.begin(), job.solutes.end() );
+      unique_merge_solutes( job.solutes );
       add_to_queue( job );
    }
 DbgLv(1) << "Mast: ORDMERGE: depth" << depth << "results" << results.size()
