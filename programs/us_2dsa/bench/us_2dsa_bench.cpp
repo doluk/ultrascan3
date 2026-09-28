@@ -33,7 +33,10 @@
 //! that fits do not depend on the order in which threads finish; set the
 //! environment variable BENCH_ARRIVAL=1 to merge in arrival order instead.
 //! BENCH_DEBUG adds further debug settings (comma-separated, for example
-//! "2DSA-MergePool=512").
+//! "2DSA-MergePool=512" or "SolveSim-ExactNoise").  BENCH_NOISE selects the
+//! fitted noise (0 none, 1 TI, 2 RI, 3 TI+RI; default 3), and BENCH_TI_FILE
+//! names the output of an earlier fit whose TI noise is subtracted from the
+//! data before fitting.
 
 #include <QApplication>
 #include <QtCore>
@@ -94,7 +97,8 @@ US_Model::SimulationComponent component( double s, double k, double c )
    US_Model::SimulationComponent sc;
    sc.s      = s * 1.0e-13;
    sc.f_f0   = k;
-   sc.vbar20 = VBAR;
+   sc.vbar20 = qgetenv( "BENCH_VBAR" ).isEmpty() ? VBAR     // as the data set
+             : qgetenv( "BENCH_VBAR" ).toDouble();
    sc.D      = 0.0;
    sc.mw     = 0.0;
    sc.f      = 0.0;
@@ -272,12 +276,18 @@ bool load_experiment( const QString& rundir, US_SolveSim::DataSet& dset,
    dset.simparams.speedstepsFromSSprof();
    dset.tmst_file          = tmst;
 
-   dset.viscosity          = VISC_20W;
-   dset.density            = DENS_20W;
+   // Buffer and vbar:  water and VBAR unless BENCH_DENSITY, BENCH_VISCOSITY
+   // and BENCH_VBAR are given (for real data)
+   double vbar             = qgetenv( "BENCH_VBAR" ).isEmpty() ? VBAR
+                           : qgetenv( "BENCH_VBAR" ).toDouble();
+   dset.viscosity          = qgetenv( "BENCH_VISCOSITY" ).isEmpty() ? VISC_20W
+                           : qgetenv( "BENCH_VISCOSITY" ).toDouble();
+   dset.density            = qgetenv( "BENCH_DENSITY" ).isEmpty() ? DENS_20W
+                           : qgetenv( "BENCH_DENSITY" ).toDouble();
    dset.compress           = 0.0;
    dset.temperature        = edata->average_temperature();
-   dset.vbar20             = VBAR;
-   dset.vbartb             = US_Math2::adjust_vbar20( VBAR, dset.temperature );
+   dset.vbar20             = vbar;
+   dset.vbartb             = US_Math2::adjust_vbar20( vbar, dset.temperature );
    dset.manual             = false;
    US_Math2::SolutionData sd;
    sd.density              = dset.density;
@@ -486,13 +496,52 @@ int mode_fit( const QStringList& args )
    int nscan  = dset.run_data.scanCount();
    int npts   = dset.run_data.pointCount();
 
+   // Noise flag (BENCH_NOISE: 0 none, 1 TI, 2 RI, 3 TI+RI; default 3)
+   int noif   = qgetenv( "BENCH_NOISE" ).isEmpty() ? 3
+              : qgetenv( "BENCH_NOISE" ).toInt();
+
+   // BENCH_TI_FILE:  output of an earlier fit whose TI noise is subtracted
+   // from the data first (as when loading data with a TI noise correction)
+   QString tifile = QString::fromLocal8Bit( qgetenv( "BENCH_TI_FILE" ) );
+   if ( ! tifile.isEmpty() )
+   {
+      QFile fi( tifile );
+      if ( ! fi.open( QIODevice::ReadOnly ) )
+      {  fprintf( stderr, "cannot open %s\n", qPrintable( tifile ) );  return 2; }
+      QJsonArray ti = QJsonDocument::fromJson( fi.readAll() ).object()
+                      .value( "ti_noise" ).toArray();
+      if ( ti.size() != npts )
+      {  fprintf( stderr, "TI noise has %d values, data %d points\n",
+                  (int)ti.size(), npts );  return 2; }
+      for ( int ss = 0; ss < nscan; ss++ )
+         for ( int rr = 0; rr < npts; rr++ )
+            dset.run_data.setValue( ss, rr, dset.run_data.value( ss, rr )
+                                            - ti[ rr ].toDouble() );
+   }
+
    int  jgref = -1;
    int  nss = 64, nks = 64;
+   double slo = 1.0, sup = 10.0, klo = 1.0, kup = 4.0;
    if ( gridarg.startsWith( "ugrid:" ) )
-   {
+   {  // ugrid:N:R  (N x N points over s 1-10, f/f0 1-4; R repetitions) or
+      // ugrid:slo:sup:ns:klo:kup:nk  (repetitions and point counts as
+      // chosen by us_2dsa, US_Math2::best_grid_reps)
       QStringList f = gridarg.split( ':' );
-      nss = nks = f[ 1 ].toInt();
-      jgref = f[ 2 ].toInt();
+      if ( f.size() >= 7 )
+      {
+         slo   = f[ 1 ].toDouble();  sup = f[ 2 ].toDouble();  nss = f[ 3 ].toInt();
+         klo   = f[ 4 ].toDouble();  kup = f[ 5 ].toDouble();  nks = f[ 6 ].toInt();
+         jgref = US_Math2::best_grid_reps( nss, nks );
+         nss   = ( ( nss + jgref / 2 ) / jgref ) * jgref;
+         nks   = ( ( nks + jgref / 2 ) / jgref ) * jgref;
+         fprintf( stderr, "grid: s %g-%g x%d, f/f0 %g-%g x%d, %d repetitions\n",
+                  slo, sup, nss, klo, kup, nks, jgref );
+      }
+      else
+      {
+         nss = nks = f[ 1 ].toInt();
+         jgref = f[ 2 ].toInt();
+      }
    }
    else if ( ! grid_model( gridarg, nsub, dset.model, err ) )
    {
@@ -514,7 +563,7 @@ int mode_fit( const QStringList& args )
    QElapsedTimer timer;
    timer.start();
    proc->set_iters( mxiter, 0, 0, 1.0e-12, 0.0, 0.0, jgref, 0 );
-   proc->start_fit( 1.0, 10.0, nss, 1.0, 4.0, nks, jgref, nthr, 3 );
+   proc->start_fit( slo, sup, nss, klo, kup, nks, jgref, nthr, noif );
    QCoreApplication::exec();
    qint64 wall_ms = timer.elapsed();
    getrusage( RUSAGE_SELF, &ru1 );
@@ -539,6 +588,24 @@ int mode_fit( const QStringList& args )
    for ( double x : dsig ) err_proj += x * x;
    double ncell = (double)( nscan * npts );
 
+   // Residual structure:  lag-1 autocorrelation along radius and time, and
+   // the RMS of residual scan means and radius means
+   double acr = 0.0, act = 0.0, rsum = 0.0;
+   QVector< double > rmean_s( nscan, 0.0 ), rmean_r( npts, 0.0 );
+   for ( int ss = 0; ss < nscan; ss++ )
+      for ( int rr = 0; rr < npts; rr++ )
+      {
+         double rv    = rdata.value( ss, rr );
+         rsum        += rv * rv;
+         rmean_s[ ss ] += rv / npts;
+         rmean_r[ rr ] += rv / nscan;
+         if ( rr + 1 < npts )  acr += rv * rdata.value( ss, rr + 1 );
+         if ( ss + 1 < nscan ) act += rv * rdata.value( ss + 1, rr );
+      }
+   double rms_smean = 0.0, rms_rmean = 0.0;
+   for ( double x : rmean_s ) rms_smean += x * x;
+   for ( double x : rmean_r ) rms_rmean += x * x;
+
    QJsonObject jo;
    jo[ "rundir" ]    = rundir;
    jo[ "grid" ]      = gridarg;
@@ -553,6 +620,17 @@ int mode_fit( const QStringList& args )
    jo[ "npoints" ]   = npts;
    jo[ "rmsd" ]      = sqrt( vari / ncell );
    jo[ "signal_err_rmsd" ] = sqrt( err_proj / ncell );
+   jo[ "noise_flag" ]  = noif;
+   jo[ "ti_file" ]     = tifile;
+   jo[ "resid_ac_radius" ] = rsum > 0.0 ? acr / rsum : 0.0;
+   jo[ "resid_ac_time" ]   = rsum > 0.0 ? act / rsum : 0.0;
+   jo[ "resid_rms_scan_means" ]   = sqrt( rms_smean / nscan );
+   jo[ "resid_rms_radius_means" ] = sqrt( rms_rmean / npts );
+   QJsonArray jti, jri;
+   for ( double x : tin.values ) jti << x;
+   for ( double x : rin.values ) jri << x;
+   jo[ "ti_noise" ] = jti;
+   jo[ "ri_noise" ] = jri;
    jo[ "wall_s" ]    = wall_ms / 1000.0;
    jo[ "cpu_user_s" ] = ( ru1.ru_utime.tv_sec - ru0.ru_utime.tv_sec )
                       + ( ru1.ru_utime.tv_usec - ru0.ru_utime.tv_usec ) * 1e-6;
