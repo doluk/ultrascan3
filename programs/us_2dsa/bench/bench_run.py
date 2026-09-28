@@ -1,7 +1,9 @@
 """Run the us_2dsa_bench fit matrix sequentially (one fit at a time, 4 threads)
 on the us_astfem_sim datasets in ~/ultrascan/results/bench<mix>s<seed>.
 
-usage: python3 bench_run.py single|iterated [configs]|arrival|mergepool [N]
+usage: python3 bench_run.py single [configs]|iterated [configs]|arrival|mergepool [N]
+BENCH_SET_SUFFIX appends a suffix to the result set directory (e.g. for
+another us_2dsa_bench build given by US_2DSA_BENCH).
 Results: out/<set>/<config>__<mixture>__<seed>[__rep].json
 """
 import os, subprocess, sys, itertools, json
@@ -34,6 +36,7 @@ def configs():
 
 
 RESULTS = os.environ.get('BENCH_RESULTS', os.path.expanduser('~/ultrascan/results'))
+SUFFIX = os.environ.get('BENCH_SET_SUFFIX', '')     # e.g. '_nnlsfix'
 
 
 def run(outdir, name, grid, nsub, mix, seed, iters, env=ENV, tag=''):
@@ -54,24 +57,25 @@ def main():
     which = sys.argv[1]
     cf = configs()
     if which == 'single':
-        for mix, seed, (name, (grid, nsub)) in itertools.product(
-                MIXTURES, SEEDS, cf.items()):
-            run(os.path.join(HERE, 'out', 'single'), name, grid, nsub, mix, seed, 1)
+        names = sys.argv[2].split(',') if len(sys.argv) > 2 else list(cf)
+        for mix, seed, name in itertools.product(MIXTURES, SEEDS, names):
+            grid, nsub = cf[name]
+            run(os.path.join(HERE, 'out', 'single' + SUFFIX), name, grid, nsub, mix, seed, 1)
     elif which == 'iterated':
         names = sys.argv[2].split(',') if len(sys.argv) > 2 else \
             ['modulo', 'classic8x8', 'lattice', 'fem4096']
         for mix, seed, name in itertools.product(MIXTURES, SEEDS, names):
             grid, nsub = cf[name]
-            run(os.path.join(HERE, 'out', 'iterated'), name, grid, nsub, mix, seed, 10)
+            run(os.path.join(HERE, 'out', 'iterated' + SUFFIX), name, grid, nsub, mix, seed, 10)
     elif which == 'arrival':
         arr = dict(ENV, BENCH_ARRIVAL='1')
         for name in ['classic8x8', 'lattice']:
             grid, nsub = cf[name]
             for rep in range(6):
-                run(os.path.join(HERE, 'out', 'arrival'), name, grid, nsub,
+                run(os.path.join(HERE, 'out', 'arrival' + SUFFIX), name, grid, nsub,
                     'M1', 1, 1, env=arr, tag=f'__arr{rep}')
             for rep in range(3):
-                run(os.path.join(HERE, 'out', 'arrival'), name, grid, nsub,
+                run(os.path.join(HERE, 'out', 'arrival' + SUFFIX), name, grid, nsub,
                     'M1', 1, 1, tag=f'__ord{rep}')
     elif which == 'mergepool':
         # Single pass with a larger merge pool (2DSA-MergePool debug setting)
@@ -80,7 +84,7 @@ def main():
         for mix, seed, name in itertools.product(
                 MIXTURES, SEEDS, ['classic8x8', 'lattice', 'fem4096', 'fem1024']):
             grid, nsub = cf[name]
-            run(os.path.join(HERE, 'out', f'pool{pool}'), name, grid, nsub,
+            run(os.path.join(HERE, 'out', f'pool{pool}' + SUFFIX), name, grid, nsub,
                 mix, seed, 1, env=env)
 
 
