@@ -621,8 +621,14 @@ and the odd-count override should call the same routine. For the $64 times 64$ g
 selects the classic $8 times 8$ offsets (the best sublattice in index units), so its effect
 here is the difference between the modulo and classic rows of @tab:single and @tab:exact: a
 median factor of 5.3 in fitted-signal error with the production solver and of 27 with the
-corrected one. Users who re-save an existing grid will obtain different single-pass results,
-and this should be documented.
+corrected one. This verifies Stage 1 only where its choice coincides with the classic grid.
+The generalized rule matters most where it does not: subgrid counts without a good
+rectangular split (prime counts, or counts next to the row length, such as the 101 diagonal
+subgrids that the odd-count override makes of a $100 times 100$ grid), and unions of partial
+grids, which Algorithm 1 of @coverage2026 handles with rotated offsets and size balancing.
+None of these cases was fitted here, and they should be before Stage 1 is released. Users who
+re-save an existing grid will obtain different single-pass results, and this should be
+documented.
 
 == Stage 2: subgrids shaped by the FEM metric
 
@@ -679,7 +685,10 @@ random noise and noise models that the fit represents exactly; there is no model
 experimental dataset shows that real data are not like this, and effects of a few percent
 seen here need not survive on such data. One experimental design, one noise level, seven
 mixtures, one grid size with 64 subgrids and one thread count were examined, and the merge tree
-depends on the thread count. The accuracy reference is the optimum of the $64 times 64$ grid,
+depends on the thread count. With 64 subgrids on $64 times 64$ and $128 times 32$ grids, good
+rectangular partitions exist; the general sublattices were therefore tested only where they
+compete with rectangles, not where they replace them (prime subgrid counts, counts next to the
+row length, unions of partial grids), and custom grids with other axes were not tested. The accuracy reference is the optimum of the $64 times 64$ grid,
 which other grids can undercut. The fits used the `us_2dsa` processing classes from a
 headless driver written for this study; the driver is itself new, unreviewed code, the
 graphical program was exercised only through the experimental-data runs, and
