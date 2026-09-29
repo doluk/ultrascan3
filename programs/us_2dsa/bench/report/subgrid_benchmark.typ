@@ -29,7 +29,8 @@
     fitted-signal error from 0.14 to 0.08--0.11 $times 10^(-3)$ OD against a noise level of
     $3 times 10^(-3)$, where the solver correction itself lowers it fourteenfold. Beyond
     Stage 1, what the proposal offers is mainly cost: a 1024-point grid placed in the FEM
-    metric ran three times faster with two thirds of the memory. The
+    metric ran three times faster with two thirds of the memory, and in iterated fits the
+    proposal's partitions reached the optimum with about a quarter fewer simulations. The
     corrected solver is itself a substantial change to long-standing numerics: its first
     implementation passed the synthetic benchmark and then failed on experimental data.
     We recommend Stage 1, a solver correction introduced as a versioned option and
@@ -495,7 +496,35 @@ the full simulated matrix.
 
 == Iterated fits
 
-#pending[Iterated fits with the corrected solver: pending.]
+With the corrected solver, iterated fits behave as the theory says they should
+@brookes2026 (@tab:iter-exact). Of 84 runs, 83 ended within 0.01% of the optimum, including
+all 21 with the modulo rule; the exception, a classic-grid fit of H1, was still 2.1% above the
+optimum when it reached the limit of ten iterations. The partition no longer decides where
+the iteration ends, but it decides how fast it gets there. The lattice and the placed grid
+needed a median of four iterations, against five for the classic grid and seven for the modulo
+rule, and in paired comparison 28% (lattice) and 24% (FEM 4096) fewer simulations than the
+classic grid; the modulo rule needed 29% more. This is an argument for Stage 2 that the
+single-pass results do not provide: for fits that are iterated, a better partition saves about
+a quarter of the computation without changing the result. The corrected iterated fits were
+also cheaper than those of the production solver, which ran to the limit in about half of the
+runs (a median of 40--75 s against 79--87 s, and 22,000--40,000 simulations against about
+50,000). The wall times of this set were measured while lighter work ran on the same machine;
+the simulation counts, which do not depend on it, give the same ratios.
+
+#figure(
+  rules-table(
+    columns: 7,
+    align: (left, right, right, right, right, right, right),
+    header: ([Configuration], [excess], [(max)], [signal err.], [iterations], [time (s)],
+      [simulations]),
+    [modulo], [0.0%], [0.0%], [0.11], [7 (4--10)], [74.8], [39,579],
+    [classic $8 times 8$], [0.0%], [2.1%], [0.13], [5 (3--10)], [54.0], [31,454],
+    [lattice (8, 3, 8)], [0.0%], [0.0%], [0.11], [4 (3--5)], [39.9], [22,449],
+    [FEM 4096], [$-0.0%$], [$-0.0%$], [0.09], [4 (3--6)], [38.5], [22,842],
+  ),
+  caption: [Iterated fits (at most ten iterations) with the corrected solver: medians over 21
+    datasets, with the range of iterations. Units as in @tab:single.],
+) <tab:iter-exact>
 
 = Experimental data
 
@@ -632,16 +661,18 @@ documented.
 
 == Stage 2: subgrids shaped by the FEM metric
 
-We do not recommend Stage 2 as a default. Its coverage advantage is real (@tab:metric), but
-its effect on fits depends on the solver. Under the production solver it helped on 13 of 21
-datasets and hurt on the others. Under the corrected solver it helps consistently (16 of 21)
-but by an amount, $0.03 times 10^(-3)$ OD in fitted-signal error and 0.1% in RMSD, that is
-two orders of magnitude below the noise and small beside the solver correction itself. It
-is not free (6--9% more simulations and time, not "no additional cost"), and it changes
-which solutes are fitted together and therefore changes results: a cost in reproducibility
-for users and, in regulated work, in revalidation. The benchmark shows no benefit that would
-pay for that. If pursued, it should be an option, evaluated on experimental data with the
-corrected solver.
+We do not recommend Stage 2 as a default for single-pass fits. Its coverage advantage is
+real (@tab:metric), but its effect on fits depends on the solver. Under the production solver
+it helped on 13 of 21 datasets and hurt on the others. Under the corrected solver it helps
+consistently (16 of 21) but by an amount, $0.03 times 10^(-3)$ OD in fitted-signal error and
+0.1% in RMSD, that is two orders of magnitude below the noise and small beside the solver
+correction itself; and in a single pass it costs 6--9% more simulations and time, not "no
+additional cost". It also changes which solutes are fitted together and therefore changes
+results: a cost in reproducibility for users and, in regulated work, in revalidation. The
+one benefit that would pay for this is in iterated fits with the corrected solver, which
+reached the same optimum with about a quarter fewer simulations. If pursued, Stage 2 should
+therefore follow the solver correction, as an option aimed at iterated fits, and be
+evaluated on experimental data.
 
 == Stage 3: grids placed in the FEM metric
 
@@ -703,7 +734,8 @@ expectation that subgrids and grids shaped by the FEM metric will make single-pa
 materially more accurate. Under the production solver their gains were inconsistent and
 dominated by a solver error common to all configurations; under a corrected solver the
 classic construction is already close to exact, and the proposal's constructions improve on
-it consistently but marginally. The reduction in cost from smaller placed
+it consistently but marginally in a single pass, and save about a quarter of the
+computation when fits are iterated. The reduction in cost from smaller placed
 grids is the part of the proposal that survives, and it is a larger undertaking than the
 proposal suggests. The most consequential finding is not about subgrids at all: fits with TI
 and RI noise have been computing concentrations with an objective other than least squares.
