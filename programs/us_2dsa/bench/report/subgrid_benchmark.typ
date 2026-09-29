@@ -23,10 +23,13 @@
     worse on the rest, and every nondegenerate configuration stayed about 15% above the
     optimum, a floor that iterated fits did not remove. The floor comes from two defects
     in the concentration solve with time- and radially-invariant noise, which affect every
-    noise-fitting analysis in UltraScan. With a corrected solver, single-pass fits with any
-    nondegenerate partition reach the optimum to within #pending[0.1%], which removes most
-    of the accuracy case for Stages 2 and 3; what remains is cost, where a 1024-point grid
-    placed in the FEM metric ran three times faster with two thirds of the memory. The
+    noise-fitting analysis in UltraScan. With a corrected solver the floor disappears: the
+    classic shifted grid comes within 0.1% of the optimum in the median, and the proposal's
+    partitions and grids are then consistently but only marginally better, lowering the
+    fitted-signal error from 0.14 to 0.08--0.11 $times 10^(-3)$ OD against a noise level of
+    $3 times 10^(-3)$, where the solver correction itself lowers it fourteenfold. Beyond
+    Stage 1, what the proposal offers is mainly cost: a 1024-point grid placed in the FEM
+    metric ran three times faster with two thirds of the memory. The
     corrected solver is itself a substantial change to long-standing numerics: its first
     implementation passed the synthetic benchmark and then failed on experimental data.
     We recommend Stage 1, a solver correction introduced as a versioned option and
@@ -151,7 +154,7 @@ single nonnegative least-squares (NNLS) solve @lawson1995 over all 4096 columns.
 the residual RMSD of each fit and its _excess_ over this optimum; the _fitted-signal error_,
 the RMSD between the fitted signal and the noise-free data with TI and RI components removed
 (a measure of how well the fit recovers the sample rather than the noise); Wasserstein
-distances between fitted and true distributions of $s$ and #ff0; the largest concentration
+distances between fitted and true distributions of $s$ and #ff0\; the largest concentration
 error of any true species; and wall time, peak memory and the number of solute simulations.
 Grids other than the $64 times 64$ grid contain different points, so their fits can fall
 slightly below this reference. Ratios between configurations are reported per dataset,
@@ -278,9 +281,8 @@ cannot serve as the acceptance criterion for Stage 2.
 
 == A common floor, and iterated fits do not reach the optimum
 
-Every nondegenerate configuration settled at the same median excess of about 15%, and the
-best single fits of every configuration were within 1% of the optimum only for a few
-datasets. Iterated fits did not remove this floor (@tab:iterated): with the production
+Every nondegenerate configuration settled at the same median excess of about 15%, and none
+came within 1% of the optimum on more than three of 21 datasets. Iterated fits did not remove this floor (@tab:iterated): with the production
 solver the modulo rule, the classic grid, the lattice and the FEM 4096 grid all ended at a
 median excess of 14.6--14.9%. About half of the runs (10 to 12 of 21 per configuration)
 stopped at the limit of ten iterations without converging; the others converged to
@@ -309,7 +311,7 @@ the partition. Section 4 identifies the cause.
 The one robust benefit in these runs is the cost of the smaller placed grid. FEM 1024 ran
 in a third of the time of the classic grid on every dataset (2.5 s against 8.0 s in the
 median), with two thirds of the peak memory (119 against 169 MB) and a third of the
-simulations, at equal or better accuracy on 20 of 21 datasets. This is the saving that
+simulations, with an equal or lower fitted-signal error on 20 of 21 datasets. This is the saving that
 @coverage2026 anticipated for Stage 3, and it grows with grid size. It should be weighed
 against what Stage 3 requires before a fit: a candidate set simulated for the specific
 experiment (16,129 ASTFEM solutions here) and a selection step, neither of which exists in
@@ -422,7 +424,78 @@ Without the option the code is bit-identical to the production code; with it, me
 final tasks also drop duplicate solutes, which the exact solve would otherwise keep after
 refinement iterations (Section 7).
 
-#pending[Section 5 text and Tables 7--8 to be completed from the corrected-solver matrix.]
+== Single pass
+
+The corrected solver changes the picture completely (@fig:single, @tab:exact). The floor
+disappears: the classic grid comes within 0.1% of the optimum in the median (at most 0.7%,
+within 0.1% on 12 of 21 datasets), and every Stage 2 and Stage 3 configuration is within
+0.1% on all 21 datasets; the $128 times 32$ and placed grids fall slightly below the
+$64 times 64$ reference (to $-0.33%$) because their points are placed more finely where it
+matters. The fitted-signal error of the classic grid falls fourteenfold, from 2.22 to
+$0.14 times 10^(-3)$ OD, the Wasserstein distance of the #ff0 distribution from 0.27 to 0.07,
+and the largest species concentration error from 0.023 to 0.001 OD. No change to partitions
+or grids comes near this. The modulo rule remains degenerate (101% median excess): a correct
+solver cannot recover solutes that no subgrid can represent.
+
+#figure(
+  rules-table(
+    columns: 9,
+    align: (left, right, right, right, right, right, right, right, right),
+    header: ([Configuration], [excess], [(max)], [signal err.], [$W_s$], [$W_(#ff0)$],
+      [vs classic], [time (s)], [memory (MB)]),
+    [modulo], [101.5%], [243.4%], [5.18], [0.12], [0.67], [3 / 21], [8.1], [213],
+    [classic $8 times 8$], [0.1%], [0.7%], [0.14], [0.05], [0.07], [--], [9.3], [216],
+    [regular path], [0.6%], [2.7%], [0.28], [0.08], [0.12], [2 / 21], [9.1], [214],
+    [rect. $4 times 16$], [0.0%], [0.1%], [0.12], [0.05], [0.07], [18 / 21], [10.0], [231],
+    [lattice (8, 3, 8)], [0.0%], [0.0%], [0.11], [0.05], [0.05], [16 / 21], [9.8], [236],
+    [$128 times 32$ $8 times 8$], [0.0%], [0.1%], [0.10], [0.03], [0.06], [17 / 21], [9.9], [219],
+    [$128 times 32$ lattice], [0.0%], [0.1%], [0.10], [0.03], [0.05], [17 / 21], [9.6], [223],
+    [FEM 4096], [0.0%], [0.0%], [0.08], [0.03], [0.05], [17 / 21], [9.3], [231],
+    [FEM 1024], [0.0%], [0.0%], [0.10], [0.03], [0.09], [16 / 21], [3.1], [139],
+    table.hline(stroke: 0.3pt),
+    [full-grid optimum], [--], [--], [0.11], [], [], [], [], [],
+  ),
+  caption: [Single-pass fits with the corrected solver (`SolveSim-ExactNoise`): medians over
+    21 datasets, units as in @tab:single. "vs classic" is the number of datasets with a lower
+    fitted-signal error than the classic grid.],
+) <tab:exact>
+
+With the floor removed, the proposal's partitions are now consistently better than the
+classic grid, where under the production solver they were not: the FEM-chosen lattice gave
+a lower fitted-signal error on 16 of 21 datasets (median ratio 0.89), the best rectangle on
+18 (0.88), and the $128 times 32$ lattice and the 4096-point placed grid on 17 (0.67 and
+0.68). The gains are real but small in absolute terms. The fitted-signal error falls from
+0.14 to 0.11 (lattice) or 0.08 (FEM 4096) $times 10^(-3)$ OD, against a noise level of
+$3 times 10^(-3)$ OD; the excess RMSD falls from 0.1% to 0.0%. In the #ff0 distribution the
+lattice reduces the Wasserstein distance from 0.07 to 0.05. The measures do not all agree:
+the largest species concentration error, about 0.001 OD in the median for every
+nondegenerate configuration, was higher for the lattice and the placed grids than for the
+classic grid on 12 to 15 of 21 datasets, and the 1024-point grid gave a coarser #ff0
+distribution than the classic grid on 12 of 21 (median ratio 1.7). Against the corrected
+solver's own effect, a factor of 14 in signal error, these are second-order differences,
+and which configuration is better depends on the measure.
+
+The regular-grid path of `us_2dsa` deserves a note. It builds the same fine grid and the
+same $8 times 8$ subgrids as the classic custom grid, but numbers them with the #ff0 offset
+varying fastest, where our custom grid varies the $s$ offset fastest; merge tasks therefore
+pool different subgrids. Its fits were 0.6% above the optimum in the median (2.7% at most)
+against 0.1% for the classic custom grid; its fitted-signal error was higher on 18 of 21
+datasets and within 0.1% on the other three. Which subgrids are
+merged together evidently matters at this level, and pooling across $s$ offsets, the
+direction the FEM metric identifies as the costly one, did better. This is a single
+observation and we do not build a recommendation on it, but it is the kind of effect a
+production change would have to control for.
+
+The corrected solve costs more: 19% more wall time and 17% more CPU time than the production
+calculation in the same configurations, and 30% more peak memory, mostly for a copy of the
+simulation matrix with the per-scan means removed. The projected-matrix implementation of
+the review branch avoids the normal equations entirely and was faster than the production
+code on the experimental dataset of Section 6 (48--61 s against 64--68 s); it was not run on
+the full simulated matrix.
+
+== Iterated fits
+
+#pending[Iterated fits with the corrected solver: pending.]
 
 = Experimental data
 
@@ -544,27 +617,32 @@ row-major grid produces single-pass fits that are wrong by any measure, the corr
 no change to the programs deployed on clusters (the benchmark encoded every partition this
 way), and it affects only grids saved after the change. It should be introduced together with
 the proposed report of the worst-subgrid covering radius in the editor and in the run log,
-and the odd-count override should call the same routine. The benefit over the classic
-construction is modest and, under the production solver, inconsistent between datasets; the
-point of Stage 1 is to remove the degenerate cases, not to improve on the classic grid.
-Users who re-save an existing grid will obtain different single-pass results, and this
-should be documented.
+and the odd-count override should call the same routine. For the $64 times 64$ grid, Stage 1
+selects the classic $8 times 8$ offsets (the best sublattice in index units), so its effect
+here is the difference between the modulo and classic rows of @tab:single and @tab:exact: a
+median factor of 5.3 in fitted-signal error with the production solver and of 27 with the
+corrected one. Users who re-save an existing grid will obtain different single-pass results,
+and this should be documented.
 
 == Stage 2: subgrids shaped by the FEM metric
 
-We do not recommend Stage 2 as a default. Its coverage advantage is real (@tab:metric) but
-did not become a consistent fit advantage: under the production solver it helped on 13 of 21
-datasets and hurt on the others, under the corrected solver the classic grid already reaches
-the optimum #pending[within 0.x%], and it costs 6% more simulations rather than nothing.
-It changes which solutes are fitted together and therefore changes results; that is a cost
-in reproducibility for users and, in regulated work, in revalidation, and nothing in this
-benchmark shows a benefit that would pay for it. If pursued, it should be an option,
-evaluated on experimental data with the corrected solver.
+We do not recommend Stage 2 as a default. Its coverage advantage is real (@tab:metric), but
+its effect on fits depends on the solver. Under the production solver it helped on 13 of 21
+datasets and hurt on the others. Under the corrected solver it helps consistently (16 of 21)
+but by an amount, $0.03 times 10^(-3)$ OD in fitted-signal error and 0.1% in RMSD, that is
+two orders of magnitude below the noise and small beside the solver correction itself. It
+is not free (6--9% more simulations and time, not "no additional cost"), and it changes
+which solutes are fitted together and therefore changes results: a cost in reproducibility
+for users and, in regulated work, in revalidation. The benchmark shows no benefit that would
+pay for that. If pursued, it should be an option, evaluated on experimental data with the
+corrected solver.
 
 == Stage 3: grids placed in the FEM metric
 
-Stage 3 has the one robust benefit found here: equal or better accuracy with a quarter of the
-grid points, a third of the time and two thirds of the memory. It is also the largest change:
+Stage 3 has the one robust benefit found here: a quarter of the grid points, a third of the
+time and two thirds of the memory, at equal residual and fitted-signal error. The saving is
+not entirely free: with the corrected solver the 1024-point grid gave a coarser #ff0
+distribution than the classic grid on 12 of 21 datasets. It is also the largest change:
 a new kind of grid, generated per experiment from thousands of simulations, with no
 counterpart in the editor, the LIMS or the cluster submission path, and with known boundary
 over-sampling. We would pursue it as a cost-reduction project after the solver question is
@@ -615,7 +693,8 @@ suggested, and Stage 1 should be implemented. Beyond that, the benchmark does no
 expectation that subgrids and grids shaped by the FEM metric will make single-pass 2DSA results
 materially more accurate. Under the production solver their gains were inconsistent and
 dominated by a solver error common to all configurations; under a corrected solver the
-classic construction is already close to exact. The reduction in cost from smaller placed
+classic construction is already close to exact, and the proposal's constructions improve on
+it consistently but marginally. The reduction in cost from smaller placed
 grids is the part of the proposal that survives, and it is a larger undertaking than the
 proposal suggests. The most consequential finding is not about subgrids at all: fits with TI
 and RI noise have been computing concentrations with an objective other than least squares.
