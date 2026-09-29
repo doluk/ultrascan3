@@ -65,13 +65,14 @@ The answer turned out to depend less on the partition than on a part of the code
 proposal did not examine. Fits with time-invariant (TI) and radially invariant (RI) noise,
 the default in practice, compute concentrations with a solver that does not minimize the
 least-squares objective, and this error dominates every partition effect short of the
-degenerate one. We report the benchmark (Sections 2 and 3), the solver defects
-(Section 4), the benchmark repeated with a corrected solver (Section 5), experience with
-experimental data (Section 6) and further defects found along the way (Section 7). Section 8
-assesses each proposed stage and the solver correction, and Section 9 states what the
+degenerate one. We report the benchmark (@sec:design and @sec:production), the solver
+defects (@sec:defects), the benchmark repeated with a corrected solver (@sec:corrected),
+experience with experimental data (@sec:experimental) and further defects found along the way
+(@sec:further). @sec:assessment assesses each proposed stage and the solver correction, and
+@sec:limitations states what the
 benchmark cannot show.
 
-= Benchmark design
+= Benchmark design <sec:design>
 
 == Data
 
@@ -114,7 +115,7 @@ fit code decodes with its modulo rule. That the programs recover every intended 
 this way is itself a result: Stage 1 needs no change to the analysis programs. Depth-1 and
 deeper merges were taken in task order (debug option `2DSA-OrderedMerge`) rather than in the
 order in which threads finish, because the latter makes results irreproducible
-(Section 3.5). Single-pass fits used one refinement iteration, iterated fits up to ten.
+(@sec:merge). Single-pass fits used one refinement iteration, iterated fits up to ten.
 
 == Configurations
 
@@ -192,7 +193,7 @@ therefore sound; what follows concerns its consequences for fits.
     @coverage2026 (Tables 3 and 4) and recomputed from ASTFEM solutions with rotor acceleration.],
 ) <tab:metric>
 
-= Results with the production solver
+= Results with the production solver <sec:production>
 
 == The partition defect is real
 
@@ -210,7 +211,7 @@ Stage 1, are confirmed by fit outcomes as well as by coverage.
   image("fig_single.svg", width: 100%),
   caption: [Excess residual RMSD of single-pass fits over the exact full-grid optimum, per
     dataset (21 per configuration), with the production solver and with the corrected solver
-    of Section 5. Bars mark medians. The axis is linear between $-1%$ and $1%$ and
+    of @sec:corrected. Bars mark medians. The axis is linear between $-1%$ and $1%$ and
     logarithmic beyond.],
 ) <fig:single>
 
@@ -290,7 +291,7 @@ stopped at the limit of ten iterations without converging; the others converged 
 solutions just as far from the optimum. The iterated method is exact only if each subproblem is solved exactly
 @brookes2026. That iterated fits of every partition converge to the same 15% excess, while
 the exact optimum of the same grid is known, locates the floor in the solver rather than in
-the partition. Section 4 identifies the cause.
+the partition. @sec:defects identifies the cause.
 
 #figure(
   rules-table(
@@ -318,7 +319,7 @@ against what Stage 3 requires before a fit: a candidate set simulated for the sp
 experiment (16,129 ASTFEM solutions here) and a selection step, neither of which exists in
 UltraScan today.
 
-== Merge order and merge size
+== Merge order and merge size <sec:merge>
 
 Two properties of the merge tree bear on how precisely any of these configurations can be
 compared. In the production code, depth-1 and deeper merges combine results in the order
@@ -332,7 +333,7 @@ over 10--11 datasets the median excess was unchanged for the lattice and FEM gri
 worse for the classic grid (35.8% against 31.1%), at 1.9--3.0 times the wall time and 1.8--2.3
 times the memory.
 
-= Two defects in the noise-fitting solve
+= Two defects in the noise-fitting solve <sec:defects>
 
 == Radially invariant noise is not eliminated from the concentration solve
 
@@ -416,14 +417,14 @@ against 7% for the exact solve. We have not assessed how the defects bear on pub
 results. They are systematic, they bias shape more than residual, and they cannot be
 detected by inspecting residuals.
 
-= Results with a corrected solver
+= Results with a corrected solver <sec:corrected>
 
 We repeated the benchmark with the debug option `SolveSim-ExactNoise`, which computes
 concentrations with both noise types eliminated by double centering and with NNLS on the
 Cholesky factor of the normal equations (branch `claude/keen-maxwell-i5daw2`, Appendix A).
 Without the option the code is bit-identical to the production code; with it, merge and
 final tasks also drop duplicate solutes, which the exact solve would otherwise keep after
-refinement iterations (Section 7).
+refinement iterations (@sec:further).
 
 == Single pass
 
@@ -491,7 +492,7 @@ The corrected solve costs more: 19% more wall time and 17% more CPU time than th
 calculation in the same configurations, and 30% more peak memory, mostly for a copy of the
 simulation matrix with the per-scan means removed. The projected-matrix implementation of
 the review branch avoids the normal equations entirely and was faster than the production
-code on the experimental dataset of Section 6 (48--61 s against 64--68 s); it was not run on
+code on the experimental dataset of @sec:experimental (48--61 s against 64--68 s); it was not run on
 the full simulated matrix.
 
 == Iterated fits
@@ -526,7 +527,67 @@ the simulation counts, which do not depend on it, give the same ratios.
     datasets, with the range of iterations. Units as in @tab:single.],
 ) <tab:iter-exact>
 
-= Experimental data
+= Where the general rule differs from the classic grid <sec:general>
+
+With 64 subgrids on the grids of @tab:configs, good rectangular partitions exist, and in
+index units the rule of Stage 1 simply selects the classic $8 times 8$ offsets. The general
+sublattice rule of @coverage2026 (Hermite normal forms, with Algorithm 1 for unions of
+partial grids) matters where rectangles fail. We therefore fitted four further cases
+(@tab:gen-cover): a $100 times 100$ grid with 101 subgrids, the count that the odd-count
+override produces for such a grid, for which the modulo rule gives diagonal subgrids and no
+rectangle leaves every subgrid populated; a $64 times 64$ grid with a prime count of 41, for
+which the modulo generator (23) is benign; a $60 times 60$ grid with 60 subgrids, for which
+the modulo rule gives columns; and a union of two partial grids with 32 subgrids, a fine band
+($64 times 21$ points, #ff0 1--1.95) stored before a coarse band ($22 times 15$ points, #ff0
+2--4), in which the modulo rule turns the fine band into pairs of columns. Each was
+partitioned by the modulo rule, by the best sublattice in index units (Stage 1) and by the
+best sublattice in the FEM metric (Stage 2); sublattice cosets of unequal size on the finite
+grid were balanced as Algorithm 1 prescribes, so that the unchanged programs decode them.
+All 21 datasets were fitted once with each partition and each solver, and compared with the
+exact optimum of the same fine grid.
+
+#figure(
+  rules-table(
+    columns: 5,
+    align: (left, left, left, right, right),
+    header: ([Case], [Partition], [Choice], [worst $h$], [median $h$]),
+    [$100 times 100$, 101], [modulo (diagonals)], [--], [14.1], [12.0],
+    [], [Stage 1, index units], [(101, 10, 1)], [11.1], [8.4],
+    [], [Stage 2, FEM metric], [(101, 15, 1)], [8.0], [6.7],
+    table.hline(stroke: 0.3pt),
+    [$64 times 64$, 41], [modulo ($g = 23$)], [--], [8.4], [6.5],
+    [], [Stage 1, index units], [(41, 6, 1), 18 moves], [8.4], [7.5],
+    [], [Stage 2, FEM metric], [(41, 11, 1), 11 moves], [8.6], [6.5],
+    table.hline(stroke: 0.3pt),
+    [$60 times 60$, 60], [modulo (columns)], [--], [46.8], [45.0],
+    [], [best rectangle, index units], [$6 times 10$], [16.4], [14.9],
+    [], [Stage 1, index units], [(30, 7, 2)], [11.7], [8.3],
+    [], [Stage 2, FEM metric], [(15, 11, 4)], [9.6], [8.0],
+    table.hline(stroke: 0.3pt),
+    [union, 32], [modulo], [--], [25.3], [15.6],
+    [], [Algorithm 1, index units], [(32, 5, 1) twice, 6 moves], [10.0], [9.3],
+    [], [Algorithm 1, FEM metric], [(32, 7, 1), (32, 17, 1), 7 moves], [10.2], [9.6],
+    [], [interleaved farthest-point], [--], [11.0], [9.2],
+  ),
+  caption: [Partitions of the further cases and their worst and median subgrid covering radii
+    in the FEM metric (against the $127 times 127$ proxy). "Moves" are the points moved by the
+    size balancing of Algorithm 1; sublattices are Hermite normal forms $(a, b, c)$.],
+) <tab:gen-cover>
+
+The index-unit choices are those of @coverage2026 (Table 1: (101, 10, 1), (41, 6, 1),
+(30, 7, 2) and the $6 times 10$ rectangle). Two properties of the table bear on the
+proposal. First, degeneracy in index units need not be degeneracy in the FEM metric: the
+diagonal subgrids of the $100 times 100$ grid, 5.6 times worse than the best sublattice in
+index units according to @coverage2026, are only 1.3 times worse in the FEM metric, because
+every diagonal contains every value of $s$ and steps in #ff0 are cheap. Columns, which
+contain a single $s$, are degenerate in both. Second, the size balancing that the modulo
+decoding requires can erase the advantage of a choice made in the FEM metric: for the
+$64 times 64$ grid with 41 subgrids and for the union, the FEM-chosen partitions were
+slightly worse after balancing than the index-unit ones.
+
+#pending[Fit results of the further cases: pending.]
+
+= Experimental data <sec:experimental>
 
 == Dataset and workflow
 
@@ -603,14 +664,14 @@ independent implementations agree is the strongest evidence we have that the cor
 results are right; that the first one failed is the strongest evidence that this code
 should not be changed casually.
 
-= Further defects found along the way
+= Further defects found along the way <sec:further>
 
 The benchmark exercised parts of the code in combinations that ordinary use rarely does,
 and several further defects surfaced. We list them because together they describe the
 state of the code into which the proposal would be introduced.
 
 - *Merge order.* The production merge tree depends on the order in which threads finish, so
-  single-pass results are not reproducible (Section 3.5). A task-ordered merge exists as a
+  single-pass results are not reproducible (@sec:merge). A task-ordered merge exists as a
   debug option on `claude/keen-maxwell-i5daw2`.
 - *Duplicate solutes.* After refinement iterations every subgrid returns the solutes added
   from the previous iteration, so merge tasks and the final fit receive several copies of each.
@@ -637,7 +698,7 @@ None of these is exotic, and several date from 2010 to 2013. They are what one s
 expect to find when long-used code is exercised systematically for the first time, and
 they argue for changing it one reviewed step at a time.
 
-= Assessment
+= Assessment <sec:assessment>
 
 == Stage 1: a geometric partition carried by component order
 
@@ -709,7 +770,7 @@ then failed on the first experimental dataset it met. We therefore recommend:
 Only once the corrected solver is the default does it make sense to decide whether Stages 2
 and 3 are worth their cost, because the benchmark shows that the answer depends on the solver.
 
-= Limitations
+= Limitations <sec:limitations>
 
 The simulated data were generated and fitted with the same ASTFEM code, with white Gaussian
 random noise and noise models that the fit represents exactly; there is no model error. The
