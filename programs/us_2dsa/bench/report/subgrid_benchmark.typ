@@ -27,8 +27,11 @@
     classic shifted grid comes within 0.1% of the optimum in the median, and the proposal's
     partitions and grids are then consistently but only marginally better, lowering the
     fitted-signal error from 0.14 to 0.08--0.11 $times 10^(-3)$ OD against a noise level of
-    $3 times 10^(-3)$, where the solver correction itself lowers it fourteenfold. Beyond
-    Stage 1, what the proposal offers is mainly cost: a 1024-point grid placed in the FEM
+    $3 times 10^(-3)$, where the solver correction itself lowers it fourteenfold. In four
+    further cases in which rectangles fail or the grid is a union of partial grids, the
+    general sublattice rule of Stage 1 removed the column subgrids of the current rule,
+    improved on its diagonal subgrids with the corrected solver and did no harm elsewhere;
+    choosing the sublattice in the FEM metric added nothing. Beyond Stage 1, what the proposal offers is mainly cost: a 1024-point grid placed in the FEM
     metric ran three times faster with two thirds of the memory, and in iterated fits the
     proposal's partitions reached the optimum with about a quarter fewer simulations. The
     corrected solver is itself a substantial change to long-standing numerics: its first
@@ -585,7 +588,78 @@ decoding requires can erase the advantage of a choice made in the FEM metric: fo
 $64 times 64$ grid with 41 subgrids and for the union, the FEM-chosen partitions were
 slightly worse after balancing than the index-unit ones.
 
-#pending[Fit results of the further cases: pending.]
+#figure(
+  rules-table(
+    columns: 8,
+    align: (left, left, right, right, right, right, right, right),
+    groups: (
+      [], [],
+      table.cell(colspan: 2, align: center)[production solver],
+      table.cell(colspan: 4, align: center)[corrected solver],
+      table.hline(start: 2, end: 4, stroke: 0.4pt),
+      table.hline(start: 4, end: 8, stroke: 0.4pt),
+    ),
+    header: ([Case], [Partition], [excess], [vs modulo], [excess], [(max)], [signal err.],
+      [vs modulo]),
+    [$100 times 100$, 101], [modulo (diagonals)], [17.6%], [--], [0.1%], [4.1%], [0.18], [--],
+    [], [Stage 1], [14.4%], [12 (0.94)], [0.0%], [0.1%], [0.13], [18 (0.71)],
+    [], [Stage 2], [14.9%], [13 (0.93)], [0.0%], [0.0%], [0.10], [18 (0.54)],
+    table.hline(stroke: 0.3pt),
+    [$64 times 64$, 41], [modulo ($g = 23$)], [14.9%], [--], [0.0%], [0.0%], [0.11], [--],
+    [], [Stage 1], [14.8%], [8 (1.00)], [0.0%], [0.1%], [0.13], [10 (1.00)],
+    [], [Stage 2], [15.4%], [9 (1.01)], [0.0%], [0.0%], [0.12], [13 (1.00)],
+    table.hline(stroke: 0.3pt),
+    [$60 times 60$, 60], [modulo (columns)], [170.1%], [--], [101.7%], [243.5%], [5.19], [--],
+    [], [rectangle $6 times 10$], [23.1%], [19 (0.24)], [0.0%], [0.7%], [0.19], [18 (0.04)],
+    [], [Stage 1], [14.5%], [20 (0.22)], [0.0%], [0.0%], [0.14], [21 (0.03)],
+    [], [Stage 2], [14.5%], [20 (0.24)], [0.0%], [0.1%], [0.14], [21 (0.03)],
+    table.hline(stroke: 0.3pt),
+    [union, 32], [modulo], [24.8%], [--], [0.5%], [6.7%], [0.34], [--],
+    [], [Algorithm 1, index], [15.0%], [15 (0.91)], [0.0%], [0.0%], [0.13], [20 (0.43)],
+    [], [Algorithm 1, FEM], [14.9%], [17 (0.79)], [0.0%], [0.0%], [0.13], [19 (0.43)],
+    [], [farthest-point], [12.8%], [16 (0.86)], [0.0%], [0.0%], [0.13], [18 (0.43)],
+  ),
+  caption: [Single-pass fits of the further cases: median excess RMSD over the exact optimum
+    of the same fine grid with the production and the corrected solver, the maximum and the
+    median fitted-signal error ($10^(-3)$ OD) with the corrected solver, and the number of the
+    21 datasets on which the partition gave a lower fitted-signal error than the modulo rule
+    (median ratio in parentheses).],
+) <tab:gen-fits>
+
+The fits (@tab:gen-fits) separate the cases more sharply than the covering radii. Where the
+modulo rule produces columns, the general rule is indispensable. For the $60 times 60$ grid
+the modulo fits were 170% above the optimum with the production solver and 102% with the
+corrected one, and every geometric partition removed the defect, with a thirtieth of the
+signal error under the corrected solver
+(ratio 0.03); the sublattice also beat the best rectangle under
+the production solver (14.5% against 23.1%, better on 15 of 21 datasets) and matched it
+under the corrected one. The union behaved alike on a smaller scale, since only its fine
+band degenerates: 24.8% against 15.0% with the production solver, 0.5% (up to 6.7%)
+against 0.0% with the corrected one. With the corrected solver Algorithm 1 lowered the
+fitted-signal error 2.3-fold and was better on 20 of 21 datasets; with the production
+solver the gain was small (15 of 21, ratio 0.91). The interleaved farthest-point partition
+did as well as Algorithm 1.
+
+For the diagonal subgrids of the $100 times 100$
+grid the answer depends on the solver. With the production solver they were barely worse
+than the sublattice (17.6% against 14.4%, the sublattice better on only 12 of 21 datasets
+and with the larger worst case, 123% against 53%), as the FEM metric, but not index units,
+would predict. With the corrected solver the sublattice was better on 18 of 21 datasets,
+lowering the signal error by 29% and the Wasserstein distance of the #ff0 distribution
+from 0.11 to 0.04.
+
+For the benign prime count, $64 times 64$ with 41 subgrids, all
+partitions gave the same results with either solver: the general rule, including its 18
+balancing moves, did no harm. Choosing the sublattice in the FEM metric rather than in
+index units made no material difference in any case (median ratios of the fitted-signal
+error between 0.98 and 1.02).
+
+Two consequences for the proposal follow. The index-unit analysis of @coverage2026 (its
+Fig. 3) treats line-like subgrids, columns and diagonals alike, as degenerate; the fits show that columns,
+which occur when the subgrid count divides the row length (#box($g = 0$)), are the dangerous case,
+and diagonals (#box($g = plus.minus 1$)) a mild one. And the general rule of Stage 1, in index
+units and including Algorithm 1 for unions, did what it is meant to do in every case
+tested: it removed the degenerate subgrids and did no harm where there were none.
 
 = Experimental data <sec:experimental>
 
@@ -711,14 +785,14 @@ and the odd-count override should call the same routine. For the $64 times 64$ g
 selects the classic $8 times 8$ offsets (the best sublattice in index units), so its effect
 here is the difference between the modulo and classic rows of @tab:single and @tab:exact: a
 median factor of 5.3 in fitted-signal error with the production solver and of 27 with the
-corrected one. This verifies Stage 1 only where its choice coincides with the classic grid.
-The generalized rule matters most where it does not: subgrid counts without a good
-rectangular split (prime counts, or counts next to the row length, such as the 101 diagonal
-subgrids that the odd-count override makes of a $100 times 100$ grid), and unions of partial
-grids, which Algorithm 1 of @coverage2026 handles with rotated offsets and size balancing.
-None of these cases was fitted here, and they should be before Stage 1 is released. Users who
-re-save an existing grid will obtain different single-pass results, and this should be
-documented.
+corrected one. Where the general rule differs from the classic grid (@sec:general), it
+removed the column subgrids of a $60 times 60$ grid with 60 subgrids and of the fine band of
+a union of partial grids under both solvers, improved on the diagonal subgrids of a
+$100 times 100$ grid with 101 subgrids under the corrected solver, and did no harm for a
+benign prime count; Algorithm 1, with its rotated offsets and size balancing, worked as
+intended for the union. Stage 1 is therefore supported as a general rule, not only where it
+reproduces the classic grid. Users who re-save an existing grid will obtain different
+single-pass results, and this should be documented.
 
 == Stage 2: subgrids shaped by the FEM metric
 
@@ -731,7 +805,9 @@ correction itself; and in a single pass it costs 6--9% more simulations and time
 additional cost". It also changes which solutes are fitted together and therefore changes
 results: a cost in reproducibility for users and, in regulated work, in revalidation. The
 one benefit that would pay for this is in iterated fits with the corrected solver, which
-reached the same optimum with about a quarter fewer simulations. If pursued, Stage 2 should
+reached the same optimum with about a quarter fewer simulations. In the four further cases
+of @sec:general, the FEM-chosen sublattice was no better than the index-unit one with either
+solver. If pursued, Stage 2 should
 therefore follow the solver correction, as an option aimed at iterated fits, and be
 evaluated on experimental data.
 
@@ -776,11 +852,11 @@ The simulated data were generated and fitted with the same ASTFEM code, with whi
 random noise and noise models that the fit represents exactly; there is no model error. The
 experimental dataset shows that real data are not like this, and effects of a few percent
 seen here need not survive on such data. One experimental design, one noise level, seven
-mixtures, one grid size with 64 subgrids and one thread count were examined, and the merge tree
-depends on the thread count. With 64 subgrids on $64 times 64$ and $128 times 32$ grids, good
-rectangular partitions exist; the general sublattices were therefore tested only where they
-compete with rectangles, not where they replace them (prime subgrid counts, counts next to the
-row length, unions of partial grids), and custom grids with other axes were not tested. The accuracy reference is the optimum of the $64 times 64$ grid,
+mixtures, one grid size with 64 subgrids for the main comparison and one thread count were
+examined, and the merge tree
+depends on the thread count. The general sublattice rule was tested where it replaces
+rectangles in four cases only, one of each kind (@sec:general); other grid shapes, subgrid
+counts and unions, and custom grids with other axes, were not tested. The accuracy reference is the optimum of the $64 times 64$ grid,
 which other grids can undercut. The fits used the `us_2dsa` processing classes from a
 headless driver written for this study; the driver is itself new, unreviewed code, the
 graphical program was exercised only through the experimental-data runs, and
@@ -790,7 +866,8 @@ GA, PCSA and DMGA, which share the solver, were not benchmarked.
 = Conclusions
 
 The degenerate subgrids of custom-grid analyses are as harmful in fits as their coverage
-suggested, and Stage 1 should be implemented. Beyond that, the benchmark does not support the
+suggested when they are columns, less so when they are diagonals, and Stage 1 should be
+implemented: its general rule removed them in every case tested and did no harm elsewhere. Beyond that, the benchmark does not support the
 expectation that subgrids and grids shaped by the FEM metric will make single-pass 2DSA results
 materially more accurate. Under the production solver their gains were inconsistent and
 dominated by a solver error common to all configurations; under a corrected solver the

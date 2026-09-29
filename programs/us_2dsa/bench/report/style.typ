@@ -75,11 +75,11 @@
 }
 
 // Three-rule ("booktabs") table:  header row between the top and middle rules
-#let rules-table(columns: auto, align: auto, header: (), ..rows) = table(
+#let rules-table(columns: auto, align: auto, header: (), groups: (), ..rows) = table(
   columns: columns,
   align: align,
   table.hline(stroke: 0.8pt),
-  table.header(..header.map(h => text(weight: "regular")[#h])),
+  table.header(..groups, ..header.map(h => text(weight: "regular")[#h])),
   table.hline(stroke: 0.5pt),
   ..rows,
   table.hline(stroke: 0.8pt),
