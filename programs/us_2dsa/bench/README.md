@@ -83,4 +83,13 @@ computed from the same ASTFEM columns in Python as the accuracy reference.
 
 ## Reproduce
 
-`run_all.sh` runs the whole pipeline (about 2.5 hours on 4 cores).
+`run_all.sh` runs the whole pipeline (about 2.5 hours on 4 cores). The fits
+with the corrected noise solve (debug option `SolveSim-ExactNoise`) are the same
+matrix with `BENCH_DEBUG=SolveSim-ExactNoise BENCH_SET_SUFFIX=_exact`.
+
+## Report
+
+`report/subgrid_benchmark.typ` is the write-up of the results (Typst 0.15;
+`python3 report/build.py` with the `typst` Python package). Its figures are
+made by `report/make_figures.py` from the result files (`BENCH_DIR` pointing at
+the benchmark directory).
