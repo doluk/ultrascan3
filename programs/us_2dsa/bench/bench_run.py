@@ -1,7 +1,7 @@
 """Run the us_2dsa_bench fit matrix sequentially (one fit at a time, 4 threads)
 on the us_astfem_sim datasets in ~/ultrascan/results/bench<mix>s<seed>.
 
-usage: python3 bench_run.py single [configs]|iterated [configs]|arrival|mergepool [N]
+usage: python3 bench_run.py single [configs]|iterated [configs]|arrival|mergepool [N]|gen
 BENCH_SET_SUFFIX appends a suffix to the result set directory (e.g. for
 another us_2dsa_bench build given by US_2DSA_BENCH).
 Results: out/<set>/<config>__<mixture>__<seed>[__rep].json
@@ -77,6 +77,16 @@ def main():
             for rep in range(3):
                 run(os.path.join(HERE, 'out', 'arrival' + SUFFIX), name, grid, nsub,
                     'M1', 1, 1, tag=f'__ord{rep}')
+    elif which == 'gen':
+        # Partition cases of gen_cases.py (single pass); duplicates of an
+        # earlier configuration of the same case are not fitted again
+        gen = json.load(open(os.path.join(HERE, 'gen_cases.json')))['configs']
+        for c in gen:
+            if c['same_as']:
+                continue
+            for mix, seed in itertools.product(MIXTURES, SEEDS):
+                run(os.path.join(HERE, 'out', 'gen' + SUFFIX), c['name'], c['grid'],
+                    c['nsub'], mix, seed, 1)
     elif which == 'mergepool':
         # Single pass with a larger merge pool (2DSA-MergePool debug setting)
         pool = int(sys.argv[2]) if len(sys.argv) > 2 else 512

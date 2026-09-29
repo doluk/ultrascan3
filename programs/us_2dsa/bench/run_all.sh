@@ -59,3 +59,19 @@ python3 "$HERE/fullgrid_ref.py"
 python3 "$HERE/analyze.py" single   > summary_single.md
 python3 "$HERE/analyze.py" iterated > summary_iterated.md
 python3 "$HERE/analyze.py" arrival  > summary_arrival.md
+
+# 6. The same matrix with the corrected noise solve (debug option
+#    SolveSim-ExactNoise), results in out/single_exact and out/iterated_exact
+BENCH_DEBUG=SolveSim-ExactNoise BENCH_SET_SUFFIX=_exact python3 "$HERE/bench_run.py" single
+BENCH_DEBUG=SolveSim-ExactNoise BENCH_SET_SUFFIX=_exact python3 "$HERE/bench_run.py" iterated
+
+# 7. Partition cases where the general sublattice rule differs from the classic
+#    grid (100x100/101, 64x64/41, 60x60/60, union of partial grids with 32):
+#    columns, partitions, exact references, single-pass fits with both solvers
+python3 "$HERE/gen_cases.py" points
+"$BIN" columns "$RES/benchM1clean" cols/g100.csv cols/g100.f32 4
+"$BIN" columns "$RES/benchM1clean" cols/g60.csv cols/g60.f32 4
+python3 "$HERE/gen_cases.py" grids
+python3 "$HERE/gen_ref.py"
+python3 "$HERE/bench_run.py" gen
+BENCH_DEBUG=SolveSim-ExactNoise BENCH_SET_SUFFIX=_exact python3 "$HERE/bench_run.py" gen

@@ -63,6 +63,14 @@ class (its `main()` is renamed at compile time). It runs headless
 | fem4096 | 4096 points placed by farthest-point sampling in the FEM metric | interleaved farthest-point partition (Stage 3) |
 | fem1024 | 1024 points, as above | interleaved farthest-point partition (Stage 3, reduced) |
 
+Further partition cases (`gen_cases.py`, `gen_ref.py`, `bench_run.py gen`):
+a 100 x 100 grid with 101 subgrids, 64 x 64 with 41, 60 x 60 with 60, and a union
+of two partial grids with 32 subgrids, each with the current modulo rule, the
+best sublattice in index units (Stage 1, Algorithm 1 of the proposal including
+size balancing) and in the FEM metric (Stage 2); the union also with the
+interleaved farthest-point partition. These are the cases in which the general
+sublattice rule differs from the classic shifted grid.
+
 Single-pass fits use one refinement iteration; iterated fits use up to 10
 (stopping when the solutes no longer change). The full-grid optimum (exact
 NNLS over all 4096 points of the 64 x 64 grid, TI+RI projected out) is
