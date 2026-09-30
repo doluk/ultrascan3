@@ -123,7 +123,8 @@ protected:
         tivec.fill( 0.0, NPOINTS );
         rivec.fill( 0.0, NSCANS );
 
-        ASSERT_EQ(US_SolveSim::nnls_noise( noisflag, NSCANS, NPOINTS, nsolutes,
+        ASSERT_EQ(US_SolveSim::nnls_noise( noisflag, QVector< int >( 1, NSCANS ),
+                                           QVector< int >( 1, NPOINTS ), nsolutes,
                                            narows, awork, bwork, xvec,
                                            tivec, rivec ), 0);
     }
@@ -250,6 +251,88 @@ TEST_F(TestUSSolveSimNnlsNoise, TikhonovRowsAreNotProjected) {
     for ( int cc = 0; cc < nsolutes; cc++ )
         xdiff = qMax( xdiff, fabs( xvec[ cc ] - xref[ cc ] ) );
     EXPECT_LT(xdiff, 1e-10);
+}
+
+TEST_F(TestUSSolveSimNnlsNoise, EachDataSetHasItsOwnNoise) {
+    // Global fit of two data sets with shared concentrations:  the rows of
+    // the second (fewer scans and points, other radii and times) follow
+    // those of the first, and each data set has its own TI and RI noise
+    const int ns2    = 9;
+    const int np2    = 30;
+    const int narows = NTOTAL + ns2 * np2;
+    QVector< double > atwo;   // Column-major, narows rows
+    for ( int is = 0; is < 6; is++ )
+        for ( int id = 0; id < 3; id++ ) {
+            int cc = is * 3 + id;
+            for ( int kk = 0; kk < NTOTAL; kk++ )
+                atwo << amat[ cc * NTOTAL + kk ];
+            for ( int ss = 0; ss < ns2; ss++ )
+                for ( int rr = 0; rr < np2; rr++ )
+                    atwo << boundary( ( 2.0 + 1.5 * is ) * 1.0e-13,
+                                      ( 3.0 + 2.0 * id ) * 1.0e-7,
+                                      6.1 + rr * 0.03, 900.0 + ss * 650.0 );
+        }
+    ASSERT_EQ(atwo.size(), narows * nsolutes);
+
+    QVector< double > ti1( NPOINTS ), ri1( NSCANS ), ti2( np2 ), ri2( ns2 );
+    for ( int rr = 0; rr < NPOINTS; rr++ ) ti1[ rr ] = 0.03 * sin( 0.4 * rr );
+    for ( int ss = 0; ss < NSCANS;  ss++ ) ri1[ ss ] = 0.02 * ( ss % 4 ) - 0.01;
+    for ( int rr = 0; rr < np2;     rr++ ) ti2[ rr ] = 0.05 - 0.002 * rr;
+    for ( int ss = 0; ss < ns2;     ss++ ) ri2[ ss ] = 0.04 * cos( 1.3 * ss );
+
+    for ( int noisflag = 1; noisflag <= 3; noisflag++ ) {
+        SCOPED_TRACE( noisflag );
+        bool fit_ti = ( noisflag & 1 ) != 0;
+        bool fit_ri = ( noisflag & 2 ) != 0;
+
+        // Model plus the fitted kind of noise of each data set
+        QVector< double > data( narows, 0.0 );
+        for ( int kk = 0; kk < narows; kk++ ) {
+            for ( int cc = 0; cc < nsolutes; cc++ )
+                data[ kk ] += ctrue[ cc ] * atwo[ cc * narows + kk ];
+            if ( kk < NTOTAL )
+                data[ kk ] += ( fit_ti ? ti1[ kk % NPOINTS ] : 0.0 )
+                            + ( fit_ri ? ri1[ kk / NPOINTS ] : 0.0 );
+            else
+                data[ kk ] += ( fit_ti ? ti2[ ( kk - NTOTAL ) % np2 ] : 0.0 )
+                            + ( fit_ri ? ri2[ ( kk - NTOTAL ) / np2 ] : 0.0 );
+        }
+
+        QVector< double > awork = atwo;
+        QVector< double > bwork = data;
+        QVector< double > xvec ( nsolutes,        0.0 );
+        QVector< double > tivec( NPOINTS + np2,   0.0 );
+        QVector< double > rivec( NSCANS  + ns2,   0.0 );
+        QVector< int >    dscans  = { NSCANS,  ns2 };
+        QVector< int >    dpoints = { NPOINTS, np2 };
+        ASSERT_EQ(US_SolveSim::nnls_noise( noisflag, dscans, dpoints, nsolutes,
+                                           narows, awork, bwork, xvec,
+                                           tivec, rivec ), 0);
+
+        double xdiff = 0.0;
+        for ( int cc = 0; cc < nsolutes; cc++ )
+            xdiff = qMax( xdiff, fabs( xvec[ cc ] - ctrue[ cc ] ) );
+        EXPECT_LT(xdiff, 1e-8);
+
+        // Fitted noise at each point of each data set (TI and RI noise of a
+        //  data set share a constant)
+        double ndiff = 0.0;
+        for ( int kk = 0; kk < narows; kk++ ) {
+            int  ks    = ( kk < NTOTAL ) ? kk : kk - NTOTAL;
+            int  npts  = ( kk < NTOTAL ) ? NPOINTS : np2;
+            int  toff  = ( kk < NTOTAL ) ? 0 : NPOINTS;
+            int  roff  = ( kk < NTOTAL ) ? 0 : NSCANS;
+            int  rr    = ks % npts;
+            int  ss    = ks / npts;
+            double fit = ( fit_ti ? tivec[ toff + rr ] : 0.0 )
+                       + ( fit_ri ? rivec[ roff + ss ] : 0.0 );
+            double tru = ( kk < NTOTAL )
+                         ? ( fit_ti ? ti1[ rr ] : 0.0 ) + ( fit_ri ? ri1[ ss ] : 0.0 )
+                         : ( fit_ti ? ti2[ rr ] : 0.0 ) + ( fit_ri ? ri2[ ss ] : 0.0 );
+            ndiff = qMax( ndiff, fabs( fit - tru ) );
+        }
+        EXPECT_LT(ndiff, 1e-9);
+    }
 }
 
 // ============================================================================
@@ -486,6 +569,90 @@ TEST_F(TestUSSolveSimCalcResiduals, RemovesTiAndRiNoise) {
     EXPECT_LT(noiseDeviation( sim, tinoi, rinoi ), 1e-9);
 
     EXPECT_LT(maxDiff( fittedConc( input.solutes, sim.solutes ), conc ), 1e-8);
+}
+
+TEST_F(TestUSSolveSimCalcResiduals, GlobalFitRemovesNoiseOfEachDataSet) {
+    // Two data sets fitted together:  the second has scans 2-10 and every
+    // other radius of the first.  Each has its own TI and RI noise, which
+    // must be removed exactly and returned in data set order
+    const int ns2 = 9;
+    const int np2 = ( NPOINTS + 1 ) / 2;
+    US_SolveSim::DataSet dset2;
+    dset2 = dset;
+    US_DataIO::EditedData& edata2 = dset2.run_data;
+    edata2.xvalues.clear();
+    edata2.scanData.clear();
+    for ( int rr = 0; rr < NPOINTS; rr += 2 )
+        edata2.xvalues << dset.run_data.xvalues[ rr ];
+    for ( int ss = 2; ss < 2 + ns2; ss++ ) {
+        US_DataIO::Scan scan = dset.run_data.scanData[ ss ];
+        scan.delta_r = 0.04;
+        scan.rvalues.fill( 0.0, np2 );
+        edata2.scanData << scan;
+    }
+    dsets << &dset2;
+
+    US_SolveSim::Simulation input;
+    for ( double sval : { 2.0, 4.0, 6.0 } )
+        for ( double kval : { 1.2, 2.0 } )
+            input.solutes << US_Solute( sval * 1.0e-13, kval );
+    std::sort( input.solutes.begin(), input.solutes.end() );
+
+    // A matrix of the global fit:  rows of data set 1, then of data set 2
+    const int narows = NTOTAL + ns2 * np2;
+    QVector< double > amatrix;
+    QVector< double > bvector;
+    {
+        US_SolveSim::Simulation sim = input;
+        sim.noisflag = 0;
+        US_SolveSim solvesim( dsets, 1, false );
+        solvesim.calc_residuals( 0, 2, sim, false, &amatrix, &bvector );
+    }
+    ASSERT_EQ(amatrix.size(), input.solutes.size() * narows);
+
+    QVector< double > conc = { 0.3, 0.0, 0.5, 0.0, 0.0, 0.2 };
+    QVector< double > tinoi, rinoi;
+    makeNoise( tinoi, rinoi );
+    QVector< double > ti2( np2 ), ri2( ns2 );
+    for ( int rr = 0; rr < np2; rr++ ) ti2[ rr ] = 0.03 - 0.001 * rr;
+    for ( int ss = 0; ss < ns2; ss++ ) ri2[ ss ] = 0.04 * cos( 1.3 * ss );
+
+    for ( int kk = 0; kk < narows; kk++ ) {
+        double val = 0.0;
+        for ( int cc = 0; cc < conc.size(); cc++ )
+            val += conc[ cc ] * amatrix[ cc * narows + kk ];
+        if ( kk < NTOTAL )
+            dset.run_data.scanData[ kk / NPOINTS ].rvalues[ kk % NPOINTS ] =
+                val + tinoi[ kk % NPOINTS ] + rinoi[ kk / NPOINTS ];
+        else {
+            int ks = kk - NTOTAL;
+            edata2.scanData[ ks / np2 ].rvalues[ ks % np2 ] =
+                val + ti2[ ks % np2 ] + ri2[ ks / np2 ];
+        }
+    }
+
+    US_SolveSim::Simulation sim = input;
+    sim.noisflag = 3;
+    US_SolveSim solvesim( dsets, 1, false );
+    solvesim.calc_residuals( 0, 2, sim );
+
+    EXPECT_LT(sim.variance, 1e-20);
+    EXPECT_LT(maxDiff( fittedConc( input.solutes, sim.solutes ), conc ), 1e-8);
+    ASSERT_EQ(sim.ti_noise.size(), NPOINTS + np2);
+    ASSERT_EQ(sim.ri_noise.size(), NSCANS  + ns2);
+
+    // TI and RI noise of a data set share a constant
+    double ndiff = 0.0;
+    for ( int ss = 0; ss < NSCANS; ss++ )
+        for ( int rr = 0; rr < NPOINTS; rr++ )
+            ndiff = qMax( ndiff, fabs( sim.ti_noise[ rr ] + sim.ri_noise[ ss ]
+                                       - tinoi[ rr ] - rinoi[ ss ] ) );
+    for ( int ss = 0; ss < ns2; ss++ )
+        for ( int rr = 0; rr < np2; rr++ )
+            ndiff = qMax( ndiff, fabs( sim.ti_noise[ NPOINTS + rr ]
+                                       + sim.ri_noise[ NSCANS + ss ]
+                                       - ti2[ rr ] - ri2[ ss ] ) );
+    EXPECT_LT(ndiff, 1e-9);
 }
 
 TEST_F(TestUSSolveSimCalcResiduals, ConstantOffsetIsAbsorbedByFittedNoise) {

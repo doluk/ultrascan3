@@ -91,29 +91,34 @@ class US_UTIL_EXTERN US_SolveSim : public QObject
 
     //! \brief Non-negative least squares for concentrations with algebraic
     //!        removal of time-invariant (TI) and/or radially-invariant (RI)
-    //!        noise, for a single data set
+    //!        noise, each data set having its own noise vectors
     //!
     //! For given concentrations, the least-squares TI noise (one value per
-    //! radius) and RI noise (one value per scan) are the mean residuals over
-    //! scans and over radii.  Eliminating them projects the data and each
-    //! simulation onto the complement of the noise subspace:  the data rows
-    //! are centered by the per-scan means (RI), the per-radius means (TI),
-    //! or both.  The concentrations are the NNLS solution of the projected
-    //! system; the noise vectors follow from the removed means.
+    //! radius) and RI noise (one value per scan) of a data set are the mean
+    //! residuals over its scans and over its radii.  Eliminating them
+    //! projects the data and each simulation onto the complement of the
+    //! noise subspace:  the data rows of each data set are centered by their
+    //! per-scan means (RI), per-radius means (TI), or both.  The
+    //! concentrations are the NNLS solution of the projected system; the
+    //! noise vectors follow from the removed means.
     //!
     //! \param noisflag  Noise flag:  1 = TI, 2 = RI, 3 = TI and RI
-    //! \param nscans    Number of scans
-    //! \param npoints   Number of radial points in each scan
+    //! \param nscans    Number of scans of each data set
+    //! \param npoints   Number of radial points of each data set
     //! \param nsolutes  Number of solutes (columns of A)
-    //! \param narows    Rows in each A column:  nscans*npoints data rows
-    //!                  (scan-major), followed by any Tikhonov rows
+    //! \param narows    Rows in each A column:  the nscans*npoints data rows
+    //!                  (scan-major) of each data set in turn, followed by
+    //!                  any Tikhonov rows
     //! \param nnls_a    A matrix, column-major (overwritten)
     //! \param nnls_b    B vector with narows values (overwritten)
     //! \param nnls_x    Output concentrations (nsolutes values)
-    //! \param tinvec    Output TI noise (npoints values), if noisflag has 1
-    //! \param rinvec    Output RI noise (nscans values), if noisflag has 2
+    //! \param tinvec    Output TI noise (npoints values of each data set in
+    //!                  turn), if noisflag has 1
+    //! \param rinvec    Output RI noise (nscans values of each data set in
+    //!                  turn), if noisflag has 2
     //! \returns         Return code of US_Math2::nnls
-    static int nnls_noise( int, int, int, int, int,
+    static int nnls_noise( int, const QVector< int >&, const QVector< int >&,
+                           int, int,
                            QVector< double >&, QVector< double >&,
                            QVector< double >&, QVector< double >&,
                            QVector< double >& );
