@@ -71,6 +71,11 @@ size balancing) and in the FEM metric (Stage 2); the union also with the
 interleaved farthest-point partition. These are the cases in which the general
 sublattice rule differs from the classic shifted grid.
 
+Band-forming experiments: `BENCH_BAND_VOLUME=<mL>` makes `columns` and `fit`
+treat the run as band-forming (lamella volume in mL, 1.2 cm path, 2.5 degree
+sector); simulate the data with `bandform="1" bandvolume="<mL>"` in the
+simulation parameters.
+
 Single-pass fits use one refinement iteration; iterated fits use up to 10
 (stopping when the solutes no longer change). The full-grid optimum (exact
 NNLS over all 4096 points of the 64 x 64 grid, TI+RI projected out) is

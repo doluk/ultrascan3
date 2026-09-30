@@ -36,7 +36,8 @@
 //! "2DSA-MergePool=512" or "SolveSim-ExactNoise").  BENCH_NOISE selects the
 //! fitted noise (0 none, 1 TI, 2 RI, 3 TI+RI; default 3), and BENCH_TI_FILE
 //! names the output of an earlier fit whose TI noise is subtracted from the
-//! data before fitting.
+//! data before fitting.  BENCH_BAND_VOLUME (mL) fits as a band-forming
+//! experiment with that lamella volume.
 
 #include <QApplication>
 #include <QtCore>
@@ -262,7 +263,18 @@ bool load_experiment( const QString& rundir, US_SolveSim::DataSet& dset,
    // As in US_2dsa::load (no database)
    dset.simparams.initFromData( NULL, *edata, true );
    dset.simparams.sim = ( edata->channel == "S" );
-   QString tmst   = QDir( rundir ).filePath( runID + ".time_state.tmst" );
+
+   // Band-forming centerpiece (as set from the centerpiece shape or in the
+   // us_2dsa advanced dialog): BENCH_BAND_VOLUME gives the lamella volume in
+   // mL; path length and sector angle are those of the simulation
+   if ( ! qgetenv( "BENCH_BAND_VOLUME" ).isEmpty() )
+   {
+      dset.simparams.band_forming = true;
+      dset.simparams.band_volume  = qgetenv( "BENCH_BAND_VOLUME" ).toDouble();
+      dset.simparams.cp_pathlen   = 1.2;
+      dset.simparams.cp_angle     = 2.5;
+   }
+   QString tmst  = QDir( rundir ).filePath( runID + ".time_state.tmst" );
    US_DataIO::RawData sdata;
    US_AstfemMath::initSimData( sdata, *edata, 0.0 );
    if ( ! ( QFile( tmst ).exists()  &&
