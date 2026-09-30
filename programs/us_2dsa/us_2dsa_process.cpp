@@ -1001,8 +1001,14 @@ DbgLv(1) << " cc 20w comp D" << model.components[ cc ].D;
       }
       edata->meniscus    = emeniscus;
       edata->bottom      = ebottom;
-      simparms->meniscus = emeniscus;
-      simparms->bottom   = ebottom;
+
+      if ( mmtype == 1 )
+      {  // Only a meniscus/bottom fit changes the simulation meniscus,bottom.
+         // (For Monte Carlo, bdata->bottom may be 0, meaning "computed";
+         //  keep the simulation parameters exactly as the first pass used.)
+         simparms->meniscus = emeniscus;
+         simparms->bottom   = ebottom;
+      }
       s_rfiter           = QString::number( r_iter + 1 );
       s_mmiter           = QString::number( mm_iter );
       s_variance         = QString::number( vari_curr );
@@ -1747,6 +1753,8 @@ void US_2dsaProcess::requeue_tasks()
    r_iter    = 0;
    task_recs.clear();             // Keep records of this iteration only
    tkdepths .clear();             // Task depths of this pass only
+   itvaris  .clear();             // Refinement convergence is tested within
+   ical_sols.clear();             //  each Monte Carlo or meniscus pass
    emit stage_complete( kcsteps, nctotal );
    int jdpth = 0;
    int jnois = 0;
