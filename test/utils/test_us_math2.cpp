@@ -623,3 +623,60 @@ TEST_F(TestUSMath2Unit, NnlsSatisfiesKuhnTuckerConditions) {
         }
     }
 }
+
+TEST_F(TestUSMath2Unit, NnlsIterationLimitReturnsLastFeasibleSolution) {
+    // Stopped by the iteration limit (return 1), nnls must return a
+    // feasible x and the residual norm of that x
+    std::mt19937 gen( 20260930 );
+    std::uniform_real_distribution< double > uni( -1.0, 1.0 );
+    const int mrows = 40;
+    const int ncols = 15;
+    int nlimit = 0;
+
+    for ( int trial = 0; trial < 50; trial++ ) {
+        QVector< double > amat( mrows * ncols );
+        QVector< double > bvec( mrows );
+        for ( double& val : amat ) val = uni( gen );
+        for ( double& val : bvec ) val = uni( gen );
+
+        QVector< double > awork = amat;   // nnls overwrites A and b
+        QVector< double > bwork = bvec;
+        QVector< double > xopt( ncols );
+        double ropt = 0.0;
+        ASSERT_EQ(US_Math2::nnls( awork.data(), mrows, mrows, ncols,
+                                  bwork.data(), xopt.data(), &ropt ), 0);
+
+        for ( int itmax = 1; itmax <= 3 * ncols; itmax++ ) {
+            awork = amat;
+            bwork = bvec;
+            QVector< double > xvec( ncols, -1.0 );
+            double rnorm = -1.0;
+            int ret = US_Math2::nnls( awork.data(), mrows, mrows, ncols,
+                                      bwork.data(), xvec.data(), &rnorm,
+                                      NULL, NULL, NULL, itmax );
+            ASSERT_TRUE(ret == 0  ||  ret == 1) << "trial " << trial;
+
+            QVector< double > resid = bvec;   // b - A x
+            for ( int jj = 0; jj < ncols; jj++ ) {
+                EXPECT_GE(xvec[ jj ], 0.0) << "trial " << trial << " itmax " << itmax;
+                for ( int ii = 0; ii < mrows; ii++ )
+                    resid[ ii ] -= amat[ jj * mrows + ii ] * xvec[ jj ];
+            }
+
+            double rsumsq = 0.0;
+            for ( double val : resid ) rsumsq += val * val;
+            EXPECT_NEAR(rnorm, sqrt( rsumsq ), 1e-12)
+                << "trial " << trial << " itmax " << itmax;
+
+            if ( ret == 0 ) {   // Limit not reached:  the optimum
+                EXPECT_NEAR(rnorm, ropt, 1e-12) << "trial " << trial;
+                break;
+            }
+
+            EXPECT_GE(rnorm, ropt - 1e-12) << "trial " << trial << " itmax " << itmax;
+            nlimit++;
+        }
+    }
+
+    EXPECT_GT(nlimit, 0);
+}

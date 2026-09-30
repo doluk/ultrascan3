@@ -875,7 +875,8 @@ int US_Math2::nnls( double* a, int a_dim1, int m, int n,
                     double* rnorm,
                     double* wp,  
                     double* zzp,
-                    int*    indexp 
+                    int*    indexp,
+                    int     itmax
                   ) 
 {
 #ifdef _BF_NNLS_
@@ -947,8 +948,10 @@ int US_Math2::nnls( double* a, int a_dim1, int m, int n,
    /* if M cols of A have been triangularized */
    
    int iter  = 0; 
-   int itmax = n * 3;
    int ja_dim1;
+
+   if ( itmax <= 0 )
+      itmax     = n * 3;
 
    while ( iz1 <= iz2 && nsetp < m ) 
    {
@@ -1204,6 +1207,20 @@ int US_Math2::nnls( double* a, int a_dim1, int m, int n,
    else 
       for( j = 0; j < n; j++ ) 
          w[ j ] = 0.0;
+
+   if ( ret == 1 )
+   {  /* At the iteration limit X does not solve the triangular system */
+      /* of set P:  add its residual in the first nsetp rows */
+      for ( ii = 0; ii < nsetp; ii++ )
+      {
+         d1 = b[ ii ];
+
+         for ( l = ii; l < nsetp; l++ )
+            d1 -= a[ ii + index[ l ] * a_dim1 ] * x[ index[ l ] ];
+
+         sm += d1 * d1;
+      }
+   }
 
    if ( rnorm != NULL ) *rnorm = sqrt( sm );
 
