@@ -653,8 +653,10 @@ void US_MPI_Analysis::set_monteCarlo( void )
 DbgLv(1) << "sMC: max_depth" << max_depth << "calcsols size" << calculated_solutes[max_depth].size()
  << "simvsols size" << simulation_values.solutes.size();
 
-   // Set up new data modified by a gaussian distribution
-   if ( mc_iteration == 1 )
+   // Set up new data modified by a gaussian distribution.
+   // A parallel-masters group other than the first starts at a later
+   // iteration, so also set the gaussians if this process has none yet.
+   if ( mc_iteration == 1  ||  sigmas.isEmpty() )
    {
       set_gaussians();
 
