@@ -549,6 +549,11 @@ DbgLv(1) << "master start 2DSA" << startTime;
    current_dataset     = 0;
    datasets_to_process = data_sets.size();
 
+   // Jobs carry the meniscus and bottom to the workers.  Monte Carlo
+   // excludes a meniscus/bottom fit, so use the edited data values.
+   meniscus_value      = data_sets[ current_dataset ]->run_data.meniscus;
+   bottom_value        = data_sets[ current_dataset ]->run_data.bottom;
+
    int iter     = 1;
    int super    = 0;
    MPI_Status status;
