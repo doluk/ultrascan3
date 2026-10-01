@@ -371,6 +371,7 @@ class US_MPI_Analysis : public QObject
         // Master
         void     _2dsa_master      ( void );
         void     submit            ( Sa_Job&, int );
+        void     run_2dsa_jobs     ( void );
         void     submit_pcsa       ( Sa_Job&, int );
         void     add_to_queue      ( Sa_Job& );
         void     process_results   ( int, const int* );
@@ -378,6 +379,7 @@ class US_MPI_Analysis : public QObject
         void     write_noise       ( US_Noise::NoiseType, const QVector< double>& );
         void     iterate           ( void );
         void     set_meniscus      ( void );
+        void     set_menibott_values( int );
         void     set_monteCarlo    ( void );
         void     write_output      ( void );
         void     write_global      ( void );

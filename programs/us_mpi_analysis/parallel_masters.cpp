@@ -572,135 +572,82 @@ DbgLv(1) << "master start 2DSA" << startTime;
 
    while ( true )
    {
-      int worker;
-//if ( max_depth > 1 )
-// DbgLv(1) << " master loop-TOP:  jq-empty?" << job_queue.isEmpty() << "   areReady?" << worker_status.contains(READY)
-//    << "  areWorking?" << worker_status.contains(WORKING);
+      run_2dsa_jobs();
 
-      // Give the jobs to the workers
-      while ( ! job_queue.isEmpty()  &&  worker_status.contains( READY ) )
+      // All done with the pass: no jobs are ready or running
+      QString progress = 
+         "Iteration: "    + QString::number( iterations ) +
+         "; Dataset: "    + QString::number( current_dataset + 1 ) +
+         "; Meniscus: (Run 1 of 1)" +
+         "; MonteCarlo: " + QString::number( mc_iteration );
+
+      send_udp( progress );
+
+      if ( ! job_queue.isEmpty() ) continue;
+
+      // Write out the model
+      max_rss();
+DbgLv(1) << "2dMast:    mc_iter" << mc_iteration
+<< "variance" << simulation_values.variance << "my_group" << my_group;
+
+      std::sort( simulation_values.solutes.begin(), simulation_values.solutes.end() );
+
+      write_model( simulation_values, US_Model::TWODSA );
+
+      if ( mc_iteration >= mc_iterations )
       {
-         worker    = ready_worker();
-
-         Sa_Job job              = job_queue.takeFirst();
-         submit( job, worker );
-         worker_depth [ worker ] = job.mpi_job.depth;
-         worker_status[ worker ] = WORKING;
+         for ( int jj = 1; jj <= my_workers; jj++ )
+            maxrss += work_rss[ jj ];
       }
 
-      // All done with the pass if no jobs are ready or running
-      if ( job_queue.isEmpty()  &&  ! worker_status.contains( WORKING ) ) 
+      // Tell the supervisor that an iteration is done
+      iter    = (int)maxrss;
+      tag     = ( mc_iteration < mc_iterations ) ?
+                DONEITER : DONELAST;
+
+      MPI_Send( &iter,
+                1,
+                MPI_INT,
+                super,
+                tag,
+                MPI_COMM_WORLD );
+
+      if ( mc_iteration < mc_iterations )
       {
-         QString progress = 
-            "Iteration: "    + QString::number( iterations ) +
-            "; Dataset: "    + QString::number( current_dataset + 1 ) +
-            "; Meniscus: (Run 1 of 1)" +
-            "; MonteCarlo: " + QString::number( mc_iteration );
-
-         send_udp( progress );
-
-         if ( ! job_queue.isEmpty() ) continue;
-
-         // Write out the model
-         max_rss();
-DbgLv(1) << "2dMast:    mc_iter" << mc_iteration
-   << "variance" << simulation_values.variance << "my_group" << my_group;
-
-         std::sort( simulation_values.solutes.begin(), simulation_values.solutes.end() );
-
-         write_model( simulation_values, US_Model::TWODSA );
-
-         if ( mc_iteration >= mc_iterations )
-         {
-            for ( int jj = 1; jj <= my_workers; jj++ )
-               maxrss += work_rss[ jj ];
-         }
-
-         // Tell the supervisor that an iteration is done
-         iter    = (int)maxrss;
-         tag     = ( mc_iteration < mc_iterations ) ?
-                   DONEITER : DONELAST;
-
-         MPI_Send( &iter,
-                   1,
-                   MPI_INT,
-                   super,
-                   tag,
-                   MPI_COMM_WORLD );
+         time_mc_iterations();
 
          if ( mc_iteration < mc_iterations )
          {
-            time_mc_iterations();
+            set_monteCarlo();
 
-            if ( mc_iteration < mc_iterations )
+            // Get new Monte Carlo iteration index from supervisor
+            MPI_Recv( &iter,
+                      1,
+                      MPI_INT,
+                      super,
+                      MPI_ANY_TAG,
+                      MPI_COMM_WORLD,
+                      &status );
+
+            tag      = status.MPI_TAG;
+
+            if ( tag == STARTLAST )
+               mc_iterations = iter;
+
+            else if ( tag != STARTITER )
             {
-               set_monteCarlo();
-
-               // Get new Monte Carlo iteration index from supervisor
-               MPI_Recv( &iter,
-                         1,
-                         MPI_INT,
-                         super,
-                         MPI_ANY_TAG,
-                         MPI_COMM_WORLD,
-                         &status );
-
-               tag      = status.MPI_TAG;
-
-               if ( tag == STARTLAST )
-                  mc_iterations = iter;
-
-               else if ( tag != STARTITER )
-               {
-                  DbgLv(0) << "Unexpected tag in PMG 2DSA Master" << tag;
-                  continue;
-               }
-
-               mc_iteration  = iter;
+               DbgLv(0) << "Unexpected tag in PMG 2DSA Master" << tag;
+               continue;
             }
+
+            mc_iteration  = iter;
          }
-
-         if ( ! job_queue.isEmpty() ) continue;
-
-         shutdown_all();  // All done
-         break;           // Break out of main loop.
       }
 
-      // Wait for worker to send a message
-      int        sizes[ 4 ];
+      if ( ! job_queue.isEmpty() ) continue;
 
-      MPI_Recv( sizes, 
-                4, 
-                MPI_INT,
-                MPI_ANY_SOURCE,
-                MPI_ANY_TAG,
-                my_communicator,
-                &status);
-
-      worker = status.MPI_SOURCE;
-
-//if ( max_depth > 0 )
-// DbgLv(1) << " PMG master loop-BOTTOM:   status TAG" << status.MPI_TAG
-//  << MPI_Job::READY << MPI_Job::RESULTS << "  source" << status.MPI_SOURCE;
-      switch( status.MPI_TAG )
-      {
-         case MPI_Job::READY:   // Ready for work
-            worker_status[ worker ] = READY;
-            break;
-
-         case MPI_Job::RESULTS: // Return solute data
-            process_results( worker, sizes );
-            work_rss[ worker ] = sizes[ 3 ];
-            break;
-
-         default:  // Should never happen
-            QString msg =  "Master 2DSA:  Received invalid status " +
-                           QString::number( status.MPI_TAG );
-            abort( msg );
-            break;
-      }
-
-      max_rss();
+      shutdown_all();  // All done
+      break;           // Break out of main loop.
    }
 }
 

@@ -49,98 +49,83 @@ void US_MPI_Analysis::_2dsa_master( void )
 
    while ( true )
    {
-      int worker;
       meniscus_value       = ( meniscus_points == 1 )
                            ? data_sets[ current_dataset ]->run_data.meniscus
                            : meniscus_values[ meniscus_run ];
       bottom_value       = ( bottom_points == 1 )
                            ? data_sets[ current_dataset ]->run_data.bottom
                            : bottom_values  [ bottom_run   ];
-//if ( max_depth > 1 )
-// DbgLv(1) << " master loop-TOP:  jq-empty?" << job_queue.isEmpty() << "   areReady?" << worker_status.contains(READY)
-//    << "  areWorking?" << worker_status.contains(WORKING);
 
-      // Give the jobs to the workers
-      while ( ! job_queue.isEmpty()  &&  worker_status.contains( READY ) )
+      run_2dsa_jobs();
+
+      // All done with the pass: no jobs are ready or running
+      US_DataIO::EditedData* edata = &data_sets[ current_dataset ]->run_data;
+      QString tripleID = edata->cell + edata->channel + edata->wavelength;
+      QString progress =
+         "Iteration: "    + QString::number( iterations );
+
+      if ( datasets_to_process > 1 )
+         progress     += "; Datasets: "
+                         + QString::number( datasets_to_process );
+      else
+         progress     += "; Dataset: "
+                         + QString::number( current_dataset + 1 )
+                         + " (" + tripleID + ") of "
+                         + QString::number( count_datasets );
+
+      if ( mc_iterations > 1 )
+         progress     += "; MonteCarlo: "
+                         + QString::number( mc_iteration + 1 );
+
+      else if ( fit_menbot )
+         progress     += "; Meniscus: "
+            + QString::number( meniscus_value, 'f', 4 )
+            + "; Bottom: "
+            + QString::number( bottom_value,   'f', 4 )
+            + QString::asprintf( "  ( m%2d b%2d )",
+                 ( meniscus_run + 1 ), ( bottom_run + 1 ) );
+      else if ( fit_meni )
+         progress     += "; Meniscus: "
+            + QString::number( meniscus_value, 'f', 4 )
+            + tr( " (%1 of %2)" ).arg( meniscus_run + 1 )
+                                 .arg( meniscus_points );
+      else if ( fit_bott )
+         progress     += "; Bottom: "
+            + QString::number( bottom_value,   'f', 4 )
+            + tr( " (%1 of %2)" ).arg( bottom_run + 1 )
+                                 .arg( bottom_points );
+      else
+         progress     += "; RMSD: "
+            + QString::number( sqrt( simulation_values.variance ) );
+
+      send_udp( progress );
+
+      // Iterative refinement
+      if ( max_iterations > 1 )
       {
-         worker    = ready_worker();
+         if ( data_sets.size() > 1  &&  iterations == 1 )
+         {
+            if ( datasets_to_process == 1 )
+            {
+               qDebug() << "   == Refinement Iterations for Dataset"
+                  << current_dataset + 1 << "==";
+            }
+            else
+            {
+               qDebug() << "   == Refinement Iterations for Datasets 1 to"
+                  << datasets_to_process << "==";
+            }
+         }
+         qDebug() << "Iteration:" << iterations << " Variance:"
+            << simulation_values.variance << "RMSD:"
+            << sqrt( simulation_values.variance );
 
-         Sa_Job job              = job_queue.takeFirst();
-         submit( job, worker );
-         worker_depth [ worker ] = job.mpi_job.depth;
-         worker_status[ worker ] = WORKING;
+         iterate();
       }
 
-      // All done with the pass if no jobs are ready or running
-      if ( job_queue.isEmpty()  &&  ! worker_status.contains( WORKING ) )
-      {
-         US_DataIO::EditedData* edata = &data_sets[ current_dataset ]->run_data;
-         QString tripleID = edata->cell + edata->channel + edata->wavelength;
-         QString progress =
-            "Iteration: "    + QString::number( iterations );
+      if ( ! job_queue.isEmpty() ) continue;
 
-         if ( datasets_to_process > 1 )
-            progress     += "; Datasets: "
-                            + QString::number( datasets_to_process );
-         else
-            progress     += "; Dataset: "
-                            + QString::number( current_dataset + 1 )
-                            + " (" + tripleID + ") of "
-                            + QString::number( count_datasets );
-
-         if ( mc_iterations > 1 )
-            progress     += "; MonteCarlo: "
-                            + QString::number( mc_iteration + 1 );
-
-         else if ( fit_menbot )
-            progress     += "; Meniscus: "
-               + QString::number( meniscus_value, 'f', 4 )
-               + "; Bottom: "
-               + QString::number( bottom_value,   'f', 4 )
-               + QString::asprintf( "  ( m%2d b%2d )",
-                    ( meniscus_run + 1 ), ( bottom_run + 1 ) );
-         else if ( fit_meni )
-            progress     += "; Meniscus: "
-               + QString::number( meniscus_value, 'f', 4 )
-               + tr( " (%1 of %2)" ).arg( meniscus_run + 1 )
-                                    .arg( meniscus_points );
-         else if ( fit_bott )
-            progress     += "; Bottom: "
-               + QString::number( bottom_value,   'f', 4 )
-               + tr( " (%1 of %2)" ).arg( bottom_run + 1 )
-                                    .arg( bottom_points );
-         else
-            progress     += "; RMSD: "
-               + QString::number( sqrt( simulation_values.variance ) );
-
-         send_udp( progress );
-
-         // Iterative refinement
-         if ( max_iterations > 1 )
-         {
-            if ( data_sets.size() > 1  &&  iterations == 1 )
-            {
-               if ( datasets_to_process == 1 )
-               {
-                  qDebug() << "   == Refinement Iterations for Dataset"
-                     << current_dataset + 1 << "==";
-               }
-               else
-               {
-                  qDebug() << "   == Refinement Iterations for Datasets 1 to"
-                     << datasets_to_process << "==";
-               }
-            }
-            qDebug() << "Iteration:" << iterations << " Variance:"
-               << simulation_values.variance << "RMSD:"
-               << sqrt( simulation_values.variance );
-
-            iterate();
-         }
-
-         if ( ! job_queue.isEmpty() ) continue;
-
-         iterations = 1;
+      iterations = 1;
 DbgLv(1) << " master loop-BOT: dssize" << data_sets.size() << "ds_to_p"
  << datasets_to_process << "curr_ds" << current_dataset;
 US_DataIO::EditedData* edat=&data_sets[current_dataset]->run_data;
@@ -152,151 +137,153 @@ DbgLv(1) << " master loop-BOT: ds" << current_dataset+1 << "data l m h"
  << edat->value(10,10) << edat->value(ss,rr) << edat->value(ks,kr);
 DbgLv(1) << " master loop-BOT: GF job_queue empty" << job_queue.isEmpty();
 
-         if ( ! job_queue.isEmpty() ) continue;
+      if ( ! job_queue.isEmpty() ) continue;
 
-         if ( is_global_fit )
-            write_global();
+      if ( is_global_fit )
+         write_global();
 
-         else
-            write_output();
+      else
+         write_output();
 
-         // Fit meniscus
-         if ( ( menibott_ndx + 1 ) < menibott_count )
+      // Fit meniscus
+      if ( ( menibott_ndx + 1 ) < menibott_count )
+      {
+         set_meniscus();
+      }
+
+      if ( ! job_queue.isEmpty() ) continue;
+
+      // Monte Carlo
+      if ( mc_iterations > 1 )
+      {  // Recompute final fit to get simulation and residual
+         mc_iteration++;
+         wksim_vals           = simulation_values;
+         wksim_vals.solutes   = calculated_solutes[ max_depth ];
+
+         calc_residuals( 0, data_sets.size(), wksim_vals );
+
+         qDebug() << "Base-Sim RMSD" << sqrt( simulation_values.variance )
+                  << "  Exp-Sim RMSD" << sqrt( wksim_vals.variance )
+                  << "  of MC_Iteration" << mc_iteration;
+         max_iterations              = max_iters_all;
+         simulation_values           = wksim_vals;
+
+         if ( mc_iteration < mc_iterations )
          {
-            set_meniscus();
+            time_mc_iterations();
+
+            set_monteCarlo();
          }
+      }
 
-         if ( ! job_queue.isEmpty() ) continue;
+      if ( ! job_queue.isEmpty() ) continue;
 
-         // Monte Carlo
-         if ( mc_iterations > 1 )
-         {  // Recompute final fit to get simulation and residual
-            mc_iteration++;
-            wksim_vals           = simulation_values;
-            wksim_vals.solutes   = calculated_solutes[ max_depth ];
+      if ( is_composite_job )
+      {  // Composite job:  update outputs in TAR and bump dataset count
+         QString tripleID = QString( data_sets[ current_dataset ]->model
+                            .description ).section( ".", -3, -3 );
+         current_dataset++;
+         dset_calc_solutes << calculated_solutes[ max_depth ];
 
-            calc_residuals( 0, data_sets.size(), wksim_vals );
+         update_outputs();
 
-            qDebug() << "Base-Sim RMSD" << sqrt( simulation_values.variance )
-                     << "  Exp-Sim RMSD" << sqrt( wksim_vals.variance )
-                     << "  of MC_Iteration" << mc_iteration;
-            max_iterations              = max_iters_all;
-            simulation_values           = wksim_vals;
-
-            if ( mc_iteration < mc_iterations )
-            {
-               time_mc_iterations();
-
-               set_monteCarlo();
-            }
+         if ( simulation_values.noisflag == 0 )
+         {
+            DbgLv(0) << my_rank << ": Dataset" << current_dataset
+                     << "(" << tripleID << ")"
+                     << " :  model was output.";
          }
-
-         if ( ! job_queue.isEmpty() ) continue;
-
-         if ( is_composite_job )
-         {  // Composite job:  update outputs in TAR and bump dataset count
-            QString tripleID = QString( data_sets[ current_dataset ]->model
-                               .description ).section( ".", -3, -3 );
-            current_dataset++;
-            dset_calc_solutes << calculated_solutes[ max_depth ];
-
-            update_outputs();
-
-            if ( simulation_values.noisflag == 0 )
-            {
-               DbgLv(0) << my_rank << ": Dataset" << current_dataset
-                        << "(" << tripleID << ")"
-                        << " :  model was output.";
-            }
-            else
-            {
-               DbgLv(0) << my_rank << ": Dataset" << current_dataset
-                        << "(" << tripleID << ")"
-                        << " :  model/noise(s) were output.";
-            }
+         else
+         {
+            DbgLv(0) << my_rank << ": Dataset" << current_dataset
+                     << "(" << tripleID << ")"
+                     << " :  model/noise(s) were output.";
+         }
 
 DbgLv(1) << " master loop-BOT:    cds kds" << current_dataset << count_datasets;
-            if ( current_dataset < count_datasets )
-            {
-               menibott_ndx    = 0;
-               meniscus_run    = 0;
-               bottom_run      = 0;
-               iterations      = 1;
-               mc_iteration    = 0;
+         if ( current_dataset < count_datasets )
+         {
+            menibott_ndx    = 0;
+            meniscus_run    = 0;
+            bottom_run      = 0;
+            iterations      = 1;
+            mc_iteration    = 0;
 
-               if ( menibott_count > 1 )
-               {  // Reset the range of fit-meniscus/bottom points for this data set
-                  US_DataIO::EditedData* edata
-                                  = &data_sets[ current_dataset ]->run_data;
-                  double dat_str  = edata->radius( 0 );
-                  double men_dpt  = ( meniscus_points > 1 ) ?
-                                    (double)( meniscus_points - 1 ) : 1;
-                  double bot_dpt  = ( bottom_points > 1 ) ?
-                                    (double)( bottom_points   - 1 ) : 1;
-                  double men_str  = edata->meniscus - ( meniscus_range * 0.5 );
-                  double bot_str  = edata->bottom   - ( bottom_range   * 0.5 );
-                  double men_inc  = meniscus_range / men_dpt;
-                  double bot_inc  = bottom_range   / bot_dpt;
-                  double men_end  = men_str + meniscus_range - men_inc;
-                  if ( men_end >= dat_str )
-                  {  // Adjust first meniscus so range remains below data range
-                     men_end         = dat_str - ( men_inc * 0.5 );
-                     men_str         = men_end - meniscus_range + men_inc;
-                  }
-                  for ( int ii = 0; ii < meniscus_points; ii++ )
-                     meniscus_values[ ii ] = men_str + men_inc * ii;
-                  for ( int ii = 0; ii < bottom_points; ii++ )
-                     bottom_values[ ii ]   = bot_str + bot_inc * ii;
+            if ( menibott_count > 1 )
+            {  // Reset the range of fit-meniscus/bottom points for this data set
+               set_menibott_values( current_dataset );
 DbgLv(0) << " master loop-BOT:     menpt" << meniscus_points << "mv0 mvn"
  << meniscus_values[0] << meniscus_values[meniscus_points-1]
  << "botpt" << bottom_points << "bv0 bvn"
  << bottom_values[0] << bottom_values[bottom_points-1]
  << "gcores_count" << gcores_count;
-               }
+            }
 
 //               for ( int ii = 1; ii < gcores_count; ii++ )
 //                  worker_status[ ii ] = READY;
 
-               fill_queue();
+            fill_queue();
 
-               for ( int ii = 1; ii < gcores_count; ii++ )
-                  worker_status[ ii ] = READY;
+            for ( int ii = 1; ii < gcores_count; ii++ )
+               worker_status[ ii ] = READY;
 DbgLv(1) << " master loop-BOT:      wkst1 wkstn" << worker_status[1]
  << worker_status[gcores_count-1];
 
-               for ( int ii = 0; ii < calculated_solutes.size(); ii++ )
-                  calculated_solutes[ ii ].clear();
+            for ( int ii = 0; ii < calculated_solutes.size(); ii++ )
+               calculated_solutes[ ii ].clear();
 
-               continue;
-            }
+            continue;
          }
-
-         // Every worker has finished its current assignment.  Some workers
-         // may have sent READY after their last result while the master was
-         // writing output; consume those messages before sending SHUTDOWN so
-         // no unexpected READY message remains at MPI_Finalize.
-         for ( int ii = 1; ii < gcores_count; ii++ )
-         {
-            if ( worker_status[ ii ] != READY )
-            {
-               int        sizes[ 4 ];
-               MPI_Status status;
-
-               MPI_Recv( sizes,
-                         4,
-                         MPI_INT,
-                         ii,
-                         MPI_Job::READY,
-                         my_communicator,
-                         &status );
-
-               worker_status[ ii ] = READY;
-            }
-         }
-
-         shutdown_all();  // All done
-         break;           // Break out of main loop.
       }
+
+      // Every worker has finished its current assignment.  Some workers
+      // may have sent READY after their last result while the master was
+      // writing output; consume those messages before sending SHUTDOWN so
+      // no unexpected READY message remains at MPI_Finalize.
+      for ( int ii = 1; ii < gcores_count; ii++ )
+      {
+         if ( worker_status[ ii ] != READY )
+         {
+            int        sizes[ 4 ];
+            MPI_Status status;
+
+            MPI_Recv( sizes,
+                      4,
+                      MPI_INT,
+                      ii,
+                      MPI_Job::READY,
+                      my_communicator,
+                      &status );
+
+            worker_status[ ii ] = READY;
+         }
+      }
+
+      shutdown_all();  // All done
+      break;           // Break out of main loop.
+   }
+}
+
+// Give queued jobs to ready workers and process worker messages until the
+//  job queue is empty and no worker is busy
+void US_MPI_Analysis::run_2dsa_jobs( void )
+{
+   while ( true )
+   {
+      // Give the jobs to the workers
+      while ( ! job_queue.isEmpty()  &&  worker_status.contains( READY ) )
+      {
+         int worker              = ready_worker();
+
+         Sa_Job job              = job_queue.takeFirst();
+         submit( job, worker );
+         worker_depth [ worker ] = job.mpi_job.depth;
+         worker_status[ worker ] = WORKING;
+      }
+
+      // All done with the pass if no jobs are ready or running
+      if ( job_queue.isEmpty()  &&  ! worker_status.contains( WORKING ) )
+         return;
 
       // Wait for worker to send a message
       int        sizes[ 4 ];
@@ -310,7 +297,7 @@ DbgLv(1) << " master loop-BOT:      wkst1 wkstn" << worker_status[1]
                 my_communicator,
                 &status);
 
-      worker = status.MPI_SOURCE;
+      int worker = status.MPI_SOURCE;
 
 if ( max_depth > 0 )
  DbgLv(1) << " master loop-BOTTOM:   status TAG" << status.MPI_TAG
@@ -604,6 +591,35 @@ DbgLv(1) << "ScaledData fill/solclear complete";
       iterations      = 1;
       max_iterations  = parameters[ "gfit_iterations" ].toInt();
    }
+}
+
+// Set the fit-meniscus and fit-bottom points around a dataset's edited
+//  meniscus and bottom, keeping the meniscus range below the data range
+void US_MPI_Analysis::set_menibott_values( int dataset )
+{
+   US_DataIO::EditedData* edata = &data_sets[ dataset ]->run_data;
+   double dat_str  = edata->radius( 0 );
+   double men_dpt  = ( meniscus_points > 1 ) ?
+                     (double)( meniscus_points - 1 ) : 1;
+   double bot_dpt  = ( bottom_points > 1 ) ?
+                     (double)( bottom_points   - 1 ) : 1;
+   double men_str  = edata->meniscus - ( meniscus_range * 0.5 );
+   double bot_str  = edata->bottom   - ( bottom_range   * 0.5 );
+   double men_inc  = meniscus_range / men_dpt;
+   double bot_inc  = bottom_range   / bot_dpt;
+   double men_end  = men_str + meniscus_range - men_inc;
+
+   if ( men_end >= dat_str )
+   {  // Adjust first meniscus so range remains below data range
+      men_end         = dat_str - ( men_inc * 0.5 );
+      men_str         = men_end - meniscus_range + men_inc;
+   }
+
+   for ( int ii = 0; ii < meniscus_points; ii++ )
+      meniscus_values[ ii ] = men_str + men_inc * ii;
+
+   for ( int ii = 0; ii < bottom_points; ii++ )
+      bottom_values[ ii ]   = bot_str + bot_inc * ii;
 }
 
 // Reset for a fit-meniscus iteration
