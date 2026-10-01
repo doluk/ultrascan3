@@ -92,6 +92,16 @@ CASES = {
         "method": "2DSA", "datasets": [DS_A, DS_B], "np": 6, "mgroupcount": 2,
         "params": dict(GRID_2DSA),
     },
+    "2dsa_composite_meniscus": {
+        "method": "2DSA", "datasets": [DS_A, DS_B], "np": 2,
+        "params": dict(GRID_2DSA, meniscus_points="3", meniscus_range="0.04",
+                       fit_mb_select="1"),
+    },
+    "2dsa_composite_meniscus_pmasters": {
+        "method": "2DSA", "datasets": [DS_A, DS_B], "np": 6, "mgroupcount": 2,
+        "params": dict(GRID_2DSA, meniscus_points="3", meniscus_range="0.04",
+                       fit_mb_select="1"),
+    },
     "2dsa_refine_np4": {
         "method": "2DSA", "datasets": [DS_A], "np": 4,
         "params": dict(GRID_2DSA, max_iterations="3"),
@@ -142,6 +152,7 @@ CASE_TOL = {
     "2dsa_mc_np4": LOOSE,
     "2dsa_mc_pmasters": LOOSE,
     "2dsa_composite_pmasters": LOOSE,
+    "2dsa_composite_meniscus_pmasters": LOOSE,
     "ga_basic": LOOSE,
 }
 

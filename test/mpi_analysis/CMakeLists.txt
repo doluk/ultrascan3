@@ -31,6 +31,8 @@ set(US_MPI_CASES
     2dsa_global
     2dsa_composite
     2dsa_composite_pmasters
+    2dsa_composite_meniscus
+    2dsa_composite_meniscus_pmasters
     2dsa_refine_np4
     2dsa_mc_np4
     pcsa_sl
