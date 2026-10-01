@@ -71,3 +71,12 @@ Run the compiled application ```LD_LIBRARY_PATH=/ultrascan3/lib:/qwt-6.1.5/lib /
 
 Note - subprocesses do not currently run in the container, so you must run any compiled application individually, e.g. `us_fematch`
 
+
+## Code style
+
+The style of the UltraScan III coding standards ([wiki](https://github.com/ehb54/ultrascan3/wiki/UltraScan-III-Coding-Standards))
+is encoded in `.clang-format` (clang-format 18) and enforced **on changed lines only**, by a pre-commit hook and the `Code Style` GitHub action.
+
+    sudo apt install clang-format-18         # includes git-clang-format
+    git config core.hooksPath .githooks      # or: pre-commit install
+    scripts/check-format.sh --fix --staged   # format staged changes, then git add
