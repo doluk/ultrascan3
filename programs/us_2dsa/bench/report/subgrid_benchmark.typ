@@ -888,7 +888,9 @@ draft text of this report were prepared with the assistance of Claude (Anthropic
 
 *Code and data.* The benchmark driver, its scripts and this report are on branch
 `claude/proposal-review-y6ue50`; the solver changes are on the branches listed in Appendix A.
-Simulated datasets and fit results are available on request.
+The simulated datasets are not distributed: steps 1 and 2 of `run_all.sh` regenerate them
+bit for bit from fixed seeds (checked on Ubuntu 24.04 with GCC 13), and fits merged in task order are deterministic apart from
+their timings. The experimental dataset is not included.
 
 #heading(numbering: none)[Appendix A: Branches and code locations]
 

@@ -1,5 +1,6 @@
 #!/bin/sh
 # Reproduce the 2DSA subgrid benchmark (see README.md).
+# "run_all.sh data" stops after the simulated datasets (steps 1 and 2).
 #
 # Environment:
 #   US_2DSA_BENCH  path of the us_2dsa_bench binary (default ../../../build/bin)
@@ -29,6 +30,7 @@ for m in M1 M2 M3 H1 H2 H3 A1; do
              "$RES/bench${m}s$s" $((1000 * s + 7)) 5.951
    done
 done
+[ "$1" = data ] && exit 0
 
 # 3. ASTFEM solute simulations for the FEM metric: 127 x 127 candidate set and
 #    a uniform 128 x 32 grid (f/f0 outer loop, s inner loop)

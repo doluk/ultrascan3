@@ -21,10 +21,17 @@ metric (Stage 3). Everything runs through UltraScan code:
 
 ## Build
 
+From the top of the repository:
+
 ```
-cmake -S . -B build -DUS3_BUILD_2DSA_BENCH=ON ...
-cmake --build build --target us_2dsa_bench
+cmake -S . -B build -DUS3_BUILD_2DSA_BENCH=ON
+cmake --build build --target us_2dsa_bench -j4
 ```
+
+The dependencies are those of UltraScan itself (see the top-level README):
+Qt, Qwt, OpenGL, OpenSSL, LibArchive, GL2PS and a MySQL/MariaDB client
+library. The results in the report were produced on Ubuntu 24.04 with its
+packages (Qt 5.15.13, Qwt 6.1.4, CMake 3.28, GCC 13).
 
 The benchmark links the `us_2dsa` process sources and the `us_astfem_sim`
 class (its `main()` is renamed at compile time). It runs headless
@@ -96,9 +103,21 @@ computed from the same ASTFEM columns in Python as the accuracy reference.
 
 ## Reproduce
 
-`run_all.sh` runs the whole pipeline (about 2.5 hours on 4 cores). The fits
+`run_all.sh` runs the whole pipeline (about 2.5 hours on 4 cores);
+`run_all.sh data` stops after the simulated datasets. The fits
 with the corrected noise solve (debug option `SolveSim-ExactNoise`) are the same
 matrix with `BENCH_DEBUG=SolveSim-ExactNoise BENCH_SET_SUFFIX=_exact`.
+
+The simulated datasets are not distributed because they need not be: steps 1
+and 2 of `run_all.sh` regenerate all 28 runs (seven mixtures, three noise
+realizations and one noise-free run each) in under a minute, bit for bit. The
+noise comes from Qt's `QRandomGenerator` with fixed seeds (1 for the noise-free
+runs, 1007, 2007 and 3007 for the noisy ones); only the GUIDs in the model and
+buffer files and the time-stamped edit IDs differ between regenerations. This
+was checked from a fresh clone on Ubuntu 24.04 with GCC 13; another compiler or
+platform may differ in the last digits of the floating-point results. Fits
+merged in task order (the default here) are deterministic too, apart from their
+timings; the `arrival` runs are not, by design.
 
 ## Report
 
