@@ -875,7 +875,8 @@ int US_Math2::nnls( double* a, int a_dim1, int m, int n,
                     double* rnorm,
                     double* wp,  
                     double* zzp,
-                    int*    indexp 
+                    int*    indexp,
+                    int     itmax
                   ) 
 {
 #ifdef _BF_NNLS_
@@ -947,8 +948,10 @@ int US_Math2::nnls( double* a, int a_dim1, int m, int n,
    /* if M cols of A have been triangularized */
    
    int iter  = 0; 
-   int itmax = n * 3;
    int ja_dim1;
+
+   if ( itmax <= 0 )
+      itmax     = n * 3;
 
    while ( iz1 <= iz2 && nsetp < m ) 
    {
@@ -1072,7 +1075,8 @@ int US_Math2::nnls( double* a, int a_dim1, int m, int n,
       }
 
       /* Secondary loop begins here */
-      while ( ++iter < itmax ) 
+      /* (at most itmax iterations, as in Lawson & Hanson) */
+      while ( ++iter <= itmax )
       {
          /* See if all new constrained coeffs are feasible; 
             if not, compute alpha */
@@ -1108,9 +1112,10 @@ int US_Math2::nnls( double* a, int a_dim1, int m, int n,
          /* Modify A and B and the INDEX arrays to move coefficient i */
          /* from set P to set Z. */
          
-         k     = index[ jj + 1 ];
+         k     = index[ jj + 1 ]; 
+         pfeas = 1;
 
-         do
+         do 
          {
             x[ k ] = 0.0;
             if ( jj != ( nsetp - 1 ) ) 
@@ -1151,22 +1156,13 @@ int US_Math2::nnls( double* a, int a_dim1, int m, int n,
             /* be because of the way alpha was determined. If any are */
             /* infeasible it is due to round-off error. Any that are */
             /* nonpositive will be set to zero and moved from set P to set Z */
-
-            /* pfeas must be reset on every pass, as in Lawson & Hanson.  Set
-               once before the loop it can only ever go from 1 to 0, so a
-               single round-off-induced removal makes the loop run until
-               nsetp and iz1 fall below zero and index[ iz1 ] writes outside
-               the array.  Reachable whenever the system is ill-conditioned
-               enough for alpha interpolation to leave a coefficient
-               marginally negative. */
-            pfeas = 1;
-
-            for( jj = 0; jj < nsetp; jj++ )
+            for( jj = 0, pfeas = 1; jj < nsetp; jj++ )
             {
                k = index[ jj ]; 
                if ( x[ k ] <= 0.0 ) 
-               {
+               {  /* Leave jj one below the position of k, as set above */
                   pfeas = 0; 
+                  jj--;
                   break;
                }
             }
@@ -1189,7 +1185,7 @@ int US_Math2::nnls( double* a, int a_dim1, int m, int n,
       } /* end of secondary loop */
 
       if ( iter > itmax ) 
-      {
+      {  /* Iteration limit:  quit with the last feasible X */
          ret = 1; 
          break;
       }
@@ -1211,6 +1207,20 @@ int US_Math2::nnls( double* a, int a_dim1, int m, int n,
    else 
       for( j = 0; j < n; j++ ) 
          w[ j ] = 0.0;
+
+   if ( ret == 1 )
+   {  /* At the iteration limit X does not solve the triangular system */
+      /* of set P:  add its residual in the first nsetp rows */
+      for ( ii = 0; ii < nsetp; ii++ )
+      {
+         d1 = b[ ii ];
+
+         for ( l = ii; l < nsetp; l++ )
+            d1 -= a[ ii + index[ l ] * a_dim1 ] * x[ index[ l ] ];
+
+         sm += d1 * d1;
+      }
+   }
 
    if ( rnorm != NULL ) *rnorm = sqrt( sm );
 
