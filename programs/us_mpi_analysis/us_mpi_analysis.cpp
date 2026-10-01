@@ -1442,41 +1442,49 @@ void US_MPI_Analysis::calc_residuals( int         offset,
                                       SIMULATION& simu_values )
 {
    count_calc_residuals++;
-bool do_dbg=( dbg_level > 0 && ( group_rank < 2 || group_rank == (proc_count/2) ) );
-if ( do_dbg )
- DbgLv(1) << "w:" << my_rank << ": CALC_RES : count" << count_calc_residuals
-  << "offs dsknt" << offset << dataset_count;
+
+   // Solver diagnostics: the given level if above 1, otherwise level 1
+   // only on a few ranks when debugging is on
+   bool do_dbg     = ( dbg_level > 0  &&
+                       ( group_rank < 2  ||  group_rank == ( proc_count / 2 ) ) );
+   int  dbglvsv    = simu_values.dbg_level;
+   simu_values.dbg_level = ( dbglvsv > 1 ) ? dbglvsv : ( do_dbg ? 1 : 0 );
+
+   QVector< US_Solute > isols;
+   if ( dbg_level > 0 )
+   {
+      isols        = simu_values.solutes;
+      if ( do_dbg )
+         DbgLv(1) << "w:" << my_rank << ": CALC_RES : count"
+                  << count_calc_residuals << "offs dsknt" << offset
+                  << dataset_count << "nsoli" << isols.size()
+                  << "nsolz" << simu_values.zsolutes.size();
+   }
 
    US_SolveSim solvesim( data_sets, my_rank, false );
-
-//*DEBUG*
-int dbglvsv=simu_values.dbg_level;
-simu_values.dbg_level=(dbglvsv>1||my_rank<0)?dbglvsv:0;
-//simu_values.dbg_level=(dbglvsv>0)?dbglvsv:0;
-int nsoli=simu_values.solutes.size();
-int nsolz=simu_values.zsolutes.size();
-if ( do_dbg ) DbgLv(1) << "w:" << my_rank << ":nsoli" << nsoli << "nsolz" << nsolz;
-QVector< US_Solute > isols;
-if (nsolz==0)
- { isols = simu_values.solutes; }
-else
- { nsoli=nsolz; }
-if ( do_dbg ) DbgLv(1) << "w:" << my_rank << ":nsoli" << nsoli << "nsolz" << nsolz;
-if ( do_dbg ) simu_values.dbg_level = qMax( simu_values.dbg_level, 1 );
-//*DEBUG*
-
    solvesim.calc_residuals( offset, dataset_count, simu_values );
 
-//*DEBUG*
-simu_values.dbg_level=dbglvsv;
-bool hicee = false;
-for (int jj=0;jj<simu_values.solutes.size();jj++ )
- if ( simu_values.solutes[jj].c > 1.0 ) hicee = true;
+   simu_values.dbg_level = dbglvsv;
 
-//if ( do_dbg )
-if ( do_dbg || hicee )
+   if ( dbg_level > 0 )
+   {
+      bool hicee   = false;
+      for ( int jj = 0; jj < simu_values.solutes.size(); jj++ )
+         if ( simu_values.solutes[ jj ].c > 1.0 ) hicee = true;
+
+      if ( do_dbg  ||  hicee )
+         debug_residuals( offset, dataset_count, simu_values, isols );
+   }
+}
+
+// Print data, simulation and dataset values after a residuals calculation
+void US_MPI_Analysis::debug_residuals( int offset, int dataset_count,
+                                       SIMULATION& simu_values,
+                                       QVector< US_Solute >& isols )
 {
  DbgLv(1) << "w:" << my_rank << ": ss.ca_re completed";
+ int nsolz=simu_values.zsolutes.size();
+ int nsoli=(nsolz>0) ? nsolz : isols.size();
  int nsolo=simu_values.solutes.size();
  nsolo = (nsolz>0) ? simu_values.zsolutes.size() : nsolo;
  US_DataIO::EditedData* edat = &data_sets[offset]->run_data;
@@ -1557,9 +1565,6 @@ if ( do_dbg || hicee )
   << isols[0].s << isols[0].k << isols[0].c
   << isols[mm].s << isols[mm].k << isols[mm].c
   << isols[nn].s << isols[nn].k << isols[nn].c;
-}
-//*DEBUG*
- 
 }
 
 // Write model (and maybe noise) output at the end of an iteration

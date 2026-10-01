@@ -406,6 +406,8 @@ class US_MPI_Analysis : public QObject
         void     _2dsa_worker      ( void );
 
         void     calc_residuals     ( int, int, SIMULATION& );
+        void     debug_residuals    ( int, int, SIMULATION&,
+                                      QVector< US_Solute >& );
 
         // GA Master
         void ga_master       ( void );
