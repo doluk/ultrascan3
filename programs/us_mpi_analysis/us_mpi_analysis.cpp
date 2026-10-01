@@ -2062,8 +2062,11 @@ DbgLv(1) << "wrMo: type" << type << "(DMGA=" << US_Model::DMGA << ") (PCSA="
 DbgLv(1) << "wrMo:  model comps" << model.components.size();
    }
 
-   int mc_iter       = ( mgroup_count < 2  ||  is_composite_job ) 
-                       ? ( mc_iteration + 1 ) : mc_iteration;
+   // 2DSA and single masters count Monte Carlo iterations from 0, the
+   //  parallel GA and DMGA group masters from 1
+   bool mc_from_0    = ( mgroup_count < 2  ||  is_composite_job  ||
+                         analysis_type.startsWith( "2DSA" ) );
+   int mc_iter       = mc_from_0 ? ( mc_iteration + 1 ) : mc_iteration;
    model.monteCarlo  = mc_iterations > 1;
    model.wavelength  = edata->wavelength.toDouble();
    model.modelGUID   = ( ! model.monteCarlo  ||  mc_iter == 1 )
@@ -2629,8 +2632,11 @@ DbgLv(1) << "wrMo: type" << type << "(DMGA=" << US_Model::DMGA << ") (PCSA="
 DbgLv(1) << "wrMo:  model comps" << model.components.size();
    }
 
-   int mc_iter       = ( mgroup_count < 2  ||  is_composite_job ) 
-                       ? ( mc_iteration + 1 ) : mc_iteration;
+   // 2DSA and single masters count Monte Carlo iterations from 0, the
+   //  parallel GA and DMGA group masters from 1
+   bool mc_from_0    = ( mgroup_count < 2  ||  is_composite_job  ||
+                         analysis_type.startsWith( "2DSA" ) );
+   int mc_iter       = mc_from_0 ? ( mc_iteration + 1 ) : mc_iteration;
    model.monteCarlo  = mc_iterations > 1;
    model.wavelength  = edata->wavelength.toDouble();
    model.modelGUID   = ( ! model.monteCarlo  ||  mc_iter == 1 )

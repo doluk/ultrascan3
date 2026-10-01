@@ -129,6 +129,7 @@ class US_MPI_Analysis : public QObject
         int meniscus_points;     //!< Meniscus points
         int bottom_points;       //!< Bottom points
         int set_count;           //!< Set count
+        int max_iters_all;       //!< Refinement iterations requested
 
         //! \enum WorkerStatus
         //! \brief Enumeration for worker statuses
@@ -380,6 +381,11 @@ class US_MPI_Analysis : public QObject
         void     _2dsa_master      ( void );
         void     submit            ( Sa_Job&, int );
         void     run_2dsa_jobs     ( void );
+        void     start_2dsa_dataset( int, bool );
+        QString  progress_2dsa     ( void );
+        int      pm_next_unit      ( int );
+        bool     pm_iteration_done ( int, int& );
+        int      pm_dataset_done   ( int );
         void     wait_workers_ready( void );
         void     submit_pcsa       ( Sa_Job&, int );
         void     add_to_queue      ( Sa_Job& );
@@ -399,7 +405,6 @@ class US_MPI_Analysis : public QObject
         void     write_superg      ( const SIMULATION&, US_Model::AnalysisType );
         void     stats_output      ( int, int, int,
                                      QDateTime, QDateTime, QDateTime );
-        void     pm_2dsa_master    ( void );
         void     pm_ga_master      ( void );
         void     pm_dmga_master    ( void );
         int      ready_worker      ( void );
@@ -523,7 +528,6 @@ class US_MPI_Analysis : public QObject
         void    pm_cjobs_master    ( void );
         void    pm_cjobs_worker    ( void );
         void    time_datasets_left ( void );
-        void    pm_2dsa_cjmast     ( void );
         void    pm_ga_cjmast       ( void );
         void    pm_dmga_cjmast     ( void );
         void    pm_pcsa_cjmast     ( void );

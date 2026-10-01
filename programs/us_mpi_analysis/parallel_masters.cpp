@@ -418,7 +418,7 @@ DbgLv(1) << "  MASTER:   Recv'd from super. (g r m)" << my_group << group_rank
    // Do the master loop for MC 2DSA or GA
    if ( analysis_type.startsWith( "2DSA" ) )
    {
-      pm_2dsa_master();
+      _2dsa_master();
    }
 
    else if ( analysis_type.startsWith( "GA" ) )
@@ -535,120 +535,6 @@ DbgLv(0) << "TMI: NEAR-ALLOW_TIME test:  mc_iters_left mc_iters_estim mc_iters"
    }
 
    return;
-}
-
-// Parallel-masters version of group 2DSA master
-void US_MPI_Analysis::pm_2dsa_master( void )
-{
-DbgLv(1) << "master start 2DSA" << startTime;
-   init_solutes();
-   fill_queue();
-
-   work_rss.resize( gcores_count );
-
-   current_dataset     = 0;
-   datasets_to_process = data_sets.size();
-
-   // Jobs carry the meniscus and bottom to the workers.  Monte Carlo
-   // excludes a meniscus/bottom fit, so use the edited data values.
-   meniscus_value      = data_sets[ current_dataset ]->run_data.meniscus;
-   bottom_value        = data_sets[ current_dataset ]->run_data.bottom;
-
-   int iter     = 1;
-   int super    = 0;
-   MPI_Status status;
-
-   // Get 1st iteration (1) from supervisor
-   MPI_Recv( &iter,
-             1,
-             MPI_INT,
-             super,
-             MPI_ANY_TAG,
-             MPI_COMM_WORLD,
-             &status );
-
-   int tag      = status.MPI_TAG;
-   mc_iteration = iter;
-
-   while ( true )
-   {
-      run_2dsa_jobs();
-
-      // All done with the pass: no jobs are ready or running
-      QString progress = 
-         "Iteration: "    + QString::number( iterations ) +
-         "; Dataset: "    + QString::number( current_dataset + 1 ) +
-         "; Meniscus: (Run 1 of 1)" +
-         "; MonteCarlo: " + QString::number( mc_iteration );
-
-      send_udp( progress );
-
-      if ( ! job_queue.isEmpty() ) continue;
-
-      // Write out the model
-      max_rss();
-DbgLv(1) << "2dMast:    mc_iter" << mc_iteration
-<< "variance" << simulation_values.variance << "my_group" << my_group;
-
-      std::sort( simulation_values.solutes.begin(), simulation_values.solutes.end() );
-
-      write_model( simulation_values, US_Model::TWODSA );
-
-      if ( mc_iteration >= mc_iterations )
-      {
-         for ( int jj = 1; jj <= my_workers; jj++ )
-            maxrss += work_rss[ jj ];
-      }
-
-      // Tell the supervisor that an iteration is done
-      iter    = (int)maxrss;
-      tag     = ( mc_iteration < mc_iterations ) ?
-                DONEITER : DONELAST;
-
-      MPI_Send( &iter,
-                1,
-                MPI_INT,
-                super,
-                tag,
-                MPI_COMM_WORLD );
-
-      if ( mc_iteration < mc_iterations )
-      {
-         time_mc_iterations();
-
-         if ( mc_iteration < mc_iterations )
-         {
-            set_monteCarlo();
-
-            // Get new Monte Carlo iteration index from supervisor
-            MPI_Recv( &iter,
-                      1,
-                      MPI_INT,
-                      super,
-                      MPI_ANY_TAG,
-                      MPI_COMM_WORLD,
-                      &status );
-
-            tag      = status.MPI_TAG;
-
-            if ( tag == STARTLAST )
-               mc_iterations = iter;
-
-            else if ( tag != STARTITER )
-            {
-               DbgLv(0) << "Unexpected tag in PMG 2DSA Master" << tag;
-               continue;
-            }
-
-            mc_iteration  = iter;
-         }
-      }
-
-      if ( ! job_queue.isEmpty() ) continue;
-
-      shutdown_all();  // All done
-      break;           // Break out of main loop.
-   }
 }
 
 // Parallel-masters version of GA group master

@@ -6,26 +6,25 @@
 #include "us_simparms.h"
 #include "us_constants.h"
 
+// 2DSA master.  The same loop serves a single master and the group masters
+//  of a parallel-masters job, where a supervisor hands out Monte Carlo
+//  iterations (pm_mc) or the datasets of a composite job (pm_comp).
 void US_MPI_Analysis::_2dsa_master( void )
 {
-   init_solutes();
-   fill_queue();
+   bool pm_mc          = ( mgroup_count > 1  &&  ! is_composite_job );
+   bool pm_comp        = ( mgroup_count > 1  &&  is_composite_job );
+   int  super          = 0;     // Supervisor world rank
+   int  pm_iter        = 1;     // pm_mc: Monte Carlo iteration of this group
 
+   init_solutes();
    work_rss.resize( gcores_count );
 
-   current_dataset     = 0;
    // A composite job fits its datasets one at a time
    datasets_to_process = is_composite_job ? 1 : count_datasets;
    dset_calc_solutes.clear();
 
-   int max_iters_all   = max_iterations;
+   max_iters_all       = max_iterations;
 
-   if ( mc_iterations > 1 )
-      max_iterations   = max_iters_all > 1 ? max_iters_all : 5;
-
-   menibott_ndx        = 0;
-   meniscus_run        = 0;
-   bottom_run          = 0;
    if ( fit_mb_select == 0 )
    {
       menibott_count      = 1;
@@ -47,6 +46,16 @@ void US_MPI_Analysis::_2dsa_master( void )
       meniscus_points     = 1;
    }
 
+   int first_dataset   = 0;
+
+   if ( pm_mc )
+      pm_iter             = pm_next_unit( super );   // First MC iteration
+
+   else if ( pm_comp )
+      first_dataset       = pm_next_unit( super );   // First dataset
+
+   start_2dsa_dataset( first_dataset, false );
+
    while ( true )
    {
       meniscus_value       = ( meniscus_points == 1 )
@@ -59,46 +68,7 @@ void US_MPI_Analysis::_2dsa_master( void )
       run_2dsa_jobs();
 
       // All done with the pass: no jobs are ready or running
-      US_DataIO::EditedData* edata = &data_sets[ current_dataset ]->run_data;
-      QString tripleID = edata->cell + edata->channel + edata->wavelength;
-      QString progress =
-         "Iteration: "    + QString::number( iterations );
-
-      if ( datasets_to_process > 1 )
-         progress     += "; Datasets: "
-                         + QString::number( datasets_to_process );
-      else
-         progress     += "; Dataset: "
-                         + QString::number( current_dataset + 1 )
-                         + " (" + tripleID + ") of "
-                         + QString::number( count_datasets );
-
-      if ( mc_iterations > 1 )
-         progress     += "; MonteCarlo: "
-                         + QString::number( mc_iteration + 1 );
-
-      else if ( fit_menbot )
-         progress     += "; Meniscus: "
-            + QString::number( meniscus_value, 'f', 4 )
-            + "; Bottom: "
-            + QString::number( bottom_value,   'f', 4 )
-            + QString::asprintf( "  ( m%2d b%2d )",
-                 ( meniscus_run + 1 ), ( bottom_run + 1 ) );
-      else if ( fit_meni )
-         progress     += "; Meniscus: "
-            + QString::number( meniscus_value, 'f', 4 )
-            + tr( " (%1 of %2)" ).arg( meniscus_run + 1 )
-                                 .arg( meniscus_points );
-      else if ( fit_bott )
-         progress     += "; Bottom: "
-            + QString::number( bottom_value,   'f', 4 )
-            + tr( " (%1 of %2)" ).arg( bottom_run + 1 )
-                                 .arg( bottom_points );
-      else
-         progress     += "; RMSD: "
-            + QString::number( sqrt( simulation_values.variance ) );
-
-      send_udp( progress );
+      send_udp( progress_2dsa() );
 
       // Iterative refinement
       if ( max_iterations > 1 )
@@ -128,22 +98,18 @@ void US_MPI_Analysis::_2dsa_master( void )
       iterations = 1;
 DbgLv(1) << " master loop-BOT: dssize" << data_sets.size() << "ds_to_p"
  << datasets_to_process << "curr_ds" << current_dataset;
-US_DataIO::EditedData* edat=&data_sets[current_dataset]->run_data;
-int ks=edat->scanCount() - 10;
-int kr=edat->pointCount() - 10;
-int ss=ks/2;
-int rr=kr/2;
-DbgLv(1) << " master loop-BOT: ds" << current_dataset+1 << "data l m h"
- << edat->value(10,10) << edat->value(ss,rr) << edat->value(ks,kr);
-DbgLv(1) << " master loop-BOT: GF job_queue empty" << job_queue.isEmpty();
 
-      if ( ! job_queue.isEmpty() ) continue;
+      // A parallel Monte Carlo group fits the unmodified data to get the
+      //  Monte Carlo sigmas; only the group doing iteration 1 writes it
+      bool skip_write      = ( pm_mc  &&  mc_iteration == 0  &&  pm_iter > 1 );
 
-      if ( is_global_fit )
-         write_global();
-
-      else
-         write_output();
+      if ( ! skip_write )
+      {
+         if ( is_global_fit )
+            write_global();
+         else
+            write_output();
+      }
 
       // Fit meniscus
       if ( ( menibott_ndx + 1 ) < menibott_count )
@@ -156,17 +122,32 @@ DbgLv(1) << " master loop-BOT: GF job_queue empty" << job_queue.isEmpty();
       // Monte Carlo
       if ( mc_iterations > 1 )
       {  // Recompute final fit to get simulation and residual
-         mc_iteration++;
          wksim_vals           = simulation_values;
          wksim_vals.solutes   = calculated_solutes[ max_depth ];
 
-         calc_residuals( 0, data_sets.size(), wksim_vals );
+         calc_residuals( current_dataset, datasets_to_process, wksim_vals );
 
          qDebug() << "Base-Sim RMSD" << sqrt( simulation_values.variance )
                   << "  Exp-Sim RMSD" << sqrt( wksim_vals.variance )
-                  << "  of MC_Iteration" << mc_iteration;
-         max_iterations              = max_iters_all;
-         simulation_values           = wksim_vals;
+                  << "  of MC_Iteration" << mc_iteration + 1;
+         max_iterations       = max_iters_all;
+         simulation_values    = wksim_vals;
+
+         if ( pm_mc )
+         {  // Report a written iteration and get the next one
+            if ( ! skip_write )
+            {
+               mc_iteration         = pm_iter;
+               if ( ! pm_iteration_done( super, pm_iter ) )
+                  break;            // Group is done
+            }
+
+            mc_iteration         = pm_iter - 1;
+            set_monteCarlo();
+            continue;
+         }
+
+         mc_iteration++;
 
          if ( mc_iteration < mc_iterations )
          {
@@ -182,64 +163,230 @@ DbgLv(1) << " master loop-BOT: GF job_queue empty" << job_queue.isEmpty();
       {  // Composite job:  update outputs in TAR and bump dataset count
          QString tripleID = QString( data_sets[ current_dataset ]->model
                             .description ).section( ".", -3, -3 );
-         current_dataset++;
          dset_calc_solutes << calculated_solutes[ max_depth ];
 
-         update_outputs();
+         int next_dataset = current_dataset + 1;
+
+         if ( pm_comp )
+            next_dataset     = pm_dataset_done( super );
+
+         else
+            update_outputs();
 
          if ( simulation_values.noisflag == 0 )
          {
-            DbgLv(0) << my_rank << ": Dataset" << current_dataset
+            DbgLv(0) << my_rank << ": Dataset" << current_dataset + 1
                      << "(" << tripleID << ")"
                      << " :  model was output.";
          }
          else
          {
-            DbgLv(0) << my_rank << ": Dataset" << current_dataset
+            DbgLv(0) << my_rank << ": Dataset" << current_dataset + 1
                      << "(" << tripleID << ")"
                      << " :  model/noise(s) were output.";
          }
 
-DbgLv(1) << " master loop-BOT:    cds kds" << current_dataset << count_datasets;
-         if ( current_dataset < count_datasets )
+DbgLv(1) << " master loop-BOT:    nds kds" << next_dataset << count_datasets;
+         if ( next_dataset < count_datasets )
          {
-            menibott_ndx    = 0;
-            meniscus_run    = 0;
-            bottom_run      = 0;
-            iterations      = 1;
-            mc_iteration    = 0;
-
-            if ( menibott_count > 1 )
-            {  // Reset the range of fit-meniscus/bottom points for this data set
-               set_menibott_values( current_dataset );
-DbgLv(0) << " master loop-BOT:     menpt" << meniscus_points << "mv0 mvn"
- << meniscus_values[0] << meniscus_values[meniscus_points-1]
- << "botpt" << bottom_points << "bv0 bvn"
- << bottom_values[0] << bottom_values[bottom_points-1]
- << "gcores_count" << gcores_count;
-            }
-
             wait_workers_ready();
-            fill_queue();
-
-            for ( int ii = 1; ii < gcores_count; ii++ )
-               worker_status[ ii ] = READY;
-DbgLv(1) << " master loop-BOT:      wkst1 wkstn" << worker_status[1]
- << worker_status[gcores_count-1];
-
-            for ( int ii = 0; ii < calculated_solutes.size(); ii++ )
-               calculated_solutes[ ii ].clear();
-
+            iterations       = 1;
+            start_2dsa_dataset( next_dataset, true );
             continue;
          }
       }
 
-      // Consume outstanding READY messages so none remains at MPI_Finalize
-      wait_workers_ready();
-
-      shutdown_all();  // All done
-      break;           // Break out of main loop.
+      break;
    }
+
+   // Consume outstanding READY messages so none remains at MPI_Finalize
+   wait_workers_ready();
+
+   shutdown_all();  // All done
+}
+
+// Reset the fit state and queue the initial subgrids for a dataset.
+//  workers_ready: no worker has a READY message outstanding (after
+//  wait_workers_ready); at the start, workers still send their first READY.
+void US_MPI_Analysis::start_2dsa_dataset( int dataset, bool workers_ready )
+{
+   current_dataset     = dataset;
+   menibott_ndx        = 0;
+   meniscus_run        = 0;
+   bottom_run          = 0;
+   mc_iteration        = 0;
+
+   // Monte Carlo refines the fit to the unmodified data at least 5 times
+   max_iterations      = ( mc_iterations > 1  &&  max_iters_all < 2 )
+                         ? 5 : max_iters_all;
+
+   if ( menibott_count > 1 )
+   {  // Set the range of fit-meniscus/bottom points for this data set
+      set_menibott_values( current_dataset );
+DbgLv(0) << " start_2dsa_dataset:  menpt" << meniscus_points << "mv0 mvn"
+ << meniscus_values[0] << meniscus_values[meniscus_points-1]
+ << "botpt" << bottom_points << "bv0 bvn"
+ << bottom_values[0] << bottom_values[bottom_points-1];
+   }
+
+   fill_queue();
+
+   if ( workers_ready )
+   {  // Every worker is waiting for a job
+      for ( int ii = 1; ii <= my_workers; ii++ )
+         worker_status[ ii ] = READY;
+   }
+
+   for ( int ii = 0; ii < calculated_solutes.size(); ii++ )
+      calculated_solutes[ ii ].clear();
+}
+
+// Progress message at the end of a 2DSA pass
+QString US_MPI_Analysis::progress_2dsa( void )
+{
+   US_DataIO::EditedData* edata = &data_sets[ current_dataset ]->run_data;
+   QString tripleID = edata->cell + edata->channel + edata->wavelength;
+   QString progress =
+      "Iteration: "    + QString::number( iterations );
+
+   if ( datasets_to_process > 1 )
+      progress     += "; Datasets: "
+                      + QString::number( datasets_to_process );
+   else
+      progress     += "; Dataset: "
+                      + QString::number( current_dataset + 1 )
+                      + " (" + tripleID + ") of "
+                      + QString::number( count_datasets );
+
+   if ( mc_iterations > 1 )
+      progress     += "; MonteCarlo: "
+                      + QString::number( mc_iteration + 1 );
+
+   else if ( fit_menbot )
+      progress     += "; Meniscus: "
+         + QString::number( meniscus_value, 'f', 4 )
+         + "; Bottom: "
+         + QString::number( bottom_value,   'f', 4 )
+         + QString::asprintf( "  ( m%2d b%2d )",
+              ( meniscus_run + 1 ), ( bottom_run + 1 ) );
+   else if ( fit_meni )
+      progress     += "; Meniscus: "
+         + QString::number( meniscus_value, 'f', 4 )
+         + tr( " (%1 of %2)" ).arg( meniscus_run + 1 )
+                              .arg( meniscus_points );
+   else if ( fit_bott )
+      progress     += "; Bottom: "
+         + QString::number( bottom_value,   'f', 4 )
+         + tr( " (%1 of %2)" ).arg( bottom_run + 1 )
+                              .arg( bottom_points );
+   else
+      progress     += "; RMSD: "
+         + QString::number( sqrt( simulation_values.variance ) );
+
+   return progress;
+}
+
+// Parallel masters: get the first Monte Carlo iteration or dataset index
+//  from the supervisor
+int US_MPI_Analysis::pm_next_unit( int super )
+{
+   int        iter;
+   MPI_Status status;
+
+   MPI_Recv( &iter,
+             1,
+             MPI_INT,
+             super,
+             MPI_ANY_TAG,
+             MPI_COMM_WORLD,
+             &status );
+
+   if ( status.MPI_TAG == STARTLAST )
+   {  // This is the last unit for the group
+      if ( is_composite_job )
+         count_datasets = iter + 1;
+      else
+         mc_iterations  = iter;
+   }
+
+   else if ( status.MPI_TAG != STARTITER )
+      DbgLv(0) << "Unexpected tag in PMG 2DSA Master" << status.MPI_TAG;
+
+   return iter;
+}
+
+// Parallel Monte Carlo: report the written iteration (mc_iteration) to the
+//  supervisor and get the next one.  Returns false if the group is done.
+bool US_MPI_Analysis::pm_iteration_done( int super, int& pm_iter )
+{
+   if ( mc_iteration >= mc_iterations )
+   {
+      for ( int jj = 1; jj <= my_workers; jj++ )
+         maxrss += work_rss[ jj ];
+   }
+
+   // Tell the supervisor that an iteration is done
+   int iter    = (int)maxrss;
+   int tag     = ( mc_iteration < mc_iterations ) ? DONEITER : DONELAST;
+
+   MPI_Send( &iter,
+             1,
+             MPI_INT,
+             super,
+             tag,
+             MPI_COMM_WORLD );
+
+   if ( mc_iteration >= mc_iterations )
+      return false;
+
+   time_mc_iterations();
+
+   if ( mc_iteration >= mc_iterations )
+      return false;
+
+   pm_iter     = pm_next_unit( super );
+   return true;
+}
+
+// Parallel composite: report the finished dataset to the supervisor and
+//  get the next one.  Returns count_datasets if the group is done.
+int US_MPI_Analysis::pm_dataset_done( int super )
+{
+   int ittest  = current_dataset + mgroup_count;
+
+   if ( ittest  >= count_datasets )
+   {
+      for ( int jj = 1; jj <= my_workers; jj++ )
+         maxrss += work_rss[ jj ];
+   }
+
+   // Tell the supervisor that a dataset is done
+   int iter    = (int)maxrss;
+   int tag     = ( ittest < count_datasets ) ? DONEITER : DONELAST;
+
+   MPI_Send( &iter,
+             1,
+             MPI_INT,
+             super,
+             tag,
+             MPI_COMM_WORLD );
+
+   if ( ittest >= count_datasets )
+      return count_datasets;
+
+   if ( my_group == 0 )
+   {  // If group 0 master, create an intermediate archive
+      update_outputs();
+      DbgLv(0) << my_rank << ": Dataset" << current_dataset + 1
+               << " : Intermediate archive was created.";
+   }
+
+   time_datasets_left();
+
+   if ( ittest >= count_datasets )
+      return count_datasets;   // Dataset count was reduced for time
+
+   return pm_next_unit( super );
 }
 
 // Give queued jobs to ready workers and process worker messages until the
