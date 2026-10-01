@@ -224,6 +224,7 @@ class US_MPI_Analysis : public QObject
                 MPI_Job mpi_job;                 //!< MPI job
                 QVector< US_Solute > solutes;    //!< Solutes list
                 QVector< US_ZSolute > zsolutes;  //!< Z solutes list
+                int seq = -1;                    //!< Queue order within depth
         };
 
         QList< Sa_Job > job_queue; //!< Job queue
@@ -251,11 +252,18 @@ class US_MPI_Analysis : public QObject
             public:
                 int depth;                      //!< Depth of the result
                 int worker;                     //!< Worker index
+                int seq;                        //!< Queue order of the job
                 QVector< US_Solute > solutes;   //!< Solutes list
                 QVector< US_ZSolute > zsolutes; //!< Z solutes list
+                double variance;                //!< Fit variance
+                QVector< double > variances;    //!< Fit variances per dataset
+                QVector< double > ti_noise;     //!< Fitted TI noise
+                QVector< double > ri_noise;     //!< Fitted RI noise
         };
 
-        QList< Result > cached_results; //!< Cached results list
+        QList< Result > cached_results; //!< Results not yet processed
+        int job_seq_next = 0;           //!< Next 2DSA job sequence number
+        QVector< int > worker_seq;      //!< Sequence number of worker's job
 
         //! \class Bucket
         //! \brief Class representing a bucket for genetic algorithm.
@@ -395,8 +403,9 @@ class US_MPI_Analysis : public QObject
         void     pm_ga_master      ( void );
         void     pm_dmga_master    ( void );
         int      ready_worker      ( void );
-        int      low_working_depth ( void );
-        void     cache_result      ( Result& );
+        void     process_ready_results( void );
+        bool     job_pending_before( int, int );
+        bool     job_pending_at    ( int );
         void     process_solutes   ( int&, int&, QVector< US_Solute >& );
         void     dset_matrices     ( int, int*,
                                      QVector< double >&, QVector< double >&,

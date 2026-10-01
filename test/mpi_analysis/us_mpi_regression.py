@@ -143,13 +143,12 @@ CASES = {
 # distribution moments are compared relative to their scale.
 DEFAULT_TOL = {"rmsd_rel": 1e-6, "moment_rel": 1e-4, "noise_abs": 1e-6}
 
-# With more than one worker the 2DSA master merges subgrid results in arrival
-# order, and GA migrates genes asynchronously, so these results depend on
-# message timing.  Only require a fit that is not markedly worse.
+# GA migrates genes asynchronously and the parallel-masters cases run more
+# than one worker per group with group-dependent Monte Carlo data, so these
+# results depend on message timing.  Only require a fit that is not markedly
+# worse.
 LOOSE = {"rmsd_rel": 0.15, "moment_rel": 0.0, "noise_abs": 0.0, "loose": True}
 CASE_TOL = {
-    "2dsa_refine_np4": LOOSE,
-    "2dsa_mc_np4": LOOSE,
     "2dsa_mc_pmasters": LOOSE,
     "2dsa_composite_pmasters": LOOSE,
     "2dsa_composite_meniscus_pmasters": LOOSE,

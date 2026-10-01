@@ -256,6 +256,7 @@ void US_MPI_Analysis::run_2dsa_jobs( void )
          Sa_Job job              = job_queue.takeFirst();
          submit( job, worker );
          worker_depth [ worker ] = job.mpi_job.depth;
+         worker_seq   [ worker ] = job.seq;
          worker_status[ worker ] = WORKING;
       }
 
@@ -437,15 +438,18 @@ void US_MPI_Analysis::fill_queue( void )
 {
    worker_status.resize( gcores_count );
    worker_depth .resize( gcores_count );
+   worker_seq   .resize( gcores_count );
 
    worker_status.fill( INIT );
    worker_depth .fill( 0 );
+   worker_seq   .fill( 0 );
    max_depth           = 0;
    worknext            = 1;
    max_experiment_size = min_experiment_size;
 
    // Put all jobs in the queue
    job_queue.clear();
+   cached_results.clear();
 
    for ( int i = 0; i < orig_solutes.size(); i++ )
    {
@@ -453,7 +457,7 @@ void US_MPI_Analysis::fill_queue( void )
                                   orig_solutes[ i ].size() );
       Sa_Job job;
       job.solutes         = orig_solutes[ i ];
-      job_queue << job;
+      add_to_queue( job );
    }
 }
 
@@ -658,7 +662,7 @@ DbgLv(0) << "FMB:set_meniscus:  mb_ndx men_run bot_run"
       Sa_Job job;
       job.solutes = orig_solutes[ i ];
 
-      job_queue << job;
+      add_to_queue( job );
    }
 
    worker_depth.fill( 0 );
@@ -964,7 +968,7 @@ void US_MPI_Analysis::iterate( void )
          }
       }
 
-      job_queue << job;
+      add_to_queue( job );
 
       // Bump max solutes per subgrid to new observed max
       max_experiment_size = qMax( max_experiment_size,
@@ -1024,6 +1028,7 @@ DbgLv(1) << "Mast: submit: send #2";
 void US_MPI_Analysis::add_to_queue( Sa_Job& job )
 {
    int jdepth = job.mpi_job.depth;
+   job.seq    = job_seq_next++;   // The queue is in (depth, seq) order
 
    for ( int qq = 0; qq < job_queue.size(); qq++ )
    {
@@ -1047,8 +1052,6 @@ void US_MPI_Analysis::process_results( int        worker,
    simulation_values.variances.resize( datasets_to_process );
    simulation_values.ti_noise.resize( size[ 1 ] );
    simulation_values.ri_noise.resize( size[ 2 ] );
-
-   max_experiment_size = qMax( max_experiment_size, size[ 0 ] );
 
    MPI_Status status;
 
@@ -1094,48 +1097,103 @@ void US_MPI_Analysis::process_results( int        worker,
              &status );
 
    worker_status[ worker ] = INIT;
-   int depth       = worker_depth[ worker ];
 
-if (depth == 0) { DbgLv(1) << "Mast:  process_results: worker" << worker
- << " solsize" << size[0] << "depth" << depth; }
-else { DbgLv(1) << "Mast:  process_results:      worker" << worker
- << " solsize" << size[0] << "depth" << depth; }
-    Result result;
-    result.depth   = depth;
-    result.worker  = worker;
-    result.solutes = simulation_values.solutes;
+   Result result;
+   result.depth     = worker_depth[ worker ];
+   result.worker    = worker;
+   result.seq       = worker_seq  [ worker ];
+   result.solutes   = simulation_values.solutes;
+   result.variance  = simulation_values.variance;
+   result.variances = simulation_values.variances;
+   result.ti_noise  = simulation_values.ti_noise;
+   result.ri_noise  = simulation_values.ri_noise;
 
-    int lwdepth    = low_working_depth();
+DbgLv(1) << "Mast:  process_results: worker" << worker << "depth" << result.depth
+ << "seq" << result.seq << "solutes" << result.solutes.size();
+   cached_results << result;
 
-    // If there are no cached results and the job result's depth
-    // is not beyond the low working depth, just process the result solutes
-    if ( cached_results.size() == 0  &&  depth <= lwdepth )
-    {
-       process_solutes( depth, worker, result.solutes );
-    }
+   process_ready_results();
+}
 
-    // If there are cached results or the job result's depth is below
-    // the low working depth, then first cache the current result
-    // in its proper depth-ordered place in the cached list
-    else
-    {
-       cache_result( result );
-    }
+// Process cached results in queue order.  A result is processed only when
+//  no queued or running job comes before it, so the merging of subgrid
+//  results does not depend on the order in which workers finish.
+void US_MPI_Analysis::process_ready_results( void )
+{
+   while ( ! cached_results.isEmpty() )
+   {
+      // Find the first result in (depth, seq) order
+      int rx = 0;
 
-    // Process any previous results that were cached.
-    // As long as there are cached depth-ordered results and the low on
-    // the list is less than or equal to the low-working depth;
-    // each first-on-the-list gets taken off and processed.
+      for ( int ii = 1; ii < cached_results.size(); ii++ )
+      {
+         const Result& rr = cached_results[ ii ];
+         const Result& rb = cached_results[ rx ];
 
-    while ( cached_results.size() > 0  &&
-            cached_results[ 0 ].depth <= lwdepth )
-    {
-       result     = cached_results.takeFirst();
-       depth      = result.depth;
-       worker     = result.worker;
+         if ( rr.depth < rb.depth  ||
+              ( rr.depth == rb.depth  &&  rr.seq < rb.seq ) )
+            rx = ii;
+      }
 
-       process_solutes( depth, worker, result.solutes );
-    }
+      if ( job_pending_before( cached_results[ rx ].depth,
+                               cached_results[ rx ].seq ) )
+         break;
+
+      Result result = cached_results.takeAt( rx );
+
+      simulation_values.solutes   = result.solutes;
+      simulation_values.variance  = result.variance;
+      simulation_values.variances = result.variances;
+      simulation_values.ti_noise  = result.ti_noise;
+      simulation_values.ri_noise  = result.ri_noise;
+      max_experiment_size = qMax( max_experiment_size,
+                                  (int)result.solutes.size() );
+
+      process_solutes( result.depth, result.worker, result.solutes );
+   }
+}
+
+// Is a queued or running job ahead of (depth, seq)?
+bool US_MPI_Analysis::job_pending_before( int depth, int seq )
+{
+   for ( int qq = 0; qq < job_queue.size(); qq++ )
+   {
+      int qdepth = job_queue[ qq ].mpi_job.depth;
+
+      if ( qdepth < depth  ||  ( qdepth == depth  &&  job_queue[ qq ].seq < seq ) )
+         return true;
+   }
+
+   for ( int ww = 1; ww <= my_workers; ww++ )
+   {
+      if ( worker_status[ ww ] != WORKING )
+         continue;
+
+      int wdepth = worker_depth[ ww ];
+
+      if ( wdepth < depth  ||  ( wdepth == depth  &&  worker_seq[ ww ] < seq ) )
+         return true;
+   }
+
+   return false;
+}
+
+// Is any job at this depth or below queued, running or not yet processed?
+bool US_MPI_Analysis::job_pending_at( int depth )
+{
+   for ( int qq = 0; qq < job_queue.size(); qq++ )
+      if ( job_queue[ qq ].mpi_job.depth <= depth )
+         return true;
+
+   for ( int ww = 1; ww <= my_workers; ww++ )
+      if ( worker_status[ ww ] == WORKING  &&  worker_depth[ ww ] <= depth )
+         return true;
+
+   for ( int ii = 0; ii < cached_results.size(); ii++ )
+      if ( cached_results[ ii ].depth <= depth )
+         return true;
+
+   return false;
 }
 
 // Process the calculated solute vector from a job result
@@ -1195,29 +1253,9 @@ DbgLv(1) << "Mast:    NEW max_exp_size" << max_experiment_size
 
    for ( int d = 0; d < dcheck; d++ )
    {
-      bool queued = false;
-      for ( int q = 0; q < job_queue.size(); q++ )
-      {
-         if ( job_queue[ q ].mpi_job.depth <= d )
-         {
-            queued = true;
-            break;
-         }
-      }
-
-      bool working = false;
-      for ( int w = 1; w <= my_workers; w++ )
-      {
-         if ( worker_depth[ w ] <= d  &&  worker_status[ w ] == WORKING )
-         {
-            working = true;
-            break;
-         }
-      }
-
       int remainder = calculated_solutes[ d ].size();
 
-      if ( ! working && ! queued && remainder > 0 )
+      if ( ! job_pending_at( d )  &&  remainder > 0 )
       { // Submit a job with remaining calculated solutes from an earlier depth
          int next_d                 = d + 1;
          Sa_Job job;
@@ -1234,26 +1272,14 @@ DbgLv(1) << "Mast:   queue REMAINDER" << remainder << " d=" << d+1;
       }
    }
 
-   // Is anyone working?
-   bool working = false;
-   for ( int w = 1; w <= my_workers; w++ )
-   {
-      if ( worker_status[ w ] == WORKING )
-      {
-         working = true;
-         break;
-      }
-   }
-
    // Submit one last time with all solutes if necessary.
    // This is the case if
    //  (1) this result is from the maximum submitted-jobs depth;
    //  (2) no jobs are queued or working; and
    //  (3) the current set of calculated solutes comes from more
    //      than one task result.
-   if ( depth == max_depth     &&
-        job_queue.isEmpty()    &&
-        ! working              &&
+   if ( depth == max_depth      &&
+        ! job_pending_at( 99 )  &&
         csol_size > rsol_size )
    {
       Sa_Job job;
@@ -1277,8 +1303,10 @@ DbgLv(1) << "Mast:   queue LAST ns=" << job.solutes.size() << "  d=" << depth+1
       if ( worker > 0 )
       { // Submit what should be the last job of this iteration
          ljob_solutes            = job.solutes;
+         job.seq                 = job_seq_next++;
          submit( job, worker );
          worker_depth [ worker ] = job.mpi_job.depth;
+         worker_seq   [ worker ] = job.seq;
          worker_status[ worker ] = WORKING;
          // Insure calculated solutes is empty for final depth
          if ( calculated_solutes.size() > max_depth )
@@ -1289,7 +1317,7 @@ DbgLv(1) << "Mast:   queue LAST ns=" << job.solutes.size() << "  d=" << depth+1
       else
       { // Shouldn't happen, but put job in queue if no worker is yet ready
 DbgLv(1) << "Mast:   WARNING: LAST depth and no worker ready!";
-         job_queue << job;
+         add_to_queue( job );
       }
    }
 
@@ -1302,42 +1330,3 @@ DbgLv(1) << "Mast:   WARNING: LAST depth and no worker ready!";
 
 }
 
-// Find the lowest depth among working jobs
-int US_MPI_Analysis::low_working_depth( )
-{
-   int depth = 99;      // Default to a depth higher than any reasonable one
-
-   for ( int ii = 1; ii <= my_workers; ii++ )
-   { // Test all worker statuses and depths
-      int wdepth = worker_depth[ ii ];
-
-      if ( worker_status[ ii ] == WORKING  &&
-           wdepth < depth )
-      { // If working and low depth so far, save depth
-         depth      = wdepth;
-      }
-   }
-
-   return depth;
-}
-
-// Cache a job result in a depth-ordered list
-void US_MPI_Analysis::cache_result( Result& result )
-{
-   int rdepth = result.depth;
-
-   for ( int ii = 0; ii < cached_results.size(); ii++ )
-   { // Examine all cached results
-      int cdepth = cached_results[ ii ].depth;
-
-      if ( rdepth < cdepth )
-      { // Insert new result before next highest depth
-         cached_results.insert( ii, result );
-         return;
-      }
-   }
-
-   // If no higher depth cached, append new result to the end
-   cached_results << result;
-   return;
-}
