@@ -5,8 +5,8 @@
 //! The data are simulated with the same simulation-parameter setup that
 //! us_mpi_analysis uses for a dataset (initFromData, rotor stretch, bottom,
 //! generated 1-second timestate), so the analysis can fit them closely.
-//! Noise comes from a portable generator so the files are identical on every
-//! platform.
+//! Files are written with US_DataIO and US_Model; noise comes from the seeded
+//! US_Math2 generator that us_mpi_analysis uses for Monte Carlo data.
 //!
 //! Usage:
 //!   us_mpi_testdata data   <outdir> <runID> <cell> <seed> <scale>
@@ -47,36 +47,10 @@ const double kRadiusLo   = 5.95;
 const double kRadiusHi   = 7.15;
 const double kRadiusStep = 0.006;
 
-// Deterministic, platform-independent normal deviates (xorshift64* plus
-// Box-Muller), unlike std::normal_distribution.
-class Rng
+QString raw_guid( int cell, uint64_t seed )
 {
-public:
-   explicit Rng( uint64_t seed ) : state( seed ? seed : 0x9E3779B97F4A7C15ULL ) {}
-
-   double uniform()
-   {
-      state ^= state >> 12;
-      state ^= state << 25;
-      state ^= state >> 27;
-      uint64_t xx = state * 2685821657736338717ULL;
-      return ( (double)( xx >> 11 ) + 0.5 ) / 9007199254740992.0;
-   }
-
-   double normal()
-   {
-      double u1 = uniform();
-      double u2 = uniform();
-      return sqrt( -2.0 * log( u1 ) ) * cos( 2.0 * M_PI * u2 );
-   }
-
-private:
-   uint64_t state;
-};
-
-QString fmt( double value )
-{
-   return QString::number( value, 'g', 12 );
+   return QString( "00000000-0000-4000-8000-%1" )
+          .arg( seed * 100 + cell, 12, 10, QChar( '0' ) );
 }
 
 US_DataIO::RawData skeleton( const QString& runID, int cell, uint64_t seed )
@@ -87,10 +61,8 @@ US_DataIO::RawData skeleton( const QString& runID, int cell, uint64_t seed )
    raw.channel     = 'A';
    raw.description = "us_mpi_analysis regression data " + runID;
 
-   // GUID bytes derived from seed and cell so every dataset differs
-   Rng guid( seed * 131 + cell );
-   for ( int ii = 0; ii < 16; ii++ )
-      raw.rawGUID[ ii ] = (char)( guid.uniform() * 256.0 );
+   // Fixed GUID per dataset so the files do not change between runs
+   US_Util::uuid_parse( raw_guid( cell, seed ), (uchar*)raw.rawGUID );
 
    int npoints = qRound( ( kRadiusHi - kRadiusLo ) / kRadiusStep ) + 1;
    for ( int rr = 0; rr < npoints; rr++ )
@@ -118,61 +90,27 @@ US_DataIO::RawData skeleton( const QString& runID, int cell, uint64_t seed )
    return raw;
 }
 
+// Velocity edit: meniscus, data range 6.0-7.1 cm, plateau and baseline
 bool write_edit( const QString& path, const QString& runID,
                  const US_DataIO::RawData& raw, int cell )
 {
-   QFile file( path );
-   if ( ! file.open( QIODevice::WriteOnly | QIODevice::Text ) )
-      return false;
+   US_DataIO::EditValues ev;
+   ev.expType    = "Velocity";
+   ev.runID      = runID;
+   ev.cell       = QString::number( cell );
+   ev.channel    = "A";
+   ev.wavelength = "260";
+   ev.editGUID   = QString( "00000000-0000-4000-8000-0000000000%1" )
+                   .arg( 10 + cell );
+   ev.dataGUID   = US_Util::uuid_unparse( (uchar*)raw.rawGUID );
+   ev.meniscus   = kMeniscus;
+   ev.rangeLeft  = 6.0;
+   ev.rangeRight = 7.1;
+   ev.plateau    = 7.0;
+   ev.baseline   = 7.12;
+   ev.ODlimit    = 1.5;
 
-   QXmlStreamWriter xml( &file );
-   xml.setAutoFormatting( true );
-   xml.writeStartDocument();
-   xml.writeDTD( "<!DOCTYPE UltraScanEdits>" );
-   xml.writeStartElement( "experiment" );
-   xml.writeAttribute( "type", "Velocity" );
-
-   xml.writeStartElement( "identification" );
-   xml.writeStartElement( "runid" );
-   xml.writeAttribute( "value", runID );
-   xml.writeEndElement();
-   xml.writeStartElement( "editGUID" );
-   xml.writeAttribute( "value", "00000000-0000-4000-8000-0000000000"
-                       + QString::number( 10 + cell ) );
-   xml.writeEndElement();
-   xml.writeStartElement( "rawDataGUID" );
-   xml.writeAttribute( "value", US_Util::uuid_unparse( (uchar*)raw.rawGUID ) );
-   xml.writeEndElement();
-   xml.writeEndElement();  // identification
-
-   xml.writeStartElement( "run" );
-   xml.writeAttribute( "cell",       QString::number( cell ) );
-   xml.writeAttribute( "channel",    "A" );
-   xml.writeAttribute( "wavelength", "260" );
-
-   xml.writeStartElement( "parameters" );
-   xml.writeStartElement( "meniscus" );
-   xml.writeAttribute( "radius", fmt( kMeniscus ) );
-   xml.writeEndElement();
-   xml.writeStartElement( "data_range" );
-   xml.writeAttribute( "left",  "6.0" );
-   xml.writeAttribute( "right", "7.1" );
-   xml.writeEndElement();
-   xml.writeStartElement( "plateau" );
-   xml.writeAttribute( "radius", "7.0" );
-   xml.writeEndElement();
-   xml.writeStartElement( "baseline" );
-   xml.writeAttribute( "radius", "7.12" );
-   xml.writeEndElement();
-   xml.writeStartElement( "od_limit" );
-   xml.writeAttribute( "value", "1.5" );
-   xml.writeEndElement();
-   xml.writeEndElement();  // parameters
-
-   xml.writeEndElement();  // run
-   xml.writeEndElement();  // experiment
-   xml.writeEndDocument();
-   return true;
+   return US_DataIO::writeEdits( path, ev ) == US_DataIO::OK;
 }
 
 US_Model sample_model( double scale )
@@ -258,7 +196,7 @@ int write_data( const QString& outdir, const QString& runID, int cell,
 
    // Copy simulation plus noise into the raw radial grid
    int    offset = US_DataIO::index( raw.xvalues, edata.xvalues[ 0 ] );
-   Rng    noise( seed );
+   US_Math2::randomize( (uint)seed );
    for ( int ss = 0; ss < raw.scanCount(); ss++ )
    {
       for ( int rr = 0; rr < raw.pointCount(); rr++ )
@@ -266,7 +204,8 @@ int write_data( const QString& outdir, const QString& runID, int cell,
          int    er    = rr - offset;
          double value = ( er >= 0  &&  er < simdat.pointCount() )
                         ? simdat.value( ss, er ) : 0.0;
-         raw.scanData[ ss ].rvalues[ rr ] = value + kNoiseSigma * noise.normal();
+         raw.scanData[ ss ].rvalues[ rr ] =
+            value + US_Math2::box_muller( 0.0, kNoiseSigma );
       }
    }
 

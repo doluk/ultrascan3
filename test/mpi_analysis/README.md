@@ -7,7 +7,7 @@ and compare the fitted models with stored baselines.
 
 | File | Purpose |
 |---|---|
-| `us_mpi_testdata.cpp` | Writes a simulated velocity dataset (`.auc` + edit file) and a custom-grid model. Three species, 30 scans, 60 krpm, fixed-seed noise (σ = 0.004). |
+| `us_mpi_testdata.cpp` | Writes a simulated velocity dataset and a custom-grid model with the UltraScan writers (`US_DataIO::writeRawData`, `US_DataIO::writeEdits`, `US_Model::write`). Three species, 30 scans, 60 krpm, noise σ = 0.004 from the seeded `US_Math2` generator. |
 | `us_mpi_regression.py` | Builds the job archive (hpcrequest XML in the LIMS format), runs the case, reduces `analysis-results.tar` to a JSON summary and compares it with `baseline/<case>.json`. |
 | `baseline/*.json` | Reference summaries: per model the RMSD, the signal-weighted moments of s, f/f0 and vbar, the solute list, and any TI/RI noise vectors. |
 
