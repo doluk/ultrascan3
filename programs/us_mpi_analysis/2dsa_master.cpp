@@ -14,7 +14,8 @@ void US_MPI_Analysis::_2dsa_master( void )
    work_rss.resize( gcores_count );
 
    current_dataset     = 0;
-   datasets_to_process = count_datasets;
+   // A composite job fits its datasets one at a time
+   datasets_to_process = is_composite_job ? 1 : count_datasets;
    dset_calc_solutes.clear();
 
    int max_iters_all   = max_iterations;
