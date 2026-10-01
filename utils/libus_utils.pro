@@ -66,7 +66,6 @@ HEADERS      = us_ana_profile.h   \
                us_solution.h      \
                us_solution_vals.h \
                us_solve_sim.h     \
-               us_solve_sim_mds.h \
                us_3dsa_process.h  \
                us_stiffbase.h     \
                us_tar.h           \
@@ -125,7 +124,6 @@ SOURCES      = us_ana_profile.cpp   \
                us_solution.cpp      \
                us_solution_vals.cpp \
                us_solve_sim.cpp     \
-               us_solve_sim_mds.cpp \
                us_3dsa_process.cpp  \
                us_stiffbase.cpp     \
                us_tar.cpp           \

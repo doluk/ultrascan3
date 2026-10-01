@@ -193,13 +193,17 @@ out, a cell is lost, and the top of the range costs the most H/D exchange. The
 contrast gate and the v̄ recovery have to depend on the densities themselves,
 not on the series being regular.
 
-Cases 15–19 are the reason `US_SolveSimMDS` exists. Each cell of a real series
+### Fitted noise
+
+Cases 15–19 are the ones that found the single-data-set noise defect in
+`US_SolveSim`, since fixed there for every caller. Each cell of a real series
 has its own time- and radially-invariant noise, so these cases inject a
 different profile into every data set and ask the fit to solve for it. Beyond
 the global RMSD they are checked on `rmsd_spread_max`, the ratio of the worst
 per-data-set RMSD to the best: a fit that cleans up one data set and leaves
-the rest passes every aggregate check but fails that one. See §3C of the
-design document.
+the rest passes every aggregate check but fails that one — which is exactly
+what the old solver did, with a spread of 609×. See §3C of the design
+document.
 
 ## Reading the report
 
