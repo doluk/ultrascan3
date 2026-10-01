@@ -361,6 +361,9 @@ def compare(name, base, cur, tol):
             continue
         for idx, (bm, cm) in enumerate(zip(bms, cms)):
             where = "%s[%d]" % (fname, idx)
+            if bm["description"] != cm["description"]:
+                errors.append("%s: description %s vs baseline %s"
+                              % (where, cm["description"], bm["description"]))
             if tol.get("loose"):
                 # Only require a fit that is not worse than the baseline
                 if cm["rmsd"] > bm["rmsd"] * (1.0 + tol["rmsd_rel"]):
