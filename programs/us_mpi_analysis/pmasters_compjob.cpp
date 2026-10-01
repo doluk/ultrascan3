@@ -619,10 +619,11 @@ DbgLv(1) << "CJ_MAST Recv tag" << tag << "iter" << iter;
                set_menibott_values( current_dataset );
             }
 
+            wait_workers_ready();
+            fill_queue();
+
             for ( int ii = 1; ii <= my_workers; ii++ )
                worker_status[ ii ] = READY;
-
-            fill_queue();
 
             for ( int ii = 0; ii < calculated_solutes.size(); ii++ )
                calculated_solutes[ ii ].clear();

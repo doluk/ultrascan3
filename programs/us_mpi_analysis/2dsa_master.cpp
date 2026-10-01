@@ -219,9 +219,7 @@ DbgLv(0) << " master loop-BOT:     menpt" << meniscus_points << "mv0 mvn"
  << "gcores_count" << gcores_count;
             }
 
-//               for ( int ii = 1; ii < gcores_count; ii++ )
-//                  worker_status[ ii ] = READY;
-
+            wait_workers_ready();
             fill_queue();
 
             for ( int ii = 1; ii < gcores_count; ii++ )
@@ -236,28 +234,8 @@ DbgLv(1) << " master loop-BOT:      wkst1 wkstn" << worker_status[1]
          }
       }
 
-      // Every worker has finished its current assignment.  Some workers
-      // may have sent READY after their last result while the master was
-      // writing output; consume those messages before sending SHUTDOWN so
-      // no unexpected READY message remains at MPI_Finalize.
-      for ( int ii = 1; ii < gcores_count; ii++ )
-      {
-         if ( worker_status[ ii ] != READY )
-         {
-            int        sizes[ 4 ];
-            MPI_Status status;
-
-            MPI_Recv( sizes,
-                      4,
-                      MPI_INT,
-                      ii,
-                      MPI_Job::READY,
-                      my_communicator,
-                      &status );
-
-            worker_status[ ii ] = READY;
-         }
-      }
+      // Consume outstanding READY messages so none remains at MPI_Finalize
+      wait_workers_ready();
 
       shutdown_all();  // All done
       break;           // Break out of main loop.
@@ -321,6 +299,31 @@ if ( max_depth > 0 )
       }
 
       max_rss();
+   }
+}
+
+// Wait for the READY message of every worker not yet marked ready.  Each
+//  worker sends READY after each result, so after a pass at most one is
+//  outstanding per worker.
+void US_MPI_Analysis::wait_workers_ready( void )
+{
+   for ( int ii = 1; ii <= my_workers; ii++ )
+   {
+      if ( worker_status[ ii ] != READY )
+      {
+         int        sizes[ 4 ];
+         MPI_Status status;
+
+         MPI_Recv( sizes,
+                   4,
+                   MPI_INT,
+                   ii,
+                   MPI_Job::READY,
+                   my_communicator,
+                   &status );
+
+         worker_status[ ii ] = READY;
+      }
    }
 }
 
@@ -667,6 +670,11 @@ DbgLv(0) << "FMB:set_meniscus:  mb_ndx men_run bot_run"
 // Reset for a Monte Carlo iteration
 void US_MPI_Analysis::set_monteCarlo( void )
 {
+   // Workers answer the new data with READY; consume the READY each worker
+   //  sent after its last result first, so no stale READY can later mark a
+   //  busy worker as ready
+   wait_workers_ready();
+
 DbgLv(1) << "sMC: max_depth" << max_depth << "calcsols size" << calculated_solutes[max_depth].size()
  << "simvsols size" << simulation_values.solutes.size();
 

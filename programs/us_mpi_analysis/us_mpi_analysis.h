@@ -372,6 +372,7 @@ class US_MPI_Analysis : public QObject
         void     _2dsa_master      ( void );
         void     submit            ( Sa_Job&, int );
         void     run_2dsa_jobs     ( void );
+        void     wait_workers_ready( void );
         void     submit_pcsa       ( Sa_Job&, int );
         void     add_to_queue      ( Sa_Job& );
         void     process_results   ( int, const int* );
