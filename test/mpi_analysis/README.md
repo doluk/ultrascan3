@@ -25,20 +25,20 @@ and compare the fitted models with stored baselines.
 | `2dsa_composite` | composite job, 2 datasets | 2 | exact |
 | `2dsa_composite_meniscus` | composite job with meniscus fit | 2 | exact |
 | `2dsa_refine_np4`, `2dsa_mc_np4` | several workers | 4 | exact |
-| `2dsa_mc_pmasters` | `pm_2dsa_master` (MC, 2 groups) | 6 | loose |
-| `2dsa_composite_pmasters` | `pm_2dsa_cjmast` (2 groups) | 6 | loose |
-| `2dsa_composite_meniscus_pmasters` | `pm_2dsa_cjmast` with meniscus fit | 6 | loose |
+| `2dsa_mc_pmasters` | parallel masters, MC (2 groups) | 6 | exact |
+| `2dsa_composite_pmasters` | parallel masters, composite (2 groups) | 6 | exact |
+| `2dsa_composite_meniscus_pmasters` | parallel composite with meniscus fit | 6 | exact |
 | `pcsa_sl` | PCSA straight lines | 2 | exact |
 | `ga_basic` | GA, 3 buckets | 4 | loose |
 
 "Exact" means RMSD within 1e-6 relative, moments within 1e-4 relative and
 noise within 1e-6 absolute.  The 2DSA master merges subgrid results in job
-order, so a fit gives the same result for any number of workers; the
-`*_np4` cases check that against the single-worker results.  GA migrates
-genes asynchronously and the parallel-masters cases depend on how Monte
-Carlo iterations are spread over the groups, so these results depend on
-message timing.  "Loose" cases only require the same output files and an
-RMSD not more than 15 % above the baseline.
+order and seeds the noise of each Monte Carlo iteration from the job seed
+and the iteration, so a fit gives the same result for any number of workers
+or master groups; the `*_np4` and `*_pmasters` cases equal the single-worker
+results.  GA migrates genes asynchronously, so its result depends on message
+timing; "loose" only requires the same output files and an RMSD not more
+than 15 % above the baseline.
 
 ## Running
 

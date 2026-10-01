@@ -869,6 +869,12 @@ int mcdsiz=mc_data.count();
    double varimax    = -1.0;
    double datasum    = 0.0;
 
+   // With a fixed seed, seed each iteration from the seed and the iteration
+   //  index, so its data do not depend on which master group computes it
+   uint seed         = parameters[ "seed" ].toUInt();
+   if ( seed != 0 )
+      US_Math2::randomize( seed + (uint)mc_iteration );
+
    // Get a randomized variation of the concentrations
    // Use a gaussian distribution with the residual as the standard deviation
    for ( int ee = ds_start; ee < ds_end; ee++ )
