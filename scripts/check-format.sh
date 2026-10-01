@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Checks (or fixes) the UltraScan III code style (.clang-format) on CHANGED LINES only.
 #
+# Also runs scripts/check-conventions.py (nullptr, f(), connect syntax, guards, \file header).
+#
 # usage: scripts/check-format.sh [--fix] [--staged | <base-ref>]
 #   --staged    check the staged changes (pre-commit hook)          [default]
 #   <base-ref>  check the diff between <base-ref> and the worktree  (CI: origin/main)
@@ -18,7 +20,7 @@ for a in "$@"; do
    case "$a" in
       --fix)    fix=1 ;;
       --staged) mode=staged ;;
-      -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
+      -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
       *)        mode=ref; base="$a" ;;
    esac
 done
@@ -46,14 +48,21 @@ else
    ref=("$base")
 fi
 
+conv=(scripts/check-conventions.py)
+if [ "$mode" = staged ]; then conv+=(--staged); else conv+=("$base"); fi
+
 if [ "$fix" = 1 ]; then
-   "$gcf" "${args[@]}" "${ref[@]}" -- "${paths[@]}"
+   "$gcf" "${args[@]}" "${ref[@]}" -- "${paths[@]}" || true
+   python3 "${conv[0]}" --fix "${conv[@]:1}" || true   # fixes what it can, reports the rest
    exit 0
 fi
 
+rc=0
+python3 "${conv[@]}" || rc=1
+
 out=$("$gcf" "${args[@]}" --diff "${ref[@]}" -- "${paths[@]}" || true)
 case "$out" in
-   *"no modified files to format"*|*"did not modify any files"*|"") exit 0 ;;
+   *"no modified files to format"*|*"did not modify any files"*|"") exit $rc ;;
 esac
 echo "$out"
 echo

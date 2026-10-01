@@ -67,8 +67,9 @@ AllowAllParametersOfDeclarationOnNextLine: false
 BreakBeforeBinaryOperators: None
 BreakConstructorInitializers: AfterColon
 
-# Leave include order and blank lines alone
-SortIncludes: Never
+# Sort includes within each block; keep blocks and blank lines
+SortIncludes: CaseSensitive
+IncludeBlocks: Preserve
 MaxEmptyLinesToKeep: 2
 KeepEmptyLinesAtTheStartOfBlocks: false
 FixNamespaceComments: false

@@ -80,3 +80,7 @@ is encoded in `.clang-format` (clang-format 18) and enforced **on changed lines 
     sudo apt install clang-format-18         # includes git-clang-format
     git config core.hooksPath .githooks      # or: pre-commit install
     scripts/check-format.sh --fix --staged   # format staged changes, then git add
+
+In addition to formatting, `scripts/check-conventions.py` checks changed code for: `nullptr` (not `NULL`), `f()` (not `f( void )`),
+`connect( a, &A::sig, b, &B::slot )` (not `SIGNAL`/`SLOT`), a trailing newline and an include guard; new files must start with
+`//! \file <name>` and headers must use the guard `<NAME>_H` (`us_foo.h` -> `US_FOO_H`). Includes are sorted within each block.

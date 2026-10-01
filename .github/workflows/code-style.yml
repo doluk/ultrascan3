@@ -11,6 +11,7 @@ on:
       - '**.hpp'
       - '.clang-format'
       - 'scripts/check-format.sh'
+      - 'scripts/check-conventions.py'
       - '.github/workflows/code-style.yml'
   workflow_dispatch:
 
