@@ -137,7 +137,7 @@ class US_MPI_Analysis : public QObject
 
         //! \enum PMGTag
         //! \brief Enumeration for PMG tags
-        enum PMGTag { ADATESIZE=1000, ADATE, STARTITER, STARTLAST, UDPSIZE, UDPMSG, DONEITER, DONELAST };
+        enum PMGTag { ADATESIZE=1000, ADATE, STARTITER, STARTLAST, UDPSIZE, UDPMSG, DONEITER, DONELAST, STOPITER };
 
         bool fit_meni;           //!< Fit meniscus flag
         bool fit_bott;           //!< Fit bottom flag

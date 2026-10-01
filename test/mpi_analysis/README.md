@@ -26,6 +26,8 @@ and compare the fitted models with stored baselines.
 | `2dsa_composite_meniscus` | composite job with meniscus fit | 2 | exact |
 | `2dsa_refine_np4`, `2dsa_mc_np4` | several workers | 4 | exact |
 | `2dsa_mc_pmasters` | parallel masters, MC (2 groups) | 6 | exact |
+| `2dsa_mc_pmasters3` | parallel MC, 3 groups, 4 iterations | 9 | exact |
+| `2dsa_mc_pmasters_idle` | parallel MC, 3 groups, 2 iterations | 9 | exact |
 | `2dsa_composite_pmasters` | parallel masters, composite (2 groups) | 6 | exact |
 | `2dsa_composite_meniscus_pmasters` | parallel composite with meniscus fit | 6 | exact |
 | `pcsa_sl` | PCSA straight lines | 2 | exact |

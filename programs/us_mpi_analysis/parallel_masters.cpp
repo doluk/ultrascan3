@@ -167,9 +167,12 @@ void US_MPI_Analysis::pmasters_supervisor()
    //   description. Then, send the iteration index as a trigger to begin
    //   an iteration loop; all groups do iteration 1.
 
+   // A 2DSA group master waits for a reply to every iteration-done message;
+   //  when no iterations are left it gets STOPITER
+   bool stop_groups = analysis_type.startsWith( "2DSA" );
+
    for ( int ii = 0; ii < mgroup_count; ii++ )
    {
-      mc_iteration++;
       master = ( ii == 0 ) ? 1 : ( ii * gcores_count );   // Master world rank
 
 DbgLv(1) << "SUPER: master msgs" << master << "analysisDate" << analysisDate;
@@ -188,6 +191,21 @@ DbgLv(1) << "SUPER: master msgs" << master << "analysisDate" << analysisDate;
                 master,
                 ADATE,
                 MPI_COMM_WORLD );
+
+      if ( stop_groups  &&  mc_iteration >= mc_iterations )
+      {  // More groups than iterations:  nothing to do for this group
+         MPI_Send( &mc_iteration,
+                   1,
+                   MPI_INT,
+                   master,
+                   STOPITER,
+                   MPI_COMM_WORLD );
+
+         mstates[ ii ] = INIT;
+         continue;
+      }
+
+      mc_iteration++;
 
       MPI_Send( &mc_iteration,
                 1,
@@ -287,6 +305,16 @@ DbgLv(1) << "SUPER: mgr kgr jgr" << mgroup << kgroup << jgroup
       {  // Just finished was last iteration for that group
          mstates[ kgroup ] = INIT;           // Mark as finished
          maxrssma += (long)( iwork );        // Sum in master maxrss
+
+         if ( stop_groups  &&  tag == DONEITER )
+         {  // The group master waits for an iteration; tell it to stop
+            MPI_Send( &iwork,
+                      1,
+                      MPI_INT,
+                      master,
+                      STOPITER,
+                      MPI_COMM_WORLD );
+         }
 DbgLv(1) << "SUPER:  (A)maxrssma" << maxrssma << "iwork" << iwork;
 
          if ( nileft == 0 )

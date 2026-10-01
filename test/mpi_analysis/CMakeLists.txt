@@ -25,6 +25,8 @@ set(US_MPI_CASES
     2dsa_refine
     2dsa_mc
     2dsa_mc_pmasters
+    2dsa_mc_pmasters3
+    2dsa_mc_pmasters_idle
     2dsa_meniscus
     2dsa_noise
     2dsa_customgrid

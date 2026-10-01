@@ -49,7 +49,17 @@ void US_MPI_Analysis::_2dsa_master( void )
    int first_dataset   = 0;
 
    if ( pm_mc )
+   {
       pm_iter             = pm_next_unit( super );   // First MC iteration
+
+      if ( pm_iter < 0 )
+      {  // More groups than Monte Carlo iterations:  nothing to do
+         worker_status.fill( INIT, gcores_count );
+         wait_workers_ready();
+         shutdown_all();
+         return;
+      }
+   }
 
    else if ( pm_comp )
       first_dataset       = pm_next_unit( super );   // First dataset
@@ -286,8 +296,8 @@ QString US_MPI_Analysis::progress_2dsa( void )
    return progress;
 }
 
-// Parallel masters: get the first Monte Carlo iteration or dataset index
-//  from the supervisor
+// Parallel masters: get the next Monte Carlo iteration or dataset index
+//  from the supervisor.  Returns -1 if the supervisor has none left.
 int US_MPI_Analysis::pm_next_unit( int super )
 {
    int        iter;
@@ -300,6 +310,9 @@ int US_MPI_Analysis::pm_next_unit( int super )
              MPI_ANY_TAG,
              MPI_COMM_WORLD,
              &status );
+
+   if ( status.MPI_TAG == STOPITER )
+      return -1;
 
    if ( status.MPI_TAG == STARTLAST )
    {  // This is the last unit for the group
@@ -319,6 +332,10 @@ int US_MPI_Analysis::pm_next_unit( int super )
 //  supervisor and get the next one.  Returns false if the group is done.
 bool US_MPI_Analysis::pm_iteration_done( int super, int& pm_iter )
 {
+   // A reduction for time must be in the message, since the supervisor
+   //  answers an iteration-done message with the next iteration
+   time_mc_iterations();
+
    if ( mc_iteration >= mc_iterations )
    {
       for ( int jj = 1; jj <= my_workers; jj++ )
@@ -339,13 +356,8 @@ bool US_MPI_Analysis::pm_iteration_done( int super, int& pm_iter )
    if ( mc_iteration >= mc_iterations )
       return false;
 
-   time_mc_iterations();
-
-   if ( mc_iteration >= mc_iterations )
-      return false;
-
    pm_iter     = pm_next_unit( super );
-   return true;
+   return ( pm_iter > 0 );
 }
 
 // Parallel composite: report the finished dataset to the supervisor and

@@ -66,6 +66,16 @@ CASES = {
         "method": "2DSA", "datasets": [DS_A], "np": 6, "mgroupcount": 2,
         "params": dict(GRID_2DSA, mc_iterations="4"),
     },
+    "2dsa_mc_pmasters3": {
+        # Iterations 2 and 3 are the last ones of their groups
+        "method": "2DSA", "datasets": [DS_A], "np": 9, "mgroupcount": 3,
+        "params": dict(GRID_2DSA, mc_iterations="4"),
+    },
+    "2dsa_mc_pmasters_idle": {
+        # More master groups than Monte Carlo iterations
+        "method": "2DSA", "datasets": [DS_A], "np": 9, "mgroupcount": 3,
+        "params": dict(GRID_2DSA, mc_iterations="2"),
+    },
     "2dsa_meniscus": {
         "method": "2DSA", "datasets": [DS_A], "np": 2,
         "params": dict(GRID_2DSA, meniscus_points="3", meniscus_range="0.04",
