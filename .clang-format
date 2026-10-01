@@ -10,14 +10,15 @@ IndentWidth: 3
 TabWidth: 3
 UseTab: Never
 ContinuationIndentWidth: 3
-AccessModifierOffset: -3
-IndentCaseLabels: false
+AccessModifierOffset: 0
+IndentAccessModifiers: true
+IndentCaseLabels: true
 NamespaceIndentation: None
 IndentPPDirectives: None
 
 # Braces: on their own line (as in the existing code base)
 BreakBeforeBraces: Allman
-InsertBraces: false
+InsertBraces: true
 AllowShortIfStatementsOnASingleLine: Never
 AllowShortLoopsOnASingleLine: false
 AllowShortFunctionsOnASingleLine: None
@@ -49,8 +50,14 @@ DerivePointerAlignment: false
 ReferenceAlignment: Pointer
 
 # Align related declarations / assignments
-AlignConsecutiveDeclarations: Consecutive
-AlignConsecutiveAssignments: Consecutive
+AlignConsecutiveDeclarations:
+  Enabled: true
+  AcrossEmptyLines: true
+  AcrossComments: true
+AlignConsecutiveAssignments:
+  Enabled: true
+  AcrossEmptyLines: false
+  AcrossComments: true
 AlignAfterOpenBracket: Align
 AlignOperands: Align
 AlignTrailingComments: true
@@ -68,3 +75,4 @@ FixNamespaceComments: false
 AlwaysBreakAfterReturnType: None
 PenaltyReturnTypeOnItsOwnLine: 1000
 PackConstructorInitializers: CurrentLine
+StatementMacros: [ Q_OBJECT, Q_GADGET, Q_DECLARE_METATYPE ]
