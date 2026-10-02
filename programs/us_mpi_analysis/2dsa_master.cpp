@@ -9,6 +9,13 @@
 #include "us_constants.h"
 #include "../../utils/us_simparms.h"
 
+// Drop duplicate solutes from a sorted merge-job solute vector
+static void unique_solutes( QVector< US_Solute >& solutes )
+{
+   solutes.erase( std::unique( solutes.begin(), solutes.end() ),
+                  solutes.end() );
+}
+
 void US_MPI_Analysis::_2dsa_master( void )
 {
    init_solutes();
@@ -378,6 +385,29 @@ DbgLv(1) << " master loop-BOT:      wkst1 wkstn" << worker_status[1]
                   calculated_solutes[ ii ].clear();
 
                continue;
+            }
+         }
+
+         // Every worker has finished its current assignment.  Some workers
+         // may have sent READY after their last result while the master was
+         // writing output; consume those messages before sending SHUTDOWN so
+         // no unexpected READY message remains at MPI_Finalize.
+         for ( int ii = 1; ii < gcores_count; ii++ )
+         {
+            if ( worker_status[ ii ] != READY )
+            {
+               int        sizes[ 4 ];
+               MPI_Status status;
+
+               MPI_Recv( sizes,
+                         4,
+                         MPI_INT,
+                         ii,
+                         MPI_Job::READY,
+                         my_communicator,
+                         &status );
+
+               worker_status[ ii ] = READY;
             }
          }
 
@@ -1365,6 +1395,7 @@ DbgLv(1) << "Mast:    process_solutes:      worker" << worker
       job.mpi_job.dataset_offset = current_dataset;
       job.mpi_job.dataset_count  = datasets_to_process;
       std::sort( job.solutes.begin(), job.solutes.end() );
+      unique_solutes( job.solutes );
       add_to_queue( job );
 
 DbgLv(1) << "Mast:   queue NEW DEPTH sols" << job.solutes.size() << " d="
@@ -1428,6 +1459,7 @@ DbgLv(1) << "Mast:    NEW max_exp_size" << max_experiment_size
          job.mpi_job.dataset_count  = datasets_to_process;
          max_depth                  = qMax( next_d, max_depth );
          std::sort( job.solutes.begin(), job.solutes.end() );
+         unique_solutes( job.solutes );
          add_to_queue( job );
 DbgLv(1) << "Mast:   queue REMAINDER" << remainder << " d=" << d+1;
 
@@ -1467,6 +1499,7 @@ DbgLv(1) << "Mast:   queue REMAINDER" << remainder << " d=" << d+1;
                            ? data_sets[ current_dataset ]->run_data.bottom
                            : bottom_values  [ bottom_run   ];
       std::sort( job.solutes.begin(), job.solutes.end() );
+      unique_solutes( job.solutes );
 DbgLv(1) << "Mast:   queue LAST ns=" << job.solutes.size() << "  d=" << depth+1
  << max_depth << "  nsvs=" << simulation_values.solutes.size();
 
@@ -1542,4 +1575,3 @@ void US_MPI_Analysis::cache_result( Result& result )
    cached_results << result;
    return;
 }
-

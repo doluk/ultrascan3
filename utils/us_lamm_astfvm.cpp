@@ -595,10 +595,17 @@ radius( Nx - 2 )
       // save a copy of the salt data set so that it may be plotted for QC
       QString saltDataPath = US_Settings::resultDir() + "/salt_data";
       QDir dir;
+
       if ( dir.mkpath( saltDataPath ) )
       {
          saltDataPath = saltDataPath + "/salt_data.RA.1.S.260.auc";
-         US_DataIO::writeRawData( saltDataPath, sa_data );
+         int wstat    = US_DataIO::writeRawData( saltDataPath, sa_data );
+
+         if ( wstat != US_DataIO::OK )
+         {  // Report the QC write failure without interrupting the solve.
+            qDebug() << "*ERROR* Unable to write salt QC data" << saltDataPath
+                     << ":" << US_DataIO::errorString( wstat );
+         }
       }
    }
 
