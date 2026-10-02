@@ -119,6 +119,8 @@ if(NOT US3_NO_DB)
             )
 endif()
 
+target_link_libraries( us_utils PUBLIC Eigen3::Eigen )
+
 # Platform-specific libraries
 if(UNIX AND NOT APPLE)
     # Linux-specific libraries
@@ -192,6 +194,8 @@ if(BUILD_TESTING OR US3_PREFER_STATIC)
                 MySQL::Client
                 )
     endif()
+
+    target_link_libraries( us_utils_static PUBLIC Eigen3::Eigen )
 
     # Platform-specific libraries
     if(UNIX AND NOT APPLE)

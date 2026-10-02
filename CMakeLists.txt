@@ -831,6 +831,8 @@ if(NOT US3_NO_DB)
     endif()
 endif()
 
+find_package(Eigen3 CONFIG REQUIRED)
+
 # Platform-specific libraries
 # GLU/X11 are display libraries only needed by the GUI (gui/, programs/us_*).
 # HPC is headless (US3_PROFILE=HPC builds only us_mpi_analysis, no GUI), so

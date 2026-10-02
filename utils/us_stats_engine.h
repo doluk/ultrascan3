@@ -67,6 +67,30 @@ class US_UTIL_EXTERN US_StatsEngine
          QString errorMessage;               //!< Error message if invalid
       };
 
+      //! \brief DMD mode (dynamic mode with temporal evolution)
+      struct US_UTIL_EXTERN DMDMode
+      {
+         QVector< double > spatial_pattern;  //!< Spatial pattern (real part of mode)
+         QVector< double > spatial_pattern_imag; //!< Spatial pattern (imaginary part)
+         QVector< double > temporal_evolution; //!< Reconstructed temporal evolution
+         double growth_rate;                 //!< Growth/decay rate (real part of eigenvalue)
+         double frequency;                   //!< Oscillation frequency (imaginary part of eigenvalue)
+         double amplitude;                   //!< Mode amplitude
+         double period;                      //!< Oscillation period (scans), NaN if non-oscillatory
+         QString description;                //!< Human-readable description of mode behavior
+         QVector<QVector<double>> reconstruction;
+      };
+
+      //! \brief DMD decomposition results
+      struct US_UTIL_EXTERN DMDResults
+      {
+         QVector< DMDMode > modes;           //!< Extracted DMD modes
+         QVector< QVector< double > > reconstruction; //!< Reconstructed residual matrix
+         double reconstruction_error;        //!< Frobenius norm of reconstruction error
+         bool valid;                         //!< Whether decomposition succeeded
+         QString errorMessage;               //!< Error message if invalid
+      };
+
       //! \brief Calculate global scalar metrics from flattened data
       //! \param data_flat  Flattened data vector
       static GlobalMetrics calculateGlobalMetrics( const QVector< double >& data_flat );
@@ -79,10 +103,22 @@ class US_UTIL_EXTERN US_StatsEngine
       //! \param residual_matrix  2D matrix [scans][positions]
       static SpatialMetrics calculateSpatialMetrics( const QVector< QVector< double > >& residual_matrix );
 
-      // //! \brief Perform SVD decomposition and extract principal modes
-      // //! \param residual_matrix  2D matrix [scans][positions]
-      // //! \param n_modes        Number of modes to extract (default 3)
-      // static SVDResults calculateSVD( const QVector< QVector< double > >& residual_matrix, int n_modes = 3 );
+      //! \brief Perform SVD decomposition and extract principal modes
+      //! \param residual_matrix  2D matrix [scans][positions]
+      //! \param n_modes        Number of modes to extract (default 3)
+      static SVDResults calculateSVD( const QVector< QVector< double > >& residual_matrix, int n_modes = 3 );
+
+      //! \brief Perform Dynamic Mode Decomposition on spatio-temporal residuals
+      //! \param residual_matrix  2D matrix [scans][positions]
+      //! \param n_modes        Number of modes to extract (default 5)
+      //! \param rank_truncation SVD rank for low-rank approximation (-1 = auto, 0 = full rank)
+      //! DMD identifies coherent spatio-temporal structures and their dynamics:
+      //!   - Growth/decay rates (stability of patterns)
+      //!   - Oscillation frequencies (periodic patterns)
+      //!   - Spatial patterns (where errors occur)
+      static DMDResults calculateDMD( const QVector< QVector< double > >& residual_matrix,
+                                      int n_modes = 5,
+                                      int rank_truncation = -1 );
 
       //! \brief Filter out non-finite values from data vector
       //! \param data  Input data vector

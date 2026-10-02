@@ -1,8 +1,8 @@
 //! \file us_stats_engine.cpp
 
 #include "us_stats_engine.h"
-//#include <Eigen/Dense>
-//#include <Eigen/SVD>
+#include <Eigen/SVD>
+#include <Eigen/Eigenvalues>
 #include <algorithm>
 #include <cmath>
 #include <qmath.h>
@@ -488,120 +488,393 @@ US_StatsEngine::SpatialMetrics
 }
 
 // Perform SVD decomposition and extract principal modes
-//US_StatsEngine::SVDResults US_StatsEngine::calculateSVD( const QVector<QVector<double>>& residual_matrix,
-//                                                         const int                       n_modes )
-//{
-//   SVDResults results;
-//   results.valid = false;
-//
-//   const int n_scans = residual_matrix.size();
-//   if ( n_scans < 2 )
-//   {
-//      results.errorMessage = "Insufficient scans for SVD";
-//      return results;
-//   }
-//
-//   const int n_positions = residual_matrix[0].size();
-//   if ( n_positions < 2 )
-//   {
-//      results.errorMessage = "Insufficient positions for SVD";
-//      return results;
-//   }
-//
-//   // Convert QVector to Eigen matrix
-//   Eigen::MatrixXd R( n_scans, n_positions );
-//   for ( int t = 0; t < n_scans; t++ )
-//   {
-//      for ( int s = 0; s < n_positions; s++ )
-//      {
-//         const double val = residual_matrix[t][s];
-//         R( t, s )        = std::isfinite( val ) ? val : 0.0; // Replace NaN/Inf with 0
-//      }
-//   }
-//
-//   // Perform SVD: R = U * S * V^T
-//   // Use BDC (Bidiagonal Divide and Conquer) for performance on large matrices
-//   const Eigen::BDCSVD<Eigen::MatrixXd> svd( R, Eigen::ComputeThinU | Eigen::ComputeThinV );
-//
-//   Eigen::VectorXd singular_values = svd.singularValues();
-//   Eigen::MatrixXd U               = svd.matrixU(); // Temporal components [nScans x min(nScans,nPositions)]
-//   Eigen::MatrixXd V               = svd.matrixV(); // Spatial components [nPositions x min(nScans,nPositions)]
-//
-//   const int n_available = std::min( n_scans, n_positions );
-//   const int n_extract   = std::min( n_modes, n_available );
-//
-//   // Calculate total variance for fraction computation
-//   double total_variance = 0.0;
-//   for ( int i = 0; i < singular_values.size(); i++ )
-//   {
-//      total_variance += singular_values( i ) * singular_values( i );
-//   }
-//
-//   // Store all singular values for scree plot (up to 10)
-//   const int n_scree = std::min( 10, n_available );
-//   results.all_singular_values.resize( n_scree );
-//   for ( int i = 0; i < n_scree; i++ )
-//   {
-//      results.all_singular_values[i] = singular_values( i );
-//   }
-//
-//   // Extract top n_modes
-//   results.modes.resize( n_extract );
-//
-//   for ( int k = 0; k < n_extract; k++ )
-//   {
-//      SVDMode mode;
-//      mode.singular_value    = singular_values( k );
-//      mode.variance_fraction = ( singular_values( k ) * singular_values( k ) ) / total_variance;
-//
-//      // Extract spatial vector (V[:,k]) - normalized shape
-//      mode.spatial_vector.resize( n_positions );
-//      for ( int s = 0; s < n_positions; s++ )
-//      {
-//         mode.spatial_vector[s] = V( s, k );
-//      }
-//
-//      // Extract temporal vector (U[:,k]) and scale by singular value
-//      // This gives the true magnitude in physical units
-//      mode.temporal_vector.resize( n_scans );
-//      for ( int t = 0; t < n_scans; t++ )
-//      {
-//         mode.temporal_vector[t] = U( t, k ) * singular_values( k );
-//      }
-//
-//      // Deterministic sign convention:
-//      // Find the element with the largest absolute magnitude in the spatial vector.
-//      // If that element is negative, multiply both spatial and temporal vectors by -1.
-//      // This ensures the "loudest" part of the spatial error is always positive.
-//      double max_abs_val        = 0.0;
-//      double element_at_max_abs = 0.0;
-//
-//      for ( const double val : mode.spatial_vector )
-//      {
-//         const double abs_val = std::abs( val );
-//         if ( abs_val > max_abs_val )
-//         {
-//            max_abs_val        = abs_val;
-//            element_at_max_abs = val;
-//         }
-//      }
-//
-//      if ( element_at_max_abs < 0.0 )
-//      {
-//         // Flip signs of both vectors
-//         for ( int s = 0; s < n_positions; s++ )
-//         {
-//            mode.spatial_vector[s] = -mode.spatial_vector[s];
-//         }
-//         for ( int t = 0; t < n_scans; t++ )
-//         {
-//            mode.temporal_vector[t] = -mode.temporal_vector[t];
-//         }
-//      }
-//
-//      results.modes[k] = mode;
-//   }
-//
-//   results.valid = true;
-//   return results;
-//}
+US_StatsEngine::SVDResults US_StatsEngine::calculateSVD( const QVector<QVector<double>>& residual_matrix,
+                                                         const int                       n_modes )
+{
+   SVDResults results;
+   results.valid = false;
+
+   const int n_scans = residual_matrix.size();
+   if ( n_scans < 2 )
+   {
+      results.errorMessage = "Insufficient scans for SVD";
+      return results;
+   }
+
+   const int n_positions = residual_matrix[0].size();
+   if ( n_positions < 2 )
+   {
+      results.errorMessage = "Insufficient positions for SVD";
+      return results;
+   }
+
+   // Convert QVector to Eigen matrix
+   Eigen::MatrixXd R( n_scans, n_positions );
+   for ( int t = 0; t < n_scans; t++ )
+   {
+      for ( int s = 0; s < n_positions; s++ )
+      {
+         const double val = residual_matrix[t][s];
+         R( t, s )        = std::isfinite( val ) ? val : 0.0; // Replace NaN/Inf with 0
+      }
+   }
+
+   // Perform SVD: R = U * S * V^T
+   // Use BDC (Bidiagonal Divide and Conquer) for performance on large matrices
+   const Eigen::BDCSVD<Eigen::MatrixXd, Eigen::ComputeThinU | Eigen::ComputeThinV> svd( R );
+
+   Eigen::VectorXd singular_values = svd.singularValues();
+   Eigen::MatrixXd U               = svd.matrixU(); // Temporal components [nScans x min(nScans,nPositions)]
+   Eigen::MatrixXd V               = svd.matrixV(); // Spatial components [nPositions x min(nScans,nPositions)]
+
+   const int n_available = std::min( n_scans, n_positions );
+   const int n_extract   = std::min( n_modes, n_available );
+
+   // Calculate total variance for fraction computation
+   double total_variance = 0.0;
+   for ( int i = 0; i < singular_values.size(); i++ )
+   {
+      total_variance += singular_values( i ) * singular_values( i );
+   }
+
+   // Store all singular values for scree plot (up to 10)
+   const int n_scree = std::min( 10, n_available );
+   results.all_singular_values.resize( n_scree );
+   for ( int i = 0; i < n_scree; i++ )
+   {
+      results.all_singular_values[i] = singular_values( i );
+   }
+
+   // Extract top n_modes
+   results.modes.resize( n_extract );
+
+   for ( int k = 0; k < n_extract; k++ )
+   {
+      SVDMode mode;
+      mode.singular_value    = singular_values( k );
+      mode.variance_fraction = ( singular_values( k ) * singular_values( k ) ) / total_variance;
+
+      // Extract spatial vector (V[:,k]) - normalized shape
+      mode.spatial_vector.resize( n_positions );
+      for ( int s = 0; s < n_positions; s++ )
+      {
+         mode.spatial_vector[s] = V( s, k );
+      }
+
+      // Extract temporal vector (U[:,k]) and scale by singular value
+      // This gives the true magnitude in physical units
+      mode.temporal_vector.resize( n_scans );
+      for ( int t = 0; t < n_scans; t++ )
+      {
+         mode.temporal_vector[t] = U( t, k ) * singular_values( k );
+      }
+
+      // Deterministic sign convention:
+      // Find the element with the largest absolute magnitude in the spatial vector.
+      // If that element is negative, multiply both spatial and temporal vectors by -1.
+      // This ensures the "loudest" part of the spatial error is always positive.
+      double max_abs_val        = 0.0;
+      double element_at_max_abs = 0.0;
+
+      for ( const double val : mode.spatial_vector )
+      {
+         const double abs_val = std::abs( val );
+         if ( abs_val > max_abs_val )
+         {
+            max_abs_val        = abs_val;
+            element_at_max_abs = val;
+         }
+      }
+
+      if ( element_at_max_abs < 0.0 )
+      {
+         // Flip signs of both vectors
+         for ( int s = 0; s < n_positions; s++ )
+         {
+            mode.spatial_vector[s] = -mode.spatial_vector[s];
+         }
+         for ( int t = 0; t < n_scans; t++ )
+         {
+            mode.temporal_vector[t] = -mode.temporal_vector[t];
+         }
+      }
+
+      results.modes[k] = mode;
+   }
+
+   results.valid = true;
+   return results;
+}
+
+// Perform Dynamic Mode Decomposition
+US_StatsEngine::DMDResults US_StatsEngine::calculateDMD( const QVector<QVector<double>>& residual_matrix,
+                                                         const int                       n_modes,
+                                                         const int                       rank_truncation )
+{
+   DMDResults results;
+   results.valid                = false;
+   results.reconstruction_error = NAN;
+
+   const int n_scans = residual_matrix.size();
+   if ( n_scans < 3 )
+   {
+      results.errorMessage = "Insufficient scans for DMD (need at least 3)";
+      return results;
+   }
+
+   const int n_positions = residual_matrix[0].size();
+   if ( n_positions < 2 )
+   {
+      results.errorMessage = "Insufficient positions for DMD";
+      return results;
+   }
+
+   // DMD Algorithm:
+   // Given snapshots X = [x_0, x_1, ..., x_{m-1}] and X' = [x_1, x_2, ..., x_m]
+   // Find A such that X' ≈ A * X (linear dynamical system)
+   //
+   // Steps:
+   // 1. Form data matrices X and X' (temporal snapshots)
+   // 2. SVD of X = U * Σ * V^T (low-rank approximation)
+   // 3. Compute Ã = U^T * X' * V * Σ^(-1) (reduced operator)
+   // 4. Eigendecomposition of Ã: Ã * W = W * Λ
+   // 5. DMD modes: Φ = X' * V * Σ^(-1) * W
+   // 6. DMD eigenvalues: λ (complex, encode growth rate and frequency)
+
+   // Step 1: Form X (columns 0 to m-2) and X' (columns 1 to m-1)
+   const int          m = n_scans - 1; // Number of snapshot pairs
+   Eigen::MatrixXd    X( n_positions, m );
+   Eigen::MatrixXd    Xprime( n_positions, m );
+
+   for ( int t = 0; t < m; t++ )
+   {
+      for ( int s = 0; s < n_positions; s++ )
+      {
+         const double val       = residual_matrix[t][s];
+         const double val_next  = residual_matrix[t + 1][s];
+         X( s, t )              = std::isfinite( val ) ? val : 0.0;
+         Xprime( s, t )         = std::isfinite( val_next ) ? val_next : 0.0;
+      }
+   }
+
+   // Step 2: SVD of X = U * Σ * V^T
+   Eigen::BDCSVD<Eigen::MatrixXd, Eigen::ComputeThinU | Eigen::ComputeThinV> svd( X );
+   Eigen::MatrixXd                U       = svd.matrixU();
+   Eigen::MatrixXd                V       = svd.matrixV();
+   Eigen::VectorXd                sigma   = svd.singularValues();
+
+   // Determine rank for truncation
+   int rank = sigma.size();
+   if ( rank_truncation == -1 )
+   {
+      // Auto: Keep modes with singular values > 1% of max
+      const double threshold = 0.01 * sigma( 0 );
+      rank                   = 0;
+      for ( int i = 0; i < sigma.size(); i++ )
+      {
+         if ( sigma( i ) > threshold )
+         {
+            rank++;
+         }
+         else
+         {
+            break;
+         }
+      }
+      rank = std::max( 1, std::min( rank, static_cast<int>( sigma.size() ) ) );
+   }
+   else if ( rank_truncation > 0 )
+   {
+      rank = std::min( rank_truncation, static_cast<int>( sigma.size() ) );
+   }
+
+   // Truncate to rank
+   Eigen::MatrixXd U_r     = U.leftCols( rank );
+   Eigen::MatrixXd V_r     = V.leftCols( rank );
+   Eigen::VectorXd sigma_r = sigma.head( rank );
+
+   // Compute Σ^(-1)
+   Eigen::MatrixXd Sigma_inv = Eigen::MatrixXd::Zero( rank, rank );
+   for ( int i = 0; i < rank; i++ )
+   {
+      if ( sigma_r( i ) > 1e-12 )
+      {
+         Sigma_inv( i, i ) = 1.0 / sigma_r( i );
+      }
+   }
+
+   // Step 3: Compute Ã = U_r^T * X' * V_r * Σ^(-1)
+   Eigen::MatrixXd Atilde = U_r.transpose() * Xprime * V_r * Sigma_inv;
+
+   // Step 4: Eigendecomposition of Ã
+   Eigen::ComplexEigenSolver<Eigen::MatrixXd> eig( Atilde );
+   if ( eig.info() != Eigen::Success )
+   {
+      results.errorMessage = "Eigendecomposition failed";
+      return results;
+   }
+
+   Eigen::VectorXcd                eigenvalues  = eig.eigenvalues();
+   Eigen::MatrixXcd                eigenvectors = eig.eigenvectors();
+
+   // Step 5: Compute DMD modes Φ = X' * V_r * Σ^(-1) * W
+   Eigen::MatrixXcd Phi = Xprime * V_r * Sigma_inv * eigenvectors;
+
+   // Step 6: Compute mode amplitudes using initial condition
+   // b = Φ^† * x_0 (pseudo-inverse)
+   Eigen::VectorXcd x0( n_positions );
+   for ( int s = 0; s < n_positions; s++ )
+   {
+      const double val = residual_matrix[0][s];
+      x0( s )          = std::isfinite( val ) ? val : 0.0;
+   }
+
+   Eigen::VectorXcd amplitudes = Phi.completeOrthogonalDecomposition().solve( x0 );
+
+   // Extract top n_modes based on amplitude
+   QVector<std::pair<double, int>> mode_importance;
+   for ( int i = 0; i < eigenvalues.size(); i++ )
+   {
+      const double amplitude = std::abs( amplitudes( i ) );
+      mode_importance.append( std::make_pair( amplitude, i ) );
+   }
+
+   std::sort( mode_importance.begin(), mode_importance.end(),
+              []( const std::pair<double, int>& a, const std::pair<double, int>& b ) {
+                 return a.first > b.first;
+              } );
+
+   const int n_extract = std::min( n_modes, static_cast<int>( eigenvalues.size() ) );
+   results.modes.resize( n_extract );
+
+   for ( int k = 0; k < n_extract; k++ )
+   {
+      const int idx = mode_importance[k].second;
+
+      DMDMode mode;
+
+      // Extract eigenvalue and compute dynamics
+      const std::complex<double> lambda = eigenvalues( idx );
+      const double               dt     = 1.0; // Assume unit time steps (scans)
+
+      // Continuous-time eigenvalue: μ = ln(λ) / dt
+      std::complex<double> mu;
+      if ( std::abs( lambda ) > 1e-12 )
+      {
+         mu = std::log( lambda ) / dt;
+      }
+      else
+      {
+         mu = std::complex<double>( -std::numeric_limits<double>::infinity(), 0.0 );
+      }
+
+      mode.growth_rate = mu.real();
+      mode.frequency   = mu.imag() / ( 2.0 * M_PI ); // Convert to cycles per scan
+      mode.amplitude   = std::abs( amplitudes( idx ) );
+
+      // Calculate period (in scans)
+      if ( std::abs( mode.frequency ) > 1e-10 )
+      {
+         mode.period = 1.0 / std::abs( mode.frequency );
+      }
+      else
+      {
+         mode.period = NAN;
+      }
+
+      // Extract spatial pattern (real and imaginary parts)
+      mode.spatial_pattern.resize( n_positions );
+      mode.spatial_pattern_imag.resize( n_positions );
+      for ( int s = 0; s < n_positions; s++ )
+      {
+         const std::complex<double> val = Phi( s, idx );
+         mode.spatial_pattern[s]        = val.real();
+         mode.spatial_pattern_imag[s]   = val.imag();
+      }
+
+      // Reconstruct temporal evolution
+      mode.temporal_evolution.resize( n_scans );
+      const std::complex<double> amp = amplitudes( idx );
+      for ( int t = 0; t < n_scans; t++ )
+      {
+         const std::complex<double> evolve = amp * std::pow( lambda, static_cast<double>( t ) );
+         mode.temporal_evolution[t]        = evolve.real();
+      }
+
+      // Generate human-readable description
+      QString desc;
+      if ( std::abs( mode.growth_rate ) < 1e-3 )
+      {
+         desc = "Steady (no growth/decay)";
+      }
+      else if ( mode.growth_rate > 0.0 )
+      {
+         desc = QString( "Growing (λ=+%1/scan)" ).arg( mode.growth_rate, 0, 'f', 4 );
+      }
+      else
+      {
+         desc = QString( "Decaying (λ=%1/scan)" ).arg( mode.growth_rate, 0, 'f', 4 );
+      }
+
+      if ( !std::isnan( mode.period ) && mode.period > 0.0 )
+      {
+         desc += QString( ", Oscillating (period=%1 scans)" ).arg( mode.period, 0, 'f', 2 );
+      }
+
+      mode.description = desc;
+
+      results.modes[k] = mode;
+   }
+
+   // Reconstruct the full data matrix using DMD modes
+   results.reconstruction.resize( n_scans );
+   QVector<QVector<double>> reconstructed_matrix( n_scans );
+   for ( int t = 0; t < n_scans; t++ )
+   {
+      results.reconstruction[t].resize( n_positions );
+      results.reconstruction[t].fill( 0.0 );
+      reconstructed_matrix[t].resize( n_positions );
+      reconstructed_matrix[t].fill( 0.0 );
+   }
+
+   for ( int k = 0; k < n_extract; k++ )
+   {
+      const int                  idx    = mode_importance[k].second;
+      const std::complex<double> lambda = eigenvalues( idx );
+      const std::complex<double> amp    = amplitudes( idx );
+
+      for ( int t = 0; t < n_scans; t++ )
+      {
+         const std::complex<double> time_coef = amp * std::pow( lambda, static_cast<double>( t ) );
+
+         for ( int s = 0; s < n_positions; s++ )
+         {
+            const std::complex<double> phi_val = Phi( s, idx );
+            const std::complex<double> contrib = time_coef * phi_val;
+            reconstructed_matrix[t][s] = contrib.real();
+            results.reconstruction[t][s] += contrib.real();
+         }
+      }
+      results.modes[k].reconstruction = reconstructed_matrix;
+   }
+
+   // Calculate reconstruction error (Frobenius norm)
+   double error_sum = 0.0;
+   double orig_sum  = 0.0;
+   for ( int t = 0; t < n_scans; t++ )
+   {
+      for ( int s = 0; s < n_positions; s++ )
+      {
+         const double orig  = std::isfinite( residual_matrix[t][s] ) ? residual_matrix[t][s] : 0.0;
+         const double recon = results.reconstruction[t][s];
+         const double diff  = orig - recon;
+         error_sum += diff * diff;
+         orig_sum += orig * orig;
+      }
+   }
+
+   results.reconstruction_error = ( orig_sum > 0.0 ) ? std::sqrt( error_sum / orig_sum ) : 0.0;
+   results.valid                = true;
+
+   return results;
+}
