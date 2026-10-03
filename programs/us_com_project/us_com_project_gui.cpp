@@ -1347,45 +1347,64 @@ void US_InitDialogueGui::checkCertificates( void )
       link->disconnectFromServer();
     }
   
-  // Display message & close the program if all machines are disconnected
+  // No Optima reachable (or none defined in the DB): let the user decide
+  // whether to continue in "data from disk only" mode or to exit
   if ( count_instruments_disconnected == this->instruments.size() )
     {
-      QString inst_names;
-      if( Optima_names.size() > 1 )
-	inst_names = Optima_names.join(", ");
-      else
-	inst_names = Optima_names.join("");
-      
-      QMessageBox msgBox_sys_data(this);
-      msgBox_sys_data.setIcon(QMessageBox::Critical);
-      msgBox_sys_data.setWindowTitle(tr("Optima System Data Server Connection Problem!"));
+      QMessageBox msgBox_sys_data( mainw );
+      msgBox_sys_data.setIcon( QMessageBox::Warning );
+      msgBox_sys_data.setWindowModality( Qt::ApplicationModal );
 
-      QString msg_sys_text = QString("Attention! UltraScan is not able to communicate with the data acquisition server(s) on the %1.").arg(inst_names);
+      QString msg_sys_text;
+      QString msg_sys_text_info_final  = QString("");
+
+      if ( Optima_names.isEmpty() )
+	{
+	  msgBox_sys_data.setWindowTitle( tr( "No Optima Instrument Defined" ) );
+	  msg_sys_text = tr( "No Optima instrument is defined in the database for this laboratory." );
+	}
+      else
+	{
+	  msgBox_sys_data.setWindowTitle( tr( "Optima System Data Server Connection Problem!" ) );
+	  msg_sys_text = QString( tr( "Attention! UltraScan is not able to communicate with the data acquisition server(s) on the %1." ) )
+	    .arg( Optima_names.join( ", " ) );
+
+	  for (int i=0; i < Optima_names.size(); ++i )
+	    msg_sys_text_info_final += Optimas_disconnect_msg[ Optima_names[i] ];
+
+	  if ( Optima_names.size() > 1 )
+	    msg_sys_text_info_final += QString( tr("\nSubmission of the experimental protocol to the Optima instruments is suspended until at least one of these conditions is resolved."));
+	  else
+	    msg_sys_text_info_final += QString( tr("\nSubmission of the experimental protocol to the Optima instrument is suspended until this condition is resolved."));
+	}
       msgBox_sys_data.setText( msg_sys_text );
 
-      QString msg_sys_text_info_final  = QString("");
-      for (int i=0; i < Optima_names.size(); ++i )
+      QPushButton* pb_disk_only = nullptr;
+      if ( !mainw->us_mode_bool )
 	{
-	  msg_sys_text_info_final += Optimas_disconnect_msg[ Optima_names[i] ];
+	  msg_sys_text_info_final += QString( tr("\n\nYou may continue without an instrument connection. "
+						 "The program will then be restricted to importing data from disk "
+						 "(tab 2. Lab/Rotor -> Select Data Source) and the subsequent workflow.") );
+	  pb_disk_only = msgBox_sys_data.addButton( tr( "Continue (Data from Disk Only)" ), QMessageBox::AcceptRole );
 	}
-
-      if ( Optima_names.size() > 1 )  
-	msg_sys_text_info_final += QString( tr("\n\nSubmission of the experimental protocol to the Optima instruments is suspended until at least one of these conditions is resolved."));
       else
-	msg_sys_text_info_final += QString( tr("\n\nSubmission of the experimental protocol to the Optima instrument is suspended until this condition is resolved."));
+	msg_sys_text_info_final += QString( tr("\n\nThe program will be closed.") );
 
-      if ( !mainw->us_mode_bool ) 
-	msg_sys_text_info_final += QString( tr("\n\nUser has an option to upload data from disk (tab 2. Lab/Rotor -> Select Data Source) and proceed with that workflow.") );
-
+      QPushButton* pb_exit = msgBox_sys_data.addButton( tr( "Exit" ), QMessageBox::RejectRole );
+      msgBox_sys_data.setDefaultButton( pb_disk_only != nullptr ? pb_disk_only : pb_exit );
+      msgBox_sys_data.setEscapeButton( pb_exit );
       msgBox_sys_data.setInformativeText( msg_sys_text_info_final );
-      QPushButton *Cancel_sys    = msgBox_sys_data.addButton(tr("OK"), QMessageBox::RejectRole);
+
       msgBox_sys_data.exec();
 
-      //emit pass_allow_dataDisk_only();
-      isDataDiskOnly = true;
+      if ( pb_disk_only == nullptr || msgBox_sys_data.clickedButton() != pb_disk_only )
+	{
+	  qDebug() << "checkCertificates: no Optima connection, user chose to exit";
+	  exit(1);
+	}
 
-      if ( mainw->us_mode_bool ) 
-	exit(1);
+      qDebug() << "checkCertificates: no Optima connection, continuing in data-from-disk-only mode";
+      isDataDiskOnly = true;
       return;
     }
 
