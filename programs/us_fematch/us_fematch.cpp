@@ -2082,6 +2082,17 @@ DbgLv(1) << "SimMdl: n) s D c"
    simparams.meshType          = US_SimulationParameters::ASTFEM;
    simparams.gridType          = US_SimulationParameters::MOVING;
    simparams.radial_resolution = (double)( radhi - radlo ) / ( nconc - 1 );
+
+   // Use meniscus and bottom from the model (e.g., from a meniscus and/or
+   // bottom fit) in place of the edit values, so the simulation matches
+   // the conditions under which the model was generated
+   if ( model.meniscus > 0.0 )
+      simparams.meniscus          = model.meniscus;
+   if ( model.bottom > 0.0 )
+      simparams.bottom            = model.bottom;
+DbgLv(1) << "SimMdl: meniscus_sim" << simparams.meniscus
+ << "meniscus_mdl" << model.meniscus << "meniscus_dat" << edata->meniscus
+ << "bottom_mdl" << model.bottom;
 //   simparams.bottom            = simparams.bottom_position;
 DbgLv(1) << "SimMdl: simpoints" << simparams.simpoints
  << "rreso" << simparams.radial_resolution
