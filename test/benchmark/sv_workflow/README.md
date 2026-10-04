@@ -88,6 +88,7 @@ Systems (`svbench/systems.py`; s in S / f/f0 / fraction):
 |---|---|---|---|
 | `designs/default.json` | One-factor-at-a-time sweeps of every noise and range factor around the reference, for every system × speed, plus a crossed TI × RI × random-noise block (3 speeds) | 5083 | 25 415 |
 | `designs/full_factorial.json` | Every combination of all levels | 5 503 680 | 27 518 400 |
+| `designs/cluster64.json` | Reduced for 64 cores: 6 speeds (5k, 11k, 23k, 36k, 48k, 60k), local noise fixed at 0, sweeps of TI/RI/random/baseline/range, crossed TI {0, 0.1, 0.5} × RI {0, 2, 10} × random {0.5, 2} at 11k and 48k rpm, 7×7 meniscus/bottom grid, 3 replicates (≈ 3 core-h per task) | 2496 | 7488 (×3) |
 | `designs/smoke.json` | Pilot: 2 systems × 2 speeds × 2 TI levels, 5×5 meniscus/bottom grid, 2 replicates | 8 | 16 |
 
 Reference condition: TI 0.05, RI 1, random 0.5, local 0, baseline 0.05,
@@ -164,7 +165,11 @@ Run the commands from `test/benchmark/sv_workflow`, or put that directory
 on `PYTHONPATH`. Each task uses its own scratch directory, which holds a
 private UltraScan settings store and work tree. The scratch directory is
 deleted afterwards unless `--keep` is given. Results are written as
-`OUT/<task>/<arm>.json`, and existing results are not recomputed.
+`OUT/<task>/<arm>.json`, and existing results are not recomputed. The design is
+stored in `OUT/design.json`, and `run` refuses an output directory whose
+results come from different simulation or analysis settings: task IDs
+depend only on the factor levels, so such results would otherwise be
+wrongly reused.
 
 ### Cost
 

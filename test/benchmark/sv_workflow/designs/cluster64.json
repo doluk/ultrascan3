@@ -1,0 +1,36 @@
+{
+  "name": "cluster64",
+  "description": "Reduced design for a 64-core cluster: 6 speeds, local noise fixed, 7x7 meniscus/bottom grid, 3 replicates, small crossed TI x RI x random-noise block",
+  "replicates": 3,
+  "inherit": "default.json",
+
+  "factors": {
+    "speed": [5000, 11000, 23000, 36000, 48000, 60000],
+    "local_noise": [0]
+  },
+
+  "blocks": [
+    {
+      "name": "oat",
+      "type": "one_at_a_time",
+      "crossed": ["system", "speed"],
+      "vary": ["ti_noise", "ri_noise", "random_noise", "baseline",
+               "range_end"]
+    },
+    {
+      "name": "noise_interaction",
+      "type": "factorial",
+      "crossed": ["system", "speed", "ti_noise", "ri_noise", "random_noise"],
+      "levels": {
+        "speed": [11000, 48000],
+        "ti_noise": [0, 0.1, 0.5],
+        "ri_noise": [0, 2, 10],
+        "random_noise": [0.5, 2]
+      }
+    }
+  ],
+
+  "analysis": {
+    "meniscus_points": 7
+  }
+}

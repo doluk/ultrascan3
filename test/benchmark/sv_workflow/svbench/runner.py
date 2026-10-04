@@ -69,6 +69,30 @@ ARM_SPEC = {
 }
 
 
+# Design settings that change the result of a task with a given task id
+RESULT_KEYS = ("base_seed", "simulation", "edit", "analysis")
+
+
+def check_outdir(design, outdir):
+    """Record the design in outdir; refuse an outdir holding results of a
+    design with other simulation/analysis settings (same task ids would
+    otherwise be skipped as done)."""
+    os.makedirs(outdir, exist_ok=True)
+    meta = os.path.join(outdir, "design.json")
+    if os.path.exists(meta):
+        with open(meta) as fh:
+            old = json.load(fh)
+        diff = [k for k in RESULT_KEYS if old.get(k) != design.get(k)]
+        if diff:
+            raise SystemExit(
+                "%s holds results of design '%s' with different %s; use "
+                "another output directory" % (outdir, old.get("name"),
+                                              ", ".join(diff)))
+    else:
+        with open(meta, "w") as fh:
+            json.dump(design, fh, indent=1)
+
+
 def result_path(outdir, task, arm):
     return os.path.join(outdir, task["task"], arm + ".json")
 
@@ -87,10 +111,7 @@ def run_task(design, task, cfg, outdir, arms=None, keep=False,
     os.makedirs(root)
     log = os.path.join(root, "log.txt")
     os.makedirs(os.path.join(outdir, task["task"]), exist_ok=True)
-    meta = os.path.join(outdir, "design.json")
-    if not os.path.exists(meta):
-        with open(meta, "w") as fh:
-            json.dump(design, fh, indent=1)
+    check_outdir(design, outdir)
     done = []
     try:
         env = us3_env(cfg, root)
