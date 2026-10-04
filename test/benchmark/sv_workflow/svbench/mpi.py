@@ -136,7 +136,10 @@ def run(exe, mpirun, jobdir, data_dir, files, noise_files, params, design,
     outdir = os.path.join(jobdir, "results")
     os.makedirs(outdir)
     with tarfile.open(res) as tar:
-        tar.extractall(outdir)
+        if hasattr(tarfile, "data_filter"):    # Python >= 3.12, backports
+            tar.extractall(outdir, filter="data")
+        else:
+            tar.extractall(outdir)
     parsed = parse_results(outdir)
     parsed["wall_seconds"] = wall
     return parsed
