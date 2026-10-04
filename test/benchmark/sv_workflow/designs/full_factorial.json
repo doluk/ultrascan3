@@ -1,0 +1,15 @@
+{
+  "name": "full_factorial",
+  "description": "Every combination of every factor level (very large; see 'svbench count')",
+  "replicates": 5,
+  "base_seed": 20261004,
+  "inherit": "default.json",
+  "blocks": [
+    {
+      "name": "full",
+      "type": "factorial",
+      "crossed": ["system", "speed", "ti_noise", "ri_noise", "random_noise",
+                  "local_noise", "baseline", "range_end"]
+    }
+  ]
+}

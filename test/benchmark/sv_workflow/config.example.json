@@ -1,0 +1,8 @@
+{
+  "astfem_sim": "/path/to/build-app/bin/us_astfem_sim",
+  "mpi_analysis_main": "/path/to/build-hpc-main/bin/us_mpi_analysis",
+  "mpi_analysis_branch": "/path/to/build-hpc-branch/bin/us_mpi_analysis",
+  "mpirun": "mpirun -np 8",
+  "scratch": "/path/to/node-local/scratch/svbench",
+  "us3_settings": "/home/USER/.config/UltraScan3/UltraScan.conf"
+}

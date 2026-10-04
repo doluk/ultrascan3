@@ -64,6 +64,7 @@ class US_Astfem_Sim : public US_Widgets
       QString        imagedir;            //!< Path to the image dir
       QString        imageName;           //!< Full path template for movie frames ({imagedir}/frame{image_count}.png)
       QString        tmst_tfpath;         //!< Path to the timestate of the simulation in a temporary location
+      double         cli_od_limit;        //!< OD limit for saving without dialog (<0: 2x total concentration, 0: none)
 
       QCheckBox*     ck_movie;            //!< Pointer to QCheckbox for movie display
       QCheckBox*     ck_savemovie;        //!< Pointer to QCheckbox for saving movie frames

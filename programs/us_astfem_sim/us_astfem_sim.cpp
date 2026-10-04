@@ -81,6 +81,14 @@ int main( int argc, char* argv[] )
    auto errors_option = QCommandLineOption("errors-cl",
       "Force errors to console and don't open any sort of gui");
    parser.addOption(errors_option);
+   auto seed_option = QCommandLineOption("seed",
+      "Seed for the noise random number generator (0 = time-based)",
+      "seed");
+   parser.addOption(seed_option);
+   auto odlimit_option = QCommandLineOption("odlimit",
+      "OD limit applied when saving (default: 2x total concentration, 0 = none)",
+      "odlimit");
+   parser.addOption(odlimit_option);
 
    QMap<QString, QString> args;
    int cli_parsing_result = -1; //!< -1 not finished, 0 headless, 1 gui needed, 2 error
@@ -112,6 +120,21 @@ int main( int argc, char* argv[] )
    }
 
    // parse command specific commands
+
+   // parse seed:  without it, the noise generator starts from its fixed
+   //  default seed, so repeated runs produce identical noise
+   if ( parser.isSet( seed_option ) )
+   {
+      bool ok;
+      uint seed = parser.value( seed_option ).toUInt( &ok );
+      if ( !ok )
+      {
+         QTextStream(stderr) << "Invalid seed: "
+            << qUtf8Printable( parser.value( seed_option ) ) << Qt::endl;
+         return 1;
+      }
+      US_Math2::randomize( seed );
+   }
 
    // parse ignore db
    int default_data_location = US_Settings::default_data_location();
@@ -184,6 +207,11 @@ int main( int argc, char* argv[] )
    {
       cli_parsing_result = qMax( cli_parsing_result, 1 );
    }
+   // parse OD limit
+   if ( parser.isSet( odlimit_option ) )
+   {
+      args["odlimit"] = parser.value( odlimit_option );
+   }
    // parse close
    if ( parser.isSet( close_option ) )
    {
@@ -215,6 +243,7 @@ US_Astfem_Sim::US_Astfem_Sim( QWidget* p, Qt::WindowFlags f )
 {
    dbg_level           = US_Settings::us_debug();
    tmst_tfpath         = "";
+   cli_od_limit        = -1.0;
 
    setWindowTitle( "UltraScan3 Simulation Module" );
    setPalette( US_GuiSettings::frameColor() );
@@ -391,6 +420,18 @@ int US_Astfem_Sim::init_from_args( const QMap<QString, QString>& flags ) {
    bool loaded_simparams = false;
    bool loaded_rotor = false;
    bool errors_to_cl = flags.contains("errors-cl");
+   if ( flags.contains( "odlimit" ) )
+   {
+      bool ok;
+      cli_od_limit = flags[ "odlimit" ].toDouble( &ok );
+      if ( !ok  ||  cli_od_limit < 0.0 )
+      {
+         qDebug() << "Error invalid OD limit " << flags[ "odlimit" ];
+         if ( errors_to_cl )
+            exit( 2 );
+         cli_od_limit = -1.0;
+      }
+   }
    // load model
    if ( flags.contains("model") && flags["model"].length() > 0 ) {
       US_Model temp_model = US_Model();
@@ -2040,7 +2081,8 @@ DbgLv(1) << "Sim:SV: reset s1plat" << s1plat;
       }
    } else
    {
-      dthresh = total_conc * 2.0;
+      dthresh = ( cli_od_limit < 0.0 ) ? total_conc * 2.0
+              : ( cli_od_limit > 0.0 ) ? cli_od_limit : maxc;
    }
 
 
@@ -2075,13 +2117,16 @@ DbgLv(1) << "Sim:SV: OD-Limit nchange nmodscn" << nchange << nmodscn
  << "maxc dthresh" << maxc << dthresh;
 
       // Report that some readings were threshold-limited
-      QMessageBox::information( this,
-            tr( "OD Values Threshold Limited" ),
-            tr( "%1 readings in %2 scans were reset\n"
-                "to a threshold value of %3 .\n"
-                "The pre-threshold-limit maximum OD\n"
-                "value was %4 ." )
-            .arg( nchange ).arg( nmodscn ).arg( dthresh ).arg( maxc ) );
+      QString msg = tr( "%1 readings in %2 scans were reset\n"
+                        "to a threshold value of %3 .\n"
+                        "The pre-threshold-limit maximum OD\n"
+                        "value was %4 ." )
+            .arg( nchange ).arg( nmodscn ).arg( dthresh ).arg( maxc );
+      if ( supress_dialog )
+         qDebug().noquote() << msg;
+      else
+         QMessageBox::information( this,
+               tr( "OD Values Threshold Limited" ), msg );
    }
 
 
