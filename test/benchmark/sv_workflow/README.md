@@ -145,6 +145,15 @@ python3 -m svbench aggregate $SCRATCH/svbench --out summary
 python3 -m svbench report summary --out summary/report.html
 ```
 
+Config keys besides the executable paths:
+- `mpirun`: the MPI launch command (prefix of `us_mpi_analysis job.tar`).
+- `scratch`: the per-task work directories.
+- `us3_settings`: the UltraScan settings file with the registration.
+- `sim_setup` and `mpi_setup`: shell commands run in a login bash before `us_astfem_sim` and before `mpirun us_mpi_analysis`, e.g. `module purge; module load ultrascan/gui` and `module purge; module load ultrascan/mpi`.
+- `sim_timeout`: seconds after which a simulation counts as hung, e.g. on a GUI dialog. The default is 900.
+
+Relative paths are taken relative to the config file.
+
 `build.sh` makes three git worktrees (main and branch for
 `us_mpi_analysis`, branch for `us_astfem_sim`), each with its own `lib/`.
 The executables are therefore called through wrapper scripts in

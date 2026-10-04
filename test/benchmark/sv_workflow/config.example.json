@@ -2,7 +2,10 @@
   "astfem_sim": "/path/to/svbench-build/bin/us_astfem_sim",
   "mpi_analysis_main": "/path/to/svbench-build/bin/us_mpi_analysis_main",
   "mpi_analysis_branch": "/path/to/svbench-build/bin/us_mpi_analysis_branch",
-  "mpirun": "/usr/lib64/mpich/bin/mpirun -np 8",
+  "mpirun": "mpirun -np 8",
   "scratch": "/path/to/node-local/scratch/svbench",
-  "us3_settings": "/home/USER/.config/UltraScan3/UltraScan.conf"
+  "us3_settings": "/home/USER/.config/UltraScan3/UltraScan.conf",
+  "sim_setup": "module purge; module load ultrascan/gui",
+  "mpi_setup": "module purge; module load ultrascan/mpi",
+  "sim_timeout": 900
 }

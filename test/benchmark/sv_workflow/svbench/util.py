@@ -4,13 +4,25 @@ import struct
 import subprocess
 
 
-def run_logged(cmd, log, env=None, cwd=None, timeout=None):
-    """Run cmd, appending its output to the file log; raise on failure."""
+def run_logged(cmd, log, env=None, cwd=None, timeout=None, setup=None):
+    """Run cmd, appending its output to the file log; raise on failure.
+
+    setup:  optional shell commands run first in a login bash, e.g.
+    "module purge; module load ultrascan/gui", so that cmd runs in the
+    environment of an environment-modules setup.
+    """
+    if setup:
+        cmd = ["bash", "-lc", setup + '\nexec "$@"', "svbench"] + list(cmd)
     with open(log, "a") as fh:
         fh.write("\n$ " + " ".join(cmd) + "\n")
         fh.flush()
-        proc = subprocess.run(cmd, stdout=fh, stderr=subprocess.STDOUT,
-                              env=env, cwd=cwd, timeout=timeout)
+        try:
+            proc = subprocess.run(cmd, stdout=fh, stderr=subprocess.STDOUT,
+                                  env=env, cwd=cwd, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("command timed out after %g s (a GUI dialog "
+                               "waiting for input?), see %s: %s"
+                               % (timeout, log, " ".join(cmd)))
     if proc.returncode != 0:
         raise RuntimeError("command failed (%d), see %s: %s"
                            % (proc.returncode, log, " ".join(cmd)))

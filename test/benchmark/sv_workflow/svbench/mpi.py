@@ -97,7 +97,7 @@ def job_parameters(ana, s_range, ti, ri, max_iter=1, fit_mb=False):
 
 
 def run(exe, mpirun, jobdir, data_dir, files, noise_files, params, design,
-        vbar, log, timeout=None):
+        vbar, log, timeout=None, setup=None):
     """Run one us_mpi_analysis job in jobdir; returns parsed results."""
     if os.path.exists(jobdir):
         shutil.rmtree(jobdir)
@@ -129,7 +129,7 @@ def run(exe, mpirun, jobdir, data_dir, files, noise_files, params, design,
 
     cmd = shlex.split(mpirun) + [exe, "job.tar"]
     t0 = time.time()
-    run_logged(cmd, log, cwd=jobdir, timeout=timeout)
+    run_logged(cmd, log, cwd=jobdir, timeout=timeout, setup=setup)
     wall = time.time() - t0
 
     res = os.path.join(jobdir, "output", "analysis-results.tar")

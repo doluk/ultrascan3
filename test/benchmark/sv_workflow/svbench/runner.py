@@ -17,6 +17,16 @@ def load_config(path):
                 "mpirun", "scratch", "us3_settings"):
         if key not in cfg:
             raise KeyError("config is missing '%s'" % key)
+    # Programs run in per-task directories:  make every path absolute
+    # (relative to the config file's directory)
+    base = os.path.dirname(os.path.abspath(path))
+    for key in ("astfem_sim", "mpi_analysis_main", "mpi_analysis_branch",
+                "scratch", "us3_settings"):
+        cfg[key] = os.path.normpath(os.path.join(
+            base, os.path.expanduser(cfg[key])))
+    cfg.setdefault("sim_setup", "")
+    cfg.setdefault("mpi_setup", "")
+    cfg.setdefault("sim_timeout", 900)
     return cfg
 
 
@@ -65,6 +75,7 @@ def result_path(outdir, task, arm):
 
 def run_task(design, task, cfg, outdir, arms=None, keep=False,
              timeout=None):
+    outdir = os.path.abspath(outdir)
     arms = arms or dsg.ARMS
     todo = [a for a in arms if not os.path.exists(result_path(outdir, task,
                                                               a))]
@@ -85,7 +96,8 @@ def run_task(design, task, cfg, outdir, arms=None, keep=False,
         env = us3_env(cfg, root)
         t0 = time.time()
         truth = sim.simulate(task, design, cfg["astfem_sim"],
-                             os.path.join(root, "sim"), env, log)
+                             os.path.join(root, "sim"), env, log,
+                             cfg["sim_setup"], cfg["sim_timeout"])
         sim_seconds = time.time() - t0
         for arm in todo:
             exe_key, wf = ARM_SPEC[arm]
@@ -97,7 +109,7 @@ def run_task(design, task, cfg, outdir, arms=None, keep=False,
                 res = workflow.run_arm(
                     task, design, truth, truth["data_dir"], cfg[exe_key],
                     cfg["mpirun"], os.path.join(root, arm), log, wf,
-                    timeout)
+                    timeout, cfg["mpi_setup"])
                 rec["metrics"] = evaluate.evaluate(truth, res)
                 rec["fit_mb"] = res["fit_mb"]
                 rec["fit_mb_grid"] = res["fit_mb_grid"]

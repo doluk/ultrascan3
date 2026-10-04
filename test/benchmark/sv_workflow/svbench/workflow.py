@@ -34,7 +34,7 @@ def _summary(res):
 
 
 def run_arm(task, design, truth, data_dir, exe, mpirun, workdir, log,
-            workflow, timeout=None):
+            workflow, timeout=None, setup=None):
     ana = design["analysis"]
     files = truth["files"]
     srng = s_range(task, ana)
@@ -44,7 +44,8 @@ def run_arm(task, design, truth, data_dir, exe, mpirun, workdir, log,
 
     def job(name, params, noise, ddir):
         return mpi.run(exe, mpirun, os.path.join(workdir, name), ddir,
-                       files, noise, params, design, vbar, log, timeout)
+                       files, noise, params, design, vbar, log, timeout,
+                       setup)
 
     # Step 1 (old workflow only):  2DSA with TI noise
     noise_in = []

@@ -87,7 +87,8 @@ def write_simparams(path, sim, rpm, t_first, t_last, noise):
         fh.write(text)
 
 
-def run_astfem_sim(exe, workdir, outdir, seed, od_limit, env, log):
+def run_astfem_sim(exe, workdir, outdir, seed, od_limit, env, log,
+                   setup=None, timeout=900):
     """Run us_astfem_sim headless; the run ID is the basename of outdir."""
     os.makedirs(outdir, exist_ok=True)
     cmd = [exe, "--model", os.path.join(workdir, "model.xml"),
@@ -96,7 +97,8 @@ def run_astfem_sim(exe, workdir, outdir, seed, od_limit, env, log):
            "--rotor", "0:0", "--seed", str(seed),
            "--odlimit", "%g" % od_limit, "--no-db",
            "--start", "--save", outdir.rstrip("/"), "--close", "--errors-cl"]
-    run_logged(cmd, log, env=env, cwd=workdir, timeout=3600)
+    run_logged(cmd, log, env=env, cwd=workdir, timeout=timeout,
+               setup=setup)
     aucs = glob.glob(os.path.join(outdir, "*.auc"))
     if len(aucs) != 1:
         raise RuntimeError("us_astfem_sim: expected one .auc in %s, got %s"
@@ -134,7 +136,8 @@ def rewrite_edit(path, meniscus, bottom, left, right):
         fh.write(head + body + "\n")
 
 
-def simulate(task, design, exe, workdir, env, log):
+def simulate(task, design, exe, workdir, env, log, setup=None,
+             timeout=900):
     """Simulate one task; returns the truth record (dict)."""
     sim = design["simulation"]
     edt = design["edit"]
@@ -166,7 +169,7 @@ def simulate(task, design, exe, workdir, env, log):
                         t_first, t_last, noise)
         raw = os.path.join(workdir, "sim_" + kind, run_id)
         out[kind] = run_astfem_sim(exe, workdir, raw, task["noise_seed"],
-                                   od_limit, env, log)
+                                   od_limit, env, log, setup, timeout)
 
     # Data set used by the analyses:  noisy AUC, time state and edit
     data_dir = os.path.join(workdir, "data")
