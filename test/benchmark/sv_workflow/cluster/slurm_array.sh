@@ -11,11 +11,11 @@
 #
 # Each task runs us_mpi_analysis with the "mpirun" command of the config,
 # e.g. "srun --mpi=pmix -n 8" or "mpirun -np 8"; request the same number
-# of tasks/cores here.
+# of tasks/cores here.  No memory is requested (about 0.4 GB per MPI rank
+# suffices); add e.g. --mem-per-cpu=1G on clusters that schedule memory.
 #SBATCH --job-name=svbench
 #SBATCH --ntasks=8
 #SBATCH --cpus-per-task=1
-#SBATCH --mem-per-cpu=1G
 #SBATCH --time=24:00:00
 #SBATCH --output=svbench-%A_%a.log
 
