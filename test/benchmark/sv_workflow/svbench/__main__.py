@@ -16,7 +16,8 @@ from . import design as dsg
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="svbench")
-    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub = ap.add_subparsers(dest="cmd")
+    sub.required = True             # Python 3.6 has no required=
 
     p = sub.add_parser("count", help="number of conditions and tasks")
     p.add_argument("design")

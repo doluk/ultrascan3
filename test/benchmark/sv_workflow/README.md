@@ -119,13 +119,16 @@ differences, one-factor sweeps, and tables by system and by speed.
 
 ## Running
 
-Requirements: Python ≥ 3.8 with numpy (matplotlib is needed only for
-`report`), MPI, and an UltraScan settings file with a valid registration.
+Requirements: Python ≥ 3.6 with numpy (matplotlib is needed only for
+`report`), MPI, qmake with Qt5 (and the libraries of a normal UltraScan build), and an UltraScan settings file with a valid registration.
 `us_astfem_sim` checks the license.
 
 ```bash
-# 1. build main/branch us_mpi_analysis and us_astfem_sim (prints config paths)
-cluster/build.sh $HOME/svbench-build            # CMAKE_ARGS=... if needed
+# 1. build main/branch us_mpi_analysis and us_astfem_sim with qmake (Qt5);
+#    pass the cluster's local.pri of the us_mpi_analysis (NO_DB, MPI) build
+#    and of a GUI build.  Prints the wrapper paths for config.json.
+QMAKE=/opt/qt-5.15.10-qwt-6.1.6/bin/qmake \
+  cluster/build.sh $HOME/svbench-build local-mpi.pri local.pri
 # 2. config:  copy config.example.json, fill in the paths
 # 3. inspect the design
 python3 -m svbench count designs/default.json
@@ -141,6 +144,12 @@ sbatch --array=0-$((N-1)) \
 python3 -m svbench aggregate $SCRATCH/svbench --out summary
 python3 -m svbench report summary --out summary/report.html
 ```
+
+`build.sh` makes three git worktrees (main and branch for
+`us_mpi_analysis`, branch for `us_astfem_sim`), each with its own `lib/`.
+The executables are therefore called through wrapper scripts in
+`DEST/bin` that set `LD_LIBRARY_PATH`. The wrappers also work under
+`mpirun`/`srun`.
 
 Run the commands from `test/benchmark/sv_workflow`, or put that directory
 on `PYTHONPATH`. Each task uses its own scratch directory, which holds a
