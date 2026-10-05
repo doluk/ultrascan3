@@ -3,6 +3,7 @@
 import json
 import os
 import shutil
+import socket
 import time
 import traceback
 
@@ -93,16 +94,43 @@ def check_outdir(design, outdir):
             json.dump(design, fh, indent=1)
 
 
+def _write_json(path, obj):
+    """Write atomically, so a concurrent status never sees partial files."""
+    tmp = "%s.tmp%d" % (path, os.getpid())
+    with open(tmp, "w") as fh:
+        json.dump(obj, fh, indent=1, default=float)
+    os.replace(tmp, path)
+
+
+def _remove(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
 def result_path(outdir, task, arm):
     return os.path.join(outdir, task["task"], arm + ".json")
 
 
+def _done(path, retry_failed):
+    if not os.path.exists(path):
+        return False
+    if not retry_failed:
+        return True
+    try:
+        with open(path) as fh:
+            return json.load(fh).get("status") == "ok"
+    except (OSError, ValueError):
+        return False
+
+
 def run_task(design, task, cfg, outdir, arms=None, keep=False,
-             timeout=None):
+             timeout=None, retry_failed=False):
     outdir = os.path.abspath(outdir)
     arms = arms or dsg.ARMS
-    todo = [a for a in arms if not os.path.exists(result_path(outdir, task,
-                                                              a))]
+    todo = [a for a in arms
+            if not _done(result_path(outdir, task, a), retry_failed)]
     if not todo:
         return []
     root = os.path.join(cfg["scratch"], task["task"])
@@ -116,12 +144,28 @@ def run_task(design, task, cfg, outdir, arms=None, keep=False,
     try:
         env = us3_env(cfg, root)
         t0 = time.time()
-        truth = sim.simulate(task, design, cfg["astfem_sim"],
-                             os.path.join(root, "sim"), env, log,
-                             cfg["sim_setup"], cfg["sim_timeout"])
+        try:
+            truth = sim.simulate(task, design, cfg["astfem_sim"],
+                                 os.path.join(root, "sim"), env, log,
+                                 cfg["sim_setup"], cfg["sim_timeout"])
+        except Exception as exc:   # record it and go on with the next task
+            for arm in todo:
+                _write_json(result_path(outdir, task, arm), {
+                    "task": task, "arm": arm, "status": "error",
+                    "error": "simulation: %s: %s" % (type(exc).__name__,
+                                                     exc),
+                    "traceback": traceback.format_exc()})
+                done.append((arm, "error"))
+            return done
         sim_seconds = time.time() - t0
         for arm in todo:
             exe_key, wf = ARM_SPEC[arm]
+            marker = result_path(outdir, task, arm)[:-5] + ".running"
+            _write_json(marker, {"host": socket.gethostname(),
+                                 "pid": os.getpid(), "start": time.time(),
+                                 "job": os.environ.get("SLURM_JOB_ID"),
+                                 "array_task":
+                                     os.environ.get("SLURM_ARRAY_TASK_ID")})
             rec = {"task": task, "arm": arm, "build": exe_key[13:],
                    "workflow": wf, "sim_seconds": sim_seconds,
                    "truth": {k: v for k, v in truth.items()
@@ -141,8 +185,8 @@ def run_task(design, task, cfg, outdir, arms=None, keep=False,
                 rec["status"] = "error"
                 rec["error"] = "%s: %s" % (type(exc).__name__, exc)
                 rec["traceback"] = traceback.format_exc()
-            with open(result_path(outdir, task, arm), "w") as fh:
-                json.dump(rec, fh, indent=1, default=float)
+            _write_json(result_path(outdir, task, arm), rec)
+            _remove(marker)
             done.append((arm, rec["status"]))
     finally:
         if os.path.exists(log):

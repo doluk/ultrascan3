@@ -4,7 +4,7 @@
   python -m svbench list      DESIGN [--out tasks.tsv]
   python -m svbench run       DESIGN CONFIG OUTDIR (--index I [--stride N]
                               | --task ID | --all) [--arms A,B] [--keep]
-  python -m svbench status    OUTDIR
+  python -m svbench status    OUTDIR [--config CONFIG]
   python -m svbench aggregate OUTDIR [--out DIR]
   python -m svbench report    SUMMARY_DIR [--out report.html]
 """
@@ -39,6 +39,8 @@ def main(argv=None):
     p.add_argument("--stride", type=int, default=0,
                    help="with --index: run tasks index, index+stride, ...")
     p.add_argument("--arms", default=",".join(dsg.ARMS))
+    p.add_argument("--retry-failed", action="store_true",
+                   help="run again the arms whose result is an error")
     p.add_argument("--keep", action="store_true",
                    help="keep the scratch directory of each task")
     p.add_argument("--timeout", type=float, default=None,
@@ -46,6 +48,11 @@ def main(argv=None):
 
     p = sub.add_parser("status", help="progress of a run (result files)")
     p.add_argument("outdir")
+    p.add_argument("--config",
+                   help="also detect running arms from the scratch "
+                        "directory (jobs started without run markers)")
+    p.add_argument("--stale-hours", type=float, default=6.0,
+                   help="age after which a running marker counts as stale")
 
     p = sub.add_parser("aggregate", help="collect results into CSV")
     p.add_argument("outdir")
@@ -102,7 +109,7 @@ def main(argv=None):
         bad = 0
         for t in sel:
             res = runner.run_task(design, t, cfg, a.outdir, arms, a.keep,
-                                  a.timeout)
+                                  a.timeout, a.retry_failed)
             for arm, status in res:
                 print("%s %-11s %s" % (t["task"], arm, status), flush=True)
                 bad += status != "ok"
@@ -110,7 +117,7 @@ def main(argv=None):
 
     elif a.cmd == "status":
         from . import status
-        status.status(a.outdir)
+        status.status(a.outdir, a.config, a.stale_hours)
 
     elif a.cmd == "aggregate":
         from . import aggregate

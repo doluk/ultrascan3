@@ -11,7 +11,8 @@
 #
 # Each task runs us_mpi_analysis with the "mpirun" command of the config,
 # e.g. "srun --mpi=pmix -n 8" or "mpirun -np 8"; request the same number
-# of tasks/cores here.  No memory is requested (about 0.4 GB per MPI rank
+# of tasks/cores here.  RUN_ARGS adds options of 'svbench run', e.g.
+# RUN_ARGS=--retry-failed to run failed arms again.  No memory is requested (about 0.4 GB per MPI rank
 # suffices); add e.g. --mem-per-cpu=1G on clusters that schedule memory.
 #SBATCH --job-name=svbench
 #SBATCH --ntasks=8
@@ -27,4 +28,4 @@ PYTHON=${PYTHON:-python3}
 cd "${SLURM_SUBMIT_DIR:-.}"
 "$PYTHON" -m svbench run "$DESIGN" "$CONFIG" "$OUT" \
     --index "$SLURM_ARRAY_TASK_ID" --stride "$STRIDE" \
-    ${TIMEOUT:+--timeout "$TIMEOUT"}
+    ${TIMEOUT:+--timeout "$TIMEOUT"} ${RUN_ARGS:-}
