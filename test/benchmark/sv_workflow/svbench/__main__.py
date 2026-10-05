@@ -4,6 +4,7 @@
   python -m svbench list      DESIGN [--out tasks.tsv]
   python -m svbench run       DESIGN CONFIG OUTDIR (--index I [--stride N]
                               | --task ID | --all) [--arms A,B] [--keep]
+  python -m svbench status    OUTDIR
   python -m svbench aggregate OUTDIR [--out DIR]
   python -m svbench report    SUMMARY_DIR [--out report.html]
 """
@@ -42,6 +43,9 @@ def main(argv=None):
                    help="keep the scratch directory of each task")
     p.add_argument("--timeout", type=float, default=None,
                    help="time limit (s) of one us_mpi_analysis job")
+
+    p = sub.add_parser("status", help="progress of a run (result files)")
+    p.add_argument("outdir")
 
     p = sub.add_parser("aggregate", help="collect results into CSV")
     p.add_argument("outdir")
@@ -103,6 +107,10 @@ def main(argv=None):
                 print("%s %-11s %s" % (t["task"], arm, status), flush=True)
                 bad += status != "ok"
         return 1 if bad else 0
+
+    elif a.cmd == "status":
+        from . import status
+        status.status(a.outdir)
 
     elif a.cmd == "aggregate":
         from . import aggregate
