@@ -32,7 +32,8 @@ def _load(path):
 
 
 def _scratch_running(cfg_path, results):
-    """(task, arm) pairs running according to the scratch directory."""
+    """{(task, arm): start} of arms running according to the scratch
+    directory; start is the time the arm's work folder was made."""
     from .runner import load_config
     cfg = load_config(cfg_path)
     now = time.time()
@@ -53,7 +54,7 @@ def _scratch_running(cfg_path, results):
         mt = os.path.getmtime(os.path.join(cfg["scratch"], task, arm))
         if task not in newest or mt > newest[task][1]:
             newest[task] = (arm, mt)
-    return set((t, a) for t, (a, _) in newest.items())
+    return dict(((t, a), mt) for t, (a, mt) in newest.items())
 
 
 def status(outdir, config=None, stale_hours=6.0):
@@ -95,8 +96,8 @@ def status(outdir, config=None, stale_hours=6.0):
         else:
             running[(task, arm)] = info
     if config:
-        for key in _scratch_running(config, results):
-            running.setdefault(key, {"host": "?", "start": None})
+        for key, mt in _scratch_running(config, results).items():
+            running.setdefault(key, {"host": "(scratch)", "start": mt})
 
     completed = sum(1 for s in results.values() if s == "ok")
     failed = len(results) - completed
