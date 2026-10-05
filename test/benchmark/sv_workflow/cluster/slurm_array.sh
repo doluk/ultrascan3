@@ -15,6 +15,7 @@
 # RUN_ARGS=--retry-failed to run failed arms again.  No memory is requested (about 0.4 GB per MPI rank
 # suffices); add e.g. --mem-per-cpu=1G on clusters that schedule memory.
 #SBATCH --job-name=svbench
+#SBATCH --nodes=1
 #SBATCH --ntasks=8
 #SBATCH --cpus-per-task=1
 #SBATCH --time=24:00:00

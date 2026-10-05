@@ -17,6 +17,7 @@
 # Each worker runs us_mpi_analysis with the "mpirun" of the config; keep
 # --ntasks equal to its -np.  RUN_ARGS adds options of 'svbench run'.
 #SBATCH --job-name=svbench-w
+#SBATCH --nodes=1
 #SBATCH --ntasks=8
 #SBATCH --cpus-per-task=1
 #SBATCH --time=02:00:00
