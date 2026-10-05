@@ -199,3 +199,44 @@ Pitfalls found while scripting the simulator:
 
 - In step 4 of the old workflow only N1 is loaded (`analysis.old_step3_noise = "step1"`). The alternative `"mbbest"` loads the TI+RI noise of the best meniscus/bottom model instead.
 - The simulator binary is built from the branch. Its ASTFEM change (closed-form fixed-mesh stiffness) is meant to be numerically equivalent to main.
+
+## Several clusters
+
+Work is split statically between clusters, and dynamically within a
+shared cluster.
+
+- **Static split.** `svbench split` writes the tasks of some elements of
+  an existing stride array to a task file, e.g. the elements whose pending
+  jobs you cancelled on the first cluster. Each cluster writes to its own
+  output directory; the result directories are disjoint and are merged
+  with `rsync`.
+- **Worker chains.** `cluster/slurm_worker.sh` claims the next free task
+  of the task file (`run --claim`, an atomic `mkdir` in
+  `OUT/.claims/`), runs tasks for at most `MAX_MINUTES`, and then
+  submits its own successor with `--nice`. Each job lasts about 1 h at
+  most, so other users' jobs get freed cores within minutes. A claim
+  whose job died is taken over after `--reclaim-hours` (4 h).
+- **Rebalancing.** Workers re-read the task file with every job.
+  Deleting lines from its end moves those tasks away from that cluster;
+  appending lines adds work.
+- **Stopping.** `touch OUT/.stop` ends the chains after their running
+  tasks.
+
+```bash
+# cluster A (stride array STRIDE=1000 running):  move elements K..999
+scancel <jobid>_[K-999]                       # only pending elements
+python3 -m svbench split designs/cluster64.json --stride 1000 \
+    --elements K-999 --exclude-done svbench-c64 --out node1.tasks
+scp node1.tasks node1:<benchmark dir>/
+
+# cluster B:  check limits, then e.g. 32 workers x 8 ranks = 256 cores
+cluster/check_limits.sh
+sbatch --array=1-32 --export=ALL,DESIGN=designs/cluster64.json,\
+CONFIG=config.json,OUT=$PWD/svbench-c64-node1,TASKS=node1.tasks \
+    cluster/slurm_worker.sh
+
+# merge (repeatable) and look at everything on cluster A
+rsync -a --exclude .claims --exclude design.json \
+    node1:<benchmark dir>/svbench-c64-node1/ svbench-c64/
+python3 -m svbench status svbench-c64
+```

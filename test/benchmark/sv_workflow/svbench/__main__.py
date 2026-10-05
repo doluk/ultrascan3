@@ -2,15 +2,20 @@
 
   python -m svbench count     DESIGN
   python -m svbench list      DESIGN [--out tasks.tsv]
+  python -m svbench split     DESIGN --stride N --elements A-B --out FILE
   python -m svbench run       DESIGN CONFIG OUTDIR (--index I [--stride N]
-                              | --task ID | --all) [--arms A,B] [--keep]
+                              | --task ID | --all) [--task-file FILE]
+                              [--claim] [--max-tasks K] [--max-minutes M]
+                              [--arms A,B] [--keep]
   python -m svbench status    OUTDIR [--config CONFIG]
   python -m svbench aggregate OUTDIR [--out DIR]
   python -m svbench report    SUMMARY_DIR [--out report.html]
 """
 
 import argparse
+import os
 import sys
+import time
 
 from . import design as dsg
 
@@ -27,6 +32,18 @@ def main(argv=None):
     p.add_argument("design")
     p.add_argument("--out")
 
+    p = sub.add_parser("split", help="task file for another cluster:  "
+                       "the tasks of some elements of a stride array")
+    p.add_argument("design")
+    p.add_argument("--stride", type=int, required=True,
+                   help="STRIDE (array size) of the existing stride run")
+    p.add_argument("--elements", required=True,
+                   help="array elements whose tasks to take, e.g. 230-999")
+    p.add_argument("--exclude-done",
+                   help="output directory:  leave out tasks with all "
+                        "results")
+    p.add_argument("--out", required=True)
+
     p = sub.add_parser("run", help="run tasks")
     p.add_argument("design")
     p.add_argument("config")
@@ -38,6 +55,20 @@ def main(argv=None):
     g.add_argument("--all", action="store_true")
     p.add_argument("--stride", type=int, default=0,
                    help="with --index: run tasks index, index+stride, ...")
+    p.add_argument("--task-file",
+                   help="run only the tasks of this file (svbench split), "
+                        "in its order; --index/--stride/--all select "
+                        "within it")
+    p.add_argument("--claim", action="store_true",
+                   help="take the next task no other job has claimed "
+                        "(shared OUTDIR on one cluster)")
+    p.add_argument("--reclaim-hours", type=float, default=4.0,
+                   help="with --claim:  take over claims older than this "
+                        "whose task has no results")
+    p.add_argument("--max-tasks", type=int, default=0,
+                   help="stop after this many tasks (0: no limit)")
+    p.add_argument("--max-minutes", type=float, default=0,
+                   help="start no new task after this many minutes")
     p.add_argument("--arms", default=",".join(dsg.ARMS))
     p.add_argument("--retry-failed", action="store_true",
                    help="run again the arms whose result is an error")
@@ -64,7 +95,7 @@ def main(argv=None):
 
     a = ap.parse_args(argv)
 
-    if a.cmd in ("count", "list", "run"):
+    if a.cmd in ("count", "list", "run", "split"):
         design = dsg.load(a.design)
         tasks = dsg.tasks(design)
 
@@ -91,9 +122,25 @@ def main(argv=None):
                 + [str(t["replicate"]), ",".join(t["blocks"])]
             fh.write("\t".join(row) + "\n")
 
+    elif a.cmd == "split":
+        from . import claim, runner
+        sel = claim.split(tasks, a.stride, claim.parse_elements(a.elements))
+        if a.exclude_done:
+            sel = [t for t in sel if not all(
+                os.path.exists(runner.result_path(a.exclude_done, t, arm))
+                for arm in dsg.ARMS)]
+        with open(a.out, "w") as fh:
+            fh.write("# %s: elements %s of stride %d, %d tasks\n"
+                     % (design["name"], a.elements, a.stride, len(sel)))
+            for t in sel:
+                fh.write(t["task"] + "\n")
+        print("%d tasks -> %s" % (len(sel), a.out))
+
     elif a.cmd == "run":
-        from . import runner
+        from . import claim, runner
         cfg = runner.load_config(a.config)
+        if a.task_file:
+            tasks = claim.read_task_file(a.task_file, tasks)
         if a.all:
             sel = tasks
         elif a.task:
@@ -104,15 +151,38 @@ def main(argv=None):
             sel = [tasks[a.index]] if a.index < len(tasks) else []
         if not sel:
             print("no task selected", file=sys.stderr)
-            return 1
+            return 0 if a.task_file else 1
         arms = [x for x in a.arms.split(",") if x]
-        bad = 0
+        outdir = os.path.abspath(a.outdir)
+        runner.check_outdir(design, outdir)
+        t0 = time.time()
+        bad = ran = 0
+        limited = False                  # stopped by a limit, work left
         for t in sel:
-            res = runner.run_task(design, t, cfg, a.outdir, arms, a.keep,
+            if os.path.exists(os.path.join(outdir, ".stop")):
+                limited = False
+                break
+            if (a.max_tasks and ran >= a.max_tasks) or \
+                    (a.max_minutes and time.time() - t0 > a.max_minutes * 60):
+                limited = True
+                break
+
+            def is_done(t=t):
+                return all(runner._done(runner.result_path(outdir, t, arm),
+                                        a.retry_failed) for arm in arms)
+            if is_done():
+                continue
+            if a.claim and not claim.claim(outdir, t["task"],
+                                           a.reclaim_hours, is_done):
+                continue
+            ran += 1
+            res = runner.run_task(design, t, cfg, outdir, arms, a.keep,
                                   a.timeout, a.retry_failed)
             for arm, status in res:
                 print("%s %-11s %s" % (t["task"], arm, status), flush=True)
                 bad += status != "ok"
+        if limited:
+            return 3                     # more tasks may be left
         return 1 if bad else 0
 
     elif a.cmd == "status":
