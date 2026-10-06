@@ -31,6 +31,22 @@ MAX_MINUTES=${MAX_MINUTES:-30}
 WORKER_SCRIPT=${WORKER_SCRIPT:-cluster/slurm_worker.sh}
 
 cd "${SLURM_SUBMIT_DIR:-.}"
+
+# A node without the Python environment would end every chain that lands
+# on it:  hand the chain on to another node instead (at most 3 hops).
+if ! "$PYTHON" -c "import numpy" 2>/dev/null; then
+  host=$(hostname -s)
+  hops=${SVB_BAD_HOPS:-0}
+  echo "ERROR: $PYTHON with numpy not available on $host"
+  if [ "$hops" -lt 3 ] && [ ! -e "$OUT/.stop" ]; then
+    echo "resubmitting without $host"
+    SVB_BAD_HOPS=$((hops + 1)) sbatch --export=ALL --exclude="$host" \
+        "$WORKER_SCRIPT"
+  fi
+  exit 1
+fi
+export SVB_BAD_HOPS=0
+
 "$PYTHON" -m svbench run "$DESIGN" "$CONFIG" "$OUT" --all \
     --task-file "$TASKS" --claim --max-minutes "$MAX_MINUTES" \
     ${TIMEOUT:+--timeout "$TIMEOUT"} ${RUN_ARGS:-}
