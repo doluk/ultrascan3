@@ -32,19 +32,23 @@ WORKER_SCRIPT=${WORKER_SCRIPT:-cluster/slurm_worker.sh}
 
 cd "${SLURM_SUBMIT_DIR:-.}"
 
-# A node without the Python environment would end every chain that lands
-# on it:  hand the chain on to another node instead (at most 3 hops).
-if ! "$PYTHON" -c "import numpy" 2>/dev/null; then
+# A node that cannot run the benchmark (no Python/numpy, a program or
+# library missing) would fail every task it takes:  hand the chain on to
+# another node instead (at most 3 hops).
+handoff() {
   host=$(hostname -s)
   hops=${SVB_BAD_HOPS:-0}
-  echo "ERROR: $PYTHON with numpy not available on $host"
+  echo "ERROR on $host: $1"
   if [ "$hops" -lt 3 ] && [ ! -e "$OUT/.stop" ]; then
     echo "resubmitting without $host"
     SVB_BAD_HOPS=$((hops + 1)) sbatch --export=ALL --exclude="$host" \
         "$WORKER_SCRIPT"
   fi
   exit 1
-fi
+}
+"$PYTHON" -c "import numpy" 2>/dev/null \
+  || handoff "$PYTHON with numpy not available"
+"$PYTHON" -m svbench check "$CONFIG" || handoff "node check failed"
 export SVB_BAD_HOPS=0
 
 "$PYTHON" -m svbench run "$DESIGN" "$CONFIG" "$OUT" --all \
@@ -52,6 +56,7 @@ export SVB_BAD_HOPS=0
     ${TIMEOUT:+--timeout "$TIMEOUT"} ${RUN_ARGS:-}
 rc=$?
 
+[ "$rc" -eq 4 ] && handoff "simulations fail on this node"
 if [ "$rc" -eq 3 ] && [ ! -e "$OUT/.stop" ]; then
   echo "work left: submitting successor"
   sbatch --export=ALL "$WORKER_SCRIPT"

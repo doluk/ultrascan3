@@ -109,6 +109,42 @@ def _remove(path):
         pass
 
 
+def simulation_failed(outdir, task, arm):
+    """True if the result of this arm failed in the simulation step."""
+    try:
+        with open(result_path(outdir, task, arm)) as fh:
+            return json.load(fh).get("error", "").startswith("simulation:")
+    except (OSError, ValueError):
+        return False
+
+
+def reset_failed(outdir, only_simulation=False):
+    """Delete failed results and the claims of their tasks."""
+    import glob
+    removed, tasks = 0, set()
+    for f in glob.glob(os.path.join(outdir, "*", "*.json")):
+        if os.path.basename(f)[:-5] not in dsg.ARMS:
+            continue
+        try:
+            with open(f) as fh:
+                rec = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if rec.get("status") == "ok":
+            continue
+        if only_simulation and \
+                not rec.get("error", "").startswith("simulation:"):
+            continue
+        os.remove(f)
+        removed += 1
+        tasks.add(os.path.basename(os.path.dirname(f)))
+    for t in tasks:
+        shutil.rmtree(os.path.join(outdir, ".claims", t), ignore_errors=True)
+    print("removed %d failed results of %d tasks (claims released)"
+          % (removed, len(tasks)))
+    return 0
+
+
 def result_path(outdir, task, arm):
     return os.path.join(outdir, task["task"], arm + ".json")
 

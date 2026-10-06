@@ -8,6 +8,8 @@
                               [--claim] [--max-tasks K] [--max-minutes M]
                               [--arms A,B] [--keep]
   python -m svbench status    OUTDIR [--config CONFIG] [--task-file FILE]
+  python -m svbench check     CONFIG
+  python -m svbench reset-failed OUTDIR
   python -m svbench aggregate OUTDIR [--out DIR]
   python -m svbench report    SUMMARY_DIR [--out report.html]
 """
@@ -88,6 +90,16 @@ def main(argv=None):
     p.add_argument("--stale-hours", type=float, default=6.0,
                    help="age after which a running marker counts as stale")
 
+    p = sub.add_parser("check", help="can the configured programs start "
+                       "on this node?  (exit 1 if not)")
+    p.add_argument("config")
+
+    p = sub.add_parser("reset-failed", help="delete failed results (and "
+                       "their claims) so that they are run again")
+    p.add_argument("outdir")
+    p.add_argument("--only-simulation", action="store_true",
+                   help="only results failed in the simulation step")
+
     p = sub.add_parser("aggregate", help="collect results into CSV")
     p.add_argument("outdir")
     p.add_argument("--out", default=None)
@@ -159,7 +171,7 @@ def main(argv=None):
         outdir = os.path.abspath(a.outdir)
         runner.check_outdir(design, outdir)
         t0 = time.time()
-        bad = ran = 0
+        bad = ran = sim_fail = 0
         limited = False                  # stopped by a limit, work left
         for t in sel:
             if os.path.exists(os.path.join(outdir, ".stop")):
@@ -184,6 +196,18 @@ def main(argv=None):
             for arm, status in res:
                 print("%s %-11s %s" % (t["task"], arm, status), flush=True)
                 bad += status != "ok"
+            # Simulations failing task after task:  this node cannot run
+            # the simulator; stop instead of failing every task
+            if res and all(st != "ok" for _, st in res) and \
+                    runner.simulation_failed(outdir, t, res[0][0]):
+                sim_fail += 1
+                if sim_fail >= 2:
+                    print("simulation failed for %d tasks in a row on %s; "
+                          "stopping" % (sim_fail, os.uname()[1]),
+                          file=sys.stderr)
+                    return 4
+            else:
+                sim_fail = 0
         if limited:
             return 3                     # more tasks may be left
         return 1 if bad else 0
@@ -191,6 +215,14 @@ def main(argv=None):
     elif a.cmd == "status":
         from . import status
         status.status(a.outdir, a.config, a.stale_hours, a.task_file)
+
+    elif a.cmd == "check":
+        from . import check, runner
+        return check.main(runner.load_config(a.config))
+
+    elif a.cmd == "reset-failed":
+        from . import runner
+        return runner.reset_failed(a.outdir, a.only_simulation)
 
     elif a.cmd == "aggregate":
         from . import aggregate
