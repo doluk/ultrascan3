@@ -8,7 +8,8 @@ needed).
              whose scratch work folder exists, have no result and whose
              task log changed in the last 30 min (jobs started before
              markers existed)
-  stale      markers older than --stale-hours without result (element
+  stale      markers without result whose SLURM job is gone (checked with
+             squeue when available) or older than --stale-hours (element
              killed, e.g. at its time limit); counted as pending
   pending    everything else
 """
@@ -16,6 +17,7 @@ needed).
 import glob
 import json
 import os
+import subprocess
 import time
 
 from . import design as dsg
@@ -57,14 +59,36 @@ def _scratch_running(cfg_path, results):
     return dict(((t, a), mt) for t, (a, mt) in newest.items())
 
 
-def status(outdir, config=None, stale_hours=6.0):
+def _live_jobs():
+    """IDs of this cluster's queued/running SLURM jobs (array elements
+    included), or None if squeue is not available."""
+    try:
+        out = subprocess.run(["squeue", "-h", "-r", "-o", "%A"],
+                             stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    return set(out.stdout.decode().split())
+
+
+def status(outdir, config=None, stale_hours=6.0, task_file=None):
     meta = os.path.join(outdir, "design.json")
     design = _load(meta)
     if design is None:
         print("no design.json in %s (no task has started yet)" % outdir)
         return
-    total = len(dsg.tasks(design)) * len(dsg.ARMS)
+    tasks = dsg.tasks(design)
+    allowed = None
+    if task_file:
+        from .claim import read_task_file
+        allowed = set(t["task"] for t in read_task_file(task_file, tasks))
+        total = len(allowed) * len(dsg.ARMS)
+    else:
+        total = len(tasks) * len(dsg.ARMS)
     now = time.time()
+    live = _live_jobs()
 
     results = {}
     mtimes = []
@@ -72,7 +96,8 @@ def status(outdir, config=None, stale_hours=6.0):
     for f in glob.glob(os.path.join(outdir, "*", "*.json")):
         task = os.path.basename(os.path.dirname(f))
         arm = os.path.basename(f)[:-5]
-        if arm not in dsg.ARMS:
+        if arm not in dsg.ARMS or (allowed is not None and
+                                   task not in allowed):
             continue
         rec = _load(f)
         if rec is None:
@@ -87,17 +112,22 @@ def status(outdir, config=None, stale_hours=6.0):
     for f in glob.glob(os.path.join(outdir, "*", "*.running")):
         task = os.path.basename(os.path.dirname(f))
         arm = os.path.basename(f)[:-8]
-        if (task, arm) in results:
+        if (task, arm) in results or (allowed is not None and
+                                      task not in allowed):
             continue
         info = _load(f) or {}
         age = now - info.get("start", os.path.getmtime(f))
-        if age > stale_hours * 3600:
+        # A marker's job no longer queued on this cluster:  it was killed
+        dead = bool(live is not None and info.get("job")
+                    and str(info["job"]) not in live)
+        if dead or age > stale_hours * 3600:
             stale += 1
         else:
             running[(task, arm)] = info
     if config:
         for key, mt in _scratch_running(config, results).items():
-            running.setdefault(key, {"host": "(scratch)", "start": mt})
+            if allowed is None or key[0] in allowed:
+                running.setdefault(key, {"host": "(scratch)", "start": mt})
 
     completed = sum(1 for s in results.values() if s == "ok")
     failed = len(results) - completed
@@ -106,7 +136,8 @@ def status(outdir, config=None, stale_hours=6.0):
     def pct(n):
         return 100.0 * n / total if total else 0.0
 
-    print("design     %s   (%s)" % (design.get("name"), outdir))
+    print("design     %s   (%s)" % (design.get("name"), outdir)
+          + ("\ntask file  %s" % task_file if task_file else ""))
     print("total      %7d" % total)
     print("completed  %7d  %5.1f %%" % (completed, pct(completed)))
     print("failed     %7d  %5.1f %%" % (failed, pct(failed)))

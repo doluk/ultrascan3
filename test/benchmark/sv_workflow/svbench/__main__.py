@@ -7,7 +7,7 @@
                               | --task ID | --all) [--task-file FILE]
                               [--claim] [--max-tasks K] [--max-minutes M]
                               [--arms A,B] [--keep]
-  python -m svbench status    OUTDIR [--config CONFIG]
+  python -m svbench status    OUTDIR [--config CONFIG] [--task-file FILE]
   python -m svbench aggregate OUTDIR [--out DIR]
   python -m svbench report    SUMMARY_DIR [--out report.html]
 """
@@ -82,6 +82,9 @@ def main(argv=None):
     p.add_argument("--config",
                    help="also detect running arms from the scratch "
                         "directory (jobs started without run markers)")
+    p.add_argument("--task-file",
+                   help="count only the tasks of this file (this "
+                        "cluster's share)")
     p.add_argument("--stale-hours", type=float, default=6.0,
                    help="age after which a running marker counts as stale")
 
@@ -187,7 +190,7 @@ def main(argv=None):
 
     elif a.cmd == "status":
         from . import status
-        status.status(a.outdir, a.config, a.stale_hours)
+        status.status(a.outdir, a.config, a.stale_hours, a.task_file)
 
     elif a.cmd == "aggregate":
         from . import aggregate

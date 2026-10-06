@@ -236,7 +236,7 @@ CONFIG=config.json,OUT=$PWD/svbench-c64-node1,TASKS=node1.tasks \
     cluster/slurm_worker.sh
 
 # merge (repeatable) and look at everything on cluster A
-rsync -a --exclude .claims --exclude design.json \
+rsync -a --exclude .claims --exclude design.json --exclude "*.running" \
     node1:<benchmark dir>/svbench-c64-node1/ svbench-c64/
 python3 -m svbench status svbench-c64
 ```
