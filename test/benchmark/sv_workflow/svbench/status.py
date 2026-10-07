@@ -83,10 +83,11 @@ def status(outdir, config=None, stale_hours=6.0, task_file=None):
     allowed = None
     if task_file:
         from .claim import read_task_file
-        allowed = set(t["task"] for t in read_task_file(task_file, tasks))
-        total = len(allowed) * len(dsg.ARMS)
+        sel = read_task_file(task_file, tasks)
+        allowed = set(t["task"] for t in sel)
     else:
-        total = len(tasks) * len(dsg.ARMS)
+        sel = tasks
+    total = sum(len(dsg.arms_for(design, t)) for t in sel)
     now = time.time()
     live = _live_jobs()
 

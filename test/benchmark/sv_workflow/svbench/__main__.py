@@ -145,7 +145,8 @@ def main(argv=None):
         print("conditions  %d" % len(conds))
         print("replicates  %d" % design["replicates"])
         print("tasks       %d" % len(tasks))
-        print("arm runs    %d" % (len(tasks) * len(dsg.ARMS)))
+        print("arm runs    %d" % sum(len(dsg.arms_for(design, t))
+                                     for t in tasks))
 
     elif a.cmd == "list":
         fh = open(a.out, "w") if a.out else sys.stdout
@@ -162,7 +163,7 @@ def main(argv=None):
         if a.exclude_done:
             sel = [t for t in sel if not all(
                 os.path.exists(runner.result_path(a.exclude_done, t, arm))
-                for arm in dsg.ARMS)]
+                for arm in dsg.arms_for(design, t))]
         with open(a.out, "w") as fh:
             fh.write("# %s: elements %s of stride %d, %d tasks\n"
                      % (design["name"], a.elements, a.stride, len(sel)))
@@ -201,16 +202,18 @@ def main(argv=None):
                 limited = True
                 break
 
-            def is_done(t=t):
+            t_arms = dsg.arms_for(design, t, arms)
+
+            def is_done(t=t, t_arms=t_arms):
                 return all(runner._done(runner.result_path(outdir, t, arm),
-                                        a.retry_failed) for arm in arms)
+                                        a.retry_failed) for arm in t_arms)
             if is_done():
                 continue
             if a.claim and not claim.claim(outdir, t["task"],
                                            a.reclaim_hours, is_done):
                 continue
             ran += 1
-            res = runner.run_task(design, t, cfg, outdir, arms, a.keep,
+            res = runner.run_task(design, t, cfg, outdir, t_arms, a.keep,
                                   a.timeout, a.retry_failed)
             for arm, status in res:
                 print("%s %-11s %s" % (t["task"], arm, status), flush=True)

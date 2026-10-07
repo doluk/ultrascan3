@@ -34,13 +34,30 @@ def boundary_time(s_sv, rpm, meniscus, radius):
     return math.log(radius / meniscus) / (s_sv * 1.0e-13 * omega2(rpm))
 
 
+def required_run_time(solutes, rpm, sim):
+    """Run time (s) the experiment needs without the max_run_hours cap:
+    the slowest solute's boundary reaching the bottom, times the safety."""
+    s_lo = min(x["s"] for x in solutes)
+    return sim["last_scan_safety"] * boundary_time(
+        s_lo, rpm, sim["meniscus"], sim["bottom"])
+
+
+def reasonable(solutes, rpm, sim):
+    """False if the experiment would need more than max_run_hours +
+    unreasonable_margin_hours:  the run is cut so short that it does not
+    represent a sensible experiment (speed far too low for the system)."""
+    limit = (sim["max_run_hours"] + sim.get("unreasonable_margin_hours",
+                                            10)) * 3600.0
+    return required_run_time(solutes, rpm, sim) <= limit
+
+
 def scan_schedule(solutes, rpm, meniscus, bottom, sim):
     """Times (s) of the first and last scan for one run.
 
     The first scan is taken right after the rotor reaches speed:
     rpm / acceleration + `first_scan_delay` (1 s).  The last scan is taken
     when the boundary of the slowest solute has reached the bottom, times
-    `last_scan_safety` (1.1) to let its diffusion-broadened boundary clear
+    `last_scan_safety` (1.2) to let its diffusion-broadened boundary clear
     the data range:  t_last = safety * ln(bottom/meniscus) / (s_min w^2).
     t_last is capped at `max_run_hours` (very slow solutes at low speed)
     and kept at least (scans-1) * `min_scan_interval` after the first scan

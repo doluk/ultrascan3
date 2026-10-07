@@ -95,8 +95,21 @@ def conditions(design):
             raise ValueError("unknown block type " + blk["type"])
 
     out = list(seen.values())
+    if design.get("skip_unreasonable"):
+        from . import physics
+        out = [c for c in out if physics.reasonable(
+            systems.solutes(c["system"]), int(c["speed"]),
+            design["simulation"])]
     out.sort(key=lambda c: [str(c[f]) for f in FACTORS])
     return out
+
+
+def arms_for(design, task, arms=None):
+    """The arms to run for a task:  design["arm_replicates"] may limit an
+    arm to some replicates, e.g. {"branch_old": [0]}."""
+    lim = design.get("arm_replicates", {})
+    return [a for a in (arms or ARMS)
+            if a not in lim or task["replicate"] in lim[a]]
 
 
 def tasks(design):

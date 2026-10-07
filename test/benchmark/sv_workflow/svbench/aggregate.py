@@ -30,12 +30,13 @@ KEY_METRICS = [
     # Restricted to what the experiment can determine (svbench.observe):
     # identifiable = every solute sediments visibly;  *_obs over solutes
     # with visible sedimentation (s, conc) and also diffusion (f/f0, D, MW)
-    "identifiable", "n_species_sed_ok", "n_species_diff_ok",
+    "reasonable", "identifiable", "n_species_sed_ok", "n_species_diff_ok",
     "s_relerr_max_obs", "s_relerr_mean_obs", "conc_relerr_max_obs",
     "conc_relerr_mean_obs", "ff0_relerr_max_obs", "ff0_relerr_mean_obs",
     "D_relerr_max_obs", "mw_relerr_max_obs",
 ]
-SPECIES_OBS = ["displacement", "diffusion_width", "sed_ok", "diff_ok"]
+SPECIES_OBS = ["displacement", "diffusion_width", "reasonable", "sed_ok",
+               "diff_ok"]
 CONTEXT = ["sigma_random_true", "ti_true_rms", "ri_true_rms", "c_true_rms",
            "signal_mean", "points", "scans", "meniscus_edit_err",
            "bottom_edit_err"]
@@ -77,14 +78,23 @@ def load_runs(outdir):
     return runs
 
 
-def add_observability(r, acceleration):
+def add_observability(r, simp):
     """Attach observability to the species of run r and the restricted
-    metrics to its metrics (in place)."""
+    metrics to its metrics (in place).  In an unreasonable run (speed far
+    too low for the system, see physics.reasonable) no solute counts as
+    observable."""
+    from . import physics
     m = r["metrics"]
-    obs = observe.solutes(r["truth"], float(r["task"]["speed"]),
-                          acceleration)
+    rpm = float(r["task"]["speed"])
+    obs = observe.solutes(r["truth"], rpm, simp["acceleration"])
+    ok = physics.reasonable(r["truth"]["solutes"], rpm, simp) \
+        if "last_scan_safety" in simp else True
     for sp, ob in zip(m["species"], obs):
         sp.update(ob)
+        sp["reasonable"] = ok
+        if not ok:
+            sp["sed_ok"] = sp["diff_ok"] = False
+    m["reasonable"] = ok
     sed = [sp for sp in m["species"] if sp["sed_ok"]]
     dif = [sp for sp in m["species"] if sp["diff_ok"]]
 
@@ -116,12 +126,12 @@ def aggregate(outdir, dest):
     runs = load_runs(outdir)
     ok = [r for r in runs if r.get("status") == "ok"]
     bad = [r for r in runs if r.get("status") != "ok"]
-    acceleration = 400.0
+    simp = {"acceleration": 400.0}
     if os.path.exists(meta):
         with open(meta) as fh:
-            acceleration = json.load(fh)["simulation"]["acceleration"]
+            simp = json.load(fh)["simulation"]
     for r in ok:
-        add_observability(r, acceleration)
+        add_observability(r, simp)
 
     base = ["task", "condition", "replicate"] + FACTORS + ["blocks", "arm",
                                                            "build",
