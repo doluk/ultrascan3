@@ -9,6 +9,7 @@
                               [--arms A,B] [--keep]
   python -m svbench status    OUTDIR [--config CONFIG] [--task-file FILE]
   python -m svbench check     CONFIG
+  python -m svbench preview   DESIGN CONFIG OUTDIR [--jobs N]
   python -m svbench reset-failed OUTDIR
   python -m svbench aggregate OUTDIR [--out DIR]
   python -m svbench report    SUMMARY_DIR [--out report.html]
@@ -89,6 +90,23 @@ def main(argv=None):
                         "cluster's share)")
     p.add_argument("--stale-hours", type=float, default=6.0,
                    help="age after which a running marker counts as stale")
+
+    p = sub.add_parser("preview", help="noise-free simulation of every "
+                       "system x speed, with plots and observability")
+    p.add_argument("design")
+    p.add_argument("config")
+    p.add_argument("outdir")
+    p.add_argument("--range-end", type=float, default=None,
+                   help="data range end before the bottom (cm; default: "
+                        "the design's reference)")
+    p.add_argument("--replicate", type=int, default=0,
+                   help="replicate whose edit geometry to use")
+    p.add_argument("--systems", help="comma-separated subset")
+    p.add_argument("--speeds", help="comma-separated subset")
+    p.add_argument("--jobs", type=int, default=4,
+                   help="simulations in parallel")
+    p.add_argument("--keep", action="store_true",
+                   help="keep the simulated AUC/edit files in OUTDIR/sims")
 
     p = sub.add_parser("check", help="can the configured programs start "
                        "on this node?  (exit 1 if not)")
@@ -215,6 +233,16 @@ def main(argv=None):
     elif a.cmd == "status":
         from . import status
         status.status(a.outdir, a.config, a.stale_hours, a.task_file)
+
+    elif a.cmd == "preview":
+        from . import preview, runner
+        design = dsg.load(a.design)
+        return preview.preview(
+            design, runner.load_config(a.config), a.outdir, a.range_end,
+            a.replicate,
+            a.systems.split(",") if a.systems else None,
+            [int(x) for x in a.speeds.split(",")] if a.speeds else None,
+            a.jobs, a.keep)
 
     elif a.cmd == "check":
         from . import check, runner

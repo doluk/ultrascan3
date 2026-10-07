@@ -240,3 +240,26 @@ rsync -a --exclude .claims --exclude design.json --exclude "*.running" \
     node1:<benchmark dir>/svbench-c64-node1/ svbench-c64/
 python3 -m svbench status svbench-c64
 ```
+
+## Observability and design preview
+
+Some combinations of system and speed carry no information about some
+solutes, independent of the analysis. `svbench/observe.py` flags this
+from the simulated truth only, so the flags are the same for every arm:
+
+- **No sedimentation information:** the boundary moves less than 20 %
+  of the data range between the first and the last scan. Such a solute
+  is left out of all species statistics. A run containing one is not
+  *identifiable*; the report's headline and sweeps use identifiable runs
+  only.
+- **No diffusion information:** √(2Dt) at the last scan stays below 5 %
+  of the data range. Such a solute is left out of the f/f0, D and MW
+  statistics only.
+
+`aggregate` adds the flags to `species.csv` and adds `*_obs` metrics
+and `identifiable` to `runs.csv`.
+
+`python3 -m svbench preview DESIGN CONFIG OUT` simulates every system ×
+speed once without noise, with the benchmark's scan schedule and edit
+geometry. It writes one figure per system, `summary.csv` with scan
+times, boundary positions and flags, and `index.html` combining both.

@@ -1,7 +1,8 @@
 """Collect task results into CSV tables.
 
 runs.csv        one row per task x arm (all scalar metrics)
-species.csv     one row per task x arm x true solute
+species.csv     one row per task x arm x true solute, with its
+                observability (svbench.observe)
 conditions.csv  mean and SD over replicates per condition x arm
 paired.csv      per condition:  mean and SD over replicates of the paired
                 difference of each arm to main_old (same simulated data)
@@ -15,6 +16,7 @@ import math
 import os
 import shutil
 
+from . import observe
 from .design import ARMS, FACTORS
 
 KEY_METRICS = [
@@ -25,7 +27,15 @@ KEY_METRICS = [
     "s_relerr_mean", "ff0_relerr_mean", "conc_relerr_mean",
     "meniscus_fit_err", "bottom_fit_err", "fit_mb_on_edge", "edit_updated",
     "n_solutes_fit", "wall_seconds",
+    # Restricted to what the experiment can determine (svbench.observe):
+    # identifiable = every solute sediments visibly;  *_obs over solutes
+    # with visible sedimentation (s, conc) and also diffusion (f/f0, D, MW)
+    "identifiable", "n_species_sed_ok", "n_species_diff_ok",
+    "s_relerr_max_obs", "s_relerr_mean_obs", "conc_relerr_max_obs",
+    "conc_relerr_mean_obs", "ff0_relerr_max_obs", "ff0_relerr_mean_obs",
+    "D_relerr_max_obs", "mw_relerr_max_obs",
 ]
+SPECIES_OBS = ["displacement", "diffusion_width", "sed_ok", "diff_ok"]
 CONTEXT = ["sigma_random_true", "ti_true_rms", "ri_true_rms", "c_true_rms",
            "signal_mean", "points", "scans", "meniscus_edit_err",
            "bottom_edit_err"]
@@ -67,6 +77,37 @@ def load_runs(outdir):
     return runs
 
 
+def add_observability(r, acceleration):
+    """Attach observability to the species of run r and the restricted
+    metrics to its metrics (in place)."""
+    m = r["metrics"]
+    obs = observe.solutes(r["truth"], float(r["task"]["speed"]),
+                          acceleration)
+    for sp, ob in zip(m["species"], obs):
+        sp.update(ob)
+    sed = [sp for sp in m["species"] if sp["sed_ok"]]
+    dif = [sp for sp in m["species"] if sp["diff_ok"]]
+
+    def agg(lst, key, fn):
+        vals = [abs(sp[key]) for sp in lst if key in sp]
+        return fn(vals) if vals else float("nan")
+
+    def mean(v):
+        return sum(v) / len(v)
+    m.update({
+        "identifiable": len(sed) == len(m["species"]),
+        "n_species_sed_ok": len(sed), "n_species_diff_ok": len(dif),
+        "s_relerr_max_obs": agg(sed, "s_relerr", max),
+        "s_relerr_mean_obs": agg(sed, "s_relerr", mean),
+        "conc_relerr_max_obs": agg(sed, "conc_relerr", max),
+        "conc_relerr_mean_obs": agg(sed, "conc_relerr", mean),
+        "ff0_relerr_max_obs": agg(dif, "ff0_relerr", max),
+        "ff0_relerr_mean_obs": agg(dif, "ff0_relerr", mean),
+        "D_relerr_max_obs": agg(dif, "D_relerr", max),
+        "mw_relerr_max_obs": agg(dif, "mw_relerr", max),
+    })
+
+
 def aggregate(outdir, dest):
     os.makedirs(dest, exist_ok=True)
     meta = os.path.join(outdir, "design.json")
@@ -75,6 +116,12 @@ def aggregate(outdir, dest):
     runs = load_runs(outdir)
     ok = [r for r in runs if r.get("status") == "ok"]
     bad = [r for r in runs if r.get("status") != "ok"]
+    acceleration = 400.0
+    if os.path.exists(meta):
+        with open(meta) as fh:
+            acceleration = json.load(fh)["simulation"]["acceleration"]
+    for r in ok:
+        add_observability(r, acceleration)
 
     base = ["task", "condition", "replicate"] + FACTORS + ["blocks", "arm",
                                                            "build",
@@ -100,12 +147,12 @@ def aggregate(outdir, dest):
                           sp.get("ff0", ""), sp.get("conc_relerr", ""),
                           sp.get("s_relerr", ""), sp.get("ff0_relerr", ""),
                           sp.get("D_relerr", ""), sp.get("mw_relerr", ""),
-                          sp["n_solutes"]])
+                          sp["n_solutes"]] + [sp[k] for k in SPECIES_OBS])
     _write(os.path.join(dest, "species.csv"),
            ["task", "condition", "system", "speed", "arm", "solute",
             "s_true", "ff0_true", "conc_true", "conc_fit", "s_fit",
             "ff0_fit", "conc_relerr", "s_relerr", "ff0_relerr", "D_relerr",
-            "mw_relerr", "n_solutes"], srows)
+            "mw_relerr", "n_solutes"] + SPECIES_OBS, srows)
 
     _write(os.path.join(dest, "errors.csv"), ["task", "arm", "error"],
            [[r["task"]["task"], r["arm"], r.get("error", "")] for r in bad])

@@ -136,23 +136,31 @@ def rewrite_edit(path, meniscus, bottom, left, right):
         fh.write(head + body + "\n")
 
 
-def simulate(task, design, exe, workdir, env, log, setup=None,
-             timeout=900):
-    """Simulate one task; returns the truth record (dict)."""
+def geometry(task, design):
+    """Edit geometry (random meniscus/bottom error, data range) and scan
+    schedule of a task."""
     sim = design["simulation"]
     edt = design["edit"]
-    sols = systems.solutes(task["system"])
-    rpm = int(task["speed"])
-
-    # Edit geometry:  random meniscus/bottom error, data range
     rng = random.Random(task["geometry_seed"])
     m_true, b_true = sim["meniscus"], sim["bottom"]
     m_edit = m_true + rng.uniform(-1, 1) * edt["meniscus_offset_max"]
     b_edit = b_true + rng.uniform(-1, 1) * edt["bottom_offset_max"]
     left = m_edit + edt["data_left_gap"]
     right = b_edit - task["range_end"]
+    t_first, t_last = physics.scan_schedule(
+        systems.solutes(task["system"]), int(task["speed"]), m_true, right,
+        sim)
+    return m_true, b_true, m_edit, b_edit, left, right, t_first, t_last
 
-    t_first, t_last = physics.scan_schedule(sols, rpm, m_true, right, sim)
+
+def simulate(task, design, exe, workdir, env, log, setup=None,
+             timeout=900):
+    """Simulate one task; returns the truth record (dict)."""
+    sim = design["simulation"]
+    sols = systems.solutes(task["system"])
+    rpm = int(task["speed"])
+    (m_true, b_true, m_edit, b_edit, left, right, t_first,
+     t_last) = geometry(task, design)
 
     os.makedirs(workdir, exist_ok=True)
     write_model(os.path.join(workdir, "model.xml"), sols,

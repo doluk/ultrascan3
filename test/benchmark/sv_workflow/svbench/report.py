@@ -37,16 +37,18 @@ METRICS = [
     ("ti_shape_rmsd", "TI noise shape error, RMS (OD)", None),
     ("ri_shape_rmsd", "RI noise shape error, RMS (OD)", None),
     ("total_conc_relerr", "|total concentration error| (rel.)", "abs"),
-    ("conc_relerr_max", "max |species concentration error| (rel.)", None),
-    ("s_relerr_max", "max |species s error| (rel.)", None),
-    ("ff0_relerr_max", "max |species f/f0 error| (rel.)", None),
+    ("conc_relerr_max_obs", "max |species concentration error| (rel.)",
+     None),
+    ("s_relerr_max_obs", "max |species s error| (rel.)", None),
+    ("ff0_relerr_max_obs", "max |species f/f0 error| (rel.)", None),
+    ("mw_relerr_max_obs", "max |species MW error| (rel.)", None),
     ("ghost_conc_fraction", "ghost concentration fraction", None),
     ("meniscus_fit_err", "|meniscus error| after fit (cm)", "abs"),
     ("bottom_fit_err", "|bottom error| after fit (cm)", "abs"),
     ("wall_seconds", "wall time per arm (s)", None),
 ]
 SWEEP_METRICS = ["rmsd_ratio", "noise_rmsd", "total_conc_relerr",
-                 "conc_relerr_max", "s_relerr_max", "meniscus_fit_err",
+                 "conc_relerr_max_obs", "s_relerr_max_obs", "meniscus_fit_err",
                  "bottom_fit_err"]
 OAT_FACTORS = ["ti_noise", "ri_noise", "random_noise", "local_noise",
                "baseline", "range_end", "speed"]
@@ -291,8 +293,45 @@ code { font-size:12px; }
 """
 
 
+def observability_section(summary_dir):
+    """Share of runs per system x speed whose solutes are observable."""
+    sp = _read(os.path.join(summary_dir, "species.csv"))
+    sp = [r for r in sp if r.get("arm") == "main_old" and "sed_ok" in r]
+    if not sp:
+        return ""
+    cells = {}
+    for r in sp:
+        key = (r["system"], int(float(r["speed"])), float(r["s_true"]),
+               float(r["ff0_true"]))
+        c = cells.setdefault(key, [0, 0, 0])
+        c[0] += 1
+        c[1] += r["sed_ok"] != "True"
+        c[2] += r["sed_ok"] == "True" and r["diff_ok"] != "True"
+    rows = [[k[0], k[1], k[2], k[3], c[0], c[1] / float(c[0]),
+             c[2] / float(c[0])] for k, c in sorted(cells.items())
+            if c[1] or c[2]]
+    from . import observe
+    return "".join([
+        "<h2>Observability</h2>",
+        '<p class="note">From the simulated truth only (same for all arms).'
+        " A solute whose boundary moves less than %.0f %% of the data range"
+        " between first and last scan carries no sedimentation information:"
+        " it is left out of all species statistics, and runs containing"
+        " one are not <em>identifiable</em> (headline and sweeps use"
+        " identifiable runs only). A solute whose diffusion width"
+        " &radic;(2Dt) stays below %.0f %% of the data range is left out"
+        " of the f/f0, D and MW statistics only. Solutes always"
+        " observable are not listed.</p>"
+        % (100 * observe.MIN_DISPLACEMENT,
+           100 * observe.MIN_DIFFUSION_WIDTH),
+        _table(["system", "speed", "s", "f/f0", "runs",
+                "no sedimentation info", "no diffusion info"], rows,
+               "num")])
+
+
 def report(summary_dir, out_path):
-    runs = _read(os.path.join(summary_dir, "runs.csv"))
+    runs_all = _read(os.path.join(summary_dir, "runs.csv"))
+    runs = [r for r in runs_all if r.get("identifiable", "True") == "True"]
     errors = _read(os.path.join(summary_dir, "errors.csv"))
     ref = {}
     meta = os.path.join(summary_dir, "design.json")
@@ -301,8 +340,8 @@ def report(summary_dir, out_path):
             ref = json.load(fh).get("reference", {})
 
     arms = [a for a in ARMS if any(r["arm"] == a for r in runs)]
-    ntask = len(set(r["task"] for r in runs))
-    ncond = len(set(r["condition"] for r in runs))
+    ntask = len(set(r["task"] for r in runs_all))
+    ncond = len(set(r["condition"] for r in runs_all))
     parts = ['<!doctype html><html lang="en"><head><meta charset="utf-8">',
              '<meta name="viewport" content="width=device-width,'
              'initial-scale=1">', "<title>SV workflow benchmark</title>",
@@ -311,7 +350,7 @@ def report(summary_dir, out_path):
              " workflow</h1>",
              '<p class="note">%d tasks (%d conditions), %d successful arm'
              " runs, %d failed runs. Arms: %s.</p>"
-             % (ntask, ncond, len(runs), len(errors), ", ".join(
+             % (ntask, ncond, len(runs_all), len(errors), ", ".join(
                  ARM_LABEL[a] for a in arms)),
              "<p>Old workflow: 2DSA with TI noise &rarr; meniscus+bottom fit"
              " (TI+RI, TI noise of step 1 loaded) &rarr; fit-meniscus edit"
@@ -319,16 +358,23 @@ def report(summary_dir, out_path):
              " the same without the first step. All arms analyse identical"
              " simulated data (paired design).</p>",
              "<h2>Headline</h2>",
-             '<p class="note">Medians over all successful runs. "Better"'
+             '<p class="note">Medians over the %d identifiable runs (every'
+             " solute sediments visibly; see Observability). Species"
+             " metrics only over observable solutes. \"Better\""
              " is the share of tasks where the arm beats main/old on the"
-             " same data (for the RMSD ratio: closer to 1).</p>",
+             " same data (for the RMSD ratio: closer to 1).</p>"
+             % len(runs),
              headline(runs),
+             "<details><summary>Headline over all %d runs, including"
+             " non-identifiable ones</summary>" % len(runs_all),
+             headline(runs_all), "</details>",
              "<h2>Does the workflow or the NNLS change matter?</h2>",
              '<p class="note">Paired differences on identical data. With'
              " exact TI/RI elimination a pre-subtracted TI noise lies in the"
              " eliminated subspace, so the branch old and new workflows are"
              " expected to agree up to numerical noise.</p>",
-             equivalence(runs)]
+             equivalence(runs_all),
+             observability_section(summary_dir)]
 
     if ref:
         parts.append("<h2>One-factor-at-a-time sweeps</h2>")
@@ -338,12 +384,14 @@ def report(summary_dir, out_path):
             parts.append(sweep_section(runs, ref, f))
 
     show = ["rmsd_ratio", "noise_rmsd", "total_conc_relerr",
-            "conc_relerr_max", "s_relerr_max", "ff0_relerr_max",
+            "conc_relerr_max_obs", "s_relerr_max_obs", "ff0_relerr_max_obs",
             "meniscus_fit_err", "bottom_fit_err"]
     parts += ["<h2>By system</h2>",
-              '<p class="note">Medians over all runs of each system.</p>',
-              group_table(runs, "system", show),
-              "<h2>By speed</h2>", group_table(runs, "speed", show)]
+              '<p class="note">Medians over all runs of each system'
+              " (task metrics include non-identifiable runs; species"
+              " metrics only observable solutes).</p>",
+              group_table(runs_all, "system", show),
+              "<h2>By speed</h2>", group_table(runs_all, "speed", show)]
     if errors:
         parts += ["<h2>Failed runs</h2>",
                   _table(["task", "arm", "error"],
