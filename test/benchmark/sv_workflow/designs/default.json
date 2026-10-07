@@ -1,7 +1,7 @@
 {
   "name": "default",
   "description": "One-factor-at-a-time sweeps of every noise/geometry factor around a reference condition, for every system x speed, plus a crossed TI x RI x random-noise block",
-  "replicates": 5,
+  "replicates": 3,
   "base_seed": 20261004,
 
   "factors": {
@@ -20,11 +20,11 @@
   },
 
   "reference": {
-    "ti_noise": 0.05,
-    "ri_noise": 1,
-    "random_noise": 0.5,
+    "ti_noise": 0,
+    "ri_noise": 0,
+    "random_noise": 0,
     "local_noise": 0,
-    "baseline": 0.05,
+    "baseline": 0,
     "range_end": 0.12
   },
 
@@ -55,7 +55,7 @@
     "total_concentration": 1.0,
     "temperature": 20.0,
     "radial_resolution": 0.001,
-    "simpoints": 500,
+    "simpoints": 10000,
     "mesh": "ASTFEM",
     "grid": "Moving",
     "scans": 50,
@@ -65,7 +65,7 @@
     "min_scan_interval": 20,
     "max_run_hours": 30,
     "unreasonable_margin_hours": 10,
-    "od_limit_factor": 5.0,
+    "od_limit_factor": 15.0,
     "buffer_density": 0.998213,
     "buffer_viscosity": 1.0016
   },
@@ -87,9 +87,9 @@
     "simpoints": 200,
     "radial_grid": 0,
     "time_grid": 1,
-    "meniscus_range": 0.03,
-    "meniscus_points": 11,
-    "ir_max_iterations": 3,
-    "old_step3_noise": "step1"
+    "meniscus_range": 0.02,
+    "meniscus_points": 7,
+    "ir_max_iterations": 10,
+    "old_step3_noise": "mbbest"
   }
 }
