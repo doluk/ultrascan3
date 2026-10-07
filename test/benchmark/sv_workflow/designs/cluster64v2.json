@@ -1,0 +1,35 @@
+{
+  "name": "cluster64v2",
+  "description": "cluster64 with the realistic scan schedule (first scan after acceleration, last when the slowest solute reaches the bottom x 1.2, cap 30 h) and fewer noise levels: TI 4, RI 4, random 4, baseline 3; all data-range ends, 3 replicates",
+  "inherit": "cluster64.json",
+  "replicates": 3,
+
+  "factors": {
+    "ti_noise":     [0, 0.05, 0.25, 1.0],
+    "ri_noise":     [0, 1, 5, 25],
+    "random_noise": [0.25, 0.5, 2, 5],
+    "baseline":     [0, 0.05, 1.0],
+    "range_end":    [0.03, 0.06, 0.12, 0.25]
+  },
+
+  "blocks": [
+    {
+      "name": "oat",
+      "type": "one_at_a_time",
+      "crossed": ["system", "speed"],
+      "vary": ["ti_noise", "ri_noise", "random_noise", "baseline",
+               "range_end"]
+    },
+    {
+      "name": "noise_interaction",
+      "type": "factorial",
+      "crossed": ["system", "speed", "ti_noise", "ri_noise", "random_noise"],
+      "levels": {
+        "speed": [11000, 48000],
+        "ti_noise": [0, 0.25, 1.0],
+        "ri_noise": [0, 5, 25],
+        "random_noise": [0.5, 2]
+      }
+    }
+  ]
+}

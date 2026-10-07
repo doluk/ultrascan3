@@ -89,6 +89,7 @@ Systems (`svbench/systems.py`; s in S / f/f0 / fraction):
 | `designs/default.json` | One-factor-at-a-time sweeps of every noise and range factor around the reference, for every system × speed, plus a crossed TI × RI × random-noise block (3 speeds) | 5083 | 25 415 |
 | `designs/full_factorial.json` | Every combination of all levels | 5 503 680 | 27 518 400 |
 | `designs/cluster64.json` | Reduced for 64 cores: 6 speeds (5k, 11k, 23k, 36k, 48k, 60k), local noise fixed at 0, sweeps of TI/RI/random/baseline/range, crossed TI {0, 0.1, 0.5} × RI {0, 2, 10} × random {0.5, 2} at 11k and 48k rpm, 7×7 meniscus/bottom grid, 3 replicates (≈ 3 core-h per task) | 2496 | 7488 (×3) |
+| `designs/cluster64v2.json` | cluster64 with the realistic scan schedule and fewer noise levels: TI {0, 0.05, 0.25, 1}, RI {0, 1, 5, 25}, random {0.25, 0.5, 2, 5}, baseline {0, 0.05, 1}, all 4 data-range ends, 3 replicates | 1638 | 4914 (×3) |
 | `designs/smoke.json` | Pilot: 2 systems × 2 speeds × 2 TI levels, 5×5 meniscus/bottom grid, 2 replicates | 8 | 16 |
 
 Reference condition: TI 0.05, RI 1, random 0.5, local 0, baseline 0.05,
