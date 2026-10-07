@@ -25,7 +25,7 @@
       "type": "factorial",
       "crossed": ["system", "speed", "ti_noise", "ri_noise", "random_noise"],
       "levels": {
-        "speed": [11000, 48000],
+        "speed": [23000, 48000],
         "ti_noise": [0, 0.25, 1.0],
         "ri_noise": [0, 5, 25],
         "random_noise": [0.5, 2]
