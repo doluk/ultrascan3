@@ -148,7 +148,7 @@ def geometry(task, design):
     left = m_edit + edt["data_left_gap"]
     right = b_edit - task["range_end"]
     t_first, t_last = physics.scan_schedule(
-        systems.solutes(task["system"]), int(task["speed"]), m_true, right,
+        systems.solutes(task["system"]), int(task["speed"]), m_true, b_true,
         sim)
     return m_true, b_true, m_edit, b_edit, left, right, t_first, t_last
 

@@ -34,31 +34,23 @@ def boundary_time(s_sv, rpm, meniscus, radius):
     return math.log(radius / meniscus) / (s_sv * 1.0e-13 * omega2(rpm))
 
 
-def scan_schedule(solutes, rpm, meniscus, right_edge, sim):
+def scan_schedule(solutes, rpm, meniscus, bottom, sim):
     """Times (s) of the first and last scan for one run.
 
-    The last scan is taken when the boundary of the slowest solute has
-    crossed `last_scan_fraction` of the data range, the first when the
-    boundary of the fastest solute has crossed `first_scan_fraction` of it.
-    Times are clipped to [acceleration + first_scan_min_delay,
-    max_run_hours] and the scans are kept at least `min_scan_interval`
-    seconds apart, so slow solutes at low speed yield diffusion-dominated
-    data and fast solutes at high speed may pellet before the first scan,
-    as in a real experiment with a fixed scan rate.
+    The first scan is taken right after the rotor reaches speed:
+    rpm / acceleration + `first_scan_delay` (1 s).  The last scan is taken
+    when the boundary of the slowest solute has reached the bottom, times
+    `last_scan_safety` (1.1) to let its diffusion-broadened boundary clear
+    the data range:  t_last = safety * ln(bottom/meniscus) / (s_min w^2).
+    t_last is capped at `max_run_hours` (very slow solutes at low speed)
+    and kept at least (scans-1) * `min_scan_interval` after the first scan
+    (very fast solutes at high speed).
     """
-    span = right_edge - meniscus
     s_lo = min(x["s"] for x in solutes)
-    s_hi = max(x["s"] for x in solutes)
-    accel_time = rpm / float(sim["acceleration"])
-    t_min = accel_time + sim["first_scan_min_delay"]
-    t_max = sim["max_run_hours"] * 3600.0
-
-    t_last = boundary_time(s_lo, rpm, meniscus,
-                           meniscus + sim["last_scan_fraction"] * span)
-    t_first = boundary_time(s_hi, rpm, meniscus,
-                            meniscus + sim["first_scan_fraction"] * span)
-    t_first = min(max(t_first, t_min), t_max)
-    t_last = min(t_last, t_max)
+    t_first = rpm / float(sim["acceleration"]) + sim["first_scan_delay"]
+    t_last = sim["last_scan_safety"] * boundary_time(s_lo, rpm, meniscus,
+                                                     bottom)
+    t_last = min(t_last, sim["max_run_hours"] * 3600.0)
     t_last = max(t_last, t_first + (sim["scans"] - 1)
                  * sim["min_scan_interval"])
     return round(t_first), round(t_last)
