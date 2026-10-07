@@ -9,7 +9,9 @@ data-range end, geometry of the given replicate).  Output:
   OUT/summary.csv     per system x speed x solute:  scan times, boundary
                       positions, displacement, diffusion width, flags
   OUT/index.html      all figures and the table in one page
-  OUT/sims/...        the simulated AUC/edit files (with --keep)
+  OUT/raw/<system>/<speed>rpm/<runID>/
+                      with --keep:  the raw noise-free simulator output
+                      (AUC, time state, full-column edit)
 """
 
 import base64
@@ -207,10 +209,18 @@ def preview(design, cfg, outdir, range_end=None, replicate=0,
     with open(os.path.join(outdir, "index.html"), "w") as fh:
         fh.write("\n".join(parts))
     if keep:
-        dest = os.path.join(outdir, "sims")
+        # Raw simulator output (AUC, time state, the simulator's own
+        # full-column edit) as OUT/raw/<system>/<speed>rpm/<runID>/
+        dest = os.path.join(outdir, "raw")
         if os.path.exists(dest):
             shutil.rmtree(dest)
-        shutil.copytree(root, dest)
+        for task, data, truth, obs, err in results:
+            if err:
+                continue
+            src = os.path.join(root, task["task"], "sim")
+            for run in os.listdir(src):
+                shutil.copytree(os.path.join(src, run), os.path.join(
+                    dest, task["system"], "%drpm" % task["speed"], run))
     shutil.rmtree(root, ignore_errors=True)
     nfail = sum(1 for x in results if x[4])
     print("%d combinations, %d failed -> %s"

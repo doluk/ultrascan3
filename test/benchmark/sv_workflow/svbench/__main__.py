@@ -106,7 +106,8 @@ def main(argv=None):
     p.add_argument("--jobs", type=int, default=4,
                    help="simulations in parallel")
     p.add_argument("--keep", action="store_true",
-                   help="keep the simulated AUC/edit files in OUTDIR/sims")
+                   help="keep the raw simulated data (AUC, time state, "
+                        "edit) in OUTDIR/raw/<system>/<speed>rpm/")
 
     p = sub.add_parser("check", help="can the configured programs start "
                        "on this node?  (exit 1 if not)")
