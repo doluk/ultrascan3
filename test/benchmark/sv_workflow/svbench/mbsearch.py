@@ -129,14 +129,20 @@ class Grid(object):
 # --------------------------------------------------------------------------
 
 def descend(g, p):
+    """Descent from p.  Ends when the best evaluated point (ties broken by
+    grid order, as the estimators do) has its complete 3x3:  with equal
+    RMSDs the point descent stops at need not be that point."""
     while True:
         for q in g.nbhd(p):
             g(*q)
         q = min(g.nbhd(p), key=lambda x: (g.known[x], x))
         if g.known[q] < g.known[p]:
             p = q
-        else:
-            return p
+            continue
+        b = g.best()
+        if g.nbhd_known(b):
+            return b
+        p = b
 
 
 def _next_line(g, axis):
@@ -259,6 +265,8 @@ def _quad(g, b):
 
 def estimate(g, est):
     b = g.best()
+    if not g.nbhd_known(b):
+        raise RuntimeError("3x3 around the best point is incomplete")
     if est == "best":
         return g.meni[b[0]], g.bott[b[1]]
     if est == "legacy":
@@ -373,9 +381,15 @@ def _write(path, rows, head=None):
 def run(outdir, dest, check=True):
     os.makedirs(dest, exist_ok=True)
     rows = []
-    mismatch = 0
+    mismatch = skipped = 0
     for path, r in load(outdir):
-        rr, ref = replay(r)
+        try:
+            rr, ref = replay(r)
+        except (ValueError, RuntimeError, KeyError,
+                ZeroDivisionError) as exc:
+            skipped += 1
+            print("skipped %s: %s" % (path, exc))
+            continue
         rows += rr
         fm = r.get("fit_mb")
         if check and fm and (abs(round(ref[0], 5) - fm["meniscus"]) > 1.5e-5
@@ -417,10 +431,10 @@ def run(outdir, dest, check=True):
                                         strategy=s, **_summ(sr)))
     _write(os.path.join(dest, "mbsearch_factors.csv"), fac)
 
-    print("%d runs (task x arm), grid %s; replay mismatches %d -> %s"
-          % (len(rows) // len(STRATEGIES),
-             ", ".join(sorted(set(r["grid"] for r in rows))), mismatch,
-             dest))
+    print("%d runs (task x arm), grid %s; replay mismatches %d, skipped %d"
+          " -> %s" % (len(rows) // len(STRATEGIES),
+                      ", ".join(sorted(set(r["grid"] for r in rows))),
+                      mismatch, skipped, dest))
     for arm in arms:
         sa = [x for x in summ if x["arm"] == arm]
         print("\n%s (build %s, workflow %s), %d runs"
