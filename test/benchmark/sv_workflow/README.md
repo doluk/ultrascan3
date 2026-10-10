@@ -298,8 +298,12 @@ python3 -m svbench mbsearch $SCRATCH/svbench --out mbsearch
     (`found_min`, `dist_min` in grid steps), and the error of each
     estimator against the truth (`*_err_*`) and against the full-grid
     legacy fit (`*_dref_*`).
-  - `mbsearch_summary.csv`: the same per strategy.
-  - `mbsearch_factors.csv`: the same per level of each factor and arm.
+  - `mbsearch_summary.csv`: the same per arm × strategy.
+  - `mbsearch_factors.csv`: the same per arm × factor level × strategy.
+
+  All statistics are per arm (`main_old`, `main_new`, `branch_old`,
+  `branch_new`, with `build` and `workflow` as columns), because the arms
+  analyse the same data and must not be pooled.
 
 The replay counts evaluations, not wall time. The stored grids are 7×7
 (cluster designs); the saving on the production 11×11 grid is larger.

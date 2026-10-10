@@ -42,10 +42,13 @@ and the best point b (all use the in-bounds 3x3 around b):
 Output (DEST):
   mbsearch_runs.csv     task x arm x strategy:  evaluations, whether the
                         global grid minimum was found, estimator errors
-  mbsearch_summary.csv  strategy x estimator:  evaluation statistics,
-                        error quantiles against the truth and the
-                        difference to the full-grid legacy estimate
-  mbsearch_factors.csv  as summary, per level of each task factor
+  mbsearch_summary.csv  arm x strategy (estimators as columns):
+                        evaluation statistics, error quantiles against
+                        the truth and the difference to the full-grid
+                        legacy estimate
+  mbsearch_factors.csv  as summary, per arm and level of each task factor
+All statistics are per arm (main_old, main_new, branch_old, branch_new):
+the arms analyse the same data, so they are never pooled.
 """
 
 import csv
@@ -56,7 +59,7 @@ import os
 
 import numpy as np
 
-from .design import FACTORS
+from .design import ARMS, FACTORS
 
 STRATEGIES = ["full", "lines", "lines_fill", "line_descent", "descent"]
 ESTIMATORS = ["legacy", "local", "none", "quad", "best"]
@@ -288,7 +291,9 @@ def replay(run):
         g = Grid(pts)
         STRATEGY_FN[s](g)
         b = g.best()
-        row = {"task": t["task"], "arm": run["arm"], "strategy": s,
+        row = {"task": t["task"], "arm": run["arm"],
+               "build": run.get("build", ""),
+               "workflow": run.get("workflow", ""), "strategy": s,
                "grid": "%dx%d" % (g.nm, g.nb), "n_grid": g.nm * g.nb,
                "n_eval": len(g.known),
                "found_min": g.known[b] == gmin,
@@ -384,35 +389,49 @@ def run(outdir, dest, check=True):
         return 1
     _write(os.path.join(dest, "mbsearch_runs.csv"), rows)
 
+    arms = sorted(set(r["arm"] for r in rows),
+                  key=lambda a: (ARMS.index(a) if a in ARMS else len(ARMS),
+                                 a))
+
+    def head(arm):
+        x = next(r for r in rows if r["arm"] == arm)
+        return {"arm": arm, "build": x["build"], "workflow": x["workflow"]}
+
     summ = []
-    for s in STRATEGIES:
-        sr = [r for r in rows if r["strategy"] == s]
-        summ.append(dict({"strategy": s}, **_summ(sr)))
+    for arm in arms:
+        for s in STRATEGIES:
+            sr = [r for r in rows if r["arm"] == arm and r["strategy"] == s]
+            if sr:
+                summ.append(dict(head(arm), strategy=s, **_summ(sr)))
     _write(os.path.join(dest, "mbsearch_summary.csv"), summ)
 
     fac = []
-    for f in FACTORS + ["arm"]:
-        levels = sorted(set(r[f] for r in rows), key=str)
-        for lv in levels:
-            for s in STRATEGIES:
-                sr = [r for r in rows if r["strategy"] == s and r[f] == lv]
-                if sr:
-                    fac.append(dict({"factor": f, "level": lv,
-                                     "strategy": s}, **_summ(sr)))
+    for arm in arms:
+        ar = [r for r in rows if r["arm"] == arm]
+        for f in FACTORS:
+            for lv in sorted(set(r[f] for r in ar), key=str):
+                for s in STRATEGIES:
+                    sr = [r for r in ar if r["strategy"] == s and r[f] == lv]
+                    if sr:
+                        fac.append(dict(head(arm), factor=f, level=lv,
+                                        strategy=s, **_summ(sr)))
     _write(os.path.join(dest, "mbsearch_factors.csv"), fac)
 
-    nruns = len(rows) // len(STRATEGIES)
     print("%d runs (task x arm), grid %s; replay mismatches %d -> %s"
-          % (nruns, ", ".join(sorted(set(r["grid"] for r in rows))),
-             mismatch, dest))
-    print("%-13s %7s %7s %7s %9s   %s" % ("strategy", "n_mean", "n_p95",
-                                         "n_max", "found_min",
-                                         "|men err| p95 (um): "
-                                         + " ".join(ESTIMATORS)))
-    for s in summ:
-        print("%-13s %7.1f %7.1f %7d %9.3f   %s" % (
-            s["strategy"], s["n_eval_mean"], s["n_eval_p95"],
-            s["n_eval_max"], s["found_min"],
-            " ".join("%6.1f" % (1e4 * s["men_abserr_p95_" + e])
-                     for e in ESTIMATORS)))
+          % (len(rows) // len(STRATEGIES),
+             ", ".join(sorted(set(r["grid"] for r in rows))), mismatch,
+             dest))
+    for arm in arms:
+        sa = [x for x in summ if x["arm"] == arm]
+        print("\n%s (build %s, workflow %s), %d runs"
+              % (arm, sa[0]["build"], sa[0]["workflow"], sa[0]["runs"]))
+        print("%-13s %7s %7s %7s %9s   %s" % (
+            "strategy", "n_mean", "n_p95", "n_max", "found_min",
+            "|men err| p95 (um): " + " ".join(ESTIMATORS)))
+        for x in sa:
+            print("%-13s %7.1f %7.1f %7d %9.3f   %s" % (
+                x["strategy"], x["n_eval_mean"], x["n_eval_p95"],
+                x["n_eval_max"], x["found_min"],
+                " ".join("%6.1f" % (1e4 * x["men_abserr_p95_" + e])
+                         for e in ESTIMATORS)))
     return 0
