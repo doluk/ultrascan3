@@ -47,6 +47,8 @@ Output (DEST):
                         the truth and the difference to the full-grid
                         legacy estimate
   mbsearch_factors.csv  as summary, per arm and level of each task factor
+Summaries are given for all runs and for identifiable runs only
+(svbench.observe, as in the report), column "subset".
 All statistics are per arm (main_old, main_new, branch_old, branch_new):
 the arms analyse the same data, so they are never pooled.
 """
@@ -317,6 +319,8 @@ def replay(run):
             row["bot_dref_" + e] = bt - ref[1]
         for f in FACTORS:
             row[f] = t.get(f, "")
+        row["identifiable"] = run["metrics"].get("identifiable", "")
+        row["reasonable"] = run["metrics"].get("reasonable", "")
         row["bottom_edit_err"] = truth["edit_bottom"] - truth["bottom"]
         row["meniscus_edit_err"] = truth["edit_meniscus"] - truth["meniscus"]
         rows.append(row)
@@ -378,11 +382,25 @@ def _write(path, rows, head=None):
         w.writerows(rows)
 
 
+def _sim_params(outdir):
+    meta = os.path.join(outdir, "design.json")
+    if os.path.isdir(outdir) and os.path.exists(meta):
+        with open(meta) as fh:
+            return json.load(fh)["simulation"]
+    return {"acceleration": 400.0}
+
+
 def run(outdir, dest, check=True):
+    from .aggregate import add_observability
     os.makedirs(dest, exist_ok=True)
+    simp = _sim_params(outdir)
     rows = []
     mismatch = skipped = 0
     for path, r in load(outdir):
+        try:
+            add_observability(r, simp)
+        except (KeyError, ValueError, TypeError) as exc:
+            print("no observability for %s: %s" % (path, exc))
         try:
             rr, ref = replay(r)
         except (ValueError, RuntimeError, KeyError,
@@ -411,41 +429,70 @@ def run(outdir, dest, check=True):
         x = next(r for r in rows if r["arm"] == arm)
         return {"arm": arm, "build": x["build"], "workflow": x["workflow"]}
 
+    def subsets(lst):
+        yield "all", lst
+        yield "identifiable", [r for r in lst if r["identifiable"] is True]
+
     summ = []
     for arm in arms:
-        for s in STRATEGIES:
-            sr = [r for r in rows if r["arm"] == arm and r["strategy"] == s]
-            if sr:
-                summ.append(dict(head(arm), strategy=s, **_summ(sr)))
+        ar = [r for r in rows if r["arm"] == arm]
+        for sub, sl in subsets(ar):
+            for s in STRATEGIES:
+                sr = [r for r in sl if r["strategy"] == s]
+                if sr:
+                    summ.append(dict(head(arm), subset=sub, strategy=s,
+                                     **_summ(sr)))
     _write(os.path.join(dest, "mbsearch_summary.csv"), summ)
 
     fac = []
     for arm in arms:
         ar = [r for r in rows if r["arm"] == arm]
-        for f in FACTORS:
-            for lv in sorted(set(r[f] for r in ar), key=str):
-                for s in STRATEGIES:
-                    sr = [r for r in ar if r["strategy"] == s and r[f] == lv]
-                    if sr:
-                        fac.append(dict(head(arm), factor=f, level=lv,
-                                        strategy=s, **_summ(sr)))
+        for sub, sl in subsets(ar):
+            for f in FACTORS:
+                for lv in sorted(set(r[f] for r in sl), key=str):
+                    for s in STRATEGIES:
+                        sr = [r for r in sl
+                              if r["strategy"] == s and r[f] == lv]
+                        if sr:
+                            fac.append(dict(head(arm), subset=sub,
+                                            factor=f, level=lv, strategy=s,
+                                            **_summ(sr)))
     _write(os.path.join(dest, "mbsearch_factors.csv"), fac)
 
     print("%d runs (task x arm), grid %s; replay mismatches %d, skipped %d"
           " -> %s" % (len(rows) // len(STRATEGIES),
                       ", ".join(sorted(set(r["grid"] for r in rows))),
                       mismatch, skipped, dest))
+    print("um = 1e-4 cm.  excess: RMSD of the best point found / grid "
+          "minimum - 1 (p95, %).\n|dfull|: difference to the full-grid "
+          "legacy fit (p95).  med/p95: absolute error against the truth.")
+    u = 1e4
     for arm in arms:
-        sa = [x for x in summ if x["arm"] == arm]
-        print("\n%s (build %s, workflow %s), %d runs"
-              % (arm, sa[0]["build"], sa[0]["workflow"], sa[0]["runs"]))
-        print("%-13s %7s %7s %7s %9s   %s" % (
-            "strategy", "n_mean", "n_p95", "n_max", "found_min",
-            "|men err| p95 (um): " + " ".join(ESTIMATORS)))
-        for x in sa:
-            print("%-13s %7.1f %7.1f %7d %9.3f   %s" % (
-                x["strategy"], x["n_eval_mean"], x["n_eval_p95"],
-                x["n_eval_max"], x["found_min"],
-                " ".join("%6.1f" % (1e4 * x["men_abserr_p95_" + e])
-                         for e in ESTIMATORS)))
+        for sub in ("all", "identifiable"):
+            sa = [x for x in summ if x["arm"] == arm and x["subset"] == sub]
+            if not sa:
+                continue
+            print("\n%s (build %s, workflow %s), %s runs: %d"
+                  % (arm, sa[0]["build"], sa[0]["workflow"], sub,
+                     sa[0]["runs"]))
+            print("%-13s %6s %6s %7s | %-24s | %-24s | %s" % (
+                "", "n", "found", "excess", "meniscus legacy (um)",
+                "meniscus none (um)", "bottom legacy (um)"))
+            print("%-13s %6s %6s %7s | %7s %7s %8s | %7s %7s %8s | "
+                  "%7s %7s %8s" % (("strategy", "mean", "min", "p95 %")
+                                   + ("med", "p95", "|dfull|") * 3))
+            for x in sa:
+                print("%-13s %6.1f %6.3f %7.3f | %7.1f %7.1f %8.1f | "
+                      "%7.1f %7.1f %8.1f | %7.1f %7.1f %8.1f" % (
+                          x["strategy"], x["n_eval_mean"], x["found_min"],
+                          100 * x["rmsd_excess_p95"],
+                          u * x["men_abserr_median_legacy"],
+                          u * x["men_abserr_p95_legacy"],
+                          u * x["men_dref_p95_legacy"],
+                          u * x["men_abserr_median_none"],
+                          u * x["men_abserr_p95_none"],
+                          u * x["men_dref_p95_none"],
+                          u * x["bot_abserr_median_legacy"],
+                          u * x["bot_abserr_p95_legacy"],
+                          u * x["bot_dref_p95_legacy"]))
     return 0

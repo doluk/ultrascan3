@@ -301,6 +301,11 @@ python3 -m svbench mbsearch $SCRATCH/svbench --out mbsearch
   - `mbsearch_summary.csv`: the same per arm × strategy.
   - `mbsearch_factors.csv`: the same per arm × factor level × strategy.
 
+  Every summary is given for all runs and for identifiable runs only
+  (column `subset`; see *Observability* below). The console shows the
+  median and p95 of the error against the truth, and the p95 of the
+  difference to the full-grid fit.
+
   All statistics are per arm (`main_old`, `main_new`, `branch_old`,
   `branch_new`, with `build` and `workflow` as columns), because the arms
   analyse the same data and must not be pooled.
