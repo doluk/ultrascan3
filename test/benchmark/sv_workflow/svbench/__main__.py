@@ -13,6 +13,7 @@
   python -m svbench reset-failed OUTDIR
   python -m svbench aggregate OUTDIR [--out DIR]
   python -m svbench report    SUMMARY_DIR [--out report.html]
+  python -m svbench mbsearch  OUTDIR [--out DIR]
 """
 
 import argparse
@@ -125,6 +126,12 @@ def main(argv=None):
 
     p = sub.add_parser("report", help="HTML report from aggregated CSV")
     p.add_argument("summary")
+    p.add_argument("--out", default=None)
+
+    p = sub.add_parser("mbsearch", help="replay adaptive meniscus/bottom "
+                       "searches on the stored full grids")
+    p.add_argument("outdir", help="result directory (OUT/<task>/<arm>.json)"
+                   " or a single result file")
     p.add_argument("--out", default=None)
 
     a = ap.parse_args(argv)
@@ -263,6 +270,11 @@ def main(argv=None):
     elif a.cmd == "report":
         from . import report
         report.report(a.summary, a.out or a.summary + "/report.html")
+
+    elif a.cmd == "mbsearch":
+        from . import mbsearch
+        return mbsearch.run(a.outdir, a.out or os.path.join(
+            a.outdir if os.path.isdir(a.outdir) else ".", "summary"))
     return 0
 
 

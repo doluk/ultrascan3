@@ -264,3 +264,42 @@ and `identifiable` to `runs.csv`.
 speed once without noise, with the benchmark's scan schedule and edit
 geometry. It writes one figure per system, `summary.csv` with scan
 times, boundary positions and flags, and `index.html` combining both.
+
+## Adaptive meniscus/bottom search (replay)
+
+The meniscus/bottom grid dominates the cost of an arm. `svbench mbsearch`
+tests whether fewer grid points give the same fit. It replays search
+strategies on the full grids already stored in the results
+(`fit_mb_grid`): a strategy requests points one at a time, and the replay
+returns the stored RMSD. No analysis is rerun.
+
+```bash
+python3 -m svbench mbsearch $SCRATCH/svbench --out mbsearch
+```
+
+- Strategies: `full`, `lines` (alternating meniscus/bottom line scans
+  until the best point and its 8 neighbours are known), `lines_fill` (line
+  scans until the best point lies on a scanned line in both directions,
+  then descent), `line_descent` (one meniscus line through the edit
+  bottom, then descent), and `descent` (descent from the edit values).
+  Descent moves to the best point of the 3×3 around the current point
+  until that point is the minimum of its complete 3×3.
+- Estimators, all using the 3×3 around the best evaluated point:
+  - `legacy`: weights 1/rmsd − 1/rmsd_max over the evaluated points. For
+    the full grid this is us_fit_meniscus; the replay checks it against
+    the stored `fit_mb`.
+  - `local`: rmsd_max over the 3×3.
+  - `none`: weights 1/rmsd.
+  - `quad`: vertex of a quadratic fitted to the 3×3.
+  - `best`: the best grid point.
+- Outputs:
+  - `mbsearch_runs.csv`: one row per task × arm × strategy, with the
+    number of evaluations, whether the global grid minimum was found
+    (`found_min`, `dist_min` in grid steps), and the error of each
+    estimator against the truth (`*_err_*`) and against the full-grid
+    legacy fit (`*_dref_*`).
+  - `mbsearch_summary.csv`: the same per strategy.
+  - `mbsearch_factors.csv`: the same per level of each factor and arm.
+
+The replay counts evaluations, not wall time. The stored grids are 7×7
+(cluster designs); the saving on the production 11×11 grid is larger.
