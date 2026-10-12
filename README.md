@@ -71,3 +71,29 @@ Run the compiled application ```LD_LIBRARY_PATH=/ultrascan3/lib:/qwt-6.1.5/lib /
 
 Note - subprocesses do not currently run in the container, so you must run any compiled application individually, e.g. `us_fematch`
 
+
+## Code style
+
+The style of the UltraScan III coding standards ([wiki](https://github.com/ehb54/ultrascan3/wiki/UltraScan-III-Coding-Standards))
+is encoded in `.clang-format` (clang-format 18) and enforced **on changed lines only**, by a pre-commit hook and the `Code Style` GitHub action.
+
+    sudo apt install clang-format-18 python3-pygments   # clang-format-18 includes git-clang-format
+    git config core.hooksPath .githooks                  # or: pre-commit install
+    scripts/check-format.sh --fix --staged               # format staged changes, then git add
+
+In addition to formatting, `scripts/check-conventions.py` checks changed code for `connect( a, &A::sig, b, &B::slot )`
+(not `SIGNAL`/`SLOT`; a justified exception is marked with `// NOLINT(us3-old-connect)`), a trailing newline and an include
+guard; new files must start with `//! \file <name>` and headers must use the guard `<NAME>_H` (`us_foo.h` -> `US_FOO_H`).
+Includes are sorted within each block. `nullptr` (not `NULL`) and `f()` (not `f( void )`) are enforced by clang-tidy (below).
+
+The *Code Style* workflow checks the lines added by a pull request:
+- **clang-format** (`.clang-format`) and `scripts/check-conventions.py` are *fixable*: findings show up as annotations, in the job summary and
+  (PRs from branches of this repository) as "Apply suggestion" comments; a failed run uploads `code-style-fixes.patch` (`git apply`), and
+  `/format` (below) applies the fixes. Locally: `scripts/check-format.sh --fix origin/main`.
+- **clang-tidy** (`.clang-tidy`) and **clazy** (`scripts/clazy-changed.py`, checks in `CLAZY_CHECKS`) only produce *annotations* and a job summary
+  (Qt6 compilation database of the `usbuildtest` image). Their automatic fixes can change the behaviour of the code, so it is up to the
+  developer to deal with the warnings. Set `TIDY_BLOCKING` / `CLAZY_BLOCKING` in the workflow to make findings fail the job.
+The *Static Analysis* workflow is independent (security/cppcheck only).
+
+Comment `/format` on a pull request (write access, branch in this repository) to let the bot apply the code style fixes to the changed lines
+and push them. Set the secret `FORMAT_PUSH_TOKEN` (PAT or app token) if the pushed commit should re-trigger the CI checks.
