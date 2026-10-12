@@ -9,7 +9,7 @@ unresolved and either became outdated (its lines were changed) or the current fi
 the suggested text.
 """
 MARKER = "### clang-format"
-import json, os, re, subprocess, sys
+import json, os, re, subprocess, sys, time
 
 QUERY = """
 query($owner:String!, $repo:String!, $pr:Int!, $after:String) {
@@ -31,8 +31,11 @@ def gh_graphql(query, **vars):
 
 
 def suggestion_text(body):
+    """Suggested replacement text; "" for a pure deletion ("Please remove the line(s)"); None if no suggestion."""
     m = re.search(r"```suggestion[^\n]*\n(.*?)```", body, re.S)
-    return None if m is None else m.group(1).rstrip("\n")
+    if m:
+        return m.group(1).rstrip("\n")
+    return "" if "Please remove the line(s)" in body else None
 
 
 def already_applied(root, t, suggestion):
@@ -44,12 +47,13 @@ def already_applied(root, t, suggestion):
     except OSError:
         return False
     first = (t["startLine"] or t["line"]) - 1
-    return "\n".join(lines[first:t["line"]]) == suggestion
+    return suggestion != "" and "\n".join(lines[first:t["line"]]) == suggestion
 
 
 def main():
     repo, pr, root = sys.argv[1], int(sys.argv[2]), sys.argv[3]
     owner, name = repo.split("/")
+    time.sleep(int(os.environ.get("RESOLVE_DELAY", "8")))   # GitHub marks threads outdated asynchronously after a push
     after, resolved = None, 0
     while True:
         vars = dict(owner=owner, repo=name, pr=pr)
@@ -58,12 +62,17 @@ def main():
         data = gh_graphql(QUERY, **vars)["data"]["repository"]["pullRequest"]["reviewThreads"]
         for t in data["nodes"]:
             c = (t["comments"]["nodes"] or [None])[0]
-            if t["isResolved"] or c is None or (c["author"] or {}).get("__typename") != "Bot":
+            if c is None:
                 continue
+            author = c["author"] or {}
+            is_bot = author.get("__typename") == "Bot" or str(author.get("login", "")).startswith("github-actions")
             sug = suggestion_text(c["body"])
-            if MARKER not in c["body"] or sug is None:
-                continue
-            if t["isOutdated"] or already_applied(root, t, sug):
+            take = (not t["isResolved"]) and is_bot and MARKER in c["body"] and sug is not None
+            done = take and (t["isOutdated"] or already_applied(root, t, sug))
+            print("thread %s:%s resolved=%s outdated=%s author=%s/%s clang-format-suggestion=%s -> %s" % (
+                t["path"], t["line"], t["isResolved"], t["isOutdated"], author.get("__typename"), author.get("login"),
+                take, "resolve" if done else "keep"))
+            if done:
                 gh_graphql(RESOLVE, id=t["id"])
                 resolved += 1
         if not data["pageInfo"]["hasNextPage"]:
