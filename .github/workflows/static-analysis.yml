@@ -72,9 +72,9 @@ jobs:
 
     env:
       CHANGED_FILES: ${{ needs.changed-files.outputs.cpp_files }}
-      # Security findings (clang-analyzer-*, bugprone-*) on changed lines are always shown as errors and
-      # reported first. Set to 'true' to make them fail the job; style findings never fail it.
-      TIDY_SECURITY_BLOCKING: 'false'
+      # clang-tidy findings (see .clang-tidy) on changed lines are annotated and suggested on the PR.
+      # Set to 'true' to make any such finding fail the job.
+      TIDY_BLOCKING: 'false'
 
     steps:
       - name: Checkout repository
@@ -262,39 +262,35 @@ jobs:
             echo '{"files": [], "summary": {"total_issues": 0, "files_with_issues": 0}}' > clang-tidy-results.json
           fi
 
-      - name: clang-tidy on changed lines (annotations and auto-fixes)
+      - name: clang-tidy on changed lines (annotations, summary and fix suggestions)
+        id: tidy
         if: env.SKIP_ANALYSIS != 'true' && github.event_name == 'pull_request'
-        continue-on-error: ${{ env.TIDY_SECURITY_BLOCKING != 'true' }}
-        run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          git fetch origin "${{ github.base_ref }}"
-          BASE=$(git merge-base HEAD "origin/${{ github.base_ref }}")
-          # applies the auto-fixable style fixes (modernize-*) to the worktree, annotates everything
-          scripts/run-clang-tidy-diff.sh --fix "$BASE" .
-          git diff > clang-tidy-fixes.patch
-          echo "Auto-fixable findings: $(grep -c '^@@' clang-tidy-fixes.patch || true) hunk(s)"
-
-      - name: Suggest clang-tidy fixes on the pull request
-        if: env.SKIP_ANALYSIS != 'true' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         continue-on-error: true
+        uses: cpp-linter/cpp-linter-action@v2
         env:
-          GH_TOKEN: ${{ github.token }}
-        # skips lines for which an open suggestion of the Code Style workflow already exists
-        run: python3 scripts/post-suggestions.py "${{ github.repository }}" "${{ github.event.pull_request.number }}" "${{ github.event.pull_request.head.sha }}" clang-tidy
-
-      - name: Upload clang-tidy fix patch
-        if: env.SKIP_ANALYSIS != 'true' && github.event_name == 'pull_request'
-        continue-on-error: true
-        uses: actions/upload-artifact@v7
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          path: clang-tidy-fixes.patch   # plain file (archive: false), named clang-tidy-fixes.patch
-          archive: false
-          if-no-files-found: ignore
+          version: '18'
+          style: ''                    # clang-format is checked by the Code Style workflow
+          tidy-checks: ''              # use .clang-tidy (security/correctness first, then style checks)
+          database: '.'                # compile_commands.json created by the CMake step above
+          lines-changed-only: true     # only lines added by the pull request
+          extensions: 'c,h,cpp,hpp,cc,hh,cxx'
+          ignore: 'us_somo|qwtplot3d|vcpkg|buildsys|doc|etc|pkg|us-build|somo|scripts|.github'
+          file-annotations: true
+          step-summary: true
+          tidy-review: ${{ github.event.pull_request.head.repo.full_name == github.repository }}   # fix suggestions; not possible on fork PRs
+          passive-reviews: true        # never approve / request changes
+          cache-enable: true
 
       - name: Restore worktree after fixes
         if: env.SKIP_ANALYSIS != 'true' && github.event_name == 'pull_request'
         continue-on-error: true
         run: git checkout -- .
+
+      - name: Fail on clang-tidy findings
+        if: env.SKIP_ANALYSIS != 'true' && github.event_name == 'pull_request' && env.TIDY_BLOCKING == 'true' && steps.tidy.outputs.clang-tidy-checks-failed != '0'
+        run: exit 1
 
       - name: Run Cppcheck Analysis
         if: env.SKIP_ANALYSIS != 'true'

@@ -40,15 +40,29 @@ jobs:
         run: |
           git fetch origin "${{ github.base_ref || 'main' }}"
           echo "sha=$(git merge-base HEAD "origin/${{ github.base_ref || 'main' }}")" >> "$GITHUB_OUTPUT"
-      - name: Check changed lines
-        id: check
-        continue-on-error: true
+      - name: clang-format on changed lines (annotations, summary and fix suggestions)
+        id: format
+        uses: cpp-linter/cpp-linter-action@v2
         env:
-          CLANG_FORMAT: clang-format-18
-          GIT_CLANG_FORMAT: git-clang-format-18
-        run: scripts/check-format.sh "${{ steps.base.outputs.sha }}"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          version: '18'
+          style: file                  # .clang-format
+          tidy-checks: '-*'            # clang-tidy runs in the Static Analysis workflow
+          lines-changed-only: true     # only lines added by the pull request
+          extensions: 'c,h,cpp,hpp,cc,hh,cxx'
+          ignore: 'us_somo|qwtplot3d|vcpkg|buildsys|doc|etc|pkg|us-build|somo|scripts|.github'
+          file-annotations: true
+          step-summary: true
+          format-review: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}   # suggestions; not possible on fork PRs
+          passive-reviews: true        # never approve / request changes
+          cache-enable: true
+      - name: Check conventions (connect syntax, guards, \file header, final newline)
+        id: conventions
+        continue-on-error: true
+        run: python3 scripts/check-conventions.py "${{ steps.base.outputs.sha }}"
       - name: Create fix patch
-        if: steps.check.outcome == 'failure'
+        if: steps.format.outputs.clang-format-checks-failed != '0' || steps.conventions.outcome == 'failure'
         env:
           CLANG_FORMAT: clang-format-18
           GIT_CLANG_FORMAT: git-clang-format-18
@@ -58,30 +72,17 @@ jobs:
           {
             echo "### Code style: fixes available"
             echo
-            echo "Download the \`code-style-fixes.patch\` artifact of this run and apply it with:"
-            echo '```'
-            echo "git apply code-style-fixes.patch"
-            echo '```'
-            echo "or run \`scripts/check-format.sh --fix origin/main\` locally. Suggestions are also posted on the pull request."
-            echo
-            echo '```diff'
-            head -c 60000 code-style-fixes.patch
-            echo '```'
+            echo "Download the \`code-style-fixes.patch\` artifact of this run and apply it with \`git apply code-style-fixes.patch\`,"
+            echo "run \`scripts/check-format.sh --fix origin/main\` locally, or comment \`/format\` on the pull request."
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload fix patch
-        if: steps.check.outcome == 'failure'
+        if: steps.format.outputs.clang-format-checks-failed != '0' || steps.conventions.outcome == 'failure'
         uses: actions/upload-artifact@v7
         with:
-          path: code-style-fixes.patch   # uploaded as a plain file (archive: false), named code-style-fixes.patch
+          path: code-style-fixes.patch   # uploaded as a plain file (archive: false)
           archive: false
-      - name: Suggest fixes on the pull request
-        if: steps.check.outcome == 'failure' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/post-suggestions.py "${{ github.repository }}" "${{ github.event.pull_request.number }}" "${{ github.event.pull_request.head.sha }}" code-style
       - name: Fail on style violations
-        if: steps.check.outcome == 'failure'
+        if: steps.format.outputs.clang-format-checks-failed != '0' || steps.conventions.outcome == 'failure'
         run: |
-          echo "Code style violations found. Apply the 'code-style-fixes.patch' artifact (git apply) or run scripts/check-format.sh --fix origin/main"
+          echo "Code style violations found. Apply code-style-fixes.patch, run scripts/check-format.sh --fix origin/main or comment /format on the PR."
           exit 1
