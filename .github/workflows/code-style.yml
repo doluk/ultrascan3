@@ -1,0 +1,162 @@
+name: Code Style
+# Job 1: clang-format + repo conventions (auto-fixable: suggestions, patch, /format).
+# Job 2: clang-tidy + clazy on the lines changed by the pull request (annotations only; the developer decides how to fix).
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - '**.c'
+      - '**.cc'
+      - '**.cpp'
+      - '**.cxx'
+      - '**.h'
+      - '**.hpp'
+      - '.clang-format'
+      - '.clang-tidy'
+      - 'scripts/clazy-changed.py'
+      - 'scripts/check-format.sh'
+      - 'scripts/check-conventions.py'
+      - '.github/workflows/code-style.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  clang-format:
+    name: clang-format (changed lines)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write   # fix suggestions on the PR (not available for fork PRs)
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Install clang-format 18 and pygments
+        run: sudo apt-get update && sudo apt-get install -y clang-format-18 python3-pygments
+      - name: Determine merge base
+        id: base
+        run: |
+          git fetch origin "${{ github.base_ref || 'main' }}"
+          echo "sha=$(git merge-base HEAD "origin/${{ github.base_ref || 'main' }}")" >> "$GITHUB_OUTPUT"
+      - name: clang-format on changed lines (annotations, summary and fix suggestions)
+        id: format
+        uses: cpp-linter/cpp-linter-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          version: '18'
+          style: file                  # .clang-format
+          tidy-checks: '-*'            # clang-tidy runs in the Static Analysis workflow
+          lines-changed-only: true     # only lines added by the pull request
+          extensions: 'c,h,cpp,hpp,cc,hh,cxx'
+          ignore: 'us_somo|qwtplot3d|vcpkg|buildsys|doc|etc|pkg|us-build|somo|scripts|.github'
+          file-annotations: true
+          step-summary: true
+          format-review: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}   # suggestions; not possible on fork PRs
+          passive-reviews: true        # never approve / request changes
+          cache-enable: true
+      - name: Check conventions (connect syntax, guards, \file header, final newline)
+        id: conventions
+        continue-on-error: true
+        run: python3 scripts/check-conventions.py "${{ steps.base.outputs.sha }}"
+      - name: Create fix patch
+        if: steps.format.outputs.clang-format-checks-failed != '0' || steps.conventions.outcome == 'failure'
+        env:
+          CLANG_FORMAT: clang-format-18
+          GIT_CLANG_FORMAT: git-clang-format-18
+        run: |
+          scripts/check-format.sh --fix "${{ steps.base.outputs.sha }}" || true
+          git diff > code-style-fixes.patch
+          {
+            echo "### Code style: fixes available"
+            echo
+            echo "Download the \`code-style-fixes.patch\` artifact of this run and apply it with \`git apply code-style-fixes.patch\`,"
+            echo "run \`scripts/check-format.sh --fix origin/main\` locally, or comment \`/format\` on the pull request."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload fix patch
+        if: steps.format.outputs.clang-format-checks-failed != '0' || steps.conventions.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          path: code-style-fixes.patch   # uploaded as a plain file (archive: false)
+          archive: false
+      - name: Fail on style violations
+        if: steps.format.outputs.clang-format-checks-failed != '0' || steps.conventions.outcome == 'failure'
+        run: |
+          echo "Code style violations found. Apply code-style-fixes.patch, run scripts/check-format.sh --fix origin/main or comment /format on the PR."
+          exit 1
+
+  clang-tidy-clazy:
+    name: clang-tidy and clazy (annotations only, Qt6)
+    runs-on: ubuntu-latest
+    container:
+      image: ehb1/usbuildtest:ubuntu24.04-qt6.10.0-qwt6.3.0
+    permissions:
+      contents: read
+      pull-requests: read   # list of changed files; findings are annotations only, nothing is posted or changed
+    env:
+      # 'true' makes findings fail the job (clang-tidy: any finding of .clang-tidy; clazy: any finding)
+      TIDY_BLOCKING: 'false'
+      CLAZY_BLOCKING: 'false'
+      CLAZY_CHECKS: 'level0,level1,qt6-deprecated-api-fixes'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Install tools and dependencies
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          apt-get update -qq
+          apt-get install -y -qq clazy clang-tidy-18 python3 libmysqlclient-dev libgl2ps-dev libarchive-dev pkg-config ninja-build
+      - name: Determine merge base
+        id: base
+        run: |
+          git fetch origin "${{ github.base_ref || 'main' }}"
+          echo "sha=$(git merge-base HEAD "origin/${{ github.base_ref || 'main' }}")" >> "$GITHUB_OUTPUT"
+      - name: Configure (compilation database only, no build)
+        run: |
+          (cd programs/us && sh revision.sh) || true
+          export QWTPATH="$QWTDIR"
+          export CMAKE_PREFIX_PATH="$QTDIR:$QWTDIR:${CMAKE_PREFIX_PATH:-}"
+          cmake -S . -B build-qt6 -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_STANDARD=17 \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DUSE_QT6=ON \
+            -DBUILD_DOCUMENTATION=OFF \
+            -DCMAKE_MODULE_PATH="$(pwd)/admin/cmake"
+          echo "compile database: $(jq length build-qt6/compile_commands.json 2>/dev/null || grep -c '"file"' build-qt6/compile_commands.json) entries"
+      - name: clang-tidy (annotations and summary, no fixes)
+        id: tidy
+        continue-on-error: true
+        uses: cpp-linter/cpp-linter-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          version: '18'
+          style: ''                    # clang-format runs in the job above
+          tidy-checks: ''              # use .clang-tidy
+          database: build-qt6
+          lines-changed-only: true     # only lines added by the pull request
+          extensions: 'c,h,cpp,hpp,cc,hh,cxx'
+          ignore: 'us_somo|qwtplot3d|vcpkg|buildsys|doc|etc|pkg|us-build|somo|scripts|.github'
+          file-annotations: true
+          step-summary: true
+          tidy-review: false           # clang-tidy and clazy findings are for the developer to judge: annotations only, no fixes
+          cache-enable: true
+      - name: Make sure the worktree is untouched
+        if: always()
+        run: git checkout -- .
+      - name: clazy (annotations and summary, no fixes)
+        id: clazy
+        continue-on-error: true
+        run: python3 scripts/clazy-changed.py "${{ steps.base.outputs.sha }}" build-qt6
+      - name: Fail on findings
+        if: (env.TIDY_BLOCKING == 'true' && steps.tidy.outputs.clang-tidy-checks-failed != '0') || (env.CLAZY_BLOCKING == 'true' && steps.clazy.outcome == 'failure')
+        run: exit 1

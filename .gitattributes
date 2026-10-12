@@ -1,0 +1,7 @@
+# Scripts executed by bash/python (pre-commit hook, CI) must keep LF line endings,
+# also on Windows checkouts with core.autocrlf=true ("set: pipefail: invalid option name").
+*.sh                      text eol=lf
+scripts/check-conventions.py text eol=lf
+.githooks/*               text eol=lf
+.clang-format             text eol=lf
+.clang-tidy               text eol=lf
