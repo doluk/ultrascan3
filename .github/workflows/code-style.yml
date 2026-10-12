@@ -30,6 +30,8 @@ jobs:
   clang-format:
     name: clang-format (changed lines)
     runs-on: ubuntu-latest
+    outputs:
+      format_clean: ${{ steps.result.outputs.clean }}
     permissions:
       contents: read
       pull-requests: write   # fix suggestions on the PR (not available for fork PRs)
@@ -85,6 +87,16 @@ jobs:
         with:
           path: code-style-fixes.patch   # uploaded as a plain file (archive: false)
           archive: false
+      - name: Record whether the formatting is clean
+        id: result
+        if: always()
+        run: |
+          if [ "${{ steps.format.outputs.clang-format-checks-failed }}" = "0" ]; then
+            echo "clean=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "clean=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=clang-tidy and clazy are waiting::They run on the final line numbers, so they start once the formatting is clean. Fix the formatting first (comment /format on the pull request)."
+          fi
       - name: Fail on style violations
         if: steps.format.outputs.clang-format-checks-failed != '0' || steps.conventions.outcome == 'failure'
         run: |
@@ -93,6 +105,10 @@ jobs:
 
   clang-tidy-clazy:
     name: clang-tidy and clazy (annotations only, Qt6)
+    needs: clang-format
+    # Formatting changes line numbers, so tidy/clazy findings are only reported once the formatting is clean:
+    # their annotations then stay on the right lines (a /format commit cannot move them afterwards).
+    if: ${{ always() && needs.clang-format.outputs.format_clean == 'true' }}
     runs-on: ubuntu-latest
     container:
       image: ehb1/usbuildtest:ubuntu24.04-qt6.10.0-qwt6.3.0
@@ -113,7 +129,7 @@ jobs:
           export DEBIAN_FRONTEND=noninteractive
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           apt-get update -qq
-          apt-get install -y -qq clazy clang-tidy-18 python3 libmysqlclient-dev libgl2ps-dev libarchive-dev pkg-config ninja-build
+          apt-get install -y -qq clazy clang-tidy-19 python3 libmysqlclient-dev libgl2ps-dev libarchive-dev pkg-config ninja-build
       - name: Determine merge base
         id: base
         run: |
@@ -138,7 +154,10 @@ jobs:
         continue-on-error: true
         run: |
           for f in $(git diff --name-only --diff-filter=AM "${{ steps.base.outputs.sha }}" -- 'gui/*.cpp' 'utils/*.cpp' 'programs/*.cpp' 'test/*.cpp'); do
-            err=$(clang-tidy-18 -p build-qt6 --quiet --checks='-*' "$f" 2>&1 | grep -m1 -E ' error: ' || true)
+            out=$(clang-tidy-19 -p build-qt6 --quiet --checks='-*' "$f" 2>&1 || true)
+            err=$(echo "$out" | grep -m1 -E ' error: ' || true)
+            echo "parse check $f: $(echo "$out" | grep -c -E ' error: ') error(s)"
+            echo "$out" | grep -E ' error: ' | head -3
             if [ -n "$err" ]; then
               echo "::warning file=$f,title=clang-tidy cannot parse this file::clang-analyzer-* checks are skipped. First error: $err"
             fi
@@ -150,7 +169,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          version: '18'
+          version: '19'                # newer clang-tidy: parses recent Qt headers better; clang-format stays on 18 (job above)
           style: ''                    # clang-format runs in the job above
           tidy-checks: ''              # use .clang-tidy
           database: build-qt6

@@ -117,7 +117,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if [ "${{ steps.fix.outputs.changed }}" = true ]; then
-            msg="Applied the code style fixes to the changed lines and pushed them to \`${{ steps.pr.outputs.head_ref }}\`."
+            msg="Applied the code style fixes to the changed lines and pushed them to \`${{ steps.pr.outputs.head_ref }}\`.
+
+          The *Code Style* checks for the new commit start only if it was pushed with a token that triggers workflows (secret \`FORMAT_PUSH_TOKEN\`); otherwise approve/re-run the pending *Code Style* run. clang-tidy and clazy run after that and annotate the final line numbers."
           else
             msg="Nothing to format: the changed lines already follow the code style."
           fi
