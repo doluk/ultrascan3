@@ -27,7 +27,7 @@ def system_include_args():
         m = re.search(r"#include <\.\.\.> search starts here:\n(.*?)\nEnd of search list", out, re.S)
         if m:
             dirs = [d.strip() for d in m.group(1).splitlines() if os.path.isdir(d.strip())]
-            return ["--extra-arg=-isystem" + d for d in dirs if "/c++/" in d or "/gcc/" in d]
+            return ["--extra-arg=-isystem" + d for d in dirs if "/c++/" in d]   # not the gcc intrinsics dir: it conflicts with clang's own
     return []
 
 
