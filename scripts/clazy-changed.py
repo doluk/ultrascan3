@@ -16,6 +16,21 @@ HDR = (".h", ".hpp")
 DIAG = re.compile(r"^(?P<file>[^\s:]+):(?P<line>\d+):(?P<col>\d+): warning: (?P<msg>.*) \[-Wclazy-(?P<check>[\w-]+)\]$")
 
 
+def system_include_args():
+    """clazy is built on an older LLVM that does not always find the newer libstdc++ of the image
+    (fatal error: 'type_traits' file not found): ask a compiler that does for its include search path."""
+    for cxx in ("g++", "clang++-18", "clang++"):
+        try:
+            out = subprocess.run([cxx, "-E", "-x", "c++", "-", "-v"], input="", capture_output=True, text=True).stderr
+        except OSError:
+            continue
+        m = re.search(r"#include <\.\.\.> search starts here:\n(.*?)\nEnd of search list", out, re.S)
+        if m:
+            dirs = [d.strip() for d in m.group(1).splitlines() if os.path.isdir(d.strip())]
+            return ["--extra-arg=-isystem" + d for d in dirs if "/c++/" in d or "/gcc/" in d]
+    return []
+
+
 def main():
     base, db = sys.argv[1], sys.argv[2]
     checks = sys.argv[3] if len(sys.argv) > 3 else os.environ.get("CLAZY_CHECKS", "level0,level1")
@@ -45,8 +60,10 @@ def main():
         print("clazy: nothing to analyse")
         return 0
 
+    extra = system_include_args()
+
     def run(unit):
-        r = subprocess.run(["clazy-standalone", "-p", db, "--checks=" + checks, unit], capture_output=True, text=True, errors="replace")
+        r = subprocess.run(["clazy-standalone", "-p", db, "--checks=" + checks] + extra + [unit], capture_output=True, text=True, errors="replace")
         return r.stdout + r.stderr
 
     findings, seen, failed = [], set(), []
