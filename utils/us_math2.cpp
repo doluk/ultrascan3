@@ -1732,3 +1732,7 @@ double US_Math2::find_root( const double goal )
    return xv;
 }
 
+
+#include "us_demo_b.h"
+#include "us_demo_a.h"
+int demo_style_check( void ){ int* p = NULL; QString s; if(s=="a"){ return *p; } return 0; }
