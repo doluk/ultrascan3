@@ -77,24 +77,24 @@ US_GA_Initialize::US_GA_Initialize() : US_Widgets()
    ct_nisols     = us_counter( 3, 0.0, 1000.0, 0.0 );
    ct_nisols->setSingleStep( 1 );
    ct_nisols->setEnabled( true );
-   connect( ct_nisols, SIGNAL( valueChanged(  double ) ),
-            this,      SLOT(   update_nisols( double ) ) );
+   connect( ct_nisols, &QwtCounter::valueChanged,
+            this,      &US_GA_Initialize::update_nisols );
 
    lb_wxbuck     = us_label( tr( "Width of s Bucket:" ) );
    lb_wxbuck->setAlignment( Qt::AlignVCenter | Qt::AlignLeft );
 
    ct_wxbuck     = us_counter( 3, 0.0, 10.0, 0.0 );
    ct_wxbuck->setSingleStep( 1 );
-   connect( ct_wxbuck, SIGNAL( valueChanged(  double ) ),
-            this,      SLOT(   update_wxbuck( double ) ) );
+   connect( ct_wxbuck, &QwtCounter::valueChanged,
+            this,      &US_GA_Initialize::update_wxbuck );
 
    lb_hybuck     = us_label( tr( "Height of f/f0 Bucket:" ) );
    lb_hybuck->setAlignment( Qt::AlignVCenter | Qt::AlignLeft );
 
    ct_hybuck     = us_counter( 3, 0.0, 1.0, 0.0 );
    ct_hybuck->setSingleStep( 1 );
-   connect( ct_hybuck, SIGNAL( valueChanged(  double ) ),
-            this,      SLOT(   update_hybuck( double ) ) );
+   connect( ct_hybuck, &QwtCounter::valueChanged,
+            this,      &US_GA_Initialize::update_hybuck );
 
    lb_info2      = us_banner( tr( "Pseudo-3D Controls" ) );
 
@@ -103,61 +103,61 @@ US_GA_Initialize::US_GA_Initialize() : US_Widgets()
 
    ct_resolu     = us_counter( 3, 0.0, 100.0, 90.0 );
    ct_resolu->setSingleStep( 1 );
-   connect( ct_resolu, SIGNAL( valueChanged( double ) ),
-            this,      SLOT( update_resolu( double ) ) );
+   connect( ct_resolu, &QwtCounter::valueChanged,
+            this,      &US_GA_Initialize::update_resolu );
 
    lb_xreso      = us_label( tr( "X Resolution:" ) );
    lb_xreso->setAlignment( Qt::AlignVCenter | Qt::AlignLeft );
 
    ct_xreso      = us_counter( 3, 10.0, 1000.0, 0.0 );
    ct_xreso->setSingleStep( 1 );
-   connect( ct_xreso,  SIGNAL( valueChanged( double ) ),
-            this,      SLOT( update_xreso( double ) ) );
+   connect( ct_xreso,  &QwtCounter::valueChanged,
+            this,      &US_GA_Initialize::update_xreso );
 
    lb_yreso      = us_label( tr( "Y Resolution:" ) );
    lb_yreso->setAlignment( Qt::AlignVCenter | Qt::AlignLeft );
 
    ct_yreso      = us_counter( 3, 10.0, 1000.0, 0.0 );
    ct_yreso->setSingleStep( 1 );
-   connect( ct_yreso,  SIGNAL( valueChanged( double ) ),
-            this,      SLOT( update_yreso( double ) ) );
+   connect( ct_yreso,  &QwtCounter::valueChanged,
+            this,      &US_GA_Initialize::update_yreso );
 
    lb_zfloor     = us_label( tr( "Z Visibility Percent:" ) );
    lb_zfloor->setAlignment( Qt::AlignVCenter | Qt::AlignLeft );
 
    ct_zfloor     = us_counter( 3, 50.0, 150.0, 1.0 );
    ct_zfloor->setSingleStep( 1 );
-   connect( ct_zfloor, SIGNAL( valueChanged( double ) ),
-            this,      SLOT( update_zfloor( double ) ) );
+   connect( ct_zfloor, &QwtCounter::valueChanged,
+            this,      &US_GA_Initialize::update_zfloor );
 
    lb_autlim     = us_label( tr( "Automatic Plot Limits" ) );
    lb_autlim->setAlignment( Qt::AlignVCenter | Qt::AlignLeft );
 
    us_checkbox( tr( "(unselect to override)             " ), ck_autlim, true );
-   connect( ck_autlim, SIGNAL( clicked() ),
-            this,       SLOT( select_autolim() ) );
+   connect( ck_autlim, &QAbstractButton::clicked,
+            this,       &US_GA_Initialize::select_autolim );
 
    lb_plxmin     = us_label( tr( "Plot Limit s Min:" ) );
    lb_plxmin->setAlignment( Qt::AlignVCenter | Qt::AlignLeft );
 
    ct_plxmin     = us_counter( 3, -10000.0, 10000.0, 0.0 );
    ct_plxmin->setSingleStep( 1 );
-   connect( ct_plxmin, SIGNAL( valueChanged( double ) ),
-            this,        SLOT( update_plxmin( double ) ) );
+   connect( ct_plxmin, &QwtCounter::valueChanged,
+            this,        &US_GA_Initialize::update_plxmin );
 
    lb_plxmax     = us_label( tr( "Plot Limit s Max:" ) );
    ct_plxmax     = us_counter( 3, -100.0, 10000.0, 0.0 );
    ct_plxmax->setSingleStep( 1 );
-   connect( ct_plxmax, SIGNAL( valueChanged( double ) ),
-            this,        SLOT( update_plxmax( double ) ) );
+   connect( ct_plxmax, &QwtCounter::valueChanged,
+            this,        &US_GA_Initialize::update_plxmax );
 
    lb_plymin     = us_label( tr( "Plot Limit f/f0 Min:" ) );
    lb_plymin->setAlignment( Qt::AlignVCenter | Qt::AlignLeft );
 
    ct_plymin     = us_counter( 3, 0.5, 50.0, 0.0 );
    ct_plymin->setSingleStep( 1 );
-   connect( ct_plymin, SIGNAL( valueChanged ( double ) ),
-            this,      SLOT(   update_plymin( double ) ) );
+   connect( ct_plymin, &QwtCounter::valueChanged,
+            this,      &US_GA_Initialize::update_plymin );
    
    lb_plymax     = us_label( tr( "Plot Limit f/f0 Max:" ) );
    lb_plymax->setAlignment( Qt::AlignVCenter | Qt::AlignLeft );
@@ -165,16 +165,16 @@ US_GA_Initialize::US_GA_Initialize() : US_Widgets()
    ct_plymax     = us_counter( 3, 1.0, 50.0, 1.0 );
    ct_plymax->setSingleStep( 1 );
    ct_plymax->setValue( 1.34567e+01 );
-   connect( ct_plymax, SIGNAL( valueChanged ( double ) ),
-            this,      SLOT(   update_plymax( double ) ) );
+   connect( ct_plymax, &QwtCounter::valueChanged,
+            this,      &US_GA_Initialize::update_plymax );
 
    lw_sbin_data = us_listwidget( );
-   connect( lw_sbin_data, SIGNAL( pressed(       const QModelIndex& ) ),
-            this,         SLOT(   sclick_sbdata( const QModelIndex& ) ) );
-   connect( lw_sbin_data, SIGNAL( doubleClicked( const QModelIndex& ) ),
-            this,         SLOT(   dclick_sbdata( const QModelIndex& ) ) );
-   connect( lw_sbin_data, SIGNAL( currentRowChanged( int )            ),
-            this,         SLOT(   newrow_sbdata(     int )            ) );
+   connect( lw_sbin_data, &QAbstractItemView::pressed,
+            this,         qOverload< const QModelIndex& >( &US_GA_Initialize::sclick_sbdata ) );
+   connect( lw_sbin_data, &QAbstractItemView::doubleClicked,
+            this,         &US_GA_Initialize::dclick_sbdata );
+   connect( lw_sbin_data, &QListWidget::currentRowChanged,
+            this,         &US_GA_Initialize::newrow_sbdata );
 
            attr_x      = 0;
            attr_y      = 1;
@@ -189,24 +189,28 @@ US_GA_Initialize::US_GA_Initialize() : US_Widgets()
    QGridLayout* gl_x_vbar = us_radiobutton( tr( "vbar" ), rb_x_vbar, false );
    QGridLayout* gl_x_D    = us_radiobutton( tr( "D"    ), rb_x_D,    false );
    QGridLayout* gl_x_f    = us_radiobutton( tr( "f"    ), rb_x_f,    false );
+   QGridLayout* gl_x_rh   = us_radiobutton( tr( "Rh"   ), rb_x_rh,   false );
    QGridLayout* gl_y_s    = us_radiobutton( tr( "s"    ), rb_y_s,    false );
    QGridLayout* gl_y_ff0  = us_radiobutton( tr( "ff0"  ), rb_y_ff0,  true  );
    QGridLayout* gl_y_mw   = us_radiobutton( tr( "mw"   ), rb_y_mw,   false );
    QGridLayout* gl_y_vbar = us_radiobutton( tr( "vbar" ), rb_y_vbar, false );
    QGridLayout* gl_y_D    = us_radiobutton( tr( "D"    ), rb_y_D,    false );
    QGridLayout* gl_y_f    = us_radiobutton( tr( "f"    ), rb_y_f,    false );
+   QGridLayout* gl_y_rh   = us_radiobutton( tr( "Rh"   ), rb_y_rh,   false );
    bg_x_axis->addButton( rb_x_s,    ATTR_S );
    bg_x_axis->addButton( rb_x_ff0,  ATTR_K );
    bg_x_axis->addButton( rb_x_mw,   ATTR_W );
    bg_x_axis->addButton( rb_x_vbar, ATTR_V );
    bg_x_axis->addButton( rb_x_D,    ATTR_D );
    bg_x_axis->addButton( rb_x_f,    ATTR_F );
+   bg_x_axis->addButton( rb_x_rh,   ATTR_R );
    bg_y_axis->addButton( rb_y_s,    ATTR_S );
    bg_y_axis->addButton( rb_y_ff0,  ATTR_K );
    bg_y_axis->addButton( rb_y_mw,   ATTR_W );
    bg_y_axis->addButton( rb_y_vbar, ATTR_V );
    bg_y_axis->addButton( rb_y_D,    ATTR_D );
    bg_y_axis->addButton( rb_y_f,    ATTR_F );
+   bg_y_axis->addButton( rb_y_rh,   ATTR_R );
    rb_x_s   ->setChecked( true  );
    rb_y_s   ->setEnabled( false );
    rb_y_ff0 ->setChecked( true  );
@@ -223,88 +227,85 @@ US_GA_Initialize::US_GA_Initialize() : US_Widgets()
    rb_y_vbar->setToolTip( tr( "Set Y axis to Partial Specific Volume"   ) );
    rb_y_D   ->setToolTip( tr( "Set Y axis to Diffusion Coefficient"     ) );
    rb_y_f   ->setToolTip( tr( "Set Y axis to Frictional Coefficient"    ) );
-   connect( bg_x_axis,   SIGNAL( buttonReleased( int ) ),
-            this,        SLOT(   select_x_axis ( int ) ) );
-   connect( bg_y_axis,   SIGNAL( buttonReleased( int ) ),
-            this,        SLOT(   select_y_axis ( int ) ) );
+   connect( bg_x_axis, &QButtonGroup::idReleased, this, &US_GA_Initialize::select_x_axis );
+   connect( bg_y_axis, &QButtonGroup::idReleased, this, &US_GA_Initialize::select_y_axis );
 
    dkdb_cntrls   = new US_Disk_DB_Controls(
          US_Settings::default_data_location() );
-   connect( dkdb_cntrls, SIGNAL( changed( bool ) ),
-            this,   SLOT( update_disk_db( bool ) ) );
+   connect( dkdb_cntrls, &US_Disk_DB_Controls::changed,
+            this,   &US_GA_Initialize::update_disk_db );
 
    pb_prefilt    = us_pushbutton( tr( "Select PreFilter" ) );
-   connect( pb_prefilt, SIGNAL( clicked() ),
-            this,       SLOT(   select_prefilt() ) );
+   connect( pb_prefilt, &QAbstractButton::clicked,
+            this,       &US_GA_Initialize::select_prefilt );
 
    le_prefilt    = us_lineedit  ( "", -1, true );
 
    pb_lddistr    = us_pushbutton( tr( "Load Distribution" ) );
-   connect( pb_lddistr, SIGNAL( clicked() ),
-            this,       SLOT(   load_distro() ) );
-
-   us_checkbox( tr( "1-Dimensional Plot" ), ck_1dplot, false );
-   connect( ck_1dplot,  SIGNAL( clicked() ),
-            this,       SLOT(   select_plot1d() ) );
+   connect( pb_lddistr, &QAbstractButton::clicked,
+            this,       &US_GA_Initialize::load_distro );
 
    pb_ldcolor    = us_pushbutton( tr( "Load Color File" ) );
-   connect( pb_ldcolor, SIGNAL( clicked() ),
-            this,       SLOT(   load_color() ) );
-
-   us_checkbox( tr( "2-Dimensional Plot" ), ck_2dplot, false );
-   connect( ck_2dplot, SIGNAL( clicked() ),
-            this,       SLOT(  select_plot2d() ) );
+   connect( pb_ldcolor, &QAbstractButton::clicked,
+            this,       &US_GA_Initialize::load_color );
 
    pb_refresh    = us_pushbutton( tr( "Refresh Plot" ), false );
-   connect( pb_refresh, SIGNAL( clicked() ),
-            this,       SLOT(   replot_data() ) );
+   connect( pb_refresh, &QAbstractButton::clicked,
+            this,       &US_GA_Initialize::replot_data );
 
-   us_checkbox( tr( "Pseudo 3-D Plot" ),    ck_3dplot, true  );
-   connect( ck_3dplot, SIGNAL( clicked() ),
-            this,       SLOT(  select_plot3d() ) );
+   plot_dim   = 3;          // default plot dimension
+   us_radiobutton( tr( "1-Dimensional Plot" ), rb_1dplot, false );
+   us_radiobutton( tr( "2-Dimensional Plot" ), rb_2dplot, false );
+   us_radiobutton( tr( "Pseudo 3-D Plot" ),    rb_3dplot, true  );
 
+   bg_plot = new QButtonGroup( this );
+   bg_plot->addButton( rb_1dplot, 1 );
+   bg_plot->addButton( rb_2dplot, 2 );
+   bg_plot->addButton( rb_3dplot, 3 );
+   connect( bg_plot, &QButtonGroup::idClicked, this, &US_GA_Initialize::select_plot_dim );
+   
    pb_mandrsb    = us_pushbutton( tr( "Manually Draw Bins" ),
                                   false );
-   connect( pb_mandrsb, SIGNAL( clicked() ),
-            this,       SLOT(   manDrawSb() ) );
+   connect( pb_mandrsb, &QAbstractButton::clicked,
+            this,       &US_GA_Initialize::manDrawSb );
 
    pb_ckovrlp    = us_pushbutton( tr( "Check for Bin Overlaps / Sort" ),
                                   false );
-   connect( pb_ckovrlp, SIGNAL( clicked()       ),
-            this,       SLOT(   checkOverlaps() ) );
+   connect( pb_ckovrlp, &QAbstractButton::clicked,
+            this,       &US_GA_Initialize::checkOverlaps );
 
    pb_autassb    = us_pushbutton( tr( "Autoassign Solute Bins" ),
                                   false );
-   connect( pb_autassb, SIGNAL( clicked() ),
-            this,       SLOT(   autoAssignSb() ) );
+   connect( pb_autassb, &QAbstractButton::clicked,
+            this,       &US_GA_Initialize::autoAssignSb );
 
    pb_resetsb    = us_pushbutton( tr( "Reset Solute Bins" ), false );
-   connect( pb_resetsb, SIGNAL( clicked() ),
-            this,       SLOT( resetSb() ) );
+   connect( pb_resetsb, &QAbstractButton::clicked,
+            this,       &US_GA_Initialize::resetSb );
 
    pb_reset      = us_pushbutton( tr( "Reset" ), false );
-   connect( pb_reset,   SIGNAL( clicked() ),
-            this,       SLOT(   reset() ) );
+   connect( pb_reset,   &QAbstractButton::clicked,
+            this,       &US_GA_Initialize::reset );
 
    pb_view       = us_pushbutton( tr( "View Statistics" ), false );
-   connect( pb_view,    SIGNAL( clicked() ),
-            this,       SLOT(   view()  ) );
+   connect( pb_view,    &QAbstractButton::clicked,
+            this,       &US_GA_Initialize::view );
 
    pb_save       = us_pushbutton( tr( "Save" ), false );
-   connect( pb_save,    SIGNAL( clicked() ),
-            this,       SLOT(   save() ) );
+   connect( pb_save,    &QAbstractButton::clicked,
+            this,       &US_GA_Initialize::save );
 
    pb_loadsb     = us_pushbutton( tr( "Load Solute Bins" ), false );
-   connect( pb_loadsb,  SIGNAL( clicked()   ),
-            this,       SLOT(   load_bins() ) );
+   connect( pb_loadsb,  &QAbstractButton::clicked,
+            this,       &US_GA_Initialize::load_bins );
 
    pb_help       = us_pushbutton( tr( "Help" ) );
-   connect( pb_help,    SIGNAL( clicked() ),
-            this,       SLOT(   help() ) );
+   connect( pb_help,    &QAbstractButton::clicked,
+            this,       &US_GA_Initialize::help );
 
    pb_close      = us_pushbutton( tr( "Close" ) );
-   connect( pb_close,   SIGNAL( clicked() ),
-            this,       SLOT(   close() ) );
+   connect( pb_close,   &QAbstractButton::clicked,
+            this,       &QWidget::close );
 
    te_status    = us_textedit( );
    te_status->setTextBackgroundColor( Qt::white );
@@ -346,29 +347,31 @@ US_GA_Initialize::US_GA_Initialize() : US_Widgets()
    spec->addWidget( lb_plymax,    s_row,   0, 1, 4 );
    spec->addWidget( ct_plymax,    s_row++, 4, 1, 4 );
    spec->addWidget( lw_sbin_data, s_row++, 0, 1, 8 );
-   spec->addWidget( lb_x_axis,    s_row,   0, 1, 2 );
-   spec->addLayout( gl_x_s,       s_row,   2, 1, 1 );
-   spec->addLayout( gl_x_ff0,     s_row,   3, 1, 1 );
-   spec->addLayout( gl_x_mw,      s_row,   4, 1, 1 );
-   spec->addLayout( gl_x_vbar,    s_row,   5, 1, 1 );
-   spec->addLayout( gl_x_D,       s_row,   6, 1, 1 );
-   spec->addLayout( gl_x_f,       s_row++, 7, 1, 1 );
-   spec->addWidget( lb_y_axis,    s_row,   0, 1, 2 );
-   spec->addLayout( gl_y_s,       s_row,   2, 1, 1 );
-   spec->addLayout( gl_y_ff0,     s_row,   3, 1, 1 );
-   spec->addLayout( gl_y_mw,      s_row,   4, 1, 1 );
-   spec->addLayout( gl_y_vbar,    s_row,   5, 1, 1 );
-   spec->addLayout( gl_y_D,       s_row,   6, 1, 1 );
-   spec->addLayout( gl_y_f,       s_row++, 7, 1, 1 );
+   spec->addWidget( lb_x_axis,    s_row,   0, 1, 1 );
+   spec->addLayout( gl_x_s,       s_row,   1, 1, 1 );
+   spec->addLayout( gl_x_ff0,     s_row,   2, 1, 1 );
+   spec->addLayout( gl_x_mw,      s_row,   3, 1, 1 );
+   spec->addLayout( gl_x_vbar,    s_row,   4, 1, 1 );
+   spec->addLayout( gl_x_D,       s_row,   5, 1, 1 );
+   spec->addLayout( gl_x_f,       s_row,   6, 1, 1 );
+   spec->addLayout( gl_x_rh,      s_row++, 7, 1, 1 );
+   spec->addWidget( lb_y_axis,    s_row,   0, 1, 1 );
+   spec->addLayout( gl_y_s,       s_row,   1, 1, 1 );
+   spec->addLayout( gl_y_ff0,     s_row,   2, 1, 1 );
+   spec->addLayout( gl_y_mw,      s_row,   3, 1, 1 );
+   spec->addLayout( gl_y_vbar,    s_row,   4, 1, 1 );
+   spec->addLayout( gl_y_D,       s_row,   5, 1, 1 );
+   spec->addLayout( gl_y_f,       s_row,   6, 1, 1 );
+   spec->addLayout( gl_y_rh,      s_row++, 7, 1, 1 );
    spec->addLayout( dkdb_cntrls,  s_row++, 0, 1, 8 );
    spec->addWidget( pb_prefilt,   s_row,   0, 1, 4 );
    spec->addWidget( le_prefilt,   s_row++, 4, 1, 4 );
    spec->addWidget( pb_lddistr,   s_row,   0, 1, 4 );
-   spec->addWidget( ck_1dplot,    s_row++, 4, 1, 4 );
+   spec->addWidget( rb_1dplot,    s_row++, 4, 1, 4 );
    spec->addWidget( pb_ldcolor,   s_row,   0, 1, 4 );
-   spec->addWidget( ck_2dplot,    s_row++, 4, 1, 4 );
+   spec->addWidget( rb_2dplot,    s_row++, 4, 1, 4 );
    spec->addWidget( pb_refresh,   s_row,   0, 1, 4 );
-   spec->addWidget( ck_3dplot,    s_row++, 4, 1, 4 );
+   spec->addWidget( rb_3dplot,    s_row++, 4, 1, 4 );
    spec->addWidget( pb_mandrsb,   s_row,   0, 1, 4 );
    spec->addWidget( pb_ckovrlp,   s_row++, 4, 1, 4 );
    spec->addWidget( pb_autassb,   s_row,   0, 1, 4 );
@@ -430,7 +433,6 @@ US_GA_Initialize::US_GA_Initialize() : US_Widgets()
    // set up variables and initial state of GUI
    soludata   = new US_SoluteData();
    sdistro    = &xy_distro;
-   plot_dim   = 3;          // default plot dimension
    attr_x     = 0;          // default X type: s
    attr_y     = 1;          // default Y type: f/f0
    attr_z     = 3;          // default Z (fixed) type:  vbar
@@ -442,7 +444,7 @@ US_GA_Initialize::US_GA_Initialize() : US_Widgets()
    binfpath   = US_Settings::resultDir();
    pick       = NULL;
    pickpen    = NULL;
-
+   
    reset();
 }
 
@@ -460,10 +462,7 @@ void US_GA_Initialize::reset( void )
 
    minmax     = false;
    zoom       = false;
-   ck_1dplot->setChecked(  plot_dim == 1 );  
-   ck_2dplot->setChecked(  plot_dim == 2 );
-   ck_3dplot->setChecked(  plot_dim == 3 );
-
+   select_plot_dim( plot_dim );
    nisols     = 0;
    nibuks     = 0;
    wxbuck     = 0.0;
@@ -682,17 +681,30 @@ DbgLv(1) << "manDr:    cblack" << cblack << "cwhite" << cwhite;
    pick->setRubberBand(    QwtPicker::RectRubberBand );
 
    // set up to capture position and dimensions of solute bin
-   connect( pick, SIGNAL(  mouseDown( const QPointF& ) ),
-            this, SLOT( getMouseDown( const QPointF& ) ) );
-   connect( pick, SIGNAL( mouseUp(    const QPointF& ) ),
-            this, SLOT( getMouseUp(   const QPointF& ) ) );
+   connect( pick, &US_PlotPicker::mouseDown,
+            this, &US_GA_Initialize::getMouseDown );
+   connect( pick, &US_PlotPicker::mouseUp,
+            this, &US_GA_Initialize::getMouseUp );
 
    pb_ckovrlp->setEnabled( false );
 
+   double xrange = qAbs( plxmax - plxmin );
+   double yrange = qAbs( plymax - plymin );
+   
+   if ( xrange == 0.0 )
+   {
+      xrange = 1.0e-1;
+   }
+   
+   if ( yrange <= 0.0 )
+   {
+      yrange = 1.0e-1;
+   }
+   
    //wxbuck       = ( plxmax - plxmin ) / 10.0;
    //hybuck       = ( plymax - plymin ) / 10.0;
-   wxbuck       = ( plxmax - plxmin ) * 0.08;
-   hybuck       = ( plymax - plymin ) * 0.2;
+   wxbuck       = xrange * 0.08;
+   hybuck       = yrange * 0.2;
    ct_wxbuck->disconnect( );
    ct_hybuck->disconnect( );
    int    rpwr  = qRound( log10( wxbuck ) );
@@ -707,10 +719,10 @@ DbgLv(1) << "manDr:    cblack" << cblack << "cwhite" << cwhite;
           rinc  = pow( 10.0, rpwr - 3 );
    hybuck       = qRound( hybuck / rinc ) * rinc;
    ct_hybuck->setValue( hybuck );
-   connect( ct_wxbuck, SIGNAL( valueChanged(  double ) ),
-            this,      SLOT(   update_wxbuck( double ) ) );
-   connect( ct_hybuck, SIGNAL( valueChanged(  double ) ),
-            this,      SLOT(   update_hybuck( double ) ) );
+   connect( ct_wxbuck, &QwtCounter::valueChanged,
+            this,      &US_GA_Initialize::update_wxbuck );
+   connect( ct_hybuck, &QwtCounter::valueChanged,
+            this,      &US_GA_Initialize::update_hybuck );
 
    manbuks      = true;
 }
@@ -756,6 +768,11 @@ void US_GA_Initialize::checkOverlaps( void )
 // Auto assign solute bins
 void US_GA_Initialize::autoAssignSb( void )
 {
+   if ( rb_x_rh->isChecked() || rb_y_rh->isChecked() )
+   {
+      QMessageBox::information( this, "Information", "Autoassign is disabled when Rh is selected.");
+      return;
+   }
    nisols      = ( nisols == 0 ) ? sdistro->size() : nisols;
    pc1         = NULL;
    lw_sbin_data->clear();
@@ -919,9 +936,7 @@ void US_GA_Initialize::plot_1dim( void )
 
    data_plot->replot();
 
-   pb_reset  ->setEnabled( true );
-   pb_autassb->setEnabled( false );
-   manbuks      = true;
+   check_draw_btn();
 }
 
 // plot data 2-D
@@ -1012,8 +1027,7 @@ void US_GA_Initialize::plot_2dim( void )
 
    data_plot->replot();
 
-   pb_reset->setEnabled( true );
-   pb_autassb->setEnabled( !monte_carlo );
+   check_draw_btn();
 }
 
 // plot data 3-D
@@ -1099,8 +1113,7 @@ DbgLv(1) << "pl3d:    cblack" << cblack << "cwhite" << cwhite;
 
    data_plot->replot();
 
-   pb_reset  ->setEnabled( true );
-   pb_autassb->setEnabled( !monte_carlo );
+   check_draw_btn();
 }
 
 // update pseudo-3d resolution factor
@@ -1207,84 +1220,36 @@ void US_GA_Initialize::select_autolim()
    ct_wxbuck->setSingleStep( rinc );
    ct_wxbuck->setValue( wxbuck );
    ct_hybuck->setValue( hybuck );
-   connect( ct_wxbuck, SIGNAL( valueChanged(  double ) ),
-            this,      SLOT(   update_wxbuck( double ) ) );
+   connect( ct_wxbuck, &QwtCounter::valueChanged,
+            this,      &US_GA_Initialize::update_wxbuck );
 }
 
-// select 1-dimensional plot
-void US_GA_Initialize::select_plot1d()
+void US_GA_Initialize::select_plot_dim( int id )
 {
-   plot_dim   = 1;
-   ck_2dplot->disconnect();
-   ck_3dplot->disconnect();
-   ck_2dplot->setChecked(  false );
-   ck_3dplot->setChecked(  false );
-
-   ck_1dplot->setEnabled(  false );
-   ck_2dplot->setEnabled(  true );
-   ck_3dplot->setEnabled(  true );
-
-   connect( ck_2dplot,  SIGNAL( clicked() ),
-            this,       SLOT( select_plot2d() ) );
-   connect( ck_3dplot,  SIGNAL( clicked() ),
-            this,       SLOT( select_plot3d() ) );
-
+   plot_dim = id;
    replot_data();
-
-   pb_mandrsb->setEnabled( false );
-   pb_autassb->setEnabled( false );
-   manbuks      = true;
 }
 
-// select 2-dimensional plot
-void US_GA_Initialize::select_plot2d()
+void US_GA_Initialize::check_draw_btn()
 {
-   plot_dim   = 2;
-   ck_1dplot->disconnect();
-   ck_3dplot->disconnect();
-   ck_1dplot->setChecked( false );
-   ck_3dplot->setChecked( false );
+   pb_reset  ->setEnabled( true );
+   if ( rb_x_rh->isChecked() || rb_y_rh->isChecked() )
+   {
+      pb_mandrsb->setEnabled( false );
+      pb_autassb->setEnabled( false );
+      return;
+   }
 
-   ck_1dplot->setEnabled( true );
-   ck_2dplot->setEnabled( false );
-   ck_3dplot->setEnabled( true );
-
-   connect( ck_1dplot,  SIGNAL( clicked() ),
-            this,       SLOT( select_plot1d() ) );
-   connect( ck_3dplot,  SIGNAL( clicked() ),
-            this,       SLOT( select_plot3d() ) );
-
-   replot_data();
-
-   pb_mandrsb->setEnabled( true );
-   pb_autassb->setEnabled( !monte_carlo );
-}
-
-// select 3-dimensional plot
-void US_GA_Initialize::select_plot3d()
-{
-   plot_dim   = 3;
-   ck_1dplot->disconnect();
-   ck_2dplot->disconnect();
-   ck_3dplot->disconnect();
-   ck_1dplot->setChecked( false );
-   ck_2dplot->setChecked( false );
-
-   ck_1dplot->setEnabled( true );
-   ck_2dplot->setEnabled( true );
-   ck_3dplot->setEnabled( false );
-
-   connect( ck_1dplot,  SIGNAL( clicked() ),
-            this,       SLOT( select_plot1d() ) );
-   connect( ck_2dplot,  SIGNAL( clicked() ),
-            this,       SLOT( select_plot2d() ) );
-   connect( ck_3dplot,  SIGNAL( clicked() ),
-            this,       SLOT( select_plot3d() ) );
-
-   replot_data();
-
-   pb_mandrsb->setEnabled( true );
-   pb_autassb->setEnabled( !monte_carlo );
+   if ( plot_dim == 1 )
+   {
+      pb_mandrsb->setEnabled( false );
+      pb_autassb->setEnabled( false );
+      manbuks      = true;
+   } else 
+   {
+      pb_mandrsb->setEnabled( true );
+      pb_autassb->setEnabled( !monte_carlo );
+   }
 }
 
 // load the solute distribution from a file or from DB
@@ -1312,8 +1277,8 @@ void US_GA_Initialize::load_distro()
    US_ModelLoader dialog( loadDB, mfilter, model, mdesc, pfilts );
    dialog.move( this->pos() + QPoint( 200, 200 ) );
 
-   connect( &dialog, SIGNAL(   changed( bool ) ),
-            this, SLOT( update_disk_db( bool ) ) );
+   connect( &dialog, &US_ModelLoader::changed,
+            this, &US_GA_Initialize::update_disk_db );
    QApplication::restoreOverrideCursor();
 
    QString         mfnam;
@@ -1396,6 +1361,7 @@ DbgLv(1) << "MC" << monte_carlo << " iters" << mc_iters;
          sol_sk.v  = model.components[ jj ].vbar20;
          sol_sk.d  = model.components[ jj ].D;
          sol_sk.f  = model.components[ jj ].f;
+         sol_sk.r  = model.components[ jj ].f / ( 6e-9 * M_PI * VISC_20W );
 
          sol_xy    = sol_sk;
          sol_xy.s  = ( attr_x == ATTR_S ) ? sol_sk.s : sol_xy.s;
@@ -1404,12 +1370,14 @@ DbgLv(1) << "MC" << monte_carlo << " iters" << mc_iters;
          sol_xy.s  = ( attr_x == ATTR_V ) ? sol_sk.v : sol_xy.s;
          sol_xy.s  = ( attr_x == ATTR_D ) ? sol_sk.d : sol_xy.s;
          sol_xy.s  = ( attr_x == ATTR_F ) ? sol_sk.f : sol_xy.s;
+         sol_xy.s  = ( attr_x == ATTR_R ) ? sol_sk.r : sol_xy.s;
          sol_xy.k  = ( attr_y == ATTR_S ) ? sol_sk.s : sol_xy.k;
          sol_xy.k  = ( attr_y == ATTR_K ) ? sol_sk.k : sol_xy.k;
          sol_xy.k  = ( attr_y == ATTR_W ) ? sol_sk.w : sol_xy.k;
          sol_xy.k  = ( attr_y == ATTR_V ) ? sol_sk.v : sol_xy.k;
          sol_xy.k  = ( attr_y == ATTR_D ) ? sol_sk.d : sol_xy.k;
          sol_xy.k  = ( attr_y == ATTR_F ) ? sol_sk.f : sol_xy.k;
+         sol_xy.k  = ( attr_y == ATTR_R ) ? sol_sk.r : sol_xy.k;
          sol_xy.si = sol_sk.s;
          sol_xy.ki = sol_sk.k;
 
@@ -1575,22 +1543,33 @@ void US_GA_Initialize::load_color()
 // set plot x,y limits
 void US_GA_Initialize::set_limits()
 {
-   double smin = 1.0e30;
-   double smax = -1.0e30;
-   double kmin = 1.0e30;
-   double kmax = -1.0e30;
-   double sinc;
-   double kinc;
-
-   resetSb();
-   sdistro     = &xy_distro;
-
-   soludata->setDistro( sdistro, attr_x, attr_y, attr_z );
-
+   
+   const QStringList labels = {"s", "f/f0", "MW", "vbar", "D", "f", "Rh" };
+   xa_title = anno_title( attr_x );
+   ya_title = anno_title( attr_y );
+   QString xlabel = labels.at( attr_x );
+   QString ylabel = labels.at( attr_y );
+   lb_plxmin->setText( tr( "Plot Limit " ) + xlabel + tr( " Minimum:" ) );
+   lb_plxmax->setText( tr( "Plot Limit " ) + xlabel + tr( " Maximum:" ) );
+   lb_wxbuck->setText( tr( "Width of "   ) + xlabel + tr( " Bucket:"  ) );
+   lb_plymin->setText( tr( "Plot Limit " ) + ylabel + tr( " Minimum:" ) );
+   lb_plymax->setText( tr( "Plot Limit " ) + ylabel + tr( " Maximum:" ) );
+   lb_hybuck->setText( tr( "Height of "  ) + ylabel + tr( " Bucket:"  ) );
+   
    data_plot->setAxisTitle( QwtPlot::xBottom, xa_title );
    data_plot->setAxisTitle( QwtPlot::yLeft,   ya_title );
 
+   resetSb();
+   sdistro     = &xy_distro;
+   soludata->setDistro( sdistro, attr_x, attr_y, attr_z );
+   
    // find min,max for S distributions
+   double smin = +1.0e99;
+   double smax = -1.0e99;
+   double kmin = +1.0e99;
+   double kmax = -1.0e99;
+   double sinc;
+   double kinc;
    for ( int jj = 0; jj < sdistro->size(); jj++ )
    {
       double sval = sdistro->at( jj ).s;
@@ -1617,52 +1596,52 @@ DbgLv(1) << "SL:  adj sinc kinc" << sinc << kinc;
 DbgLv(1) << "SL: adj smin,max" << smin << smax
  << "kmin,max" << kmin << kmax;
 
-   if ( auto_lim )
-   {  // Set auto limits
-      sinc        = pow( 10.0, qFloor( log10( smax ) ) - 3.0 );
-      kinc        = pow( 10.0, qFloor( log10( kmax ) ) - 3.0 );
+   ct_plxmin->setRange( smin, smax );
+   ct_plxmax->setRange( smin, smax );
+   ct_plxmin->setSingleStep( sinc / 10.0 );
+   ct_plxmax->setSingleStep( sinc / 10.0 );
+
+   ct_plymin->setRange( kmin, kmax );
+   ct_plymax->setRange( kmin, kmax );
+   ct_plymin->setSingleStep( kinc / 10.0 );
+   ct_plymax->setSingleStep( kinc / 10.0 );
+
+   sinc        = pow( 10.0, qFloor( log10( smax ) ) - 3.0 );
+   kinc        = pow( 10.0, qFloor( log10( kmax ) ) - 3.0 );
 DbgLv(1) << "SL: aut min,inc" << smax << sinc << kmax << kinc;
 
-      // Make x,y limits multiples of reasonable values
-      if ( equivalent( smin, smax, 0.001 ) )
-      {
-         smin       -= sinc;
-         smax       += sinc;
-      }
-      if ( equivalent( kmin, kmax, 0.001 ) )
-      {
-         kmin       -= kinc;
-         kmax       += kinc;
-      }
-      smin        = qFloor( smin / sinc ) * sinc;
-      smin        = ( smin < 0.0 ) ? ( smin - sinc ) : smin;
-      smax        = qFloor( smax / sinc ) * sinc + sinc;
-      smin        = ( attr_x != ATTR_S ) ?  qMax( smin, 0.0 ) : smin;
-      smin        = ( attr_x == ATTR_K ) ?  qMax( smin, 0.8 ) : smin;
-      kmin        = qFloor( kmin / kinc ) * kinc;
-      kmax        = qFloor( kmax / kinc ) * kinc + kinc;
-      kmin        = ( attr_y != ATTR_S ) ?  qMax( kmin, 0.0 ) : kmin;
-      kmin        = ( attr_y == ATTR_K ) ?  qMax( kmin, 0.8 ) : kmin;
+   // Make x,y limits multiples of reasonable values
+   if ( equivalent( smin, smax, 0.001 ) )
+   {
+      smin       -= sinc;
+      smax       += sinc;
+   }
+   if ( equivalent( kmin, kmax, 0.001 ) )
+   {
+      kmin       -= kinc;
+      kmax       += kinc;
+   }
+   smin        = qFloor( smin / sinc ) * sinc;
+   smin        = ( smin < 0.0 ) ? ( smin - sinc ) : smin;
+   smax        = qFloor( smax / sinc ) * sinc + sinc;
+   smin        = ( attr_x != ATTR_S ) ?  qMax( smin, 0.0 ) : smin;
+   smin        = ( attr_x == ATTR_K ) ?  qMax( smin, 0.8 ) : smin;
+   kmin        = qFloor( kmin / kinc ) * kinc;
+   kmax        = qFloor( kmax / kinc ) * kinc + kinc;
+   kmin        = ( attr_y != ATTR_S ) ?  qMax( kmin, 0.0 ) : kmin;
+   kmin        = ( attr_y == ATTR_K ) ?  qMax( kmin, 0.8 ) : kmin;
 DbgLv(1) << "SL: auto smin,max,inc" << smin << smax << sinc
  << "kmin,max,inc" << kmin << kmax << kinc;
 
-      ct_plxmin->setValue( smin );
-      ct_plxmax->setValue( smax );
-      ct_plymin->setValue( kmin );
-      ct_plymax->setValue( kmax );
+   ct_plxmin->setValue( smin );
+   ct_plxmax->setValue( smax );
+   ct_plymin->setValue( kmin );
+   ct_plymax->setValue( kmax );
 
-      plxmin      = smin;
-      plxmax      = smax;
-      plymin      = kmin;
-      plymax      = kmax;
-   }
-   else
-   {
-      plxmin      = ct_plxmin->value();
-      plxmax      = ct_plxmax->value();
-      plymin      = ct_plymin->value();
-      plymax      = ct_plymax->value();
-   }
+   plxmin      = smin;
+   plxmax      = smax;
+   plymin      = kmin;
+   plymax      = kmax;
 
    // Set bucket width,height values
    //wxbuck       = ( plxmax - plxmin ) / 20.0;
@@ -1685,10 +1664,10 @@ DbgLv(1) << "SL: auto smin,max,inc" << smin << smax << sinc
    ct_hybuck->setRange( 0.0, kmax );
    ct_hybuck->setSingleStep( kinc );
    ct_hybuck->setValue( hybuck );
-   connect( ct_wxbuck, SIGNAL( valueChanged(  double ) ),
-            this,      SLOT(   update_wxbuck( double ) ) );
-   connect( ct_hybuck, SIGNAL( valueChanged(  double ) ),
-            this,      SLOT(   update_hybuck( double ) ) );
+   connect( ct_wxbuck, &QwtCounter::valueChanged,
+            this,      &US_GA_Initialize::update_wxbuck );
+   connect( ct_hybuck, &QwtCounter::valueChanged,
+            this,      &US_GA_Initialize::update_hybuck );
 
    // Update help and status text
    QString hmsg = tr(
@@ -1978,12 +1957,12 @@ DbgLv(1) << "gain: sclick_sbd: sx" << sx << "rtbtn" << rtbtn;
       {
          removeSoluteBin( sx );
       }
-      connect( lw_sbin_data, SIGNAL( pressed(       const QModelIndex& ) ),
-               this,         SLOT(   sclick_sbdata( const QModelIndex& ) ) );
-      connect( lw_sbin_data, SIGNAL( doubleClicked( const QModelIndex& ) ),
-               this,         SLOT(   dclick_sbdata( const QModelIndex& ) ) );
-      connect( lw_sbin_data, SIGNAL( currentRowChanged( int )            ),
-               this,         SLOT(   newrow_sbdata(     int )            ) );
+      connect( lw_sbin_data, &QAbstractItemView::pressed,
+               this,         qOverload< const QModelIndex& >( &US_GA_Initialize::sclick_sbdata ) );
+      connect( lw_sbin_data, &QAbstractItemView::doubleClicked,
+               this,         &US_GA_Initialize::dclick_sbdata );
+      connect( lw_sbin_data, &QListWidget::currentRowChanged,
+               this,         &US_GA_Initialize::newrow_sbdata );
 
       int rx      = qMin( sx, ( nibuks - 1 ) );
       if ( rx >= 0 )
@@ -2187,8 +2166,8 @@ void US_GA_Initialize::select_prefilt( void )
 
    US_SelectRuns srdiag( dkdb_cntrls->db(), pfilts );
    srdiag.move( this->pos() + QPoint( 200, 200 ) );
-   connect( &srdiag, SIGNAL( dkdb_changed  ( bool ) ),
-            this,    SLOT(   update_disk_db( bool ) ) );
+   connect( &srdiag, &US_SelectRuns::dkdb_changed,
+            this,    &US_GA_Initialize::update_disk_db );
 
    if ( srdiag.exec() == QDialog::Accepted )
       nruns      = pfilts.size();
@@ -2258,88 +2237,52 @@ DbgLv(1) << "VIEW OPEN ERROR" << fname;
 // Select the coordinate for the horizontal axis
 void US_GA_Initialize::select_x_axis( int ival )
 {
-   const QString xlabs[] = {      "s", "f/f0",  "MW", "vbar", "D",  "f" };
-   const double  xvlos[] = {      1.0,   1.0,   2e+4,  0.60, 1e-8, 1e-8 };
-   const double  xvhis[] = {     10.0,   4.0,   1e+5,  0.80, 1e-7, 1e-7 };
-   const double  xmins[] = { -10000.0,   1.0,    0.0,  0.01, 1e-9, 1e-9 };
-   const double  xmaxs[] = {  10000.0,  50.0,  1e+10,  3.00, 1e-5, 1e-5 };
-   const double  xincs[] = {     0.01,  0.01, 1000.0,  0.01, 1e-9, 1e-9 };
-
-   attr_x         = ival;
-   xa_title       = anno_title( attr_x );
-   QString xlab   = xlabs[ attr_x ];
-   double  xmin   = xmins[ attr_x ];
-   double  xmax   = xmaxs[ attr_x ];
-   double  xinc   = xincs[ attr_x ];
-   lb_plxmin->setText( tr( "Plot Limit " ) + xlab + tr( " Minimum:" ) );
-   lb_plxmax->setText( tr( "Plot Limit " ) + xlab + tr( " Maximum:" ) );
-   lb_wxbuck->setText( tr( "Width of "   ) + xlab + tr( " Bucket:" ) );
-   ct_plxmin->setRange( xmin, xmax );
-   ct_plxmax->setRange( xmin, xmax );
-   ct_plxmin->setSingleStep( xinc );
-   ct_plxmax->setSingleStep( xinc );
-   ct_plxmin->setValue( xvlos[ attr_x ]  );
-   ct_plxmax->setValue( xvhis[ attr_x ]  );
-
+   attr_x = ival;
    rb_y_s   ->setEnabled( attr_x != ATTR_S );
    rb_y_ff0 ->setEnabled( attr_x != ATTR_K );
    rb_y_mw  ->setEnabled( attr_x != ATTR_W );
    rb_y_vbar->setEnabled( attr_x != ATTR_V );
    rb_y_D   ->setEnabled( attr_x != ATTR_D );
    rb_y_f   ->setEnabled( attr_x != ATTR_F );
+   rb_y_rh  ->setEnabled( attr_x != ATTR_R );
+
+   if ( sk_distro.empty() )
+   {
+      return;
+   }
 
    build_xy_distro();
-
    set_limits();
-
    replot_data();
 }
 
 // Select the coordinate for the vertical axis
 void US_GA_Initialize::select_y_axis( int ival )
 {
-   const QString ylabs[] = {      "s", "f/f0",  "MW", "vbar", "D",  "f" };
-   const double  yvlos[] = {      1.0,   1.0,   2e+4,  0.60, 1e-8, 1e-8 };
-   const double  yvhis[] = {     10.0,   4.0,   1e+5,  0.80, 1e-7, 1e-7 };
-   const double  ymins[] = { -10000.0,   1.0,    0.0,  0.01, 1e-9, 1e-9 };
-   const double  ymaxs[] = {  10000.0,  50.0,  1e+10,  3.00, 1e-5, 1e-5 };
-   const double  yincs[] = {     0.01,  0.01, 1000.0,  0.01, 1e-9, 1e-9 };
-
-   attr_y         = ival;
-   ya_title       = anno_title( attr_y );
-   QString ylab   = ylabs[ attr_y ];
-   double  ymin   = ymins[ attr_y ];
-   double  ymax   = ymaxs[ attr_y ];
-   double  yinc   = yincs[ attr_y ];
-   lb_plymin->setText( tr( "Plot Limit " ) + ylab + tr( " Minimum:" ) );
-   lb_plymax->setText( tr( "Plot Limit " ) + ylab + tr( " Maximum:" ) );
-   lb_hybuck->setText( tr( "Height of "  ) + ylab + tr( " Bucket:" ) );
-   ct_plymin->setRange( ymin, ymax );
-   ct_plymax->setRange( ymin, ymax );
-   ct_plymin->setSingleStep( yinc );
-   ct_plymax->setSingleStep( yinc );
-   ct_plymin->setValue( yvlos[ attr_y ]  );
-   ct_plymax->setValue( yvhis[ attr_y ]  );
-
+   attr_y = ival;
    rb_x_s   ->setEnabled( attr_y != ATTR_S );
    rb_x_ff0 ->setEnabled( attr_y != ATTR_K );
    rb_x_mw  ->setEnabled( attr_y != ATTR_W );
    rb_x_vbar->setEnabled( attr_y != ATTR_V );
    rb_x_D   ->setEnabled( attr_y != ATTR_D );
    rb_x_f   ->setEnabled( attr_y != ATTR_F );
+   rb_x_rh  ->setEnabled( attr_y != ATTR_R );
+
+   if ( sk_distro.empty() )
+   {
+      return;
+   }
 
    build_xy_distro();
-
    set_limits();
-
    replot_data();
 }
 
 // Re-generate the XY version of the current distribution
 void US_GA_Initialize::build_xy_distro()
 {
-   S_Solute        sol_sk;
-   S_Solute        sol_xy;
+   S_Solute sol_sk;
+   S_Solute sol_xy;
    xy_distro.clear();
 
    for ( int jj = 0; jj < sk_distro.size(); jj++ )
@@ -2355,12 +2298,14 @@ void US_GA_Initialize::build_xy_distro()
       sol_xy.s  = ( attr_x == ATTR_V ) ? sol_sk.v : sol_xy.s;
       sol_xy.s  = ( attr_x == ATTR_D ) ? sol_sk.d : sol_xy.s;
       sol_xy.s  = ( attr_x == ATTR_F ) ? sol_sk.f : sol_xy.s;
+      sol_xy.s  = ( attr_x == ATTR_R ) ? sol_sk.r : sol_xy.s;
       sol_xy.k  = ( attr_y == ATTR_S ) ? sol_sk.s : sol_xy.k;
       sol_xy.k  = ( attr_y == ATTR_K ) ? sol_sk.k : sol_xy.k;
       sol_xy.k  = ( attr_y == ATTR_W ) ? sol_sk.w : sol_xy.k;
       sol_xy.k  = ( attr_y == ATTR_V ) ? sol_sk.v : sol_xy.k;
       sol_xy.k  = ( attr_y == ATTR_D ) ? sol_sk.d : sol_xy.k;
       sol_xy.k  = ( attr_y == ATTR_F ) ? sol_sk.f : sol_xy.k;
+      sol_xy.k  = ( attr_y == ATTR_R ) ? sol_sk.r : sol_xy.k;
 
       xy_distro << sol_xy;
    }
@@ -2386,8 +2331,42 @@ QString US_GA_Initialize::anno_title( int pltndx )
       a_title  = tr( "Diffusion Coefficient" );
    else if ( pltndx == ATTR_F )
       a_title  = tr( "Frictional Coefficient" );
+   else if ( pltndx == ATTR_R )
+      a_title  = tr( "Hydrodynamic Radius (nm)" );
 
    return a_title;
+}
+
+// Set annotation label for an attribute
+QString US_GA_Initialize::anno_label( int id )
+{
+   QString title;
+
+   switch ( id )
+   {
+   case ATTR_S:
+      title = "s";
+      break;
+   case ATTR_K:
+      title = "ff0";
+      break;
+   case ATTR_W:
+      title = "mw";
+      break;
+   case ATTR_V:
+      title = "vbar";
+      break;
+   case ATTR_D:
+      title = "D";
+      break;
+   case ATTR_F:
+      title = "f";
+      break;
+   case ATTR_R:
+      title = "Rh";
+      break;
+   }
+   return title;
 }
 
 // Load bins from a saved gadistro file
@@ -2410,9 +2389,24 @@ DbgLv(1) << "gain: load_bins()";
 
    // Load the solute bins and plot them
    binfpath       = QString( fname ).section( "/", 0, -2 );
-   soludata->loadGAdata( fname, &attr_x, &attr_y, &attr_z );
+   int xparam, yparam, zparam;
+   soludata->loadGAdata( fname, &xparam, &yparam, &zparam );
 DbgLv(1) << "gain:  ld_b : fname attr_x attr_y attr_z"
  << fname << attr_x << attr_y << attr_z;
+   if ( xparam == attr_x && yparam == attr_y )
+   {
+      attr_x = xparam;
+      attr_y = yparam;
+      attr_z = zparam;
+   }
+   else
+   {
+      QString msg = "Plot X and Y parameters don't match with the file:\n";
+      msg += tr("X : Plot=%1, File=%2\n").arg( anno_label( attr_x ), anno_label( xparam ) );
+      msg += tr("Y : Plot=%1, File=%2\n").arg( anno_label( attr_y ), anno_label( yparam ) );
+      QMessageBox::warning( this, "Warning!", msg );
+      return;
+   }
 
    soludata->sortBuckets();
    resetPlotAndList( hlx );

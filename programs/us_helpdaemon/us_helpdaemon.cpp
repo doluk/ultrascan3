@@ -35,17 +35,25 @@ debug("location="+location);
        << url;
 
   debug( args.join( " " ) );
-#ifndef Q_OS_MAC
-  QString assisloc  = US_Settings::appBaseDir() + "/bin/assistant";
+#ifdef Q_OS_MAC
+  QString assisloc  = US_Settings::appBaseDir()
+                      + "/bin/Assistant.app/Contents/MacOS/Assistant";
+  if ( !QFile::exists( assisloc ) )
+    assisloc = US_Settings::appBaseDir() + "/bin/assistant";
+#elif defined(Q_OS_WIN)
+  QString assisloc  = US_Settings::appBaseDir() + "/bin/assistant.exe";
+  if ( !QFile::exists( assisloc ) )
+    assisloc = US_Settings::appBaseDir() + "/bin/Assistant.exe";
 #else
-  QString assisloc  = US_Settings::appBaseDir() + "/bin/Assistant.app";
+  QString assisloc  = US_Settings::appBaseDir() + "/bin/assistant";
 #endif
+
+  debug( "assisloc=" + assisloc );
   daemon.start( assisloc, args );
-//debug("assisloc="+assisloc);
   daemon.waitForStarted();
 
-  connect( &daemon, SIGNAL( finished ( int, QProcess::ExitStatus ) ),
-                    SLOT  ( close    ( int, QProcess::ExitStatus ) ) );
+  connect( &daemon, qOverload< int, QProcess::ExitStatus >( &QProcess::finished ),
+                    this, &US_HelpDaemon::close );
 //show(page);
 }
 
@@ -122,9 +130,6 @@ int main( int argc, char* argv[] )
    application.initialize();
 #endif
   US_HelpDaemon* daemon = new US_HelpDaemon( message );
- 
-  QObject::connect( &application, SIGNAL( messageReceived( const QString& ) ),
-                    daemon,       SLOT  ( show           ( const QString& ) ) );
 
   return application.exec();
 }

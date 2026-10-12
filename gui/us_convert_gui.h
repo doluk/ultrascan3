@@ -279,7 +279,7 @@ class US_GUI_EXTERN US_ConvertGui : public US_Widgets
       int           nlamb_i;                   // Lambda count for raw input
       int           dbg_level;                 // Debug level
       int           impType;                   // Import type flag: 0,1,2 == Beck,MWL,AUC
-
+      US_TimeState time_state;
       QVector<int> slambdas_per_channel;
       QVector<int> elambdas_per_channel;
 
@@ -304,7 +304,7 @@ class US_GUI_EXTERN US_ConvertGui : public US_Widgets
       bool readProtocolSolutions_auto ( QXmlStreamReader& );
       bool readProtocolOptics_auto ( QXmlStreamReader& );
       bool isCorrectDataType( QString, QString );
-  int  getProtSolIndex( QString , QString);
+      int  getProtSolIndex( QString , QString);
 
       void read_aprofile_data_from_aprofile( void );
       bool readAProfileBasicParms_auto ( QXmlStreamReader& );
@@ -372,10 +372,16 @@ class US_GUI_EXTERN US_ConvertGui : public US_Widgets
       QMap < QString, QString > channels_report;
       QMap < QString, QStringList >    triples_dropped_from_channel;
   QMap < QString, QMap <QString, QString> > drop_operations;
+  QMap<QString, QStringList> scan_difference_map;
   //ABDE
   QMap < QString, int >  channels_abde_refs;
   QMap < QString, int >  channels_abde_use_refs;					   
 							   
+
+  public slots:
+      //void import_data_auto  (QString &, QString &, QString &, QString &);
+      void import_data_auto  ( QMap < QString, QString > & ) ;
+      void reset_limsimport_panel( void );
 
   private slots:
       //! \brief Select the current investigator
@@ -386,8 +392,6 @@ class US_GUI_EXTERN US_ConvertGui : public US_Widgets
       */
       void assign_investigator( int );
 
-      //void import_data_auto  (QString &, QString &, QString &, QString &);
-      void import_data_auto  ( QMap < QString, QString > & ) ;
       
       QMap < QString, QString > read_autoflow_record( int );
       int  read_autoflow_stages_record( int );
@@ -460,7 +464,6 @@ class US_GUI_EXTERN US_ConvertGui : public US_Widgets
       
       void resetAll          ( void );
       void resetAll_auto     ( void );
-      void reset_limsimport_panel( void );
       
       void source_changed    ( bool );
       void update_disk_db    ( bool );
@@ -474,6 +477,7 @@ class US_GUI_EXTERN US_ConvertGui : public US_Widgets
       void connectTolerance  ( bool );
       int  countSpeeds       ( QVector< int >&, int* );
       int  writeTimeStateDisk( void );
+      int  prepareTimeState  ( void );
       int  writeTimeStateDB  ( void );
       void help              ( void )
         { showHelp.show_help( "convert.html" ); };

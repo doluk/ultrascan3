@@ -3,6 +3,7 @@
 #include <QApplication>
 #include <QtSvg>
 #include "us_plot.h"
+#include "us_theme.h"
 #include "us_images.h"
 
 #include <QtPrintSupport>
@@ -24,25 +25,203 @@
 #include "qwt_scale_map.h"
 #include "qwt_scale_widget.h"
 #include "qwt_symbol.h"
+#include "qwt_plot_spectrogram.h"
+
+#include <QMouseEvent>
+#include <QEvent>
+#include <QToolBar>
+#include <QLabel>
+#include <QHBoxLayout>
+#include <cmath>
+#include <limits>
 
 US_Zoomer::US_Zoomer( const int xAxis, const int yAxis, QwtPlotCanvas* canvas )
    : QwtPlotZoomer( xAxis, yAxis, canvas )
 {
-   setStateMachine  ( new QwtPickerDragRectMachine() );
    setTrackerMode   ( QwtPicker::ActiveOnly );
    setRubberBand    ( QwtPicker::RectRubberBand );
+   toggle_zoom_events( this, false );
+}
 
-   // RightButton: zoom out by 1
-   // Ctrl+RightButton: zoom out to full size
+void US_Zoomer::initializeZoomStack( QwtPlotZoomer* zoomer ) {
+   if ( zoomer == nullptr ) {
+      return;
+   }
+   if ( zoomer->zoomStack().size() > 1) {
+      return;
+   }
+   const QwtPlot* plot = zoomer->plot();
+   if ( plot == nullptr || ( plot->itemList(QwtPlotItem::Rtti_PlotCurve).count() == 0 && plot->itemList(QwtPlotItem::Rtti_PlotSpectrogram).count() == 0 ) ) {
+      return;
+   }
+   // first zoom event, check if the zoomStack is properly set
+   // Get the actual axis values
+   const auto xa = plot->axisScaleDiv( zoomer->xAxis() );
+   const auto ya = plot->axisScaleDiv( zoomer->yAxis() );
+   const auto x_min = xa.lowerBound();
+   const auto x_max = xa.upperBound();
+   const auto y_min = ya.lowerBound();
+   const auto y_max = ya.upperBound();
+   const auto zoom_base = zoomer->zoomBase();
 
-   setMousePattern( QwtEventPattern::MouseSelect2,
-                    Qt::RightButton, Qt::ControlModifier );
+   // if zoom base is within 10% of the actual axis values, do not reset zoom stack
+   if ( qAbs(x_min * 0.9) <= qAbs(zoom_base.left()) && qAbs(zoom_base.left()) <= qAbs(x_min * 1.1) &&
+      qAbs(y_min * 0.9) <= qAbs(zoom_base.top()) && qAbs(zoom_base.top()) <= qAbs(y_min * 1.1) &&
+      qAbs(x_max * 0.9) <= qAbs(zoom_base.right()) && qAbs(zoom_base.right()) <= qAbs(x_max * 1.1) &&
+      qAbs(y_max * 0.9) <= qAbs(zoom_base.bottom()) && qAbs(zoom_base.bottom()) <= qAbs(y_max * 1.1) ) {
+      return;
+   }
+   if ( !qFuzzyCompare(zoom_base.left(), x_min ) ||
+        !qFuzzyCompare(zoom_base.right(), x_max ) ||
+        !qFuzzyCompare(zoom_base.top(), y_min ) ||
+        !qFuzzyCompare(zoom_base.bottom(), y_max ) ) {
+      auto zoom_stack = QStack<QRectF>();
+      zoom_stack << QRectF( x_min, y_min, x_max - x_min, y_max - y_min );
+      const QSignalBlocker blocker(zoomer);
+      zoomer->setZoomStack(zoom_stack, -1);
+   }
+}
 
-   setMousePattern( QwtEventPattern::MouseSelect3,
-                    Qt::RightButton );
+void US_Zoomer::begin(  ) {
+   if ( !zoom_base_set ) {
+	   initializeZoomStack( this );
+   }
+   zoom_base_set = true;
+   QwtPlotZoomer::begin();
+}
+
+void US_Zoomer::toggle_zoom_events(QwtPlotZoomer* zoomer, const bool active_zoom_button) {
+   if (active_zoom_button) {
+      zoomer->setMousePattern( QwtEventPattern::MouseSelect1,
+                 Qt::LeftButton );
+      zoomer->setMousePattern( QwtEventPattern::MouseSelect2,
+                       Qt::RightButton, Qt::ControlModifier );
+
+      zoomer->setMousePattern( QwtEventPattern::MouseSelect3,
+                       Qt::RightButton );
+   }
+   else {
+      zoomer->setMousePattern( QwtEventPattern::MouseSelect1,
+                 Qt::LeftButton, Qt::ShiftModifier );
+      zoomer->setMousePattern( QwtEventPattern::MouseSelect2,
+                       Qt::RightButton, Qt::ShiftModifier );
+
+      zoomer->setMousePattern( QwtEventPattern::MouseSelect3,
+                       Qt::RightButton );
+   }
+}
+
+US_DoubleClickEventFilter::US_DoubleClickEventFilter(QwtPlot *plot, QObject *parent, const double &threshold): QObject(parent), plot(plot), threshold(threshold) {
+}
+
+bool US_DoubleClickEventFilter::eventFilter( QObject* object, QEvent* event )
+{
+   if ( event->type() == QEvent::MouseButtonDblClick ) {
+      // Iterate through all possible axes to find the match
+      for (int axisId = 0; axisId < QwtPlot::axisCnt; ++axisId) {
+         if ( object == plot->axisWidget(axisId)) {
+            emit axisDoubleClicked(axisId);
+            return true; // Mark event as handled
+         }
+      }
+   }
+   if ( object == plot->canvas() && event->type() == QEvent::MouseButtonDblClick )
+   {
+      auto* mouseEvent = static_cast<QMouseEvent*>( event );
+      QPoint pos = mouseEvent->pos();
+      QList< CurveDistance > curves;
+
+      const QwtPlotItemList list = plot->itemList();
+
+      for ( const auto& item : list )
+      {
+         if ( item->rtti() == QwtPlotItem::Rtti_PlotCurve )
+         {
+            auto* curve = dynamic_cast<QwtPlotCurve*>( item );
+            if ( curve && curve->isVisible() )
+            {
+               double distance = 0.0;
+               const int nearest = curve->closestPoint( pos, &distance );
+
+               if ( nearest >= 0 )
+               {
+                  if ( distance < 0.0 )
+                     distance = qAbs( distance );
+
+                  if ( distance <= threshold )
+                     curves << CurveDistance{ curve, distance, nearest };
+               }
+            }
+         }
+      }
+      std::sort(curves.begin(), curves.end(), [](const CurveDistance& a, const CurveDistance& b) {
+         return a.distance < b.distance;
+      });
+      if ( !curves.isEmpty() ) {
+         emit curveDoubleClicked( curves[ 0 ].curve );
+         QList< QwtPlotCurve* > curve_pointers;
+         for ( const auto& curve : curves ) {
+            curve_pointers << curve.curve;
+         }
+         emit curvesDoubleClicked( curve_pointers );
+         return true;  // Event handled
+      }
+   }
+   return QObject::eventFilter( object, event );
 }
 
 /*********************       US_Plot Class      *************************/
+
+namespace
+{
+   //! The palette of the plot tool bar
+   QPalette toolBarColor( void )
+   {
+      QPalette p = US_GuiSettings::plotColor();
+
+      const QList< QPalette::ColorGroup > groups =
+         QList< QPalette::ColorGroup >()
+            << QPalette::Active << QPalette::Inactive << QPalette::Disabled;
+
+      for ( const auto g : groups )
+      {
+         const QColor bg = p.color( g, QPalette::Window     );
+         const QColor fg = p.color( g, QPalette::WindowText );
+
+         // Contrast has to be added in the direction that is available
+         const bool dark = ( bg.lightness() < 128 );
+
+         p.setColor( g, QPalette::Button    , bg );
+         p.setColor( g, QPalette::ButtonText, fg );
+         p.setColor( g, QPalette::Text      , fg );
+         p.setColor( g, QPalette::Base      , bg );
+
+         p.setColor( g, QPalette::Midlight,                       // hover
+                     dark ? bg.lighter( 135 ) : bg.darker( 108 ) );
+         p.setColor( g, QPalette::Dark,                           // pressed
+                     dark ? bg.lighter( 165 ) : bg.darker( 118 ) );
+         p.setColor( g, QPalette::Mid,                            // outline
+                     dark ? bg.lighter( 150 ) : bg.darker( 125 ) );
+      }
+
+      return p;
+   }
+}
+
+bool US_Plot::eventFilter( QObject* object, QEvent* event )
+{
+   // A widget that carries a palette of its own keeps it when the application
+   // palette is replaced, so the tool bar has to be rebuilt from the new
+   // plot colors by hand.
+   if ( object == toolBar  &&
+        ( event->type() == QEvent::ApplicationPaletteChange ||
+          event->type() == QEvent::StyleChange ) )
+   {
+      toolBar->setPalette( toolBarColor() );
+   }
+
+   return QObject::eventFilter( object, event );
+}
 
 // A new plot returns a QBoxLayout
 US_Plot::US_Plot( QwtPlot*& parent_plot, const QString& title,
@@ -52,16 +231,22 @@ US_Plot::US_Plot( QwtPlot*& parent_plot, const QString& title,
    zoomer = nullptr;
    picker = nullptr;
    panner = nullptr;
+   zoomEnabled = false;
+   configWidget = nullptr;
    setSpacing( 0 );
+
 
    const QFont buttonFont( US_GuiSettings::fontFamily(),
                      US_GuiSettings::fontSize() - 2 );
 
    // Add the tool bar 
-   QToolBar* toolBar = new QToolBar;
+   toolBar = new QToolBar;
    toolBar->setAutoFillBackground( true );
-   toolBar->setPalette( US_GuiSettings::plotColor() );
+   toolBar->setPalette( toolBarColor() );
    toolBar->setOrientation( Qt::Vertical );
+
+   // Recolor the bar when the color scheme is switched while it is on screen
+   toolBar->installEventFilter( this );
 
    btnZoom = new QToolButton( toolBar );
    btnZoom->setText( "Zoom" );
@@ -70,7 +255,7 @@ US_Plot::US_Plot( QwtPlot*& parent_plot, const QString& title,
    btnZoom->setToolButtonStyle( Qt::ToolButtonTextUnderIcon );
    btnZoom->setFont( buttonFont );
    btnZoom->setIconSize ( QSize( 20, 20 ) );
-   btnZoom->setFixedSize( QSize( 40, 50 ) );
+   btnZoom->setFixedSize( QSize( 42, 50 ) );
    connect( btnZoom, &QToolButton::toggled, this, &US_Plot::zoom );
 
    QToolButton* btnCSV = new QToolButton( toolBar );
@@ -79,7 +264,7 @@ US_Plot::US_Plot( QwtPlot*& parent_plot, const QString& title,
    btnCSV->setToolButtonStyle( Qt::ToolButtonTextUnderIcon );
    btnCSV->setFont( buttonFont );
    btnCSV->setIconSize ( QSize( 20, 20 ) );
-   btnCSV->setFixedSize( QSize( 40, 50 ) );
+   btnCSV->setFixedSize( QSize( 42, 50 ) );
    connect( btnCSV, &QToolButton::clicked, this, &US_Plot::csv );
 
    QToolButton* btnPrint = new QToolButton( toolBar );
@@ -88,7 +273,7 @@ US_Plot::US_Plot( QwtPlot*& parent_plot, const QString& title,
    btnPrint->setToolButtonStyle( Qt::ToolButtonTextUnderIcon );
    btnPrint->setFont( buttonFont );
    btnPrint->setIconSize ( QSize( 20, 20 ) );
-   btnPrint->setFixedSize( QSize( 40, 50 ) );
+   btnPrint->setFixedSize( QSize( 42, 50 ) );
    connect( btnPrint, &QToolButton::clicked, this, &US_Plot::print );
 
    QToolButton* btnSVG = new QToolButton( toolBar );
@@ -97,7 +282,7 @@ US_Plot::US_Plot( QwtPlot*& parent_plot, const QString& title,
    btnSVG->setToolButtonStyle( Qt::ToolButtonTextUnderIcon );
    btnSVG->setFont( buttonFont );
    btnSVG->setIconSize ( QSize( 20, 20 ) );
-   btnSVG->setFixedSize( QSize( 40, 50 ) );
+   btnSVG->setFixedSize( QSize( 42, 50 ) );
    connect( btnSVG, &QToolButton::clicked, this, &US_Plot::svg );
 
    QToolButton* btnPNG = new QToolButton( toolBar );
@@ -106,7 +291,7 @@ US_Plot::US_Plot( QwtPlot*& parent_plot, const QString& title,
    btnPNG->setToolButtonStyle( Qt::ToolButtonTextUnderIcon );
    btnPNG->setFont( buttonFont );
    btnPNG->setIconSize ( QSize( 20, 20 ) );
-   btnPNG->setFixedSize( QSize( 40, 50 ) );
+   btnPNG->setFixedSize( QSize( 42, 50 ) );
    connect( btnPNG, &QToolButton::clicked, this, &US_Plot::png );
 
    QToolButton* btnConfig = new QToolButton( toolBar );
@@ -115,7 +300,7 @@ US_Plot::US_Plot( QwtPlot*& parent_plot, const QString& title,
    btnConfig->setToolButtonStyle( Qt::ToolButtonTextUnderIcon );
    btnConfig->setFont( buttonFont );
    btnConfig->setIconSize ( QSize( 20, 20 ) );
-   btnConfig->setFixedSize( QSize( 40, 50 ) );
+   btnConfig->setFixedSize( QSize( 42, 50 ) );
    connect( btnConfig, &QToolButton::clicked, this, &US_Plot::config );
 
    btnCMap                = new QToolButton( toolBar );
@@ -123,6 +308,8 @@ US_Plot::US_Plot( QwtPlot*& parent_plot, const QString& title,
    btnCMap  ->setIcon( QIcon( QPixmap( cmap_xpm ) ) );
    btnCMap  ->setToolButtonStyle( Qt::ToolButtonTextUnderIcon );
    btnCMap  ->setFont( buttonFont );
+   btnCMap  ->setIconSize ( QSize( 20, 20 ) );
+   btnCMap  ->setFixedSize( QSize( 42, 50 ) );
    cmapEnab      = cmEnab;
    cmapMatch     = cmMatch;
    btnCMap  ->setVisible( cmapEnab );
@@ -138,10 +325,10 @@ US_Plot::US_Plot( QwtPlot*& parent_plot, const QString& title,
 
    addWidget( toolBar );
 
-   // Add a 1 pixel black line between the tool bar and the plot
+   // Add a 1 pixel separator between the tool bar and the plot
    QLabel* spacer = new QLabel;
    QPalette p;
-   p.setColor( QPalette::Window, Qt::black );
+   p.setColor( QPalette::Window, US_Theme::tokens().border );
    spacer->setPalette( p );
    spacer->setAutoFillBackground( true );
    spacer->setMaximumWidth( 1 );
@@ -149,6 +336,8 @@ US_Plot::US_Plot( QwtPlot*& parent_plot, const QString& title,
 
    plot        = new QwtPlot;
    parent_plot = plot;
+
+   US_Widgets::us_style_plot( plot );
 
    configWidget = nullptr;
   
@@ -188,14 +377,16 @@ US_Plot::US_Plot( QwtPlot*& parent_plot, const QString& title,
       plot->legend()->setFont( font );
    }
   
-   plot->setAutoFillBackground( true );
-   plot->setPalette ( US_GuiSettings::plotColor() );
-   plot->setCanvasBackground( US_GuiSettings::plotCanvasBG() );
-
    addWidget( plot );
 
+   // Setup canvas for double-click events
+   setupCanvas();
+   setupConnections();
+   setZoomEnabled(false);
    // Create default color map file path if need be
    cmfpath        = QString();
+   cmapEnab       = cmEnab;
+   cmapMatch      = cmMatch;
    qDebug() << "UP:main: cmName" << cmName;
    if ( ! cmName.isEmpty() )
    {  // Default Color Map Name is given
@@ -204,7 +395,7 @@ US_Plot::US_Plot( QwtPlot*& parent_plot, const QString& title,
       {  // Prepend with "cm-" if missing
          cmfpath        = "cm-" + cmfpath;
       }
-      if ( ! cmfpath.endsWith( ".xml-" ) )
+      if ( ! cmfpath.endsWith( ".xml" ) )
       {  // Append with ".xml" if missing
          cmfpath        = cmfpath + ".xml";
       }
@@ -214,58 +405,323 @@ US_Plot::US_Plot( QwtPlot*& parent_plot, const QString& title,
    qDebug() << "UP:main: cmfpath" << cmfpath;
 }
 
-void US_Plot::zoom( const bool on )
+//! \brief Shrink (or restore) the plot title's font so its longest line
+//! fits within the plot's current width.
+//!
+//! QwtPlot titles are centered and do not wrap or auto-shrink, so a
+//! multi-line title (e.g. "Run ID: ...\nCell: ...  Channel: ...
+//! Wavelength: ...") that is wider than the plot simply overflows past
+//! both edges, clipped by whatever sits alongside the plot. This is not
+//! wired up to run automatically (no event filter, no call from the
+//! constructor) -- it's purely opt-in. Call it yourself wherever your
+//! program sets/changes the title, and from your own resizeEvent() too if
+//! you want it to keep fitting as the plot is resized. Each call
+//! re-measures starting from the title's originally-intended size (rather
+//! than shrinking further from whatever size it happens to currently be),
+//! so the font grows back toward full size if the plot is widened again.
+void US_Plot::fitTitleToWidth()
 {
-   if ( on )
+   if ( plot == nullptr )
    {
-      // Set up for zooming
-      zoomer = new US_Zoomer( QwtPlot::xBottom, QwtPlot::yLeft,
-                              dynamic_cast<QwtPlotCanvas *>( plot->canvas() ) );
-      
-      zoomer->setRubberBand   ( QwtPicker::RectRubberBand );
-      zoomer->setRubberBandPen( QColor( Qt::green ) );
-      zoomer->setTrackerMode  ( QwtPicker::ActiveOnly );
-      zoomer->setTrackerPen   ( QColor( Qt::white ) );
-      connect( zoomer, &US_Zoomer::zoomed, this, &US_Plot::zoomedCorners );
-      connect( zoomer, &US_Zoomer::zoomed, this, &US_Plot::scale_yRight );
-      
-      panner = new QwtPlotPanner( plot->canvas() );
-      panner->setMouseButton( Qt::MiddleButton );
+      return;
+   }
 
-      picker = new QwtPlotPicker( QwtPlot::xBottom, QwtPlot::yLeft,
-                     QwtPlotPicker::CrossRubberBand, QwtPicker::AlwaysOn,
-                     plot->canvas() );
-      picker->setStateMachine ( new QwtPickerDragRectMachine() );
+   QwtText qwtTitle = plot->title();
+   const QString text = qwtTitle.text();
 
-      picker->setRubberBandPen( QColor( Qt::green ) );
-      picker->setRubberBand   ( QwtPicker::CrossRubberBand );
-      picker->setTrackerPen   ( QColor( Qt::white ) );
-      plot->setAxisAutoScale(QwtPlot::yRight, true);
-      yLeftRange.fill(0, 2);
-      yLeftRange[0] = plot->axisScaleDiv(QwtPlot::yLeft).lowerBound();
-      yLeftRange[1] = plot->axisScaleDiv(QwtPlot::yLeft).upperBound();
-      yRightRange.fill(0, 2);
-      if (plot->axisEnabled(QwtPlot::yRight)){
-         yRightRange[0] = plot->axisScaleDiv(QwtPlot::yRight).lowerBound();
-         yRightRange[1] = plot->axisScaleDiv(QwtPlot::yRight).upperBound();
+   if ( text.isEmpty() )
+   {
+      return;
+   }
+
+   // Prefer the canvas width (the title sits directly above it, edge to
+   // edge) and fall back to the plot's own width if the canvas isn't
+   // available yet.
+   int availableWidth = ( plot->canvas() != nullptr )
+                         ? plot->canvas()->width()
+                         : plot->width();
+
+   if ( availableWidth <= 0 )
+   {
+      return;
+   }
+
+   // A little breathing room so the text doesn't sit flush against the
+   // plot's edges.
+   availableWidth -= 10;
+
+   const QStringList lines = text.split( "\n" );
+
+   QFont font = qwtTitle.font();
+   const qreal originalPointSize = US_GuiSettings::fontSize() * 1.4;
+   const qreal minPointSize      = 7.0;
+   qreal pointSize                = originalPointSize;
+
+   for ( ; pointSize > minPointSize; pointSize -= 0.5 )
+   {
+      font.setPointSizeF( pointSize );
+      QFontMetrics fm( font );
+
+      int maxLineWidth = 0;
+
+      for ( const QString& line : lines )
+      {
+         maxLineWidth = qMax( maxLineWidth, fm.horizontalAdvance( line ) );
+      }
+
+      if ( maxLineWidth <= availableWidth )
+      {
+         break;
       }
    }
-   
-   panner->setEnabled( on );
 
-   zoomer->setEnabled( on );
-   zoomer->zoom( 0 );
-
-   picker->setEnabled( ! on );
-
-   if ( ! on  &&  zoomer != nullptr )
+   if ( qFuzzyCompare( font.pointSizeF(), qwtTitle.font().pointSizeF() ) )
    {
-      zoomer->disconnect();
-      delete picker;
-      delete panner;
-      delete zoomer;
-      zoomer = nullptr;
+      return;  // Already at the right size -- avoid a redundant setTitle().
    }
+
+   font.setPointSizeF( pointSize );
+   qwtTitle.setFont( font );
+   plot->setTitle( qwtTitle );
+}
+
+void US_Plot::setupCanvas()
+{
+   US_DoubleClickEventFilter* filter = new US_DoubleClickEventFilter(plot, this, 10.0);
+   // Install event filter or connect to canvas for double-click detection
+   if ( plot && plot->canvas() )
+   {
+      plot->canvas()->installEventFilter( filter );
+   }
+   if ( plot ) {
+      for ( int axisId = 0; axisId < QwtPlot::axisCnt; ++axisId ) {
+         QWidget* axisWidget = plot->axisWidget(axisId);
+         if ( axisWidget ) {
+            axisWidget->installEventFilter( filter );
+         }
+      }
+   }
+   connect(filter, &US_DoubleClickEventFilter::axisDoubleClicked, this, &US_Plot::configureAxis);
+   connect(filter, &US_DoubleClickEventFilter::curvesDoubleClicked, this, &US_Plot::configureCurves);
+   connect(filter, &US_DoubleClickEventFilter::curveDoubleClicked, this, &US_Plot::curveDoubleClicked);
+   connect(filter, &US_DoubleClickEventFilter::axisDoubleClicked, this, &US_Plot::axisDoubleClicked);
+}
+
+void US_Plot::setupConnections()
+{
+   // Additional connections can be set up here
+}
+
+QList< CurveDistance > US_Plot::findCurvesAtPosition( const QPoint& pos,
+                                                      const double& threshold ) const
+{
+   QList< CurveDistance > curves;
+
+   if ( ! plot )
+      return curves;
+
+   const QwtPlotItemList list = plot->itemList();
+
+   for ( const auto& item : list )
+   {
+      if ( item->rtti() == QwtPlotItem::Rtti_PlotCurve )
+      {
+         auto* curve = dynamic_cast<QwtPlotCurve*>( item );
+         if ( curve && curve->isVisible() )
+         {
+            double distance = 0.0;
+            const int nearest = curve->closestPoint( pos, &distance );
+
+            if ( nearest >= 0 )
+            {
+               if ( distance < 0.0 )
+                  distance = qAbs( distance );
+
+               if ( distance <= threshold )
+                  curves << CurveDistance{ curve, distance, nearest };
+            }
+         }
+      }
+   }
+
+   return curves;
+}
+
+CurveDistance US_Plot::findCurveAtPosition( const QPoint& pos, const double& threshold ) const
+{
+   QList< CurveDistance > curves = findCurvesAtPosition( pos, threshold );
+   if ( curves.isEmpty() ) {
+      return CurveDistance();
+   }
+   // sort curves by distance ascending
+   std::sort( curves.begin(), curves.end(), []( const CurveDistance& a, const CurveDistance& b ) {
+      return a.distance < b.distance;
+   });
+   return curves[ 0 ];
+}
+
+void US_Plot::configureAxis( int axis )
+{
+   if ( ! plot ) return;
+   US_PlotConfig* config_widget = new US_PlotConfig( plot, this->parentWidget() );
+
+   US_PlotAxisConfig* axisConfig = new US_PlotAxisConfig( axis, plot, config_widget );
+   axisConfig->exec();
+   delete axisConfig;
+   delete config_widget;
+   plot->replot();
+}
+
+void US_Plot::configureCurve( QwtPlotCurve* curve )
+{
+   QList< QwtPlotCurve* > curves;
+
+   if ( curve != nullptr )
+      curves << curve;
+
+   configureCurves( curves );
+}
+
+void US_Plot::configureCurves( const QList< QwtPlotCurve* >& curves )
+{
+   if ( !plot || curves.isEmpty() )
+      return;
+
+   QStringList curveNames;
+
+   for ( int ii = 0; ii < curves.size(); ii++ )
+   {
+      QwtPlotCurve* curve = curves[ ii ];
+
+      if ( curve != nullptr )
+      {
+         const QString ctitle = curve->title().text();
+
+         if ( !curveNames.contains( ctitle ) )
+            curveNames << ctitle;
+      }
+   }
+
+   if ( curveNames.isEmpty() )
+      return;
+
+   US_PlotConfig* plotconfig = new US_PlotConfig( plot, this->parentWidget() );
+   US_PlotCurveConfig* curveConfig = new US_PlotCurveConfig( plot, curveNames, plotconfig );
+   curveConfig->exec();
+   delete curveConfig;
+   delete plotconfig;
+   plot->replot();
+}
+
+QwtPlotZoomer* US_Plot::createZoomer()
+{
+   QwtPlotCanvas* canvas = qobject_cast<QwtPlotCanvas*>(plot->canvas());
+   auto* newZoomer = new US_Zoomer( 2, 0, canvas );
+   // apply the color settings to the zoomer
+   newZoomer->setRubberBandPen( US_GuiSettings::plotPicker() );
+   newZoomer->setTrackerPen( US_GuiSettings::plotPicker() );
+
+   return newZoomer;
+}
+
+QwtPlotPanner* US_Plot::createPanner()
+{
+   auto* newPanner = new QwtPlotPanner( plot->canvas() );
+   newPanner->setMouseButton( Qt::LeftButton, Qt::AltModifier );
+   return newPanner;
+}
+
+QwtPlotPicker* US_Plot::createPicker()
+{
+   auto* newPicker = new QwtPlotPicker( QwtPlot::xBottom, QwtPlot::yLeft,
+                      QwtPlotPicker::CrossRubberBand, QwtPicker::AlwaysOn,
+                      plot->canvas() );
+   newPicker->setStateMachine( new QwtPickerTrackerMachine() );
+   newPicker->setRubberBandPen( US_GuiSettings::plotPicker() );
+   newPicker->setRubberBand( QwtPicker::CrossRubberBand );
+   newPicker->setTrackerPen( US_GuiSettings::plotPicker() );
+
+   return newPicker;
+}
+
+void US_Plot::setupZoom()
+{
+   if ( zoomer != nullptr ) return;
+
+   // Create zoomer using factory method
+   zoomer = createZoomer();
+
+   connect( zoomer, &QwtPlotZoomer::zoomed, this, &US_Plot::zoomedCorners );
+   connect( zoomer, &QwtPlotZoomer::zoomed, this, &US_Plot::scale_yRight );
+
+   // Create panner using factory method
+   panner = createPanner();
+
+   // Create picker using factory method - but disable in zoom mode
+   picker = createPicker();
+
+   // Set up axis ranges for scaling
+   plot->setAxisAutoScale( QwtPlot::yRight, true );
+   yLeftRange.fill( 0, 2 );
+   yLeftRange[0] = plot->axisScaleDiv( QwtPlot::yLeft ).lowerBound();
+   yLeftRange[1] = plot->axisScaleDiv( QwtPlot::yLeft ).upperBound();
+   yRightRange.fill( 0, 2 );
+   if ( plot->axisEnabled( QwtPlot::yRight ) )
+   {
+      yRightRange[0] = plot->axisScaleDiv( QwtPlot::yRight ).lowerBound();
+      yRightRange[1] = plot->axisScaleDiv( QwtPlot::yRight ).upperBound();
+   }
+}
+
+void US_Plot::cleanupZoom()
+{
+   if ( zoomer != nullptr )
+   {
+      US_Zoomer::toggle_zoom_events(zoomer, false);
+      // reset the zoom to zoomBase
+      zoomer->zoom( 0 );
+   }
+}
+
+void US_Plot::setZoomEnabled( bool enable )
+{
+   setupZoom();
+
+   if ( enable )
+   {
+      if ( panner ) panner->setEnabled( true );
+      if ( zoomer )
+      {
+         US_Zoomer::initializeZoomStack( zoomer );
+         zoomer->setEnabled( true );
+         zoomer->zoom( 0 );
+         US_Zoomer::toggle_zoom_events(zoomer, true);
+      }
+      if ( picker ) picker->setEnabled( false );  // Disable picker during zoom
+   }
+   else
+   {
+      if ( panner ) panner->setEnabled( false );
+      // Re-enable picker when not zooming, but only if it exists
+      if ( picker ) picker->setEnabled( true );
+      cleanupZoom();
+   }
+
+   zoomEnabled = enable;
+   emit zoomModeChanged( enable );
+}
+
+void US_Plot::replot()
+{
+   if ( plot )
+   {
+      plot->replot();
+   }
+}
+
+void US_Plot::zoom( const bool on )
+{
+   setZoomEnabled( on );
 }
 
 void US_Plot::csv( void ) const
@@ -481,6 +937,11 @@ void US_Plot::quit( void )
 void US_Plot::scale_yRight( const QRectF &rect ) const
 {
    if (! plot->axisEnabled ( QwtPlot::yRight )){
+      return;
+   }
+   // if a QwtPlotSpectrogram is present, return early too
+   if ( plot->itemList(QwtPlotItem::Rtti_PlotSpectrogram).count() > 0 )
+   {
       return;
    }
    const double dyL = yLeftRange.at(1) - yLeftRange.at(0);
@@ -871,7 +1332,7 @@ void US_PlotConfig::selectLegendPos( const int index ) const
    if ( index > 0 )
    {
       legend = new QwtLegend;
-      legend->setFrameStyle( QFrame::Box | QFrame::Sunken );
+      legend->setFrameStyle( QFrame::StyledPanel | QFrame::Plain );
    }
 
    plot->insertLegend( nullptr, QwtPlot::BottomLegend );
@@ -1793,7 +2254,11 @@ US_PlotCurveConfig::US_PlotCurveConfig( QwtPlot* currentPlot,
    
    lb_showCurveColor = us_label( "" , 1 );
    p = lb_showCurveColor->palette();
-   p.setColor( QPalette::Window, firstSelectedCurve->pen().color() );
+   if ( selected.size() > 1 ) {
+      p.setColor( QPalette::Window, QColor( Qt::transparent ) );
+   } else {
+      p.setColor( QPalette::Window, firstSelectedCurve->pen().color() );
+   }
    lb_showCurveColor->setPalette( p );
 
    QPushButton* pb_showCurveColor = us_pushbutton ( tr( "Update Color" ) );
@@ -2026,9 +2491,10 @@ void US_PlotCurveConfig::apply( void )
    // QwtSymbol* newSymbol = new QwtSymbol( symbolStyle, symbolBrush,           //ALEXEY:: new Symbol object will be initialized inside the cycle !!!
    //                                       symbolPen,   symbolSize );
 
-   palette = lb_showCurveColor->palette();
-   QPen      curvePen( palette.color( QPalette::Window ) );
+   QPalette curve_color_palette = lb_showCurveColor->palette();
+   QPen      curvePen( curve_color_palette.color( QPalette::Window ) );
    curvePen.setWidth( sb_curveWidth->value() );
+   bool curve_color_is_transparent = curve_color_palette.color( QPalette::Window ) == QColor( Qt::transparent );
 
    
    QwtPlotItemList list = plot->itemList(); // All items
@@ -2088,9 +2554,15 @@ void US_PlotCurveConfig::apply( void )
 	         // Also, crashed when multiple curves selected && pressing "Apply" more than one time (even while changing the symbol type...)
 	         // ATTN: crashed only when applied to the 2nd curve in a selected list!
 	         // When only 1 curve selected, all good -- was wrong (heap) memory allocation!!
-
-	         curve->setPen   ( curvePen );
-
+            // if the curve color is Qt::transparent, reuse the existing color of the curve
+            if ( !curve_color_is_transparent ) {
+               curve->setPen   ( curvePen );
+            }
+            else {
+               QPen curve_color_pen = curve->pen();
+               curve_color_pen.setWidth(sb_curveWidth->value());
+               curve->setPen( curve_color_pen );
+            }
 	         curve->setStyle ( curveStyle );
             break;
          }
@@ -2874,6 +3346,7 @@ void US_PlotPicker::widgetMousePressEvent( QMouseEvent* e )
    if ( !last_click.isValid() || last_click.elapsed() > 300 )
    {
       last_click.start();
+      emit mouseDownRaw( invTransform( e->pos()), e );
       if ( e->button() == Qt::LeftButton ) 
          emit mouseDown( invTransform( e->pos() ) );
       if ( e->button() == Qt::LeftButton && e->modifiers() == Qt::ControlModifier )
@@ -2893,6 +3366,7 @@ void US_PlotPicker::widgetMouseReleaseEvent( QMouseEvent* e )
    if ( !last_click.isValid() || last_click.elapsed() > 300 )
    {
       last_click.start();
+      emit mouseUpRaw( invTransform( e->pos()), e );
       if ( e->button() == Qt::LeftButton )
          emit mouseUp( invTransform( e->pos() ) );
       
@@ -2919,8 +3393,21 @@ void US_PlotPicker::widgetMouseMoveEvent( QMouseEvent* e )
          emit cMouseDrag( invTransform( e->pos() ) );
       }
    }
+   else {
+      emit mouseMoving();
+   }
 
    QwtPlotPicker::widgetMouseMoveEvent( e );
+}
+
+void US_PlotPicker::widgetMouseDoubleClickEvent( QMouseEvent* e )
+{
+   if ( e->button() == Qt::LeftButton )
+   {
+      emit canvasDoubleClicked( e->pos() );
+   }
+
+   QwtPlotPicker::widgetMouseDoubleClickEvent( e );
 }
 
 

@@ -6,11 +6,12 @@ QT            += printsupport
 }
 
 unix:   TARGET = us_gui
+macx:   LIBS  += -L../lib -lus_utils
 
 win32 {
         DEFINES += QWT_DLL US_MAKE_GUI_DLL
         TARGET   = us_gui
-        LIBS    += -L../lib -lus_utils$${VER} -lqwtplot3d
+        LIBS    += -L../lib -lus_utils$${VER} -lqwtplot3d$${VER}
         LIBS    += -L$${QWTPATH}/lib -lqwt
         QMAKE_LFLAGS += -shared 
         # We assume QMAKE_LFLAGS += Wl,--out-implib,../lib/lib$${TARGET}$${VER}.a
@@ -20,8 +21,6 @@ QT          += network svg
 greaterThan( QT_VERSION, 5.99 ) {
 QT          += openglwidgets
 }
-
-TRANSLATIONS = $${TARGET}_DE_de.ts
 
 HEADERS      = \
                us_abstractrotor_gui.h   \
@@ -79,7 +78,9 @@ HEADERS      = \
                us_sim_params_gui.h      \
                us_solution_gui.h        \
                us_spectrodata.h         \
+               us_style.h               \
                us_table.h               \
+               us_theme.h               \
                us_tmst_plot.h           \
                us_widgets.h             \
                us_widgets_dialog.h
@@ -140,7 +141,9 @@ SOURCES      = \
                us_sim_params_gui.cpp      \
                us_solution_gui.cpp        \
                us_spectrodata.cpp         \
+               us_style.cpp               \
                us_table.cpp               \
+               us_theme.cpp               \
                us_tmst_plot.cpp           \
                us_widgets.cpp             \
                us_widgets_dialog.cpp

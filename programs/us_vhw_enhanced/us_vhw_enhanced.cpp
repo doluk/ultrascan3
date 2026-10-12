@@ -50,22 +50,22 @@ US_vHW_Enhanced::US_vHW_Enhanced() : US_AnalysisBase2()
    us_checkbox( tr( "Use Enhanced vHW" ),   ck_vhw_enh, true  );
    us_checkbox( tr( "Use FE Data" ),        ck_use_fed, false );
 
-   connect( pb_dstrpl,  SIGNAL( clicked()       ),
-            this,       SLOT(   distr_plot()    ) );
-   connect( pb_selegr,  SIGNAL( clicked()       ),
-            this,       SLOT(   sel_groups()    ) );
-   connect( pb_replot,  SIGNAL( clicked()       ),
-            this,       SLOT(   plot_refresh()  ) );
-   connect( ck_modelpl, SIGNAL( toggled( bool ) ),
-            this,       SLOT(   data_plot()     ) );
-   connect( ck_vhw_enh, SIGNAL( toggled( bool ) ),
-            this,       SLOT(   data_plot()     ) );
-   connect( ck_use_fed, SIGNAL( toggled( bool ) ),
-            this,       SLOT(   data_plot()     ) );
-   connect( pb_save,    SIGNAL( clicked()       ),
-            this,       SLOT(   save_data()     ) );
-   connect( pb_view,    SIGNAL( clicked()       ),
-            this,       SLOT(   view_report()   ) );
+   connect( pb_dstrpl,  &QAbstractButton::clicked,
+            this,       &US_vHW_Enhanced::distr_plot );
+   connect( pb_selegr,  &QAbstractButton::clicked,
+            this,       &US_vHW_Enhanced::sel_groups );
+   connect( pb_replot,  &QAbstractButton::clicked,
+            this,       &US_vHW_Enhanced::plot_refresh );
+   connect( ck_modelpl, &QAbstractButton::toggled,
+            this,       &US_vHW_Enhanced::data_plot );
+   connect( ck_vhw_enh, &QAbstractButton::toggled,
+            this,       &US_vHW_Enhanced::data_plot );
+   connect( ck_use_fed, &QAbstractButton::toggled,
+            this,       &US_vHW_Enhanced::data_plot );
+   connect( pb_save,    &QAbstractButton::clicked,
+            this,       &US_vHW_Enhanced::save_data );
+   connect( pb_view,    &QAbstractButton::clicked,
+            this,       &US_vHW_Enhanced::view_report );
 
    int jr = 2;
    parameterLayout->addWidget( pb_dstrpl,  jr,   0, 1, 2 );
@@ -92,8 +92,8 @@ US_vHW_Enhanced::US_vHW_Enhanced() : US_AnalysisBase2()
    bdtoler       = 0.001;
    ct_tolerance->setSingleStep( 0.001 );
    ct_tolerance->setEnabled( true );
-   connect( ct_tolerance, SIGNAL( valueChanged(   double ) ),
-            this,          SLOT(  update_bdtoler( double ) ) );
+   connect( ct_tolerance, &QwtCounter::valueChanged,
+            this,          &US_vHW_Enhanced::update_bdtoler );
 
    lb_division   = us_label( tr( "Divisions:" ) );
    lb_division->setAlignment( Qt::AlignVCenter | Qt::AlignLeft );
@@ -101,8 +101,8 @@ US_vHW_Enhanced::US_vHW_Enhanced() : US_AnalysisBase2()
    ct_division   = us_counter( 3, 0.0, 1000.0, 50.0 );
    ct_division->setSingleStep( 1 );
    ct_division->setEnabled( true );
-   connect( ct_division, SIGNAL( valueChanged(  double ) ),
-            this,         SLOT(  update_divis(  double ) ) );
+   connect( ct_division, &QwtCounter::valueChanged,
+            this,         &US_vHW_Enhanced::update_divis );
 
    jr     = 0;
    controlsLayout->addWidget( lb_analysis       , jr++, 0, 1, 4 );
@@ -124,8 +124,8 @@ US_vHW_Enhanced::US_vHW_Enhanced() : US_AnalysisBase2()
    controlsLayout->addWidget( pb_exclude        , jr,   0, 1, 2 );
    controlsLayout->addWidget( pb_reset_exclude  , jr++, 2, 1, 2 );
 
-   connect( pb_help, SIGNAL( clicked() ),
-            this,    SLOT(   help() ) );
+   connect( pb_help, &QAbstractButton::clicked,
+            this,    &US_vHW_Enhanced::help );
 
    dataLoaded = false;
    haveZone   = false;
@@ -192,8 +192,8 @@ DbgLv(1) << "vhw: mxht p1ht p2ht" << mxht << p1ht << p2ht;
 
    gpick      = new US_PlotPicker( data_plot1 );
    gpick->setStateMachine( new QwtPickerClickPointMachine() );
-   connect( gpick,    SIGNAL( mouseDown(  const QPointF& ) ),
-            this,       SLOT( groupClick( const QPointF& ) ) );
+   connect( gpick,    &US_PlotPicker::mouseDown,
+            this,       &US_vHW_Enhanced::groupClick );
    groupstep   = NONE;
 
    pb_selegr->setEnabled( true );
@@ -234,8 +234,8 @@ DbgLv(1) << "vhw:   init:   copy'd simdat (s x p)"
 
    ck_use_fed->disconnect();
    ck_use_fed->setChecked( false );
-   connect( ck_use_fed, SIGNAL( toggled( bool ) ),
-            this,       SLOT(   data_plot()     ) );
+   connect( ck_use_fed, &QAbstractButton::toggled,
+            this,       &US_vHW_Enhanced::data_plot );
 
    //update( 0 );
 }
@@ -2355,8 +2355,8 @@ void US_vHW_Enhanced::exclude_from( double from )
       ct_to->disconnect();
       ct_to->setValue( from );
 
-      connect( ct_to,   SIGNAL( valueChanged( double ) ),
-                        SLOT  ( exclude_to  ( double ) ) );
+      connect( ct_to,   &QwtCounter::valueChanged,
+                        this, &US_vHW_Enhanced::exclude_to );
    }
 
    // Mark upper plot excluded scans, then lower plot ones
@@ -2383,8 +2383,8 @@ DbgLv(1) << "(2)TO=" << to;
       else if ( to > 0.0 )
          ct_from->setValue( 1.0 );
 
-      connect( ct_from, SIGNAL( valueChanged( double ) ),
-                        SLOT  ( exclude_from( double ) ) );
+      connect( ct_from, &QwtCounter::valueChanged,
+                        this, &US_vHW_Enhanced::exclude_from );
 DbgLv(1) << "(3)TO=" << to;
    }
 
@@ -2766,3 +2766,81 @@ DbgLv(1) << "gMo:  MODEL empty/matches  IDln" << modelGUID.length()
 DbgLv(1) << "gMo:  loaded model: modelGUID" << modelGUID << mmodlGUID;
 }
 
+void US_vHW_Enhanced::reset( void )
+{
+   US_AnalysisBase2::reset();
+   reset_data();
+   reset_gui();
+}
+
+void US_vHW_Enhanced::reset_data( void )
+{
+   haveZone   = false;
+   forcePlot  = false;
+   skipPlot   = false;
+   groupSel   = false;
+   groupstep  = NONE;
+   last_plot  = -1;
+
+   bdtoler    = 0.001;
+   divsCount  = 50;
+
+   have_sims.clear();
+   dsimList .clear();
+   modlList .clear();
+
+   dseds.clear();
+   dslos.clear();
+   dsigs.clear();
+   dcors.clear();
+   dpnts.clear();
+
+   bdrads.clear();
+   bdcons.clear();
+   aseds .clear();
+
+   scPlats  .clear();
+   liveScans.clear();
+   CPijs    .clear();
+   mconcs   .clear();
+
+   groupdat .clear();
+   groupxy  .clear();
+
+   C0         = 0.0;
+   Swavg      = 0.0;
+   total_conc = 0.0;
+
+   edata      = nullptr;
+   expda      = nullptr;
+   simda      = nullptr;
+   dscan      = nullptr;
+   expsc      = nullptr;
+   simsc      = nullptr;
+}
+
+void US_vHW_Enhanced::reset_gui( void )
+{
+   pb_dstrpl ->setEnabled( false );
+   pb_selegr ->setEnabled( false );
+   pb_replot ->setEnabled( false );
+   pb_selegr ->setText( tr( "Select Groups" ) );
+
+   const QSignalBlocker b_ck_modelpl( ck_modelpl );
+   const QSignalBlocker b_ck_vhw_enh( ck_vhw_enh );
+   const QSignalBlocker b_ck_use_fed( ck_use_fed );
+   const QSignalBlocker b_ck_manrepl( ck_manrepl );
+   const QSignalBlocker b_ct_tolerance( ct_tolerance );
+   const QSignalBlocker b_ct_division( ct_division );
+
+   ck_modelpl->setChecked( true );
+   ck_vhw_enh->setChecked( true );
+   ck_use_fed->setChecked( false );
+   ck_manrepl->setChecked( false );
+
+   ct_tolerance->setValue( 0.001 );
+   ct_division ->setValue( 50.0 );
+
+   data_plot1->detachItems( QwtPlotItem::Rtti_PlotMarker );
+   data_plot1->replot();
+}

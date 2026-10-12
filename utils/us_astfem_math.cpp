@@ -56,14 +56,7 @@ simparams.debug();
    int t_acc            = 1; // Used for time when accelerated up to the specified rotor speed
    double rate          = 1.0;
    double speed         = 1000.0;
-   int ss_reso          = 100;
-   // If debug_text so directs, change set_speed_resolution
-   QStringList dbgtxt = US_Settings::debug_text();
-   for ( int ii = 0; ii < dbgtxt.count(); ii++ )
-   {  // If debug text modifies ss_reso, apply it
-      if ( dbgtxt[ ii ].startsWith( "SetSpeedReso" ) )
-         ss_reso        = QString( dbgtxt[ ii ] ).section( "=", 1, 1 ).toInt();
-   }
+   double ss_reso       = US_Settings::speedResolution();
    US_SimulationParameters::SpeedProfile* sp;
    US_SimulationParameters::SpeedProfile* sp_prev;
 DbgLv(1) << "AMATH:wrts: writetimestate : no of scans" << nscans;
@@ -157,7 +150,7 @@ DbgLv(0)<< "AMATH:wrts: rate is given by user : t_acc from timestate" << t_acc <
          else
             rpm         = speed;
 
-         int set_speed  = (int)qRound( rpm / (double)ss_reso ) * ss_reso;
+         int set_speed  = (int)( qRound( rpm / ss_reso ) * ss_reso );
 
          double om1t = rpm * M_PI / 30.0;
          omega2t    += sq( om1t );
@@ -191,7 +184,7 @@ if((scan_nbr>0)||(ii<(d1+2))||((ii>(tacc-2))&&(ii<(tacc+2)))||((ii+3)>d2))
    duration      += 10;
    d1             = itime + 1;
    int step       = nspeed - 1;
-   int set_speed  = (int)qRound( rpm / (double)ss_reso ) * ss_reso;
+   int set_speed  = (int)( qRound( rpm / ss_reso ) * ss_reso );
    scan_nbr       = 0;
    double omg2ti  = pow( ( rpm * M_PI / 30.0 ), 2.0 );
 
@@ -217,6 +210,8 @@ if((scan_nbr>0)||(ii<(d1+2))||((ii>(tacc-2))&&(ii<(tacc+2)))||((ii+3)>d2))
    }
 
    timestate.close_write_data();
+   timestate.setTimeStateType( US_TimeState::TIMESTATE_TYPE::CALCULATED );
+   timestate.setImportType( US_TimeState::IMPORT_TYPE::XLA );
    timestate.write_defs( 1.0 );
 
    return timestate.time_count();
@@ -279,16 +274,20 @@ DbgLv(0) << "AMATH:loac:t1 t2" << t1 << t2 << "t_acc rate" << t_acc << rate;
    return ( rate < min_accel );
 }
 
-QStringList US_AstfemMath::check_acceleration(const QVector<US_SimulationParameters::SpeedProfile> & speed_profiles,
-   const QVector<US_DataIO::Scan> & scans) {
+QStringList US_AstfemMath::check_acceleration(
+   const QVector<US_SimulationParameters::SpeedProfile> & speed_profiles,
+   const QVector<US_DataIO::Scan> & scans,
+   US_TimeState* timestate ) {
    QStringList results;
    // Settings and constants
    const QString dbgval = US_Settings::debug_value( "SetSpeedLowAcc" );
    const double lowAccelLimit = dbgval.isEmpty() ? DSS_LO_ACC : dbgval.toDouble(); // rpm/s
 
+   const bool timestate_useful = timestate != nullptr && timestate->time_count() > 0;
 
    constexpr double kRpmToRadPerSec = M_PI / 30.0;  // convert rpm to rad/s
    constexpr double kT1Factor       = 3.0 / 2.0;          // (3.0 / 2.0)
+   constexpr double accelerationDelay = 4.0;
 
    // Inputs distilled into a single "first scan" and target speed
    double targetRpm          = 0.0;
@@ -371,7 +370,26 @@ QStringList US_AstfemMath::check_acceleration(const QVector<US_SimulationParamet
    const double accelRate = targetRpm / accelEnd; // rpm/s
 
    if ( accelRate < lowAccelLimit ) {
-      // Low acceleration rate
+      // If an original timestate is present, the warning is ignored
+      if ( timestate_useful && timestate->getTimeStateType() == US_TimeState::TIMESTATE_TYPE::ORIGINAL ) {
+         DbgLv(1) << "Original timestate detected, ignore warning for low acceleration rate";
+         return results;
+      }
+      // For very slow running experiments, acceleration delays (most likely gear shifting) cause an artificial low
+      // acceleration rate. To avoid false positive warnings, the warning is ignored if the calculated rate with a
+      // time correction of 4 seconds meets the threshold
+      const double firstScanTimeCorrected = qMax(1.0, firstScanTime - accelerationDelay);
+      const double accelRateCorrected = targetRpm / ( kT1Factor * ( firstScanTimeCorrected - t1w ) );
+
+      if ( targetRpm < 15000.0 && accelRateCorrected > lowAccelLimit ) {
+         DbgLv(1) << "Slow running experiment " << QString::number( targetRpm ) << " rpm\n"
+                  << "Acceleration rate with correction: " << QString::number( accelRateCorrected ) << " rpm/s\n"
+                  << "Acceleration rate without correction: " << QString::number( accelRate ) << " rpm/s\n"
+                  << "Ignore warning for low acceleration rate";
+         return results;
+      }
+
+      // Low acceleration rate, no explanation for it
       results << "Bad TimeState Implied - Low Acceleration Rate";
       results << QString( "The experiment has a slower acceleration rate than expected.<br/>"
          "The rate implied for linear acceleration is %1 rpm/s, while %2 rpm/s or more were expected.<br/>"

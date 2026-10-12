@@ -1,0 +1,89 @@
+name: Code Style
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - '**.c'
+      - '**.cc'
+      - '**.cpp'
+      - '**.cxx'
+      - '**.h'
+      - '**.hpp'
+      - '.clang-format'
+      - 'scripts/check-format.sh'
+      - 'scripts/check-conventions.py'
+      - '.github/workflows/code-style.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  clang-format:
+    name: clang-format (changed lines)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write   # fix suggestions on the PR (not available for fork PRs)
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Install clang-format 18 and pygments
+        run: sudo apt-get update && sudo apt-get install -y clang-format-18 python3-pygments
+      - name: Determine merge base
+        id: base
+        run: |
+          git fetch origin "${{ github.base_ref || 'main' }}"
+          echo "sha=$(git merge-base HEAD "origin/${{ github.base_ref || 'main' }}")" >> "$GITHUB_OUTPUT"
+      - name: Check changed lines
+        id: check
+        continue-on-error: true
+        env:
+          CLANG_FORMAT: clang-format-18
+          GIT_CLANG_FORMAT: git-clang-format-18
+        run: scripts/check-format.sh "${{ steps.base.outputs.sha }}"
+      - name: Create fix patch
+        if: steps.check.outcome == 'failure'
+        env:
+          CLANG_FORMAT: clang-format-18
+          GIT_CLANG_FORMAT: git-clang-format-18
+        run: |
+          scripts/check-format.sh --fix "${{ steps.base.outputs.sha }}" || true
+          git diff > code-style-fixes.patch
+          {
+            echo "### Code style: fixes available"
+            echo
+            echo "Download the \`code-style-fixes\` artifact of this run and apply it with:"
+            echo '```'
+            echo "git apply code-style-fixes.patch"
+            echo '```'
+            echo "or run \`scripts/check-format.sh --fix origin/main\` locally. Suggestions are also posted on the pull request."
+            echo
+            echo '```diff'
+            head -c 60000 code-style-fixes.patch
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload fix patch
+        if: steps.check.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-style-fixes
+          path: code-style-fixes.patch
+      - name: Suggest fixes on the pull request
+        if: steps.check.outcome == 'failure' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
+        uses: reviewdog/action-suggester@v1
+        with:
+          tool_name: code style
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          fail_level: none
+      - name: Fail on style violations
+        if: steps.check.outcome == 'failure'
+        run: |
+          echo "Code style violations found. Apply the 'code-style-fixes' artifact (git apply) or run scripts/check-format.sh --fix origin/main"
+          exit 1

@@ -1,12 +1,10 @@
 # List of files that belong in $ULTRASCAN/etc/
 abstractCenterpieces.xml
-beckman_logo.png
 bufferComponents.xml
 check.png
 cluster.config
 etc_belongs_list.txt
 labs.xml
-logo_hsc.png
 nobandform.config
 reports.lengths.txt
 reports.xml
@@ -21,15 +19,7 @@ us3-splash.png
 us3-icon-128x128.png
 us3-icon-128x128.ico
 us3-icon.icns
-us3-GMP-icon-128x128.ico
 us3-GMP-icon-128x128.png
-us3-GMP-icon-128x128.xpm
-us3-GMP-icon-32x32.ico
-us3-GMP-icon-32x32.png
-us3-GMP-icon-32x32.xpm
-us3-GMP-icon-48x48.ico
-us3-GMP-icon-48x48.png
-us3-GMP-icon-48x48.xpm
 best.radii
 black-blue.map
 black-green.map
@@ -53,6 +43,7 @@ vdw.json
 yellow-black.map
 # List of directories that belong in $ULTRASCAN/etc
 dmd/
+icons/
 mysql/
 rotors/
 somo/

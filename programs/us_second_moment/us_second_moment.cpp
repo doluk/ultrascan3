@@ -32,9 +32,9 @@ US_SecondMoment::US_SecondMoment() : US_AnalysisBase2()
    smSeconds  = NULL;
    te_results = NULL;
 
-   connect( pb_help,  SIGNAL( clicked() ), SLOT( help() ) );
-   connect( pb_view,  SIGNAL( clicked() ), SLOT( view() ) );
-   connect( pb_save,  SIGNAL( clicked() ), SLOT( save() ) );
+   connect( pb_help,  &QAbstractButton::clicked, this, &US_SecondMoment::help );
+   connect( pb_view,  &QAbstractButton::clicked, this, &US_SecondMoment::view );
+   connect( pb_save,  &QAbstractButton::clicked, this, &US_SecondMoment::save );
 }
 
 void US_SecondMoment::data_plot( void )
@@ -427,3 +427,26 @@ void US_SecondMoment::save( void )
    QMessageBox::warning( this, tr( "Success" ), wmsg );
 }
 
+void US_SecondMoment::reset() {
+   US_AnalysisBase2::reset();
+   reset_data();
+   reset_gui();
+}
+
+void US_SecondMoment::reset_data() {
+   if ( smPoints  != nullptr) delete [] smPoints;
+   if ( smSeconds != nullptr) delete [] smSeconds;
+
+   smPoints    = nullptr;
+   smSeconds   = nullptr;
+   average_2nd = 0.0;
+}
+
+void US_SecondMoment::reset_gui() {
+   if ( te_results != nullptr)
+   {
+      te_results->disconnect();
+      te_results->close();
+      te_results = nullptr;
+   }
+}

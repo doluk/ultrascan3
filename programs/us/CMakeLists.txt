@@ -21,7 +21,7 @@ endif()
 if(WIN32)
         # Create us.rc if it doesn't exist
         if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/us.rc")
-                file(WRITE "${CMAKE_CURRENT_SOURCE_DIR}/us.rc" "IDI_ICON1 ICON \"../../gui/images/us3-icon-256x256.png\"\n")
+                file(WRITE "${CMAKE_CURRENT_SOURCE_DIR}/us.rc" "IDI_ICON1 ICON \"../../etc/us3-icon-128x128.ico\"\n")
         endif()
         list(APPEND US_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/us.rc")
 endif()
@@ -46,9 +46,9 @@ target_link_libraries(us
         us_program_common
 )
 
-# Ensure us_revision.h is found
+# Ensure us_revision.h is found — written to CMAKE_BINARY_DIR root by GenerateVersion.cmake
 target_include_directories(us PRIVATE
-        ${CMAKE_BINARY_DIR}/us       # where us_revision.h lives
+        ${CMAKE_BINARY_DIR}
 )
 
 # Ensure version headers are always generated first
@@ -58,3 +58,79 @@ target_include_directories(us
         PRIVATE
         ${src_dir}
 )
+
+if(APPLE)
+        add_custom_command(TARGET us POST_BUILD
+                COMMAND codesign --force --deep --sign -
+                "$<TARGET_BUNDLE_DIR:us>"
+                COMMENT "Ad-hoc code signing"
+        )
+endif()
+
+if(WIN32 AND USE_QT6)
+    if(WINDEPLOYQT_EXECUTABLE)
+        add_custom_command(TARGET us POST_BUILD
+                COMMAND $<$<NOT:$<CONFIG:Debug>>:${WINDEPLOYQT_EXECUTABLE}>
+                $<$<NOT:$<CONFIG:Debug>>:--no-translations>
+                $<$<NOT:$<CONFIG:Debug>>:--ignore-library-errors>
+                $<$<NOT:$<CONFIG:Debug>>:--release>
+                $<$<NOT:$<CONFIG:Debug>>:$<TARGET_FILE:us>>
+                COMMENT "Running windeployqt for Release..."
+                COMMAND_EXPAND_LISTS
+        )
+    endif()
+endif()
+
+if(WIN32 AND QHELPGENERATOR_EXECUTABLE AND ASSISTANT_EXECUTABLE AND WINDEPLOYQT_EXECUTABLE)
+    add_custom_command(TARGET us POST_BUILD
+            COMMAND "${CMAKE_COMMAND}"
+            -DDOC_QCH_STAGE=${DOC_QCH_STAGE}
+            -DDOC_QHC_STAGE=${DOC_QHC_STAGE}
+            -DDOC_OUTPUT_DIR=${DOC_OUTPUT_DIR}
+            -DASSISTANT_SOURCE=${ASSISTANT_EXECUTABLE}
+            -DWINDEPLOYQT=${WINDEPLOYQT_EXECUTABLE}
+            -DVCPKG_RUNTIME_BIN_DIR=${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin
+            -P "${CMAKE_SOURCE_DIR}/admin/cmake/packaging/windows/WindowsDeployQtAssistant.cmake"
+            COMMENT "Staging Qt Assistant and help files into bin/"
+            VERBATIM
+    )
+endif()
+
+# =============================================================================
+# macOS developer build: stage Assistant.app into bin/ with a qt.conf that
+# points at the vcpkg plugins directory so libqcocoa.dylib is found at runtime.
+# This is the dev-build equivalent of the --pkg MacDeploy staging path.
+# =============================================================================
+if(APPLE AND USE_QT6 AND TARGET stage_qt_assistant)
+    # The documentation target owns this bundle; do not stage it concurrently.
+    add_dependencies(us stage_qt_assistant)
+elseif(APPLE AND USE_QT6)
+    set(_VCPKG_ASSISTANT
+        "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/tools/qttools/bin/Assistant.app")
+
+    set(_VCPKG_QT6_PLUGINS
+        "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/Qt6/plugins")
+    if(NOT EXISTS "${_VCPKG_QT6_PLUGINS}")
+        set(_VCPKG_QT6_PLUGINS
+            "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/plugins")
+    endif()
+
+    set(_VCPKG_QT6_LIB "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/lib")
+
+    if(EXISTS "${_VCPKG_ASSISTANT}/Contents/MacOS/Assistant")
+        add_custom_command(TARGET us POST_BUILD
+            COMMAND "${CMAKE_COMMAND}"
+                -DASSISTANT_SRC=${_VCPKG_ASSISTANT}
+                "-DBIN_DIR=$<TARGET_FILE_DIR:us>/../../.."
+                -DQT6_PLUGINS_DIR=${_VCPKG_QT6_PLUGINS}
+                -DQT6_LIB_DIR=${_VCPKG_QT6_LIB}
+                "-DCMAKE_INSTALL_NAME_TOOL=${CMAKE_INSTALL_NAME_TOOL}"
+                "-DUS3_CODESIGN_EXECUTABLE=${US3_CODESIGN_EXECUTABLE}"
+                -P "${CMAKE_SOURCE_DIR}/admin/cmake/packaging/macos/StageAssistantDev.cmake"
+            COMMENT "Staging Qt Assistant.app for developer build"
+            VERBATIM
+        )
+    else()
+        message(STATUS "Qt Assistant.app not found at ${_VCPKG_ASSISTANT} -- Help will not work until qttools[assistant] is installed")
+    endif()
+endif()

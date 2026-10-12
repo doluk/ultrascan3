@@ -99,7 +99,7 @@ void US_Hydrodyn_Saxs_Hplc_Options::setupGUI()
    cb_save_bl->setPalette( PALET_NORMAL );
    AUTFBACK( cb_save_bl );
 
-   lbl_smooth =  new QLabel      ( us_tr( "Smoothing:" ), this );
+   lbl_smooth =  new QLabel      ( us_tr( "Smoothing radius:" ), this );
    lbl_smooth -> setAlignment    ( Qt::AlignLeft | Qt::AlignVCenter );
    lbl_smooth -> setPalette      ( PALET_LABEL );
    AUTFBACK( lbl_smooth );
@@ -418,7 +418,7 @@ void US_Hydrodyn_Saxs_Hplc_Options::setupGUI()
    le_guinier_qrgmax->setMinimumWidth( 60 );
 
    cb_gg_smooth = new QCheckBox(this);
-   cb_gg_smooth->setText(us_tr( "Experimental: Global Gaussian initialization smoothing. Maximum smoothing points: "));
+   cb_gg_smooth->setText(us_tr( "Global Gaussians - initialization smoothing. Maximum smoothing radius: "));
    cb_gg_smooth->setEnabled( true );
    cb_gg_smooth->setChecked( (*parameters)[ "hplc_cb_gg_smooth" ] == "true" );
    cb_gg_smooth->setFont(QFont( USglobal->config_list.fontFamily, USglobal->config_list.fontSize ) );
@@ -440,7 +440,7 @@ void US_Hydrodyn_Saxs_Hplc_Options::setupGUI()
    le_gg_smooth->setMinimumWidth( 60 );
 
    cb_gg_cyclic = new QCheckBox(this);
-   cb_gg_cyclic->setText(us_tr( "Experimental: Global Gaussian Gaussian cyclic fit"));
+   cb_gg_cyclic->setText(us_tr( "Global Gaussians - cyclic fit"));
    cb_gg_cyclic->setEnabled( true );
    cb_gg_cyclic->setChecked( (*parameters)[ "hplc_cb_gg_cyclic" ] == "true" );
    cb_gg_cyclic->setFont(QFont( USglobal->config_list.fontFamily, USglobal->config_list.fontSize ) );
@@ -449,7 +449,7 @@ void US_Hydrodyn_Saxs_Hplc_Options::setupGUI()
    connect( cb_gg_cyclic, SIGNAL( clicked() ), SLOT( update_enables() ) );
 
    cb_gg_oldstyle = new QCheckBox(this);
-   cb_gg_oldstyle->setText(us_tr( "Experimental: Global Gaussian - Enable legacy Gaussian fit display"));
+   cb_gg_oldstyle->setText(us_tr( "Global Gaussians - Enable legacy Gaussian fit display"));
    cb_gg_oldstyle->setEnabled( true );
    cb_gg_oldstyle->setChecked( (*parameters)[ "hplc_cb_gg_oldstyle" ] == "true" );
    cb_gg_oldstyle->setFont(QFont( USglobal->config_list.fontFamily, USglobal->config_list.fontSize ) );
@@ -553,6 +553,25 @@ void US_Hydrodyn_Saxs_Hplc_Options::setupGUI()
    connect( le_ampl_width_min, SIGNAL( textChanged( const QString & ) ), SLOT( update_enables() ) );
    le_ampl_width_min->setMinimumWidth( 60 );
 
+   lbl_ampl_min =  new QLabel      ( us_tr( "Global minimum value for Gaussian amplitude:" ), this );
+   lbl_ampl_min -> setAlignment    ( Qt::AlignLeft | Qt::AlignVCenter );
+   lbl_ampl_min -> setPalette( PALET_LABEL );
+   AUTFBACK( lbl_ampl_min );
+   lbl_ampl_min -> setFont         ( QFont( USglobal->config_list.fontFamily, USglobal->config_list.fontSize, QFont::Bold ) );
+
+   le_ampl_min = new QLineEdit( this );    le_ampl_min->setObjectName( "le_ampl_min Line Edit" );
+   le_ampl_min->setText( (*parameters)[ "hplc_ampl_min" ] );
+   le_ampl_min->setAlignment(Qt::AlignCenter|Qt::AlignVCenter);
+   le_ampl_min->setPalette( PALET_NORMAL );
+   AUTFBACK( le_ampl_min );
+   le_ampl_min->setFont(QFont( USglobal->config_list.fontFamily, USglobal->config_list.fontSize ));
+   {
+      QDoubleValidator *qdv = new QDoubleValidator( 1e-50, 1e-3, 1, le_ampl_min );
+      le_ampl_min->setValidator( qdv );
+   }
+   connect( le_ampl_min, SIGNAL( textChanged( const QString & ) ), SLOT( update_enables() ) );
+   le_ampl_min->setMinimumWidth( 60 );
+
    cb_lock_min_retry = new QCheckBox(this);
    cb_lock_min_retry->setText( us_tr( "Lock curves and retry when minimum amplitude or width is pegged\nby the global minimum times this value:" ) );
    cb_lock_min_retry->setEnabled( true );
@@ -630,7 +649,13 @@ void US_Hydrodyn_Saxs_Hplc_Options::setupGUI()
    le_makeiq_cutmax_pct->setMinimumWidth( 60 );
 
    cb_makeiq_avg_peaks = new QCheckBox(this);
-   cb_makeiq_avg_peaks->setText( us_tr( "Make I(q): average and normalize top % of max intensity" ) );
+   cb_makeiq_avg_peaks->setText( us_tr( "Make I(q): average top % of max intensity" ) );
+   cb_makeiq_avg_peaks->setToolTip( us_tr(
+      "With an associated concentration curve, two averaged curves are produced per peak:<br>"
+      "&nbsp;&nbsp;<b>..._avg</b> &ndash; scaled to the mean concentration of the averaged frames<br>"
+      "&nbsp;&nbsp;&nbsp;&nbsp;(use this for concentration-dependent analysis, e.g. molecular weight via Guinier)<br>"
+      "&nbsp;&nbsp;<b>..._avg_n</b> &ndash; normalized to concentration 1.0<br>"
+      "Without concentration data, a single plain average is produced." ) );
    cb_makeiq_avg_peaks->setEnabled( true );
    cb_makeiq_avg_peaks->setChecked( (*parameters)[ "hplc_cb_makeiq_avg_peaks" ] == "true" );
    cb_makeiq_avg_peaks->setFont(QFont( USglobal->config_list.fontFamily, USglobal->config_list.fontSize ) );
@@ -733,6 +758,10 @@ void US_Hydrodyn_Saxs_Hplc_Options::setupGUI()
 
       gl_other->addWidget         ( lbl_ampl_width_min , row, 0 );
       gl_other->addWidget         ( le_ampl_width_min  , row, 1 );
+      ++row;
+
+      gl_other->addWidget         ( lbl_ampl_min , row, 0 );
+      gl_other->addWidget         ( le_ampl_min  , row, 1 );
       ++row;
 
       gl_other->addWidget         ( cb_lock_min_retry       , row, 0 );
@@ -938,6 +967,7 @@ bool US_Hydrodyn_Saxs_Hplc_Options::any_changes()
       || (*parameters)[ "hplc_makeiq_avg_peaks"        ] != ( le_makeiq_avg_peaks    ->text() )
       || (*parameters)[ "hplc_csv_transposed"          ] != ( cb_csv_transposed->isChecked() ? "true" : "false" )
       || (*parameters)[ "hplc_ampl_width_min"          ] != ( le_ampl_width_min      ->text() )
+      || (*parameters)[ "hplc_ampl_min"                ] != ( le_ampl_min            ->text() )
       || (*parameters)[ "hplc_lock_min_retry"          ] != ( cb_lock_min_retry->isChecked() ? "true" : "false" )
       || (*parameters)[ "hplc_lock_min_retry_mult"     ] != ( le_lock_min_retry_mult ->text() )
       || (*parameters)[ "hplc_maxfpk_restart"          ] != ( cb_maxfpk_restart->isChecked() ? "true" : "false" )
@@ -998,6 +1028,7 @@ void US_Hydrodyn_Saxs_Hplc_Options::ok()
    (*parameters)[ "hplc_csv_transposed" ] = cb_csv_transposed->isChecked() ? "true" : "false";
    
    (*parameters)[ "hplc_ampl_width_min"       ] = le_ampl_width_min      ->text();
+   (*parameters)[ "hplc_ampl_min"             ] = le_ampl_min            ->text();
 
    (*parameters)[ "hplc_lock_min_retry"       ] = cb_lock_min_retry->isChecked() ? "true" : "false";
    (*parameters)[ "hplc_lock_min_retry_mult"  ] = le_lock_min_retry_mult ->text();
@@ -1202,8 +1233,8 @@ void US_Hydrodyn_Saxs_Hplc_Options::fasta_file() {
    QStringList qsl;
 
    QTextStream ts( &f );
-   QRegExp rx_empty( "^\\s*$" );
-   QRegExp rx_newseq( "^\\s*>" );
+   QRegularExpression rx_empty( "^\\s*$" );
+   QRegularExpression rx_newseq( "^\\s*>" );
 
    QString seq;
    int chains = 0;
@@ -1215,11 +1246,12 @@ void US_Hydrodyn_Saxs_Hplc_Options::fasta_file() {
    while ( !ts.atEnd() ) {
       QString qs = ts.readLine().trimmed();
       
-      if ( rx_empty.exactMatch( qs ) ) {
+      if ( rx_empty.match( qs ).hasMatch() ) {
          continue;
       }
 
-      if ( rx_newseq.indexIn( qs ) > -1 ) {
+      QRegularExpressionMatch rx_newseq_m = rx_newseq.match( qs );
+      if ( rx_newseq_m.hasMatch() ) {
          seq_names += qs.replace( rx_newseq, "" ) + "\n";
          chains++;
          continue;

@@ -98,7 +98,8 @@ class US_AnaprofPanGen : public US_WidgetsDialog
       QScrollArea* scrollArea;
       QWidget*     containerWidget;
       
-      QGridLayout* middle_h;
+     QGridLayout* middle_h;
+  //QHBoxLayout* middle_h;
       QVBoxLayout* left;
       QVBoxLayout* right;
       QScrollArea* scrollArea_r;
@@ -218,7 +219,7 @@ class US_AnaprofPan2DSA : public US_WidgetsDialog
       QStringList sibLValue( const QString, const QString );
       int         status   ( void );
       void        help     ( void )
-         { showHelp.show_help( "manual/experiment_speeds.html" ); };
+         { showHelp.show_help( "manual/experiment/speeds.html" ); };
 
    private:
       US_AnalysisProfileGui*  mainw;
@@ -277,7 +278,8 @@ class US_AnaprofPan2DSA : public US_WidgetsDialog
       int          dbg_level;     // Debug flag
       int          cchx;          // Current 2DSA channel index
       bool         changed;       // Flag if any speed step changes
-      
+			  
+      void setValidators( void );      
    private slots:
       void channel_selected ( int );
       void parms_to_gui     ( int );
@@ -333,7 +335,7 @@ class US_AnaprofPanPCSA : public US_WidgetsDialog
       QStringList sibLValue( const QString, const QString );
       int         status   ( void );
       void        help     ( void )
-         { showHelp.show_help( "manual/experiment_cells.html" ); };
+         { showHelp.show_help( "manual/experiment/cells.html" ); };
 
    private:
       US_AnalysisProfileGui*   mainw;
@@ -375,6 +377,7 @@ class US_AnaprofPanPCSA : public US_WidgetsDialog
       QMap< QString, bool > isErrorField;
       int  check_syntax_xyz( void );
       void bind_min_max( QString, double );
+      void setValidators( void );     					  
 
    private slots:
       void nopcsa_checked   ( bool );

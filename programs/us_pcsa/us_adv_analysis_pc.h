@@ -130,7 +130,7 @@ class US_AdvAnalysisPc : public US_WidgetsDialog
       void kupperChanged   ( double );
       void pointsChanged   ( double );
 #endif
-      void mciterChanged   ( double );
+      void mciterChanged   ( int );
       void load_mrecs      ( void );
       void store_mrecs     ( void );
       void load_bfm        ( void );
@@ -158,7 +158,7 @@ class US_AdvAnalysisPc : public US_WidgetsDialog
       void test_db_mrecs   ( void );
 
       void help     ( void )
-      { showHelp.show_help( "pcsa_advanced.html" ); };
+      { showHelp.show_help( "manual/pcsa/pcsa_adv.html" ); };
 };
 #endif
 
