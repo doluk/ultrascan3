@@ -89,3 +89,6 @@ In addition to formatting, `scripts/check-conventions.py` checks changed code fo
 (`clang-analyzer-*`, `bugprone-*`) are annotated as errors first, style findings (`modernize-use-nullptr`,
 `modernize-redundant-void-arg`) as warnings with fix suggestions on the PR and a `clang-tidy-fixes` patch artifact.
 Locally (needs a `compile_commands.json`): `scripts/run-clang-tidy-diff.sh --fix origin/main <build-dir>`.
+
+Comment `/format` on a pull request (write access, branch in this repository) to let the bot apply the code style fixes to the changed lines
+and push them. Set the secret `FORMAT_PUSH_TOKEN` (PAT or app token) if the pushed commit should re-trigger the CI checks.

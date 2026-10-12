@@ -25,6 +25,7 @@ for a in "$@"; do
    esac
 done
 
+here=$(dirname "$(readlink -f "$0")")   # tools are taken from where this script lives
 cd "$(git rev-parse --show-toplevel)"
 
 cf=${CLANG_FORMAT:-clang-format}
@@ -48,7 +49,7 @@ else
    ref=("$base")
 fi
 
-conv=(scripts/check-conventions.py)
+conv=("$here/check-conventions.py")
 if [ "$mode" = staged ]; then conv+=(--staged); else conv+=("$base"); fi
 
 if [ "$fix" = 1 ]; then
