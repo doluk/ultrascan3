@@ -1733,14 +1733,30 @@ double US_Math2::find_root( const double goal )
 }
 
 
-#include "us_settings.h"
 #include "us_constants.h"
-int demo_style_check( void ){ int* p = NULL; QString s; if(s=="a"){ return *p; } return 0; }
-void clazy_demo( QStringList& l, QMap< int, int >& m )
+#include "us_settings.h"
+int demo_style_check( void )
 {
-   foreach ( QString s, l ) { qDebug() << s; }
-   for ( auto it = m.begin(); it != m.end(); ++it ) { qDebug() << it.key(); }
-   int c = l.count();
+   int*    p = NULL;
+   QString s;
+   if ( s == "a" )
+   {
+      return *p;
+   }
+   return 0;
+}
+void clazy_demo( QStringList& l, QMap<int, int>& m )
+{
+   foreach ( QString s, l )
+   {
+      qDebug() << s;
+   }
+   for ( auto it = m.begin(); it != m.end(); ++it )
+   {
+      qDebug() << it.key();
+   }
+   int     c = l.count();
    QString t = l.first() + "x" + "y";
-   Q_UNUSED( c ); Q_UNUSED( t );
+   Q_UNUSED( c );
+   Q_UNUSED( t );
 }
