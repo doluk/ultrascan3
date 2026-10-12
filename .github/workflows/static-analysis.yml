@@ -66,21 +66,15 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ehb1/us3comp:latest
-    permissions:
-      contents: read
-      pull-requests: write   # lets the suggester post fix suggestions (not available for fork PRs)
 
     env:
       CHANGED_FILES: ${{ needs.changed-files.outputs.cpp_files }}
-      # clang-tidy findings (see .clang-tidy) on changed lines are annotated and suggested on the PR.
-      # Set to 'true' to make any such finding fail the job.
-      TIDY_BLOCKING: 'false'
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
         with:
-          fetch-depth: 0   # clang-tidy runs on the lines changed against the base branch
+          fetch-depth: 1
 
       - name: Allow CI to access repo directory
         run: git config --global --add safe.directory /__w/ultrascan3/ultrascan3
@@ -133,8 +127,7 @@ jobs:
           apt-get install -y clang-tidy cppcheck clang-format libxml2-utils jq || true
           # Install all development libraries that CMake expects
           apt-get install -y libqwt-qt5-dev libarchive-dev libgl2ps-dev libssl-dev || true
-          apt-get install -y iwyu ninja-build python3 || true
-          apt-get install -y libqt5svg5-dev libqt5datavisualization5-dev qtmultimedia5-dev libqt5opengl5-dev libmysqlclient-dev libqt5sql5-mysql || true
+          apt-get install -y iwyu ninja-build || true
           # Install comprehensive Qt5 development environment
           apt-get install -y qtbase5-dev qt5-qmake qt5-default || true
           apt-get install -y qttools5-dev qttools5-dev-tools || true
@@ -261,36 +254,6 @@ jobs:
             echo "Clang-tidy not available"
             echo '{"files": [], "summary": {"total_issues": 0, "files_with_issues": 0}}' > clang-tidy-results.json
           fi
-
-      - name: clang-tidy on changed lines (annotations, summary and fix suggestions)
-        id: tidy
-        if: env.SKIP_ANALYSIS != 'true' && github.event_name == 'pull_request'
-        continue-on-error: true
-        uses: cpp-linter/cpp-linter-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          version: '18'
-          style: ''                    # clang-format is checked by the Code Style workflow
-          tidy-checks: ''              # use .clang-tidy (security/correctness first, then style checks)
-          database: '.'                # compile_commands.json created by the CMake step above
-          lines-changed-only: true     # only lines added by the pull request
-          extensions: 'c,h,cpp,hpp,cc,hh,cxx'
-          ignore: 'us_somo|qwtplot3d|vcpkg|buildsys|doc|etc|pkg|us-build|somo|scripts|.github'
-          file-annotations: true
-          step-summary: true
-          tidy-review: ${{ github.event.pull_request.head.repo.full_name == github.repository }}   # fix suggestions; not possible on fork PRs
-          passive-reviews: true        # never approve / request changes
-          cache-enable: true
-
-      - name: Restore worktree after fixes
-        if: env.SKIP_ANALYSIS != 'true' && github.event_name == 'pull_request'
-        continue-on-error: true
-        run: git checkout -- .
-
-      - name: Fail on clang-tidy findings
-        if: env.SKIP_ANALYSIS != 'true' && github.event_name == 'pull_request' && env.TIDY_BLOCKING == 'true' && steps.tidy.outputs.clang-tidy-checks-failed != '0'
-        run: exit 1
 
       - name: Run Cppcheck Analysis
         if: env.SKIP_ANALYSIS != 'true'

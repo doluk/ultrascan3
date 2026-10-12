@@ -86,11 +86,13 @@ In addition to formatting, `scripts/check-conventions.py` checks changed code fo
 guard; new files must start with `//! \file <name>` and headers must use the guard `<NAME>_H` (`us_foo.h` -> `US_FOO_H`).
 Includes are sorted within each block. `nullptr` (not `NULL`) and `f()` (not `f( void )`) are enforced by clang-tidy (below).
 
-Both checks run through [cpp-linter-action](https://github.com/cpp-linter/cpp-linter-action) on the lines added by a pull request:
-*Code Style* (clang-format, `.clang-format`) and *Static Analysis* (clang-tidy, `.clang-tidy`: security/correctness checks, `modernize-use-nullptr`,
-`modernize-redundant-void-arg`). Findings show up as annotations in the diff, in the job summary and (PRs from branches of this repository) as
-"Apply suggestion" review comments. Failed *Code Style* runs also upload `code-style-fixes.patch` (`git apply`).
-Locally: `scripts/check-format.sh --fix origin/main`.
+The *Code Style* workflow checks the lines added by a pull request with
+[cpp-linter-action](https://github.com/cpp-linter/cpp-linter-action) (clang-format `.clang-format`, clang-tidy `.clang-tidy`),
+clazy (`scripts/clazy-changed.py`, checks in `CLAZY_CHECKS`) and `scripts/check-conventions.py`. Findings show up as annotations in the diff,
+in the job summary and (clang-format/clang-tidy, PRs from branches of this repository) as "Apply suggestion" review comments.
+Failed formatting runs also upload `code-style-fixes.patch` (`git apply`). Locally: `scripts/check-format.sh --fix origin/main`.
+clang-tidy and clazy run against the Qt6 compilation database of the `usbuildtest` image; set `TIDY_BLOCKING` / `CLAZY_BLOCKING` in the
+workflow to make their findings fail the job. The *Static Analysis* workflow is independent (security/cppcheck only).
 
 Comment `/format` on a pull request (write access, branch in this repository) to let the bot apply the code style fixes to the changed lines
 and push them. Set the secret `FORMAT_PUSH_TOKEN` (PAT or app token) if the pushed commit should re-trigger the CI checks.
