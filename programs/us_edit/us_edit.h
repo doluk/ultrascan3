@@ -16,6 +16,8 @@
 //#include "us_license_t.h"
 //#include "us_license.h"
 
+class QVBoxLayout;
+
 class US_Edit : public US_Widgets
 {
    Q_OBJECT
@@ -50,6 +52,9 @@ class US_Edit : public US_Widgets
          QWidget* upperWidget;
          QWidget* leftWidget;
          QWidget* rightWidget;	 
+         QVBoxLayout* top;  // this widget's own top-level layout; sdiag/sdiag_bll
+                             // are added into it so Qt keeps them auto-sized to
+                             // fill this widget (see manual_edit_auto()).
 
          QPointF fixedPoint;
          
@@ -179,8 +184,10 @@ class US_Edit : public US_Widgets
       QMap < QString, bool > isSet_ref_wvl;
 
       QMap < QString, bool > channels_to_analyse;
+      QMap < QString, bool > channels_abde_refs;
       QMap < QString, QString > triples_skip_analysis;
       QMap < QString, QString > triple_to_edit;
+      
 
       QVector < int > iwavl_edit_ref;
       QVector < int > iwavl_edit_ref_index;
@@ -355,6 +362,7 @@ class US_Edit : public US_Widgets
       int     autoflowID_passed;
       int     autoflowStatusID;
       QString autoflow_expType;
+      QString expType_manual;
       QString dataSource;
       bool    simulated_data;
 
@@ -431,19 +439,22 @@ class US_Edit : public US_Widgets
       void record_edit_status( QMap< QString, bool>, QString );
       
       bool isSet_to_analyse( QString, QString  );
+      bool isSet_abde_ref( QString );
       bool isSet_to_analyse_triple( QString, QString  );
       bool isSet_to_edit_triple( QString, QString );
       bool isSet_edit_info_for_channel( QString, QString );
       void set_data_over_lamda();
       void xaxis_wavl_wgts_on( bool );
 
- // protected:
- //    void resizeEvent(QResizeEvent *event) override;	
-						  
+ protected:
+     void resizeEvent( QResizeEvent* event ) override;
+
+   public slots:
+      void load_auto         ( QMap < QString, QString > & );
+      void reset_editdata_panel ( void );
 
    private slots:         
       void load              ( void );
-      void load_auto         ( QMap < QString, QString > & );
       void load_manual_auto  ( void );
       void onMouseMoved(const QPointF& mousePos);
   
@@ -455,7 +466,6 @@ class US_Edit : public US_Widgets
       
       bool isSaved_auto( void );
       
-      void reset_editdata_panel ( void );
       
       void details           ( void );
 

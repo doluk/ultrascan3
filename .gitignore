@@ -1,9 +1,20 @@
 local.pri
 .*
 !/.gitignore
+# The blanket dot-rule above also hides .github, which silently made every
+# newly added workflow, composite action and issue template untracked until
+# someone noticed and force-added it. Re-include the directory explicitly.
+!/.github/
+!/.clang-format
+!/.gitattributes
+!/.clang-tidy
+!/.pre-commit-config.yaml
+!/.githooks/
 *.o
 tmp/
 moc/
+moc_*.cpp
+moc_predefs.h
 obj/
 Makefile*
 qwtplot3d/
@@ -12,6 +23,7 @@ lib/
 build.log
 gui/qrc_images.cpp
 /programs/us/us_revision.h
+/us_somo/develop/include/us_revision.h
 /us_somo/develop/include/us_version.h
 *~
 *.pro.user
@@ -19,12 +31,18 @@ gui/qrc_images.cpp
 
 /build/
 /build-docker/
+/build-docker-nodb/
+/build-docker-coverage/
 /cmake-build-debug/
-
+doc/manual/build
 /vcpkg/
 /.idea/
 /.vscode/
-vcpkg_installed/ 
-configure-arm64.log 
-programs/us/us.rc 
-CMakeUserPresets.json 
+/_CPack_Packages/
+vcpkg_installed/
+configure-arm64.log
+programs/us/us.rc
+CMakeUserPresets.json
+__pycache__
+*.pyc
+/build-mac/

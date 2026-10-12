@@ -37,14 +37,14 @@ US_Extinction::US_Extinction(QString buffer, const QString& text, const QString&
    //Connect all the buttons on the GUI to their proper functions
    v_wavelength.clear();
    pb_addWavelength = us_pushbutton( tr( "Add Wavelength Scanfile") );
-   connect( pb_addWavelength, SIGNAL( clicked()), SLOT(add_wavelength()));
+   connect( pb_addWavelength, &QPushButton::clicked, this, &US_Extinction::add_wavelength );
    pb_reset = us_pushbutton( tr( "Reset Scanlist") );
-        connect( pb_reset, SIGNAL( clicked()), SLOT(reset_scanlist()));
+        connect( pb_reset, &QPushButton::clicked, this, &US_Extinction::reset_scanlist );
    pb_update = us_pushbutton( tr( "Update Data Plot"));
-   connect( pb_update, SIGNAL( clicked()), SLOT(update_data()));
+   connect( pb_update, &QPushButton::clicked, this, &US_Extinction::update_data );
    
    pb_perform = us_pushbutton( tr( "Perform Global Fit") );
-   connect( pb_perform, SIGNAL( clicked()), SLOT(perform_global()));
+   connect( pb_perform, &QPushButton::clicked, this, &US_Extinction::perform_global );
    pb_perform->hide();
 
    //if (buffer_temp.toStdString() == "BUFFER")
@@ -54,9 +54,9 @@ US_Extinction::US_Extinction(QString buffer, const QString& text, const QString&
 
      pb_perform_solution = us_pushbutton( tr( "Perform Solution Fit") );          // New button for 'Fit Solution...'
 
-   connect( pb_perform_buffer, SIGNAL( clicked()), SLOT(perform_global_buffer()));
-   connect( pb_perform_analyte, SIGNAL( clicked()), SLOT(perform_global_analyte()));
-   connect( pb_perform_solution, SIGNAL( clicked()), SLOT(perform_global_solution()));
+   connect( pb_perform_buffer, &QPushButton::clicked, this, &US_Extinction::perform_global_buffer );
+   connect( pb_perform_analyte, &QPushButton::clicked, this, &US_Extinction::perform_global_analyte );
+   connect( pb_perform_solution, &QPushButton::clicked, this, &US_Extinction::perform_global_solution );
    if (buffer_temp.toStdString() == "BUFFER")
      {
        pb_perform_analyte->hide();
@@ -73,24 +73,24 @@ US_Extinction::US_Extinction(QString buffer, const QString& text, const QString&
        pb_perform_analyte->hide();
      }
    pb_calculate = us_pushbutton( tr( "Calculate E280 from Peptide File") );
-   connect( pb_calculate, SIGNAL( clicked()), SLOT(calculateE280()));
+   connect( pb_calculate, &QPushButton::clicked, this, &US_Extinction::calculateE280 );
    //if (buffer_temp.toStdString() == "BUFFER")
      pb_calculate->hide();
 
    pb_save = us_pushbutton( tr( "Save") );
-   connect( pb_save, SIGNAL( clicked()), SLOT(save()));
+   connect( pb_save, &QPushButton::clicked, this, &US_Extinction::save );
    pb_save->hide();
 
    pb_accept = us_pushbutton( tr( "Accept") );                                 // New button for 'Fit Buffer...' 
-   connect( pb_accept, SIGNAL( clicked()), SLOT(accept()));
+   connect( pb_accept, &QPushButton::clicked, this, &US_Extinction::accept );
    //pb_accept->hide();
 
    pb_view = us_pushbutton( tr( "View Result File") );
-   connect( pb_view, SIGNAL( clicked()), SLOT(view_result()));
+   connect( pb_view, &QPushButton::clicked, this, &US_Extinction::view_result );
    pb_help = us_pushbutton( tr( "Help") );
-   connect( pb_help, SIGNAL( clicked()), SLOT(help()));
+   connect( pb_help, &QAbstractButton::clicked, this, &US_Extinction::help);
    pb_close = us_pushbutton( tr( "Close") );
-   connect( pb_close, SIGNAL( clicked()), SLOT(close()));
+   connect( pb_close, &QAbstractButton::clicked, this, &QWidget::close);
    
    lbl_peptide = us_banner(tr("Peptide Information"));
    if (buffer_temp.toStdString() == "BUFFER")
@@ -113,8 +113,8 @@ US_Extinction::US_Extinction(QString buffer, const QString& text, const QString&
      lbl_wavelengthref->hide();
 
    lw_file_names = us_listwidget();
-   connect(lw_file_names, SIGNAL(itemSelectionChanged()), SLOT(listToCurve()));
-   connect(lw_file_names, SIGNAL(itemDoubleClicked(QListWidgetItem*)), SLOT(deleteCurve()));
+   connect(lw_file_names, &QListWidget::itemSelectionChanged, this, &US_Extinction::listToCurve);
+   connect(lw_file_names, &QListWidget::itemDoubleClicked, this, &US_Extinction::deleteCurve);
    
    le_associate = us_lineedit("Simulation",1, false);
    le_associate->hide();
@@ -139,7 +139,7 @@ US_Extinction::US_Extinction(QString buffer, const QString& text, const QString&
    ct_gaussian = us_counter(2, 1, 50, 15);
    ct_gaussian->setSingleStep(1);
    ct_gaussian->setEnabled(true);
-   connect(ct_gaussian, SIGNAL(valueChanged(double)), SLOT(update_order(double)));
+   connect(ct_gaussian, &QwtCounter::valueChanged, this, &US_Extinction::update_order);
 
    ct_coefficient = us_counter(2, 200, 1500, 280);
    ct_coefficient->setSingleStep(1);
@@ -149,6 +149,7 @@ US_Extinction::US_Extinction(QString buffer, const QString& text, const QString&
 
 
    data_plot = new QwtPlot();
+   US_Widgets::us_style_plot( data_plot );
    changedCurve = NULL;
    plotLayout = new US_Plot(data_plot, tr(""), tr("Wavelength(nm)"), tr("Optical Density"));
    data_plot->setCanvasBackground(Qt::black);
@@ -272,35 +273,35 @@ US_Extinction::US_Extinction() : US_Widgets()
    //Connect all the buttons on the GUI to their proper functions
    v_wavelength.clear();
    pb_addWavelength = us_pushbutton( tr( "Add Wavelength Scanfile") );
-   connect( pb_addWavelength, SIGNAL( clicked()), SLOT(add_wavelength()));
+   connect( pb_addWavelength, &QPushButton::clicked, this, &US_Extinction::add_wavelength );
    pb_reset = us_pushbutton( tr( "Reset Scanlist") );
-   connect( pb_reset, SIGNAL( clicked()), SLOT(reset_scanlist()));
+   connect( pb_reset, &QPushButton::clicked, this, &US_Extinction::reset_scanlist );
    pb_update = us_pushbutton( tr( "Update Data Plot"));
-   connect( pb_update, SIGNAL( clicked()), SLOT(update_data()));
+   connect( pb_update, &QPushButton::clicked, this, &US_Extinction::update_data );
    
    pb_perform = us_pushbutton( tr( "Perform Global Fit") );
-   connect( pb_perform, SIGNAL( clicked()), SLOT(perform_global()));
+   connect( pb_perform, &QPushButton::clicked, this, &US_Extinction::perform_global );
    
    pb_perform_buffer = us_pushbutton( tr( "Perform Buffer Fit") );            // New button for 'Fit Buffer...'
-   connect( pb_perform_buffer, SIGNAL( clicked()), SLOT(perform_global_buffer()));
+   connect( pb_perform_buffer, &QPushButton::clicked, this, &US_Extinction::perform_global_buffer );
    pb_perform_buffer->hide();
    
    pb_calculate = us_pushbutton( tr( "Calculate E280 from Peptide File") );
-   connect( pb_calculate, SIGNAL( clicked()), SLOT(calculateE280()));
+   connect( pb_calculate, &QPushButton::clicked, this, &US_Extinction::calculateE280 );
 
    pb_save = us_pushbutton( tr( "Save") );
-   connect( pb_save, SIGNAL( clicked()), SLOT(save()));
+   connect( pb_save, &QPushButton::clicked, this, &US_Extinction::save );
    
    pb_accept = us_pushbutton( tr( "Accept") );                                 // New button for 'Fit Buffer...' 
-   connect( pb_accept, SIGNAL( clicked()), SLOT(accept()));
+   connect( pb_accept, &QPushButton::clicked, this, &US_Extinction::accept );
    pb_accept->hide();
 
    pb_view = us_pushbutton( tr( "View Result File") );
-   connect( pb_view, SIGNAL( clicked()), SLOT(view_result()));
+   connect( pb_view, &QPushButton::clicked, this, &US_Extinction::view_result );
    pb_help = us_pushbutton( tr( "Help") );
-   connect( pb_help, SIGNAL( clicked()), SLOT(help()));
+   connect( pb_help, &QAbstractButton::clicked, this, &US_Extinction::help);
    pb_close = us_pushbutton( tr( "Close") );
-   connect( pb_close, SIGNAL( clicked()), SLOT(close()));
+   connect( pb_close, &QAbstractButton::clicked, this, &QWidget::close);
    
    lbl_peptide = us_banner(tr("Peptide Information"));
    lbl_wvinfo = us_banner(tr("Wavelength Information:"));
@@ -314,8 +315,8 @@ US_Extinction::US_Extinction() : US_Widgets()
    lbl_wavelengthref = us_label(tr("Wavelength:"));
 
    lw_file_names = us_listwidget();
-   connect(lw_file_names, SIGNAL(itemSelectionChanged()), SLOT(listToCurve()));
-   connect(lw_file_names, SIGNAL(itemDoubleClicked(QListWidgetItem*)), SLOT(deleteCurve()));
+   connect(lw_file_names, &QListWidget::itemSelectionChanged, this, &US_Extinction::listToCurve);
+   connect(lw_file_names, &QListWidget::itemDoubleClicked, this, &US_Extinction::deleteCurve);
    
    le_associate = us_lineedit("Simulation",1, false);
    le_associate_buffer = us_lineedit("",1, true);
@@ -330,13 +331,14 @@ US_Extinction::US_Extinction() : US_Widgets()
    ct_gaussian = us_counter(2, 1, 50, 15);
    ct_gaussian->setSingleStep(1);
    ct_gaussian->setEnabled(true);
-   connect(ct_gaussian, SIGNAL(valueChanged(double)), SLOT(update_order(double)));
+   connect(ct_gaussian, &QwtCounter::valueChanged, this, &US_Extinction::update_order);
 
    ct_coefficient = us_counter(2, 200, 1500, 280);
    ct_coefficient->setSingleStep(1);
    ct_coefficient->setEnabled(true);
 
    data_plot = new QwtPlot();
+   US_Widgets::us_style_plot( data_plot );
    changedCurve = NULL;
    plotLayout = new US_Plot(data_plot, tr(""), tr("Wavelength(nm)"), tr("Optical Density"));
    data_plot->setCanvasBackground(Qt::black);
@@ -409,54 +411,73 @@ US_Extinction::US_Extinction() : US_Widgets()
    main->setColumnStretch(1, 5);
 }
 
-// void US_Extinction::add_wavelength(void)
-// {
-//   QStringList files;
-//   QFile f;
-
-//   QFileDialog dialog (this);
-//   //dialog.setNameFilter(tr("Text (*.txt *.csv *.dat *.wa *.dsp)"));
-
-//   dialog.setNameFilter(tr("Text files (*.[Tt][Xx][Tt] *.[Cc][Ss][Vv] *.[Dd][Aa][Tt] *.[Ww][Aa]* *.[Dd][Ss][Pp]);;All files (*)"));
-
-//   dialog.setFileMode(QFileDialog::ExistingFiles);
-//   dialog.setViewMode(QFileDialog::Detail);
-//   //dialog.setDirectory("/home/alexsav/ultrascan/data/spectra");
-
-//   QString work_dir_data  = US_Settings::dataDir();
-//   //qDebug() << work_dir_data;
-//   //dialog.setDirectory(work_dir_data);
-
-//   qDebug() << current_path;
-//   current_path = current_path.isEmpty() ? work_dir_data : current_path;
-
-//   dialog.setDirectory(current_path);
-//   qDebug() << current_path;
-
-//   if(dialog.exec())
-//     {
-//       QDir d = dialog.directory();
-//       current_path = d.absolutePath();
-//       files = dialog.selectedFiles();
-//       reading(files);
-//     }
-// }
-
 void US_Extinction::add_wavelength(void)
 {
-   QString filter = "Text Files (*.csv *.dat *.txt *.dsp *.wa);; All Files (*)";
-   QString fpath = QFileDialog::getOpenFileName(this, "Load The Target Spectrum",
-                                                US_Settings::dataDir(), filter);
-   if (fpath.isEmpty()) {
+
+   QString path = US_Settings::dataDir();
+   current_path = current_path.isEmpty() ? path : current_path;
+
+   QString filter = tr("Text Files (*.txt *.csv *.dat *.wa *.dsp);;All Files (*)");
+   QStringList files;
+   files = QFileDialog::getOpenFileNames(this, "Add Basis Spectra", current_path, filter);
+
+   if (files.isEmpty())
+   {
       return;
    }
-   QString note = "1st Column -> WAVELENGTH ; Others -> OD";
-   US_CSV_Loader *csv_loader = new US_CSV_Loader(fpath, note, true, this);
-   int state = csv_loader->exec();
-   if (state != QDialog::Accepted) return;
-   US_CSV_Data csv_data = csv_loader->data();
-   if (csv_data.columnCount() < 2) return;
-   loadScan(csv_data);
+
+   QVector<US_CSV_Data> data_list;
+   for (int ii = 0; ii < files.size(); ii++)
+   {
+      QString filepath = files.at(ii);
+      QString note = "1st Column -> WAVELENGTH ; Others -> OD";
+      bool editing = true;
+      US_CSV_Loader *csv_loader = new US_CSV_Loader(filepath, note, editing, this);
+      int state = csv_loader->exec();
+      if (state == QDialog::Rejected)
+      {
+         int check = QMessageBox::question(this, "Warning!",
+                                           "You canceled parsing a file.\n" + filepath +
+                                               "\nDo you want to continue loading the rest of the file(s)?");
+         if (check == QMessageBox::No)
+         {
+            return;
+         }
+      }
+      else if (state == QDialog::Accepted)
+      {
+         US_CSV_Data csv_data = csv_loader->data();
+         if (csv_data.columnCount() < 2)
+         {
+            int check = QMessageBox::question(this, "Warning!",
+                                              "This file does not have two data columns:\n" + filepath +
+                                                  "\nDo you want to continue loading the rest of the file(s)?");
+            if (check == QMessageBox::No)
+            {
+               return;
+            }
+         }
+         else
+         {
+            data_list << csv_data;
+         }
+      }
+      else
+      {
+         int check = QMessageBox::question(this, "Warning!",
+                                           "Unable to load the file!\n" + filepath +
+                                               "\nDo you want to continue loading the rest of the file(s)?");
+         if (check == QMessageBox::No)
+         {
+            return;
+         }
+      }
+   }
+
+   for (int ii = 0; ii < data_list.size(); ii++)
+   {
+      loadScan(data_list[ii]);
+   }
    update_data();
 }
 
@@ -879,13 +900,13 @@ void US_Extinction::perform_global_buffer(void)
   fitter = new US_ExtinctFitter(&v_wavelength, fitparameters, order, parameters,
 				projectName, &fitting_widget);
 
-  connect( fitter, SIGNAL( get_yfit( QVector <QVector<double> > &, QVector <QVector<double> > & )), this, SLOT(process_yfit( QVector <QVector<double> > &, QVector <QVector<double> > & ) ) );
+  connect( fitter, &US_ExtinctFitter::get_yfit, this, &US_Extinction::process_yfit );
 
   fitter->setParent(this, Qt::Window);
   fitter->show();
   fitted = true;
   
-  connect(fitter, SIGNAL(fittingWidgetClosed()), SLOT(plot()));
+  connect(fitter, &US_Minimize::fittingWidgetClosed, this, &US_Extinction::plot);
  
 }
 
@@ -921,13 +942,13 @@ void US_Extinction::perform_global_solution(void)
   fitter = new US_ExtinctFitter(&v_wavelength, fitparameters, order, parameters,
 				projectName, &fitting_widget);
 
-  connect( fitter, SIGNAL( get_yfit( QVector <QVector<double> > &, QVector <QVector<double> > & )), this, SLOT(process_yfit( QVector <QVector<double> > &, QVector <QVector<double> > & ) ) );
+  connect( fitter, &US_ExtinctFitter::get_yfit, this, &US_Extinction::process_yfit );
 
   fitter->setParent(this, Qt::Window);
   fitter->show();
   fitted = true;
   
-  connect(fitter, SIGNAL(fittingWidgetClosed()), SLOT(plot()));
+  connect(fitter, &US_Minimize::fittingWidgetClosed, this, &US_Extinction::plot);
  }
 
 
@@ -975,13 +996,13 @@ void US_Extinction::perform_global_analyte(void)
     fitter = new US_ExtinctFitter(&v_wavelength, fitparameters, order, parameters,
                                   projectName, &fitting_widget);
 
-    connect( fitter, SIGNAL( get_yfit( QVector <QVector<double> > &, QVector <QVector<double> > & )), this, SLOT(process_yfit( QVector <QVector<double> > &, QVector <QVector<double> > & ) ) );
+    connect( fitter, &US_ExtinctFitter::get_yfit, this, &US_Extinction::process_yfit );
 
     fitter->setParent(this, Qt::Window);
     fitter->show();
     fitted = true;
     
-    connect(fitter, SIGNAL(fittingWidgetClosed()), SLOT(plot()));
+    connect(fitter, &US_Minimize::fittingWidgetClosed, this, &US_Extinction::plot);
   }
   
   if (msg.clickedButton()==pNewval) {
@@ -1055,7 +1076,7 @@ void US_Extinction::perform_global(void)
    fitter = new US_ExtinctFitter(&v_wavelength, fitparameters, order, parameters,
                                   projectName, &fitting_widget);
  
-   connect( fitter, SIGNAL( get_yfit( QVector <QVector<double> > &, QVector <QVector<double> > & )), this, SLOT(process_yfit( QVector <QVector<double> > &, QVector <QVector<double> > & ) ) );
+   connect( fitter, &US_ExtinctFitter::get_yfit, this, &US_Extinction::process_yfit );
 
    fitter->setParent(this, Qt::Window);
 
@@ -1068,7 +1089,7 @@ void US_Extinction::perform_global(void)
    
    fitted = true;
    //causes the fitted line to plot after the fitting widget is closed
-   connect(fitter, SIGNAL(fittingWidgetClosed()), SLOT(plot()));
+   connect(fitter, &US_Minimize::fittingWidgetClosed, this, &US_Extinction::plot);
    //data_plot->enableOutline(true);
 }
 void US_Extinction::calc_extinction()
@@ -1162,8 +1183,8 @@ void US_Extinction::calculateE280(void)
 
    US_AnalyteGui* analyte_dialog = new US_AnalyteGui( true, QString(), dbdisk );
 
-   connect( analyte_dialog, SIGNAL( valueChanged  ( US_Analyte ) ),
-            this,           SLOT  ( accessAnalyteExtinc( US_Analyte ) ) );
+   connect( analyte_dialog, qOverload< US_Analyte >( &US_AnalyteGui::valueChanged ),
+            this,           &US_Extinction::accessAnalyteExtinc );
 
    analyte_dialog->exec();
    qApp->processEvents();
