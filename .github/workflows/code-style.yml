@@ -1,5 +1,6 @@
 name: Code Style
-# clang-format + repo conventions (job 1) and clang-tidy + clazy (job 2), always on the lines changed by the pull request
+# Job 1: clang-format + repo conventions (auto-fixable: suggestions, patch, /format).
+# Job 2: clang-tidy + clazy on the lines changed by the pull request (annotations only; the developer decides how to fix).
 on:
   pull_request:
     branches: [ main ]
@@ -91,13 +92,13 @@ jobs:
           exit 1
 
   clang-tidy-clazy:
-    name: clang-tidy and clazy (changed lines, Qt6)
+    name: clang-tidy and clazy (annotations only, Qt6)
     runs-on: ubuntu-latest
     container:
       image: ehb1/usbuildtest:ubuntu24.04-qt6.10.0-qwt6.3.0
     permissions:
       contents: read
-      pull-requests: write   # fix suggestions on the PR (not available for fork PRs)
+      pull-requests: read   # list of changed files; findings are annotations only, nothing is posted or changed
     env:
       # 'true' makes findings fail the job (clang-tidy: any finding of .clang-tidy; clazy: any finding)
       TIDY_BLOCKING: 'false'
@@ -131,7 +132,7 @@ jobs:
             -DBUILD_DOCUMENTATION=OFF \
             -DCMAKE_MODULE_PATH="$(pwd)/admin/cmake"
           echo "compile database: $(jq length build-qt6/compile_commands.json 2>/dev/null || grep -c '"file"' build-qt6/compile_commands.json) entries"
-      - name: clang-tidy (annotations, summary and fix suggestions)
+      - name: clang-tidy (annotations and summary, no fixes)
         id: tidy
         continue-on-error: true
         uses: cpp-linter/cpp-linter-action@v2
@@ -147,13 +148,12 @@ jobs:
           ignore: 'us_somo|qwtplot3d|vcpkg|buildsys|doc|etc|pkg|us-build|somo|scripts|.github'
           file-annotations: true
           step-summary: true
-          tidy-review: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}   # fix suggestions; not possible on fork PRs
-          passive-reviews: true        # never approve / request changes
+          tidy-review: false           # clang-tidy and clazy findings are for the developer to judge: annotations only, no fixes
           cache-enable: true
-      - name: Restore worktree after clang-tidy
+      - name: Make sure the worktree is untouched
         if: always()
         run: git checkout -- .
-      - name: clazy (annotations and summary)
+      - name: clazy (annotations and summary, no fixes)
         id: clazy
         continue-on-error: true
         run: python3 scripts/clazy-changed.py "${{ steps.base.outputs.sha }}" build-qt6
