@@ -26,4 +26,6 @@ else
    cmake --install "$src/build"
    rm -rf "$src"
 fi
-"$prefix/bin/clazy-standalone" --version | head -2
+# no pipe into head: with pipefail a closed pipe (SIGPIPE) would fail the script
+version=$("$prefix/bin/clazy-standalone" --version 2>&1 || true)
+echo "$version" | sed -n 1,2p
