@@ -277,19 +277,18 @@ jobs:
       - name: Suggest clang-tidy fixes on the pull request
         if: env.SKIP_ANALYSIS != 'true' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         continue-on-error: true
-        uses: reviewdog/action-suggester@v1
-        with:
-          tool_name: clang-tidy
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          fail_level: none
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # skips lines for which an open suggestion of the Code Style workflow already exists
+        run: python3 scripts/post-suggestions.py "${{ github.repository }}" "${{ github.event.pull_request.number }}" "${{ github.event.pull_request.head.sha }}" clang-tidy
 
       - name: Upload clang-tidy fix patch
         if: env.SKIP_ANALYSIS != 'true' && github.event_name == 'pull_request'
         continue-on-error: true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: clang-tidy-fixes
-          path: clang-tidy-fixes.patch
+          path: clang-tidy-fixes.patch   # plain file (archive: false), named clang-tidy-fixes.patch
+          archive: false
           if-no-files-found: ignore
 
       - name: Restore worktree after fixes
