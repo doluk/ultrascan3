@@ -1732,14 +1732,32 @@ double US_Math2::find_root( const double goal )
    return xv;
 }
 
-#include "us_settings.h"
 #include "us_constants.h"
-int style_demo( void ){ int* p = NULL; QString s; if(s=="a"){ return *p; } return 0; }
-void probe_connect( QObject* o ){ QObject::connect( o, SIGNAL( destroyed() ), o, SLOT( deleteLater() ) ); }
-void clazy_probe( QList< int > l, QMap< int, int > m, QString s )
+#include "us_settings.h"
+int style_demo( void )
 {
-   foreach ( int i, m.keys() ) { Q_UNUSED( i ); }
+   int*    p = NULL;
+   QString s;
+   if ( s == "a" )
+   {
+      return *p;
+   }
+   return 0;
+}
+void probe_connect( QObject* o )
+{
+   QObject::connect( o, SIGNAL( destroyed() ), o, SLOT( deleteLater() ) );
+}
+void clazy_probe( QList<int> l, QMap<int, int> m, QString s )
+{
+   foreach ( int i, m.keys() )
+   {
+      Q_UNUSED( i );
+   }
    QString a = QString( "%1 %2" ).arg( s ).arg( s );
-   for ( int i : l.toVector() ) { Q_UNUSED( i ); }
+   for ( int i : l.toVector() )
+   {
+      Q_UNUSED( i );
+   }
    qDebug() << a << m.values().first();
 }
