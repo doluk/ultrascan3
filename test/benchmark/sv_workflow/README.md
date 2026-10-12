@@ -306,6 +306,12 @@ python3 -m svbench mbsearch $SCRATCH/svbench --out mbsearch
   median and p95 of the error against the truth, and the p95 of the
   difference to the full-grid fit.
 
+  - `mbsearch_start.csv`: descent started from every meniscus grid point
+    (bottom at the edit value), with the full-grid errors of the same run.
+    The console bins it by the distance of the start from the true
+    meniscus. This tests how robust descent is against a poor edit
+    meniscus beyond the benchmark's edit offsets.
+
   All statistics are per arm (`main_old`, `main_new`, `branch_old`,
   `branch_new`, with `build` and `workflow` as columns), because the arms
   analyse the same data and must not be pooled.

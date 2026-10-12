@@ -47,6 +47,11 @@ Output (DEST):
                         the truth and the difference to the full-grid
                         legacy estimate
   mbsearch_factors.csv  as summary, per arm and level of each task factor
+  mbsearch_start.csv    descent started from every meniscus grid point
+                        (bottom at the edit value) instead of the edit
+                        meniscus:  robustness against a poor edit meniscus.
+                        One row per task x arm x start point, with the
+                        full-grid errors of the same run for pairing.
 Summaries are given for all runs and for identifiable runs only
 (svbench.observe, as in the report), column "subset".
 All statistics are per arm (main_old, main_new, branch_old, branch_new):
@@ -327,6 +332,59 @@ def replay(run):
     return rows, ref
 
 
+START_EST = ["legacy", "quad"]
+
+
+def start_scan(run):
+    """Descent from every meniscus grid point (bottom at the centre)."""
+    pts = run["fit_mb_grid"]
+    truth = run["truth"]
+    full = Grid(pts)
+    s_full(full)
+    f_est = {e: estimate(full, e) for e in START_EST}
+    rows = []
+    for i in range(full.nm):
+        g = Grid(pts)
+        descend(g, (i, full.nb // 2))
+        row = {"task": run["task"]["task"], "arm": run["arm"],
+               "identifiable": run["metrics"].get("identifiable", ""),
+               "start": i,
+               "start_err": full.meni[i] - truth["meniscus"],
+               "n_eval": len(g.known)}
+        for e in START_EST:
+            row["men_err_" + e] = estimate(g, e)[0] - truth["meniscus"]
+            row["men_err_full_" + e] = f_est[e][0] - truth["meniscus"]
+        rows.append(row)
+    return rows
+
+
+def _start_report(srows, arms):
+    """Errors binned by the distance of the start from the truth."""
+    u = 1e4
+    edges = [0, 25, 50, 75, 100, 125, 150, 200]
+    print("\nDescent started from every meniscus grid point (identifiable "
+          "runs);\n|start - truth| in um; full = full grid, same runs.  "
+          "med/p95 of |meniscus error| (um)")
+    print("%-11s %-9s %6s %5s | %-15s %-15s | %-15s %-15s" % (
+        "arm", "start", "n", "evals", "descent legacy", "full legacy",
+        "descent quad", "full quad"))
+    for arm in arms:
+        ar = [r for r in srows if r["arm"] == arm
+              and r["identifiable"] is True]
+        for lo, hi in zip(edges[:-1], edges[1:]):
+            b = [r for r in ar if lo <= abs(r["start_err"]) * u < hi]
+            if not b:
+                continue
+
+            def mq(k):
+                v = np.abs([r[k] for r in b]) * u
+                return "%6.1f %6.1f  " % (_q(v, 50), _q(v, 95))
+            print("%-11s %3d-%3d   %6d %5.1f | %s %s | %s %s" % (
+                arm, lo, hi, len(b), np.mean([r["n_eval"] for r in b]),
+                mq("men_err_legacy"), mq("men_err_full_legacy"),
+                mq("men_err_quad"), mq("men_err_full_quad")))
+
+
 def load(outdir):
     """Result files with a grid:  OUT/<task>/<arm>.json, or the files
     given directly."""
@@ -395,6 +453,7 @@ def run(outdir, dest, check=True):
     os.makedirs(dest, exist_ok=True)
     simp = _sim_params(outdir)
     rows = []
+    srows = []
     mismatch = skipped = 0
     for path, r in load(outdir):
         try:
@@ -409,6 +468,7 @@ def run(outdir, dest, check=True):
             print("skipped %s: %s" % (path, exc))
             continue
         rows += rr
+        srows += start_scan(r)
         fm = r.get("fit_mb")
         if check and fm and (abs(round(ref[0], 5) - fm["meniscus"]) > 1.5e-5
                              or abs(round(ref[1], 5) - fm["bottom"]) > 1.5e-5):
@@ -420,6 +480,7 @@ def run(outdir, dest, check=True):
         print("no results with a meniscus/bottom grid in %s" % outdir)
         return 1
     _write(os.path.join(dest, "mbsearch_runs.csv"), rows)
+    _write(os.path.join(dest, "mbsearch_start.csv"), srows)
 
     arms = sorted(set(r["arm"] for r in rows),
                   key=lambda a: (ARMS.index(a) if a in ARMS else len(ARMS),
@@ -495,4 +556,5 @@ def run(outdir, dest, check=True):
                           u * x["bot_abserr_median_legacy"],
                           u * x["bot_abserr_p95_legacy"],
                           u * x["bot_dref_p95_legacy"]))
+    _start_report(srows, arms)
     return 0
