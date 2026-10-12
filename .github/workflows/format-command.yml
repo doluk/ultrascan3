@@ -103,7 +103,7 @@ jobs:
           git push origin "HEAD:${{ steps.pr.outputs.head_ref }}"
 
       - name: Resolve fixed suggestions
-        if: steps.fix.outputs.changed == 'true'
+        if: steps.fix.outcome == 'success'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
