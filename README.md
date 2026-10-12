@@ -92,7 +92,8 @@ The *Code Style* workflow checks the lines added by a pull request:
   `/format` (below) applies the fixes. Locally: `scripts/check-format.sh --fix origin/main`.
 - **clang-tidy** (`.clang-tidy`) and **clazy** (`scripts/clazy-changed.py`, checks in `CLAZY_CHECKS`) only produce *annotations* and a job summary
   (Qt6 compilation database of the `usbuildtest` image). Their automatic fixes can change the behaviour of the code, so it is up to the
-  developer to deal with the warnings. Set `TIDY_BLOCKING` / `CLAZY_BLOCKING` in the workflow to make findings fail the job.
+  developer to deal with the warnings. They run once the formatting is clean (formatting changes line numbers), on clang-tidy 19.
+  Set `TIDY_BLOCKING` / `CLAZY_BLOCKING` in the workflow to make findings fail the job.
 The *Static Analysis* workflow is independent (security/cppcheck only).
 
 Comment `/format` on a pull request (write access, branch in this repository) to let the bot apply the code style fixes to the changed lines
