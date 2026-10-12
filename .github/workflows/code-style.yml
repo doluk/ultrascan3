@@ -120,6 +120,12 @@ jobs:
       TIDY_BLOCKING: 'false'
       CLAZY_BLOCKING: 'false'
       CLAZY_CHECKS: 'level0,level1,qt6-deprecated-api-fixes'
+      # Newest releases that are available: clang-tidy through cpp-linter (any LLVM version), clazy built from source
+      # (the distribution package is old). Clazy 1.17 supports LLVM >= 19; LLVM 20 is the newest in Ubuntu 24.04.
+      CLANG_TIDY_VERSION: '23'
+      CLAZY_VERSION: 'v1.17.1'
+      CLAZY_LLVM: '20'
+      CLAZY_STANDALONE: /opt/clazy/bin/clazy-standalone
     steps:
       - uses: actions/checkout@v5
         with:
@@ -129,12 +135,19 @@ jobs:
           export DEBIAN_FRONTEND=noninteractive
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           apt-get update -qq
-          apt-get install -y -qq clazy clang-tidy-19 python3 libmysqlclient-dev libgl2ps-dev libarchive-dev pkg-config ninja-build
+          apt-get install -y -qq python3 libmysqlclient-dev libgl2ps-dev libarchive-dev pkg-config ninja-build
       - name: Determine merge base
         id: base
         run: |
           git fetch origin "${{ github.base_ref || 'main' }}"
           echo "sha=$(git merge-base HEAD "origin/${{ github.base_ref || 'main' }}")" >> "$GITHUB_OUTPUT"
+      - name: Restore cached clazy build
+        uses: actions/cache@v4
+        with:
+          path: /opt/clazy
+          key: clazy-${{ env.CLAZY_VERSION }}-llvm${{ env.CLAZY_LLVM }}-ubuntu24.04
+      - name: Install clazy (built from source on a cache miss)
+        run: scripts/install-clazy.sh "$CLAZY_VERSION" "$CLAZY_LLVM" /opt/clazy
       - name: Configure (compilation database only, no build)
         run: |
           (cd programs/us && sh revision.sh) || true
@@ -148,20 +161,6 @@ jobs:
             -DBUILD_DOCUMENTATION=OFF \
             -DCMAKE_MODULE_PATH="$(pwd)/admin/cmake"
           echo "compile database: $(jq length build-qt6/compile_commands.json 2>/dev/null || grep -c '"file"' build-qt6/compile_commands.json) entries"
-      - name: Check that clang-tidy can parse the changed files
-        # clang-tidy silently skips the static analyzer (clang-analyzer-*) for files with compile errors,
-        # which would hide security findings; make that visible
-        continue-on-error: true
-        run: |
-          for f in $(git diff --name-only --diff-filter=AM "${{ steps.base.outputs.sha }}" -- 'gui/*.cpp' 'utils/*.cpp' 'programs/*.cpp' 'test/*.cpp'); do
-            out=$(clang-tidy-19 -p build-qt6 --quiet --checks='-*' "$f" 2>&1 || true)
-            err=$(echo "$out" | grep -m1 -E ' error: ' || true)
-            echo "parse check $f: $(echo "$out" | grep -c -E ' error: ') error(s)"
-            echo "$out" | grep -E ' error: ' | head -3
-            if [ -n "$err" ]; then
-              echo "::warning file=$f,title=clang-tidy cannot parse this file::clang-analyzer-* checks are skipped. First error: $err"
-            fi
-          done
       - name: clang-tidy (annotations and summary, no fixes)
         id: tidy
         continue-on-error: true
@@ -169,7 +168,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          version: '19'                # newer clang-tidy: parses recent Qt headers better; clang-format stays on 18 (job above)
+          version: ${{ env.CLANG_TIDY_VERSION }}   # newest clang-tidy; clang-format stays on 18 (job above)
           style: ''                    # clang-format runs in the job above
           tidy-checks: ''              # use .clang-tidy
           database: build-qt6
@@ -180,6 +179,20 @@ jobs:
           step-summary: true
           tidy-review: false           # clang-tidy and clazy findings are for the developer to judge: annotations only, no fixes
           cache-enable: true
+      - name: Check that clang-tidy can parse the changed files
+        # clang-tidy silently skips the static analyzer (clang-analyzer-*) for files with compile errors,
+        # which would hide security findings; make that visible
+        continue-on-error: true
+        run: |
+          for f in $(git diff --name-only --diff-filter=AM "${{ steps.base.outputs.sha }}" -- 'gui/*.cpp' 'utils/*.cpp' 'programs/*.cpp' 'test/*.cpp'); do
+            out=$(clang-tidy-${CLANG_TIDY_VERSION} -p build-qt6 --quiet --checks='-*' "$f" 2>&1 || true)
+            err=$(echo "$out" | grep -m1 -E ' error: ' || true)
+            echo "parse check $f: $(echo "$out" | grep -c -E ' error: ') error(s)"
+            echo "$out" | grep -E ' error: ' | head -3
+            if [ -n "$err" ]; then
+              echo "::warning file=$f,title=clang-tidy cannot parse this file::clang-analyzer-* checks are skipped. First error: $err"
+            fi
+          done
       - name: Make sure the worktree is untouched
         if: always()
         run: git checkout -- .

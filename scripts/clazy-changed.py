@@ -63,7 +63,7 @@ def main():
     extra = system_include_args()
 
     def run(unit):
-        r = subprocess.run(["clazy-standalone", "-p", db, "--checks=" + checks] + extra + [unit], capture_output=True, text=True, errors="replace")
+        r = subprocess.run([os.environ.get("CLAZY_STANDALONE", "clazy-standalone"), "-p", db, "--checks=" + checks] + extra + [unit], capture_output=True, text=True, errors="replace")
         return r.stdout + r.stderr
 
     findings, seen, failed = [], set(), []
