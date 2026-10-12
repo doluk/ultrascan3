@@ -254,16 +254,17 @@ class US_UTIL_EXTERN US_Math2
                     selects 3*n, as in Lawson & Hanson.
       */
 
-      static int nnls(
-         double* a, int a_dim1, int m, int n,
-         double* b,
-         double* x,
-         double* rnorm  = NULL,
-         double* wp     = NULL,  
-         double* zzp    = NULL, 
-         int*    indexp = NULL,
-         int     itmax  = 0
-         );
+      static int    nnls( double* a,
+                          int     a_dim1,
+                          int     m,
+                          int     n,
+                          double* b,
+                          double* x,
+                          double* rnorm  = NULL,
+                          double* wp     = NULL,
+                          double* zzp    = NULL,
+                          int*    indexp = NULL,
+                          int     itmax  = 0 );
 
       /*! \brief Remove high frequency noise from a signal
           \param array   Data to be smoothed.  This array will be modified.

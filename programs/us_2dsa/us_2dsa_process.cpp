@@ -470,9 +470,10 @@ DbgLv(1) << "2P:FC:  szSoluC" << c_solutes[ depth ].size();
    {
       if ( c_solutes[ depth ][ ii ].c > 0.0 )
       {
-         if ( ! wtask.isolutes.isEmpty()  &&
-              c_solutes[ depth ][ ii ] == wtask.isolutes.last() )
-            continue;       // skip a duplicate solute (sorted input)
+         if ( !wtask.isolutes.isEmpty() && c_solutes[depth][ii] == wtask.isolutes.last() )
+         {
+            continue; // skip a duplicate solute (sorted input)
+         }
 
          wtask.isolutes << c_solutes[ depth ][ ii ];
       }
@@ -1191,7 +1192,7 @@ DbgLv(1) << "THR_FIN:   (new)kcst ncto" <<  kcsteps << nctotal
          // (Merge tasks at depth 2 or more may already be queued:  lowering
          //  maxdepth below their depth would leave their results unmerged)
          int maxdepsv   = maxdepth;
-         maxdepth       = qMax( maxdepth, 1 );
+         maxdepth        = qMax( maxdepth, 1 );
 
          if ( nextc <= maxtsols  &&  maxdepsv < 1 )
             maxdepth       = 0;  // handle no depth 1 jobs yet submitted
@@ -1331,12 +1332,10 @@ void US_2dsaProcess::queue_task( WorkPacket2D& wtask, double llss, double llsk,
    wtask.isolutes = isolutes;      // solutes for calc_residuals task
 
    if ( depth > 0 )
-   {  // Merge task:  drop duplicate solutes.  After refinement iterations,
+   { // Merge task:  drop duplicate solutes.  After refinement iterations,
       // every subgrid returns the solutes added from the previous iteration.
       std::sort( wtask.isolutes.begin(), wtask.isolutes.end() );
-      wtask.isolutes.erase( std::unique( wtask.isolutes.begin(),
-                                         wtask.isolutes.end() ),
-                            wtask.isolutes.end() );
+      wtask.isolutes.erase( std::unique( wtask.isolutes.begin(), wtask.isolutes.end() ), wtask.isolutes.end() );
    }
 
    if ( jgrefine == (-2) )
@@ -1345,7 +1344,7 @@ void US_2dsaProcess::queue_task( WorkPacket2D& wtask, double llss, double llsk,
    wtask.csolutes.clear();         // clear output vectors
    wtask.ti_noise.clear();
    wtask.ri_noise.clear();
-   int nrisols    = wtask.isolutes.size();
+   int nrisols = wtask.isolutes.size();
    ntisols       += nrisols;
 if ( taskx < 9 || taskx > (nsubgrid-4) )
 DbgLv(1) << "QT: taskx" << taskx << " isolutes size tot" << nrisols << ntisols;

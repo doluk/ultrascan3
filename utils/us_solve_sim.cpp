@@ -168,8 +168,7 @@ const double US_SolveSim::VBAR_CONTRAST_REFUSE = 0.5;
 const double US_SolveSim::VBAR_CONTRAST_WARN   = 1.0;
 
 // Static function to measure the buoyancy contrast across a set of data sets
-double US_SolveSim::buoyancy_contrast( QList< DataSet* >& data_sets,
-                                       double vbar_mid, QString& msg )
+double       US_SolveSim::buoyancy_contrast( QList<DataSet*>& data_sets, double vbar_mid, QString& msg )
 {
    msg              = QString( "" );
    const int ndsets = data_sets.size();
@@ -184,39 +183,45 @@ double US_SolveSim::buoyancy_contrast( QList< DataSet* >& data_sets,
 
    // The temperature-corrected density each data set's corrections are built
    // from.  Reuse data_correction() rather than repeating its water model.
-   QVector< double > rho_tb( ndsets, 0.0 );
+   QVector<double> rho_tb( ndsets, 0.0 );
 
    for ( int dd = 0; dd < ndsets; dd++ )
    {
-      DataSet* dset  = data_sets[ dd ];
+      DataSet*               dset = data_sets[dd];
       US_Math2::SolutionData sd;
-      sd.density     = dset->density;
-      sd.viscosity   = dset->viscosity;
-      sd.manual      = dset->manual;
-      sd.vbar20      = vbar_mid;
-      sd.vbar        = US_Math2::adjust_vbar20( vbar_mid, dset->temperature );
+      sd.density   = dset->density;
+      sd.viscosity = dset->viscosity;
+      sd.manual    = dset->manual;
+      sd.vbar20    = vbar_mid;
+      sd.vbar      = US_Math2::adjust_vbar20( vbar_mid, dset->temperature );
       US_Math2::data_correction( dset->temperature, sd );
-      rho_tb[ dd ]   = sd.density_tb;
+      rho_tb[dd] = sd.density_tb;
    }
 
    // Largest pairwise gain.  A buoyancy term at or below zero means the
    // species would not sediment in that buffer; skip such pairs rather than
    // reporting a spurious pole.
-   double gain_max  = 0.0;
-   int    jmax      = 0;
-   int    kmax      = 1;
+   double gain_max = 0.0;
+   int    jmax     = 0;
+   int    kmax     = 1;
 
    for ( int jj = 0; jj < ndsets; jj++ )
    {
-      const double bj = 1.0 - vbar_mid * rho_tb[ jj ];
-      if ( qAbs( bj ) < 1.0e-6 )  continue;
+      const double bj = 1.0 - vbar_mid * rho_tb[jj];
+      if ( qAbs( bj ) < 1.0e-6 )
+      {
+         continue;
+      }
 
       for ( int kk = jj + 1; kk < ndsets; kk++ )
       {
-         const double bk = 1.0 - vbar_mid * rho_tb[ kk ];
-         if ( qAbs( bk ) < 1.0e-6 )  continue;
+         const double bk = 1.0 - vbar_mid * rho_tb[kk];
+         if ( qAbs( bk ) < 1.0e-6 )
+         {
+            continue;
+         }
 
-         const double gain = qAbs( rho_tb[ jj ] / bj - rho_tb[ kk ] / bk );
+         const double gain = qAbs( rho_tb[jj] / bj - rho_tb[kk] / bk );
 
          if ( gain > gain_max )
          {
@@ -227,24 +232,22 @@ double US_SolveSim::buoyancy_contrast( QList< DataSet* >& data_sets,
       }
    }
 
-   const QString verdict =
-      ( gain_max < VBAR_CONTRAST_REFUSE )
-         ? tr( "Too little contrast: vbar cannot be fitted from this series." )
-      : ( gain_max < VBAR_CONTRAST_WARN )
-         ? tr( "Marginal contrast: vbar will be poorly resolved." )
-         : tr( "Adequate contrast." );
+   const QString verdict = ( gain_max < VBAR_CONTRAST_REFUSE )
+                              ? tr( "Too little contrast: vbar cannot be fitted from this series." )
+                           : ( gain_max < VBAR_CONTRAST_WARN ) ? tr( "Marginal contrast: vbar will be poorly resolved." )
+                                                               : tr( "Adequate contrast." );
 
    msg = tr( "%1 data sets; densities %2 to %3 g/mL.  Widest pair is"
              " %4 / %5, giving a contrast of %6 (mL/g)^-1 and a vbar"
              " resolution near %7 mL/g at 1% precision on the s ratio.  %8" )
-         .arg( ndsets )
-         .arg( *std::min_element( rho_tb.begin(), rho_tb.end() ), 0, 'f', 4 )
-         .arg( *std::max_element( rho_tb.begin(), rho_tb.end() ), 0, 'f', 4 )
-         .arg( rho_tb[ jmax ], 0, 'f', 4 )
-         .arg( rho_tb[ kmax ], 0, 'f', 4 )
-         .arg( gain_max, 0, 'f', 3 )
-         .arg( vbar_resolution( gain_max, 0.01 ), 0, 'f', 4 )
-         .arg( verdict );
+            .arg( ndsets )
+            .arg( *std::min_element( rho_tb.begin(), rho_tb.end() ), 0, 'f', 4 )
+            .arg( *std::max_element( rho_tb.begin(), rho_tb.end() ), 0, 'f', 4 )
+            .arg( rho_tb[jmax], 0, 'f', 4 )
+            .arg( rho_tb[kmax], 0, 'f', 4 )
+            .arg( gain_max, 0, 'f', 3 )
+            .arg( vbar_resolution( gain_max, 0.01 ), 0, 'f', 4 )
+            .arg( verdict );
 
    return gain_max;
 }
@@ -254,8 +257,7 @@ double US_SolveSim::vbar_resolution( double gain, double s_precis )
 {
    const double no_resolution = 1.0e+99;
 
-   return ( qAbs( gain ) > 0.0 ) ? ( qAbs( s_precis ) / qAbs( gain ) )
-                                 : no_resolution;
+   return ( qAbs( gain ) > 0.0 ) ? ( qAbs( s_precis ) / qAbs( gain ) ) : no_resolution;
 }
 
 // Do the real work of a 2dsa/ga thread/processor:  simulation from solutes set
@@ -774,12 +776,9 @@ DbgLv(1) << "CR: attr_ x,y,z" << attr_x << attr_y << attr_z << stype << smask
       // That proxy fails for a grid that fits vbar in the Z slot (3DSA), so a
       // data set can now say so directly.  With fit_vbar false the test is
       // exactly the old one.
-      static_assert( (int)ATTR_V == 3,
-                     "the historical test was literally attr_z != 3" );
-      bool   vbar_varies = ( attr_z != ATTR_V )
-                           ||  data_sets[ 0 ]->fit_vbar;
-DbgLv(1) << "CR: vbar_varies" << vbar_varies << "attr_z" << attr_z
- << "fit_vbar" << data_sets[ 0 ]->fit_vbar;
+      static_assert( (int) ATTR_V == 3, "the historical test was literally attr_z != 3" );
+      bool vbar_varies = ( attr_z != ATTR_V ) || data_sets[0]->fit_vbar;
+      DbgLv( 1 ) << "CR: vbar_varies" << vbar_varies << "attr_z" << attr_z << "fit_vbar" << data_sets[0]->fit_vbar;
 
       for ( int cc = 0; cc < ksolutes; cc++ )
       {  // Solve for each solute
@@ -829,12 +828,12 @@ DbgLv(1) << "CR: cc" << cc << " use_zsol" << use_zsol;
             sd.manual      = dset->manual;
             sd.vbar20      = model.components[ 0 ].vbar20;
             if ( vbar_varies )
-            {  // Vbar differs per solute:  recompute this solute's corrections
+            { // Vbar differs per solute:  recompute this solute's corrections
                sd.vbar        = US_Math2::adjust_vbar20( sd.vbar20, avtemp );
                US_Math2::data_correction( avtemp, sd );
             }
             else
-            {  // Vbar constant:  use this data set's precomputed corrections.
+            { // Vbar constant:  use this data set's precomputed corrections.
                // Note these come from dset, not data_sets[ 0 ]:  in a global
                // fit each data set has its own buffer and its own corrections.
                sd.vbar            = dset->vbartb;
@@ -933,7 +932,7 @@ DbgLv(1) << "CR: sdat:"
             // same scaled block.
             if ( ( ee - offset ) < sim_vals.scales.size() )
             {
-               const double dscale = sim_vals.scales[ ee - offset ];
+               const double dscale = sim_vals.scales[ee - offset];
 
                if ( dscale != 1.0 )
                {
@@ -941,9 +940,12 @@ DbgLv(1) << "CR: sdat:"
                   const int kpt = simdat.pointCount();
 
                   for ( int ss = 0; ss < ksc; ss++ )
+                  {
                      for ( int rr = 0; rr < kpt; rr++ )
-                        simdat.setValue( ss, rr,
-                                         simdat.value( ss, rr ) * dscale );
+                     {
+                        simdat.setValue( ss, rr, simdat.value( ss, rr ) * dscale );
+                     }
+                  }
                }
             }
 
@@ -1290,7 +1292,7 @@ DbgLv(1)<< " norm cuts for #solutes=" << ksolutes << ":  count_cut" << count_cut
       }
    }
 
-   nsolutes     = banddthr ? ksols : nsolutes;
+   nsolutes = banddthr ? ksols : nsolutes;
 
    if ( signal_wanted  &&  kstep > 0 )  // If signals and steps done, report
       emit work_progress( kstep );
@@ -1356,36 +1358,36 @@ DbgLv(1) << "   CR:200  rss now" << US_Memory::rss_now() << "thrn" << thrnrank;
 DbgLv(1)<<"subha_nnls_a size: " << nnls_a.size() << nscans << npoints << "nsolutes=" << nsolutes;
 //------------------------------------------
 
-   if ( calc_ti  ||  calc_ri )
-   {  // Compute concentrations with TI and/or RI noise algebraically removed
-      if ( abort ) return;
-      QVector< int > dscans;     // Scans of each data set
-      QVector< int > dpoints;    // Radial points of each data set
+if ( calc_ti || calc_ri )
+{ // Compute concentrations with TI and/or RI noise algebraically removed
+   if ( abort )
+      return;
+   QVector<int> dscans;  // Scans of each data set
+   QVector<int> dpoints; // Radial points of each data set
 
-      for ( int ee = offset; ee < lim_offs; ee++ )
-      {
-         dscans  << data_sets[ ee ]->run_data.scanCount();
-         dpoints << data_sets[ ee ]->run_data.pointCount();
-      }
-DbgLv(1) << "  noise NNLS: noisflag" << noisflag << "nscans npoints" << dscans
- << dpoints << "nsolutes narows" << nsolutes << narows;
+   for ( int ee = offset; ee < lim_offs; ee++ )
+   {
+      dscans << data_sets[ee]->run_data.scanCount();
+      dpoints << data_sets[ee]->run_data.pointCount();
+   }
+   DbgLv( 1 ) << "  noise NNLS: noisflag" << noisflag << "nscans npoints" << dscans << dpoints << "nsolutes narows" << nsolutes
+              << narows;
 
-      int nnlsrc    = nnls_noise( noisflag, dscans, dpoints, nsolutes, narows,
-                                  nnls_a, nnls_b, nnls_x, tinvec, rinvec );
+   int nnlsrc = nnls_noise( noisflag, dscans, dpoints, nsolutes, narows, nnls_a, nnls_b, nnls_x, tinvec, rinvec );
 
-      if ( nnlsrc == 1 )
-      {  // Iteration limit:  concentrations are feasible, but not optimal
-DbgLv(0) << "CR: *WARNING* NNLS iteration limit reached, nsolutes narows"
- << nsolutes << narows;
-      }
+   if ( nnlsrc == 1 )
+   { // Iteration limit:  concentrations are feasible, but not optimal
+      DbgLv( 0 ) << "CR: *WARNING* NNLS iteration limit reached, nsolutes narows" << nsolutes << narows;
+   }
 
-      if ( abort ) return;
+   if ( abort )
+      return;
 
-      if ( signal_wanted )
-      {  // Report noise and NNLS steps done
-         emit work_progress( sq( nsolutes ) / 10 + kstodo );
-      }
-   }  // End tinoise and/or rinoise calculation
+   if ( signal_wanted )
+   { // Report noise and NNLS steps done
+      emit work_progress( sq( nsolutes ) / 10 + kstodo );
+   }
+} // End tinoise and/or rinoise calculation
 
    else
    {  // No TI or RI noise
@@ -1403,14 +1405,12 @@ DbgLv(1) << "no_ti_or_ri: CR: sv_nnls_a size" << sv_nnls_a.size() << nnls_a.size
       }
 
 //DebugTime("BEG:clcr-nl");
-      int nnlsrc    = US_Math2::nnls( nnls_a.data(), narows, narows, nsolutes,
-                                      nnls_b.data(), nnls_x.data() );
-//DebugTime("END:clcr-nl");
+      int nnlsrc = US_Math2::nnls( nnls_a.data(), narows, narows, nsolutes, nnls_b.data(), nnls_x.data() );
+      //DebugTime("END:clcr-nl");
 
       if ( nnlsrc == 1 )
-      {  // Iteration limit:  concentrations are feasible, but not optimal
-DbgLv(0) << "CR: *WARNING* NNLS iteration limit reached, nsolutes narows"
- << nsolutes << narows;
+      { // Iteration limit:  concentrations are feasible, but not optimal
+         DbgLv( 0 ) << "CR: *WARNING* NNLS iteration limit reached, nsolutes narows" << nsolutes << narows;
       }
 
 DbgLv(2) << "   CR:211  rss now" << US_Memory::rss_now() << "thrn" << thrnrank;
@@ -1827,128 +1827,139 @@ void US_SolveSim::abort_work()
 // Remove noise means from the data rows of one vector (B or an A column):
 //  subtract the per-scan means (RI), then the per-radius means of the
 //  result (TI); return the removed means in v_tilde and v_bar
-static void remove_noise_means( double* vals, int nscans, int npoints,
-                                bool calc_ti, bool calc_ri,
-                                double* v_tilde, double* v_bar )
+static void remove_noise_means( double* vals, int nscans, int npoints, bool calc_ti, bool calc_ri, double* v_tilde, double* v_bar )
 {
    if ( calc_ri )
-   {  // Per-scan means:  average over radius at each time
-      double avgscale = 1.0 / (double)npoints;
+   { // Per-scan means:  average over radius at each time
+      double avgscale = 1.0 / (double) npoints;
 
       for ( int ss = 0; ss < nscans; ss++ )
       {
-         double* svals  = vals + (size_t)ss * npoints;
-         double  sum    = 0.0;
+         double* svals = vals + (size_t) ss * npoints;
+         double  sum   = 0.0;
 
          for ( int rr = 0; rr < npoints; rr++ )
-            sum           += svals[ rr ];
+         {
+            sum += svals[rr];
+         }
 
-         v_tilde[ ss ]  = sum * avgscale;
+         v_tilde[ss] = sum * avgscale;
 
          for ( int rr = 0; rr < npoints; rr++ )
-            svals[ rr ]   -= v_tilde[ ss ];
+         {
+            svals[rr] -= v_tilde[ss];
+         }
       }
    }
 
    if ( calc_ti )
-   {  // Per-radius means:  average over time at each radius
-      double avgscale = 1.0 / (double)nscans;
+   { // Per-radius means:  average over time at each radius
+      double avgscale = 1.0 / (double) nscans;
 
       for ( int rr = 0; rr < npoints; rr++ )
-         v_bar[ rr ]    = 0.0;
+      {
+         v_bar[rr] = 0.0;
+      }
 
       for ( int ss = 0; ss < nscans; ss++ )
       {
-         double* svals  = vals + (size_t)ss * npoints;
+         double* svals = vals + (size_t) ss * npoints;
 
          for ( int rr = 0; rr < npoints; rr++ )
-            v_bar[ rr ]   += svals[ rr ];
+            v_bar[rr] += svals[rr];
       }
 
       for ( int rr = 0; rr < npoints; rr++ )
-         v_bar[ rr ]   *= avgscale;
+      {
+         v_bar[rr] *= avgscale;
+      }
 
       for ( int ss = 0; ss < nscans; ss++ )
       {
-         double* svals  = vals + (size_t)ss * npoints;
+         double* svals = vals + (size_t) ss * npoints;
 
          for ( int rr = 0; rr < npoints; rr++ )
-            svals[ rr ]   -= v_bar[ rr ];
+            svals[rr] -= v_bar[rr];
       }
    }
 }
 
 // Compute concentrations by NNLS with TI and/or RI noise algebraically removed
-int US_SolveSim::nnls_noise( int noisflag, const QVector< int >& nscans,
-                             const QVector< int >& npoints,
-                             int nsolutes, int narows,
-                             QVector< double >& nnls_a,
-                             QVector< double >& nnls_b,
-                             QVector< double >& nnls_x,
-                             QVector< double >& tinvec,
-                             QVector< double >& rinvec )
+int US_SolveSim::nnls_noise( int                 noisflag,
+                             const QVector<int>& nscans,
+                             const QVector<int>& npoints,
+                             int                 nsolutes,
+                             int                 narows,
+                             QVector<double>&    nnls_a,
+                             QVector<double>&    nnls_b,
+                             QVector<double>&    nnls_x,
+                             QVector<double>&    tinvec,
+                             QVector<double>&    rinvec )
 {
-   bool calc_ti  = ( ( noisflag & 1 ) != 0 );
-   bool calc_ri  = ( ( noisflag & 2 ) != 0 );
-   int  ndsets   = nscans.size();
-   int  ntinois  = 0;       // TI noise values of all data sets
-   int  nrinois  = 0;       // RI noise values of all data sets
+   bool calc_ti = ( ( noisflag & 1 ) != 0 );
+   bool calc_ri = ( ( noisflag & 2 ) != 0 );
+   int  ndsets  = nscans.size();
+   int  ntinois = 0; // TI noise values of all data sets
+   int  nrinois = 0; // RI noise values of all data sets
 
    for ( int ee = 0; ee < ndsets; ee++ )
    {
-      ntinois      += npoints[ ee ];
-      nrinois      += nscans [ ee ];
+      ntinois += npoints[ee];
+      nrinois += nscans[ee];
    }
 
-   QVector< double > a_tilde ( nrinois, 0.0 );                // Data scan means
-   QVector< double > a_bar   ( ntinois, 0.0 );                // Data radius means
-   QVector< double > L_tildes( static_cast< qsizetype >( nsolutes ) * nrinois,
-                               0.0 );                         // Sim scan means
-   QVector< double > L_bars  ( static_cast< qsizetype >( nsolutes ) * ntinois,
-                               0.0 );                         // Sim radius means
+   QVector<double> a_tilde( nrinois, 0.0 ); // Data scan means
+   QVector<double> a_bar( ntinois, 0.0 );   // Data radius means
+   QVector<double> L_tildes( static_cast<qsizetype>( nsolutes ) * nrinois,
+                             0.0 ); // Sim scan means
+   QVector<double> L_bars( static_cast<qsizetype>( nsolutes ) * ntinois,
+                           0.0 ); // Sim radius means
 
    // Project data and simulations onto the complement of the noise
    //  subspace, one data set at a time (data rows only; any Tikhonov rows
    //  below are noise-free)
-   size_t krow   = 0;       // First data row of a data set
-   int    kti    = 0;       // First TI noise value of a data set
-   int    kri    = 0;       // First RI noise value of a data set
+   size_t          krow = 0; // First data row of a data set
+   int             kti  = 0; // First TI noise value of a data set
+   int             kri  = 0; // First RI noise value of a data set
 
    for ( int ee = 0; ee < ndsets; ee++ )
    {
-      remove_noise_means( nnls_b.data() + krow, nscans[ ee ], npoints[ ee ],
-                          calc_ti, calc_ri, a_tilde.data() + kri,
-                          a_bar.data() + kti );
+      remove_noise_means(
+         nnls_b.data() + krow, nscans[ee], npoints[ee], calc_ti, calc_ri, a_tilde.data() + kri, a_bar.data() + kti );
 
       for ( int cc = 0; cc < nsolutes; cc++ )
       {
-         remove_noise_means( nnls_a.data() + (size_t)cc * narows + krow,
-                             nscans[ ee ], npoints[ ee ], calc_ti, calc_ri,
-                             L_tildes.data() + (size_t)cc * nrinois + kri,
-                             L_bars.data() + (size_t)cc * ntinois + kti );
+         remove_noise_means( nnls_a.data() + (size_t) cc * narows + krow,
+                             nscans[ee],
+                             npoints[ee],
+                             calc_ti,
+                             calc_ri,
+                             L_tildes.data() + (size_t) cc * nrinois + kri,
+                             L_bars.data() + (size_t) cc * ntinois + kti );
       }
 
-      krow         += (size_t)nscans[ ee ] * npoints[ ee ];
-      kti          += npoints[ ee ];
-      kri          += nscans [ ee ];
+      krow += (size_t) nscans[ee] * npoints[ee];
+      kti += npoints[ee];
+      kri += nscans[ee];
    }
 
    // Concentrations are the NNLS solution of the projected system
-   int rc        = US_Math2::nnls( nnls_a.data(), narows, narows, nsolutes,
-                                   nnls_b.data(), nnls_x.data() );
+   int rc = US_Math2::nnls( nnls_a.data(), narows, narows, nsolutes, nnls_b.data(), nnls_x.data() );
 
    // Noise is the data mean less the mean of the fitted simulations
    if ( calc_ti )
    {
       for ( int rr = 0; rr < ntinois; rr++ )
       {
-         double        tinoi  = a_bar[ rr ];
-         const double* lbars  = L_bars.constData() + rr;
+         double        tinoi = a_bar[rr];
+         const double* lbars = L_bars.constData() + rr;
 
          for ( int cc = 0; cc < nsolutes; cc++ )
-            tinoi        -= nnls_x[ cc ] * lbars[ (size_t)cc * ntinois ];
+         {
+            tinoi -= nnls_x[cc] * lbars[(size_t) cc * ntinois];
+         }
 
-         tinvec[ rr ]  = tinoi;
+         tinvec[rr] = tinoi;
       }
    }
 
@@ -1956,13 +1967,15 @@ int US_SolveSim::nnls_noise( int noisflag, const QVector< int >& nscans,
    {
       for ( int ss = 0; ss < nrinois; ss++ )
       {
-         double        rinoi  = a_tilde[ ss ];
-         const double* ltils  = L_tildes.constData() + ss;
+         double        rinoi = a_tilde[ss];
+         const double* ltils = L_tildes.constData() + ss;
 
          for ( int cc = 0; cc < nsolutes; cc++ )
-            rinoi        -= nnls_x[ cc ] * ltils[ (size_t)cc * nrinois ];
+         {
+            rinoi -= nnls_x[cc] * ltils[(size_t) cc * nrinois];
+         }
 
-         rinvec[ ss ]  = rinoi;
+         rinvec[ss] = rinoi;
       }
    }
 

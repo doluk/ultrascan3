@@ -564,8 +564,9 @@ int US_Astfem_Sim::init_from_args( const QMap<QString, QString>& flags ) {
          {
             // check if path is accessible and writable
             QString save_path = flags["save"];
-            auto saving = save_simulation( save_path, true );
-            if ( !saving ) {
+            auto    saving    = save_simulation( save_path, true );
+            if ( !saving )
+            {
                error_occured = true;
             }
          }
@@ -1208,8 +1209,8 @@ DbgLv(1) << "astfem_radial_ranges" << sim_datas[jd].xvalues[0] << sim_datas[jd].
       // This must use the final xvalues count, not the pre-resize pointCount().
       for ( int js = 0; js < kscan; js++ )
       {
-         sim_data_all.scanData[ js ].rvalues     .fill( 0.0, points );
-         sim_data_all.scanData[ js ].interpolated.fill( 0, ( points + 7 ) / 8 );
+         sim_data_all.scanData[js].rvalues.fill( 0.0, points );
+         sim_data_all.scanData[js].interpolated.fill( 0, ( points + 7 ) / 8 );
       }
 
       for ( int jd = 0; jd < nstep; jd++ )
@@ -1537,8 +1538,9 @@ DbgLv(1) << "ASIM:svscn: 1-speed file paths"  << odir << tmst_fpath;
          if ( csv_data_ti.rowCount() > 0 ) {
             csv_data_ti.setFilePath( dir.absoluteFilePath( "ASTFEM_TI_NOISE.csv" ) );
             save_csv_noise( csv_data_ti );
-            QFile ti_noise (csv_data_ri[ 0 ].filePath() );
-            if ( !ti_noise.exists() ) {
+            QFile ti_noise( csv_data_ri[0].filePath() );
+            if ( !ti_noise.exists() )
+            {
                qDebug() << "Saving TI NOISE FAILED";
             }
          }
@@ -1546,8 +1548,9 @@ DbgLv(1) << "ASIM:svscn: 1-speed file paths"  << odir << tmst_fpath;
          if ( !csv_data_ri.isEmpty() ) {
             csv_data_ri[ 0 ].setFilePath( dir.absoluteFilePath( "ASTFEM_RI_NOISE.csv" ) );
             save_csv_noise( csv_data_ri[ 0 ] );
-            QFile ri_noise (csv_data_ri[ 0 ].filePath() );
-            if ( !ri_noise.exists() ) {
+            QFile ri_noise( csv_data_ri[0].filePath() );
+            if ( !ri_noise.exists() )
+            {
                qDebug() << "Saving RI NOISE FAILED";
             }
          }
@@ -2087,16 +2090,20 @@ DbgLv(1) << "Sim:SV: reset s1plat" << s1plat;
       }
 DbgLv(1) << "Sim:SV: OD-Limit nchange nmodscn" << nchange << nmodscn
  << "maxc dthresh" << maxc << dthresh;
-      if ( !supress_dialog ) {
-         // Report that some readings were threshold-limited
-         QMessageBox::information( this,
-               tr( "OD Values Threshold Limited" ),
-               tr( "%1 readings in %2 scans were reset\n"
-                   "to a threshold value of %3 .\n"
-                   "The pre-threshold-limit maximum OD\n"
-                   "value was %4 ." )
-               .arg( nchange ).arg( nmodscn ).arg( dthresh ).arg( maxc ) );
-      }
+if ( !supress_dialog )
+{
+   // Report that some readings were threshold-limited
+   QMessageBox::information( this,
+                             tr( "OD Values Threshold Limited" ),
+                             tr( "%1 readings in %2 scans were reset\n"
+                                 "to a threshold value of %3 .\n"
+                                 "The pre-threshold-limit maximum OD\n"
+                                 "value was %4 ." )
+                                .arg( nchange )
+                                .arg( nmodscn )
+                                .arg( dthresh )
+                                .arg( maxc ) );
+}
    }
 
 
@@ -2168,7 +2175,7 @@ DbgLv(1) << "Sim:SV:  run_id_from_save_xla" << run_id;
 
    int wstat        = US_DataIO::writeRawData( ofname, sim_data );
    qDebug() << "Saving RawData Exit " << wstat;
-DbgLv(1) << "Sim:SV: after_write_rawdata" << ofname;
+   DbgLv( 1 ) << "Sim:SV: after_write_rawdata" << ofname;
 
    if ( wstat != US_DataIO::OK )
    {  // Nothing was saved, so do not report completion

@@ -91,12 +91,15 @@ class US_UTIL_EXTERN US_Solute
       //! with US_ZSolute::attr_type and US_SolveSim::attr_type; us_solute.cpp
       //! static-asserts that they agree.  A 9-bit "solute type" mask packs
       //! three of them as ( x << 6 ) | ( y << 3 ) | z.
-      enum attr_type { ATTR_S = 0,   //!< Sedimentation coefficient -> s
-                       ATTR_K,       //!< Frictional ratio          -> k
-                       ATTR_W,       //!< Molecular weight          -> d
-                       ATTR_V,       //!< Partial specific volume   -> v
-                       ATTR_D,       //!< Diffusion coefficient     -> d
-                       ATTR_F };     //!< Frictional coefficient    -> d
+      enum attr_type
+      {
+         ATTR_S = 0, //!< Sedimentation coefficient -> s
+         ATTR_K,     //!< Frictional ratio          -> k
+         ATTR_W,     //!< Molecular weight          -> d
+         ATTR_V,     //!< Partial specific volume   -> v
+         ATTR_D,     //!< Diffusion coefficient     -> d
+         ATTR_F
+      }; //!< Frictional coefficient    -> d
 
       //! \brief Check that an attribute mask can be represented by a solute
       //!
@@ -107,7 +110,7 @@ class US_UTIL_EXTERN US_Solute
       //! \param s_mask  Attribute mask, ( x << 6 ) | ( y << 3 ) | z
       //! \param errmsg  Returned description of the problem, empty if valid
       //! \returns       True if the mask is usable
-      static bool validate_mask( int s_mask, QString& errmsg );
+      static bool         validate_mask( int s_mask, QString& errmsg );
 
       //! \brief Is an (s, D, vbar) solute a shape a particle could have?
       //!
@@ -119,7 +122,7 @@ class US_UTIL_EXTERN US_Solute
       //! \param solute  Solute carrying s in .s, D in .d and vbar in .v
       //! \returns       True if the implied f/f0 is at least 1.0, within
       //!                FF0_SPHERE_TOLER
-      static bool physical_sdv( const US_Solute& solute );
+      static bool         physical_sdv( const US_Solute& solute );
 
       //! Tolerance below f/f0 = 1.0 that physical_sdv() still accepts.
       //! Round-tripping an exact sphere through US_Model::calc_coefficients()
@@ -159,11 +162,17 @@ class US_UTIL_EXTERN US_Solute
       //! \param solute_list Returned list of grid_reps cubed solute vectors
       //! \returns           The grid_reps actually used, clamped so that no
       //!                    subgrid is empty; zero if the mask is invalid
-      static int init_solutes_3d(
-                    double x_min, double x_max, int x_res,
-                    double y_min, double y_max, int y_res,
-                    double z_min, double z_max, int z_res,
-                    int grid_reps, int s_mask,
-                    QList< QVector< US_Solute > >& solute_list );
+      static int          init_solutes_3d( double                     x_min,
+                                           double                     x_max,
+                                           int                        x_res,
+                                           double                     y_min,
+                                           double                     y_max,
+                                           int                        y_res,
+                                           double                     z_min,
+                                           double                     z_max,
+                                           int                        z_res,
+                                           int                        grid_reps,
+                                           int                        s_mask,
+                                           QList<QVector<US_Solute>>& solute_list );
 };
 #endif

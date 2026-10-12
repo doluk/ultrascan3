@@ -18,40 +18,41 @@
 #include "us_math2.h"
 #include "us_model.h"
 #include "us_simparms.h"
-#include "us_solve_sim.h"
 #include "us_solute.h"
+#include "us_solve_sim.h"
 
 #include <cmath>
 #include <memory>
 #include <vector>
 
-namespace {
+namespace
+{
 
 struct Buffer
 {
-   double density;
-   double viscosity;
-   double temperature;
+      double density;
+      double viscosity;
+      double temperature;
 };
 
-const Buffer BUF_WATER { 0.998234, 1.001940, 20.0 };
-const Buffer BUF_HALF  { 1.050000, 1.120000, 20.0 };
-const Buffer BUF_D2O   { 1.105000, 1.251000, 20.0 };
+const Buffer           BUF_WATER{ 0.998234, 1.001940, 20.0 };
+const Buffer           BUF_HALF{ 1.050000, 1.120000, 20.0 };
+const Buffer           BUF_D2O{ 1.105000, 1.251000, 20.0 };
 
 // The species the synthetic data is generated from.
-const double TRUE_S    = 4.0e-13;
-const double TRUE_FF0  = 1.5;
-const double TRUE_VBAR = 0.73;
-const double TRUE_CONC = 0.50;
+const double           TRUE_S    = 4.0e-13;
+const double           TRUE_FF0  = 1.5;
+const double           TRUE_VBAR = 0.73;
+const double           TRUE_CONC = 0.50;
 
 // Cheap but realistic simulation geometry: enough scans and radial points to
 // resolve a boundary, few enough for a unit test.
-const int    NSCANS    = 4;
-const int    RPM       = 45000;
-const double MENISCUS  = 5.85;
-const double BOTTOM    = 7.15;
-const double DELTA_R   = 0.005;
-const int    SIMPOINTS  = 100;
+const int              NSCANS    = 4;
+const int              RPM       = 45000;
+const double           MENISCUS  = 5.85;
+const double           BOTTOM    = 7.15;
+const double           DELTA_R   = 0.005;
+const int              SIMPOINTS = 100;
 
 US_Math2::SolutionData corrections( double vbar20, const Buffer& b )
 {
@@ -68,21 +69,21 @@ US_Math2::SolutionData corrections( double vbar20, const Buffer& b )
 US_SimulationParameters make_simparams()
 {
    US_SimulationParameters sp;
-   sp.simpoints         = SIMPOINTS;
-   sp.radial_resolution = DELTA_R;
-   sp.meniscus          = MENISCUS;
-   sp.bottom            = BOTTOM;
-   sp.bottom_position   = BOTTOM;
-   sp.temperature       = 20.0;
-   sp.sim               = true;
-   sp.speed_step[ 0 ].duration_hours    = 5;
-   sp.speed_step[ 0 ].duration_minutes  = 0.0;
-   sp.speed_step[ 0 ].delay_hours       = 0;
-   sp.speed_step[ 0 ].delay_minutes     = 0.0;
-   sp.speed_step[ 0 ].scans             = NSCANS;
-   sp.speed_step[ 0 ].rotorspeed        = RPM;
-   sp.speed_step[ 0 ].acceleration      = 400;
-   sp.speed_step[ 0 ].acceleration_flag = false;
+   sp.simpoints                       = SIMPOINTS;
+   sp.radial_resolution               = DELTA_R;
+   sp.meniscus                        = MENISCUS;
+   sp.bottom                          = BOTTOM;
+   sp.bottom_position                 = BOTTOM;
+   sp.temperature                     = 20.0;
+   sp.sim                             = true;
+   sp.speed_step[0].duration_hours    = 5;
+   sp.speed_step[0].duration_minutes  = 0.0;
+   sp.speed_step[0].delay_hours       = 0;
+   sp.speed_step[0].delay_minutes     = 0.0;
+   sp.speed_step[0].scans             = NSCANS;
+   sp.speed_step[0].rotorspeed        = RPM;
+   sp.speed_step[0].acceleration      = 400;
+   sp.speed_step[0].acceleration_flag = false;
    return sp;
 }
 
@@ -91,11 +92,13 @@ void make_grid( US_DataIO::RawData& data )
 {
    const double w2 = std::pow( RPM * M_PI / 30.0, 2.0 );
 
-   data.xvalues .clear();
+   data.xvalues.clear();
    data.scanData.clear();
 
    for ( double rr = MENISCUS; rr <= BOTTOM + 1.0e-9; rr += DELTA_R )
+   {
       data.xvalues << rr;
+   }
 
    const int npoints = data.xvalues.size();
 
@@ -103,31 +106,29 @@ void make_grid( US_DataIO::RawData& data )
    {
       US_DataIO::Scan sc;
       sc.temperature = 20.0;
-      sc.rpm         = (double)RPM;
+      sc.rpm         = (double) RPM;
       sc.seconds     = 2400.0 * ( ii + 1 );
       sc.omega2t     = w2 * sc.seconds;
       sc.wavelength  = 280.0;
       sc.plateau     = 0.0;
       sc.delta_r     = DELTA_R;
-      sc.rvalues     = QVector< double >( npoints, 0.0 );
+      sc.rvalues     = QVector<double>( npoints, 0.0 );
       data.scanData << sc;
    }
 }
 
 // Simulate a standard-space (20W) model as it would be observed in one
 // buffer, scaled by that cell's loading.
-void simulate_in( const US_Model& truth_20w, const Buffer& b,
-                  double loading, US_DataIO::RawData& out )
+void simulate_in( const US_Model& truth_20w, const Buffer& b, double loading, US_DataIO::RawData& out )
 {
    US_Model expt = truth_20w;
 
    for ( int cc = 0; cc < expt.components.size(); cc++ )
    {
-      US_Math2::SolutionData sd =
-         corrections( truth_20w.components[ cc ].vbar20, b );
-      expt.components[ cc ].s /= sd.s20w_correction;
-      expt.components[ cc ].D /= sd.D20w_correction;
-      expt.components[ cc ].signal_concentration *= loading;
+      US_Math2::SolutionData sd = corrections( truth_20w.components[cc].vbar20, b );
+      expt.components[cc].s /= sd.s20w_correction;
+      expt.components[cc].D /= sd.D20w_correction;
+      expt.components[cc].signal_concentration *= loading;
    }
 
    make_grid( out );
@@ -141,31 +142,29 @@ void simulate_in( const US_Model& truth_20w, const Buffer& b,
 }
 
 // Wrap simulated data as an edited dataset the solver will accept.
-US_SolveSim::DataSet* make_dataset( const US_Model& truth_20w, const Buffer& b,
-                                    double loading, double nominal_vbar )
+US_SolveSim::DataSet* make_dataset( const US_Model& truth_20w, const Buffer& b, double loading, double nominal_vbar )
 {
    US_DataIO::RawData sim;
    simulate_in( truth_20w, b, loading, sim );
 
    US_SolveSim::DataSet* d = new US_SolveSim::DataSet;
 
-   d->run_data.runID       = "synthetic";
-   d->run_data.dataType    = "RA";
-   d->run_data.cell        = "1";
-   d->run_data.channel     = "A";
-   d->run_data.wavelength  = "280";
-   d->run_data.expType     = "velocity";
-   d->run_data.meniscus    = MENISCUS;
-   d->run_data.bottom      = BOTTOM;
-   d->run_data.baseline    = 0.0;
-   d->run_data.plateau     = 0.0;
-   d->run_data.ODlimit     = 1.0e+30;   // never substitute zeros
-   d->run_data.xvalues     = sim.xvalues;
-   d->run_data.scanData    = sim.scanData;
+   d->run_data.runID      = "synthetic";
+   d->run_data.dataType   = "RA";
+   d->run_data.cell       = "1";
+   d->run_data.channel    = "A";
+   d->run_data.wavelength = "280";
+   d->run_data.expType    = "velocity";
+   d->run_data.meniscus   = MENISCUS;
+   d->run_data.bottom     = BOTTOM;
+   d->run_data.baseline   = 0.0;
+   d->run_data.plateau    = 0.0;
+   d->run_data.ODlimit    = 1.0e+30; // never substitute zeros
+   d->run_data.xvalues    = sim.xvalues;
+   d->run_data.scanData   = sim.scanData;
 
-   d->simparams   = make_simparams();
-   US_SimulationParameters::computeSpeedSteps( &d->run_data.scanData,
-                                               d->simparams.speed_step );
+   d->simparams = make_simparams();
+   US_SimulationParameters::computeSpeedSteps( &d->run_data.scanData, d->simparams.speed_step );
 
    d->density     = b.density;
    d->viscosity   = b.viscosity;
@@ -175,13 +174,13 @@ US_SolveSim::DataSet* make_dataset( const US_Model& truth_20w, const Buffer& b,
    d->vbar20      = nominal_vbar;
 
    US_Math2::SolutionData sd = corrections( nominal_vbar, b );
-   d->vbartb          = sd.vbar;
-   d->s20w_correction = sd.s20w_correction;
-   d->D20w_correction = sd.D20w_correction;
-   d->solute_type     = US_3dsaProcess::mask_s_k_v();
-   d->centerpiece_bottom = BOTTOM;
-   d->rotor_stretch[ 0 ] = 0.0;
-   d->rotor_stretch[ 1 ] = 0.0;
+   d->vbartb                 = sd.vbar;
+   d->s20w_correction        = sd.s20w_correction;
+   d->D20w_correction        = sd.D20w_correction;
+   d->solute_type            = US_3dsaProcess::mask_s_k_v();
+   d->centerpiece_bottom     = BOTTOM;
+   d->rotor_stretch[0]       = 0.0;
+   d->rotor_stretch[1]       = 0.0;
 
    return d;
 }
@@ -190,13 +189,13 @@ US_Model truth_model()
 {
    US_Model m;
    m.components.resize( 1 );
-   m.components[ 0 ].s      = TRUE_S;
-   m.components[ 0 ].f_f0   = TRUE_FF0;
-   m.components[ 0 ].vbar20 = TRUE_VBAR;
-   m.components[ 0 ].D      = 0.0;
-   m.components[ 0 ].mw     = 0.0;
-   m.components[ 0 ].f      = 0.0;
-   m.components[ 0 ].signal_concentration = TRUE_CONC;
+   m.components[0].s                    = TRUE_S;
+   m.components[0].f_f0                 = TRUE_FF0;
+   m.components[0].vbar20               = TRUE_VBAR;
+   m.components[0].D                    = 0.0;
+   m.components[0].mw                   = 0.0;
+   m.components[0].f                    = 0.0;
+   m.components[0].signal_concentration = TRUE_CONC;
    m.update_coefficients();
    return m;
 }
@@ -209,8 +208,8 @@ double weighted_vbar( const US_Model& m )
 
    for ( int cc = 0; cc < m.components.size(); cc++ )
    {
-      const double conc = m.components[ cc ].signal_concentration;
-      num += m.components[ cc ].vbar20 * conc;
+      const double conc = m.components[cc].signal_concentration;
+      num += m.components[cc].vbar20 * conc;
       den += conc;
    }
 
@@ -224,8 +223,8 @@ double weighted_s( const US_Model& m )
 
    for ( int cc = 0; cc < m.components.size(); cc++ )
    {
-      const double conc = m.components[ cc ].signal_concentration;
-      num += m.components[ cc ].s * conc;
+      const double conc = m.components[cc].signal_concentration;
+      num += m.components[cc].s * conc;
       den += conc;
    }
 
@@ -235,18 +234,20 @@ double weighted_s( const US_Model& m )
 // Owns a series of datasets and hands out the QList the engine wants.
 class Series
 {
-public:
-   void add( const Buffer& b, double loading )
-   {
-      owned_.emplace_back( make_dataset( truth_model(), b, loading,
-                                         TRUE_VBAR ) );
-      list_ << owned_.back().get();
-   }
-   QList< US_SolveSim::DataSet* >& list() { return list_; }
+   public:
+      void add( const Buffer& b, double loading )
+      {
+         owned_.emplace_back( make_dataset( truth_model(), b, loading, TRUE_VBAR ) );
+         list_ << owned_.back().get();
+      }
+      QList<US_SolveSim::DataSet*>& list()
+      {
+         return list_;
+      }
 
-private:
-   std::vector< std::unique_ptr< US_SolveSim::DataSet > > owned_;
-   QList< US_SolveSim::DataSet* >                         list_;
+   private:
+      std::vector<std::unique_ptr<US_SolveSim::DataSet>> owned_;
+      QList<US_SolveSim::DataSet*>                       list_;
 };
 
 // A grid that straddles the truth, with the true values landing exactly on
@@ -254,9 +255,15 @@ private:
 US_3dsaProcess::Parameters base_parameters()
 {
    US_3dsaProcess::Parameters p;
-   p.x_min      = 2.0e-13;   p.x_max = 6.0e-13;  p.x_res = 5;   // step 1.0
-   p.y_min      = 1.00;      p.y_max = 2.00;     p.y_res = 5;   // step 0.25
-   p.z_min      = 0.65;      p.z_max = 0.81;     p.z_res = 5;   // step 0.04
+   p.x_min      = 2.0e-13;
+   p.x_max      = 6.0e-13;
+   p.x_res      = 5; // step 1.0
+   p.y_min      = 1.00;
+   p.y_max      = 2.00;
+   p.y_res      = 5; // step 0.25
+   p.z_min      = 0.65;
+   p.z_max      = 0.81;
+   p.z_res      = 5; // step 0.04
    p.grid_reps  = 1;
    p.s_mask     = US_3dsaProcess::mask_s_k_v();
    p.nthreads   = 4;
@@ -268,7 +275,9 @@ US_3dsaProcess::Parameters base_parameters()
 
 } // namespace
 
-class TestUS3dsaProcess : public QtTestBase {};
+class TestUS3dsaProcess : public QtTestBase
+{
+};
 
 // ---------------------------------------------------------------------------
 // The gate: a series without contrast must be refused, not fitted.
@@ -279,7 +288,7 @@ TEST_F( TestUS3dsaProcess, RefusesASeriesWithoutContrast )
    series.add( BUF_WATER, 1.0 );
    series.add( BUF_WATER, 1.0 );
 
-   US_3dsaProcess proc( series.list() );
+   US_3dsaProcess         proc( series.list() );
    US_3dsaProcess::Result result;
 
    EXPECT_FALSE( proc.fit( base_parameters(), result ) );
@@ -292,7 +301,7 @@ TEST_F( TestUS3dsaProcess, RefusesASingleDataset )
    Series series;
    series.add( BUF_WATER, 1.0 );
 
-   US_3dsaProcess proc( series.list() );
+   US_3dsaProcess         proc( series.list() );
    US_3dsaProcess::Result result;
 
    EXPECT_FALSE( proc.fit( base_parameters(), result ) );
@@ -302,18 +311,16 @@ TEST_F( TestUS3dsaProcess, RejectsAnUnusableMask )
 {
    Series series;
    series.add( BUF_WATER, 1.0 );
-   series.add( BUF_D2O,   1.0 );
+   series.add( BUF_D2O, 1.0 );
 
    US_3dsaProcess::Parameters p = base_parameters();
-   p.s_mask = ( US_Solute::ATTR_S << 6 ) | ( US_Solute::ATTR_D << 3 )
-              | US_Solute::ATTR_W;          // D and MW share one field
+   p.s_mask = ( US_Solute::ATTR_S << 6 ) | ( US_Solute::ATTR_D << 3 ) | US_Solute::ATTR_W; // D and MW share one field
 
-   US_3dsaProcess proc( series.list() );
+   US_3dsaProcess         proc( series.list() );
    US_3dsaProcess::Result result;
 
    EXPECT_FALSE( proc.fit( p, result ) );
-   EXPECT_TRUE( proc.lastError().contains( "MW" ) )
-      << proc.lastError().toStdString();
+   EXPECT_TRUE( proc.lastError().contains( "MW" ) ) << proc.lastError().toStdString();
 }
 
 // ---------------------------------------------------------------------------
@@ -324,24 +331,25 @@ TEST_F( TestUS3dsaProcess, RecoversVbarFromAContrastSeries )
    // Three buffers, three different cell loadings.
    Series series;
    series.add( BUF_WATER, 1.00 );
-   series.add( BUF_HALF,  0.70 );
-   series.add( BUF_D2O,   1.40 );
+   series.add( BUF_HALF, 0.70 );
+   series.add( BUF_D2O, 1.40 );
 
-   US_3dsaProcess proc( series.list() );
+   US_3dsaProcess         proc( series.list() );
    US_3dsaProcess::Result result;
 
-   QObject::connect( &proc, &US_3dsaProcess::message_update,
-                     [ ]( QString m )
-                     { std::printf( "  | %s\n", m.toStdString().c_str() ); } );
+   QObject::connect(
+      &proc, &US_3dsaProcess::message_update, []( QString m ) { std::printf( "  | %s\n", m.toStdString().c_str() ); } );
 
-   ASSERT_TRUE( proc.fit( base_parameters(), result ) )
-      << proc.lastError().toStdString();
+   ASSERT_TRUE( proc.fit( base_parameters(), result ) ) << proc.lastError().toStdString();
 
    std::printf( "\n  %s\n", result.report.toStdString().c_str() );
    std::printf( "  scales:" );
-   for ( double sc : result.scales )  std::printf( " %.4f", sc );
+   for ( double sc : result.scales )
+   {
+      std::printf( " %.4f", sc );
+   }
    std::printf( "\n  components: %d   weighted vbar %.4f   weighted s %.4f S\n",
-                (int)result.model.components.size(),
+                (int) result.model.components.size(),
                 weighted_vbar( result.model ),
                 weighted_s( result.model ) * 1.0e13 );
 
@@ -359,14 +367,16 @@ TEST_F( TestUS3dsaProcess, RecoversVbarFromAContrastSeries )
 
    // The loadings come back as ratios against the first data set.
    ASSERT_EQ( 3, result.scales.size() );
-   EXPECT_NEAR( result.scales[ 0 ], 1.00, 1.0e-9 );   // the gauge
-   EXPECT_NEAR( result.scales[ 1 ], 0.70, 0.01 );
-   EXPECT_NEAR( result.scales[ 2 ], 1.40, 0.01 );
+   EXPECT_NEAR( result.scales[0], 1.00, 1.0e-9 ); // the gauge
+   EXPECT_NEAR( result.scales[1], 0.70, 0.01 );
+   EXPECT_NEAR( result.scales[2], 1.40, 0.01 );
 
    // Total concentration matches the loading of the gauge data set.
    double total_conc = 0.0;
    for ( int cc = 0; cc < result.model.components.size(); cc++ )
-      total_conc += result.model.components[ cc ].signal_concentration;
+   {
+      total_conc += result.model.components[cc].signal_concentration;
+   }
    EXPECT_NEAR( total_conc, TRUE_CONC, TRUE_CONC * 0.02 );
 
    // The amplitude loop converged rather than running out of iterations.
@@ -382,16 +392,16 @@ TEST_F( TestUS3dsaProcess, RecoversVbarFromAContrastSeries )
 // ---------------------------------------------------------------------------
 TEST_F( TestUS3dsaProcess, ScaleFittingRemovesTheLoadingBias )
 {
-   auto run = [ & ]( bool fit_scales, US_3dsaProcess::Result& result )
+   auto run = [&]( bool fit_scales, US_3dsaProcess::Result& result )
    {
       Series series;
       series.add( BUF_WATER, 1.00 );
-      series.add( BUF_HALF,  0.70 );
-      series.add( BUF_D2O,   1.40 );
+      series.add( BUF_HALF, 0.70 );
+      series.add( BUF_D2O, 1.40 );
 
-      US_3dsaProcess proc( series.list() );
+      US_3dsaProcess             proc( series.list() );
       US_3dsaProcess::Parameters p = base_parameters();
-      p.fit_scales = fit_scales;
+      p.fit_scales                 = fit_scales;
 
       return proc.fit( p, result );
    };
@@ -399,18 +409,14 @@ TEST_F( TestUS3dsaProcess, ScaleFittingRemovesTheLoadingBias )
    US_3dsaProcess::Result with_scales;
    US_3dsaProcess::Result without;
 
-   ASSERT_TRUE( run( true,  with_scales ) );
-   ASSERT_TRUE( run( false, without     ) );
+   ASSERT_TRUE( run( true, with_scales ) );
+   ASSERT_TRUE( run( false, without ) );
 
-   const double err_with    = std::fabs( weighted_vbar( with_scales.model )
-                                         - TRUE_VBAR );
-   const double err_without = std::fabs( weighted_vbar( without.model )
-                                         - TRUE_VBAR );
+   const double err_with    = std::fabs( weighted_vbar( with_scales.model ) - TRUE_VBAR );
+   const double err_without = std::fabs( weighted_vbar( without.model ) - TRUE_VBAR );
 
-   std::printf( "\n  vbar error with scales %.4f, without %.4f\n",
-                err_with, err_without );
-   std::printf( "  rmsd with scales %.3e, without %.3e\n",
-                with_scales.rmsd, without.rmsd );
+   std::printf( "\n  vbar error with scales %.4f, without %.4f\n", err_with, err_without );
+   std::printf( "  rmsd with scales %.3e, without %.3e\n", with_scales.rmsd, without.rmsd );
 
    // Mismatched loadings must cost the unscaled fit something real.
    EXPECT_GT( without.rmsd, with_scales.rmsd * 2.0 );
@@ -425,18 +431,17 @@ TEST_F( TestUS3dsaProcess, ScaleFittingRemovesTheLoadingBias )
 // ---------------------------------------------------------------------------
 TEST_F( TestUS3dsaProcess, SubgriddingStaysWithinTheDiscretisation )
 {
-   auto run = [ & ]( int grid_reps, int nthreads,
-                     US_3dsaProcess::Result& result )
+   auto run = [&]( int grid_reps, int nthreads, US_3dsaProcess::Result& result )
    {
       Series series;
       series.add( BUF_WATER, 1.00 );
-      series.add( BUF_D2O,   1.00 );
+      series.add( BUF_D2O, 1.00 );
 
-      US_3dsaProcess proc( series.list() );
+      US_3dsaProcess             proc( series.list() );
       US_3dsaProcess::Parameters p = base_parameters();
-      p.grid_reps  = grid_reps;
-      p.nthreads   = nthreads;
-      p.fit_scales = false;      // isolate the partitioning
+      p.grid_reps                  = grid_reps;
+      p.nthreads                   = nthreads;
+      p.fit_scales                 = false; // isolate the partitioning
 
       return proc.fit( p, result );
    };
@@ -444,17 +449,17 @@ TEST_F( TestUS3dsaProcess, SubgriddingStaysWithinTheDiscretisation )
    US_3dsaProcess::Result one;
    US_3dsaProcess::Result many;
 
-   ASSERT_TRUE( run( 1, 1, one  ) );
+   ASSERT_TRUE( run( 1, 1, one ) );
    ASSERT_TRUE( run( 2, 4, many ) );
 
    // Both cover the same grid; only the partitioning differs.
    EXPECT_EQ( one.ngrid, many.ngrid );
-   EXPECT_EQ( 1,         one.nsubgrids  );
-   EXPECT_EQ( 8,         many.nsubgrids );
+   EXPECT_EQ( 1, one.nsubgrids );
+   EXPECT_EQ( 8, many.nsubgrids );
    EXPECT_GT( many.ntasks, one.ntasks );
 
-   const double vbar_step = ( 0.81 - 0.65 ) / 4.0;   // 0.04
-   const double s_step    = ( 6.0  - 2.0  ) / 4.0;   // 1.0 S
+   const double vbar_step = ( 0.81 - 0.65 ) / 4.0; // 0.04
+   const double s_step    = ( 6.0 - 2.0 ) / 4.0;   // 1.0 S
 
    // One subgrid fits every column together and lands on the truth.
    EXPECT_NEAR( weighted_vbar( one.model ), TRUE_VBAR, 0.002 );
@@ -465,11 +470,9 @@ TEST_F( TestUS3dsaProcess, SubgriddingStaysWithinTheDiscretisation )
    // punishing case: two repetitions over a five-point axis leaves each
    // subgrid a very coarse covering, where a production run has eight
    // repetitions over sixty-four points.
-   EXPECT_LT( std::fabs( weighted_vbar( many.model ) - TRUE_VBAR ),
-              vbar_step * 0.5 )
+   EXPECT_LT( std::fabs( weighted_vbar( many.model ) - TRUE_VBAR ), vbar_step * 0.5 )
       << "subgridded vbar " << weighted_vbar( many.model );
-   EXPECT_LT( std::fabs( weighted_s( many.model ) - TRUE_S ) * 1.0e13,
-              s_step * 0.5 );
+   EXPECT_LT( std::fabs( weighted_s( many.model ) - TRUE_S ) * 1.0e13, s_step * 0.5 );
 }
 
 // ---------------------------------------------------------------------------
@@ -480,9 +483,9 @@ TEST_F( TestUS3dsaProcess, ProducesAStandardSpaceModel )
 {
    Series series;
    series.add( BUF_WATER, 1.0 );
-   series.add( BUF_D2O,   1.0 );
+   series.add( BUF_D2O, 1.0 );
 
-   US_3dsaProcess proc( series.list() );
+   US_3dsaProcess         proc( series.list() );
    US_3dsaProcess::Result result;
    ASSERT_TRUE( proc.fit( base_parameters(), result ) );
 
@@ -490,18 +493,18 @@ TEST_F( TestUS3dsaProcess, ProducesAStandardSpaceModel )
 
    // A fit over more than one data set is a global fit, and typeText()
    // labels it so.
-   EXPECT_EQ( US_Model::GLOBAL,      result.model.global );
-   EXPECT_EQ( QString( "3DSA-GL" ),  result.model.typeText() );
+   EXPECT_EQ( US_Model::GLOBAL, result.model.global );
+   EXPECT_EQ( QString( "3DSA-GL" ), result.model.typeText() );
 
    for ( int cc = 0; cc < result.model.components.size(); cc++ )
    {
-      const US_Model::SimulationComponent& c = result.model.components[ cc ];
+      const US_Model::SimulationComponent& c = result.model.components[cc];
 
       // Coefficients are complete and self-consistent.
-      EXPECT_GT( c.s,      0.0 );
-      EXPECT_GT( c.D,      0.0 );
-      EXPECT_GT( c.mw,     0.0 );
-      EXPECT_GE( c.f_f0,   1.0 );
+      EXPECT_GT( c.s, 0.0 );
+      EXPECT_GT( c.D, 0.0 );
+      EXPECT_GT( c.mw, 0.0 );
+      EXPECT_GE( c.f_f0, 1.0 );
       EXPECT_GT( c.vbar20, 0.0 );
       EXPECT_GT( c.signal_concentration, 0.0 );
       EXPECT_FALSE( c.name.isEmpty() );

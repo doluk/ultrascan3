@@ -869,15 +869,17 @@ double US_Math2::erfc( double x )
 #endif
 
 // Non-negative least-squares matrix solution
-int US_Math2::nnls( double* a, int a_dim1, int m, int n,
+int US_Math2::nnls( double* a,
+                    int     a_dim1,
+                    int     m,
+                    int     n,
                     double* b,
                     double* x,
                     double* rnorm,
-                    double* wp,  
+                    double* wp,
                     double* zzp,
                     int*    indexp,
-                    int     itmax
-                  ) 
+                    int     itmax )
 {
 #ifdef _BF_NNLS_
    /* If there is an external NNLS algorithm implementation, execute it */
@@ -946,12 +948,14 @@ int US_Math2::nnls( double* a, int a_dim1, int m, int n,
 
    /* Main loop; quit if all coeffs are already in the solution or */
    /* if M cols of A have been triangularized */
-   
-   int iter  = 0; 
+
+   int iter = 0;
    int ja_dim1;
 
    if ( itmax <= 0 )
-      itmax     = n * 3;
+   {
+      itmax = n * 3;
+   }
 
    while ( iz1 <= iz2 && nsetp < m ) 
    {
@@ -1156,12 +1160,12 @@ int US_Math2::nnls( double* a, int a_dim1, int m, int n,
             /* be because of the way alpha was determined. If any are */
             /* infeasible it is due to round-off error. Any that are */
             /* nonpositive will be set to zero and moved from set P to set Z */
-            for( jj = 0, pfeas = 1; jj < nsetp; jj++ )
+            for ( jj = 0, pfeas = 1; jj < nsetp; jj++ )
             {
                k = index[ jj ]; 
-               if ( x[ k ] <= 0.0 ) 
-               {  /* Leave jj one below the position of k, as set above */
-                  pfeas = 0; 
+               if ( x[ k ] <= 0.0 )
+               { /* Leave jj one below the position of k, as set above */
+                  pfeas = 0;
                   jj--;
                   break;
                }
@@ -1184,8 +1188,8 @@ int US_Math2::nnls( double* a, int a_dim1, int m, int n,
          }
       } /* end of secondary loop */
 
-      if ( iter > itmax ) 
-      {  /* Iteration limit:  quit with the last feasible X */
+      if ( iter > itmax )
+      { /* Iteration limit:  quit with the last feasible X */
          ret = 1; 
          break;
       }
@@ -1209,14 +1213,16 @@ int US_Math2::nnls( double* a, int a_dim1, int m, int n,
          w[ j ] = 0.0;
 
    if ( ret == 1 )
-   {  /* At the iteration limit X does not solve the triangular system */
+   { /* At the iteration limit X does not solve the triangular system */
       /* of set P:  add its residual in the first nsetp rows */
       for ( ii = 0; ii < nsetp; ii++ )
       {
-         d1 = b[ ii ];
+         d1 = b[ii];
 
          for ( l = ii; l < nsetp; l++ )
-            d1 -= a[ ii + index[ l ] * a_dim1 ] * x[ index[ l ] ];
+         {
+            d1 -= a[ii + index[l] * a_dim1] * x[index[l]];
+         }
 
          sm += d1 * d1;
       }

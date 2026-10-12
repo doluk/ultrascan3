@@ -5,16 +5,16 @@
 #include <QtCore>
 #include <algorithm>
 
-#include "us_model.h"
-#include "us_dataIO.h"
-#include "us_noise.h"
-#include "us_simparms.h"
-#include "us_solution.h"
-#include "us_solute.h"
-#include "us_zsolute.h"
 #include "us_astfem_math.h"
 #include "us_astfem_rsa.h"
 #include "us_constants.h"
+#include "us_dataIO.h"
+#include "us_model.h"
+#include "us_noise.h"
+#include "us_simparms.h"
+#include "us_solute.h"
+#include "us_solution.h"
+#include "us_zsolute.h"
 
 #define SIMPARAMS US_SimulationParameters
 
@@ -47,21 +47,21 @@ class US_UTIL_EXTERN US_SolveSim : public QObject
             // constructor, and a caller that forgets one of these otherwise
             // hands calc_residuals an indeterminate value.  solute_type in
             // particular selects which branch of the fit runs.
-            double                  viscosity   = VISC_20W; //!< Buffer viscosity
-            double                  density     = DENS_20W; //!< Buffer density
-            double                  compress    = 0.0;  //!< Sol.buff. compressibility
+            double                  viscosity   = VISC_20W;    //!< Buffer viscosity
+            double                  density     = DENS_20W;    //!< Buffer density
+            double                  compress    = 0.0;         //!< Sol.buff. compressibility
             double                  temperature = NORMAL_TEMP; //!< Avg run temperature
 
-            double            vbar20  = TYPICAL_VBAR;     //!< VBar at 20 degrees C
-            double            vbartb  = TYPICAL_VBAR;     //!< VBar at temperature
-            double            s20w_correction = 1.0;      //!< s data correction
-            double            D20w_correction = 1.0;      //!< D data correction
-            double            rotor_stretch[ 2 ] = { 0.0, 0.0 }; //!< Stretch coeffs
-            double            centerpiece_bottom = 0.0;   //!< Base bottom
-            double            zcoeffs[ 4 ] = { 0.0, 0.0, 0.0, 0.0 }; //!< Z coeffs
+            double                  vbar20             = TYPICAL_VBAR;           //!< VBar at 20 degrees C
+            double                  vbartb             = TYPICAL_VBAR;           //!< VBar at temperature
+            double                  s20w_correction    = 1.0;                    //!< s data correction
+            double                  D20w_correction    = 1.0;                    //!< D data correction
+            double                  rotor_stretch[2]   = { 0.0, 0.0 };           //!< Stretch coeffs
+            double                  centerpiece_bottom = 0.0;                    //!< Base bottom
+            double                  zcoeffs[4]         = { 0.0, 0.0, 0.0, 0.0 }; //!< Z coeffs
 
-            int               solute_type = 0;      //!< Solute type (0,1,2)
-            bool              manual      = false;  //!< visc.,dens. manual
+            int                     solute_type = 0;     //!< Solute type (0,1,2)
+            bool                    manual      = false; //!< visc.,dens. manual
 
             //! \brief Flag that vbar varies from solute to solute
             //!
@@ -72,7 +72,7 @@ class US_UTIL_EXTERN US_SolveSim : public QObject
             //! grid that fits vbar in the Z slot (3DSA).  Callers that fit
             //! vbar set this; leaving it false preserves the older behaviour
             //! exactly.
-            bool              fit_vbar = false;
+            bool                    fit_vbar = false;
     };
 
     //! Class for communicating simulation
@@ -86,7 +86,7 @@ class US_UTIL_EXTERN US_SolveSim : public QObject
          double                xnormsq;    //!< X-norm squared
          double                alpha;      //!< Tikhonov regularization factor
          QVector< double >     variances;  //!< Variances for data sets
-         QVector< double >     ti_noise;   //!< Time-invariant noise
+         QVector<double>       ti_noise;   //!< Time-invariant noise
          QVector< double >     ri_noise;   //!< Radially-invariant noise
 
          //! \brief Per-data-set amplitude scale factors
@@ -101,7 +101,7 @@ class US_UTIL_EXTERN US_SolveSim : public QObject
          //! Empty, the default, means all ones: every existing caller is
          //! unaffected.  Honoured by the attribute-mask branch, which is the
          //! one a global vbar fit uses.
-         QVector< double >     scales;
+         QVector<double>       scales;
 
          QVector< US_Solute >  solutes;    //!< Input/Output solutes
          QVector< US_ZSolute > zsolutes;   //!< Input/Output solutes
@@ -146,14 +146,14 @@ class US_UTIL_EXTERN US_SolveSim : public QObject
     //!                  grid range
     //! \param msg       Returned human-readable summary of the series
     //! \returns         Largest pairwise gain, in (mL/g)^-1
-    static double buoyancy_contrast( QList< DataSet* >&, double, QString& );
+    static double       buoyancy_contrast( QList<DataSet*>&, double, QString& );
 
     //! \brief vbar resolution implied by a buoyancy contrast
     //! \param gain      Contrast from buoyancy_contrast()
     //! \param s_precis  Relative precision of the measured s ratio, e.g. 0.01
     //! \returns         Achievable vbar resolution in mL/g, or a large
     //!                  sentinel when the gain is zero
-    static double vbar_resolution( double, double );
+    static double       vbar_resolution( double, double );
 
     //! Below this gain, a fit that varies vbar must be refused: (mL/g)^-1
     static const double VBAR_CONTRAST_REFUSE;
@@ -189,13 +189,18 @@ class US_UTIL_EXTERN US_SolveSim : public QObject
     //! \param rinvec    Output RI noise (nscans values of each data set in
     //!                  turn), if noisflag has 2
     //! \returns         Return code of US_Math2::nnls
-    static int nnls_noise( int, const QVector< int >&, const QVector< int >&,
-                           int, int,
-                           QVector< double >&, QVector< double >&,
-                           QVector< double >&, QVector< double >&,
-                           QVector< double >& );
+    static int          nnls_noise( int,
+                                    const QVector<int>&,
+                                    const QVector<int>&,
+                                    int,
+                                    int,
+                                    QVector<double>&,
+                                    QVector<double>&,
+                                    QVector<double>&,
+                                    QVector<double>&,
+                                    QVector<double>& );
 
-  public slots:
+ public slots:
 
     //! \brief Static function to check if implied grid size is beyond limits
     //! \param data_sets The set of data sets for which to check
@@ -249,7 +254,7 @@ class US_UTIL_EXTERN US_SolveSim : public QObject
     bool               banddthr;      // Band-forming data threshold peak enhance
     QDateTime          startCalc;     // Start calc time for elapsed time prints
 
-  private slots:
+ private slots:
     // Limit data to thresholds
     bool data_threshold    ( US_DataIO::RawData*,
                              double, double, double, double );
