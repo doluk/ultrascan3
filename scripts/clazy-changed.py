@@ -49,9 +49,12 @@ def main():
         r = subprocess.run(["clazy-standalone", "-p", db, "--checks=" + checks, unit], capture_output=True, text=True, errors="replace")
         return r.stdout + r.stderr
 
-    findings, seen = [], set()
+    findings, seen, failed = [], set(), []
     with ThreadPoolExecutor(max_workers=os.cpu_count() or 2) as ex:
-        for out in ex.map(run, sorted(units)):
+        for unit, out in zip(sorted(units), ex.map(run, sorted(units))):
+            errors = [l for l in out.splitlines() if re.search(r": (fatal )?error: ", l)]
+            if errors:   # clang could not parse the file: clazy results are incomplete or missing
+                failed.append((unit, errors[0]))
             for l in out.splitlines():
                 m = DIAG.match(l)
                 if not m:
@@ -63,20 +66,24 @@ def main():
                 seen.add(key)
                 findings.append((f, m["line"], m["col"], m["check"], m["msg"]))
 
+    for unit, err in failed:
+        print("::warning file=%s,title=clazy could not analyse the file::%s" % (unit, err.replace(root + "/", "")))
     for f, ln, col, chk, msg in sorted(findings):
         print("::warning file=%s,line=%s,col=%s,title=clazy %s::%s" % (f, ln, col, chk, msg))
-    print("clazy (%s): %d finding(s) on changed lines" % (checks, len(findings)))
+    print("clazy (%s): %d finding(s) on changed lines, %d file(s) could not be analysed" % (checks, len(findings), len(failed)))
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         with open(summary, "a") as s:
             s.write("### clazy (%s)\n\n" % checks)
+            for unit, err in failed:
+                s.write("> :warning: `%s` could not be parsed, clazy results are incomplete: `%s`\n\n" % (unit, err.replace(root + "/", "")))
             if findings:
                 s.write("| File | Line | Check | Message |\n|---|---|---|---|\n")
                 for f, ln, col, chk, msg in sorted(findings):
                     s.write("| `%s` | %s | `%s` | %s |\n" % (f, ln, chk, msg.replace("|", "\\|")))
             else:
                 s.write("No findings on changed lines.\n")
-    return 1 if findings and os.environ.get("CLAZY_BLOCKING") == "true" else 0
+    return 1 if (findings or failed) and os.environ.get("CLAZY_BLOCKING") == "true" else 0
 
 
 sys.exit(main())
