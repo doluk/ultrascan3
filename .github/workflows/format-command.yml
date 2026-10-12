@@ -102,6 +102,15 @@ jobs:
           git commit -am "style: apply clang-format to changed lines (/format)"
           git push origin "HEAD:${{ steps.pr.outputs.head_ref }}"
 
+      - name: Resolve fixed suggestions
+        if: steps.fix.outputs.changed == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 "$GITHUB_WORKSPACE/trusted/scripts/resolve-suggestion-threads.py" \
+            "${{ github.repository }}" "${{ github.event.issue.number }}" "$GITHUB_WORKSPACE/pr"
+
       - name: Report
         if: always() && steps.fix.outcome != 'skipped'
         env:
