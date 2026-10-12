@@ -58,7 +58,7 @@ jobs:
           {
             echo "### Code style: fixes available"
             echo
-            echo "Download the \`code-style-fixes\` artifact of this run and apply it with:"
+            echo "Download the \`code-style-fixes.patch\` artifact of this run and apply it with:"
             echo '```'
             echo "git apply code-style-fixes.patch"
             echo '```'
@@ -70,20 +70,18 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload fix patch
         if: steps.check.outcome == 'failure'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: code-style-fixes
-          path: code-style-fixes.patch
+          path: code-style-fixes.patch   # uploaded as a plain file (archive: false), named code-style-fixes.patch
+          archive: false
       - name: Suggest fixes on the pull request
         if: steps.check.outcome == 'failure' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         continue-on-error: true
-        uses: reviewdog/action-suggester@v1
-        with:
-          tool_name: code style
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          fail_level: none
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/post-suggestions.py "${{ github.repository }}" "${{ github.event.pull_request.number }}" "${{ github.event.pull_request.head.sha }}" code-style
       - name: Fail on style violations
         if: steps.check.outcome == 'failure'
         run: |
-          echo "Code style violations found. Apply the 'code-style-fixes' artifact (git apply) or run scripts/check-format.sh --fix origin/main"
+          echo "Code style violations found. Apply the 'code-style-fixes.patch' artifact (git apply) or run scripts/check-format.sh --fix origin/main"
           exit 1

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Resolves the bot's fix-suggestion review threads on a pull request that are already fixed.
+"""Resolves the CODE STYLE suggestion threads of a pull request that are already fixed.
 
 usage: resolve-suggestion-threads.py <owner/repo> <pr-number> <checkout-dir>
-Needs GH_TOKEN and the gh CLI. A thread is resolved if it is unresolved, was opened by a bot with a
-```suggestion block, and either became outdated (its lines were changed) or the current file already
-contains the suggested text. Threads of human reviewers are never touched.
+Needs GH_TOKEN and the gh CLI. Only threads created by scripts/post-suggestions.py with the marker
+<!-- us3-suggestion:code-style --> are considered (suggestions of other bots/tools and comments of
+reviewers are never touched). Such a thread is resolved if it is unresolved and either became outdated
+(its lines were changed) or the current file already contains the suggested text.
 """
+MARKER = "<!-- us3-suggestion:code-style -->"
 import json, os, re, subprocess, sys
 
 QUERY = """
@@ -55,10 +57,10 @@ def main():
         data = gh_graphql(QUERY, **vars)["data"]["repository"]["pullRequest"]["reviewThreads"]
         for t in data["nodes"]:
             c = (t["comments"]["nodes"] or [None])[0]
-            if t["isResolved"] or c is None or (c["author"] or {}).get("__typename") != "Bot":
+            if t["isResolved"] or c is None:
                 continue
             sug = suggestion_text(c["body"])
-            if sug is None:
+            if MARKER not in c["body"] or sug is None:
                 continue
             if t["isOutdated"] or already_applied(root, t, sug):
                 gh_graphql(RESOLVE, id=t["id"])
