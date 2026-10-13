@@ -136,6 +136,9 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           apt-get update -qq
           apt-get install -y -qq python3 libmysqlclient-dev libgl2ps-dev libarchive-dev pkg-config ninja-build
+          # needed by the LLVM installer script (apt.llvm.org) that cpp-linter uses for clang-tidy versions Ubuntu does not ship;
+          # without lsb_release it falls back to a pip clang-tidy binary that has no compiler builtin headers (stddef.h not found)
+          apt-get install -y -qq lsb-release wget gnupg software-properties-common ca-certificates
       - name: Determine merge base
         id: base
         run: |
@@ -184,8 +187,15 @@ jobs:
         # which would hide security findings; make that visible
         continue-on-error: true
         run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          TIDY=$(command -v "clang-tidy-${CLANG_TIDY_VERSION}" || true)
+          if [ -z "$TIDY" ]; then
+            echo "::warning title=clang-tidy not found::clang-tidy-${CLANG_TIDY_VERSION} is not on the PATH, cannot check whether the changed files can be parsed"
+            exit 0
+          fi
+          echo "using $TIDY ($("$TIDY" --version | grep -m1 -i 'version'))"
           for f in $(git diff --name-only --diff-filter=AM "${{ steps.base.outputs.sha }}" -- 'gui/*.cpp' 'utils/*.cpp' 'programs/*.cpp' 'test/*.cpp'); do
-            out=$(clang-tidy-${CLANG_TIDY_VERSION} -p build-qt6 --quiet --checks='-*' "$f" 2>&1 || true)
+            out=$("$TIDY" -p build-qt6 --quiet --checks='-*' "$f" 2>&1 || true)
             err=$(echo "$out" | grep -m1 -E ' error: ' || true)
             echo "parse check $f: $(echo "$out" | grep -c -E ' error: ') error(s)"
             echo "$out" | grep -E ' error: ' | head -3
