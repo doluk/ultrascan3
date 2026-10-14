@@ -28,6 +28,10 @@ set(US_MPI_CASES
     2dsa_mc_pmasters3
     2dsa_mc_pmasters_idle
     2dsa_meniscus
+    2dsa_bottom
+    2dsa_menbot
+    2dsa_composite_menbot
+    2dsa_composite_menbot_pmasters
     2dsa_noise
     2dsa_customgrid
     2dsa_global

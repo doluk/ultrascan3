@@ -19,6 +19,10 @@ and compare the fitted models with stored baselines.
 | `2dsa_refine` | iterative refinement (3) | 2 | exact |
 | `2dsa_mc` | Monte Carlo (3) | 2 | exact |
 | `2dsa_meniscus` | meniscus fit (3 points) | 2 | exact |
+| `2dsa_bottom` | bottom fit (3 points) | 2 | exact |
+| `2dsa_menbot` | meniscus and bottom fit (3 × 3) | 2 | exact |
+| `2dsa_composite_menbot` | composite job, meniscus and bottom fit (2 × 2) | 2 | exact |
+| `2dsa_composite_menbot_pmasters` | the same with parallel masters | 6 | exact |
 | `2dsa_noise` | TI + RI noise | 2 | exact |
 | `2dsa_customgrid` | custom grid (s × vbar) | 2 | exact |
 | `2dsa_global` | global fit, 2 datasets | 2 | exact |
