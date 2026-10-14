@@ -42,6 +42,10 @@ endfunction()
 
 add_subdirectory(utils)
 
+# Add data publication tests if directory exists
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/programs/us_data_publication/CMakeLists.txt")
+    add_subdirectory(programs/us_data_publication)
+endif()
 # GUI tests require the DB-enabled GUI library; NO_DB builds run utils tests.
 if(TARGET UltraScan3::Gui_Static)
     add_subdirectory(gui)
