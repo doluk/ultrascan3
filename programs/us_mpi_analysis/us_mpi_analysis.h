@@ -66,6 +66,9 @@ class US_MPI_Analysis : public QObject
         bool is_composite_job;   //!< Composite job flag
 
         MPI_Comm my_communicator; //!< MPI communicator
+        MPI_Comm node_comm = MPI_COMM_NULL; //!< Ranks sharing this node's memory
+        int node_rank = 0;        //!< Rank within node_comm
+        int node_size = 1;        //!< Number of ranks on this node
 
         int current_dataset;      //!< Current dataset for global fit or composite
         int datasets_to_process;  //!< Datasets to process for global fit or composite
@@ -410,6 +413,8 @@ class US_MPI_Analysis : public QObject
         void     set_meniscus      ( void );
         void     set_menibott_values( int );
         void     begin_fit_context ( void );
+        void     create_node_comm  ( void );
+        void     free_node_comm    ( void );
         bool     worker_fit_context( int, double, double );
         double   dataset_bottom    ( int );
         void     set_monteCarlo    ( void );

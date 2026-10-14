@@ -1048,6 +1048,9 @@ if (my_rank==0) DbgLv(0) << "ckGrSz: ssp count"
    mgroup_count = qMax( 1, mgroup_count );
    gcores_count = proc_count / mgroup_count;
 
+   // Collective over all ranks, so before any masters-group split
+   create_node_comm();
+
    if ( mgroup_count < 2 )
       start();                  // Start standard job
    
@@ -1056,6 +1059,32 @@ if (my_rank==0) DbgLv(0) << "ckGrSz: ssp count"
 
    else
       pmasters_start();         // Start parallel-masters job (mc_iters)
+}
+
+// Create the communicator of the ranks on this node, which can share
+//  memory (MPI_COMM_TYPE_SHARED).  Not used yet; a node-wide simulation
+//  cache will be built on it.
+void US_MPI_Analysis::create_node_comm( void )
+{
+   MPI_Comm_split_type( MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, my_rank,
+                        MPI_INFO_NULL, &node_comm );
+   MPI_Comm_rank( node_comm, &node_rank );
+   MPI_Comm_size( node_comm, &node_size );
+
+   // Number of nodes: count the node leaders (node rank 0)
+   int leader     = ( node_rank == 0 ) ? 1 : 0;
+   int node_count = 0;
+   MPI_Allreduce( &leader, &node_count, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD );
+
+   if ( my_rank == 0 )
+      DbgLv(0) << "Node communicator: nodes" << node_count
+               << "ranks on master node" << node_size;
+}
+
+void US_MPI_Analysis::free_node_comm( void )
+{
+   if ( node_comm != MPI_COMM_NULL )
+      MPI_Comm_free( &node_comm );
 }
 
 // Main function  (single master group)
@@ -1180,6 +1209,7 @@ void US_MPI_Analysis::start( void )
       }
    }
 
+   free_node_comm();
    MPI_Finalize();
    exit( exit_status );
 }
