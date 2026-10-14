@@ -69,13 +69,6 @@ void US_MPI_Analysis::_2dsa_master( void )
 
    while ( true )
    {
-      meniscus_value       = ( meniscus_points == 1 )
-                           ? data_sets[ current_dataset ]->run_data.meniscus
-                           : meniscus_values[ meniscus_run ];
-      bottom_value       = ( bottom_points == 1 )
-                           ? data_sets[ current_dataset ]->run_data.bottom
-                           : bottom_values  [ bottom_run   ];
-
       run_2dsa_jobs();
 
       // All done with the pass: no jobs are ready or running
@@ -250,6 +243,8 @@ DbgLv(0) << " start_2dsa_dataset:  menpt" << meniscus_points << "mv0 mvn"
 
    for ( int ii = 0; ii < calculated_solutes.size(); ii++ )
       calculated_solutes[ ii ].clear();
+
+   begin_fit_context();
 }
 
 // Progress message at the end of a 2DSA pass
@@ -760,6 +755,31 @@ DbgLv(1) << "ScaledData fill/solclear complete";
    }
 }
 
+// Start a fit context: every change of dataset, meniscus/bottom point or
+//  Monte Carlo iteration passes here before its jobs are submitted.  Sets
+//  the meniscus and bottom that the jobs carry to the workers.
+void US_MPI_Analysis::begin_fit_context( void )
+{
+   meniscus_value       = ( meniscus_points == 1 )
+                        ? data_sets[ current_dataset ]->run_data.meniscus
+                        : meniscus_values[ meniscus_run ];
+   bottom_value         = ( bottom_points == 1 )
+                        ? data_sets[ current_dataset ]->run_data.bottom
+                        : bottom_values  [ bottom_run   ];
+
+   bool sim_changed     = ( fit_context.dataset  != current_dataset  ||
+                            fit_context.meniscus != meniscus_value   ||
+                            fit_context.bottom   != bottom_value );
+
+   fit_context.dataset      = current_dataset;
+   fit_context.meniscus     = meniscus_value;
+   fit_context.bottom       = bottom_value;
+   fit_context.mc_iteration = mc_iteration;
+
+DbgLv(1) << "FitContext: ds" << current_dataset << "men" << meniscus_value
+ << "bot" << bottom_value << "mc" << mc_iteration << "sim_changed" << sim_changed;
+}
+
 // Bottom of a dataset: the edited bottom if given, else the centerpiece
 //  bottom stretched at the rotor speed
 double US_MPI_Analysis::dataset_bottom( int dataset )
@@ -843,6 +863,8 @@ DbgLv(0) << "FMB:set_meniscus:  mb_ndx men_run bot_run"
    max_depth = 0;
    for ( int ii = 0; ii < calculated_solutes.size(); ii++ )
       calculated_solutes[ ii ].clear();
+
+   begin_fit_context();
 }
 
 // Reset for a Monte Carlo iteration
@@ -984,6 +1006,8 @@ DbgLv(1) << "sMC: MPI Bcast";
 
    for ( int ii = 0; ii < calculated_solutes.size(); ii++ )
       calculated_solutes[ ii ].clear();
+
+   begin_fit_context();
 }
 
 //////////////////
@@ -1465,12 +1489,6 @@ DbgLv(1) << "Mast:   queue REMAINDER" << remainder << " d=" << d+1;
       Sa_Job job;
       job.solutes          = calculated_solutes[ depth ];
       job.mpi_job.depth    = next_depth;
-      meniscus_value       = ( meniscus_points == 1 )
-                           ? data_sets[ current_dataset ]->run_data.meniscus
-                           : meniscus_values[ meniscus_run ];
-      bottom_value         = ( bottom_points == 1 )
-                           ? data_sets[ current_dataset ]->run_data.bottom
-                           : bottom_values  [ bottom_run   ];
       std::sort( job.solutes.begin(), job.solutes.end() );
 DbgLv(1) << "Mast:   queue LAST ns=" << job.solutes.size() << "  d=" << depth+1
  << max_depth << "  nsvs=" << simulation_values.solutes.size();

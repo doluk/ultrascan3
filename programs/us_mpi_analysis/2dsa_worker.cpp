@@ -46,16 +46,13 @@ DbgLv(1) << "w:" << my_rank << ": job_recvd  length" << job.length
                          + ( parameters[ "rinoise_option" ].toInt() > 0 ?  2 : 0 );
 DbgLv(1) << "w:" << my_rank << ": offs cnt" << offset << dataset_count;
 
-      data_sets[ offset ]->run_data.meniscus  = meniscus_value;
-      data_sets[ offset ]->run_data.bottom    = bottom_value;
-      data_sets[ offset ]->simparams.meniscus = meniscus_value;
-      data_sets[ offset ]->simparams.bottom   = bottom_value;
-
       switch( job.command )
       {
 
          case MPI_Job::PROCESS:  // Process solutes
             {
+               worker_fit_context( offset, meniscus_value, bottom_value );
+
                US_SolveSim::Simulation simulation_values;
                simulation_values.noisflag    = noisflag;
                simulation_values.dbg_level   = dbg_level;
@@ -285,3 +282,24 @@ DbgLv(1) << "newD:" << my_rank << "  length index" << job_length << index
    }  // repeat_loop
 }
 
+// Apply a job's meniscus and bottom to its dataset.  This is the workers'
+//  fit-context entry point; returns true if the simulation parameters
+//  differ from those of the previous job.
+bool US_MPI_Analysis::worker_fit_context( int offset, double meniscus,
+                                          double bottom )
+{
+   data_sets[ offset ]->run_data.meniscus  = meniscus;
+   data_sets[ offset ]->run_data.bottom    = bottom;
+   data_sets[ offset ]->simparams.meniscus = meniscus;
+   data_sets[ offset ]->simparams.bottom   = bottom;
+
+   bool sim_changed      = ( fit_context.dataset  != offset    ||
+                             fit_context.meniscus != meniscus  ||
+                             fit_context.bottom   != bottom );
+
+   fit_context.dataset   = offset;
+   fit_context.meniscus  = meniscus;
+   fit_context.bottom    = bottom;
+
+   return sim_changed;
+}

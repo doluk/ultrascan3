@@ -262,6 +262,20 @@ class US_MPI_Analysis : public QObject
                 QVector< double > ri_noise;     //!< Fitted RI noise
         };
 
+        //! \class FitContext
+        //! \brief Simulation parameters shared by the jobs of a fit.
+        //!  Simulations depend on dataset, meniscus and bottom; a Monte
+        //!  Carlo iteration changes only the data.
+        class FitContext
+        {
+            public:
+                int    dataset      = -1;   //!< Dataset index
+                double meniscus     = 0.0;  //!< Meniscus sent with jobs
+                double bottom       = 0.0;  //!< Bottom sent with jobs
+                int    mc_iteration = 0;    //!< Monte Carlo iteration
+        };
+        FitContext fit_context;         //!< Current fit context
+
         QList< Result > cached_results; //!< Results not yet processed
         int job_seq_next = 0;           //!< Next 2DSA job sequence number
         QVector< int > worker_seq;      //!< Sequence number of worker's job
@@ -395,6 +409,8 @@ class US_MPI_Analysis : public QObject
         void     iterate           ( void );
         void     set_meniscus      ( void );
         void     set_menibott_values( int );
+        void     begin_fit_context ( void );
+        bool     worker_fit_context( int, double, double );
         double   dataset_bottom    ( int );
         void     set_monteCarlo    ( void );
         void     write_output      ( void );
