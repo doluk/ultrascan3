@@ -395,6 +395,7 @@ class US_MPI_Analysis : public QObject
         void     iterate           ( void );
         void     set_meniscus      ( void );
         void     set_menibott_values( int );
+        double   dataset_bottom    ( int );
         void     set_monteCarlo    ( void );
         void     write_output      ( void );
         void     write_global      ( void );

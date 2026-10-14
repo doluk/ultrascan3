@@ -3,6 +3,7 @@
 #include "us_util.h"
 #include "us_tar.h"
 #include "us_astfem_rsa.h"
+#include "us_astfem_math.h"
 #include "us_simparms.h"
 #include "us_constants.h"
 
@@ -759,6 +760,20 @@ DbgLv(1) << "ScaledData fill/solclear complete";
    }
 }
 
+// Bottom of a dataset: the edited bottom if given, else the centerpiece
+//  bottom stretched at the rotor speed
+double US_MPI_Analysis::dataset_bottom( int dataset )
+{
+   US_SolveSim::DataSet* ds = data_sets[ dataset ];
+
+   if ( ds->run_data.bottom > 0.0 )
+      return ds->run_data.bottom;
+
+   return US_AstfemMath::calc_bottom( ds->run_data.scanData[ 0 ].rpm,
+                                      ds->centerpiece_bottom,
+                                      ds->rotor_stretch );
+}
+
 // Set the fit-meniscus and fit-bottom points around a dataset's edited
 //  meniscus and bottom, keeping the meniscus range below the data range
 void US_MPI_Analysis::set_menibott_values( int dataset )
@@ -770,7 +785,7 @@ void US_MPI_Analysis::set_menibott_values( int dataset )
    double bot_dpt  = ( bottom_points > 1 ) ?
                      (double)( bottom_points   - 1 ) : 1;
    double men_str  = edata->meniscus - ( meniscus_range * 0.5 );
-   double bot_str  = edata->bottom   - ( bottom_range   * 0.5 );
+   double bot_str  = dataset_bottom( dataset ) - ( bottom_range * 0.5 );
    double men_inc  = meniscus_range / men_dpt;
    double bot_inc  = bottom_range   / bot_dpt;
    double men_end  = men_str + meniscus_range - men_inc;
