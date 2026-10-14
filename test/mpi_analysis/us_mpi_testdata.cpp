@@ -90,7 +90,16 @@ US_DataIO::RawData skeleton( const QString& runID, int cell, uint64_t seed )
    return raw;
 }
 
-// Velocity edit: meniscus, data range 6.0-7.1 cm, plateau and baseline
+// Bottom at the rotor speed, as us_edit writes it (US_SimulationParameters::
+//  initFromData: centerpiece bottom stretched by the rotor coefficients)
+double stretched_bottom( void )
+{
+   double stretch[ 2 ] = { kStretch0, kStretch1 };
+   return US_AstfemMath::calc_bottom( kRpm, kCpBottom, stretch );
+}
+
+// Velocity edit: meniscus, stretched bottom, data range 6.0-7.1 cm, plateau
+//  and baseline
 bool write_edit( const QString& path, const QString& runID,
                  const US_DataIO::RawData& raw, int cell )
 {
@@ -104,6 +113,7 @@ bool write_edit( const QString& path, const QString& runID,
                    .arg( 10 + cell );
    ev.dataGUID   = US_Util::uuid_unparse( (uchar*)raw.rawGUID );
    ev.meniscus   = kMeniscus;
+   ev.bottom     = stretched_bottom();
    ev.rangeLeft  = 6.0;
    ev.rangeRight = 7.1;
    ev.plateau    = 7.0;
@@ -163,7 +173,7 @@ int write_data( const QString& outdir, const QString& runID, int cell,
    simparams.rotorcoeffs[ 0 ]   = stretch[ 0 ];
    simparams.rotorcoeffs[ 1 ]   = stretch[ 1 ];
    simparams.bottom_position    = kCpBottom;
-   simparams.bottom             = kCpBottom;
+   simparams.bottom             = edata.bottom;   // As us_mpi_analysis
    simparams.band_forming       = false;
 
    QTemporaryDir tmpdir;
