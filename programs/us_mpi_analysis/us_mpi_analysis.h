@@ -184,8 +184,7 @@ class US_MPI_Analysis : public QObject
         QString requestGUID;                //!< Request GUID
         QString analysisDate;               //!< Analysis date
 
-        US_MPI_JobConfig          job_config; //!< The job description (hpcrequest XML)
-        QMap< QString, QString > parameters; //!< Parameters map
+        US_MPI_JobConfig          job_config;  //!< The job description (hpcrequest XML)
         QMap< QString, QString > task_params; //!< Task parameters map
 
         QDateTime submitTime;               //!< Submission time
@@ -394,11 +393,7 @@ class US_MPI_Analysis : public QObject
         enum { GENERATION, GENE, IMMIGRATE, EMMIGRATE, UPDATE, FINISHED };
 
         // Methods
-        void     parse         ( const QString& );
-        void     parse_job     ( QXmlStreamReader& );
-        void     parse_dataset ( QXmlStreamReader&, DATASET* );
-        void     parse_files   ( QXmlStreamReader&, DATASET* );
-        void     parse_solution( QXmlStreamReader&, DATASET* );
+        void                   set_solute_types( void );
         void                   read_job_config( const QString& );
         void     send_udp      ( const QString& );
         void     abort         ( const QString&, int=-1 );

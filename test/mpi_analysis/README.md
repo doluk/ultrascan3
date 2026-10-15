@@ -91,11 +91,10 @@ cmake --build build --target test_us_mpi_jobconfig
 ctest --test-dir build -L gtest-unit-mpi_analysis --output-on-failure
 ```
 
-While the readers move to `US_MPI_JobConfig`, `us_mpi_analysis` reads every
-job file with both the old parser and `US_MPI_JobConfig` and aborts with
-"US_MPI_JobConfig differs from parse()" and the differing fields if the two
-disagree.  The regression and input cases therefore check the two against
-each other on every job they run.
+`us_mpi_analysis` reads the job file with `US_MPI_JobConfig` only.  While
+the parser was replaced, the old and the new parser were run side by side
+on the regression jobs and on 7069 hpcrequest files written by the LIMS
+(2DSA, 2DSA_CG, GA, PCSA) and gave the same job description.
 
 ## Running
 

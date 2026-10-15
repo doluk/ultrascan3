@@ -218,8 +218,7 @@ DbgLv(0) << "work_dir=" << work_dir;
 
    concentrations.clear();
 
-   data_sets .clear();
-   parameters.clear();
+   data_sets.clear();
    buckets   .clear();
    maxods    .clear();
 
@@ -238,9 +237,8 @@ DbgLv(0) << "work_dir=" << work_dir;
 
    if ( files.size() != 1 ) abort( "Could not find unique hpc input file." );
 
-   // Parse analysis parameters
-   parse( xmlfile );
-   read_job_config( xmlfile ); // Check and validate the job description
+   // Read, set up and validate the job description
+   read_job_config( xmlfile );
 
    // The parameter defaults are part of job_config.params
    uint seed = job_config.params.seed;
