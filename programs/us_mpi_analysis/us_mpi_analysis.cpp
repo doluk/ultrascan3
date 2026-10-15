@@ -106,6 +106,11 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
 
    MPI_Barrier( MPI_COMM_WORLD ); // Sync everybody up
 
+   if ( proc_count < 2 )
+   { // All analyses distribute their work from a master to workers
+      abort_all( "us_mpi_analysis needs at least 2 processes (a master and a worker)" );
+   }
+
 
    startTime    = QDateTime::currentDateTime();
    analysisDate = startTime.toUTC().toString( "yyMMddhhmm" );
