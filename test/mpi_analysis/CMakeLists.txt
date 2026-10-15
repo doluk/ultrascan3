@@ -43,9 +43,28 @@ set(US_MPI_CASES
     2dsa_mc_np4
     pcsa_sl
     ga_basic
+    ga_np2
+    dmga_basic
 )
 
-foreach(case ${US_MPI_CASES})
+# Input-handling cases: defective or unusual job input (see INPUT_CASES)
+set(US_MPI_INPUT_CASES
+    input_hpcxml_unreadable
+    input_walltime_jobxml_without
+    input_walltime_cmdline_precedence
+    input_ga_mutation_defaults
+    input_dmga_sigma_default
+    input_ga_negative_bucket
+    input_rotor_stretch_short
+    input_xml_truncated
+)
+
+foreach(case ${US_MPI_CASES} ${US_MPI_INPUT_CASES})
+    if(case IN_LIST US_MPI_INPUT_CASES)
+        set(case_label input)
+    else()
+        set(case_label fit)
+    endif()
     add_test(NAME mpi_analysis_${case}
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/us_mpi_regression.py
             check ${case}
@@ -54,7 +73,7 @@ foreach(case ${US_MPI_CASES})
             --mpirun ${MPIEXEC_EXECUTABLE}
             --workdir ${CMAKE_CURRENT_BINARY_DIR}/work)
     set_tests_properties(mpi_analysis_${case} PROPERTIES
-        LABELS "mpi;regression"
+        LABELS "mpi;regression;${case_label}"
         TIMEOUT 600
         RESOURCE_LOCK mpi_analysis)
 endforeach()

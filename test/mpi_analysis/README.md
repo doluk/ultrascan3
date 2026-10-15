@@ -7,7 +7,7 @@ and compare the fitted models with stored baselines.
 
 | File | Purpose |
 |---|---|
-| `us_mpi_testdata.cpp` | Writes a simulated velocity dataset and a custom-grid model with the UltraScan writers (`US_DataIO::writeRawData`, `US_DataIO::writeEdits`, `US_Model::write`). Three species, 30 scans, 60 krpm, edited bottom at the stretched centerpiece bottom as `us_edit` writes it, noise σ = 0.004 from the seeded `US_Math2` generator. |
+| `us_mpi_testdata.cpp` | Writes a simulated velocity dataset, a DMGA constraints model and a custom-grid model with the UltraScan writers (`US_DataIO::writeRawData`, `US_DataIO::writeEdits`, `US_Model::write`). Three species, 30 scans, 60 krpm, edited bottom at the stretched centerpiece bottom as `us_edit` writes it, noise σ = 0.004 from the seeded `US_Math2` generator. |
 | `us_mpi_regression.py` | Builds the job archive (hpcrequest XML in the LIMS format), runs the case, reduces `analysis-results.tar` to a JSON summary and compares it with `baseline/<case>.json`. |
 | `baseline/*.json` | Reference summaries: per model the RMSD, the signal-weighted moments of s, f/f0 and vbar, the solute list, and any TI/RI noise vectors. |
 
@@ -36,6 +36,8 @@ and compare the fitted models with stored baselines.
 | `2dsa_composite_meniscus_pmasters` | parallel composite with meniscus fit | 6 | exact |
 | `pcsa_sl` | PCSA straight lines | 2 | exact |
 | `ga_basic` | GA, 3 buckets | 4 | loose |
+| `ga_np2` | GA, 3 buckets, one worker | 2 | exact |
+| `dmga_basic` | DMGA, 3 components, s, f/f0 and concentration float | 2 | exact |
 
 "Exact" means RMSD within 1e-6 relative, moments within 1e-4 relative and
 noise within 1e-6 absolute.  The 2DSA master merges subgrid results in job
@@ -44,7 +46,25 @@ and the iteration, so a fit gives the same result for any number of workers
 or master groups; the `*_np4` and `*_pmasters` cases equal the single-worker
 results.  GA migrates genes asynchronously, so its result depends on message
 timing; "loose" only requires the same output files and an RMSD not more
-than 15 % above the baseline.
+than 15 % above the baseline.  With a single worker (`ga_np2`, `dmga_basic`)
+there is no migration and the result is reproducible.
+
+## Input cases
+
+Input cases run one of the cases above with a modified job (defective or
+incomplete input, other command-line arguments) and check how the input is
+handled.  They have no baseline of their own.
+
+| Case | Input | Expected |
+|---|---|---|
+| `input_hpcxml_unreadable` | hpcrequest XML cannot be opened | abort "Cannot open ..." |
+| `input_walltime_jobxml_without` | `jobxmlfile.xml` without walltime, `-walltime 60` | maxwalltime 60 |
+| `input_walltime_cmdline_precedence` | `jobxmlfile.xml` walltime 30, `-walltime 60` | maxwalltime 60 (command line wins) |
+| `input_ga_mutation_defaults` | GA without `mutate_sigma`, `p_mutate_*` | equal to `ga_np2` (explicit defaults) |
+| `input_dmga_sigma_default` | DMGA without `mutate_sigma` | equal to `dmga_basic` (explicit default) |
+| `input_ga_negative_bucket` | additional flotation bucket, s from -3 to -1 | finite result, RMSD as `ga_np2` |
+| `input_rotor_stretch_short` | `rotor_stretch` with one value | abort naming rotor_stretch |
+| `input_xml_truncated` | global fit XML cut off after the first dataset | abort naming the XML error |
 
 ## Running
 
@@ -57,12 +77,16 @@ cmake --build build
 ctest --test-dir build -L mpi --output-on-failure
 ```
 
+`-L fit` selects the fit cases, `-L input` the input cases.
+
 Single cases can be run directly:
 
 ```bash
 python3 test/mpi_analysis/us_mpi_regression.py check 2dsa_mc \
     --program build/bin/us_mpi_analysis --testdata build/bin/us_mpi_testdata
 ```
+
+`check input` runs all input cases.
 
 ## Updating baselines
 
