@@ -22,12 +22,8 @@ void US_MPI_Analysis::ga_worker( void )
    datasets_to_process = count_datasets;
 
    // Initialize grid values
-   QStringList keys = parameters.keys();
-
-   s_grid = ( keys.contains( "s_grid" ) )
-      ? parameters.value( "s_grid" ).toInt() : 100;
-   k_grid = ( keys.contains( "k_grid" ) )
-      ? parameters.value( "k_grid" ).toInt() : 100;
+   s_grid = job_config.params.ga.s_grid;
+   k_grid = job_config.params.ga.k_grid;
 
    static const double extn_s  = (double)( s_grid - 1 );
    static const double extn_k  = (double)( k_grid - 1 );
@@ -160,7 +156,7 @@ void US_MPI_Analysis::ga_worker_loop( void )
 {
    // Initialize genes
    genes.clear();
-   population = parameters.value( "population" ).toInt();
+   population = job_config.params.ga.population;
 
    for ( int i = 0; i < population; i++ ) genes << new_gene();
 
@@ -179,11 +175,11 @@ void US_MPI_Analysis::ga_worker_loop( void )
       fitness << empty_fitness;
    }
 
-   int generations = parameters.value( "generations" ).toInt();
-   int crossover   = parameters.value( "crossover" ).toInt();
-   int mutation    = parameters.value( "mutation" ).toInt();
-   int plague      = parameters.value( "plague" ).toInt();
-   int elitism     = parameters.value( "elitism" ).toInt();
+   int generations = job_config.params.ga.generations;
+   int crossover   = job_config.params.ga.crossover;
+   int mutation    = job_config.params.ga.mutation;
+   int plague      = job_config.params.ga.plague;
+   int elitism     = job_config.params.ga.elitism;
 
    int p_mutate    = mutation;
    int p_crossover = p_mutate + crossover;
@@ -564,9 +560,9 @@ int US_MPI_Analysis::e_random( void )
 
 void US_MPI_Analysis::mutate_gene( Gene& gene )
 {
-   static const int p_mutate_s  = parameters.value( "p_mutate_s" ).toInt();
-   static const int p_mutate_k  = parameters.value( "p_mutate_k" ).toInt();
-   static const int p_mutate_sk = parameters.value( "p_mutate_sk" ).toInt();
+   static const int p_mutate_s  = job_config.params.ga.p_mutate_s;
+   static const int p_mutate_k  = job_config.params.ga.p_mutate_k;
+   static const int p_mutate_sk = job_config.params.ga.p_mutate_sk;
 
    static const int p_k         = p_mutate_s + p_mutate_k;   // e.g., 40
    static const int p_total     = p_k + p_mutate_sk;         // e.g., 60
@@ -616,7 +612,7 @@ void US_MPI_Analysis::mutate_s( US_Solute& solute, int b )
 
 void US_MPI_Analysis::mutate_k( US_Solute& solute, int b )
 {
-   //static const double mutate_sigma = parameters.value( "mutate_sigma" ).toDouble();
+   //static const double mutate_sigma = job_config.params.ga.mutate_sigma;
 
    double sigma   = ( k_grid - 1 ) / ( 6.0 * ( log2( generation + 2 ) ) );
    double x       = US_Math2::box_muller( 0.0, sigma );
@@ -664,8 +660,8 @@ void US_MPI_Analysis::cross_gene( Gene& gene, QList< Gene > old_genes )
 
 int US_MPI_Analysis::migrate_genes( void )
 {
-   static const int migrate_pcent = parameters.value( "migration" ).toInt();
-   static const int elitism_count = parameters.value( "elitism" ).toInt();
+   static const int     migrate_pcent = job_config.params.ga.migration;
+   static const int     elitism_count = job_config.params.ga.elitism;
 
    QVector< US_Solute > emmigres;
    int migrate_count = ( migrate_pcent * population + 50 ) / 100;
@@ -1247,7 +1243,7 @@ double US_MPI_Analysis::update_fitness( int index, US_Vector& v )
    int    vsize   = v.size();
    int    nsols   = vsize / 2;
    int    navals  = nsols * ntotal;
-   double fixval  = parameters.value( "bucket_fixed" ).toDouble();
+   double                   fixval  = job_config.params.ga.bucket_fixed;
    fixval         = ( attr_z == ATTR_V ) ? dset->vbar20 : fixval;
 //qDebug() << "UF: vsize nsols ntotal navals" << vsize << nsols << ntotal << navals;
 
@@ -1586,9 +1582,7 @@ void US_MPI_Analysis::build_component( US_Model::SimulationComponent& mcomp,
 
 void US_MPI_Analysis::solutes_from_gene( Gene& solutes, int nsols )
 {
-   double fixval    = ( attr_z == ATTR_V )
-                    ? data_sets[ 0 ]->vbar20
-                    : parameters.value( "bucket_fixed" ).toDouble();
+   double fixval = ( attr_z == ATTR_V ) ? data_sets[0]->vbar20 : job_config.params.ga.bucket_fixed;
 
    for ( int cc = 0; cc < nsols; cc++ )
    {

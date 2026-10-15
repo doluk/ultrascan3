@@ -11,10 +11,8 @@ void US_MPI_Analysis::ga_master( void )
    calculated_solutes.clear();
 
    // Set noise and debug flags
-   simulation_values.noisflag   = parameters.value( "tinoise_option" ).toInt() > 0 ?
-                                  1 : 0;
-   simulation_values.noisflag  += parameters.value( "rinoise_option" ).toInt() > 0 ?
-                                  2 : 0;
+   simulation_values.noisflag = job_config.params.tinoise_option > 0 ? 1 : 0;
+   simulation_values.noisflag += job_config.params.rinoise_option > 0 ? 2 : 0;
    simulation_values.dbg_level  = dbg_level;
    simulation_values.dbg_timing = dbg_timing;
 DbgLv(0) << "DEBUG_LEVEL" << simulation_values.dbg_level;
