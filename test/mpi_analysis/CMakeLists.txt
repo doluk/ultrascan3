@@ -49,6 +49,7 @@ set(US_MPI_CASES
 
 # Input-handling cases: defective or unusual job input (see INPUT_CASES)
 set(US_MPI_INPUT_CASES
+    input_hpcxml_missing
     input_hpcxml_unreadable
     input_walltime_jobxml_without
     input_walltime_cmdline_precedence

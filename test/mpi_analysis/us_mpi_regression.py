@@ -210,6 +210,11 @@ CASES = {
 HPC_XML = "hpcrequest-local-regression-1.xml"
 
 
+def no_hpc_xml(inputs):
+    # Rename the hpcrequest file so that it does not match hpc*.xml
+    (inputs / HPC_XML).rename(inputs / ("job-" + HPC_XML))
+
+
 def unreadable_hpc_xml(inputs):
     # A directory matches the hpc*.xml pattern but cannot be opened as a file
     path = inputs / HPC_XML
@@ -252,6 +257,11 @@ def input_case(base, **changes):
 #   finite      all fitted values must be finite numbers
 #   loose_vs    case whose RMSD this run must not exceed by more than 15 %
 INPUT_CASES = {
+    # A9: an abort before the inputs are read archives and removes the
+    #     files of the work directory (the job's input files)
+    "input_hpcxml_missing": input_case(
+        "2dsa_basic", prepare=no_hpc_xml,
+        expect={"abort": r"Could not find unique hpc input file"}),
     # A1: unreadable hpcrequest file -> MPI_Finalize, then execution goes on
     "input_hpcxml_unreadable": input_case(
         "2dsa_basic", prepare=unreadable_hpc_xml,
@@ -413,7 +423,8 @@ def run_job(name, case, args):
     cmd += case.get("args", ["-walltime", "60",
                              "-mgroupcount", str(case.get("mgroupcount", 1))])
     cmd += [archive.name]
-    log = casedir / "run.log"
+    # The log is kept outside the work directory, which a defect may clear
+    log = casedir.parent / ("%s.log" % name)
     try:
         with open(log, "w") as out:
             proc = subprocess.run(cmd, cwd=casedir, env=env, stdout=out,
@@ -424,6 +435,14 @@ def run_job(name, case, args):
         status = "timeout"
     results = casedir / "output" / "analysis-results.tar"
     return status, log.read_text(errors="replace"), results
+
+
+def lost_inputs(name, case, args):
+    """Input files that are no longer in the work directory."""
+    casedir = Path(args.workdir) / name
+    expected = [casedir / ("%s.tar" % name)]
+    expected += [casedir / p.name for p in (casedir / "inputs").iterdir()]
+    return [p.name for p in expected if not p.exists()]
 
 
 def run_case(name, case, args):
@@ -603,6 +622,11 @@ def check_input_case(name, case, args, reference):
             return ["expected abort message /%s/, got %s (exit %s)\n      %s"
                     % (expect["abort"], aborts or "no abort message",
                        status, tail)]
+        # An abort must leave the job's input files in place
+        lost = lost_inputs(name, case, args)
+        if lost:
+            return ["abort removed input files from the work directory: %s"
+                    % ", ".join(sorted(lost))]
         return []
 
     if status != 0 or not results.exists():

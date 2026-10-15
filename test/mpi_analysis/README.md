@@ -53,10 +53,12 @@ there is no migration and the result is reproducible.
 
 Input cases run one of the cases above with a modified job (defective or
 incomplete input, other command-line arguments) and check how the input is
-handled.  They have no baseline of their own.
+handled.  They have no baseline of their own.  An expected abort must also
+leave the job's input files in the work directory.
 
 | Case | Input | Expected |
 |---|---|---|
+| `input_hpcxml_missing` | no hpcrequest XML in the archive | abort "Could not find unique hpc input file" |
 | `input_hpcxml_unreadable` | hpcrequest XML cannot be opened | abort "Cannot open ..." |
 | `input_walltime_jobxml_without` | `jobxmlfile.xml` without walltime, `-walltime 60` | maxwalltime 60 |
 | `input_walltime_cmdline_precedence` | `jobxmlfile.xml` walltime 30, `-walltime 60` | maxwalltime 60 (command line wins) |
