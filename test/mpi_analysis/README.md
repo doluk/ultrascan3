@@ -26,6 +26,7 @@ and compare the fitted models with stored baselines.
 | `2dsa_menbot` | meniscus and bottom fit (3 × 3) | 2 | exact |
 | `2dsa_composite_menbot` | composite job, meniscus and bottom fit (2 × 2) | 2 | exact |
 | `2dsa_composite_menbot_pmasters` | the same with parallel masters | 6 | exact |
+| `2dsa_timestate`, `2dsa_composite_timestate` | timestate file given (as in LIMS jobs), 1-second intervals | 2 | exact |
 | `2dsa_noise` | TI + RI noise | 2 | exact |
 | `2dsa_customgrid` | custom grid (s × vbar) | 2 | exact |
 | `2dsa_global` | global fit, 2 datasets | 2 | exact |
@@ -71,6 +72,7 @@ leave the job's input files in the work directory.
 | `input_rotor_stretch_short` | `rotor_stretch` with one value | abort naming rotor_stretch |
 | `input_xml_truncated` | global fit XML cut off after the first dataset | abort naming the XML error |
 | `input_jobxml_truncated` | `jobxmlfile.xml` cut off inside its Header | abort naming the XML error |
+| `input_timestate_missing` | timestate file listed, not in the archive | result as `2dsa_timestate`, timestate created |
 
 | `input_invalid_number` | 2DSA `s_max="ten"` | abort naming `s_max` (was: segfault) |
 | `input_missing_required` | 2DSA without `s_max` | abort naming `s_max` (was: segfault) |

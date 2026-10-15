@@ -9,12 +9,13 @@
 //! US_Math2 generator that us_mpi_analysis uses for Monte Carlo data.
 //!
 //! Usage:
-//!   us_mpi_testdata data   <outdir> <runID> <cell> <seed> <scale>
+//!   us_mpi_testdata data   <outdir> <runID> <cell> <seed> <scale> [tmst]
 //!   us_mpi_testdata cgrid  <outdir> <filename>
 //!   us_mpi_testdata dmga   <outdir> <filename>
 //!
 //! "data" writes <runID>.RI.<cell>.A.260.auc and the edit file
-//! <runID>.e1.RI.<cell>.A.260.xml.  "cgrid" writes a custom-grid model file.
+//! <runID>.e1.RI.<cell>.A.260.xml; with "tmst" also the 1-second timestate
+//! file set <runID>.time_state.tmst/.xml the data were simulated with.  "cgrid" writes a custom-grid model file.
 //! "dmga" writes a DMGA constraints model for the three simulated species.
 
 #include <QtCore>
@@ -146,7 +147,7 @@ US_Model sample_model( double scale )
    return model;
 }
 
-int write_data( const QString& outdir, const QString& runID, int cell, uint64_t seed, double scale )
+int write_data( const QString& outdir, const QString& runID, int cell, uint64_t seed, double scale, bool with_tmst )
 {
    QString            triple   = QString( "RI.%1.A.260" ).arg( cell );
    QString            aucname  = runID + "." + triple + ".auc";
@@ -183,6 +184,20 @@ int write_data( const QString& outdir, const QString& runID, int cell, uint64_t 
    US_AstfemMath::initSimData( tsdat, edata, 0.0 );
    US_AstfemMath::writetimestate( tmst, simparams, tsdat );
    simparams.simSpeedsFromTimeState( tmst );
+
+   if ( with_tmst )
+   { // Also write the timestate file set as the LIMS includes it in a job
+      QString tmst_out = outdir + "/" + runID + ".time_state.tmst";
+      QString xml_in   = QString( tmst ).replace( ".tmst", ".xml" );
+      QString xml_out  = QString( tmst_out ).replace( ".tmst", ".xml" );
+      QFile::remove( tmst_out );
+      QFile::remove( xml_out );
+      if ( !QFile::copy( tmst, tmst_out ) || ( QFile::exists( xml_in ) && !QFile::copy( xml_in, xml_out ) ) )
+      {
+         fprintf( stderr, "cannot write %s\n", qPrintable( tmst_out ) );
+         return 1;
+      }
+   }
 
    // Convert the 20,W model to experimental space as US_SolveSim does
    US_Math2::SolutionData sd;
@@ -324,9 +339,9 @@ int main( int argc, char* argv[] )
    QCoreApplication app( argc, argv );
    QStringList      args = app.arguments();
 
-   if ( args.size() == 7 && args[1] == "data" )
+   if ( ( args.size() == 7 || ( args.size() == 8 && args[7] == "tmst" ) ) && args[1] == "data" )
    {
-      return write_data( args[2], args[3], args[4].toInt(), args[5].toULongLong(), args[6].toDouble() );
+      return write_data( args[2], args[3], args[4].toInt(), args[5].toULongLong(), args[6].toDouble(), args.size() == 8 );
    }
 
    if ( args.size() == 4 && args[1] == "cgrid" )
@@ -340,7 +355,7 @@ int main( int argc, char* argv[] )
    }
 
    fprintf( stderr,
-            "usage: %s data <outdir> <runID> <cell> <seed> <scale>\n"
+            "usage: %s data <outdir> <runID> <cell> <seed> <scale> [tmst]\n"
             "       %s cgrid <outdir> <filename>\n"
             "       %s dmga  <outdir> <filename>\n",
             argv[0],

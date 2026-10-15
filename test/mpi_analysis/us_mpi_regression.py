@@ -129,6 +129,15 @@ CASES = {
         "params": dict(GRID_2DSA, meniscus_points="2", meniscus_range="0.04",
                        fit_mb_select="3"),
     },
+    "2dsa_timestate": {
+        # Timestate file given (as in every LIMS job), at 1-second intervals
+        "method": "2DSA", "datasets": [DS_A], "np": 2,
+        "params": dict(GRID_2DSA), "timestate": "given",
+    },
+    "2dsa_composite_timestate": {
+        "method": "2DSA", "datasets": [DS_A, DS_B], "np": 2,
+        "params": dict(GRID_2DSA), "timestate": "given",
+    },
     "2dsa_noise": {
         "method": "2DSA", "datasets": [DS_A], "np": 2,
         "params": dict(GRID_2DSA, tinoise_option="1", rinoise_option="1"),
@@ -267,6 +276,7 @@ def input_case(base, **changes):
 #   finite      all fitted values must be finite numbers
 #   loose_vs    case whose RMSD this run must not exceed by more than 15 %
 #   log         regex the run log must match
+#   log_absent  regex the run log must not match
 # A case with "pending" documents a defect whose fix is still to come: it is
 # reported as XFAIL while it fails and as an error once it passes, so that
 # the marker gets removed.
@@ -313,6 +323,13 @@ INPUT_CASES = {
     "input_jobxml_truncated": input_case(
         "2dsa_basic", prepare=jobxml_file(truncate=True, walltime="30"),
         expect={"abort": r"XML"}),
+
+    # A10: a timestate file listed but not in the archive was not created:
+    #      ranks ran with different speed profiles
+    "input_timestate_missing": input_case(
+        "2dsa_timestate", timestate="missing", debug_log=True,
+        expect={"same_as": "2dsa_timestate",
+                "log_absent": r"timestate file does not exist"}),
 
     # Validation of job parameters (US_MPI_JobConfig::validate)
     "input_invalid_number": input_case(
@@ -381,6 +398,9 @@ def job_xml(name, case):
         files = sub(dset, "files")
         sub(files, "auc", filename="%s.%s.auc" % (run_id, triple))
         sub(files, "edit", filename="%s.e1.%s.xml" % (run_id, triple))
+        if case.get("timestate"):
+            # As in LIMS jobs; "missing": listed, but not in the archive
+            sub(files, "timestate", filename="%s.time_state.tmst" % run_id)
         solution = sub(dset, "solution")
         sub(solution, "buffer", density="0.998234", viscosity="1.00194",
             compress="0", manual="0")
@@ -404,8 +424,9 @@ def build_archive(name, case, testdata, casedir):
     inputs = casedir / "inputs"
     inputs.mkdir(parents=True)
     for (run_id, cell, seed, scale) in case["datasets"]:
+        tmst = ["tmst"] if case.get("timestate") == "given" else []
         subprocess.run([testdata, "data", str(inputs), run_id, str(cell),
-                        str(seed), str(scale)], check=True,
+                        str(seed), str(scale)] + tmst, check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for kind in ("cgrid", "dmga"):
         if kind in case:
@@ -674,6 +695,11 @@ def check_input_case(name, case, args, reference):
     errors = []
     if "log" in expect and not re.search(expect["log"], text):
         errors.append("log does not match /%s/" % expect["log"])
+    if "log_absent" in expect:
+        found = re.search(r".*%s.*" % expect["log_absent"], text)
+        if found:
+            errors.append("log matches /%s/: %s"
+                          % (expect["log_absent"], found.group(0).strip()))
     summary = summarize(results)
     for key, value in expect.get("statistics", {}).items():
         got = job_statistics(results).get(key)

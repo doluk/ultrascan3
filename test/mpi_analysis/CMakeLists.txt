@@ -57,6 +57,8 @@ set(US_MPI_CASES
     2dsa_composite_menbot
     2dsa_composite_menbot_pmasters
     2dsa_noise
+    2dsa_timestate
+    2dsa_composite_timestate
     2dsa_customgrid
     2dsa_global
     2dsa_composite
@@ -83,6 +85,7 @@ set(US_MPI_INPUT_CASES
     input_rotor_stretch_short
     input_xml_truncated
     input_jobxml_truncated
+    input_timestate_missing
     input_invalid_number
     input_missing_required
     input_unknown_method
