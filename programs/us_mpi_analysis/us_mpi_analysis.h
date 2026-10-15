@@ -394,6 +394,19 @@ class US_MPI_Analysis : public QObject
 
         // Methods
         void                   set_solute_types( void );
+        void                   parse_command_line( int, QStringList&, QString&, QString&, QMap<QString, QString>& );
+        void                   unpack_inputs( const QString& );
+        QString                find_job_file( void );
+        void                   read_task_parameters( const QString&, const QMap<QString, QString>& );
+        void                   announce_start( const QString& );
+        void                   load_data( void );
+        void                   set_fit_controls( void );
+        void                   set_ga_controls( void );
+        void                   prepare_datasets( bool&, int&, int&, int& );
+        void                   prepare_timestates( int, int, int );
+        void                   prepare_speed_steps( bool );
+        void                   check_grid_size( void );
+        void                   choose_groups( void );
         void                   read_job_config( const QString& );
         void     send_udp      ( const QString& );
         void     abort         ( const QString&, int=-1 );

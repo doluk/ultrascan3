@@ -68,18 +68,6 @@ int main( int argc, char* argv[] )
 US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
 {
    //printf( "QT_LOGGING_RULES=\"%s\"\n", (char*)getenv("QT_LOGGING_RULES") );
-   // Command line special parameter keys
-   const QString wallkey ( "-walltime" );
-   const QString pmgckey ( "-mgroupcount" );
-   const QString sgszkey ( "-sgsize" );
-   // Alternate versions of those keys
-   const QString wallkey2( "-WallTimeLimit" );
-   const QString pmgckey2( "-MGroupCount" );
-   const QString sgszkey2( "-SubGridSize" );
-   const QString wallkey3( "-wallTimeLimit" );
-   const QString pmgckey3( "-pmgc" );
-   const QString sgszkey3( "-subgridsize" );
-
    MPI_Comm_size( MPI_COMM_WORLD, &proc_count );
    MPI_Comm_rank( MPI_COMM_WORLD, &my_rank );
 
@@ -101,6 +89,112 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
    task_params[ "subgridsize" ] = "100";
 
    // Get some task parameters from the command line
+   parse_command_line( nargs, cmdargs, tarfile, jxmlfili, cmd_task_params );
+
+   attr_x = ATTR_S;
+   attr_y = ATTR_K;
+   attr_z = ATTR_V;
+
+   if ( my_rank == 0 )
+   {
+      socket = new QUdpSocket( this );
+   }
+
+   output_dir = QDir::currentPath() + "/output";
+   unpack_inputs( tarfile );
+
+   MPI_Barrier( MPI_COMM_WORLD ); // Sync everybody up
+
+
+   startTime    = QDateTime::currentDateTime();
+   analysisDate = startTime.toUTC().toString( "yyMMddhhmm" );
+   set_count    = 0;
+   iterations   = 1;
+
+   previous_values.variance = 1.0e39; // A large number
+
+   concentrations.clear();
+
+   data_sets.clear();
+   buckets.clear();
+   maxods.clear();
+
+   // Read, set up and validate the job description
+   read_job_config( find_job_file() );
+
+   // The parameter defaults are part of job_config.params
+   uint seed = job_config.params.seed;
+   US_Math2::randomize( seed );
+
+   read_task_parameters( jxmlfili, cmd_task_params );
+   announce_start( tarfile );
+   load_data();
+
+
+   // After reading all input, set the working directory for file output.
+   QDir::setCurrent( output_dir );
+
+   set_fit_controls();
+   set_ga_controls();
+
+   bool redo_ss  = false; // By default, accept speed step as is
+   int  ntmsf_ne = 0;     // Number timestate files non-empty
+   int  ntmsf_ex = 0;     // Number timestate files that exist
+   int  ntmsf_1s = 0;     // Nbr tstate files at 1-sec interval
+   prepare_datasets( redo_ss, ntmsf_ne, ntmsf_ex, ntmsf_1s );
+   prepare_timestates( ntmsf_ne, ntmsf_ex, ntmsf_1s );
+   prepare_speed_steps( redo_ss );
+   check_grid_size();
+
+
+   count_calc_residuals = 0; // Internal instrumentation
+   menibott_ndx         = 0;
+   meniscus_run         = 0;
+   bottom_run           = 0;
+   mc_iteration         = 0;
+
+   choose_groups();
+
+
+   // Collective over all ranks, so before any masters-group split
+   create_node_comm();
+
+   if ( mgroup_count < 2 )
+   {
+      start(); // Start standard job
+   }
+
+   else if ( is_composite_job )
+   {
+      pm_cjobs_start(); // Start parallel-masters job (composite)
+   }
+
+   else
+   {
+      pmasters_start(); // Start parallel-masters job (mc_iters)
+   }
+}
+
+// Read the command line: keyed task parameters (walltime, master groups,
+//  subgrid size), the job archive and the job xml file
+void US_MPI_Analysis::parse_command_line( int                     nargs,
+                                          QStringList&            cmdargs,
+                                          QString&                tarfile,
+                                          QString&                jxmlfili,
+                                          QMap<QString, QString>& cmd_task_params )
+{
+   // Command line special parameter keys
+   const QString wallkey( "-walltime" );
+   const QString pmgckey( "-mgroupcount" );
+   const QString sgszkey( "-sgsize" );
+   // Alternate versions of those keys
+   const QString wallkey2( "-WallTimeLimit" );
+   const QString pmgckey2( "-MGroupCount" );
+   const QString sgszkey2( "-SubGridSize" );
+   const QString wallkey3( "-wallTimeLimit" );
+   const QString pmgckey3( "-pmgc" );
+   const QString sgszkey3( "-subgridsize" );
+
    for ( int jj = 1; jj < nargs; jj++ )
    {
       QString cmdarg = cmdargs[ jj ];
@@ -171,19 +265,14 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
       DbgLv( 0 ) << "CmdArg: tarfile" << tarfile;
       DbgLv( 0 ) << "CmdArg: jxmlfili" << jxmlfili;
    }
+}
 
-   attr_x       = ATTR_S;
-   attr_y       = ATTR_K;
-   attr_z       = ATTR_V;
-
-   if ( my_rank == 0 ) 
-      socket = new QUdpSocket( this );
-
+// Unpack the job archive and create an empty output directory (rank 0)
+void US_MPI_Analysis::unpack_inputs( const QString& tarfile )
+{
    QStringList ffilt;
-   QDir    wkdir      = QDir::current();
-   QString work_dir   = QDir::currentPath();
-   output_dir             = work_dir + "/output";
-   QString input_dir  = work_dir + "/input";
+   QDir        wkdir    = QDir::current();
+   QString     work_dir = QDir::currentPath();
 
    if ( my_rank == 0 )
    {
@@ -212,22 +301,14 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
       foreach( file, files ) odir.remove( file );
       DbgLv(0) << "Start:  processor_count" << proc_count;
    }
- 
-   MPI_Barrier( MPI_COMM_WORLD ); // Sync everybody up
+}
 
-
-   startTime      = QDateTime::currentDateTime();
-   analysisDate   = startTime.toUTC().toString( "yyMMddhhmm" );
-   set_count      = 0;
-   iterations     = 1;
-
-   previous_values.variance = 1.0e39;  // A large number
-
-   concentrations.clear();
-
-   data_sets.clear();
-   buckets   .clear();
-   maxods    .clear();
+// The hpcrequest file: the one hpc*.xml in the work or input directory
+QString US_MPI_Analysis::find_job_file( void )
+{
+   QDir        wkdir     = QDir::current();
+   QString     input_dir = QDir::currentPath() + "/input";
+   QStringList ffilt;
 
    QString xmlfile;
    ffilt.clear();
@@ -244,12 +325,16 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
 
    if ( files.size() != 1 ) abort( "Could not find unique hpc input file." );
 
-   // Read, set up and validate the job description
-   read_job_config( xmlfile );
+   return xmlfile;
+}
 
-   // The parameter defaults are part of job_config.params
-   uint seed = job_config.params.seed;
-   US_Math2::randomize( seed );
+// Read the task parameters (walltime, master groups) from the job xml
+//  file, given or found, then apply those of the command line
+void US_MPI_Analysis::read_task_parameters( const QString& jxmlfili, const QMap<QString, QString>& cmd_task_params )
+{
+   QDir        wkdir     = QDir::current();
+   QString     input_dir = QDir::currentPath() + "/input";
+   QStringList ffilt;
 
    QString jxmlfile  = jxmlfili;
 
@@ -290,7 +375,11 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
    {
       task_params[it.key()] = it.value();
    }
+}
 
+// Report the start, on stdout and to the udp server
+void US_MPI_Analysis::announce_start( const QString& tarfile )
+{
    if ( my_rank == 0 )
    {  // Save submit time
       submitTime      = QFileInfo( tarfile ).lastModified();
@@ -304,7 +393,11 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
 
    QString msg_start = QString( "Starting --  " ) + QString( GIT_REVISION );
    send_udp( msg_start );   // Can't send udp message until xmlfile is parsed
+}
 
+// Load the edited data of each dataset and apply its noise files
+void US_MPI_Analysis::load_data( void )
+{
    // Read data 
    for ( int ii = 0; ii < data_sets.size(); ii++ )
    {
@@ -360,10 +453,12 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
       if ( dset->centerpiece_bottom == 7.3 )
          abort( "The bottom is set to the invalid default value of 7.3" );
    }
+}
 
-   // After reading all input, set the working directory for file output.
-   QDir::setCurrent( output_dir );
-
+// Iteration counts, meniscus and bottom fit values, and the checks of
+//  compatible options
+void US_MPI_Analysis::set_fit_controls( void )
+{
    // Set some minimums
    max_iterations  = job_config.params.max_iterations;
    max_iterations  = qMax( max_iterations, 1 );
@@ -544,7 +639,11 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
    {
       DbgLv( 0 ) << "FMB: bottom:  start delta" << bottom_start << dbot;
    }
+}
 
+// GA and DMGA controls
+void US_MPI_Analysis::set_ga_controls( void )
+{
    population                 = job_config.params.ga.population;
    generations                = job_config.params.ga.generations;
    crossover                  = job_config.params.ga.crossover;
@@ -560,13 +659,16 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
    concentration_threshold    = job_config.params.ga.conc_threshold;
    minimize_opt               = job_config.params.ga.minimize_opt;
    minimize_opt               = ( minimize_opt == 0 ? 2 : minimize_opt );
-   total_points            = 0;
-   bool redo_ss            = false;     // By default, accept speed step as is
-   bool redo_tstate        = false;     // By default, accept timestate as is
-   double ds_concen        = 1.0;
-   int ntmsf_ne            = 0;         // Number timestate files non-empty
-   int ntmsf_ex            = 0;         // Number timestate files that exist
-   int ntmsf_1s            = 0;         // Nbr tstate files at 1-sec interval
+}
+
+// Per dataset: s and D corrections, simulation parameters, data points and
+//  maximum OD (data scaled for a global fit); flag speed steps to compute
+//  from the data and count the timestate files given, existing and at
+//  1-second intervals
+void US_MPI_Analysis::prepare_datasets( bool& redo_ss, int& ntmsf_ne, int& ntmsf_ex, int& ntmsf_1s )
+{
+   total_points     = 0;
+   double ds_concen = 1.0;
 
    // Calculate s, D corrections for calc_residuals; simulation parameters
    for ( int ee = 0; ee < data_sets.size(); ee++ )
@@ -694,6 +796,13 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
 
       maxods << odmax;
    }
+}
+
+// Write timestate files where none or no 1-second ones are given (rank 0),
+//  then load the timestate of each dataset
+void US_MPI_Analysis::prepare_timestates( int ntmsf_ne, int ntmsf_ex, int ntmsf_1s )
+{
+   bool redo_tstate = false; // By default, accept timestate as is
 
    // Determine whether we need to re-do timestate files
    if ( ( ntmsf_ne == 0 )  ||          // No non-empty tmst_files
@@ -859,8 +968,11 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
       }
 #endif
    }  // END: datasets loop to upload timestate
-   //DbgLv(0) << "rank" << my_rank << ": simSpeed :TM:" << ELAPSED_SECS;
-   //   }
+}
+
+// Compute speed steps from the data if flagged, check accelerations
+void US_MPI_Analysis::prepare_speed_steps( bool redo_ss )
+{
    if ( my_rank == 0 )
    {
       DbgLv( 0 ) << "rank" << my_rank << ": redo_ss" << redo_ss;
@@ -913,7 +1025,11 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
           << dset->run_data.runID << check_results.join(" ");
       }
    }
+}
 
+// Check GA buckets and the implied simulation grid size
+void US_MPI_Analysis::check_grid_size( void )
+{
    double s_max  = job_config.params.grid.s_max * 1.0e-13;
    double x_max  = job_config.params.grid.x_max * 1.0e-13;
    s_max         = ( s_max == 0.0 ) ? x_max : s_max;
@@ -1057,13 +1173,11 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
    //else
    // qDebug() << "check_grid_size FALSE  x_max" << x_max
    //    << "rpm" << data_sets[0]->simparams.speed_step[0].rotorspeed;
+}
 
-   count_calc_residuals = 0;   // Internal instrumentation
-   menibott_ndx         = 0;
-   meniscus_run         = 0;
-   bottom_run           = 0;
-   mc_iteration         = 0;
-
+// Determine the masters-group count and related controls
+void US_MPI_Analysis::choose_groups( void )
+{
    // Determine masters-group count and related controls
    mgroup_count = task_params[ "mgroupcount" ].toInt();
    max_walltime = task_params[ "walltime"    ].toInt();
@@ -1094,19 +1208,8 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
 
    mgroup_count = qMax( 1, mgroup_count );
    gcores_count = proc_count / mgroup_count;
-
-   // Collective over all ranks, so before any masters-group split
-   create_node_comm();
-
-   if ( mgroup_count < 2 )
-      start();                  // Start standard job
-   
-   else if ( is_composite_job )
-      pm_cjobs_start();         // Start parallel-masters job (composite)
-
-   else
-      pmasters_start();         // Start parallel-masters job (mc_iters)
 }
+
 
 // Create the communicator of the ranks on this node, which can share
 //  memory (MPI_COMM_TYPE_SHARED).  Not used yet; a node-wide simulation
