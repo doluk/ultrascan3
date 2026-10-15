@@ -3,7 +3,7 @@
 //!        us_mpi_analysis.
 //!
 //! The files in jobs/ are anonymized hpcrequest files written by the LIMS
-//! (2DSA with noise, GA with buckets, 2DSA custom grid).  The inline cases
+//! (2DSA with noise, GA with buckets, 2DSA custom grid, PCSA).  The inline cases
 //! cover the rules of the reader that those files do not exercise.
 
 #include <gtest/gtest.h>
@@ -146,6 +146,24 @@ TEST( US_MPI_JobConfig, LimsCustomGridJob )
    EXPECT_EQ( config.parameters.value( "CG_model" ), "demo-cg.model" );
    ASSERT_EQ( config.datasets.size(), 1 );
    EXPECT_TRUE( config.datasets[0].noise_files.isEmpty() );
+}
+
+TEST( US_MPI_JobConfig, LimsPcsaJob )
+{
+   Config config = Config::fromFile( job_file( "hpcrequest-pcsa.xml" ) );
+   ASSERT_TRUE( config.ok() ) << config.errors.join( "\n" ).toStdString();
+
+   EXPECT_EQ( config.method, "PCSA" );
+   const QMap<QString, QString>& p = config.parameters;
+   EXPECT_EQ( p.value( "curve_type" ), "IS" );
+   EXPECT_EQ( p.value( "solute_type" ), "013.skv" );
+   EXPECT_EQ( p.value( "x_max" ), "4" ); // Given as x_*, no s_* copies
+   EXPECT_FALSE( p.contains( "s_max" ) );
+   EXPECT_EQ( p.value( "z_value" ), "0" ); // Given, not the default
+   EXPECT_EQ( p.value( "tikreg_option" ), "2" );
+   EXPECT_EQ( p.value( "tikreg_alpha" ), "0.275" );
+   ASSERT_EQ( config.datasets.size(), 1 );
+   EXPECT_EQ( config.datasets[0].noise_files.size(), 2 );
 }
 
 // --- Job parameters ---------------------------------------------------------
@@ -365,7 +383,7 @@ std::string all_of( const Config& config )
 
 TEST( US_MPI_JobConfig, LimsJobsAreValid )
 {
-   for ( const char* name : { "hpcrequest-2dsa.xml", "hpcrequest-ga.xml", "hpcrequest-2dsa-cg.xml" } )
+   for ( const char* name : { "hpcrequest-2dsa.xml", "hpcrequest-ga.xml", "hpcrequest-2dsa-cg.xml", "hpcrequest-pcsa.xml" } )
    {
       Config config = Config::fromFile( job_file( name ) );
       config.validate();

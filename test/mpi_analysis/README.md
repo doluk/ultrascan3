@@ -11,7 +11,7 @@ and compare the fitted models with stored baselines.
 | `us_mpi_regression.py` | Builds the job archive (hpcrequest XML in the LIMS format), runs the case, reduces `analysis-results.tar` to a JSON summary and compares it with `baseline/<case>.json`. |
 | `test_us_mpi_jobconfig.cpp` | Unit tests (GoogleTest, no MPI) of `US_MPI_JobConfig`, the hpcrequest XML reader. |
 | `us_mpi_jobcheck.cpp` | `us_mpi_jobcheck [-q] <hpcrequest.xml>...`: reads and validates job files as `us_mpi_analysis` does, without MPI and data. |
-| `jobs/*.xml` | Anonymized hpcrequest files written by the LIMS (2DSA with noise, GA with buckets, 2DSA custom grid) for the unit tests. |
+| `jobs/*.xml` | Anonymized hpcrequest files written by the LIMS (2DSA with noise, GA with buckets, 2DSA custom grid, PCSA) for the unit tests. |
 | `baseline/*.json` | Reference summaries: per model the RMSD, the signal-weighted moments of s, f/f0 and vbar, the solute list, and any TI/RI noise vectors. |
 
 ## Cases
