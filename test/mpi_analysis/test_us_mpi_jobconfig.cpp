@@ -1,0 +1,336 @@
+//! \file test_us_mpi_jobconfig.cpp
+//! \brief Unit tests of US_MPI_JobConfig, the hpcrequest XML reader of
+//!        us_mpi_analysis.
+//!
+//! The files in jobs/ are anonymized hpcrequest files written by the LIMS
+//! (2DSA with noise, GA with buckets, 2DSA custom grid).  The inline cases
+//! cover the rules of the reader that those files do not exercise.
+
+#include <gtest/gtest.h>
+
+#include "us_math2.h"
+#include "us_mpi_jobconfig.h"
+
+#include <memory>
+
+namespace
+{
+typedef US_MPI_JobConfig Config;
+
+Config                   parse( const QString& text )
+{
+   QByteArray data = text.toUtf8();
+   QBuffer    buffer( &data );
+   buffer.open( QIODevice::ReadOnly );
+   return Config::fromXml( buffer, "test.xml" );
+}
+
+// A job document with the given job parameters and datasets
+QString job( const QString& params, const QString& datasets = QString(), const QString& method = "2DSA" )
+{
+   return QString( "<?xml version=\"1.0\"?>\n<US_JobSubmit method=\"%1\" version=\"1.0\">"
+                   "<job><jobParameters>%2</jobParameters></job>%3</US_JobSubmit>" )
+      .arg( method, params, datasets );
+}
+
+QString job_file( const QString& name )
+{
+   return QString( US_MPI_TEST_JOBS_DIR ) + "/" + name;
+}
+
+// Owns the datasets of make_datasets()
+std::vector<std::unique_ptr<US_SolveSim::DataSet>> datasets_of( const Config& config )
+{
+   std::vector<std::unique_ptr<US_SolveSim::DataSet>> owned;
+   for ( US_SolveSim::DataSet* ds : config.make_datasets() )
+   {
+      owned.emplace_back( ds );
+   }
+   return owned;
+}
+} // namespace
+
+// --- LIMS files -------------------------------------------------------------
+
+TEST( US_MPI_JobConfig, Lims2dsaJob )
+{
+   Config config = Config::fromFile( job_file( "hpcrequest-2dsa.xml" ) );
+   ASSERT_TRUE( config.ok() ) << config.errors.join( "\n" ).toStdString();
+
+   EXPECT_EQ( config.method, "2DSA" );
+   EXPECT_EQ( config.cluster, "node0" );
+   EXPECT_EQ( config.db_name, "uslims3_TEST" ); // <database><name>
+   EXPECT_EQ( config.udp_server, "127.0.0.1" );
+   EXPECT_EQ( config.udp_port, 12233 );
+   EXPECT_EQ( config.request_id, "004711" );
+   EXPECT_EQ( config.request_guid, "00000000-0000-4000-8000-000000000001" );
+
+   const QMap<QString, QString>& p = config.parameters;
+   EXPECT_EQ( p.value( "s_max" ), "20" );
+   EXPECT_EQ( p.value( "x_max" ), "20" ); // s_* also as x_*
+   EXPECT_EQ( p.value( "x_min" ), "1" );
+   EXPECT_EQ( p.value( "y_min" ), "1" ); // ff0_* also as y_*
+   EXPECT_EQ( p.value( "y_max" ), "4" );
+   EXPECT_EQ( p.value( "max_iterations" ), "10" );
+   EXPECT_EQ( p.value( "global_fit" ), "0" );
+   EXPECT_EQ( p.value( "z_value" ), "0.0" ); // Default
+   EXPECT_FALSE( p.contains( "ytype" ) );    // No buckets
+   EXPECT_EQ( config.debug_level(), 0 );
+   EXPECT_FALSE( config.debug_timings() );
+   EXPECT_EQ( config.debug_text(), QStringList( "" ) );
+   EXPECT_TRUE( config.buckets.isEmpty() );
+
+   ASSERT_EQ( config.datasets.size(), 1 );
+   const Config::DatasetSpec& spec = config.datasets[0];
+   EXPECT_EQ( spec.auc_file, "demo-2dsa.RA.1.A.590.auc" );
+   EXPECT_EQ( spec.edit_file, "demo-2dsa.2610061116.RA.1.A.590.xml" );
+   EXPECT_EQ( spec.noise_files, QStringList( { "clEgOh.ti_noise", "zuJEFc.ri_noise" } ) );
+   EXPECT_EQ( spec.tmst_file.value_or( "" ), "demo-2dsa.time_state.tmst" );
+   EXPECT_EQ( *spec.simpoints, 200 );
+   EXPECT_EQ( *spec.band_volume, 0.0 );
+   EXPECT_EQ( *spec.mesh_type, 0 );
+   EXPECT_EQ( *spec.grid_type, 1 );
+   EXPECT_DOUBLE_EQ( *spec.rotor_stretch[0], 2.01959e-7 );
+   EXPECT_DOUBLE_EQ( *spec.rotor_stretch[1], 5.56967e-12 );
+   EXPECT_EQ( *spec.cp_sector, 1 ); // "standard"
+   EXPECT_EQ( *spec.centerpiece_bottom, 7.2 );
+   EXPECT_EQ( spec.total_concentrations, QVector<double>( { -1.0 } ) );
+   ASSERT_EQ( spec.speed_steps.size(), 1 );
+   EXPECT_EQ( spec.speed_steps[0].rotorspeed, 42000 );
+   EXPECT_EQ( spec.speed_steps[0].scans, 1200 );
+   EXPECT_EQ( *spec.density, 1.0042 );
+   EXPECT_EQ( *spec.viscosity, 1.03809 );
+   EXPECT_FALSE( *spec.manual );
+   ASSERT_EQ( spec.analytes.size(), 2 );
+   EXPECT_EQ( spec.analytes[0].analyte.type, US_Analyte::PROTEIN );
+   EXPECT_EQ( spec.analytes[1].analyte.type, US_Analyte::RNA );
+   EXPECT_EQ( spec.analytes[1].analyte.mw, 15613.5 );
+
+   auto dsets = datasets_of( config );
+   ASSERT_EQ( dsets.size(), 1u );
+   EXPECT_EQ( dsets[0]->edit_file, spec.edit_file );
+   EXPECT_EQ( dsets[0]->rotor_stretch[1], *spec.rotor_stretch[1] );
+   EXPECT_EQ( dsets[0]->simparams.cp_sector, 1 );
+   EXPECT_DOUBLE_EQ( dsets[0]->vbar20, US_Math2::calcCommonVbar( dsets[0]->solution_rec, 20.0 ) );
+}
+
+TEST( US_MPI_JobConfig, LimsGaJob )
+{
+   Config config = Config::fromFile( job_file( "hpcrequest-ga.xml" ) );
+   ASSERT_TRUE( config.ok() ) << config.errors.join( "\n" ).toStdString();
+
+   EXPECT_EQ( config.method, "GA" );
+   const QMap<QString, QString>& p = config.parameters;
+   EXPECT_EQ( p.value( "bucket_fixed" ), "0" );
+   EXPECT_EQ( p.value( "xtype" ), "s" );
+   EXPECT_EQ( p.value( "ytype" ), "ff0" );
+   EXPECT_EQ( p.value( "ztype" ), "vbar" );
+   EXPECT_EQ( p.value( "mutate_sigma" ), "0" );
+   EXPECT_EQ( p.value( "demes" ), "1" ); // Not used by us_mpi_analysis
+
+   ASSERT_EQ( config.buckets.size(), 15 );
+   EXPECT_DOUBLE_EQ( config.buckets[0].x_min, 0.5956 );
+   EXPECT_DOUBLE_EQ( config.buckets[0].x_max, 1.404 );
+   EXPECT_DOUBLE_EQ( config.buckets[0].y_min, 1.0 );
+   EXPECT_DOUBLE_EQ( config.buckets[0].y_max, 1.24 );
+   ASSERT_EQ( config.datasets.size(), 1 );
+   EXPECT_EQ( config.datasets[0].total_concentrations, QVector<double>( { 0.219131808 } ) );
+}
+
+TEST( US_MPI_JobConfig, LimsCustomGridJob )
+{
+   Config config = Config::fromFile( job_file( "hpcrequest-2dsa-cg.xml" ) );
+   ASSERT_TRUE( config.ok() ) << config.errors.join( "\n" ).toStdString();
+
+   EXPECT_EQ( config.method, "2DSA_CG" );
+   EXPECT_EQ( config.parameters.value( "CG_model" ), "demo-cg.model" );
+   ASSERT_EQ( config.datasets.size(), 1 );
+   EXPECT_TRUE( config.datasets[0].noise_files.isEmpty() );
+}
+
+// --- Job parameters ---------------------------------------------------------
+
+TEST( US_MPI_JobConfig, ZValueDefaultOnlyWithJobElement )
+{
+   EXPECT_EQ( parse( job( "" ) ).parameters.value( "z_value" ), "0.0" );
+   EXPECT_EQ( parse( job( "<z_value value=\"1.5\"/>" ) ).parameters.value( "z_value" ), "1.5" );
+
+   Config empty = parse( "<US_JobSubmit method=\"2DSA\"><job/></US_JobSubmit>" );
+   EXPECT_TRUE( empty.ok() );
+   EXPECT_FALSE( empty.parameters.contains( "z_value" ) );
+}
+
+TEST( US_MPI_JobConfig, ModelFileParameters )
+{
+   Config config = parse( job( "<DC_model id=\"7\" filename=\"c.model.xml\"/>" ) );
+   EXPECT_EQ( config.parameters.value( "DC_model" ), "c.model.xml" );
+}
+
+TEST( US_MPI_JobConfig, DebugParameters )
+{
+   Config config = parse( job( "<debug_level value=\"2\"/><debug_timings value=\"1\"/>"
+                               "<debug_text value=\" SetSpeedLowA=100 , base_sig 0.3\"/>" ) );
+   EXPECT_EQ( config.debug_level(), 2 );
+   EXPECT_TRUE( config.debug_timings() );
+   EXPECT_EQ( config.debug_text(), QStringList( { "SetSpeedLowA=100", "base_sig 0.3" } ) );
+
+   Config none = parse( job( "" ) );
+   EXPECT_EQ( none.debug_level(), 0 );
+   EXPECT_FALSE( none.debug_timings() );
+   EXPECT_TRUE( none.debug_text().isEmpty() );
+}
+
+// --- Buckets ----------------------------------------------------------------
+
+TEST( US_MPI_JobConfig, BucketFixedSetsTypes )
+{
+   // bucket_fixed after a bucket overrides the ytype the bucket set
+   Config config = parse( job( "<bucket s_min=\"1\" s_max=\"2\" vbar_min=\"0.7\" vbar_max=\"0.8\"/>"
+                               "<bucket_fixed value=\"2.5\" fixedtype=\"ff0\" xtype=\"s\" ytype=\"mw\"/>",
+                               QString(),
+                               "GA" ) );
+   EXPECT_EQ( config.parameters.value( "ytype" ), "mw" );
+   EXPECT_EQ( config.parameters.value( "ztype" ), "ff0" );
+}
+
+TEST( US_MPI_JobConfig, FirstBucketSetsYType )
+{
+   Config ff0  = parse( job( "<bucket s_min=\"1\" s_max=\"2\" ff0_min=\"1\" ff0_max=\"2\"/>" ) );
+   Config vbar = parse( job( "<bucket s_min=\"1\" s_max=\"2\" vbar_min=\"0.7\" vbar_max=\"0.8\"/>"
+                             "<bucket s_min=\"2\" s_max=\"3\" ff0_min=\"1\" ff0_max=\"2\"/>" ) );
+   Config xy   = parse( job( "<bucket x_min=\"1\" x_max=\"2\" y_min=\"0.7\" y_max=\"0.8\"/>" ) );
+   EXPECT_EQ( ff0.parameters.value( "ytype" ), "ff0" );
+   EXPECT_EQ( vbar.parameters.value( "ytype" ), "vbar" ); // The first bucket decides
+   EXPECT_EQ( xy.parameters.value( "ytype" ), "ff0" );
+   ASSERT_EQ( vbar.buckets.size(), 2 );
+   EXPECT_DOUBLE_EQ( vbar.buckets[0].y_min, 0.7 );
+   EXPECT_DOUBLE_EQ( vbar.buckets[1].y_max, 2.0 );
+}
+
+TEST( US_MPI_JobConfig, BucketRoundingKeepsSevenDigits )
+{
+   Config config = parse( job( "<bucket x_min=\"1.23456789\" x_max=\"9.87654321\" "
+                               "y_min=\"1.000000049\" y_max=\"2.5\"/>" ) );
+   ASSERT_EQ( config.buckets.size(), 1 );
+   EXPECT_DOUBLE_EQ( config.buckets[0].x_min, 1.234568 );
+   EXPECT_DOUBLE_EQ( config.buckets[0].x_max, 9.876543 );
+   EXPECT_DOUBLE_EQ( config.buckets[0].y_min, 1.0 );
+}
+
+TEST( US_MPI_JobConfig, NegativeAndZeroBuckets )
+{
+   Config config = parse( job( "<bucket x_min=\"-3.0\" x_max=\"-1.0\" y_min=\"1\" y_max=\"2\"/>"
+                               "<bucket x_min=\"0\" x_max=\"0\" y_min=\"1\" y_max=\"2\"/>" ) );
+   ASSERT_EQ( config.buckets.size(), 2 );
+   EXPECT_DOUBLE_EQ( config.buckets[0].x_min, -3.0 );
+   EXPECT_DOUBLE_EQ( config.buckets[0].x_max, -1.0 );
+   EXPECT_EQ( config.buckets[1].x_min, 0.0 );
+   EXPECT_EQ( config.buckets[1].x_max, 0.0 );
+}
+
+// --- Datasets ---------------------------------------------------------------
+
+TEST( US_MPI_JobConfig, TimestateTakenFromPreviousDataset )
+{
+   Config config = parse( job( "",
+                               "<dataset><files><timestate filename=\"a.tmst\"/></files></dataset>"
+                               "<dataset><files/></dataset>"
+                               "<dataset><files><timestate filename=\"\"/></files></dataset>"
+                               "<dataset/>" ) );
+   auto   dsets  = datasets_of( config );
+   ASSERT_EQ( dsets.size(), 4u );
+   EXPECT_EQ( dsets[0]->tmst_file, "a.tmst" );
+   EXPECT_EQ( dsets[1]->tmst_file, "a.tmst" ); // Not given: previous
+   EXPECT_EQ( dsets[2]->tmst_file, "" );       // Given empty
+   EXPECT_EQ( dsets[3]->tmst_file, "" );       // Previous (empty)
+}
+
+TEST( US_MPI_JobConfig, MwlEditFileName )
+{
+   Config::DatasetSpec spec;
+   spec.auc_file  = "run.RI.2.A.280.auc";
+   spec.edit_file = "run.e1.RI.2.A.260-290.xml";
+   EXPECT_EQ( spec.edit_file_name(), "run.e1.RI.2.A.260-290@280.xml" );
+
+   spec.edit_file = "run.e1.RI.2.A.260.xml";
+   EXPECT_EQ( spec.edit_file_name(), "run.e1.RI.2.A.260.xml" );
+}
+
+TEST( US_MPI_JobConfig, LastDensityWins )
+{
+   // A density element after the buffer overrides the buffer density
+   Config config = parse( job( "",
+                               "<dataset><solution><buffer density=\"1.01\" viscosity=\"1.02\" "
+                               "compress=\"0\" manual=\"1\"/></solution>"
+                               "<density value=\"0.999\"/></dataset>" ) );
+   ASSERT_EQ( config.datasets.size(), 1 );
+   EXPECT_EQ( *config.datasets[0].density, 0.999 );
+   EXPECT_EQ( *config.datasets[0].viscosity, 1.02 );
+   EXPECT_TRUE( *config.datasets[0].manual );
+}
+
+TEST( US_MPI_JobConfig, UnsetValuesStayUnset )
+{
+   Config config = parse( job( "", "<dataset/>" ) );
+   ASSERT_EQ( config.datasets.size(), 1 );
+   const Config::DatasetSpec& spec = config.datasets[0];
+   EXPECT_FALSE( spec.density );
+   EXPECT_FALSE( spec.rotor_stretch[0] );
+   EXPECT_FALSE( spec.centerpiece_bottom );
+   EXPECT_FALSE( spec.tmst_file );
+   EXPECT_FALSE( spec.has_solution );
+   EXPECT_TRUE( spec.total_concentrations.isEmpty() );
+}
+
+TEST( US_MPI_JobConfig, CenterpieceShapes )
+{
+   auto shape = []( const QString& name )
+   {
+      Config config = parse( job( "", "<dataset><centerpiece_shape value=\"" + name + "\"/></dataset>" ) );
+      return *config.datasets[0].cp_sector;
+   };
+   EXPECT_EQ( shape( "sector" ), 0 );
+   EXPECT_EQ( shape( "band-forming" ), 3 );
+   EXPECT_EQ( shape( "synthetic" ), 6 );
+   EXPECT_EQ( shape( "unknown" ), 0 );
+}
+
+TEST( US_MPI_JobConfig, AnalyteTypes )
+{
+   Config      config   = parse( job( "",
+                               "<dataset><solution>"
+                                      "<analyte mw=\"1\" vbar20=\"0.5\" amount=\"1\" type=\"DNA\"/>"
+                                      "<analyte mw=\"1\" vbar20=\"0.5\" amount=\"1\" type=\"Other\"/>"
+                                      "<analyte mw=\"1\" vbar20=\"0.5\" amount=\"1\" type=\"Protein\"/>"
+                                      "</solution></dataset>" ) );
+   const auto& analytes = config.datasets[0].analytes;
+   ASSERT_EQ( analytes.size(), 3 );
+   EXPECT_EQ( analytes[0].analyte.type, US_Analyte::DNA );
+   EXPECT_EQ( analytes[1].analyte.type, US_Analyte::CARBOHYDRATE );
+   EXPECT_EQ( analytes[2].analyte.type, US_Analyte::PROTEIN );
+}
+
+// --- Errors -----------------------------------------------------------------
+
+TEST( US_MPI_JobConfig, RotorStretchNeedsTwoCoefficients )
+{
+   Config config = parse( job( "", "<dataset><rotor_stretch value=\"0\"/></dataset>" ) );
+   ASSERT_EQ( config.errors.size(), 1 );
+   EXPECT_EQ( config.errors[0], "Invalid rotor_stretch value \"0\": two coefficients expected" );
+   EXPECT_FALSE( config.datasets[0].rotor_stretch[0] );
+}
+
+TEST( US_MPI_JobConfig, TruncatedXml )
+{
+   QString text   = job( "<s_max value=\"10\"/>", "<dataset><files>" );
+   Config  config = parse( text.left( text.indexOf( "</US_JobSubmit>" ) ) );
+   ASSERT_FALSE( config.ok() );
+   EXPECT_TRUE( config.errors.last().startsWith( "XML error in test.xml, line " ) ) << config.errors.last().toStdString();
+}
+
+TEST( US_MPI_JobConfig, MissingFile )
+{
+   Config config = Config::fromFile( job_file( "no-such-file.xml" ) );
+   ASSERT_EQ( config.errors.size(), 1 );
+   EXPECT_TRUE( config.errors[0].startsWith( "Cannot open file " ) );
+}

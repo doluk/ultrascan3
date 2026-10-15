@@ -9,6 +9,8 @@ and compare the fitted models with stored baselines.
 |---|---|
 | `us_mpi_testdata.cpp` | Writes a simulated velocity dataset, a DMGA constraints model and a custom-grid model with the UltraScan writers (`US_DataIO::writeRawData`, `US_DataIO::writeEdits`, `US_Model::write`). Three species, 30 scans, 60 krpm, edited bottom at the stretched centerpiece bottom as `us_edit` writes it, noise σ = 0.004 from the seeded `US_Math2` generator. |
 | `us_mpi_regression.py` | Builds the job archive (hpcrequest XML in the LIMS format), runs the case, reduces `analysis-results.tar` to a JSON summary and compares it with `baseline/<case>.json`. |
+| `test_us_mpi_jobconfig.cpp` | Unit tests (GoogleTest, no MPI) of `US_MPI_JobConfig`, the hpcrequest XML reader. |
+| `jobs/*.xml` | Anonymized hpcrequest files written by the LIMS (2DSA with noise, GA with buckets, 2DSA custom grid) for the unit tests. |
 | `baseline/*.json` | Reference summaries: per model the RMSD, the signal-weighted moments of s, f/f0 and vbar, the solute list, and any TI/RI noise vectors. |
 
 ## Cases
@@ -81,6 +83,19 @@ pass, so that the marker gets removed with the fix.
 | `input_meniscus_points_negative` | `meniscus_points="-3"` | run without meniscus fit | abort naming `meniscus_points` |
 | `input_bucket_inverted` | GA bucket with s_min > s_max | runs | abort naming the bucket |
 | `input_unknown_key` | additional parameter `s_mx` | ignored silently | warning, result as `2dsa_basic` |
+
+## Unit tests
+
+```bash
+cmake --build build --target test_us_mpi_jobconfig
+ctest --test-dir build -L gtest-unit-mpi_analysis --output-on-failure
+```
+
+While the readers move to `US_MPI_JobConfig`, `us_mpi_analysis` reads every
+job file with both the old parser and `US_MPI_JobConfig` and aborts with
+"US_MPI_JobConfig differs from parse()" and the differing fields if the two
+disagree.  The regression and input cases therefore check the two against
+each other on every job they run.
 
 ## Running
 
