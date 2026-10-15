@@ -510,12 +510,13 @@ void US_MPI_Analysis::parse_solution( QXmlStreamReader& xml, DATASET* dataset )
 }
 
 
-// Transitional check while the parser moves to US_MPI_JobConfig: read the
-//  file again with US_MPI_JobConfig and abort if anything differs from the
-//  result of parse().  Removed once all readers use US_MPI_JobConfig.
-void US_MPI_Analysis::check_job_config( const QString& xmlfile )
+// Read the job description into job_config and validate it: errors abort,
+//  warnings are printed.  Transitional while the readers move to
+//  US_MPI_JobConfig: abort if anything differs from the result of parse().
+void US_MPI_Analysis::read_job_config( const QString& xmlfile )
 {
-   US_MPI_JobConfig config = US_MPI_JobConfig::fromFile( xmlfile );
+   job_config                     = US_MPI_JobConfig::fromFile( xmlfile );
+   const US_MPI_JobConfig& config = job_config;
    QStringList      diffs;
 
    auto             differ = [&diffs]( bool same, const QString& what )
@@ -626,5 +627,20 @@ void US_MPI_Analysis::check_job_config( const QString& xmlfile )
    if ( !diffs.isEmpty() )
    {
       abort( "US_MPI_JobConfig differs from parse() in " + xmlfile + ": " + diffs.join( ", " ) );
+   }
+
+   job_config.validate();
+
+   if ( my_rank == 0 )
+   {
+      for ( const QString& warning : job_config.warnings )
+      {
+         printf( "  Warning: %s\n", qPrintable( warning ) );
+      }
+   }
+
+   if ( !job_config.errors.isEmpty() )
+   {
+      abort( "Invalid job " + xmlfile + ": " + job_config.errors.join( "; " ) );
    }
 }

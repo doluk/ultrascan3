@@ -26,6 +26,13 @@ target_compile_definitions(test_us_mpi_jobconfig PRIVATE
 target_link_libraries(test_us_mpi_jobconfig PRIVATE
     ${US_MPI_TEST_UTILS} Qt::Core Qt::Xml gtest gtest_main)
 
+# Checks job files without MPI: us_mpi_jobcheck [-q] <hpcrequest.xml>...
+add_executable(us_mpi_jobcheck
+    us_mpi_jobcheck.cpp
+    ${US_MPI_SRC_DIR}/us_mpi_jobconfig.cpp)
+target_include_directories(us_mpi_jobcheck PRIVATE ${US_MPI_SRC_DIR})
+target_link_libraries(us_mpi_jobcheck PRIVATE ${US_MPI_TEST_UTILS} Qt::Core Qt::Xml)
+
 include(GoogleTest)
 gtest_discover_tests(test_us_mpi_jobconfig
     PROPERTIES

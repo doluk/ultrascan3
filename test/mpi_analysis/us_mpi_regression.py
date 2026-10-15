@@ -314,27 +314,26 @@ INPUT_CASES = {
         "2dsa_basic", prepare=jobxml_file(truncate=True, walltime="30"),
         expect={"abort": r"XML"}),
 
-    # Validation of job parameters (JobConfig, phase 2)
+    # Validation of job parameters (US_MPI_JobConfig::validate)
     "input_invalid_number": input_case(
         "2dsa_basic", params=lambda p: dict(p, s_max="ten"),
-        expect={"abort": r"s_max"}, pending="phase 2"),
+        expect={"abort": r"s_max"}),
     "input_missing_required": input_case(
         "2dsa_basic", params=lambda p: without(p, ("s_max",)),
-        expect={"abort": r"s_max"}, pending="phase 2"),
+        expect={"abort": r"s_max"}),
     "input_unknown_method": input_case(
         "2dsa_basic", edit_xml=set_method("2DXA"),
-        expect={"abort": r"2DXA"}, pending="phase 2"),
+        expect={"abort": r"2DXA"}),
     "input_meniscus_points_negative": input_case(
         "2dsa_meniscus", params=lambda p: dict(p, meniscus_points="-3"),
-        expect={"abort": r"meniscus_points"}, pending="phase 2"),
+        expect={"abort": r"meniscus_points"}),
     "input_bucket_inverted": input_case(
         "ga_np2", buckets=GA_BUCKETS + [(9.5, 8.6, 1.0, 2.0)],
-        expect={"abort": r"[Bb]ucket"}, pending="phase 2"),
+        expect={"abort": r"[Bb]ucket"}),
     # An unknown parameter is reported, the run goes on
     "input_unknown_key": input_case(
         "2dsa_basic", params=lambda p: dict(p, s_mx="10.0"),
-        expect={"same_as": "2dsa_basic", "log": r"[Uu]nknown parameter.*s_mx"},
-        pending="phase 2"),
+        expect={"same_as": "2dsa_basic", "log": r"[Uu]nknown parameter.*s_mx"}),
 }
 
 # Default comparison tolerances.  RMSD differences are relative; solute

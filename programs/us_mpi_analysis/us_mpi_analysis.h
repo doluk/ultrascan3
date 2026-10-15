@@ -6,15 +6,16 @@
 #include <QtNetwork>
 #include <mpi.h>
 
-#include "us_model.h"
-#include "us_dmga_constr.h"
-#include "us_pcsa_modelrec.h"
 #include "us_dataIO.h"
+#include "us_dmga_constr.h"
+#include "us_math2.h"
+#include "us_model.h"
+#include "us_mpi_jobconfig.h"
 #include "us_noise.h"
+#include "us_pcsa_modelrec.h"
 #include "us_simparms.h"
 #include "us_solve_sim.h"
 #include "us_vector.h"
-#include "us_math2.h"
 
 #define SIMULATION       US_SolveSim::Simulation
 #define DATASET          US_SolveSim::DataSet
@@ -183,6 +184,7 @@ class US_MPI_Analysis : public QObject
         QString requestGUID;                //!< Request GUID
         QString analysisDate;               //!< Analysis date
 
+        US_MPI_JobConfig          job_config; //!< The job description (hpcrequest XML)
         QMap< QString, QString > parameters; //!< Parameters map
         QMap< QString, QString > task_params; //!< Task parameters map
 
@@ -397,12 +399,11 @@ class US_MPI_Analysis : public QObject
         void     parse_dataset ( QXmlStreamReader&, DATASET* );
         void     parse_files   ( QXmlStreamReader&, DATASET* );
         void     parse_solution( QXmlStreamReader&, DATASET* );
-        void                   check_job_config( const QString& );
+        void                   read_job_config( const QString& );
         void     send_udp      ( const QString& );
         void     abort         ( const QString&, int=-1 );
         long int max_rss       ( void );
         static void            phys_memory( qint64&, qint64& );
-        QString  par_key_value ( const QString, const QString );
 
         Gene     create_solutes( double, double, double,
                                  double, double, double );

@@ -486,9 +486,8 @@ void US_MPI_Analysis::dmga_master_loop( void )
    static const int    min_generation = 10;
    static const int    _KS_BASE_      = 6;
    static const int    _KS_STEP_      = 3;
-   QString dbgtext   = parameters.value( "debug_text" );
-   QString s_ksbase  = par_key_value( dbgtext, "ksame_base" );
-   QString s_ksstep  = par_key_value( dbgtext, "ksame_step" );
+   QString             s_ksbase       = job_config.debug_value( "ksame_base" );
+   QString             s_ksstep       = job_config.debug_value( "ksame_step" );
    int ks_base       = s_ksbase.isEmpty() ? _KS_BASE_ : s_ksbase.toInt();
    int ks_step       = s_ksstep.isEmpty() ? _KS_STEP_ : s_ksstep.toInt();
    ks_base           = qMax( 2, ks_base );

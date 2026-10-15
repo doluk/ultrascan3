@@ -3,6 +3,7 @@
 #include "us_math2.h"
 
 #include <cmath>
+#include <limits>
 
 namespace
 {
@@ -123,6 +124,20 @@ void US_MPI_JobConfig::read_job( QXmlStreamReader& xml )
          parameters[xname] = attr.value( "value" ).toString();
       }
 
+      else if ( xname == "datasetCount" )
+      {
+         bool ok;
+         int  count = attr.value( "value" ).toString().toInt( &ok );
+         if ( ok )
+         {
+            dataset_count = count;
+         }
+         else
+         {
+            errors << "Invalid datasetCount \"" + attr.value( "value" ).toString() + "\"";
+         }
+      }
+
       else if ( xname == "request" )
       {
          request_id   = QString::asprintf( "%06d", attr.value( "id" ).toString().toInt() );
@@ -200,33 +215,46 @@ void US_MPI_JobConfig::read_job_parameters( QXmlStreamReader& xml )
 
 void US_MPI_JobConfig::read_bucket( const QXmlStreamAttributes& attr, QString& ytype )
 {
-   QString ytyp0 = "ff0";
-   QString stxmx = attr.value( "x_max" ).toString();
-   QString stfmx = attr.value( "ff0_max" ).toString();
-   QString stvmx = attr.value( "vbar_max" ).toString();
-   double  xmin  = value_attr( attr, "x_min" );
-   double  xmax  = stxmx.toDouble();
-   double  ymin  = value_attr( attr, "y_min" );
-   double  ymax  = value_attr( attr, "y_max" );
+   // x/y limits; without x_max, s and f/f0 (or vbar) limits
+   QString xmin_name = "x_min";
+   QString xmax_name = "x_max";
+   QString ymin_name = "y_min";
+   QString ymax_name = "y_max";
+   QString ytyp0     = "ff0";
 
-   if ( stxmx.isEmpty() )
-   { // s and f/f0 or vbar limits
-      xmin = value_attr( attr, "s_min" );
-      xmax = value_attr( attr, "s_max" );
+   if ( attr.value( "x_max" ).isEmpty() )
+   {
+      xmin_name = "s_min";
+      xmax_name = "s_max";
 
-      if ( !stfmx.isEmpty() )
+      if ( !attr.value( "ff0_max" ).isEmpty() )
       {
-         ymin = value_attr( attr, "ff0_min" );
-         ymax = stfmx.toDouble();
+         ymin_name = "ff0_min";
+         ymax_name = "ff0_max";
       }
 
-      else if ( !stvmx.isEmpty() )
+      else if ( !attr.value( "vbar_max" ).isEmpty() )
       {
-         ymin  = value_attr( attr, "vbar_min" );
-         ymax  = stvmx.toDouble();
-         ytyp0 = "vbar";
+         ymin_name = "vbar_min";
+         ymax_name = "vbar_max";
+         ytyp0     = "vbar";
       }
    }
+
+   Bucket bucket;
+   auto   limit = [&attr, &bucket]( const QString& name ) { // A missing or invalid limit reads as 0, as before, and is recorded
+      bool   ok;
+      double value = attr.value( name ).toString().toDouble( &ok );
+      if ( !ok )
+      {
+         bucket.unreadable << ( name.startsWith( "s_" ) ? name + " (no x_max)" : name );
+      }
+      return value;
+   };
+   double xmin = limit( xmin_name );
+   double xmax = limit( xmax_name );
+   double ymin = limit( ymin_name );
+   double ymax = limit( ymax_name );
 
    if ( ytype.isEmpty() )
    {
@@ -234,7 +262,6 @@ void US_MPI_JobConfig::read_bucket( const QXmlStreamAttributes& attr, QString& y
       parameters["ytype"] = ytype;
    }
 
-   Bucket bucket;
    bucket.x_min = rounded( xmin, xmin, xmax );
    bucket.x_max = rounded( xmax, xmin, xmax );
    bucket.y_min = rounded( ymin, ymin, ymax );
@@ -540,4 +567,353 @@ QList<US_SolveSim::DataSet*> US_MPI_JobConfig::make_datasets() const
    }
 
    return dsets;
+}
+
+// --- Validation ---------------------------------------------------------------
+
+namespace
+{
+// Method families as bits
+enum
+{
+   M_2DSA = 1,
+   M_GA   = 2,
+   M_DMGA = 4,
+   M_PCSA = 8,
+   M_ANY  = 15
+};
+
+enum class Kind
+{
+   Int,    // Integer in [lo, hi]
+   Double, // Finite number in [lo, hi]
+   Flag,   // 0/1 (also T/F)
+   Choice, // One of the words in choices
+   Text,   // Any text
+   File    // A file name, not empty
+};
+
+const double NOLIM = std::numeric_limits<double>::infinity();
+
+// The job parameters us_mpi_analysis reads.  Where a parameter is used
+//  by a method, lo..hi is its valid range.  An empty value counts as not
+//  given; "required" parameters must be given.
+struct ParamSpec
+{
+      const char* key;
+      Kind        kind;
+      int         methods;  // Methods that use it (M_ANY for all)
+      int         required; // Methods that require it
+      double      lo;
+      double      hi;
+      const char* choices; // Kind::Choice: words separated by blanks
+};
+
+const ParamSpec PARAMS[] = {
+   // All methods
+   { "mc_iterations", Kind::Int, M_ANY, 0, 0, NOLIM, nullptr },
+   { "max_iterations", Kind::Int, M_ANY, 0, 0, NOLIM, nullptr },
+   { "req_mgroupcount", Kind::Int, M_ANY, 0, 0, NOLIM, nullptr },
+   { "tinoise_option", Kind::Int, M_ANY, 0, 0, NOLIM, nullptr },
+   { "rinoise_option", Kind::Int, M_ANY, 0, 0, NOLIM, nullptr },
+   { "fit_mb_select", Kind::Int, M_ANY, 0, 0, 3, nullptr },
+   { "meniscus_range", Kind::Double, M_ANY, 0, 0, NOLIM, nullptr },
+   { "meniscus_points", Kind::Int, M_ANY, 0, 0, NOLIM, nullptr },
+   { "global_fit", Kind::Flag, M_ANY, 0, 0, 0, nullptr },
+   { "seed", Kind::Int, M_ANY, 0, 0, 4294967295.0, nullptr },
+   { "debug_level", Kind::Int, M_ANY, 0, 0, NOLIM, nullptr },
+   { "debug_timings", Kind::Int, M_ANY, 0, 0, NOLIM, nullptr },
+   { "debug_text", Kind::Text, M_ANY, 0, 0, 0, nullptr },
+   { "z_value", Kind::Double, M_ANY, 0, -NOLIM, NOLIM, nullptr },
+   { "bucket_fixed", Kind::Double, M_ANY, 0, -NOLIM, NOLIM, nullptr },
+   { "xtype", Kind::Choice, M_ANY, 0, 0, 0, "s ff0 MW vbar D f" },
+   { "ytype", Kind::Choice, M_ANY, 0, 0, 0, "s ff0 MW vbar D f" },
+   { "ztype", Kind::Choice, M_ANY, 0, 0, 0, "s ff0 MW vbar D f" },
+   { "solute_type", Kind::Text, M_ANY, 0, 0, 0, nullptr },
+   // Grid limits; x_* and y_* are also set from s_* and ff0_*
+   { "s_min", Kind::Double, M_ANY, 0, -NOLIM, NOLIM, nullptr },
+   { "s_max", Kind::Double, M_ANY, 0, -NOLIM, NOLIM, nullptr },
+   { "ff0_min", Kind::Double, M_ANY, 0, -NOLIM, NOLIM, nullptr },
+   { "ff0_max", Kind::Double, M_ANY, 0, -NOLIM, NOLIM, nullptr },
+   { "x_min", Kind::Double, M_ANY, M_PCSA, -NOLIM, NOLIM, nullptr },
+   { "x_max", Kind::Double, M_ANY, M_PCSA, -NOLIM, NOLIM, nullptr },
+   { "y_min", Kind::Double, M_ANY, M_PCSA, -NOLIM, NOLIM, nullptr },
+   { "y_max", Kind::Double, M_ANY, M_PCSA, -NOLIM, NOLIM, nullptr },
+   // 2DSA
+   { "s_resolution", Kind::Double, M_2DSA | M_PCSA, 0, 0, NOLIM, nullptr },
+   { "ff0_resolution", Kind::Double, M_2DSA | M_PCSA, 0, 0, NOLIM, nullptr },
+   { "s_grid_points", Kind::Int, M_2DSA | M_PCSA, 0, 1, NOLIM, nullptr },
+   { "ff0_grid_points", Kind::Int, M_2DSA | M_PCSA, 0, 1, NOLIM, nullptr },
+   { "uniform_grid", Kind::Int, M_2DSA | M_PCSA, 0, 0, NOLIM, nullptr },
+   { "montecarlo_value", Kind::Int, M_2DSA, 0, 0, NOLIM, nullptr },
+   { "gfit_iterations", Kind::Int, M_2DSA | M_PCSA, 0, 0, NOLIM, nullptr },
+   { "CG_model", Kind::File, M_2DSA, 0, 0, 0, nullptr },
+   // GA and DMGA
+   { "population", Kind::Int, M_GA | M_DMGA, M_GA | M_DMGA, 1, NOLIM, nullptr },
+   { "generations", Kind::Int, M_GA | M_DMGA, M_GA | M_DMGA, 1, NOLIM, nullptr },
+   { "crossover", Kind::Int, M_GA | M_DMGA, 0, 0, 100, nullptr },
+   { "mutation", Kind::Int, M_GA | M_DMGA, 0, 0, 100, nullptr },
+   { "plague", Kind::Int, M_GA | M_DMGA, 0, 0, 100, nullptr },
+   { "migration", Kind::Int, M_GA | M_DMGA, 0, 0, 100, nullptr },
+   { "elitism", Kind::Int, M_GA | M_DMGA, 0, 0, NOLIM, nullptr },
+   { "mutate_sigma", Kind::Double, M_GA | M_DMGA, 0, 0, NOLIM, nullptr },
+   { "p_mutate_s", Kind::Int, M_GA | M_DMGA, 0, 0, 100, nullptr },
+   { "p_mutate_k", Kind::Int, M_GA | M_DMGA, 0, 0, 100, nullptr },
+   { "p_mutate_sk", Kind::Int, M_GA | M_DMGA, 0, 0, 100, nullptr },
+   { "regularization", Kind::Double, M_GA | M_DMGA, 0, 0, NOLIM, nullptr },
+   { "conc_threshold", Kind::Double, M_GA | M_DMGA, 0, 0, NOLIM, nullptr },
+   { "minimize_opt", Kind::Int, M_GA | M_DMGA, 0, 0, NOLIM, nullptr },
+   { "s_grid", Kind::Int, M_GA, 0, 1, NOLIM, nullptr },
+   { "k_grid", Kind::Int, M_GA, 0, 1, NOLIM, nullptr },
+   { "p_grid", Kind::Int, M_DMGA, 0, 1, NOLIM, nullptr },
+   { "demes", Kind::Int, M_GA | M_DMGA, 0, 0, NOLIM, nullptr }, // Sent by the LIMS, not used
+   { "DC_model", Kind::File, M_DMGA, M_DMGA, 0, 0, nullptr },
+   // PCSA
+   { "curve_type", Kind::Choice, M_PCSA, M_PCSA, 0, 0, "SL IS DS HL 2O All" },
+   { "vars_count", Kind::Int, M_PCSA, M_PCSA, 1, NOLIM, nullptr },
+   { "curves_points", Kind::Int, M_PCSA, M_PCSA, 1, NOLIM, nullptr },
+   { "thr_deltr_ratio", Kind::Double, M_PCSA, 0, 0, NOLIM, nullptr },
+   { "tikreg_option", Kind::Int, M_PCSA, 0, 0, 2, nullptr },
+   { "tikreg_alpha", Kind::Double, M_PCSA, 0, 0, NOLIM, nullptr },
+};
+
+int method_bit( const QString& method )
+{
+   const QStringList families = US_MPI_JobConfig::method_families();
+   const int         bits[]   = { M_2DSA, M_DMGA, M_GA, M_PCSA }; // Order of families
+
+   for ( int ii = 0; ii < families.size(); ii++ )
+   {
+      if ( method.startsWith( families[ii] ) )
+      {
+         return bits[ii];
+      }
+   }
+   return 0;
+}
+
+// Check one value against its spec; returns an error text or empty
+QString check_value( const ParamSpec& spec, const QString& value )
+{
+   QString name = QString( spec.key ) + " \"" + value + "\"";
+   bool    ok   = true;
+   double  dval = 0.0;
+
+   switch ( spec.kind )
+   {
+      case Kind::Int:
+         dval = (double) value.toLongLong( &ok );
+         if ( !ok )
+         {
+            return name + ": not an integer";
+         }
+         break;
+      case Kind::Double:
+         dval = value.toDouble( &ok );
+         if ( !ok || !std::isfinite( dval ) )
+         {
+            return name + ": not a number";
+         }
+         break;
+      case Kind::Flag:
+         if ( !QStringList( { "0", "1", "T", "F" } ).contains( value ) )
+         {
+            return name + ": not 0 or 1";
+         }
+         return QString();
+      case Kind::Choice:
+         if ( !QString( spec.choices ).split( ' ' ).contains( value ) )
+         {
+            return name + ": not one of " + QString( spec.choices ).replace( " ", ", " );
+         }
+         return QString();
+      case Kind::Text:
+      case Kind::File:
+         return QString();
+   }
+
+   if ( dval < spec.lo || dval > spec.hi )
+   {
+      QString range =
+         std::isinf( spec.hi ) ? QString( "at least %1" ).arg( spec.lo ) : QString( "from %1 to %2" ).arg( spec.lo ).arg( spec.hi );
+      return name + ": must be " + range;
+   }
+   return QString();
+}
+} // namespace
+
+QStringList US_MPI_JobConfig::method_families()
+{
+   // DMGA before GA: "DMGA" does not start with "GA", but keep the
+   //  longer name first for clarity
+   return { "2DSA", "DMGA", "GA", "PCSA" };
+}
+
+void US_MPI_JobConfig::validate()
+{
+   int  mbit = method_bit( method );
+
+   // s_m* and ff0_m* parameters are also stored as x_m* and y_m*: report
+   //  a problem only under the name given in the file
+   auto mirrored = [this]( const QString& key )
+   {
+      QString source = key.startsWith( "x_m" )   ? "s_m" + key.mid( 3 )
+                       : key.startsWith( "y_m" ) ? "ff0_m" + key.mid( 3 )
+                                                 : QString();
+      return !source.isEmpty() && parameters.contains( source ) && parameters.value( source ) == parameters.value( key );
+   };
+
+   if ( mbit == 0 )
+   {
+      errors << "Unknown analysis method \"" + method + "\" (expected " + method_families().join( ", " ) + ")";
+   }
+
+   // Parameter values
+   QSet<QString> known;
+   for ( const ParamSpec& spec : PARAMS )
+   {
+      known << spec.key;
+      QString value = parameters.value( spec.key ).trimmed();
+
+      if ( value.isEmpty() )
+      {
+         if ( ( spec.required & mbit ) != 0 )
+         {
+            errors << QString( "%1: required for %2" ).arg( spec.key, method );
+         }
+         continue;
+      }
+
+      QString error = check_value( spec, value );
+      if ( !error.isEmpty() && ( spec.methods & mbit ) != 0 && !mirrored( spec.key ) )
+      {
+         errors << error;
+      }
+   }
+
+   for ( auto it = parameters.constBegin(); it != parameters.constEnd(); ++it )
+   {
+      if ( !known.contains( it.key() ) && !mirrored( it.key() ) )
+      {
+         warnings << "Unknown parameter " + it.key() + " \"" + it.value() + "\" is ignored";
+      }
+   }
+
+   // Ranges given by a pair of parameters
+   auto check_range = [this]( const char* kmin, const char* kmax )
+   {
+      bool   okn, okx;
+      double vmin = parameters.value( kmin ).toDouble( &okn );
+      double vmax = parameters.value( kmax ).toDouble( &okx );
+      if ( okn && okx && vmin >= vmax )
+      {
+         errors << QString( "%1 (%2) must be less than %3 (%4)" ).arg( kmin ).arg( vmin ).arg( kmax ).arg( vmax );
+      }
+   };
+
+   if ( mbit == M_2DSA && !parameters.contains( "CG_model" ) )
+   { // A 2DSA grid: s and f/f0 limits
+      for ( const char* key : { "s_min", "s_max", "ff0_min", "ff0_max" } )
+      {
+         if ( parameters.value( key ).trimmed().isEmpty() )
+         {
+            errors << QString( "%1: required for %2" ).arg( key, method );
+         }
+      }
+      check_range( "s_min", "s_max" );
+      check_range( "ff0_min", "ff0_max" );
+   }
+
+   if ( mbit == M_PCSA )
+   {
+      check_range( "x_min", "x_max" );
+      check_range( "y_min", "y_max" );
+   }
+
+   // GA buckets
+   for ( int ii = 0; ii < buckets.size(); ii++ )
+   {
+      const Bucket& b = buckets[ii];
+      if ( !b.unreadable.isEmpty() )
+      {
+         errors << QString( "Bucket %1: %2 missing or not a number" ).arg( ii + 1 ).arg( b.unreadable.join( ", " ) );
+      }
+      // Equal limits are valid: limitBucket() widens them
+      else if ( !std::isfinite( b.x_min ) || !std::isfinite( b.x_max ) || !std::isfinite( b.y_min ) || !std::isfinite( b.y_max ) ||
+                b.x_min > b.x_max || b.y_min > b.y_max )
+      {
+         errors << QString( "Bucket %1: limits x %2 to %3, y %4 to %5 are inverted" )
+                      .arg( ii + 1 )
+                      .arg( b.x_min )
+                      .arg( b.x_max )
+                      .arg( b.y_min )
+                      .arg( b.y_max );
+      }
+   }
+
+   // Datasets
+   if ( datasets.isEmpty() )
+   {
+      errors << "No dataset";
+   }
+   if ( dataset_count && *dataset_count != datasets.size() )
+   {
+      errors << QString( "datasetCount is %1, but %2 datasets were read" ).arg( *dataset_count ).arg( datasets.size() );
+   }
+
+   for ( int ii = 0; ii < datasets.size(); ii++ )
+   {
+      const DatasetSpec& ds = datasets[ii];
+      QString            dx = QString( "Dataset %1: " ).arg( ii + 1 );
+
+      if ( ds.auc_file.isEmpty() )
+      {
+         errors << dx + "no auc file";
+      }
+      if ( ds.edit_file.isEmpty() )
+      {
+         errors << dx + "no edit file";
+      }
+      if ( !ds.rotor_stretch[0] )
+      {
+         errors << dx + "no rotor_stretch";
+      }
+      if ( !ds.centerpiece_bottom )
+      {
+         errors << dx + "no centerpiece_bottom";
+      }
+      if ( !ds.density || !ds.viscosity )
+      {
+         errors << dx + "no buffer density and viscosity";
+      }
+      if ( ds.total_concentrations.size() > 1 )
+      {
+         errors << dx + "more than one total_concentration";
+      }
+   }
+}
+
+QString US_MPI_JobConfig::debug_value( const QString& key, bool* found ) const
+{
+   for ( const QString& entry : debug_text() )
+   { // "key=value", "key value" or "key"
+      int     sep   = entry.indexOf( QRegularExpression( "[= ]" ) );
+      QString ekey  = ( sep < 0 ) ? entry : entry.left( sep );
+      QString value = ( sep < 0 ) ? QString() : entry.mid( sep + 1 ).trimmed();
+
+      if ( ekey == key )
+      {
+         if ( found )
+         {
+            *found = true;
+         }
+         return value;
+      }
+   }
+
+   if ( found )
+   {
+      *found = false;
+   }
+   return QString();
 }

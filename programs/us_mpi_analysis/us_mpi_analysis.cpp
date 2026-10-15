@@ -240,7 +240,7 @@ DbgLv(0) << "work_dir=" << work_dir;
 
    // Parse analysis parameters
    parse( xmlfile );
-   check_job_config( xmlfile ); // Transitional: US_MPI_JobConfig reads the same
+   read_job_config( xmlfile ); // Check and validate the job description
 
    // Set some defaults, before any parameter is read
    if ( ! parameters.contains( "mutate_sigma" ) ) 

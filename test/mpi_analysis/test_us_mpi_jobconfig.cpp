@@ -334,3 +334,199 @@ TEST( US_MPI_JobConfig, MissingFile )
    ASSERT_EQ( config.errors.size(), 1 );
    EXPECT_TRUE( config.errors[0].startsWith( "Cannot open file " ) );
 }
+
+// --- Validation -------------------------------------------------------------
+
+namespace
+{
+// A dataset with everything validate() requires
+const QString DATASET = "<dataset><files><auc filename=\"r.RI.1.A.260.auc\"/>"
+                        "<edit filename=\"r.e1.RI.1.A.260.xml\"/></files>"
+                        "<rotor_stretch value=\"0 1e-12\"/><centerpiece_bottom value=\"7.2\"/>"
+                        "<solution><buffer density=\"0.998\" viscosity=\"1.002\" manual=\"0\"/></solution>"
+                        "</dataset>";
+
+const QString GRID_2DSA = "<s_min value=\"1\"/><s_max value=\"10\"/>"
+                          "<ff0_min value=\"1\"/><ff0_max value=\"4\"/>";
+
+Config        validated( const QString& params, const QString& method = "2DSA", const QString& datasets = DATASET )
+{
+   Config config = parse( job( params, datasets, method ) );
+   EXPECT_TRUE( config.ok() ) << config.errors.join( "\n" ).toStdString();
+   config.validate();
+   return config;
+}
+
+std::string all_of( const Config& config )
+{
+   return ( config.errors + config.warnings ).join( "\n" ).toStdString();
+}
+} // namespace
+
+TEST( US_MPI_JobConfig, LimsJobsAreValid )
+{
+   for ( const char* name : { "hpcrequest-2dsa.xml", "hpcrequest-ga.xml", "hpcrequest-2dsa-cg.xml" } )
+   {
+      Config config = Config::fromFile( job_file( name ) );
+      config.validate();
+      EXPECT_TRUE( config.errors.isEmpty() ) << name << ": " << all_of( config );
+      EXPECT_TRUE( config.warnings.isEmpty() ) << name << ": " << all_of( config );
+   }
+}
+
+TEST( US_MPI_JobConfig, ValidMinimalJobs )
+{
+   EXPECT_TRUE( validated( GRID_2DSA ).errors.isEmpty() );
+   EXPECT_TRUE( validated( "<CG_model filename=\"g.model\"/>", "2DSA_CG" ).errors.isEmpty() ); // No grid needed
+   EXPECT_TRUE( validated( "<population value=\"30\"/><generations value=\"15\"/>"
+                           "<bucket x_min=\"1\" x_max=\"2\" y_min=\"1\" y_max=\"2\"/>",
+                           "GA" )
+                   .errors.isEmpty() );
+   EXPECT_TRUE( validated( "<population value=\"30\"/><generations value=\"15\"/>"
+                           "<DC_model filename=\"c.model.xml\"/>",
+                           "DMGA" )
+                   .errors.isEmpty() );
+   EXPECT_TRUE( validated( "<curve_type value=\"All\"/><x_min value=\"1\"/><x_max value=\"10\"/>"
+                           "<y_min value=\"1\"/><y_max value=\"4\"/><vars_count value=\"10\"/>"
+                           "<curves_points value=\"200\"/>",
+                           "PCSA" )
+                   .errors.isEmpty() );
+}
+
+TEST( US_MPI_JobConfig, UnknownMethod )
+{
+   Config config = validated( GRID_2DSA, "2DXA" );
+   ASSERT_EQ( config.errors.size(), 1 ) << all_of( config );
+   EXPECT_TRUE( config.errors[0].contains( "\"2DXA\"" ) );
+}
+
+TEST( US_MPI_JobConfig, InvalidNumberReportedOnce )
+{
+   // s_max is also stored as x_max: one error, under the given name
+   Config config = validated( "<s_min value=\"1\"/><s_max value=\"ten\"/><ff0_min value=\"1\"/><ff0_max value=\"4\"/>" );
+   ASSERT_EQ( config.errors.size(), 1 ) << all_of( config );
+   EXPECT_EQ( config.errors[0], "s_max \"ten\": not a number" );
+}
+
+TEST( US_MPI_JobConfig, IntegerParameters )
+{
+   EXPECT_EQ( validated( GRID_2DSA + "<mc_iterations value=\"10.5\"/>" ).errors,
+              QStringList( "mc_iterations \"10.5\": not an integer" ) );
+   EXPECT_TRUE( validated( GRID_2DSA + "<mc_iterations value=\" 100 \"/>" ).errors.isEmpty() );
+}
+
+TEST( US_MPI_JobConfig, RequiredParameters )
+{
+   EXPECT_EQ( validated( "<s_min value=\"1\"/><ff0_min value=\"1\"/><ff0_max value=\"4\"/>" ).errors,
+              QStringList( "s_max: required for 2DSA" ) );
+   EXPECT_EQ( validated( "<generations value=\"15\"/>", "GA" ).errors, QStringList( "population: required for GA" ) );
+   EXPECT_EQ( validated( "<population value=\"30\"/><generations value=\"15\"/>", "DMGA" ).errors,
+              QStringList( "DC_model: required for DMGA" ) );
+   EXPECT_TRUE( validated( "", "PCSA" ).errors.contains( "curve_type: required for PCSA" ) );
+}
+
+TEST( US_MPI_JobConfig, RangesAndChoices )
+{
+   auto error_of = []( const QString& params, const QString& method = "2DSA" )
+   {
+      Config config = validated( method == "2DSA" ? GRID_2DSA + params : params, method );
+      return config.errors.isEmpty() ? QString() : config.errors.last();
+   };
+   EXPECT_EQ( error_of( "<meniscus_points value=\"-3\"/>" ), "meniscus_points \"-3\": must be at least 0" );
+   EXPECT_EQ( error_of( "<fit_mb_select value=\"4\"/>" ), "fit_mb_select \"4\": must be from 0 to 3" );
+   EXPECT_EQ( error_of( "<global_fit value=\"2\"/>" ), "global_fit \"2\": not 0 or 1" );
+   EXPECT_EQ( error_of( "<s_grid_points value=\"0\"/>" ), "s_grid_points \"0\": must be at least 1" );
+   EXPECT_EQ( error_of( "<population value=\"30\"/><generations value=\"15\"/><crossover value=\"101\"/>", "GA" ),
+              "crossover \"101\": must be from 0 to 100" );
+   EXPECT_EQ( error_of( "<curve_type value=\"XY\"/><x_min value=\"1\"/><x_max value=\"10\"/><y_min value=\"1\"/>"
+                        "<y_max value=\"4\"/><vars_count value=\"10\"/><curves_points value=\"200\"/>",
+                        "PCSA" ),
+              "curve_type \"XY\": not one of SL, IS, DS, HL, 2O, All" );
+   EXPECT_EQ( error_of( "<s_min value=\"10\"/><s_max value=\"1\"/><ff0_min value=\"1\"/><ff0_max value=\"4\"/>" ),
+              "s_min (10) must be less than s_max (1)" );
+}
+
+TEST( US_MPI_JobConfig, EmptyValueCountsAsNotGiven )
+{
+   // As in LIMS GA jobs: bucket_fixed with empty value and types
+   Config config = validated( "<population value=\"30\"/><generations value=\"15\"/>"
+                              "<bucket_fixed value=\"\" fixedtype=\"\" xtype=\"\" ytype=\"\"/>"
+                              "<debug_text value=\"\"/><mutate_sigma value=\"\"/>",
+                              "GA" );
+   EXPECT_TRUE( config.errors.isEmpty() ) << all_of( config );
+}
+
+TEST( US_MPI_JobConfig, OtherMethodsParametersNotChecked )
+{
+   // A 2DSA grid value in a GA job is not used, so not checked
+   Config config = validated( "<population value=\"30\"/><generations value=\"15\"/><s_grid_points value=\"x\"/>", "GA" );
+   EXPECT_TRUE( config.errors.isEmpty() ) << all_of( config );
+}
+
+TEST( US_MPI_JobConfig, UnknownParameterWarnedOnce )
+{
+   Config config = validated( GRID_2DSA + "<s_mx value=\"10\"/><demes value=\"1\"/>" );
+   EXPECT_TRUE( config.errors.isEmpty() ) << all_of( config );
+   ASSERT_EQ( config.warnings.size(), 1 ) << all_of( config ); // Not for x_mx, not for demes
+   EXPECT_EQ( config.warnings[0], "Unknown parameter s_mx \"10\" is ignored" );
+}
+
+TEST( US_MPI_JobConfig, BucketValidation )
+{
+   const QString ga = "<population value=\"30\"/><generations value=\"15\"/>";
+   // Equal limits are valid (a fixed f/f0 per bucket, as in LIMS jobs)
+   EXPECT_TRUE(
+      validated( ga + "<bucket x_min=\"1.905\" x_max=\"1.915\" y_min=\"1.169\" y_max=\"1.169\"/>", "GA" ).errors.isEmpty() );
+   EXPECT_EQ( validated( ga + "<bucket x_min=\"9.5\" x_max=\"8.6\" y_min=\"1\" y_max=\"2\"/>", "GA" ).errors,
+              QStringList( "Bucket 1: limits x 9.5 to 8.6, y 1 to 2 are inverted" ) );
+   // As in a LIMS job: empty x limits would become a flotation bucket
+   EXPECT_EQ( validated( ga + "<bucket x_min=\"\" x_max=\"\" y_min=\"1\" y_max=\"4\"/>", "GA" ).errors,
+              QStringList( "Bucket 1: s_min (no x_max), s_max (no x_max) missing or not a number" ) );
+   EXPECT_EQ( validated( ga + "<bucket s_min=\"1\" s_max=\"2\" ff0_min=\"1\" ff0_max=\"x\"/>", "GA" ).errors,
+              QStringList( "Bucket 1: ff0_max missing or not a number" ) );
+}
+
+TEST( US_MPI_JobConfig, DatasetValidation )
+{
+   EXPECT_EQ( validated( GRID_2DSA, "2DSA", "" ).errors, QStringList( "No dataset" ) );
+   EXPECT_EQ( validated( GRID_2DSA, "2DSA", "<dataset/>" ).errors,
+              QStringList( { "Dataset 1: no auc file",
+                             "Dataset 1: no edit file",
+                             "Dataset 1: no rotor_stretch",
+                             "Dataset 1: no centerpiece_bottom",
+                             "Dataset 1: no buffer density and viscosity" } ) );
+
+   QString two_concs = DATASET;
+   two_concs.replace( "</dataset>", "<total_concentration value=\"1\"/><total_concentration value=\"2\"/></dataset>" );
+   EXPECT_EQ( validated( GRID_2DSA, "2DSA", two_concs ).errors, QStringList( "Dataset 1: more than one total_concentration" ) );
+}
+
+TEST( US_MPI_JobConfig, DatasetCount )
+{
+   // datasetCount (LIMS) must match the datasets read: catches a file cut
+   //  off between datasets
+   QString text = job( GRID_2DSA, DATASET + DATASET );
+   text.replace( "<job>", "<job><datasetCount value=\"3\"/>" );
+   Config config = parse( text );
+   config.validate();
+   EXPECT_EQ( config.errors, QStringList( "datasetCount is 3, but 2 datasets were read" ) );
+
+   text.replace( "value=\"3\"", "value=\"2\"" );
+   Config good = parse( text );
+   good.validate();
+   EXPECT_TRUE( good.errors.isEmpty() ) << all_of( good );
+}
+
+TEST( US_MPI_JobConfig, DebugValues )
+{
+   Config config = parse( job( "<debug_text value=\"SetSpeedLowA=100, base_sig 0.3,flag, base_sig2 5\"/>" ) );
+   bool   found  = false;
+   EXPECT_EQ( config.debug_value( "SetSpeedLowA", &found ), "100" );
+   EXPECT_TRUE( found );
+   EXPECT_EQ( config.debug_value( "base_sig" ), "0.3" ); // Not base_sig2
+   EXPECT_EQ( config.debug_value( "flag", &found ), "" );
+   EXPECT_TRUE( found );
+   EXPECT_EQ( config.debug_value( "g_redo_inc", &found ), "" );
+   EXPECT_FALSE( found );
+   EXPECT_EQ( config.debug_value( "base" ), "" ); // Exact keys only
+}

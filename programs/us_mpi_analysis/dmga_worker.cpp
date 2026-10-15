@@ -25,9 +25,8 @@ void US_MPI_Analysis::dmga_worker( void )
    QStringList keys    = parameters.keys();
    p_grid              = ( keys.contains( "p_grid" ) )
                          ? parameters.value( "p_grid" ).toInt() : 100;
-   QString dbgtext     = parameters.value( "debug_text" );
-   QString s_bsig      = par_key_value( dbgtext, "base_sig" );
-   QString s_grinc     = par_key_value( dbgtext, "g_redo_inc" );
+   QString s_bsig               = job_config.debug_value( "base_sig" );
+   QString s_grinc              = job_config.debug_value( "g_redo_inc" );
    base_sig            = s_bsig .isEmpty() ? BASE_SIG : s_bsig .toDouble();
    g_redo_inc          = s_grinc.isEmpty() ? GR_INCR  : s_grinc.toInt();
 if(group_rank==1)
@@ -1256,17 +1255,3 @@ astfem_rsa.set_debug_flag(dbg_flg);
 if(group_rank==0)
 DbgLv(1) << my_rank << "CR: variance" << sim_vals.variance << variance << total_points;
 }
-
-// Get the value part of a "key value " substring
-QString US_MPI_Analysis::par_key_value( const QString kvtext, const QString key )
-{
-   QString value( "" );
-   int keyx   = kvtext.indexOf( key );
-   value      = ( keyx < 0 ) ? value
-                : QString( kvtext ).mid( keyx ).section( " ", 1, 1 );
-if(group_rank<2)
-DbgLv(0) << my_rank << ": p_k_v  key" << key << "value" << value << "kvtext" << kvtext;
-
-   return value;
-}
-

@@ -10,6 +10,7 @@ and compare the fitted models with stored baselines.
 | `us_mpi_testdata.cpp` | Writes a simulated velocity dataset, a DMGA constraints model and a custom-grid model with the UltraScan writers (`US_DataIO::writeRawData`, `US_DataIO::writeEdits`, `US_Model::write`). Three species, 30 scans, 60 krpm, edited bottom at the stretched centerpiece bottom as `us_edit` writes it, noise σ = 0.004 from the seeded `US_Math2` generator. |
 | `us_mpi_regression.py` | Builds the job archive (hpcrequest XML in the LIMS format), runs the case, reduces `analysis-results.tar` to a JSON summary and compares it with `baseline/<case>.json`. |
 | `test_us_mpi_jobconfig.cpp` | Unit tests (GoogleTest, no MPI) of `US_MPI_JobConfig`, the hpcrequest XML reader. |
+| `us_mpi_jobcheck.cpp` | `us_mpi_jobcheck [-q] <hpcrequest.xml>...`: reads and validates job files as `us_mpi_analysis` does, without MPI and data. |
 | `jobs/*.xml` | Anonymized hpcrequest files written by the LIMS (2DSA with noise, GA with buckets, 2DSA custom grid) for the unit tests. |
 | `baseline/*.json` | Reference summaries: per model the RMSD, the signal-weighted moments of s, f/f0 and vbar, the solute list, and any TI/RI noise vectors. |
 
@@ -71,18 +72,17 @@ leave the job's input files in the work directory.
 | `input_xml_truncated` | global fit XML cut off after the first dataset | abort naming the XML error |
 | `input_jobxml_truncated` | `jobxmlfile.xml` cut off inside its Header | abort naming the XML error |
 
-Cases marked *pending* document a defect whose fix is still to come.  They
-are reported as XFAIL while they fail and as an error (XPASS) once they
-pass, so that the marker gets removed with the fix.
+| `input_invalid_number` | 2DSA `s_max="ten"` | abort naming `s_max` (was: segfault) |
+| `input_missing_required` | 2DSA without `s_max` | abort naming `s_max` (was: segfault) |
+| `input_unknown_method` | method `2DXA` | abort naming the method (was: exit 0, no output) |
+| `input_meniscus_points_negative` | `meniscus_points="-3"` | abort naming `meniscus_points` |
+| `input_bucket_inverted` | GA bucket with s_min > s_max | abort naming the bucket |
+| `input_unknown_key` | additional parameter `s_mx` | warning, result as `2dsa_basic` |
 
-| Case (pending phase 2) | Input | Current behaviour | Expected |
-|---|---|---|---|
-| `input_invalid_number` | 2DSA `s_max="ten"` | segfault | abort naming `s_max` |
-| `input_missing_required` | 2DSA without `s_max` | segfault | abort naming `s_max` |
-| `input_unknown_method` | method `2DXA` | "finished successfully", no output | abort naming the method |
-| `input_meniscus_points_negative` | `meniscus_points="-3"` | run without meniscus fit | abort naming `meniscus_points` |
-| `input_bucket_inverted` | GA bucket with s_min > s_max | runs | abort naming the bucket |
-| `input_unknown_key` | additional parameter `s_mx` | ignored silently | warning, result as `2dsa_basic` |
+A case can carry a *pending* marker while the fix of the defect it
+documents is still to come: it is reported as XFAIL while it fails and as
+an error (XPASS) once it passes, so that the marker gets removed with the
+fix.
 
 ## Unit tests
 

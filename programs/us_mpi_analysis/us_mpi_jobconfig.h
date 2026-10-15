@@ -51,10 +51,11 @@ class US_MPI_JobConfig
       class Bucket
       {
          public:
-            double x_min = 0.0; //!< Minimum X value
-            double x_max = 0.0; //!< Maximum X value
-            double y_min = 0.0; //!< Minimum Y value
-            double y_max = 0.0; //!< Maximum Y value
+            double      x_min = 0.0; //!< Minimum X value
+            double      x_max = 0.0; //!< Maximum X value
+            double      y_min = 0.0; //!< Minimum Y value
+            double      y_max = 0.0; //!< Maximum Y value
+            QStringList unreadable;  //!< Limit attributes missing or not a number
       };
 
       //! \brief The input of one dataset.  Values the file does not give are
@@ -116,19 +117,36 @@ class US_MPI_JobConfig
       //! \brief The comma-separated entries of the debug_text parameter
       QStringList                  debug_text() const;
 
+      //! \brief Look up an entry of debug_text, "key=value" or "key value"
+      //! \param key    The entry key (matched exactly)
+      //! \param found  Set to true if the key is present
+      //! \returns      The value; empty for an entry without value
+      QString                      debug_value( const QString& key, bool* found = nullptr ) const;
+
+      //! \brief Check the job: method, parameter values and their ranges,
+      //!        the parameters the method requires, buckets and datasets.
+      //!        Problems are appended to errors; unknown parameters to
+      //!        warnings.  An empty value counts as not given.
+      void                         validate();
+
+      //! \brief The analysis method families us_mpi_analysis runs; a method
+      //!        name starts with one of them (e.g. 2DSA_CG)
+      static QStringList           method_families();
+
       //! \brief Datasets as us_mpi_analysis uses them: a timestate file not
       //!        given is taken from the previous dataset, the edit file name
       //!        is completed for MWL data, vbar20 is computed from the
       //!        solution.  The caller owns the returned objects.
       QList<US_SolveSim::DataSet*> make_datasets() const;
 
-      QString                      method;       //!< Analysis method (US_JobSubmit method)
-      QString                      cluster;      //!< Cluster short name
-      QString                      db_name;      //!< Database name
-      QString                      udp_server;   //!< UDP status server address
-      quint16                      udp_port = 0; //!< UDP status server port
-      QString                      request_id;   //!< Request ID, six digits
-      QString                      request_guid; //!< Request GUID
+      QString                      method;        //!< Analysis method (US_JobSubmit method)
+      QString                      cluster;       //!< Cluster short name
+      QString                      db_name;       //!< Database name
+      QString                      udp_server;    //!< UDP status server address
+      quint16                      udp_port = 0;  //!< UDP status server port
+      QString                      request_id;    //!< Request ID, six digits
+      QString                      request_guid;  //!< Request GUID
+      Optional<int>                dataset_count; //!< datasetCount, if given
 
       //! Job parameters as strings by name.  s_min/s_max and ff0_min/ff0_max
       //!  are also stored as x_min/x_max and y_min/y_max; bucket_fixed sets
@@ -138,6 +156,7 @@ class US_MPI_JobConfig
       QList<Bucket>                buckets;  //!< GA buckets
       QList<DatasetSpec>           datasets; //!< Datasets in file order
       QStringList                  errors;   //!< Errors found while reading
+      QStringList                  warnings; //!< Problems that do not stop a run
 
    private:
       void read_job( QXmlStreamReader& );
