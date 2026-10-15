@@ -77,9 +77,9 @@ if (my_rank==0) DbgLv(0) << "task_parse xmlfile" << xmlfile;
 
       if ( proc_count > 64 )
       {
-         task_params[ "mgroupcount" ] = parameters.value( "req_mgroupcount" );
-         if ( my_rank == 0 ) DbgLv(0) << " Value of mgroupcount set to"
-            << parameters.value( "req_mgroupcount" );
+         task_params["mgroupcount"] = job_config.params.req_mgroupcount;
+         if ( my_rank == 0 )
+            DbgLv( 0 ) << " Value of mgroupcount set to" << job_config.params.req_mgroupcount;
       }
       return;
    }
@@ -366,7 +366,7 @@ DbgLv(1) << "SUPER:  maxrss maxrssma" << maxrss << maxrssma;
    int cputime   = qRound(
       startTime .msecsTo( endTime ) / 1000.0 );
    int maxrssmb  = qRound( (double)maxrss / 1024.0 );
-   int kc_iters  = parameters.value( "mc_iterations" ).toInt();
+   int kc_iters  = job_config.params.mc_iterations;
 
    // Output job statistics
    stats_output( walltime, cputime, maxrssmb,
@@ -793,7 +793,7 @@ DbgLv(0) << "DEBUG_LEVEL" << simulation_values.dbg_level;
    best_fitness.reserve( gcores_count );
 
    // Read in the constraints model and build constraints
-   QString cmfname  = "../" + parameters.value( "DC_model" );
+   QString cmfname = "../" + job_config.params.dc_model.value_or( "" );
    wmodel.load( cmfname );                   // Load the constraints model
    constraints.load_constraints( &wmodel );  // Build the constraints object
    constraints.get_work_model  ( &wmodel );  // Get the base work model

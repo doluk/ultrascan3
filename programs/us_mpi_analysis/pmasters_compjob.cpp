@@ -660,7 +660,7 @@ DbgLv(0) << "DEBUG_LEVEL" << simulation_values.dbg_level;
    best_fitness.reserve( gcores_count );
 
    // Read in the constraints model and build constraints
-   QString cmfname  = "../" + parameters.value( "DC_model" );
+   QString cmfname = "../" + job_config.params.dc_model.value_or( "" );
    wmodel.load( cmfname );                   // Load the constraints model
    constraints.load_constraints( &wmodel );  // Build the constraints object
    constraints.get_work_model  ( &wmodel );  // Get the base work model
@@ -824,7 +824,7 @@ DbgLv(1) << my_rank << ": master start PCSA" << startTime;
    int iter            = current_dataset;
    alpha               = 0.0;
    mc_iterations       = 0;
-   max_iterations      = parameters.value( "gfit_iterations" ).toInt();
+   max_iterations      = job_config.params.gfit_iterations;
    MPI_Status status;
 
    // Get 1st dataset from supervisor
@@ -1022,7 +1022,7 @@ DbgLv(1) << "CJ_MAST Recv tag" << tag << "iter" << iter;
                mc_iteration     = 0;
                mc_iterations    = 0;
                alpha            = 0.0;
-               max_iterations   = parameters.value( "gfit_iterations" ).toInt();
+               max_iterations   = job_config.params.gfit_iterations;
                kcurve           = 0;
 
                fill_pcsa_queue();
