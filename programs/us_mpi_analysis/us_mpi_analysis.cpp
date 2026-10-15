@@ -89,7 +89,8 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
    task_params[ "subgridsize" ] = "100";
 
    // Get some task parameters from the command line
-   parse_command_line( nargs, cmdargs, tarfile, jxmlfili, cmd_task_params );
+   QString hpcfile; // hpcrequest file given on the command line
+   parse_command_line( nargs, cmdargs, tarfile, jxmlfili, hpcfile, cmd_task_params );
 
    attr_x = ATTR_S;
    attr_y = ATTR_K;
@@ -120,7 +121,7 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
    maxods.clear();
 
    // Read, set up and validate the job description
-   read_job_config( find_job_file() );
+   read_job_config( find_job_file( hpcfile ) );
 
    // The parameter defaults are part of job_config.params
    uint seed = job_config.params.seed;
@@ -181,6 +182,7 @@ void US_MPI_Analysis::parse_command_line( int                     nargs,
                                           QStringList&            cmdargs,
                                           QString&                tarfile,
                                           QString&                jxmlfili,
+                                          QString&                hpcfile,
                                           QMap<QString, QString>& cmd_task_params )
 {
    // Command line special parameter keys
@@ -223,6 +225,11 @@ void US_MPI_Analysis::parse_command_line( int                     nargs,
               cmdarg.contains( wallkey3 ) )
          {  // Get maximum wall time in minutes
             cmd_task_params["walltime"] = cmdval;
+         }
+
+         else if ( cmdarg.startsWith( "-hpcrequest" ) )
+         { // The hpcrequest file, if the archive has more than one
+            hpcfile = cmdval;
          }
 
          else if ( cmdarg.contains( pmgckey )   ||
@@ -303,9 +310,15 @@ void US_MPI_Analysis::unpack_inputs( const QString& tarfile )
    }
 }
 
-// The hpcrequest file: the one hpc*.xml in the work or input directory
-QString US_MPI_Analysis::find_job_file( void )
+// The hpcrequest file: the one given on the command line, else the one
+//  hpc*.xml in the work or input directory
+QString US_MPI_Analysis::find_job_file( const QString& hpcfile )
 {
+   if ( !hpcfile.isEmpty() )
+   {
+      return hpcfile;
+   }
+
    QDir        wkdir     = QDir::current();
    QString     input_dir = QDir::currentPath() + "/input";
    QStringList ffilt;

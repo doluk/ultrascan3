@@ -394,9 +394,9 @@ class US_MPI_Analysis : public QObject
 
         // Methods
         void                   set_solute_types( void );
-        void                   parse_command_line( int, QStringList&, QString&, QString&, QMap<QString, QString>& );
+        void                   parse_command_line( int, QStringList&, QString&, QString&, QString&, QMap<QString, QString>& );
         void                   unpack_inputs( const QString& );
-        QString                find_job_file( void );
+        QString                find_job_file( const QString& );
         void                   read_task_parameters( const QString&, const QMap<QString, QString>& );
         void                   announce_start( const QString& );
         void                   load_data( void );
