@@ -447,11 +447,7 @@ void US_MPI_Analysis::load_data( void )
       }
 
       dset->temperature = dset->run_data.average_temperature();
-      dset->vbartb = US_Math2::calcCommonVbar( dset->solution_rec,
-                                               dset->temperature );
-
-      if ( dset->centerpiece_bottom == 7.3 )
-         abort( "The bottom is set to the invalid default value of 7.3" );
+      dset->vbartb      = US_Math2::calcCommonVbar( dset->solution_rec, dset->temperature );
    }
 }
 
@@ -1051,20 +1047,6 @@ void US_MPI_Analysis::prepare_speed_steps( bool redo_ss )
       }
    }
 
-   // If debug text modifies SetSpeedLowA value, apply it
-   int lo_ss_acc = 250;
-   QStringList dbgtxt = US_Settings::debug_text();
-   for ( int ii = 0; ii < dbgtxt.count(); ii++ )
-   {
-      if ( dbgtxt[ ii ].startsWith( "SetSpeedLowA=" ) )
-      {
-         lo_ss_acc        = QString( dbgtxt[ ii ] ).section( "=", 1, 1 ).toInt();
-         if ( my_rank == 0 ){
-            DbgLv(1) << "DSM: SetSpeedLowA:    SetSpeedLowA" << lo_ss_acc;
-         }
-      }
-   }
-
    // Check for low acceleration in every dataset
    for ( int ee = 0; ee < data_sets.size(); ee++ )
    {
@@ -1216,7 +1198,7 @@ void US_MPI_Analysis::check_grid_size( void )
       if ( my_rank == 0 )
       {
          qDebug() << smsg;
-         printf( smsg.toLatin1().data() );
+         printf( "%s", smsg.toLatin1().data() );
       }
       abort( "Implied Grid Size is Too Large!" );
    }

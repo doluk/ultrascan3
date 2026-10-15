@@ -514,6 +514,11 @@ TEST( US_MPI_JobConfig, DatasetValidation )
                              "Dataset 1: no centerpiece_bottom",
                              "Dataset 1: no buffer density and viscosity" } ) );
 
+   QString bottom73 = DATASET;
+   bottom73.replace( "value=\"7.2\"", "value=\"7.3\"" );
+   EXPECT_EQ( validated( GRID_2DSA, "2DSA", bottom73 ).errors,
+              QStringList( "Dataset 1: the bottom is set to the invalid default value of 7.3" ) );
+
    QString two_concs = DATASET;
    two_concs.replace( "</dataset>", "<total_concentration value=\"1\"/><total_concentration value=\"2\"/></dataset>" );
    EXPECT_EQ( validated( GRID_2DSA, "2DSA", two_concs ).errors, QStringList( "Dataset 1: more than one total_concentration" ) );

@@ -92,6 +92,7 @@ set(US_MPI_INPUT_CASES
     input_meniscus_points_negative
     input_bucket_inverted
     input_unknown_key
+    input_centerpiece_bottom_default
 )
 
 foreach(case ${US_MPI_CASES} ${US_MPI_INPUT_CASES})

@@ -79,6 +79,7 @@ leave the job's input files in the work directory.
 | `input_unknown_method` | method `2DXA` | abort naming the method (was: exit 0, no output) |
 | `input_meniscus_points_negative` | `meniscus_points="-3"` | abort naming `meniscus_points` |
 | `input_bucket_inverted` | GA bucket with s_min > s_max | abort naming the bucket |
+| `input_centerpiece_bottom_default` | `centerpiece_bottom="7.3"` (the invalid default) | abort naming 7.3 |
 | `input_unknown_key` | additional parameter `s_mx` | warning, result as `2dsa_basic` |
 
 A case can carry a *pending* marker while the fix of the defect it

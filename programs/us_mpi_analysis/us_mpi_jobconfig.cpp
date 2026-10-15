@@ -971,6 +971,10 @@ void US_MPI_JobConfig::validate()
       {
          errors << dx + "no centerpiece_bottom";
       }
+      else if ( *ds.centerpiece_bottom == 7.3 )
+      { // The value of the LIMS for a bottom not set
+         errors << dx + "the bottom is set to the invalid default value of 7.3";
+      }
       if ( !ds.density || !ds.viscosity )
       {
          errors << dx + "no buffer density and viscosity";

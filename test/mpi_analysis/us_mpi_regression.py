@@ -347,6 +347,9 @@ INPUT_CASES = {
     "input_bucket_inverted": input_case(
         "ga_np2", buckets=GA_BUCKETS + [(9.5, 8.6, 1.0, 2.0)],
         expect={"abort": r"[Bb]ucket"}),
+    "input_centerpiece_bottom_default": input_case(
+        "2dsa_basic", centerpiece_bottom="7.3",
+        expect={"abort": r"invalid default value of 7\.3"}),
     # An unknown parameter is reported, the run goes on
     "input_unknown_key": input_case(
         "2dsa_basic", params=lambda p: dict(p, s_mx="10.0"),
@@ -409,7 +412,7 @@ def job_xml(name, case):
         # Without band_volume the default (0.015) makes a band-forming run
         sub(dset, "band_volume", value="0.0")
         sub(dset, "rotor_stretch", value=case.get("rotor_stretch", "0 1e-12"))
-        sub(dset, "centerpiece_bottom", value="7.2")
+        sub(dset, "centerpiece_bottom", value=case.get("centerpiece_bottom", "7.2"))
         sub(dset, "centerpiece_shape", value="standard")
         sub(dset, "centerpiece_angle", value="2.5")
         sub(dset, "centerpiece_pathlength", value="1.2")
