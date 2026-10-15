@@ -67,9 +67,9 @@ void US_MPI_Analysis::task_parse( const QString& xmlfile )
    }
 
 if (my_rank==0) DbgLv(0) << "task_parse xmlfile" << xmlfile;
+   // The defaults are set in the constructor; values not in the file
+   //  keep them
    QFile file ( xmlfile );
-   task_params[ "walltime"    ] = "1440";
-   task_params[ "mgroupcount" ] = "1";
 
    if ( ! file.open( QIODevice::ReadOnly | QIODevice::Text) )
    {  // If no job xml or us3.pbs, return now

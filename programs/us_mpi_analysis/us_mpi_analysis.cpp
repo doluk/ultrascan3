@@ -94,6 +94,8 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
    min_experiment_size = def_experiment_size;
    QString tarfile;
    QString jxmlfili;
+   QMap< QString, QString > cmd_task_params;  // Task parameters given on
+                                              //  the command line
    task_params[ "walltime"    ] = "1440";
    task_params[ "mgroupcount" ] = "1";
    task_params[ "subgridsize" ] = "100";
@@ -124,20 +126,20 @@ DbgLv(0) << "CmdArg: jj" << jj << "cmdarg" << cmdarg;
               cmdarg.contains( wallkey2 )  ||
               cmdarg.contains( wallkey3 ) )
          {  // Get maximum wall time in minutes
-            task_params[ "walltime"    ] = cmdval;
+            cmd_task_params[ "walltime"    ] = cmdval;
          }
 
          else if ( cmdarg.contains( pmgckey )   ||
                    cmdarg.contains( pmgckey2 )  ||
                    cmdarg.contains( pmgckey3 ) )
          {  // Get number of parallel masters groups
-            task_params[ "mgroupcount" ] = cmdval;
+            cmd_task_params[ "mgroupcount" ] = cmdval;
          }
          else if ( cmdarg.contains( sgszkey )   ||
                    cmdarg.contains( sgszkey2 )  ||
                    cmdarg.contains( sgszkey3 ) )
          {  // Get minimum subgrid size in solute points
-            task_params[ "subgridsize" ] = cmdval;
+            cmd_task_params[ "subgridsize" ] = cmdval;
          }
 else
 DbgLv(0) << "CmdArg -- unknown cmdarg " << cmdarg << "cmdval" << cmdval;
@@ -156,9 +158,9 @@ DbgLv(0) << "CmdArg:   valx" << valx << "cmdval" << cmdval;
       }
    }
 if(my_rank==0) {
-DbgLv(0) << "CmdArg: walltime" << task_params["walltime"];
-DbgLv(0) << "CmdArg: mgroupcount" << task_params["mgroupcount"];
-DbgLv(0) << "CmdArg: minexpsize" << task_params["subgridsize"];
+DbgLv(0) << "CmdArg: walltime" << cmd_task_params.value("walltime");
+DbgLv(0) << "CmdArg: mgroupcount" << cmd_task_params.value("mgroupcount");
+DbgLv(0) << "CmdArg: minexpsize" << cmd_task_params.value("subgridsize");
 DbgLv(0) << "CmdArg: tarfile" << tarfile;
 DbgLv(0) << "CmdArg: jxmlfili" << jxmlfili;
 }
@@ -274,6 +276,14 @@ DbgLv(0) << "  jfiles size" << jfiles.size() << "jxmlfile" << jxmlfile;
    }
 
    task_parse( jxmlfile );
+
+   // Task parameters given on the command line take precedence over
+   //  those of the job xml file
+   for ( auto it = cmd_task_params.constBegin();
+              it != cmd_task_params.constEnd(); ++it )
+   {
+      task_params[ it.key() ] = it.value();
+   }
 
    if ( my_rank == 0 )
    {  // Save submit time
