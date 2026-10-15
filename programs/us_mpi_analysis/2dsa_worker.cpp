@@ -23,7 +23,7 @@ void US_MPI_Analysis::_2dsa_worker( void )
                 MPI_Job::READY,
                 my_communicator ); // let master know we are ready
       //if(my_rank==1)
-      DbgLv(1) << "w:" << my_rank << ": ready sent";
+      DbgLv( 1 ) << "w:" << my_rank << ": ready sent";
 
       // Blocking -- Wait for instructions
       MPI_Recv( &job, // get masters' response
@@ -34,8 +34,7 @@ void US_MPI_Analysis::_2dsa_worker( void )
                 my_communicator,
                 &status );        // status not used
       //if(my_rank==1)
-      DbgLv(1) << "w:" << my_rank << ": job_recvd  length" << job.length
-       << "command" << job.command;
+      DbgLv( 1 ) << "w:" << my_rank << ": job_recvd  length" << job.length << "command" << job.command;
 
       meniscus_value     = job.meniscus_value;
       bottom_value       = job.bottom_value;
@@ -57,9 +56,9 @@ void US_MPI_Analysis::_2dsa_worker( void )
                simulation_values.dbg_level   = dbg_level;
                simulation_values.dbg_timing  = dbg_timing;
 
-            //DbgLv(1) << "w:" << my_rank << ": sols size" << job.length;
-            //if(my_rank==1)
-            DbgLv(1) << "w:" << my_rank << ": sols size" << job.length;
+               //DbgLv(1) << "w:" << my_rank << ": sols size" << job.length;
+               //if(my_rank==1)
+               DbgLv( 1 ) << "w:" << my_rank << ": sols size" << job.length;
                simulation_values.solutes.resize( job.length );
 
                MPI_Recv( simulation_values.solutes.data(), // Get solutes
@@ -71,24 +70,20 @@ void US_MPI_Analysis::_2dsa_worker( void )
                          &status );
 
                max_rss();
-            //*DEBUG*
-            //if(dbg_level>0 && my_rank==1)
-            //if(my_rank==1)
-            {
-             int nn = simulation_values.solutes.size() - 1;
-             int mm = nn/2;
-             DbgLv(1) << "w:" << my_rank << ": offs dscnt" << offset << dataset_count
-  << "vbar s20wc cpbott dabott"
-  << data_sets[offset]->vbar20
-  << data_sets[offset]->s20w_correction
-  << data_sets[offset]->centerpiece_bottom
-  << data_sets[offset]->run_data.bottom;
- DbgLv(1) << "w:" << my_rank << ": sol0 solm soln"
-  << simulation_values.solutes[0].s << simulation_values.solutes[0].k
-  << simulation_values.solutes[mm].s << simulation_values.solutes[mm].k
-  << simulation_values.solutes[nn].s << simulation_values.solutes[nn].k;
-}
-            //*DEBUG*
+               //*DEBUG*
+               //if(dbg_level>0 && my_rank==1)
+               //if(my_rank==1)
+               {
+                  int nn = simulation_values.solutes.size() - 1;
+                  int mm = nn / 2;
+                  DbgLv( 1 ) << "w:" << my_rank << ": offs dscnt" << offset << dataset_count << "vbar s20wc cpbott dabott"
+                             << data_sets[offset]->vbar20 << data_sets[offset]->s20w_correction
+                             << data_sets[offset]->centerpiece_bottom << data_sets[offset]->run_data.bottom;
+                  DbgLv( 1 ) << "w:" << my_rank << ": sol0 solm soln" << simulation_values.solutes[0].s
+                             << simulation_values.solutes[0].k << simulation_values.solutes[mm].s << simulation_values.solutes[mm].k
+                             << simulation_values.solutes[nn].s << simulation_values.solutes[nn].k;
+               }
+               //*DEBUG*
 
                calc_residuals( offset, dataset_count, simulation_values );
 
@@ -98,14 +93,14 @@ void US_MPI_Analysis::_2dsa_worker( void )
                                  (int)simulation_values.ri_noise.size(),
                                  (int)max_rss() };
 
-            DbgLv(1) << "w:" << my_rank << ":   result sols size" << size[0]
-             << "max_rss" << size[ 3 ];
-            //*DEBUG*
-            if(dbg_level==0 && my_rank==1) {
-               DbgLv(1) << "w:" << my_rank << ":   result sols size" << size[0]
-                << "nsscan" << simulation_values.sim_data.scanCount();
-}
-            //*DEBUG*
+               DbgLv( 1 ) << "w:" << my_rank << ":   result sols size" << size[0] << "max_rss" << size[3];
+               //*DEBUG*
+               if ( dbg_level == 0 && my_rank == 1 )
+               {
+                  DbgLv( 1 ) << "w:" << my_rank << ":   result sols size" << size[0] << "nsscan"
+                             << simulation_values.sim_data.scanCount();
+               }
+               //*DEBUG*
                MPI_Send( size,
                          4,
                          MPI_INT,
@@ -207,10 +202,12 @@ void US_MPI_Analysis::_2dsa_worker( void )
 
                MPI_Barrier( my_communicator );
 
-            if(my_rank==1 || my_rank==11)
-            DbgLv(1) << "newD:" << my_rank << " scld/newdat rcv : offs dsknt"
-             << offset << dataset_count << "joblen" << job_length;
-            double dsum=0.0;
+               if ( my_rank == 1 || my_rank == 11 )
+               {
+                  DbgLv( 1 ) << "newD:" << my_rank << " scld/newdat rcv : offs dsknt" << offset << dataset_count << "joblen"
+                             << job_length;
+               }
+               double dsum = 0.0;
                // This is a receive
                MPI_Bcast( mc_data.data(),
                           job_length,
@@ -223,9 +220,10 @@ void US_MPI_Analysis::_2dsa_worker( void )
                {  // For global update to scaled data, extra value is new ODlimit
                   job_length--;
                   data_sets[ offset ]->run_data.ODlimit = mc_data[ job_length ];
-               if( (my_rank==1||my_rank==11) )
-               DbgLv(1) << "newD:" << my_rank << ":offset ODlimit" << offset
-                << data_sets[ offset ]->run_data.ODlimit;
+                  if ( ( my_rank == 1 || my_rank == 11 ) )
+                  {
+                     DbgLv( 1 ) << "newD:" << my_rank << ":offset ODlimit" << offset << data_sets[offset]->run_data.ODlimit;
+                  }
                }
 
                int index = 0;
@@ -237,23 +235,25 @@ void US_MPI_Analysis::_2dsa_worker( void )
                   int scan_count    = edata->scanCount();
                   int radius_points = edata->pointCount();
 
-               int indxh=((scan_count/2)*radius_points)+(radius_points/2);
+                  int                    indxh = ( ( scan_count / 2 ) * radius_points ) + ( radius_points / 2 );
                   for ( int ss = 0; ss < scan_count; ss++ )
                   {
                      for ( int rr = 0; rr < radius_points; rr++, index++ )
                      {
                         edata->setValue( ss, rr, mc_data[ index ] );
-                     dsum+=edata->value(ss,rr);
-                     if( (my_rank==1||my_rank==11)
-                      && (index<5 || index>(job_length-6) || (index>(indxh-4)&&index<(indxh+3))) )
-                     DbgLv(1) << "newD:" << my_rank << ":index" << index << "edat" << edata->value(ss,rr)
-                      << "ee" << ee;
+                        dsum += edata->value( ss, rr );
+                        if ( ( my_rank == 1 || my_rank == 11 ) &&
+                             ( index < 5 || index > ( job_length - 6 ) || ( index > ( indxh - 4 ) && index < ( indxh + 3 ) ) ) )
+                        {
+                           DbgLv( 1 ) << "newD:" << my_rank << ":index" << index << "edat" << edata->value( ss, rr ) << "ee" << ee;
+                        }
                      }
                   }
                }
-            if(my_rank==1 || my_rank==11)
-            DbgLv(1) << "newD:" << my_rank << "  length index" << job_length << index
-             << "dsum" << dsum;
+               if ( my_rank == 1 || my_rank == 11 )
+               {
+                  DbgLv( 1 ) << "newD:" << my_rank << "  length index" << job_length << index << "dsum" << dsum;
+               }
             }
 
             break;

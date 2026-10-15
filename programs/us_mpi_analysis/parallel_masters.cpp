@@ -24,17 +24,15 @@ void US_MPI_Analysis::pmasters_start()
       group_rank--;
    }
 
-   DbgLv(1) << "my_group" << my_group << "my_workers" << my_workers
-    << "group_rank" << group_rank << "my_rank" << my_rank
-    << "HOST=" << QHostInfo::localHostName();
+   DbgLv( 1 ) << "my_group" << my_group << "my_workers" << my_workers << "group_rank" << group_rank << "my_rank" << my_rank
+              << "HOST=" << QHostInfo::localHostName();
 
-   DbgLv(1) << "MPI_Barrier" << my_rank;
+   DbgLv( 1 ) << "MPI_Barrier" << my_rank;
    // Synch up everyone then split into communicator groups
    MPI_Barrier( MPI_COMM_WORLD );
    int sstat = MPI_Comm_split( MPI_COMM_WORLD, my_group, group_rank,
                                &my_communicator );
-   DbgLv(1) << "COMM_SPLIT (g r m)" << my_group << group_rank << my_rank
-    << "stat" << sstat;
+   DbgLv( 1 ) << "COMM_SPLIT (g r m)" << my_group << group_rank << my_rank << "stat" << sstat;
 
    if ( my_rank == 0 )
    {  // Run parallel-masters supervisor             (world rank 0)
@@ -51,7 +49,7 @@ void US_MPI_Analysis::pmasters_start()
       pmasters_worker();
    }
 
-   DbgLv(1) << "Final-my_rank" << my_rank << " msecs=" << startTime.msecsTo(QDateTime::currentDateTime());
+   DbgLv( 1 ) << "Final-my_rank" << my_rank << " msecs=" << startTime.msecsTo( QDateTime::currentDateTime() );
    free_node_comm();
    MPI_Finalize();
    exit( 0 );
@@ -66,10 +64,13 @@ void US_MPI_Analysis::task_parse( const QString& xmlfile )
       return;
    }
 
-   if (my_rank==0) DbgLv(0) << "task_parse xmlfile" << xmlfile;
+   if ( my_rank == 0 )
+   {
+      DbgLv( 0 ) << "task_parse xmlfile" << xmlfile;
+   }
    // The defaults are set in the constructor; values not in the file
    //  keep them
-   QFile file ( xmlfile );
+   QFile file( xmlfile );
 
    if ( ! file.open( QIODevice::ReadOnly | QIODevice::Text) )
    {  // If no job xml or us3.pbs, return now
@@ -79,7 +80,9 @@ void US_MPI_Analysis::task_parse( const QString& xmlfile )
       {
          task_params["mgroupcount"] = job_config.params.req_mgroupcount;
          if ( my_rank == 0 )
+         {
             DbgLv( 0 ) << " Value of mgroupcount set to" << job_config.params.req_mgroupcount;
+         }
       }
       return;
    }
@@ -101,7 +104,10 @@ void US_MPI_Analysis::task_parse( const QString& xmlfile )
             int     valu2 = svalu.section( ":", 1, 1 ).toInt();
             svalu         = QString::number( valu1 * 60 + valu2 );
             task_params[ "walltime"    ] = svalu;
-            if (my_rank==0) DbgLv(0) << "h m" << valu1 << valu2 << "svalu" << svalu;
+            if ( my_rank == 0 )
+            {
+               DbgLv( 0 ) << "h m" << valu1 << valu2 << "svalu" << svalu;
+            }
          }
 
          if ( jgr > 0 )
@@ -111,13 +117,18 @@ void US_MPI_Analysis::task_parse( const QString& xmlfile )
                     valu1 = valu1 < 0 ? 1 : valu1;
             svalu         = QString::number( valu1 );
             task_params[ "mgroupcount" ] = svalu;
-            if (my_rank==0) DbgLv(0) << "group" << svalu << "valu1" << valu1;
+            if ( my_rank == 0 )
+            {
+               DbgLv( 0 ) << "group" << svalu << "valu1" << valu1;
+            }
          }
       }
 
       file.close();
-      if ( my_rank == 0 ) DbgLv(0) << "walltime=" << task_params["walltime"]
-       << "mgroupcount=" << task_params["mgroupcount"];
+      if ( my_rank == 0 )
+      {
+         DbgLv( 0 ) << "walltime=" << task_params["walltime"] << "mgroupcount=" << task_params["mgroupcount"];
+      }
       return;
    }
 
@@ -144,15 +155,19 @@ void US_MPI_Analysis::task_parse( const QString& xmlfile )
    }
 
    if ( xml.hasError() )
-   {  // A malformed or truncated file: do not run with what was read
+   { // A malformed or truncated file: do not run with what was read
       abort( QString( "XML error in %1, line %2 column %3: %4" )
-             .arg( xmlfile ).arg( xml.lineNumber() )
-             .arg( xml.columnNumber() ).arg( xml.errorString() ) );
+                .arg( xmlfile )
+                .arg( xml.lineNumber() )
+                .arg( xml.columnNumber() )
+                .arg( xml.errorString() ) );
    }
 
    file.close();
-   if ( my_rank == 0 ) DbgLv(1) << "walltime=" << task_params["walltime"]
-    << "mgroupcount=" << task_params["mgroupcount"];
+   if ( my_rank == 0 )
+   {
+      DbgLv( 1 ) << "walltime=" << task_params["walltime"] << "mgroupcount=" << task_params["mgroupcount"];
+   }
 }
 
 // Parallel-masters supervisor
@@ -183,7 +198,7 @@ void US_MPI_Analysis::pmasters_supervisor()
    {
       master = ( ii == 0 ) ? 1 : ( ii * gcores_count );   // Master world rank
 
-      DbgLv(1) << "SUPER: master msgs" << master << "analysisDate" << analysisDate;
+      DbgLv( 1 ) << "SUPER: master msgs" << master << "analysisDate" << analysisDate;
       msg    = analysisDate.toLatin1();
       iwork  = msg.size();
       MPI_Send( &iwork,
@@ -233,7 +248,7 @@ void US_MPI_Analysis::pmasters_supervisor()
       max_rss();
 
       // Get UDP message or iteration-done flag
-      DbgLv(1) << "SUPER: wait on iter done/udp";
+      DbgLv( 1 ) << "SUPER: wait on iter done/udp";
       MPI_Recv( &iwork,
                 1,
                 MPI_INT,
@@ -247,7 +262,7 @@ void US_MPI_Analysis::pmasters_supervisor()
       master      = status.MPI_SOURCE;
       tag         = status.MPI_TAG;
       QByteArray msg;
-      DbgLv(1) << "SUPER:   wait recv'd iwork" << iwork << "master tag" << master << tag;
+      DbgLv( 1 ) << "SUPER:   wait recv'd iwork" << iwork << "master tag" << master << tag;
 
       switch( tag )
       {
@@ -255,7 +270,7 @@ void US_MPI_Analysis::pmasters_supervisor()
             isize = iwork;
             msg.resize( isize );
 
-         DbgLv(1) << "SUPER: wait on UDPmsg - master" << master;
+            DbgLv( 1 ) << "SUPER: wait on UDPmsg - master" << master;
             MPI_Recv( msg.data(),
                       isize,
                       MPI_BYTE,
@@ -264,7 +279,7 @@ void US_MPI_Analysis::pmasters_supervisor()
                       MPI_COMM_WORLD,
                       &status );
 
-         DbgLv(1) << "SUPER:     UDPmsg:" << QString(msg);
+            DbgLv( 1 ) << "SUPER:     UDPmsg:" << QString( msg );
             send_udp( QString( msg ) );       // Send forwarded UDP message
 
             udpmsg   = true;
@@ -301,8 +316,8 @@ void US_MPI_Analysis::pmasters_supervisor()
       int jgroup = ( mgroup < 0 ) ? kgroup : mgroup; // Ready master index
       mstates[ kgroup ] = READY;                     // Mark current as ready
       int nileft = mstates.count( WORKING );         // Iterations left working
-      DbgLv(1) << "SUPER: mgr kgr jgr" << mgroup << kgroup << jgroup
-       << "left iter iters" << nileft << mc_iteration << mc_iterations;
+      DbgLv( 1 ) << "SUPER: mgr kgr jgr" << mgroup << kgroup << jgroup << "left iter iters" << nileft << mc_iteration
+                 << mc_iterations;
 
       if ( islast )    
       {  // Just finished was last iteration for that group
@@ -313,7 +328,7 @@ void US_MPI_Analysis::pmasters_supervisor()
          { // The group master waits for an iteration; tell it to stop
             MPI_Send( &iwork, 1, MPI_INT, master, STOPITER, MPI_COMM_WORLD );
          }
-         DbgLv(1) << "SUPER:  (A)maxrssma" << maxrssma << "iwork" << iwork;
+         DbgLv( 1 ) << "SUPER:  (A)maxrssma" << maxrssma << "iwork" << iwork;
 
          if ( nileft == 0 )
          {
@@ -337,7 +352,7 @@ void US_MPI_Analysis::pmasters_supervisor()
 
       master      = ( jgroup == 0 ) ? 1 : ( jgroup * gcores_count );
 
-      DbgLv(1) << "SUPER:  Send next iter" << iter_wk << "gr ma tg" << jgroup << master << tag;
+      DbgLv( 1 ) << "SUPER:  Send next iter" << iter_wk << "gr ma tg" << jgroup << master << tag;
       MPI_Send( &iter_wk,
                 1,
                 MPI_INT,
@@ -358,7 +373,7 @@ void US_MPI_Analysis::pmasters_supervisor()
 
    // Send message and build file with run-time statistics
    max_rss();                              // Max memory for supervisor
-   DbgLv(1) << "SUPER:  maxrss maxrssma" << maxrss << maxrssma;
+   DbgLv( 1 ) << "SUPER:  maxrss maxrssma" << maxrss << maxrssma;
    maxrss       += maxrssma;               // Sum in master groups' use
 
    int walltime  = qRound(
@@ -413,8 +428,7 @@ void US_MPI_Analysis::pmasters_master()
    QByteArray msg;
 
    // Get analysis date for model descriptions from supervisor
-   DbgLv(1) << "  MASTER   Recv from super. my_rank" << my_rank
-    << "group" << my_group;
+   DbgLv( 1 ) << "  MASTER   Recv from super. my_rank" << my_rank << "group" << my_group;
    int super  = 0;
    int isize  = 0;
 
@@ -425,7 +439,7 @@ void US_MPI_Analysis::pmasters_master()
              ADATESIZE,
              MPI_COMM_WORLD,
              &status );
-   DbgLv(1) << "  MASTER:   wait recv'd isize" << isize;
+   DbgLv( 1 ) << "  MASTER:   wait recv'd isize" << isize;
 
    msg.resize( isize );
 
@@ -438,8 +452,8 @@ void US_MPI_Analysis::pmasters_master()
              &status );
 
    analysisDate = QString( msg );
-   DbgLv(1) << "  MASTER:   Recv'd from super. (g r m)" << my_group << group_rank
-    << my_rank << "analysisDate" << analysisDate << "atype" << analysis_type;
+   DbgLv( 1 ) << "  MASTER:   Recv'd from super. (g r m)" << my_group << group_rank << my_rank << "analysisDate" << analysisDate
+              << "atype" << analysis_type;
 
    // Do the master loop for MC 2DSA or GA
    if ( analysis_type.startsWith( "2DSA" ) )
@@ -494,27 +508,31 @@ void US_MPI_Analysis::time_mc_iterations()
       {
          show_mcit       = true;
          break;
-         DbgLv(0) << "TMI: show_mcit TRUE";
+         DbgLv( 0 ) << "TMI: show_mcit TRUE";
       }
    }
    //*DEBUG*
-   show_mcit=true;
+   show_mcit = true;
    //*DEBUG*
-   DbgLv(0) << "TMI: show_mcit" << show_mcit;
+   DbgLv( 0 ) << "TMI: show_mcit" << show_mcit;
 
    // Do preliminary iteration time tests
    //   if ( mc_iteration < ( mgroup_count * 4 ) )
    if ( mc_iteration < ( mgroup_count * 3 ) )
    {
-      if(show_mcit)
-      DbgLv(0) << "TMI: mc_iter < pmgc*3" << mc_iteration << (mgroup_count*3);
+      if ( show_mcit )
+      {
+         DbgLv( 0 ) << "TMI: mc_iter < pmgc*3" << mc_iteration << ( mgroup_count * 3 );
+      }
       return;                      // Don't bother until MC iteration pass 3
    }
 
    if ( is_composite_job )
    {
-      if(show_mcit)
-      DbgLv(0) << "TMI: composite_job";
+      if ( show_mcit )
+      {
+         DbgLv( 0 ) << "TMI: composite_job";
+      }
       return;                      // Don't check MC iteration if composite
    }
 
@@ -525,13 +543,13 @@ void US_MPI_Analysis::time_mc_iterations()
    int mc_iters_left   = ( mins_left_allow * mc_iteration ) / mins_so_far;
    mc_iters_left       = ( mc_iters_left / mgroup_count ) * mgroup_count;
    int mc_iters_estim  = mc_iteration + mc_iters_left;
-   if(show_mcit)
+   if ( show_mcit )
    {
-      DbgLv(0) << "TMI: NEAR-ALLOW_TIME test: mins_so_far max_wt mins_left_allow"
-       << mins_so_far << max_walltime << mins_left_allow;
-      DbgLv(0) << "TMI: NEAR-ALLOW_TIME test:  mc_iters_left mc_iters_estim mc_iters"
-       << mc_iters_left << mc_iters_estim << mc_iterations;
-}
+      DbgLv( 0 ) << "TMI: NEAR-ALLOW_TIME test: mins_so_far max_wt mins_left_allow" << mins_so_far << max_walltime
+                 << mins_left_allow;
+      DbgLv( 0 ) << "TMI: NEAR-ALLOW_TIME test:  mc_iters_left mc_iters_estim mc_iters" << mc_iters_left << mc_iters_estim
+                 << mc_iterations;
+   }
 
    if ( mc_iters_estim < mc_iterations  &&  mc_iters_left < 4 )
    {  // In danger of exceeding allowed time:   reduce MC iterations
@@ -576,7 +594,7 @@ void US_MPI_Analysis::pm_ga_master( void )
    simulation_values.noisflag   = 0;
    simulation_values.dbg_level  = dbg_level;
    simulation_values.dbg_timing = dbg_timing;
-   DbgLv(0) << "DEBUG_LEVEL" << simulation_values.dbg_level;
+   DbgLv( 0 ) << "DEBUG_LEVEL" << simulation_values.dbg_level;
 
    // Initialize best fitness
    best_genes  .reserve( gcores_count );
@@ -615,7 +633,7 @@ void US_MPI_Analysis::pm_ga_master( void )
                 &status );
 
       int tag        = status.MPI_TAG;
-      DbgLv(1) << "  MASTER: iter" << iter << "gr" << my_group << "tag" << tag;
+      DbgLv( 1 ) << "  MASTER: iter" << iter << "gr" << my_group << "tag" << tag;
       switch ( tag )
       {
          case STARTLAST:
@@ -639,17 +657,15 @@ void US_MPI_Analysis::pm_ga_master( void )
 
       solutes_from_gene( simulation_values.solutes, nisols );
 
-      DbgLv(1) << "GaMast: sols size" << simulation_values.solutes.size()
-       << "buck size" << buckets.size();
-      DbgLv(1) << "GaMast:   dset size" << data_sets.size();
-      DbgLv(1) << "GaMast:   sol0.s" << simulation_values.solutes[0].s;
+      DbgLv( 1 ) << "GaMast: sols size" << simulation_values.solutes.size() << "buck size" << buckets.size();
+      DbgLv( 1 ) << "GaMast:   dset size" << data_sets.size();
+      DbgLv( 1 ) << "GaMast:   sol0.s" << simulation_values.solutes[0].s;
       calc_residuals( 0, data_sets.size(), simulation_values );
 
-      DbgLv(1) << "GaMast:    calc_resids return";
+      DbgLv( 1 ) << "GaMast:    calc_resids return";
 
       // Write out the model
-      DbgLv(1) << "2dMast:    mc_iter" << mc_iteration
-   << "variance" << simulation_values.variance << "my_group" << my_group;
+      DbgLv( 1 ) << "2dMast:    mc_iter" << mc_iteration << "variance" << simulation_values.variance << "my_group" << my_group;
 
       std::sort( simulation_values.solutes.begin(), simulation_values.solutes.end() );
 
@@ -716,7 +732,7 @@ void US_MPI_Analysis::pm_ga_master( void )
 
       // Tell the supervisor that an iteration is done
       iter    = (int)maxrss;
-      DbgLv(1) << "GaMast:  iter done: maxrss" << iter << "tag" << tag << DONELAST;
+      DbgLv( 1 ) << "GaMast:  iter done: maxrss" << iter << "tag" << tag << DONELAST;
 
       MPI_Send( &iter,
                 1,
@@ -725,7 +741,7 @@ void US_MPI_Analysis::pm_ga_master( void )
                 tag,
                 MPI_COMM_WORLD );
 
-      DbgLv(1) << "GaMast:  mc_iter iters" << mc_iteration << mc_iterations;
+      DbgLv( 1 ) << "GaMast:  mc_iter iters" << mc_iteration << mc_iterations;
       if ( mc_iteration < mc_iterations )
       {     // Set up for next iteration
          if ( mc_iteration <= mgroup_count ) 
@@ -768,7 +784,7 @@ void US_MPI_Analysis::pm_dmga_master( void )
    simulation_values.noisflag   = 0;
    simulation_values.dbg_level  = dbg_level;
    simulation_values.dbg_timing = dbg_timing;
-   DbgLv(0) << "DEBUG_LEVEL" << simulation_values.dbg_level;
+   DbgLv( 0 ) << "DEBUG_LEVEL" << simulation_values.dbg_level;
 
    // Build up the base structure of simulations and residuals
    if ( data_sets.size() == 1 )
@@ -837,7 +853,7 @@ void US_MPI_Analysis::pm_dmga_master( void )
                 &status );
 
       int tag        = status.MPI_TAG;
-      DbgLv(1) << "  MASTER: iter" << iter << "gr" << my_group << "tag" << tag;
+      DbgLv( 1 ) << "  MASTER: iter" << iter << "gr" << my_group << "tag" << tag;
       switch ( tag )
       {
          case STARTLAST:
@@ -898,7 +914,7 @@ void US_MPI_Analysis::pm_dmga_master( void )
 
       // Tell the supervisor that an iteration is done
       iter    = (int)maxrss;
-      DbgLv(1) << "GaMast:  iter done: maxrss" << iter << "tag" << tag << DONELAST;
+      DbgLv( 1 ) << "GaMast:  iter done: maxrss" << iter << "tag" << tag << DONELAST;
 
       MPI_Send( &iter,
                 1,
@@ -907,7 +923,7 @@ void US_MPI_Analysis::pm_dmga_master( void )
                 tag,
                 MPI_COMM_WORLD );
 
-      DbgLv(1) << "GaMast:  mc_iter iters" << mc_iteration << mc_iterations;
+      DbgLv( 1 ) << "GaMast:  mc_iter iters" << mc_iteration << mc_iterations;
       if ( mc_iteration < mc_iterations )
       {     // Set up for next iteration
          if ( mc_iteration <= mgroup_count )

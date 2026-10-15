@@ -85,17 +85,17 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
 
    dbg_level    = 0;
    dbg_timing   = false;
-   mc_iterations  = 1;          // Read by abort() before parameters are known
-   max_iterations = 1;
-   port           = 0;          // No udp server until the job xml is parsed
+   mc_iterations       = 1; // Read by abort() before parameters are known
+   max_iterations      = 1;
+   port                = 0; // No udp server until the job xml is parsed
    maxrss       = 0L;
    minimize_opt = 2;
    in_gsm       = false;
    min_experiment_size = def_experiment_size;
    QString tarfile;
    QString jxmlfili;
-   QMap< QString, QString > cmd_task_params;  // Task parameters given on
-                                              //  the command line
+   QMap<QString, QString> cmd_task_params; // Task parameters given on
+                                           //  the command line
    task_params[ "walltime"    ] = "1440";
    task_params[ "mgroupcount" ] = "1";
    task_params[ "subgridsize" ] = "100";
@@ -104,8 +104,10 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
    for ( int jj = 1; jj < nargs; jj++ )
    {
       QString cmdarg = cmdargs[ jj ];
-      if(my_rank==0)
-      DbgLv(0) << "CmdArg: jj" << jj << "cmdarg" << cmdarg;
+      if ( my_rank == 0 )
+      {
+         DbgLv( 0 ) << "CmdArg: jj" << jj << "cmdarg" << cmdarg;
+      }
 
       if ( cmdarg.startsWith( "-" ) )
       {  // Argument pair is keyed set (.e.g., "-maxwall <n>")
@@ -126,25 +128,29 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
               cmdarg.contains( wallkey2 )  ||
               cmdarg.contains( wallkey3 ) )
          {  // Get maximum wall time in minutes
-            cmd_task_params[ "walltime"    ] = cmdval;
+            cmd_task_params["walltime"] = cmdval;
          }
 
          else if ( cmdarg.contains( pmgckey )   ||
                    cmdarg.contains( pmgckey2 )  ||
                    cmdarg.contains( pmgckey3 ) )
          {  // Get number of parallel masters groups
-            cmd_task_params[ "mgroupcount" ] = cmdval;
+            cmd_task_params["mgroupcount"] = cmdval;
          }
          else if ( cmdarg.contains( sgszkey )   ||
                    cmdarg.contains( sgszkey2 )  ||
                    cmdarg.contains( sgszkey3 ) )
          {  // Get minimum subgrid size in solute points
-            cmd_task_params[ "subgridsize" ] = cmdval;
+            cmd_task_params["subgridsize"] = cmdval;
          }
          else
-         DbgLv(0) << "CmdArg -- unknown cmdarg " << cmdarg << "cmdval" << cmdval;
-         if(my_rank==0)
-         DbgLv(0) << "CmdArg:   valx" << valx << "cmdval" << cmdval;
+         {
+            DbgLv( 0 ) << "CmdArg -- unknown cmdarg " << cmdarg << "cmdval" << cmdval;
+         }
+         if ( my_rank == 0 )
+         {
+            DbgLv( 0 ) << "CmdArg:   valx" << valx << "cmdval" << cmdval;
+         }
       }
 
       else if ( tarfile.isEmpty() )
@@ -157,13 +163,14 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
          jxmlfili     = cmdarg;
       }
    }
-   if(my_rank==0) {
-      DbgLv(0) << "CmdArg: walltime" << cmd_task_params.value("walltime");
-      DbgLv(0) << "CmdArg: mgroupcount" << cmd_task_params.value("mgroupcount");
-      DbgLv(0) << "CmdArg: minexpsize" << cmd_task_params.value("subgridsize");
-      DbgLv(0) << "CmdArg: tarfile" << tarfile;
-      DbgLv(0) << "CmdArg: jxmlfili" << jxmlfili;
-}
+   if ( my_rank == 0 )
+   {
+      DbgLv( 0 ) << "CmdArg: walltime" << cmd_task_params.value( "walltime" );
+      DbgLv( 0 ) << "CmdArg: mgroupcount" << cmd_task_params.value( "mgroupcount" );
+      DbgLv( 0 ) << "CmdArg: minexpsize" << cmd_task_params.value( "subgridsize" );
+      DbgLv( 0 ) << "CmdArg: tarfile" << tarfile;
+      DbgLv( 0 ) << "CmdArg: jxmlfili" << jxmlfili;
+   }
 
    attr_x       = ATTR_S;
    attr_y       = ATTR_K;
@@ -175,13 +182,13 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
    QStringList ffilt;
    QDir    wkdir      = QDir::current();
    QString work_dir   = QDir::currentPath();
-   output_dir         = work_dir + "/output";
+   output_dir             = work_dir + "/output";
    QString input_dir  = work_dir + "/input";
 
    if ( my_rank == 0 )
    {
-      DbgLv(0) << "wkdir=" << wkdir;
-      DbgLv(0) << "work_dir=" << work_dir;
+      DbgLv( 0 ) << "wkdir=" << wkdir;
+      DbgLv( 0 ) << "work_dir=" << work_dir;
       DbgLv(0) << "Us_Mpi_Analysis  " << GIT_REVISION;
 
       // Unpack the input tarfile
@@ -253,7 +260,10 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
       ffilt << "*jobxmlfile.xml";
       ffilt << "jobxmlfile.xml";
       QStringList jfiles = QDir( input_dir ).entryList( ffilt, QDir::Files );
-      if(my_rank==0) DbgLv(0) << "  jfiles size" << jfiles.size();
+      if ( my_rank == 0 )
+      {
+         DbgLv( 0 ) << "  jfiles size" << jfiles.size();
+      }
 
       if ( jfiles.size() > 0 )
       {  // Files found in ./input
@@ -266,26 +276,26 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
          jfiles          = wkdir.entryList( ffilt, QDir::Files );
          jxmlfile           = jfiles.size() > 0 ? jfiles[ 0 ] : "";
       }
-      if(my_rank==0)
-      DbgLv(0) << "  jfiles size" << jfiles.size() << "jxmlfile" << jxmlfile;
+      if ( my_rank == 0 )
+      {
+         DbgLv( 0 ) << "  jfiles size" << jfiles.size() << "jxmlfile" << jxmlfile;
+      }
    }
 
    task_parse( jxmlfile );
 
    // Task parameters given on the command line take precedence over
    //  those of the job xml file
-   for ( auto it = cmd_task_params.constBegin();
-              it != cmd_task_params.constEnd(); ++it )
+   for ( auto it = cmd_task_params.constBegin(); it != cmd_task_params.constEnd(); ++it )
    {
-      task_params[ it.key() ] = it.value();
+      task_params[it.key()] = it.value();
    }
 
    if ( my_rank == 0 )
    {  // Save submit time
       submitTime      = QFileInfo( tarfile ).lastModified();
-      DbgLv(0) << "submitTime " << submitTime
-       << " mgroupcount" << task_params["mgroupcount"].toInt()
-       << " walltime" << task_params["walltime"].toInt();
+      DbgLv( 0 ) << "submitTime " << submitTime << " mgroupcount" << task_params["mgroupcount"].toInt() << " walltime"
+                 << task_params["walltime"].toInt();
 
       printf( "Us_Mpi_Analysis %s has started.\n", GIT_REVISION );
    }
@@ -311,14 +321,14 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
       {
          QString msg = "Bad data file " + dset->auc_file + " "
                                         + dset->edit_file;
-         DbgLv(0) << "BAD DATA. error" << error << "rank" << my_rank;
+         DbgLv( 0 ) << "BAD DATA. error" << error << "rank" << my_rank;
          abort( msg, error );
       }
       catch ( US_DataIO::ioError error )
       {
          QString msg = "Bad data file " + dset->auc_file + " "
                                         + dset->edit_file;
-         DbgLv(0) << "BAD DATA. ioError" << error << "rank" << my_rank << proc_count;
+         DbgLv( 0 ) << "BAD DATA. ioError" << error << "rank" << my_rank << proc_count;
          //if(proc_count!=16)
          abort( msg, error );
       }
@@ -369,9 +379,10 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
    fit_meni        = ( ( fit_mb_select & 1 ) != 0 );
    fit_bott        = ( ( fit_mb_select & 2 ) != 0 );
    fit_menbot      = ( fit_meni  &&  fit_bott );
-   if (my_rank==0) {
-      DbgLv(0) << "FMB: fit_mb_select" << fit_mb_select
-       << "    fit_meni _bott _menbot" << fit_meni << fit_bott << fit_menbot; }
+   if ( my_rank == 0 )
+   {
+      DbgLv( 0 ) << "FMB: fit_mb_select" << fit_mb_select << "    fit_meni _bott _menbot" << fit_meni << fit_bott << fit_menbot;
+   }
 
    if ( fit_menbot )
    {  // Meniscus-and-bottom fit iterations will be run
@@ -404,9 +415,11 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
       bottom_points   = 1;
       menibott_count  = 1;
    }
-   if (my_rank==0) {
-      DbgLv(0) << "FMB: meni range points" << meniscus_range << meniscus_points
-       << "  bott range points" << bottom_range << bottom_points; }
+   if ( my_rank == 0 )
+   {
+      DbgLv( 0 ) << "FMB: meni range points" << meniscus_range << meniscus_points << "  bott range points" << bottom_range
+                 << bottom_points;
+   }
 
    // Do some parameter checking
    count_datasets     = data_sets.size();
@@ -460,8 +473,7 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
       abort( "Meniscus fit is not compatible with Monte Carlo analysis" );
    }
 
-   bool noise = job_config.params.tinoise_option > 0  ||
-                job_config.params.rinoise_option > 0;
+   bool noise = job_config.params.tinoise_option > 0 || job_config.params.rinoise_option > 0;
 
    if ( ! analysis_type.startsWith( "PCSA" )  &&
         mc_iterations > 1  &&  noise )
@@ -492,8 +504,10 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
    // Get lower limit of data and last (largest) meniscus value
    double start_range    = data_sets[ 0 ]->run_data.radius( 0 );
    double last_meniscus  = meniscus_values[ meniscus_points - 1 ];
-   if (my_rank==0) {
-    DbgLv(0) << "FMB: meniscus:  start delta" << meniscus_start << dmen; }
+   if ( my_rank == 0 )
+   {
+      DbgLv( 0 ) << "FMB: meniscus:  start delta" << meniscus_start << dmen;
+   }
 
    if ( last_meniscus >= start_range )
    {
@@ -526,24 +540,26 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
    {
       bottom_values[ ii ]  = bottom_start + dbot * ii;
    }
-   if (my_rank==0) {
-    DbgLv(0) << "FMB: bottom:  start delta" << bottom_start << dbot; }
+   if ( my_rank == 0 )
+   {
+      DbgLv( 0 ) << "FMB: bottom:  start delta" << bottom_start << dbot;
+   }
 
-   population              = job_config.params.ga.population;
-   generations             = job_config.params.ga.generations;
-   crossover               = job_config.params.ga.crossover;
-   mutation                = job_config.params.ga.mutation;
-   plague                  = job_config.params.ga.plague;
-   migrate_count           = job_config.params.ga.migration;
-   elitism                 = job_config.params.ga.elitism;
-   mutate_sigma            = job_config.params.ga.mutate_sigma;
-   p_mutate_s              = job_config.params.ga.p_mutate_s;
-   p_mutate_k              = job_config.params.ga.p_mutate_k;
-   p_mutate_sk             = job_config.params.ga.p_mutate_sk;
-   regularization          = job_config.params.ga.regularization;
-   concentration_threshold = job_config.params.ga.conc_threshold;
-   minimize_opt            = job_config.params.ga.minimize_opt;
-   minimize_opt=(minimize_opt==0?2:minimize_opt);
+   population                 = job_config.params.ga.population;
+   generations                = job_config.params.ga.generations;
+   crossover                  = job_config.params.ga.crossover;
+   mutation                   = job_config.params.ga.mutation;
+   plague                     = job_config.params.ga.plague;
+   migrate_count              = job_config.params.ga.migration;
+   elitism                    = job_config.params.ga.elitism;
+   mutate_sigma               = job_config.params.ga.mutate_sigma;
+   p_mutate_s                 = job_config.params.ga.p_mutate_s;
+   p_mutate_k                 = job_config.params.ga.p_mutate_k;
+   p_mutate_sk                = job_config.params.ga.p_mutate_sk;
+   regularization             = job_config.params.ga.regularization;
+   concentration_threshold    = job_config.params.ga.conc_threshold;
+   minimize_opt               = job_config.params.ga.minimize_opt;
+   minimize_opt               = ( minimize_opt == 0 ? 2 : minimize_opt );
    total_points            = 0;
    bool redo_ss            = false;     // By default, accept speed step as is
    bool redo_tstate        = false;     // By default, accept timestate as is
@@ -568,16 +584,19 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
       ds_concen    = is_global_fit ? concentrations[ ee ] : 1.0;
       ds_concen    = ( ds_concen > 0.0 ) ? ( 1.0 / ds_concen ) : 1.0;
       if ( my_rank == 0 )
-       DbgLv(0) << "density/viscosity/comm vbar20/commvbar/compress"
-  << sd.density << sd.viscosity << sd.vbar20 << sd.vbar << ds->compress;
+      {
+         DbgLv( 0 ) << "density/viscosity/comm vbar20/commvbar/compress" << sd.density << sd.viscosity << sd.vbar20 << sd.vbar
+                    << ds->compress;
+      }
 
       US_Math2::data_correction( ds->temperature, sd );
 
       ds->s20w_correction = sd.s20w_correction;
       ds->D20w_correction = sd.D20w_correction;
       if ( my_rank == 0 )
-       DbgLv(0) << "s20w_correction/D20w_correction"
-  << sd.s20w_correction << sd.D20w_correction;
+      {
+         DbgLv( 0 ) << "s20w_correction/D20w_correction" << sd.s20w_correction << sd.D20w_correction;
+      }
 
       // Set up simulation parameters for the data set
  
@@ -588,9 +607,10 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
       double bottom_ds    = ( edata->bottom > 0.0 ) ? edata->bottom
                             : ds->centerpiece_bottom;
       if ( my_rank == 0 )
-       DbgLv(0) << "incl_speed" << incl_speed << "nssp" << nssp
-  << "bottom_ds bottom_cp" << bottom_ds << ds->centerpiece_bottom;
- 
+      {
+         DbgLv( 0 ) << "incl_speed" << incl_speed << "nssp" << nssp << "bottom_ds bottom_cp" << bottom_ds << ds->centerpiece_bottom;
+      }
+
       if ( ! incl_speed &&  ! redo_ss )
       {  // If experiment speed step used, test against data set times
          int stm1            = ds->simparams.speed_step[        0 ].time_first;
@@ -599,7 +619,9 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
          int etm1            = edata->scanData[        0 ].seconds;
          int etm2            = edata->scanData[ nesc - 1 ].seconds;
          if ( my_rank == 0 )
-          DbgLv(0) << "etm1 stm1" << etm1 << stm1 << "stm2 etm2" << stm2 << etm2;
+         {
+            DbgLv( 0 ) << "etm1 stm1" << etm1 << stm1 << "stm2 etm2" << stm2 << etm2;
+         }
 
          if ( etm1 < stm1  ||  etm2 > stm2 )
          {  // If data time range outside that of speed step, flag it
@@ -648,7 +670,7 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
       ds_startx << total_points;
       ds_points << npoints;
       total_points       += npoints;
-      
+
       //      // Initialize concentrations vector in case of global fit
       //      concentrations << 1.0;
 
@@ -668,7 +690,7 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
       }
 
       odmax             = qMin( odmax, odlim );
-      DbgLv(2) << "ee" << ee << "odlim odmax" << odlim << odmax;
+      DbgLv( 2 ) << "ee" << ee << "odlim odmax" << odlim << odmax;
 
       maxods << odmax;
    }
@@ -682,8 +704,8 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
    // Sync up after all processes have evaluated timestates
    //DbgLv(0) << "rank" << my_rank << ": pre-barrier2 :TM:" << ELAPSED_SECS;
    MPI_Barrier( MPI_COMM_WORLD );
-   DbgLv(0) << "rank" << my_rank << ": redo_tstate" << redo_tstate
-    << "ntmsf_ne ntmsf_ex ntmsf_1s" << ntmsf_ne << ntmsf_ex << ntmsf_1s;
+   DbgLv( 0 ) << "rank" << my_rank << ": redo_tstate" << redo_tstate << "ntmsf_ne ntmsf_ex ntmsf_1s" << ntmsf_ne << ntmsf_ex
+              << ntmsf_1s;
    //DbgLv(0) << "rank" << my_rank << ": barrier2 :TM:" << ELAPSED_SECS;
 
    if ( redo_tstate )
@@ -694,8 +716,7 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
          QStringList tmsf_fs;
 
          bool is_sim             = ( data_sets[ 0 ]->run_data.channel == "S" );
-         DbgLv(0) << "rank" << my_rank << ": is_sim" << is_sim << "chan"
-          << data_sets[0]->run_data.channel;
+         DbgLv( 0 ) << "rank" << my_rank << ": is_sim" << is_sim << "chan" << data_sets[0]->run_data.channel;
 
          for ( int ee = 0; ee < count_datasets; ee++ )
          {  // Examine each data set for associated timestate
@@ -728,7 +749,7 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
                }
 
                ds->tmst_file      = tmst_fpath;   // Save the used timestate file set
-               DbgLv(0) << "rank" << my_rank << ": ee" << ee << "(NE)tmst_file" << ds->tmst_file;
+               DbgLv( 0 ) << "rank" << my_rank << ": ee" << ee << "(NE)tmst_file" << ds->tmst_file;
             }
 
             else if ( ntmsf_ex == 1  &&  ntmsf_1s == 0 )
@@ -753,7 +774,7 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
                }
 
                ds->tmst_file      = tmst_fpath;   // Save the used timestate file set
-               DbgLv(0) << "rank" << my_rank << ": ee" << ee << "(E1)tmst_file" << ds->tmst_file;
+               DbgLv( 0 ) << "rank" << my_rank << ": ee" << ee << "(E1)tmst_file" << ds->tmst_file;
             }
 
             else if ( ntmsf_ex > 1  &&  ntmsf_1s < ntmsf_ex )
@@ -778,7 +799,7 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
                }
 
                ds->tmst_file      = tmst_fpath;   // Save the used timestate file set
-               DbgLv(0) << "rank" << my_rank << ": ee" << ee << "(EX)tmst_file" << ds->tmst_file;
+               DbgLv( 0 ) << "rank" << my_rank << ": ee" << ee << "(EX)tmst_file" << ds->tmst_file;
             }
 
             ds->simparams.simSpeedsFromTimeState( tmst_fpath );
@@ -804,14 +825,14 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
 
       if ( QFile( ds->tmst_file ).exists() )
       {
-         DbgLv(0) << "rank" << my_rank << ": ee" << ee << "   tmst UPLOADED";
+         DbgLv( 0 ) << "rank" << my_rank << ": ee" << ee << "   tmst UPLOADED";
          // Build simulation speed profile from time state
          ds->simparams.simSpeedsFromTimeState( ds->tmst_file );
          // Build speed steps from simulation speed profile
          ds->simparams.speedstepsFromSSprof();
       }
-      DbgLv(0) << "rank" << my_rank << ": ee" << ee << "tmst_file" << ds->tmst_file
-       << "ssp count" << ds->simparams.sim_speed_prof.count();
+      DbgLv( 0 ) << "rank" << my_rank << ": ee" << ee << "tmst_file" << ds->tmst_file << "ssp count"
+                 << ds->simparams.sim_speed_prof.count();
 
 #if 0
       // If EditedData has a bottom, use that to adjust bottom_position
@@ -841,7 +862,9 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
    //DbgLv(0) << "rank" << my_rank << ": simSpeed :TM:" << ELAPSED_SECS;
    //   }
    if ( my_rank == 0 )
-    DbgLv(0) << "rank" << my_rank << ": redo_ss" << redo_ss;
+   {
+      DbgLv( 0 ) << "rank" << my_rank << ": redo_ss" << redo_ss;
+   }
 
    if ( redo_ss )
    {  // If speed step re-do flagged, set all speed steps from data
@@ -852,13 +875,17 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
          ds->simparams.computeSpeedSteps( &ds->run_data.scanData,
                                           ds->simparams.speed_step );
          if ( my_rank == 0 )
-          DbgLv(0) << "rank" << my_rank << ": ee" << ee << "speed_step RE-DONE from data";
-         int nssp= ds->simparams.speed_step.count();
-         int stm1= ds->simparams.speed_step[     0].time_first;
-         int stm2= ds->simparams.speed_step[nssp-1].time_last;
-         if ( my_rank == 0 ) {
-          DbgLv(0) << my_rank << ": stm1" << stm1 << "stm2" << stm2;
-          ds->simparams.debug(); }
+         {
+            DbgLv( 0 ) << "rank" << my_rank << ": ee" << ee << "speed_step RE-DONE from data";
+         }
+         int nssp = ds->simparams.speed_step.count();
+         int stm1 = ds->simparams.speed_step[0].time_first;
+         int stm2 = ds->simparams.speed_step[nssp - 1].time_last;
+         if ( my_rank == 0 )
+         {
+            DbgLv( 0 ) << my_rank << ": stm1" << stm1 << "stm2" << stm2;
+            ds->simparams.debug();
+         }
       }
    }
 
@@ -887,8 +914,8 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
       }
    }
 
-   double  s_max = job_config.params.grid.s_max * 1.0e-13;
-   double  x_max = job_config.params.grid.x_max * 1.0e-13;
+   double s_max  = job_config.params.grid.s_max * 1.0e-13;
+   double x_max  = job_config.params.grid.x_max * 1.0e-13;
    s_max         = ( s_max == 0.0 ) ? x_max : s_max;
    double  y_max = 1e-39;
 
@@ -962,9 +989,9 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
 
    // Do a check of implied grid size
    QString smsg;
-   double  zval     = job_config.params.ga.bucket_fixed;
+   double  zval = job_config.params.ga.bucket_fixed;
    if ( analysis_type.startsWith( "PCSA" ) )
-      zval             = job_config.params.z_value;
+      zval = job_config.params.z_value;
 
    if ( attr_x != ATTR_S )
    {  // We will need to determine the maximum s value
@@ -994,9 +1021,11 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
             set_comp_attrib( mcomp, yval, attr_y );
             set_comp_attrib( mcomp, zval, attr_z );
             US_Model::calc_coefficients( mcomp );
-            if (my_rank==0) DbgLv(0) << "ckGrSz:  buck" << jj << "xv yv zv"
-             << xval << yval << zval << "mc s k w v d f"
-             << mcomp.s << mcomp.f_f0 << mcomp.mw << mcomp.vbar20 << mcomp.D << mcomp.f;
+            if ( my_rank == 0 )
+            {
+               DbgLv( 0 ) << "ckGrSz:  buck" << jj << "xv yv zv" << xval << yval << zval << "mc s k w v d f" << mcomp.s
+                          << mcomp.f_f0 << mcomp.mw << mcomp.vbar20 << mcomp.D << mcomp.f;
+            }
             s_max         = qMax( s_max, mcomp.s );
          }
       }
@@ -1004,14 +1033,18 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
    }
 
    s_max         = ( s_max == 0.0 ) ? 10e-13 : s_max;
-   if (my_rank==0) DbgLv(0) << "ckGrSz: s_max" << s_max << "attr_x,y,z"
-    << attr_x << attr_y << attr_z;
+   if ( my_rank == 0 )
+   {
+      DbgLv( 0 ) << "ckGrSz: s_max" << s_max << "attr_x,y,z" << attr_x << attr_y << attr_z;
+   }
 
    bool g_too_big  = false;
    if ( data_sets[ 0 ]->simparams.sim_speed_prof.count() < 2 )
         g_too_big  = US_SolveSim::checkGridSize( data_sets, s_max, smsg );
-   if (my_rank==0) DbgLv(0) << "ckGrSz: ssp count"
-    << data_sets[0]->simparams.sim_speed_prof.count() << "g_too_big" << g_too_big;
+   if ( my_rank == 0 )
+   {
+      DbgLv( 0 ) << "ckGrSz: ssp count" << data_sets[0]->simparams.sim_speed_prof.count() << "g_too_big" << g_too_big;
+   }
    if ( g_too_big )
    {
       if ( my_rank == 0 )
@@ -1309,15 +1342,13 @@ void US_MPI_Analysis::abort( const QString& message, int error )
    MPI_Barrier( MPI_COMM_WORLD );     // Sync everybody up so stdout msg first
 
    if ( my_rank == 0 )
-   {  // Create archive file of outputs and remove other output files.
+   { // Create archive file of outputs and remove other output files.
       //  Before all input is read the current directory is the work
       //  directory, which holds the job's input files: leave it alone.
-      static bool archiving = false;  // update_outputs() may abort, too
-      QDir odir( output_dir );
+      static bool archiving = false; // update_outputs() may abort, too
+      QDir        odir( output_dir );
 
-      if ( ! archiving  &&  ! output_dir.isEmpty()  &&
-           QDir::current() == odir  &&
-           ! odir.entryList( QDir::Files ).isEmpty() )
+      if ( !archiving && !output_dir.isEmpty() && QDir::current() == odir && !odir.entryList( QDir::Files ).isEmpty() )
       {
          archiving = true;
          update_outputs( true );
@@ -1445,7 +1476,7 @@ void US_MPI_Analysis::dset_matrices( int dsx, int* nsolutesP,
       if ( dbgtxt[ ii ].startsWith( "normCutoff=" ) )
       {
          norm_cut        = QString( dbgtxt[ ii ] ).section( "=", 1, 1 ).toDouble();
-         DbgLv(0) << "DSM: NORM_CUT:    norm_cut" << norm_cut;
+         DbgLv( 0 ) << "DSM: NORM_CUT:    norm_cut" << norm_cut;
       }
    }
 
@@ -1458,8 +1489,8 @@ void US_MPI_Analysis::dset_matrices( int dsx, int* nsolutesP,
    int kc          = 0;                     // Column-used index
    int jj          = rowx;                  // Global matrix index
    int inccx       = total_points - ndspts; // Next-column increment
-   DbgLv(0) << "DSM: dsx" << dsx << "rowx ndspts" << rowx << ndspts
-    << "nsolutes" << nsolutes << "concen" << concen << "inccx" << inccx;
+   DbgLv( 0 ) << "DSM: dsx" << dsx << "rowx ndspts" << rowx << ndspts << "nsolutes" << nsolutes << "concen" << concen << "inccx"
+              << inccx;
 
    // Copy the data set portion of the global A matrix
    for ( int cc = 0; cc < nsolutes; cc++ )
@@ -1479,7 +1510,7 @@ void US_MPI_Analysis::dset_matrices( int dsx, int* nsolutesP,
       {  // This column should be excluded
          ksolutes--;             // Decrement column count
          ka              = kas;  // Set to overwrite this column
-         DbgLv(0) << "DSM: NORM_CUT:  norm_a" << norm_a << "ksol" << ksolutes;
+         DbgLv( 0 ) << "DSM: NORM_CUT:  norm_a" << norm_a << "ksol" << ksolutes;
       }
 
       else
@@ -1494,7 +1525,7 @@ void US_MPI_Analysis::dset_matrices( int dsx, int* nsolutesP,
    {  // Norm tolerance has excluded some columns
       nnls_a.resize( static_cast<qsizetype>( ksolutes ) * ndspts ); // Resize A matrix
       *nsolutesP      = ksolutes;         // Save new solutes count
-      DbgLv(0) << "DSM:   ASIZE" << nnls_a.size() << "c_used[n]" << c_used[kc-1];
+      DbgLv( 0 ) << "DSM:   ASIZE" << nnls_a.size() << "c_used[n]" << c_used[kc - 1];
    }
 
    // Copy and restore scaling for data set portion of the global b matrix
@@ -1664,7 +1695,7 @@ void US_MPI_Analysis::write_output( void )
       calculated_solutes.clear();
       calculated_solutes << solvec;
       sim.solutes  = solvec;
-      DbgLv(1) << "MAST: wrout: mdl_type DMGA";
+      DbgLv( 1 ) << "MAST: wrout: mdl_type DMGA";
    }
 
    else if ( mdl_type == US_Model::PCSA )
@@ -1672,24 +1703,23 @@ void US_MPI_Analysis::write_output( void )
       max_depth    = 0;
       std::sort( mrecs.begin(), mrecs.end() );
       //*DEBUG*
-      DbgLv(1) << "MAST: wrout: mdl_type PCSA  mrecs size" << mrecs.size();
-      if(dbg_level>0)
+      DbgLv( 1 ) << "MAST: wrout: mdl_type PCSA  mrecs size" << mrecs.size();
+      if ( dbg_level > 0 )
       {
-       for(int jj=0;jj<mrecs.size();jj++)
-       {
-  DbgLv(1) << "M:wo: jj" << jj << "typ tx" << mrecs[jj].ctype << mrecs[jj].taskx << "isz csz"
-   << mrecs[jj].isolutes.size() << mrecs[jj].csolutes.size() << "rmsd" << mrecs[jj].rmsd
-   << "sy ey" << mrecs[jj].str_y << mrecs[jj].end_y
-   << "p1 p2" << mrecs[jj].par1 << mrecs[jj].par2;
- }
-}
+         for ( int jj = 0; jj < mrecs.size(); jj++ )
+         {
+            DbgLv( 1 ) << "M:wo: jj" << jj << "typ tx" << mrecs[jj].ctype << mrecs[jj].taskx << "isz csz"
+                       << mrecs[jj].isolutes.size() << mrecs[jj].csolutes.size() << "rmsd" << mrecs[jj].rmsd << "sy ey"
+                       << mrecs[jj].str_y << mrecs[jj].end_y << "p1 p2" << mrecs[jj].par1 << mrecs[jj].par2;
+         }
+      }
       //*DEBUG*
       sim.zsolutes = mrecs[ 0 ].csolutes;
       mxdssz       = sim.zsolutes.size();
       sim.ti_noise = mrecs[ 0 ].ti_noise;
       sim.ri_noise = mrecs[ 0 ].ri_noise;
    }
-   DbgLv(1) << "WrO: mxdssz" << mxdssz;
+   DbgLv( 1 ) << "WrO: mxdssz" << mxdssz;
 
    if ( mxdssz == 0 )
    { // Handle the case of a zero-solute final model
@@ -1715,7 +1745,7 @@ void US_MPI_Analysis::write_output( void )
       }
    }
 
-   DbgLv(1) << "WrO: meniscus_run" << meniscus_run << "mvsz" << meniscus_values.size();
+   DbgLv( 1 ) << "WrO: meniscus_run" << meniscus_run << "mvsz" << meniscus_values.size();
    meniscus_value  = meniscus_run < meniscus_values.size() 
                      ? meniscus_values[ meniscus_run ] : save_meniscus;
    bottom_value    = bottom_run < bottom_values.size() 
@@ -1723,29 +1753,33 @@ void US_MPI_Analysis::write_output( void )
 
    if ( mdl_type == US_Model::PCSA )
    {
-      DbgLv(1) << "WrO: std::sort solutes  sssz" << sim.zsolutes.size();
+      DbgLv( 1 ) << "WrO: std::sort solutes  sssz" << sim.zsolutes.size();
       std::sort( sim.zsolutes.begin(), sim.zsolutes.end() );
    }
 
    else if ( mdl_type != US_Model::DMGA )
    {
-      DbgLv(1) << "WrO: std::sort solutes  sssz" << sim.solutes.size();
+      DbgLv( 1 ) << "WrO: std::sort solutes  sssz" << sim.solutes.size();
       std::sort( sim.solutes.begin(), sim.solutes.end() );
    }
 
-   DbgLv(1) << "WrO: wr_model  mdl_type" << mdl_type;
+   DbgLv( 1 ) << "WrO: wr_model  mdl_type" << mdl_type;
    write_model( sim, mdl_type );
    meniscus_value  = save_meniscus;
    bottom_value    = save_bottom;
 
-   DbgLv(1) << "WrO: wr_noise";
-   if (  job_config.params.tinoise_option > 0 )
+   DbgLv( 1 ) << "WrO: wr_noise";
+   if ( job_config.params.tinoise_option > 0 )
+   {
       write_noise( US_Noise::TI, sim.ti_noise );
+   }
 
-   if (  job_config.params.rinoise_option > 0 )
+   if ( job_config.params.rinoise_option > 0 )
+   {
       write_noise( US_Noise::RI, sim.ri_noise );
+   }
 
-   DbgLv(1) << "WrO: wr_mrecs";
+   DbgLv( 1 ) << "WrO: wr_mrecs";
    if ( mdl_type == US_Model::PCSA )
    {  // Output mrecs for PCSA, if we have a final mrecs vector
       int tikreg   = job_config.params.pcsa.tikreg_option;
@@ -1768,8 +1802,7 @@ void US_MPI_Analysis::write_global( void )
    int nsolutes = ( mdl_type != US_Model::DMGA ) ? sim.solutes.size() : -1;
    nsolutes     = ( mdl_type != US_Model::PCSA ) ? nsolutes : sim.zsolutes.size();
 
-   DbgLv(0) << "WrGlob: mciter mxdepth" << mc_iteration+1 << max_depth
-    << "simvsols size" << nsolutes;
+   DbgLv( 0 ) << "WrGlob: mciter mxdepth" << mc_iteration + 1 << max_depth << "simvsols size" << nsolutes;
    if ( nsolutes == 0 )
    { // Handle the case of a zero-solute final model
       DbgLv( 0 ) << "   *ERROR* No solutes available for global model";
@@ -1782,8 +1815,8 @@ void US_MPI_Analysis::write_global( void )
       US_SolveSim solvesim( data_sets, my_rank, false );
       solvesim.calc_residuals( 0, data_sets.size(), wksim_vals, false,
                                &gl_nnls_a, &gl_nnls_b );
-      DbgLv(0) << "WrGlob:  glob recompute nsols" << wksim_vals.solutes.size()
-       << "globrec A,b sizes" << gl_nnls_a.size() << gl_nnls_b.size();
+      DbgLv( 0 ) << "WrGlob:  glob recompute nsols" << wksim_vals.solutes.size() << "globrec A,b sizes" << gl_nnls_a.size()
+                 << gl_nnls_b.size();
       nsolutes             = gsim->solutes.size();
       sim.variance         = wksim_vals.variance;
 
@@ -1799,14 +1832,13 @@ void US_MPI_Analysis::write_global( void )
       for ( int cc = 0; cc < nsolutes; cc++ )
       {
          sim.solutes[ cc ].c   = gsim->solutes[ cc ].c * avg_conc;
-         DbgLv(0) << "WrGlob:     cc" << cc << "conc-in" << gsim->solutes[cc].c
-          << "SGconc-out" << sim.solutes[cc].c;
+         DbgLv( 0 ) << "WrGlob:     cc" << cc << "conc-in" << gsim->solutes[cc].c << "SGconc-out" << sim.solutes[cc].c;
       }
 
       write_superg( sim, mdl_type );
 
-      DbgLv(0) << "WrGlob: dssize" << data_sets.size() << "concsize" << concentrations.size()
-       << "simsolssz" << sim.solutes.size() << "gsimsolssz" << gsim->solutes.size() << nsolutes;
+      DbgLv( 0 ) << "WrGlob: dssize" << data_sets.size() << "concsize" << concentrations.size() << "simsolssz" << sim.solutes.size()
+                 << "gsimsolssz" << gsim->solutes.size() << nsolutes;
       // Build and write scaled global models
       for ( int ee = 0; ee < data_sets.size(); ee++ )
       {
@@ -1816,17 +1848,16 @@ void US_MPI_Analysis::write_global( void )
          sim.variance         = sim.variances[ ee ];
          double concentration = concentrations[ ee ];
          nsolutes             = gsim->solutes.size();
-         DbgLv(0) << "WrGlob:   currds" << ee << "concen" << concentration;
+         DbgLv( 0 ) << "WrGlob:   currds" << ee << "concen" << concentration;
 
          for ( int cc = 0; cc < nsolutes; cc++ )
          {
             sim.solutes[ cc ].c   = gsim->solutes[ cc ].c * concentration;
-            DbgLv(0) << "WrGlob:     cc" << cc << "conc-in" << gsim->solutes[cc].c
-             << "conc-out" << sim.solutes[cc].c;
+            DbgLv( 0 ) << "WrGlob:     cc" << cc << "conc-in" << gsim->solutes[cc].c << "conc-out" << sim.solutes[cc].c;
          }
 
 
-         DbgLv(0) << "WrGlob:    call write_model(1)";
+         DbgLv( 0 ) << "WrGlob:    call write_model(1)";
          // Output the model from global solute points
          write_model( sim, mdl_type, true );
 
@@ -1842,15 +1873,15 @@ void US_MPI_Analysis::write_global( void )
          QVector< double > nnls_b( narows,   0.0 );
          QVector< double > nnls_x( nsolutes, 0.0 );
          QVector< int >    c_used( nsolutes, 0   );
-         DbgLv(0) << "WrGlob:    ks kp nar nav" << kscans << kpoints << narows << navals;
+         DbgLv( 0 ) << "WrGlob:    ks kp nar nav" << kscans << kpoints << narows << navals;
 
          dset_matrices( ee, &nsolutes, nnls_a, nnls_b, c_used );
 
-         DbgLv(0) << "WrGlob:    mats built; calling NNLS";
+         DbgLv( 0 ) << "WrGlob:    mats built; calling NNLS";
          US_Math2::nnls( nnls_a.data(), narows, narows, nsolutes,
                          nnls_b.data(), nnls_x.data() );
 
-         DbgLv(0) << "WrGlob:     building solutes from nnls_x";
+         DbgLv( 0 ) << "WrGlob:     building solutes from nnls_x";
          for ( int cc = 0; cc < nsolutes; cc++ )
          {
             double soluval       = nnls_x[ cc ];
@@ -1861,31 +1892,32 @@ void US_MPI_Analysis::write_global( void )
                solu.c               = soluval;
                wksim_vals.solutes << solu;
                ksolutes++;
-               if(soluval>1.0) {
-                DbgLv(0) << "WrGlob:     SOLUVAL" << soluval << "ee cc" << ee << cc << "ksol" << ksolutes;
-                double avlo=1e+100;
-                double avhi=0.0;
-                double avav=0.0;
-                double bvlo=1e+100;
-                double bvhi=0.0;
-                double bvav=0.0;
-                int ja=cc*narows;
-                for (int jb=0; jb<narows;jb++ ) {
-  double aval=nnls_a[ja++];
-  avlo=qMin(avlo,aval);
-  avhi=qMax(avhi,aval);
-  avav+=aval;
-  double bval=nnls_b[jb];
-  bvlo=qMin(bvlo,bval);
-  bvhi=qMax(bvhi,bval);
-  bvav+=bval;
- }
- DbgLv(0) << "WrGlob:      A lo,hi,av" << avlo << avhi << avav
-  << "B lo,hi,av" << bvlo << bvhi << bvav;
-}
+               if ( soluval > 1.0 )
+               {
+                  DbgLv( 0 ) << "WrGlob:     SOLUVAL" << soluval << "ee cc" << ee << cc << "ksol" << ksolutes;
+                  double avlo = 1e+100;
+                  double avhi = 0.0;
+                  double avav = 0.0;
+                  double bvlo = 1e+100;
+                  double bvhi = 0.0;
+                  double bvav = 0.0;
+                  int    ja   = cc * narows;
+                  for ( int jb = 0; jb < narows; jb++ )
+                  {
+                     double aval = nnls_a[ja++];
+                     avlo        = qMin( avlo, aval );
+                     avhi        = qMax( avhi, aval );
+                     avav += aval;
+                     double bval = nnls_b[jb];
+                     bvlo        = qMin( bvlo, bval );
+                     bvhi        = qMax( bvhi, bval );
+                     bvav += bval;
+                  }
+                  DbgLv( 0 ) << "WrGlob:      A lo,hi,av" << avlo << avhi << avav << "B lo,hi,av" << bvlo << bvhi << bvav;
+               }
             }
          }
-         DbgLv(0) << "WrGlob:    currds" << ee << "nsol ksol" << nsolutes << ksolutes;
+         DbgLv( 0 ) << "WrGlob:    currds" << ee << "nsol ksol" << nsolutes << ksolutes;
 
          // Output the model refitted to individual dataset
          write_model( wksim_vals, mdl_type, false );
@@ -1898,8 +1930,8 @@ void US_MPI_Analysis::write_global( void )
       US_SolveSim solvesim( data_sets, my_rank, false );
       solvesim.calc_residuals( 0, data_sets.size(), wksim_vals, false,
                                &gl_nnls_a, &gl_nnls_b );
-      DbgLv(1) << "WrGlob:  glob recompute nsols" << wksim_vals.solutes.size()
-       << "globrec A,b sizes" << gl_nnls_a.size() << gl_nnls_b.size();
+      DbgLv( 1 ) << "WrGlob:  glob recompute nsols" << wksim_vals.solutes.size() << "globrec A,b sizes" << gl_nnls_a.size()
+                 << gl_nnls_b.size();
 
       // Compute the average concentration and output superglobal model
       nsolutes             = gsim->solutes.size();
@@ -1911,18 +1943,17 @@ void US_MPI_Analysis::write_global( void )
          avg_conc            += concentrations[ ee ];
       }
       avg_conc            /= (double)( data_sets.size() );
-      DbgLv(1) << "WrGlob:   avg_conc" << avg_conc;
+      DbgLv( 1 ) << "WrGlob:   avg_conc" << avg_conc;
 
       for ( int cc = 0; cc < nsolutes; cc++ )
       {
          sim.solutes[ cc ].c   = gsim->solutes[ cc ].c * avg_conc;
-         DbgLv(1) << "WrGlob:     cc" << cc << "conc-in" << gsim->solutes[cc].c
-          << "SGconc-out" << sim.solutes[cc].c;
+         DbgLv( 1 ) << "WrGlob:     cc" << cc << "conc-in" << gsim->solutes[cc].c << "SGconc-out" << sim.solutes[cc].c;
       }
 
       write_superg( sim, mdl_type );
-      DbgLv(1) << "WrGlob: dssize" << data_sets.size() << "concsize" << concentrations.size()
-       << "simsolssz" << sim.solutes.size() << "gsimsolssz" << gsim->solutes.size() << nsolutes;
+      DbgLv( 1 ) << "WrGlob: dssize" << data_sets.size() << "concsize" << concentrations.size() << "simsolssz" << sim.solutes.size()
+                 << "gsimsolssz" << gsim->solutes.size() << nsolutes;
 
       // Build and write scaled global models
       for ( int ee = 0; ee < data_sets.size(); ee++ )
@@ -1932,13 +1963,12 @@ void US_MPI_Analysis::write_global( void )
          meniscus_value       = edata->meniscus;
          sim.variance         = sim.variances[ ee ];
          double concentration = concentrations[ ee ];
-         DbgLv(1) << "WrGlob:   currds" << ee << "concen" << concentration;
+         DbgLv( 1 ) << "WrGlob:   currds" << ee << "concen" << concentration;
 
          for ( int cc = 0; cc < nsolutes; cc++ )
          {
             sim.solutes[ cc ].c   = gsim->solutes[ cc ].c * concentration;
-            DbgLv(1) << "WrGlob:     cc" << cc << "conc-in" << gsim->solutes[cc].c
-             << "conc-out" << sim.solutes[cc].c;
+            DbgLv( 1 ) << "WrGlob:     cc" << cc << "conc-in" << gsim->solutes[cc].c << "conc-out" << sim.solutes[cc].c;
          }
 
          // Output the model from global solute points
@@ -1977,7 +2007,7 @@ void US_MPI_Analysis::write_global( void )
 
          // Output the model refitted to the individual dataset
          write_model( wksim_vals, mdl_type, false );
-         DbgLv(1) << "WrGlob:    currds" << ee << "nsol ksol" << nsolutes << ksolutes;
+         DbgLv( 1 ) << "WrGlob:    currds" << ee << "nsol ksol" << nsolutes << ksolutes;
       }
    }
 
@@ -1987,11 +2017,14 @@ void US_MPI_Analysis::write_global( void )
       solvesim.calc_residuals( 0, data_sets.size(), wksim_vals, false,
                                &gl_nnls_a, &gl_nnls_b );
       nsolutes             = gsim->zsolutes.size();
-      DbgLv(1) << "WrGlob:  glob recompute nzsols" << wksim_vals.zsolutes.size() << nsolutes
-       << "globrec A,b sizes" << gl_nnls_a.size() << gl_nnls_b.size();
-      double dsum_b=0.0;
-      for (int ii=0;ii<gl_nnls_b.size();ii++) dsum_b += gl_nnls_b[ii];
-      DbgLv(1) << "WrGlob:   ALL dsum_b" << dsum_b;
+      DbgLv( 1 ) << "WrGlob:  glob recompute nzsols" << wksim_vals.zsolutes.size() << nsolutes << "globrec A,b sizes"
+                 << gl_nnls_a.size() << gl_nnls_b.size();
+      double dsum_b = 0.0;
+      for ( int ii = 0; ii < gl_nnls_b.size(); ii++ )
+      {
+         dsum_b += gl_nnls_b[ii];
+      }
+      DbgLv( 1 ) << "WrGlob:   ALL dsum_b" << dsum_b;
 
       // Compute the average concentration and output superglobal model
       double avg_conc      = 0.0;
@@ -2005,36 +2038,34 @@ void US_MPI_Analysis::write_global( void )
       for ( int cc = 0; cc < nsolutes; cc++ )
       {
          sim.zsolutes[ cc ].c  = gsim->zsolutes[ cc ].c * avg_conc;
-         DbgLv(1) << "WrGlob:     cc" << cc << "conc-in" << gsim->zsolutes[cc].c
-          << "SGconc-out" << sim.zsolutes[cc].c;
+         DbgLv( 1 ) << "WrGlob:     cc" << cc << "conc-in" << gsim->zsolutes[cc].c << "SGconc-out" << sim.zsolutes[cc].c;
       }
 
       write_superg( sim, mdl_type );
 
-      DbgLv(1) << "WrGlob: dssize" << data_sets.size() << "concsize" << concentrations.size()
-       << "simsolssz" << sim.zsolutes.size() << "gsimsolssz" << gsim->zsolutes.size() << nsolutes;
-      double dsum_b_all=0.0;
+      DbgLv( 1 ) << "WrGlob: dssize" << data_sets.size() << "concsize" << concentrations.size() << "simsolssz"
+                 << sim.zsolutes.size() << "gsimsolssz" << gsim->zsolutes.size() << nsolutes;
+      double dsum_b_all = 0.0;
       // Build and write scaled global models
       for ( int ee = 0; ee < data_sets.size(); ee++ )
       {
          US_DataIO::EditedData* edata = &data_sets[ ee ]->run_data;
-         int ks=edata->scanCount();
-         int kp=edata->pointCount();
-         DbgLv(1) << "WrGlob:  ee" << ee << "AA-dset(m)" << edata->value(ks/2,kp/2);
+         int                    ks    = edata->scanCount();
+         int                    kp    = edata->pointCount();
+         DbgLv( 1 ) << "WrGlob:  ee" << ee << "AA-dset(m)" << edata->value( ks / 2, kp / 2 );
          current_dataset      = ee;
          meniscus_value       = edata->meniscus;
          sim.variance         = sim.variances[ ee ];
          double concentration = concentrations[ ee ];
-         DbgLv(1) << "WrGlob:   currds" << ee << "concen" << concentration;
+         DbgLv( 1 ) << "WrGlob:   currds" << ee << "concen" << concentration;
 
          for ( int cc = 0; cc < nsolutes; cc++ )
          {
             sim.zsolutes[ cc ].c  = gsim->zsolutes[ cc ].c * concentration;
-            DbgLv(1) << "WrGlob:     cc" << cc << "conc-in" << gsim->zsolutes[cc].c
-             << "conc-out" << sim.zsolutes[cc].c;
+            DbgLv( 1 ) << "WrGlob:     cc" << cc << "conc-in" << gsim->zsolutes[cc].c << "conc-out" << sim.zsolutes[cc].c;
          }
 
-         DbgLv(1) << "WrGlob:    call write_model(1)";
+         DbgLv( 1 ) << "WrGlob:    call write_model(1)";
          // Output the model from global solute points
          write_model( sim, mdl_type, true );
 
@@ -2050,21 +2081,24 @@ void US_MPI_Analysis::write_global( void )
          QVector< double > nnls_b( narows,   0.0 );
          QVector< double > nnls_x( nsolutes, 0.0 );
          QVector< int >    c_used( nsolutes, 0   );
-         DbgLv(1) << "WrGlob:    ks kp nar nav" << kscans << kpoints << narows << navals;
+         DbgLv( 1 ) << "WrGlob:    ks kp nar nav" << kscans << kpoints << narows << navals;
 
          dset_matrices( ee, &nsolutes, nnls_a, nnls_b, c_used );
-         double dsum_b=0.0;
-         for (int ii=0;ii<narows;ii++) dsum_b += nnls_b[ii];
-         DbgLv(1) << "WrGlob:      ee" << ee << "dsum_b" << dsum_b
-          << "stx pts" << ds_startx[ee] << ds_points[ee] << narows << "conc" << concentrations[ee];
+         double dsum_b = 0.0;
+         for ( int ii = 0; ii < narows; ii++ )
+         {
+            dsum_b += nnls_b[ii];
+         }
+         DbgLv( 1 ) << "WrGlob:      ee" << ee << "dsum_b" << dsum_b << "stx pts" << ds_startx[ee] << ds_points[ee] << narows
+                    << "conc" << concentrations[ee];
          dsum_b_all += dsum_b;
 
-         DbgLv(1) << "WrGlob:    mats built; calling NNLS";
+         DbgLv( 1 ) << "WrGlob:    mats built; calling NNLS";
          US_Math2::nnls( nnls_a.data(), narows, narows, nsolutes,
                          nnls_b.data(), nnls_x.data() );
 
-         DbgLv(1) << "WrGlob:     building solutes from nnls_x";
-         double sum_sol=0.0;
+         DbgLv( 1 ) << "WrGlob:     building solutes from nnls_x";
+         double sum_sol = 0.0;
          for ( int cc = 0; cc < nsolutes; cc++ )
          {
             double soluval       = nnls_x[ cc ];
@@ -2075,16 +2109,16 @@ void US_MPI_Analysis::write_global( void )
                solu.c               = soluval;
                wksim_vals.zsolutes << solu;
                ksolutes++;
-               sum_sol+=soluval;
+               sum_sol += soluval;
             }
          }
-         DbgLv(1) << "WrGlob:    currds" << ee << "nsol ksol" << nsolutes << ksolutes
-          << sim.zsolutes.size() << "sum_sol" << sum_sol;
+         DbgLv( 1 ) << "WrGlob:    currds" << ee << "nsol ksol" << nsolutes << ksolutes << sim.zsolutes.size() << "sum_sol"
+                    << sum_sol;
 
          // Output the model refitted to individual dataset
          write_model( wksim_vals, mdl_type, false );
       }
-      DbgLv(1) << "WrGlob:     dsum_b_all" << dsum_b_all;
+      DbgLv( 1 ) << "WrGlob:     dsum_b_all" << dsum_b_all;
    }
 
    else if ( mdl_type == US_Model::DMGA )
@@ -2100,8 +2134,8 @@ void US_MPI_Analysis::shutdown_all( void )
 {
    MPI_Job job;
    job.command = MPI_Job::SHUTDOWN;
-   DbgLv(1) << "2dsa master shutdown : master maxrss" << maxrss;
- 
+   DbgLv( 1 ) << "2dsa master shutdown : master maxrss" << maxrss;
+
    for ( int i = 1; i <= my_workers; i++ )
    {
       MPI_Send( &job, 
@@ -2112,8 +2146,7 @@ void US_MPI_Analysis::shutdown_all( void )
          my_communicator );
 
       maxrss += work_rss[ i ];
-      DbgLv(1) << "2dsa master shutdown : worker" << i << " upd. maxrss" << maxrss
-       << "  wkrss" << work_rss[ i ];
+      DbgLv( 1 ) << "2dsa master shutdown : worker" << i << " upd. maxrss" << maxrss << "  wkrss" << work_rss[i];
    }
 }
 
@@ -2128,12 +2161,11 @@ void US_MPI_Analysis::write_model( const SIMULATION&      sim,
    US_Model model;
    int subtype       = ( type == US_Model::PCSA ) ? mrecs[ 0 ].ctype : 0;
 
-   DbgLv(1) << "wrMo: type" << type << "(DMGA=" << US_Model::DMGA << ") (PCSA="
-    << US_Model::PCSA << ") subtype=" << subtype;
+   DbgLv( 1 ) << "wrMo: type" << type << "(DMGA=" << US_Model::DMGA << ") (PCSA=" << US_Model::PCSA << ") subtype=" << subtype;
    if ( type == US_Model::DMGA )
    {  // For discrete GA, get the already constructed model
       model             = data_sets[ 0 ]->model;
-      DbgLv(1) << "wrMo:  model comps" << model.components.size();
+      DbgLv( 1 ) << "wrMo:  model comps" << model.components.size();
    }
 
    // 2DSA and single masters count Monte Carlo iterations from 0, the
@@ -2144,8 +2176,7 @@ void US_MPI_Analysis::write_model( const SIMULATION&      sim,
    model.wavelength  = edata->wavelength.toDouble();
    model.modelGUID   = ( ! model.monteCarlo  ||  mc_iter == 1 )
                        ? US_Util::new_guid() : modelGUID;
-   DbgLv(1) << "wrMo:  mc mciter mGUID" << model.monteCarlo << mc_iter
-    << model.modelGUID;
+   DbgLv( 1 ) << "wrMo:  mc mciter mGUID" << model.monteCarlo << mc_iter << model.modelGUID;
    model.editGUID    = edata->editGUID;
    model.requestGUID = requestGUID;
    model.dataDescrip = edata->description;
@@ -2171,9 +2202,9 @@ void US_MPI_Analysis::write_model( const SIMULATION&      sim,
    }
 
    else
-      model.global      = US_Model::NONE; 
-   DbgLv(0) << "wrMo:  is_glob glob_sols" << is_global_fit << glob_sols
-    << "f_men f_bot f_mbo" << fit_meni << fit_bott << fit_menbot << "m.glob" << model.global;
+      model.global = US_Model::NONE;
+   DbgLv( 0 ) << "wrMo:  is_glob glob_sols" << is_global_fit << glob_sols << "f_men f_bot f_mbo" << fit_meni << fit_bott
+              << fit_menbot << "m.glob" << model.global;
 
    model.meniscus    = meniscus_value;
    model.bottom      = fit_bott ? bottom_value : 0.0;
@@ -2194,7 +2225,7 @@ void US_MPI_Analysis::write_model( const SIMULATION&      sim,
 
    QString tripleID  = edata->cell + edata->channel + edata->wavelength;
    QString dates     = "e" + edata->editID + "_a" + analysisDate;
-   DbgLv(1) << "wrMo: tripleID" << tripleID << "dates" << dates;
+   DbgLv( 1 ) << "wrMo: tripleID" << tripleID << "dates" << dates;
    QString iterID;
 
    if ( mc_iterations > 1 )
@@ -2226,7 +2257,7 @@ void US_MPI_Analysis::write_model( const SIMULATION&      sim,
    double  vbar20    = data_sets[ current_dataset ]->vbar20;
 
    model.description = runID + "." + tripleID + "." + analyID + ".model";
-   DbgLv(0) << "wrMo: model descr" << model.description;
+   DbgLv( 0 ) << "wrMo: model descr" << model.description;
 
    // Save as class variable for later reference
    modelGUID         = model.modelGUID;
@@ -2268,8 +2299,8 @@ void US_MPI_Analysis::write_model( const SIMULATION&      sim,
          model.components << component;
       }
    }
-   DbgLv(1) << "wrMo: stype" << stype << QString::asprintf( "0%o",stype )
-    << "attr_z vbar20 mco0.v" << attr_z << vbar20 << model.components[0].vbar20;
+   DbgLv( 1 ) << "wrMo: stype" << stype << QString::asprintf( "0%o", stype ) << "attr_z vbar20 mco0.v" << attr_z << vbar20
+              << model.components[0].vbar20;
 
    QString fext      = model.monteCarlo ? ".mdl.tmp" : ".model.xml";
    QString fileid    = "." + id + "." + mdlid + fext;
@@ -2433,19 +2464,20 @@ int US_MPI_Analysis::ready_worker( )
 {
    // Find next ready worker by searching status array
    int worker = worker_status.indexOf( READY, worknext );
-   int w1=worker;
-   int w1n=worknext;
+   int w1     = worker;
+   int w1n    = worknext;
    worker     = ( worker > 0 ) ? worker :
                 worker_status.indexOf( READY, 1 );
 
    // Set index to start with on next search
    worknext   = ( worker > 0 ) ? ( worker + 1 ) : 1;
    worknext   = ( worknext > my_workers ) ? 1 : worknext;
-   DbgLv(1) << "ready_worker  w1 w1n worker worknext" << w1 << w1n << worker << worknext;
-   if(w1<0)
-   DbgLv(1) << "ready_worker  w1234...wmn"
-    << worker_status[1] << worker_status[2] << worker_status[3] << worker_status[4]
-    << worker_status[my_workers-1] << worker_status[my_workers];
+   DbgLv( 1 ) << "ready_worker  w1 w1n worker worknext" << w1 << w1n << worker << worknext;
+   if ( w1 < 0 )
+   {
+      DbgLv( 1 ) << "ready_worker  w1234...wmn" << worker_status[1] << worker_status[2] << worker_status[3] << worker_status[4]
+                 << worker_status[my_workers - 1] << worker_status[my_workers];
+   }
 
    return worker;
 }
@@ -2456,12 +2488,11 @@ void US_MPI_Analysis::update_outputs( bool is_final )
    // Get a list of output files, minus any TAR file
    QDir odir( "." );
    QStringList files = odir.entryList( QStringList( "*" ), QDir::Files );
-   DbgLv(0) << my_rank << ": UpdOut : final" << is_final
-   << "files size" << files.size();
+   DbgLv( 0 ) << my_rank << ": UpdOut : final" << is_final << "files size" << files.size();
 
    if ( files.size() == 1  &&  files[ 0 ] == "analysis-results.tar" )
    {  // If the tar file exists alone, do nothing here
-      DbgLv(0) << my_rank << ": A single output file, the archive, already exists!!!";
+      DbgLv( 0 ) << my_rank << ": A single output file, the archive, already exists!!!";
       return;
    }
 
@@ -2481,7 +2512,7 @@ void US_MPI_Analysis::update_outputs( bool is_final )
       QStringList mfiles = odir.entryList( mfilt, QDir::Files );
       QStringList mtrips;
       mfiles.sort();
-      DbgLv(0) << my_rank << ": MC : mfiles count" << mfiles.count();
+      DbgLv( 0 ) << my_rank << ": MC : mfiles count" << mfiles.count();
 
       // Scan for unique triples
       for ( int ii = 0; ii < mfiles.size(); ii++ )
@@ -2491,11 +2522,13 @@ void US_MPI_Analysis::update_outputs( bool is_final )
             mtrips << mftrip;
       }
 
-      int kmt=mtrips.count();
-      DbgLv(0) << my_rank << ": MC : mtrips count" << kmt;
-      DbgLv(0) << my_rank << ": MC : mtrips[0]" << mtrips[0];
-      if(kmt>1)
-       DbgLv(0) << my_rank << ": MC : mtrips[n]" << mtrips[kmt-1];
+      int kmt = mtrips.count();
+      DbgLv( 0 ) << my_rank << ": MC : mtrips count" << kmt;
+      DbgLv( 0 ) << my_rank << ": MC : mtrips[0]" << mtrips[0];
+      if ( kmt > 1 )
+      {
+         DbgLv( 0 ) << my_rank << ": MC : mtrips[n]" << mtrips[kmt - 1];
+      }
       // Get a list of files in the text file
       QStringList tfiles;
       QFile filet( "analysis_files.txt" );
@@ -2510,7 +2543,7 @@ void US_MPI_Analysis::update_outputs( bool is_final )
          }
          filet.close();
       }
-      DbgLv(0) << my_rank << ": MC : tfiles count" << tfiles.count();
+      DbgLv( 0 ) << my_rank << ": MC : tfiles count" << tfiles.count();
 
       // Open text file for appending composite file names
       QFile fileo( "analysis_files.txt" );
@@ -2531,14 +2564,14 @@ void US_MPI_Analysis::update_outputs( bool is_final )
          QStringList mfilt;
          mfilt << mftrip + ".mc0*";
          QStringList mtfiles = odir.entryList( mfilt, QDir::Files );
-         DbgLv(0) << my_rank << ": MC : ii" << ii << "mftrip" << mftrip << "mtf count" << mtfiles.count();
+         DbgLv( 0 ) << my_rank << ": MC : ii" << ii << "mftrip" << mftrip << "mtf count" << mtfiles.count();
 
          // Skip composite build if not yet enough triple mc iteration models
          if ( mtfiles.count() < mc_iterations )  continue;
 
          // Build a composite model file and get its name
          QString cmfname  = US_Model::composite_mc_file( mtfiles, true );
-         DbgLv(0) << my_rank << ":  ii" << ii << "cmfname" << cmfname;
+         DbgLv( 0 ) << my_rank << ":  ii" << ii << "cmfname" << cmfname;
 
          if ( cmfname.isEmpty() )  continue;
 
@@ -2548,7 +2581,7 @@ void US_MPI_Analysis::update_outputs( bool is_final )
             if ( mtfiles[ jj ] != cmfname )
             {
                files.removeOne( mtfiles[ jj ] );
-               DbgLv(0) << my_rank << ": ii,jj" << ii << jj << "REMOVED from list:" << mtfiles[jj];
+               DbgLv( 0 ) << my_rank << ": ii,jj" << ii << jj << "REMOVED from list:" << mtfiles[jj];
             }
          }
 
@@ -2556,7 +2589,7 @@ void US_MPI_Analysis::update_outputs( bool is_final )
          if ( ! files.contains( cmfname ) )
          {
             files << cmfname;
-            DbgLv(0) << my_rank << ":     files.size" << files.size() << "after cmfname add";
+            DbgLv( 0 ) << my_rank << ":     files.size" << files.size() << "after cmfname add";
          }
 
          // Add composite name to text file if need be
@@ -2566,9 +2599,9 @@ void US_MPI_Analysis::update_outputs( bool is_final )
               ( is_final  ||  f_iters == mc_iterations ) )
          {
             US_Model model2;
-            DbgLv(0) << my_rank << ":      model2.load(" << cmfname << ")";
+            DbgLv( 0 ) << my_rank << ":      model2.load(" << cmfname << ")";
             model2.load( cmfname );
-            DbgLv(0) << my_rank << ":       model2.description" << model2.description;
+            DbgLv( 0 ) << my_rank << ":       model2.description" << model2.description;
             QString runstring = "Run: " + QString::number( ii + 1 )
                                 + " " + tripleID;
             model2.variance = rmsd_combined_mc_models( model2 );
@@ -2600,13 +2633,15 @@ void US_MPI_Analysis::update_outputs( bool is_final )
       abort( "Could not compress files\n " + error + "\n" + filename );
    }
 
-   for(int jf=0;jf<files.size();jf++)
-    DbgLv(0) << my_rank << "   tar file" << jf << ":" << files[jf];
+   for ( int jf = 0; jf < files.size(); jf++ )
+   {
+      DbgLv( 0 ) << my_rank << "   tar file" << jf << ":" << files[jf];
+   }
 
    // If this is the final call, remove all but the archive file
    if ( is_final )
    {  // Remove the files we just put into the tar archive
-      DbgLv(0) << my_rank << ": All output files except the archive are now removed.";
+      DbgLv( 0 ) << my_rank << ": All output files except the archive are now removed.";
       QString file;
       foreach( file, files ) odir.remove( file );
    }
@@ -2651,9 +2686,8 @@ double US_MPI_Analysis::rmsd_combined_mc_models( US_Model& model )
    bool   fit_ti   = ti_noise.size() > 0;
    bool   fit_ri   = ri_noise.size() > 0;
    int    kpts     = 0;
-   DbgLv(1) << "Combined MC Model: nscans:" << nscans << "npoints:" << npoints
-         << "fit_ti:" << fit_ti << "fit_ri:" << fit_ri << "size ti_noise:" << ti_noise.size()
-         << "size ri_noise:" << ri_noise.size();
+   DbgLv( 1 ) << "Combined MC Model: nscans:" << nscans << "npoints:" << npoints << "fit_ti:" << fit_ti << "fit_ri:" << fit_ri
+              << "size ti_noise:" << ti_noise.size() << "size ri_noise:" << ri_noise.size();
    for ( int ii = 0; ii < nscans; ii++ )
    {
       double rin = fit_ri ? ri_noise.at( ii ) : 0.0;
@@ -2697,12 +2731,11 @@ void US_MPI_Analysis::write_superg( const SIMULATION&      sim,
    US_Model model;
    int subtype       = ( type == US_Model::PCSA ) ? mrecs[ 0 ].ctype : 0;
 
-   DbgLv(1) << "wrMo: type" << type << "(DMGA=" << US_Model::DMGA << ") (PCSA="
-    << US_Model::PCSA << ") subtype=" << subtype;
+   DbgLv( 1 ) << "wrMo: type" << type << "(DMGA=" << US_Model::DMGA << ") (PCSA=" << US_Model::PCSA << ") subtype=" << subtype;
    if ( type == US_Model::DMGA )
    {  // For discrete GA, get the already constructed model
       model             = data_sets[ 0 ]->model;
-      DbgLv(1) << "wrMo:  model comps" << model.components.size();
+      DbgLv( 1 ) << "wrMo:  model comps" << model.components.size();
    }
 
    // 2DSA and single masters count Monte Carlo iterations from 0, the
@@ -2713,8 +2746,7 @@ void US_MPI_Analysis::write_superg( const SIMULATION&      sim,
    model.wavelength  = edata->wavelength.toDouble();
    model.modelGUID   = ( ! model.monteCarlo  ||  mc_iter == 1 )
                        ? US_Util::new_guid() : modelGUID;
-   DbgLv(1) << "wrMo:  mc mciter mGUID" << model.monteCarlo << mc_iter
-    << model.modelGUID;
+   DbgLv( 1 ) << "wrMo:  mc mciter mGUID" << model.monteCarlo << mc_iter << model.modelGUID;
    model.editGUID    = uaGUID;
    model.requestGUID = requestGUID;
    model.dataDescrip = edata->description;
@@ -2727,7 +2759,7 @@ void US_MPI_Analysis::write_superg( const SIMULATION&      sim,
 
    QString tripleID  = edata->cell + edata->channel + edata->wavelength;
    QString dates     = "e" + edata->editID + "_a" + analysisDate;
-   DbgLv(1) << "wrMo: tripleID" << tripleID << "dates" << dates;
+   DbgLv( 1 ) << "wrMo: tripleID" << tripleID << "dates" << dates;
    QString iterID;
 
    if ( mc_iterations > 1 )
@@ -2759,7 +2791,7 @@ void US_MPI_Analysis::write_superg( const SIMULATION&      sim,
    double  vbar20    = data_sets[ current_dataset ]->vbar20;
 
    model.description = runID + "." + tripleID + "." + analyID + ".model";
-   DbgLv(1) << "wrMo: model descr" << model.description;
+   DbgLv( 1 ) << "wrMo: model descr" << model.description;
 
    // Save as class variable for later reference
    modelGUID         = model.modelGUID;
@@ -2796,8 +2828,8 @@ void US_MPI_Analysis::write_superg( const SIMULATION&      sim,
          model.components << component;
       }
    }
-   DbgLv(1) << "wrMo: stype" << stype << QString::asprintf( "0%o",stype )
-    << "attr_z vbar20 mco0.v" << attr_z << vbar20 << model.components[0].vbar20;
+   DbgLv( 1 ) << "wrMo: stype" << stype << QString::asprintf( "0%o", stype ) << "attr_z vbar20 mco0.v" << attr_z << vbar20
+              << model.components[0].vbar20;
 
    QString fext      = model.monteCarlo ? ".mdl.tmp" : ".model.xml";
    QString fileid    = "." + id + "." + mdlid + fext;
