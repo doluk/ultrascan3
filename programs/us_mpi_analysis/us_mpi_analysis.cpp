@@ -911,6 +911,23 @@ void US_MPI_Analysis::prepare_timestates( int ntmsf_ne, int ntmsf_ex, int ntmsf_
                DbgLv( 0 ) << "rank" << my_rank << ": ee" << ee << "(EX)tmst_file" << ds->tmst_file;
             }
 
+            else if ( !QFile( tmst_fpath ).exists() )
+            { // Timestate file given, but not present:  create one as if
+               //  none were given
+               tmst_fpath = "../" + ds->run_data.runID + ".time_state.tmst";
+
+               if ( !tmsf_fs.contains( tmst_fpath ) )
+               {
+                  US_DataIO::RawData simdat;
+                  US_AstfemMath::initSimData( simdat, ds->run_data, 0.0 );
+                  US_AstfemMath::writetimestate( tmst_fpath, ds->simparams, simdat );
+                  tmsf_fs << tmst_fpath;
+               }
+
+               ds->tmst_file = tmst_fpath; // Save the used timestate file set
+               DbgLv( 0 ) << "rank" << my_rank << ": ee" << ee << "(MS)tmst_file" << ds->tmst_file;
+            }
+
             ds->simparams.simSpeedsFromTimeState( tmst_fpath );
          }
       }
@@ -919,6 +936,30 @@ void US_MPI_Analysis::prepare_timestates( int ntmsf_ne, int ntmsf_ex, int ntmsf_
       //      // Get all processes synched up, then fix non-master processes
       // Get all processes synched up, then build timestate objects
       MPI_Barrier( MPI_COMM_WORLD );
+
+      // All ranks use the timestate files rank 0 chose
+      QByteArray tmst_names;
+      if ( my_rank == 0 )
+      {
+         QStringList names;
+         for ( const US_SolveSim::DataSet* ds : data_sets )
+         {
+            names << ds->tmst_file;
+         }
+         tmst_names = names.join( '\n' ).toUtf8();
+      }
+      int nsize = tmst_names.size();
+      MPI_Bcast( &nsize, 1, MPI_INT, 0, MPI_COMM_WORLD );
+      tmst_names.resize( nsize );
+      MPI_Bcast( tmst_names.data(), nsize, MPI_BYTE, 0, MPI_COMM_WORLD );
+      if ( my_rank != 0 )
+      {
+         QStringList names = QString::fromUtf8( tmst_names ).split( '\n' );
+         for ( int ee = 0; ee < count_datasets && ee < names.size(); ee++ )
+         {
+            data_sets[ee]->tmst_file = names[ee];
+         }
+      }
       //DbgLv(0) << "rank" << my_rank << ": barrier3 :TM:" << ELAPSED_SECS;
    }  // END:  Re-do timestate files
 
