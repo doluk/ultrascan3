@@ -227,13 +227,20 @@ void US_MPI_Analysis::parse_job( QXmlStreamReader& xml )
                         parameters[ "ytype" ]     = ytype;
                      }
 
-                     // Try to forestall round-off problems
+                     // Try to forestall round-off problems: round to 7
+                     //  digits of the larger magnitude.  Limits may be zero
+                     //  or negative (flotation s), so use the magnitude.
 if (my_rank==0) DbgLv(0) << "PF: xymnmx" << xmin << xmax << ymin << ymax;
-                     int xpwr      = (int)qFloor( log10( xmax ) ) - 6;
-                     int ypwr      = (int)qFloor( log10( ymax ) ) - 6;
-                     double xinc   = pow( 10.0, xpwr );
-                     double yinc   = pow( 10.0, ypwr );
-if (my_rank==0) DbgLv(0) << "PF:  xp yp xi yi" << xpwr << ypwr << xinc << yinc;
+                     auto round_inc = []( double vmin, double vmax )
+                     {
+                        double vmag = qMax( qAbs( vmin ), qAbs( vmax ) );
+                        return ( vmag > 0.0 )
+                               ? pow( 10.0, qFloor( log10( vmag ) ) - 6 )
+                               : 1.0;
+                     };
+                     double xinc   = round_inc( xmin, xmax );
+                     double yinc   = round_inc( ymin, ymax );
+if (my_rank==0) DbgLv(0) << "PF:  xi yi" << xinc << yinc;
                      b.x_min       = qRound64( xmin / xinc ) * xinc;
                      b.x_max       = qRound64( xmax / xinc ) * xinc;
                      b.y_min       = qRound64( ymin / yinc ) * yinc;
