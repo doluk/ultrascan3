@@ -40,7 +40,7 @@ void US_MPI_Analysis::parse( const QString& xmlfile )
 
             if ( parameters.contains( "CG_model" ) )
             {  // Flag Custom Grid model input
-               d->model_file  = parameters[ "CG_model" ];
+               d->model_file  = parameters.value( "CG_model" );
                d->solute_type = 2;
                attr_x         = ATTR_S;
                attr_y         = ATTR_V;
@@ -49,16 +49,16 @@ void US_MPI_Analysis::parse( const QString& xmlfile )
 
             else if ( parameters.contains( "DC_model" ) )
             {  // Flag DMGA_Constraints model input
-               d->model_file  = parameters[ "DC_model" ];
+               d->model_file  = parameters.value( "DC_model" );
             }
 
-            else if ( ! parameters[ "ztype" ].isEmpty() )
+            else if ( ! parameters.value( "ztype" ).isEmpty() )
             {  // Flag generic x,y model with fixed "z"
                QStringList s_attrs;
                s_attrs << "s" << "ff0" << "MW" << "vbar" << "D" << "f";
-               attr_x         = s_attrs.indexOf( parameters[ "xtype" ] );
-               attr_y         = s_attrs.indexOf( parameters[ "ytype" ] );
-               attr_z         = s_attrs.indexOf( parameters[ "ztype" ] );
+               attr_x         = s_attrs.indexOf( parameters.value( "xtype" ) );
+               attr_y         = s_attrs.indexOf( parameters.value( "ytype" ) );
+               attr_z         = s_attrs.indexOf( parameters.value( "ztype" ) );
                attr_x         = ( attr_x < 0 ) ? ATTR_S : attr_x;
                attr_y         = ( attr_y < 0 ) ? ATTR_K : attr_y;
                attr_z         = ( attr_z < 0 ) ? ATTR_V : attr_z;
@@ -67,7 +67,7 @@ void US_MPI_Analysis::parse( const QString& xmlfile )
                d->solute_type = ( attr_x << 6 ) + ( attr_y << 3 ) + attr_z;
             }
 
-            else if ( parameters[ "ytype" ] == "vbar" )
+            else if ( parameters.value( "ytype" ) == "vbar" )
             {  // Flag s,vbar model with fixed f_f0
                d->solute_type = 1;
                attr_x         = ATTR_S;
@@ -75,9 +75,9 @@ void US_MPI_Analysis::parse( const QString& xmlfile )
                attr_z         = ATTR_K;
             }
 
-            else if ( ! parameters[ "solute_type" ].isEmpty() )
+            else if ( ! parameters.value( "solute_type" ).isEmpty() )
             {  // Flag explicit solute type
-               QString s_styp = parameters[ "solute_type" ];
+               QString s_styp = parameters.value( "solute_type" );
                d->solute_type = US_ModelRecord::stype_flag( s_styp );
                attr_x         = ( d->solute_type >> 6 ) & 7;
                attr_y         = ( d->solute_type >> 3 ) & 7;
@@ -104,7 +104,7 @@ if (my_rank==0) DbgLv(0) << "PF: solute_type" << d->solute_type
 
    if ( parameters.contains( "debug_text" ) )
    {
-      QString dbgtxt_str     = parameters[ "debug_text" ];
+      QString dbgtxt_str     = parameters.value( "debug_text" );
       QStringList dbgtxt_sls = dbgtxt_str.split( ',' );
       int ndtln              = dbgtxt_sls.count();
 
@@ -245,7 +245,7 @@ if (my_rank==0) DbgLv(0) << "PF:   rnd xymnmx" << b.x_min << b.x_max << b.y_min 
                   else if ( name == "CG_model"  ||  name == "DC_model" )
                   {
                      parameters[ name ]    = attr.value( "filename").toString();
-if (my_rank==0) DbgLv(0) << "PF:   DC_model" << parameters[name] << name;
+if (my_rank==0) DbgLv(0) << "PF:   DC_model" << parameters.value( name ) << name;
                   }
                   else if ( name == "bucket_fixed" )
                   {
@@ -253,7 +253,7 @@ if (my_rank==0) DbgLv(0) << "PF:   DC_model" << parameters[name] << name;
                      parameters[ "xtype" ] = attr.value( "xtype" ).toString();
                      parameters[ "ytype" ] = attr.value( "ytype" ).toString();
                      parameters[ "ztype" ] = attr.value("fixedtype").toString();
-                     ytype                 = parameters[ "ytype" ];
+                     ytype                 = parameters.value( "ytype" );
                   }
 
                   else if ( name.startsWith( "s_m" )  ||
@@ -279,7 +279,7 @@ if (my_rank==0) DbgLv(0) << "PF:   DC_model" << parameters[name] << name;
          parameters[ "z_value" ]     = "0.0";
 
       if ( parameters.contains( "debug_level" ) )
-         dbg_level  = parameters[ "debug_level" ].toInt();
+         dbg_level  = parameters.value( "debug_level" ).toInt();
 
       else
          dbg_level  = 0;
@@ -288,7 +288,7 @@ if (my_rank==0) DbgLv(0) << "PF:   DC_model" << parameters[name] << name;
       int dbglv = ( my_rank < 2 || my_rank == 15 ) ? dbg_level : 0;
       US_Settings::set_us_debug( dbglv );
       dbg_timing = ( parameters.contains( "debug_timings" )
-                 &&  parameters[ "debug_timings" ].toInt() != 0 );
+                 &&  parameters.value( "debug_timings" ).toInt() != 0 );
    }
 }
 

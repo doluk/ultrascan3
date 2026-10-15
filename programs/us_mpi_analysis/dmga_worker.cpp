@@ -24,8 +24,8 @@ void US_MPI_Analysis::dmga_worker( void )
    datasets_to_process = data_sets.size();
    QStringList keys    = parameters.keys();
    p_grid              = ( keys.contains( "p_grid" ) )
-                         ? parameters[ "p_grid" ].toInt() : 100;
-   QString dbgtext     = parameters[ "debug_text" ];
+                         ? parameters.value( "p_grid" ).toInt() : 100;
+   QString dbgtext     = parameters.value( "debug_text" );
    QString s_bsig      = par_key_value( dbgtext, "base_sig" );
    QString s_grinc     = par_key_value( dbgtext, "g_redo_inc" );
    base_sig            = s_bsig .isEmpty() ? BASE_SIG : s_bsig .toDouble();
@@ -59,7 +59,7 @@ DbgLv(0) << my_rank << "dmga_worker: base_sig" << base_sig
 //abort( "DMGA_WORKER not yet implemented" );
 
    // Read in the constraints model and build constraints
-   QString cmfname  = "../" + parameters[ "DC_model" ];
+   QString cmfname  = "../" + parameters.value( "DC_model" );
    wmodel.load( cmfname );                  // Load the constraints model
    constraints.load_constraints( &wmodel ); // Build the constraints object
    constraints.get_work_model  ( &wmodel ); // Get the base work model
@@ -200,7 +200,7 @@ void US_MPI_Analysis::dmga_worker_loop( void )
 {
    // Initialize genes
    dgenes.clear();
-   population = parameters[ "population" ].toInt();
+   population = parameters.value( "population" ).toInt();
 
    // Build the first generation of genes
    for ( int ii = 0; ii < population; ii++ )
@@ -219,11 +219,11 @@ void US_MPI_Analysis::dmga_worker_loop( void )
       fitness << empty_fitness;
    }
 
-   int generations = parameters[ "generations" ].toInt();
-   int crossover   = parameters[ "crossover"   ].toInt();
-   int mutation    = parameters[ "mutation"    ].toInt();
-   int plague      = parameters[ "plague"      ].toInt();
-   int elitism     = parameters[ "elitism"     ].toInt();
+   int generations = parameters.value( "generations" ).toInt();
+   int crossover   = parameters.value( "crossover" ).toInt();
+   int mutation    = parameters.value( "mutation" ).toInt();
+   int plague      = parameters.value( "plague" ).toInt();
+   int elitism     = parameters.value( "elitism" ).toInt();
 
    int p_mutate    = mutation;
    int p_crossover = p_mutate + crossover;
@@ -624,8 +624,8 @@ DbgLv(1) << "dg:crsg: gndx" << gndx << "smask" << smask;
 // Migrate a list of discrete GA Genes
 int US_MPI_Analysis::migrate_dgenes( void )
 {
-   static const int migrate_pcent = parameters[ "migration" ].toInt();
-   static const int elitism_count = parameters[ "elitism"   ].toInt();
+   static const int migrate_pcent = parameters.value( "migration" ).toInt();
+   static const int elitism_count = parameters.value( "elitism" ).toInt();
 
    QList < DGene >   emmigres;
    int migrate_count   = ( migrate_pcent * population + 50 ) / 100;

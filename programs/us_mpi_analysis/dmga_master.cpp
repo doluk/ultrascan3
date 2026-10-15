@@ -37,7 +37,7 @@ DbgLv(0) << "DEBUG_LEVEL" << simulation_values.dbg_level;
    best_fitness.reserve( gcores_count );
 
    // Read in the constraints model and build constraints
-   QString cmfname  = "../" + parameters[ "DC_model" ];
+   QString cmfname  = "../" + parameters.value( "DC_model" );
    wmodel.load( cmfname );                  // Load the constraints model
    constraints.load_constraints( &wmodel ); // Build the constraints object
    constraints.get_work_model  ( &wmodel ); // Get the base work model
@@ -47,7 +47,7 @@ DbgLv(1) << "dmga_master: wmodel #comps" << wmodel.components.size()
 
    // Report on the constraints attribute values and ranges
 
-   DbgLv(0) << parameters[ "DC_model" ] << "Constraints --";
+   DbgLv(0) << parameters.value( "DC_model" ) << "Constraints --";
 
    QString attrtype = tr( "UNKNOWN" );
    US_dmGA_Constraints::AttribType atype;
@@ -486,7 +486,7 @@ void US_MPI_Analysis::dmga_master_loop( void )
    static const int    min_generation = 10;
    static const int    _KS_BASE_      = 6;
    static const int    _KS_STEP_      = 3;
-   QString dbgtext   = parameters[ "debug_text" ];
+   QString dbgtext   = parameters.value( "debug_text" );
    QString s_ksbase  = par_key_value( dbgtext, "ksame_base" );
    QString s_ksstep  = par_key_value( dbgtext, "ksame_step" );
    int ks_base       = s_ksbase.isEmpty() ? _KS_BASE_ : s_ksbase.toInt();

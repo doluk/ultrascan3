@@ -241,11 +241,24 @@ DbgLv(0) << "work_dir=" << work_dir;
    // Parse analysis parameters
    parse( xmlfile );
 
+   // Set some defaults, before any parameter is read
+   if ( ! parameters.contains( "mutate_sigma" ) ) 
+      parameters[ "mutate_sigma" ] = "2.0";
+
+   if ( ! parameters.contains( "p_mutate_s"   ) ) 
+      parameters[ "p_mutate_s"   ] = "20";
+
+   if ( ! parameters.contains( "p_mutate_k"   ) ) 
+      parameters[ "p_mutate_k"   ] = "20";
+
+   if ( ! parameters.contains( "p_mutate_sk"  ) ) 
+      parameters[ "p_mutate_sk"  ] = "20";
+
    uint seed = 0;
    
    if ( parameters.keys().contains( "seed" ) ) 
    {
-      seed = parameters[ "seed" ].toUInt();
+      seed = parameters.value( "seed" ).toUInt();
    }
    US_Math2::randomize( seed );
 
@@ -360,16 +373,16 @@ DbgLv(0) << "BAD DATA. ioError" << error << "rank" << my_rank << proc_count;
    QDir::setCurrent( output_dir );
 
    // Set some minimums
-   max_iterations  = parameters[ "max_iterations" ].toInt();
+   max_iterations  = parameters.value( "max_iterations" ).toInt();
    max_iterations  = qMax( max_iterations, 1 );
 
-   mc_iterations   = parameters[ "mc_iterations" ].toInt();
+   mc_iterations   = parameters.value( "mc_iterations" ).toInt();
    mc_iterations   = qMax( mc_iterations, 1 );
 
    // Set Fit-Meniscus/Bottom parameters
-   fit_mb_select   = parameters[ "fit_mb_select"   ].toInt();
-   meniscus_range  = parameters[ "meniscus_range"  ].toDouble();
-   meniscus_points = parameters[ "meniscus_points" ].toInt();
+   fit_mb_select   = parameters.value( "fit_mb_select" ).toInt();
+   meniscus_range  = parameters.value( "meniscus_range" ).toDouble();
+   meniscus_points = parameters.value( "meniscus_points" ).toInt();
    fit_mb_select   = ( meniscus_points > 1 ) ?  qMax( 1, fit_mb_select ) : 0;
    fit_meni        = ( ( fit_mb_select & 1 ) != 0 );
    fit_bott        = ( ( fit_mb_select & 2 ) != 0 );
@@ -415,7 +428,7 @@ DbgLv(0) << "FMB: meni range points" << meniscus_range << meniscus_points
 
    // Do some parameter checking
    count_datasets     = data_sets.size();
-   is_global_fit      = US_Util::bool_flag( parameters[ "global_fit" ] );
+   is_global_fit      = US_Util::bool_flag( parameters.value( "global_fit" ) );
    is_composite_job   = ( count_datasets > 1  &&  ! is_global_fit );
    if ( my_rank == 0 )
    {
@@ -465,8 +478,8 @@ DbgLv(0) << "FMB: meni range points" << meniscus_range << meniscus_points
       abort( "Meniscus fit is not compatible with Monte Carlo analysis" );
    }
 
-   bool noise = parameters[ "tinoise_option" ].toInt() > 0  ||
-                parameters[ "rinoise_option" ].toInt() > 0;
+   bool noise = parameters.value( "tinoise_option" ).toInt() > 0  ||
+                parameters.value( "rinoise_option" ).toInt() > 0;
 
    if ( ! analysis_type.startsWith( "PCSA" )  &&
         mc_iterations > 1  &&  noise )
@@ -534,20 +547,20 @@ if (my_rank==0) {
 if (my_rank==0) {
  DbgLv(0) << "FMB: bottom:  start delta" << bottom_start << dbot; }
 
-   population              = parameters[ "population"     ].toInt();
-   generations             = parameters[ "generations"    ].toInt();
-   crossover               = parameters[ "crossover"      ].toInt();
-   mutation                = parameters[ "mutation"       ].toInt();
-   plague                  = parameters[ "plague"         ].toInt();
-   migrate_count           = parameters[ "migration"      ].toInt();
-   elitism                 = parameters[ "elitism"        ].toInt();
-   mutate_sigma            = parameters[ "mutate_sigma"   ].toDouble();
-   p_mutate_s              = parameters[ "p_mutate_s"     ].toDouble();
-   p_mutate_k              = parameters[ "p_mutate_k"     ].toDouble();
-   p_mutate_sk             = parameters[ "p_mutate_sk"    ].toDouble();
-   regularization          = parameters[ "regularization" ].toDouble();
-   concentration_threshold = parameters[ "conc_threshold" ].toDouble();
-   minimize_opt            = parameters[ "minimize_opt"   ].toInt();
+   population              = parameters.value( "population" ).toInt();
+   generations             = parameters.value( "generations" ).toInt();
+   crossover               = parameters.value( "crossover" ).toInt();
+   mutation                = parameters.value( "mutation" ).toInt();
+   plague                  = parameters.value( "plague" ).toInt();
+   migrate_count           = parameters.value( "migration" ).toInt();
+   elitism                 = parameters.value( "elitism" ).toInt();
+   mutate_sigma            = parameters.value( "mutate_sigma" ).toDouble();
+   p_mutate_s              = parameters.value( "p_mutate_s" ).toDouble();
+   p_mutate_k              = parameters.value( "p_mutate_k" ).toDouble();
+   p_mutate_sk             = parameters.value( "p_mutate_sk" ).toDouble();
+   regularization          = parameters.value( "regularization" ).toDouble();
+   concentration_threshold = parameters.value( "conc_threshold" ).toDouble();
+   minimize_opt            = parameters.value( "minimize_opt" ).toInt();
 minimize_opt=(minimize_opt==0?2:minimize_opt);
    total_points            = 0;
    bool redo_ss            = false;     // By default, accept speed step as is
@@ -892,8 +905,8 @@ if ( my_rank == 0 ) {
       }
    }
 
-   double  s_max = parameters[ "s_max" ].toDouble() * 1.0e-13;
-   double  x_max = parameters[ "x_max" ].toDouble() * 1.0e-13;
+   double  s_max = parameters.value( "s_max" ).toDouble() * 1.0e-13;
+   double  x_max = parameters.value( "x_max" ).toDouble() * 1.0e-13;
    s_max         = ( s_max == 0.0 ) ? x_max : s_max;
    double  y_max = 1e-39;
 
@@ -967,9 +980,9 @@ if ( my_rank == 0 ) {
 
    // Do a check of implied grid size
    QString smsg;
-   double  zval     = parameters[ "bucket_fixed" ].toDouble();
+   double  zval     = parameters.value( "bucket_fixed" ).toDouble();
    if ( analysis_type.startsWith( "PCSA" ) )
-      zval             = parameters[ "z_value" ].toDouble();
+      zval             = parameters.value( "z_value" ).toDouble();
 
    if ( attr_x != ATTR_S )
    {  // We will need to determine the maximum s value
@@ -1029,19 +1042,6 @@ if (my_rank==0) DbgLv(0) << "ckGrSz: ssp count"
 //else
 // qDebug() << "check_grid_size FALSE  x_max" << x_max
 //    << "rpm" << data_sets[0]->simparams.speed_step[0].rotorspeed;
-
-   // Set some defaults
-   if ( ! parameters.contains( "mutate_sigma" ) ) 
-      parameters[ "mutate_sigma" ] = "2.0";
-
-   if ( ! parameters.contains( "p_mutate_s"   ) ) 
-      parameters[ "p_mutate_s"   ] = "20";
-
-   if ( ! parameters.contains( "p_mutate_k"   ) ) 
-      parameters[ "p_mutate_k"   ] = "20";
-
-   if ( ! parameters.contains( "p_mutate_sk"  ) ) 
-      parameters[ "p_mutate_sk"  ] = "20";
 
    count_calc_residuals = 0;   // Internal instrumentation
    menibott_ndx         = 0;
@@ -1132,7 +1132,7 @@ void US_MPI_Analysis::start( void )
    // Real processing goes here
    if ( analysis_type.startsWith( "2DSA" ) )
    {
-      iterations = parameters[ "montecarlo_value" ].toInt();
+      iterations = parameters.value( "montecarlo_value" ).toInt();
 
       if ( iterations < 1 ) iterations = 1;
 
@@ -1178,7 +1178,7 @@ void US_MPI_Analysis::start( void )
 
       if ( mc_iterations > 0 )
       {
-         int kc_iterations = parameters[ "mc_iterations" ].toInt();
+         int kc_iterations = parameters.value( "mc_iterations" ).toInt();
 
          if ( mc_iterations < kc_iterations )
          {
@@ -1757,17 +1757,17 @@ DbgLv(1) << "WrO: wr_model  mdl_type" << mdl_type;
    bottom_value    = save_bottom;
 
 DbgLv(1) << "WrO: wr_noise";
-   if (  parameters[ "tinoise_option" ].toInt() > 0 )
+   if (  parameters.value( "tinoise_option" ).toInt() > 0 )
       write_noise( US_Noise::TI, sim.ti_noise );
 
-   if (  parameters[ "rinoise_option" ].toInt() > 0 )
+   if (  parameters.value( "rinoise_option" ).toInt() > 0 )
       write_noise( US_Noise::RI, sim.ri_noise );
 
 DbgLv(1) << "WrO: wr_mrecs";
    if ( mdl_type == US_Model::PCSA )
    {  // Output mrecs for PCSA, if we have a final mrecs vector
-      int tikreg   = parameters[ "tikreg_option" ].toInt();
-      int mc_iters = parameters[ "mc_iterations" ].toInt();
+      int tikreg   = parameters.value( "tikreg_option" ).toInt();
+      int mc_iters = parameters.value( "mc_iterations" ).toInt();
 
       if ( tikreg == 0  &&  mc_iters < 2 )
          write_mrecs();

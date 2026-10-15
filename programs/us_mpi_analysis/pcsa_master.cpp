@@ -24,7 +24,7 @@ DbgLv(1) << "pcsa_mast: fill_pcsa_queue complete  qsize" << job_queue.size();
 
    alpha               = 0.0;
    mc_iterations       = 0;
-   max_iterations      = parameters[ "gfit_iterations" ].toInt();
+   max_iterations      = parameters.value( "gfit_iterations" ).toInt();
    int kcurve          = 0;
 
    while ( true )
@@ -77,9 +77,9 @@ DbgLv(1) << "pcsa_mast:   END PASS mrecs size" << mrecs.size();
          simulation_values.zsolutes    = mrecs[ 0 ].csolutes;
          simulation_values.ti_noise    = mrecs[ 0 ].ti_noise;
          simulation_values.ri_noise    = mrecs[ 0 ].ri_noise;
-         simulation_values.noisflag    = parameters[ "tinoise_option" ].toInt() > 0 ?
+         simulation_values.noisflag    = parameters.value( "tinoise_option" ).toInt() > 0 ?
                                          1 : 0;
-         simulation_values.noisflag   += parameters[ "rinoise_option" ].toInt() > 0 ?
+         simulation_values.noisflag   += parameters.value( "rinoise_option" ).toInt() > 0 ?
                                          2 : 0;
 //         simulation_values.dbg_level   = dbg_level;
          simulation_values.dbg_timing  = dbg_timing;
@@ -283,26 +283,26 @@ void US_MPI_Analysis::init_pcsa_solutes( void )
 DbgLv(1) << "  init_pcsa_sols: IN";
    calculated_zsolutes.clear();
    orig_zsolutes      .clear();
-   simulation_values.noisflag    = parameters[ "tinoise_option" ].toInt() > 0 ?
+   simulation_values.noisflag    = parameters.value( "tinoise_option" ).toInt() > 0 ?
                                    1 : 0;
-   simulation_values.noisflag   += parameters[ "rinoise_option" ].toInt() > 0 ?
+   simulation_values.noisflag   += parameters.value( "rinoise_option" ).toInt() > 0 ?
                                    2 : 0;
 //   simulation_values.dbg_level   = dbg_level;
    simulation_values.dbg_timing  = dbg_timing;
 DbgLv(0) << "DEBUG_LEVEL" << simulation_values.dbg_level;
 
-   double x_min      = parameters[ "x_min"           ].toDouble();
-   double x_max      = parameters[ "x_max"           ].toDouble();
-   double y_min      = parameters[ "y_min"           ].toDouble();
-   double y_max      = parameters[ "y_max"           ].toDouble();
-   double zval       = parameters[ "z_value"         ].toDouble();
-   QString s_ctyp    = parameters[ "curve_type" ];
+   double x_min      = parameters.value( "x_min" ).toDouble();
+   double x_max      = parameters.value( "x_max" ).toDouble();
+   double y_min      = parameters.value( "y_min" ).toDouble();
+   double y_max      = parameters.value( "y_max" ).toDouble();
+   double zval       = parameters.value( "z_value" ).toDouble();
+   QString s_ctyp    = parameters.value( "curve_type" );
    int    ctype      = US_ModelRecord::ctype_flag( s_ctyp );
-   QString s_styp    = parameters[ "solute_type" ];
+   QString s_styp    = parameters.value( "solute_type" );
    int    stype      = US_ModelRecord::stype_flag( s_styp );
-   int    nkpts      = parameters[ "vars_count"      ].toInt();
+   int    nkpts      = parameters.value( "vars_count" ).toInt();
    int    nkpto      = sq( nkpts );
-   int    nlpts      = parameters[ "curves_points"   ].toInt();
+   int    nlpts      = parameters.value( "curves_points" ).toInt();
 DbgLv(1) << "  init_pcsa_sols: nkpts" << nkpts << "nkpto" << nkpto;
    double vbar20     = data_sets[ current_dataset ]->vbar20;
    zval              = ( zval == 0.0 ) ? vbar20 : zval;
@@ -536,14 +536,14 @@ DbgLv(1) << "pcsa:wrmr:  editGUID=" << mrecs[0].editGUID
  << "modelGUID=" << mrecs[0].modelGUID;
    QString s_desc        = QString( modelP->description )
                            .replace( ".model", ".mrecs" );
-   QString s_ctyp        = parameters[ "curve_type" ];
+   QString s_ctyp        = parameters.value( "curve_type" );
    int    ctype          = US_ModelRecord::ctype_flag( s_ctyp );
-   QString s_styp        = parameters[ "solute_type" ];
+   QString s_styp        = parameters.value( "solute_type" );
    int    stype          = US_ModelRecord::stype_flag( s_styp );
-   double x_min          = parameters[ "x_min"   ].toDouble();
-   double x_max          = parameters[ "x_max"   ].toDouble();
-   double y_min          = parameters[ "y_min"   ].toDouble();
-   double y_max          = parameters[ "y_max"   ].toDouble();
+   double x_min          = parameters.value( "x_min" ).toDouble();
+   double x_max          = parameters.value( "x_max" ).toDouble();
+   double y_min          = parameters.value( "y_min" ).toDouble();
+   double y_max          = parameters.value( "y_max" ).toDouble();
    if ( ctype != CTYPE_ALL )
       mrecs[ 0 ].ctype      = ctype;
    mrecs[ 0 ].xmin       = x_min;
@@ -601,7 +601,7 @@ void US_MPI_Analysis::iterate_pcsa()
 {
    static double rmsd_last = 0.0;
    double rmsd_curr  = mrecs[ 0 ].rmsd;
-   double thr_dr_rat = parameters[ "thr_deltr_ratio" ].toDouble();
+   double thr_dr_rat = parameters.value( "thr_deltr_ratio" ).toDouble();
 
 DbgLv(1) << "iter_p: iter" << iterations << "of" << max_iterations;
    // If we have reached the maximum iterations, we are done
@@ -634,17 +634,17 @@ DbgLv(1) << "iter_p: rmsd_c rmsd_l" << rmsd_curr << rmsd_last
    }
 
    // Set up to create a narrower set of model record curves
-   double x_min      = parameters[ "x_min"      ].toDouble();
-   double x_max      = parameters[ "x_max"      ].toDouble();
-   double y_min      = parameters[ "y_min"      ].toDouble();
-   double y_max      = parameters[ "y_max"      ].toDouble();
-   double zval       = parameters[ "z_value"    ].toDouble();
-   QString s_ctyp    = parameters[ "curve_type" ];
+   double x_min      = parameters.value( "x_min" ).toDouble();
+   double x_max      = parameters.value( "x_max" ).toDouble();
+   double y_min      = parameters.value( "y_min" ).toDouble();
+   double y_max      = parameters.value( "y_max" ).toDouble();
+   double zval       = parameters.value( "z_value" ).toDouble();
+   QString s_ctyp    = parameters.value( "curve_type" );
    int    ctype      = US_ModelRecord::ctype_flag( s_ctyp );
-   QString s_styp    = parameters[ "solute_type" ];
+   QString s_styp    = parameters.value( "solute_type" );
    int    stype      = US_ModelRecord::stype_flag( s_styp );
-   int    nkpts      = parameters[ "vars_count"      ].toInt();
-   int    nlpts      = parameters[ "curves_points"   ].toInt();
+   int    nkpts      = parameters.value( "vars_count" ).toInt();
+   int    nlpts      = parameters.value( "curves_points" ).toInt();
    double vbar20     = data_sets[ current_dataset ]->vbar20;
    zval              = ( zval == 0.0 ) ? vbar20 : zval;
    double *parlims   = (double*)pararry;
@@ -748,14 +748,14 @@ DbgLv(1) << "iter_p: plims_ds"
 // Engineer Tikhonov Regularization for PCSA
 void US_MPI_Analysis::tikreg_pcsa()
 {
-   int tikreg     = parameters[ "tikreg_option" ].toInt();
+   int tikreg     = parameters.value( "tikreg_option" ).toInt();
 DbgLv(1) << "tikr: tikreg" << tikreg << "mrecs size" << mrecs.count();
 
    if ( tikreg == 0 )
       return;
 
    alpha          = ( tikreg == 1 )
-                    ? parameters[ "tikreg_alpha" ].toDouble()
+                    ? parameters.value( "tikreg_alpha" ).toDouble()
                     : alpha_scan();
 
    wksim_vals          = simulation_values;
@@ -818,7 +818,7 @@ void US_MPI_Analysis::montecarlo_pcsa()
 
    int worker;
    meniscus_value   = data_sets[ current_dataset ]->run_data.meniscus;
-   mc_iterations    = parameters[ "mc_iterations" ].toInt();
+   mc_iterations    = parameters.value( "mc_iterations" ).toInt();
    mc_iteration     = 1;
    mrec             = mrecs[ 0 ];
    int stype        = mrec.stype;
@@ -1356,8 +1356,8 @@ DbgLv(1) << "bestm: RMSD" << mrec.rmsd;
 
    mrecs[ 0 ]        = mrec;
 
-   int tikreg        = parameters[ "tikreg_option" ].toInt();
-   mc_iterations     = parameters[ "mc_iterations" ].toInt();
+   int tikreg        = parameters.value( "tikreg_option" ).toInt();
+   mc_iterations     = parameters.value( "mc_iterations" ).toInt();
    int noiflg        = simulation_values.noisflag;
 DbgLv(1) << "bestm: tikreg mciters" << tikreg << mc_iterations;
 
@@ -1502,7 +1502,7 @@ DbgLv(1) << "wraux:      MC: mrecs size" << mrecs.size();
    wmodel.description  = mdesc;
    wmodel.components.clear();
 DbgLv(1) << "wraux: mdesc" << mdesc;
-   QString s_styp      = parameters[ "solute_type" ];
+   QString s_styp      = parameters.value( "solute_type" );
    int    stype        = US_ModelRecord::stype_flag( s_styp );
 
    for ( int ii = 0; ii < wksim_vals.zsolutes.size(); ii++ )

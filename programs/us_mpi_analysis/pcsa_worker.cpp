@@ -60,8 +60,8 @@ DbgLv(1) << "w:" << my_rank << ": offs cnt" << offset << dataset_count
 DbgLv(1) << "w:" << my_rank << ":Recv:PROCESS";
                US_SolveSim::Simulation simulation_values;
                simulation_values.noisflag    =
-                    ( parameters[ "tinoise_option" ].toInt() > 0 ? 1 : 0 )
-                  + ( parameters[ "rinoise_option" ].toInt() > 0 ? 2 : 0 );
+                    ( parameters.value( "tinoise_option" ).toInt() > 0 ? 1 : 0 )
+                  + ( parameters.value( "rinoise_option" ).toInt() > 0 ? 2 : 0 );
 //               simulation_values.dbg_level   = dbg_level;
                simulation_values.dbg_timing  = dbg_timing;
 
@@ -339,17 +339,17 @@ DbgLv(1) << "w:" << my_rank << ":Recv:NEWDATA  joblen" << job_length;
                {  // For global fits, check the memory requirements
                   long memused    = max_rss();
                   long memdata    = job_length * sizeof( double );
-                  int grid_reps   = qMax( parameters[ "uniform_grid" ].toInt(), 1 );
+                  int grid_reps   = qMax( parameters.value( "uniform_grid" ).toInt(), 1 );
                   double s_pts    = 60.0;
                   double ff0_pts  = 60.0;
                   if ( parameters.contains( "s_grid_points"   ) )
-                     s_pts   = parameters[ "s_grid_points"   ].toDouble();
+                     s_pts   = parameters.value( "s_grid_points" ).toDouble();
                   else if ( parameters.contains( "s_resolution"    ) )
-                     s_pts   = parameters[ "s_resolution"    ].toDouble() * grid_reps;
+                     s_pts   = parameters.value( "s_resolution" ).toDouble() * grid_reps;
                   if ( parameters.contains( "ff0_grid_points" ) )
-                     ff0_pts = parameters[ "ff0_grid_points" ].toDouble();
+                     ff0_pts = parameters.value( "ff0_grid_points" ).toDouble();
                   else if ( parameters.contains( "ff0_resolution"  ) )
-                     ff0_pts = parameters[ "ff0_resolution"  ].toDouble() * grid_reps;
+                     ff0_pts = parameters.value( "ff0_resolution" ).toDouble() * grid_reps;
                   int  nsstep     = (int)( s_pts );
                   int  nkstep     = (int)( ff0_pts );
                   int  maxsols    = nsstep * nkstep;
