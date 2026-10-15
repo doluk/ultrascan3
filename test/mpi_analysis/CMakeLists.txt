@@ -58,6 +58,7 @@ set(US_MPI_INPUT_CASES
     input_ga_negative_bucket
     input_rotor_stretch_short
     input_xml_truncated
+    input_jobxml_truncated
 )
 
 foreach(case ${US_MPI_CASES} ${US_MPI_INPUT_CASES})

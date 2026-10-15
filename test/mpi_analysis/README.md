@@ -67,6 +67,7 @@ leave the job's input files in the work directory.
 | `input_ga_negative_bucket` | additional flotation bucket, s from -3 to -1 | finite result, RMSD as `ga_np2` |
 | `input_rotor_stretch_short` | `rotor_stretch` with one value | abort naming rotor_stretch |
 | `input_xml_truncated` | global fit XML cut off after the first dataset | abort naming the XML error |
+| `input_jobxml_truncated` | `jobxmlfile.xml` cut off inside its Header | abort naming the XML error |
 
 ## Running
 

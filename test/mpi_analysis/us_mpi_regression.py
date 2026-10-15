@@ -222,8 +222,10 @@ def unreadable_hpc_xml(inputs):
     path.mkdir()
 
 
-def jobxml_file(**entries):
-    """A jobxmlfile.xml with the given Header entries (task_parse format)."""
+def jobxml_file(truncate=False, **entries):
+    """A jobxmlfile.xml with the given Header entries (task_parse format).
+
+    With truncate, the file ends inside the Header."""
     def prepare(inputs):
         root = ET.Element("Message")
         header = ET.SubElement(root, "Header")
@@ -231,8 +233,10 @@ def jobxml_file(**entries):
             ET.SubElement(header, key).text = str(value)
         ET.SubElement(root, "Body")
         ET.indent(root)
-        (inputs / "jobxmlfile.xml").write_text(ET.tostring(root,
-                                                           encoding="unicode"))
+        text = ET.tostring(root, encoding="unicode")
+        if truncate:
+            text = text[:text.index("</Header>")]
+        (inputs / "jobxmlfile.xml").write_text(text)
     return prepare
 
 
@@ -294,6 +298,10 @@ INPUT_CASES = {
     #     single-dataset fit
     "input_xml_truncated": input_case(
         "2dsa_global", edit_xml=truncate_after_first_dataset,
+        expect={"abort": r"XML"}),
+    # A8: a job xml file cut off inside its Header
+    "input_jobxml_truncated": input_case(
+        "2dsa_basic", prepare=jobxml_file(truncate=True, walltime="30"),
         expect={"abort": r"XML"}),
 }
 
