@@ -413,6 +413,7 @@ class US_MPI_Analysis : public QObject
         void     abort         ( const QString&, int=-1 );
         void                   abort_all( const QString&, int = -1 );
         void                   abort_if_any( const QString& );
+        bool                   read_shared_file( const QString&, QByteArray& );
         void                   archive_outputs( void );
         long int max_rss       ( void );
         static void            phys_memory( qint64&, qint64& );

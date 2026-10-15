@@ -70,9 +70,11 @@ void US_MPI_Analysis::task_parse( const QString& xmlfile )
    }
    // The defaults are set in the constructor; values not in the file
    //  keep them
-   QFile file( xmlfile );
+   QByteArray text; // Read by rank 0, sent to all
+   bool       readable = read_shared_file( xmlfile, text );
+   QBuffer    file( &text );
 
-   if ( ! file.open( QIODevice::ReadOnly | QIODevice::Text) )
+   if ( !readable || !file.open( QIODevice::ReadOnly | QIODevice::Text ) )
    {  // If no job xml or us3.pbs, return now
       if ( my_rank == 0 ) DbgLv(0) << "Cannot open file " << xmlfile;
 

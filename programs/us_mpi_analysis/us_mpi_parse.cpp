@@ -2,12 +2,52 @@
 #include "us_mpi_jobconfig.h"
 #include "us_settings.h"
 
+// Read a file on rank 0 and send its content to all ranks, so that the
+//  file system is read once and all ranks get the same text.  Returns
+//  false on all ranks if rank 0 cannot read it.  Collective over
+//  MPI_COMM_WORLD.
+bool US_MPI_Analysis::read_shared_file( const QString& path, QByteArray& data )
+{
+   int readable = 1;
+   data.clear();
+
+   if ( my_rank == 0 )
+   {
+      QFile file( path );
+      readable = file.open( QIODevice::ReadOnly ) ? 1 : 0;
+      if ( readable )
+      {
+         data = file.readAll();
+      }
+   }
+
+   MPI_Bcast( &readable, 1, MPI_INT, 0, MPI_COMM_WORLD );
+   if ( !readable )
+   {
+      return false;
+   }
+
+   int nsize = data.size();
+   MPI_Bcast( &nsize, 1, MPI_INT, 0, MPI_COMM_WORLD );
+   data.resize( nsize );
+   MPI_Bcast( data.data(), nsize, MPI_BYTE, 0, MPI_COMM_WORLD );
+   return true;
+}
+
 // Read the job description (hpcrequest XML) into job_config, set up the
 //  job data, datasets and debug settings from it, and validate it: errors
 //  abort, warnings are printed.
 void US_MPI_Analysis::read_job_config( const QString& xmlfile )
 {
-   job_config = US_MPI_JobConfig::fromFile( xmlfile );
+   QByteArray text; // Read by rank 0, sent to all ranks
+   if ( !read_shared_file( xmlfile, text ) )
+   {
+      abort_all( "Cannot open file " + xmlfile );
+   }
+
+   QBuffer buffer( &text );
+   buffer.open( QIODevice::ReadOnly | QIODevice::Text );
+   job_config = US_MPI_JobConfig::fromXml( buffer, xmlfile );
 
    if ( !job_config.errors.isEmpty() )
    { // Cannot open, malformed XML, invalid values
