@@ -77,7 +77,96 @@ US_MPI_JobConfig US_MPI_JobConfig::fromXml( QIODevice& device, const QString& so
                           .arg( xml.errorString() );
    }
 
+   config.read_parameters();
    return config;
+}
+
+void US_MPI_JobConfig::read_parameters( void )
+{
+   const QMap<QString, QString>& p       = parameters;
+   auto                          integer = [&p]( const char* key ) { return p.value( key ).toInt(); };
+   auto                          number  = [&p]( const char* key ) { return p.value( key ).toDouble(); };
+   auto                          given   = [&p]( const char* key )
+   {
+      Optional<double> value;
+      if ( p.contains( key ) )
+      {
+         value = p.value( key ).toDouble();
+      }
+      return value;
+   };
+   // A default applies only if the parameter is not given at all
+   auto        integer_or = [&p]( const char* key, int other ) { return p.contains( key ) ? p.value( key ).toInt() : other; };
+
+   Parameters& pp      = params;
+   pp.mc_iterations    = integer( "mc_iterations" );
+   pp.max_iterations   = integer( "max_iterations" );
+   pp.gfit_iterations  = integer( "gfit_iterations" );
+   pp.montecarlo_value = integer( "montecarlo_value" );
+   pp.fit_mb_select    = integer( "fit_mb_select" );
+   pp.meniscus_range   = number( "meniscus_range" );
+   pp.meniscus_points  = integer( "meniscus_points" );
+   pp.tinoise_option   = integer( "tinoise_option" );
+   pp.rinoise_option   = integer( "rinoise_option" );
+   pp.global_fit       = p.value( "global_fit" ) == "1" || p.value( "global_fit" ) == "T";
+   pp.seed             = p.value( "seed" ).toUInt();
+   pp.req_mgroupcount  = p.value( "req_mgroupcount" );
+   pp.z_value          = number( "z_value" );
+   pp.solute_type      = p.value( "solute_type" );
+   if ( p.contains( "CG_model" ) )
+   {
+      pp.cg_model = p.value( "CG_model" );
+   }
+   if ( p.contains( "DC_model" ) )
+   {
+      pp.dc_model = p.value( "DC_model" );
+   }
+
+   Parameters::Grid& grid = pp.grid;
+   grid.s_min             = number( "s_min" );
+   grid.s_max             = number( "s_max" );
+   grid.ff0_min           = number( "ff0_min" );
+   grid.ff0_max           = number( "ff0_max" );
+   grid.x_min             = number( "x_min" );
+   grid.x_max             = number( "x_max" );
+   grid.y_min             = number( "y_min" );
+   grid.y_max             = number( "y_max" );
+   grid.uniform_grid      = integer( "uniform_grid" );
+   grid.s_grid_points     = given( "s_grid_points" );
+   grid.s_resolution      = given( "s_resolution" );
+   grid.ff0_grid_points   = given( "ff0_grid_points" );
+   grid.ff0_resolution    = given( "ff0_resolution" );
+
+   Parameters::Ga& ga = pp.ga;
+   ga.population      = integer( "population" );
+   ga.generations     = integer( "generations" );
+   ga.crossover       = integer( "crossover" );
+   ga.mutation        = integer( "mutation" );
+   ga.plague          = integer( "plague" );
+   ga.migration       = integer( "migration" );
+   ga.elitism         = integer( "elitism" );
+   ga.mutate_sigma    = p.contains( "mutate_sigma" ) ? number( "mutate_sigma" ) : 2.0;
+   ga.p_mutate_s      = integer_or( "p_mutate_s", 20 );
+   ga.p_mutate_k      = integer_or( "p_mutate_k", 20 );
+   ga.p_mutate_sk     = integer_or( "p_mutate_sk", 20 );
+   ga.regularization  = number( "regularization" );
+   ga.conc_threshold  = number( "conc_threshold" );
+   ga.minimize_opt    = integer( "minimize_opt" );
+   ga.s_grid          = integer_or( "s_grid", 100 );
+   ga.k_grid          = integer_or( "k_grid", 100 );
+   ga.p_grid          = integer_or( "p_grid", 100 );
+   ga.bucket_fixed    = number( "bucket_fixed" );
+   ga.xtype           = p.value( "xtype" );
+   ga.ytype           = p.value( "ytype" );
+   ga.ztype           = p.value( "ztype" );
+
+   Parameters::Pcsa& pcsa = pp.pcsa;
+   pcsa.curve_type        = p.value( "curve_type" );
+   pcsa.vars_count        = integer( "vars_count" );
+   pcsa.curves_points     = integer( "curves_points" );
+   pcsa.thr_deltr_ratio   = number( "thr_deltr_ratio" );
+   pcsa.tikreg_option     = integer( "tikreg_option" );
+   pcsa.tikreg_alpha      = number( "tikreg_alpha" );
 }
 
 void US_MPI_JobConfig::read_job( QXmlStreamReader& xml )

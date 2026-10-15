@@ -58,6 +58,110 @@ class US_MPI_JobConfig
             QStringList unreadable;  //!< Limit attributes missing or not a number
       };
 
+      //! \brief The job parameters as us_mpi_analysis uses them.  A value
+      //!        not given, empty or not a number reads as 0 unless a
+      //!        default is noted; validate() reports values that are not
+      //!        numbers for the parameters of the job's method.
+      class Parameters
+      {
+         public:
+            //! \brief 2DSA grid and PCSA limits
+            class Grid
+            {
+               public:
+                  double           s_min        = 0.0; //!< s minimum (S)
+                  double           s_max        = 0.0; //!< s maximum (S)
+                  double           ff0_min      = 0.0; //!< f/f0 minimum
+                  double           ff0_max      = 0.0; //!< f/f0 maximum
+                  double           x_min        = 0.0; //!< x minimum (s_min if given as s)
+                  double           x_max        = 0.0; //!< x maximum (s_max if given as s)
+                  double           y_min        = 0.0; //!< y minimum (ff0_min if given as f/f0)
+                  double           y_max        = 0.0; //!< y maximum (ff0_max if given as f/f0)
+                  int              uniform_grid = 0;   //!< Grid repetitions
+                  Optional<double> s_grid_points;      //!< s grid points
+                  Optional<double> s_resolution;       //!< s points per repetition
+                  Optional<double> ff0_grid_points;    //!< f/f0 grid points
+                  Optional<double> ff0_resolution;     //!< f/f0 points per repetition
+
+                  //! \brief Grid repetitions, at least 1
+                  int              repetitions() const
+                  {
+                     return qMax( uniform_grid, 1 );
+                  }
+                  //! \brief s points: s_grid_points, else s_resolution times
+                  //!        the repetitions, else 60
+                  double s_points() const
+                  {
+                     return s_grid_points ? *s_grid_points : s_resolution ? *s_resolution * repetitions() : 60.0;
+                  }
+                  //! \brief f/f0 points: ff0_grid_points, else ff0_resolution
+                  //!        times the repetitions, else 60
+                  double ff0_points() const
+                  {
+                     return ff0_grid_points ? *ff0_grid_points : ff0_resolution ? *ff0_resolution * repetitions() : 60.0;
+                  }
+            };
+
+            //! \brief GA and DMGA parameters
+            class Ga
+            {
+               public:
+                  int     population     = 0;
+                  int     generations    = 0;
+                  int     crossover      = 0; //!< Percent
+                  int     mutation       = 0; //!< Percent
+                  int     plague         = 0; //!< Percent
+                  int     migration      = 0; //!< Percent
+                  int     elitism        = 0;
+                  double  mutate_sigma   = 2.0; //!< 2.0 if not given
+                  int     p_mutate_s     = 20;  //!< 20 if not given
+                  int     p_mutate_k     = 20;  //!< 20 if not given
+                  int     p_mutate_sk    = 20;  //!< 20 if not given
+                  double  regularization = 0.0;
+                  double  conc_threshold = 0.0;
+                  int     minimize_opt   = 0;
+                  int     s_grid         = 100; //!< 100 if not given
+                  int     k_grid         = 100; //!< 100 if not given
+                  int     p_grid         = 100; //!< 100 if not given (DMGA)
+                  double  bucket_fixed   = 0.0; //!< Fixed attribute value
+                  QString xtype;                //!< Bucket x attribute
+                  QString ytype;                //!< Bucket y attribute
+                  QString ztype;                //!< Fixed attribute
+            };
+
+            //! \brief PCSA parameters
+            class Pcsa
+            {
+               public:
+                  QString curve_type;
+                  int     vars_count      = 0;
+                  int     curves_points   = 0;
+                  double  thr_deltr_ratio = 0.0;
+                  int     tikreg_option   = 0;
+                  double  tikreg_alpha    = 0.0;
+            };
+
+            int               mc_iterations    = 0;
+            int               max_iterations   = 0;
+            int               gfit_iterations  = 0;
+            int               montecarlo_value = 0;
+            int               fit_mb_select    = 0;
+            double            meniscus_range   = 0.0;
+            int               meniscus_points  = 0;
+            int               tinoise_option   = 0;
+            int               rinoise_option   = 0;
+            bool              global_fit       = false; //!< "1" or "T"
+            uint              seed             = 0;
+            QString           req_mgroupcount; //!< Requested master groups, as given
+            double            z_value = 0.0;   //!< "0.0" if a job element is given
+            QString           solute_type;     //!< PCSA/2DSA solute type ("013.skv")
+            Optional<QString> cg_model;        //!< Custom grid model file, if given
+            Optional<QString> dc_model;        //!< DMGA constraints model file, if given
+            Grid              grid;
+            Ga                ga;
+            Pcsa              pcsa;
+      };
+
       //! \brief The input of one dataset.  Values the file does not give are
       //!        unset; where an element occurs more than once the last wins.
       class DatasetSpec
@@ -155,10 +259,12 @@ class US_MPI_JobConfig
       QMap<QString, QString>       parameters;
       QList<Bucket>                buckets;  //!< GA buckets
       QList<DatasetSpec>           datasets; //!< Datasets in file order
+      Parameters                   params;   //!< Typed job parameters
       QStringList                  errors;   //!< Errors found while reading
       QStringList                  warnings; //!< Problems that do not stop a run
 
    private:
+      void read_parameters( void );
       void read_job( QXmlStreamReader& );
       void read_job_parameters( QXmlStreamReader& );
       void read_bucket( const QXmlStreamAttributes&, QString& );

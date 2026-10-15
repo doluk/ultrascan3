@@ -563,10 +563,7 @@ void US_MPI_Analysis::init_solutes( void )
 {
    calculated_solutes.clear();
    orig_solutes.clear();
-   simulation_values.noisflag    = ( parameters.value( "tinoise_option" ).toInt() > 0 ?
-                                     1 : 0 )
-                                 + ( parameters.value( "rinoise_option" ).toInt() > 0 ?
-                                     2 : 0 );
+   simulation_values.noisflag = ( job_config.params.tinoise_option > 0 ? 1 : 0 ) + ( job_config.params.rinoise_option > 0 ? 2 : 0 );
    simulation_values.dbg_level   = dbg_level;
    simulation_values.dbg_timing  = dbg_timing;
 DbgLv(0) << "DEBUG_LEVEL" << simulation_values.dbg_level;
@@ -578,26 +575,14 @@ DbgLv(0) << "DEBUG_LEVEL" << simulation_values.dbg_level;
    if ( model_filename.isEmpty() )
    {  // If no model file given, calculate initial solutes in a fixed grid
 
-      double s_min   = parameters.value( "s_min" ).toDouble() * 1.0e-13;
-      double s_max   = parameters.value( "s_max" ).toDouble() * 1.0e-13;
-      double ff0_min = parameters.value( "ff0_min" ).toDouble();
-      double ff0_max = parameters.value( "ff0_max" ).toDouble();
+      double s_min   = job_config.params.grid.s_min * 1.0e-13;
+      double s_max   = job_config.params.grid.s_max * 1.0e-13;
+      double ff0_min = job_config.params.grid.ff0_min;
+      double ff0_max = job_config.params.grid.ff0_max;
 
-      int grid_reps  = qMax( parameters.value( "uniform_grid" ).toInt(), 1 );
-      double s_pts   = 60.0;
-      double ff0_pts = 60.0;
-
-      if ( parameters.contains( "s_grid_points"   ) )
-         s_pts   = parameters.value( "s_grid_points" ).toDouble();
-
-      else if ( parameters.contains( "s_resolution"    ) )
-         s_pts   = parameters.value( "s_resolution" ).toDouble() * grid_reps;
-
-      if ( parameters.contains( "ff0_grid_points" ) )
-         ff0_pts = parameters.value( "ff0_grid_points" ).toDouble();
-
-      else if ( parameters.contains( "ff0_resolution"  ) )
-         ff0_pts = parameters.value( "ff0_resolution" ).toDouble() * grid_reps;
+      int    grid_reps = job_config.params.grid.repetitions();
+      double s_pts     = job_config.params.grid.s_points();
+      double ff0_pts   = job_config.params.grid.ff0_points();
 
       int    nsstep   = (int)( s_pts );
       int    nkstep   = (int)( ff0_pts );
@@ -826,7 +811,7 @@ DbgLv(0) << "ScaledData sum" << dsum << "iSum" << isum << "concen" << concentrat
 DbgLv(1) << "ScaledData fill/solclear complete";
 
       iterations      = 1;
-      max_iterations  = parameters.value( "gfit_iterations" ).toInt();
+      max_iterations  = job_config.params.gfit_iterations;
    }
 }
 
@@ -984,7 +969,7 @@ double datasum = 0.0;
 // With a fixed seed, seed each iteration from the seed, dataset and
 //  iteration index, so its data do not depend on which master group
 //  computes it, and differ between datasets and nearby seeds
-uint   seed = parameters.value( "seed" ).toUInt();
+uint   seed = job_config.params.seed;
 if ( seed != 0 )
 {
    US_Math2::randomize( mc_seed( seed, current_dataset, mc_iteration ) );
