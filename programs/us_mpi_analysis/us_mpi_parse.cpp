@@ -9,13 +9,8 @@ void US_MPI_Analysis::parse( const QString& xmlfile )
    QFile file ( xmlfile );
 
    if ( ! file.open( QIODevice::ReadOnly | QIODevice::Text) )
-   {
-      // Fail quietly - can't use udp yet
-      if ( my_rank == 0 ) DbgLv(0) << "Cannot open file " << xmlfile;
-      printf( "Cannot open file %s\n", xmlfile.toLatin1().data() );
-      printf( "Aborted" );
-      MPI_Finalize();
-      qApp->exit();
+   {  // The udp server is not known yet, so the message goes to stdout only
+      abort( "Cannot open file " + xmlfile );
    }
 
    QString tmst_fn;

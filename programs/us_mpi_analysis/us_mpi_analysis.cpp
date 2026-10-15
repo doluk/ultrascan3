@@ -85,6 +85,9 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
 
    dbg_level    = 0;
    dbg_timing   = false;
+   mc_iterations  = 1;          // Read by abort() before parameters are known
+   max_iterations = 1;
+   port           = 0;          // No udp server until the job xml is parsed
    maxrss       = 0L;
    minimize_opt = 2;
    in_gsm       = false;
@@ -170,7 +173,7 @@ DbgLv(0) << "CmdArg: jxmlfili" << jxmlfili;
    QStringList ffilt;
    QDir    wkdir      = QDir::current();
    QString work_dir   = QDir::currentPath();
-   QString output_dir = work_dir + "/output";
+   output_dir         = work_dir + "/output";
    QString input_dir  = work_dir + "/input";
 
    if ( my_rank == 0 )
@@ -1314,8 +1317,19 @@ void US_MPI_Analysis::abort( const QString& message, int error )
    MPI_Barrier( MPI_COMM_WORLD );     // Sync everybody up so stdout msg first
 
    if ( my_rank == 0 )
-   {  // Create archive file of outputs and remove other output files
-      update_outputs( true );
+   {  // Create archive file of outputs and remove other output files.
+      //  Before all input is read the current directory is the work
+      //  directory, which holds the job's input files: leave it alone.
+      static bool archiving = false;  // update_outputs() may abort, too
+      QDir odir( output_dir );
+
+      if ( ! archiving  &&  ! output_dir.isEmpty()  &&
+           QDir::current() == odir  &&
+           ! odir.entryList( QDir::Files ).isEmpty() )
+      {
+         archiving = true;
+         update_outputs( true );
+      }
    }
 
    DbgLv(0) << my_rank << ": " << message;

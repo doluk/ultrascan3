@@ -175,6 +175,7 @@ class US_MPI_Analysis : public QObject
 
         QString requestID;                  //!< Request ID
         QString directory;                  //!< Directory path
+        QString output_dir;                 //!< Output directory (absolute)
         QString analysis_type;              //!< Analysis type
         QString cluster;                    //!< Cluster name
         QString db_name;                    //!< Database name
