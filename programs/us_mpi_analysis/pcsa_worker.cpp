@@ -59,10 +59,9 @@ DbgLv(1) << "w:" << my_rank << ": offs cnt" << offset << dataset_count
             {
 DbgLv(1) << "w:" << my_rank << ":Recv:PROCESS";
                US_SolveSim::Simulation simulation_values;
-               simulation_values.noisflag    =
-                    ( parameters.value( "tinoise_option" ).toInt() > 0 ? 1 : 0 )
-                  + ( parameters.value( "rinoise_option" ).toInt() > 0 ? 2 : 0 );
-//               simulation_values.dbg_level   = dbg_level;
+               simulation_values.noisflag =
+                  ( job_config.params.tinoise_option > 0 ? 1 : 0 ) + ( job_config.params.rinoise_option > 0 ? 2 : 0 );
+               //               simulation_values.dbg_level   = dbg_level;
                simulation_values.dbg_timing  = dbg_timing;
 
 //if(my_rank==1)
@@ -339,17 +338,8 @@ DbgLv(1) << "w:" << my_rank << ":Recv:NEWDATA  joblen" << job_length;
                {  // For global fits, check the memory requirements
                   long memused    = max_rss();
                   long memdata    = job_length * sizeof( double );
-                  int grid_reps   = qMax( parameters.value( "uniform_grid" ).toInt(), 1 );
-                  double s_pts    = 60.0;
-                  double ff0_pts  = 60.0;
-                  if ( parameters.contains( "s_grid_points"   ) )
-                     s_pts   = parameters.value( "s_grid_points" ).toDouble();
-                  else if ( parameters.contains( "s_resolution"    ) )
-                     s_pts   = parameters.value( "s_resolution" ).toDouble() * grid_reps;
-                  if ( parameters.contains( "ff0_grid_points" ) )
-                     ff0_pts = parameters.value( "ff0_grid_points" ).toDouble();
-                  else if ( parameters.contains( "ff0_resolution"  ) )
-                     ff0_pts = parameters.value( "ff0_resolution" ).toDouble() * grid_reps;
+                  double       s_pts      = job_config.params.grid.s_points();
+                  double       ff0_pts    = job_config.params.grid.ff0_points();
                   int  nsstep     = (int)( s_pts );
                   int  nkstep     = (int)( ff0_pts );
                   int  maxsols    = nsstep * nkstep;
