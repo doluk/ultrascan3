@@ -1,7 +1,8 @@
-#include "us_mpi_analysis.h"
-#include "us_math2.h"
-#include "us_settings.h"
 #include "mpi.h"
+#include "us_math2.h"
+#include "us_mpi_analysis.h"
+#include "us_mpi_jobconfig.h"
+#include "us_settings.h"
 
 //  Parse XML routines
 void US_MPI_Analysis::parse( const QString& xmlfile )
@@ -508,3 +509,122 @@ void US_MPI_Analysis::parse_solution( QXmlStreamReader& xml, DATASET* dataset )
    dataset->vbar20  = US_Math2::calcCommonVbar( dataset->solution_rec, 20.0 );
 }
 
+
+// Transitional check while the parser moves to US_MPI_JobConfig: read the
+//  file again with US_MPI_JobConfig and abort if anything differs from the
+//  result of parse().  Removed once all readers use US_MPI_JobConfig.
+void US_MPI_Analysis::check_job_config( const QString& xmlfile )
+{
+   US_MPI_JobConfig config = US_MPI_JobConfig::fromFile( xmlfile );
+   QStringList      diffs;
+
+   auto             differ = [&diffs]( bool same, const QString& what )
+   {
+      if ( !same )
+      {
+         diffs << what;
+      }
+   };
+   auto speedsteps = []( const QVector<US_SimulationParameters::SpeedProfile>& sps )
+   {
+      QString          text;
+      QXmlStreamWriter xml( &text );
+      for ( auto sp : sps )
+      {
+         US_SimulationParameters::speedstepToXml( xml, &sp );
+      }
+      return text;
+   };
+
+   differ( config.errors.isEmpty(), "errors: " + config.errors.join( "; " ) );
+   differ( config.method == analysis_type, "method" );
+   differ( config.cluster == cluster, "cluster" );
+   differ( config.db_name == db_name, "db_name" );
+   differ( QHostAddress( config.udp_server ) == server, "udp server" );
+   differ( config.udp_port == port, "udp port" );
+   differ( config.request_id == requestID, "request id" );
+   differ( config.request_guid == requestGUID, "request guid" );
+   differ( config.parameters == parameters, "parameters" );
+   differ( config.debug_level() == dbg_level, "debug_level" );
+   differ( config.debug_timings() == dbg_timing, "debug_timings" );
+   if ( parameters.contains( "debug_text" ) )
+   {
+      differ( config.debug_text() == US_Settings::debug_text(), "debug_text" );
+   }
+
+   differ( config.buckets.size() == buckets.size(), "bucket count" );
+   for ( int ii = 0; ii < qMin( config.buckets.size(), buckets.size() ); ii++ )
+   {
+      const US_MPI_JobConfig::Bucket& cb = config.buckets[ii];
+      const Bucket&                   lb = buckets[ii];
+      differ( cb.x_min == lb.x_min && cb.x_max == lb.x_max && cb.y_min == lb.y_min && cb.y_max == lb.y_max,
+              QString( "bucket %1" ).arg( ii ) );
+   }
+
+   QVector<double>              concs;
+   QList<US_SolveSim::DataSet*> dsets = config.make_datasets();
+   differ( dsets.size() == data_sets.size(), "dataset count" );
+
+   for ( int ii = 0; ii < qMin( dsets.size(), data_sets.size() ); ii++ )
+   { // Compare what the file gives; other values are not initialized
+      const US_MPI_JobConfig::DatasetSpec& spec = config.datasets[ii];
+      const US_SolveSim::DataSet*          cd   = dsets[ii];
+      const US_SolveSim::DataSet*          ld   = data_sets[ii];
+      const US_SimulationParameters&       cp   = cd->simparams;
+      const US_SimulationParameters&       lp   = ld->simparams;
+      QString                              dsx  = QString( "dataset %1: " ).arg( ii );
+      concs += spec.total_concentrations;
+
+      differ( cd->auc_file == ld->auc_file, dsx + "auc_file" );
+      differ( cd->edit_file == ld->edit_file, dsx + "edit_file" );
+      differ( cd->tmst_file == ld->tmst_file, dsx + "tmst_file" );
+      differ( cd->noise_files == ld->noise_files, dsx + "noise_files" );
+      differ( speedsteps( cp.speed_step ) == speedsteps( lp.speed_step ), dsx + "speed_step" );
+      differ( cd->solution_rec.analyteInfo == ld->solution_rec.analyteInfo, dsx + "analytes" );
+      if ( spec.has_solution )
+      {
+         differ( cd->vbar20 == ld->vbar20, dsx + "vbar20" );
+      }
+      if ( spec.density )
+      {
+         differ( cd->density == ld->density, dsx + "density" );
+      }
+      if ( spec.viscosity )
+      {
+         differ( cd->viscosity == ld->viscosity, dsx + "viscosity" );
+      }
+      if ( spec.compress )
+      {
+         differ( cd->compress == ld->compress, dsx + "compress" );
+      }
+      if ( spec.manual )
+      {
+         differ( cd->manual == ld->manual, dsx + "manual" );
+      }
+      if ( spec.rotor_stretch[0] )
+      {
+         differ( cd->rotor_stretch[0] == ld->rotor_stretch[0] && cd->rotor_stretch[1] == ld->rotor_stretch[1],
+                 dsx + "rotor_stretch" );
+      }
+      if ( spec.centerpiece_bottom )
+      {
+         differ( cd->centerpiece_bottom == ld->centerpiece_bottom, dsx + "centerpiece_bottom" );
+      }
+      differ( cp.simpoints == lp.simpoints, dsx + "simpoints" );
+      differ( cp.band_volume == lp.band_volume, dsx + "band_volume" );
+      differ( cp.meshType == lp.meshType, dsx + "radial_grid" );
+      differ( cp.gridType == lp.gridType, dsx + "time_grid" );
+      differ( cp.cp_sector == lp.cp_sector, dsx + "centerpiece_shape" );
+      differ( cp.cp_angle == lp.cp_angle, dsx + "centerpiece_angle" );
+      differ( cp.cp_pathlen == lp.cp_pathlen, dsx + "centerpiece_pathlength" );
+      differ( cp.cp_width == lp.cp_width, dsx + "centerpiece_width" );
+   }
+
+   differ( concs == concentrations, "total_concentration" );
+   qDeleteAll( dsets );
+
+   if ( !diffs.isEmpty() )
+   {
+      abort( "US_MPI_JobConfig differs from parse() in " + xmlfile + ": " + diffs.join( ", " ) );
+   }
+}

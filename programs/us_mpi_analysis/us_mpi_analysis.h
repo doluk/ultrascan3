@@ -397,6 +397,7 @@ class US_MPI_Analysis : public QObject
         void     parse_dataset ( QXmlStreamReader&, DATASET* );
         void     parse_files   ( QXmlStreamReader&, DATASET* );
         void     parse_solution( QXmlStreamReader&, DATASET* );
+        void                   check_job_config( const QString& );
         void     send_udp      ( const QString& );
         void     abort         ( const QString&, int=-1 );
         long int max_rss       ( void );
