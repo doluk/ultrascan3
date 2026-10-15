@@ -411,6 +411,9 @@ class US_MPI_Analysis : public QObject
         void                   read_job_config( const QString& );
         void     send_udp      ( const QString& );
         void     abort         ( const QString&, int=-1 );
+        void                   abort_all( const QString&, int = -1 );
+        void                   abort_if_any( const QString& );
+        void                   archive_outputs( void );
         long int max_rss       ( void );
         static void            phys_memory( qint64&, qint64& );
 

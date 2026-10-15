@@ -11,7 +11,7 @@ void US_MPI_Analysis::read_job_config( const QString& xmlfile )
 
    if ( !job_config.errors.isEmpty() )
    { // Cannot open, malformed XML, invalid values
-      abort( job_config.errors.join( "; " ) );
+      abort_all( job_config.errors.join( "; " ) );
    }
 
    analysis_type = job_config.method;
@@ -63,7 +63,7 @@ void US_MPI_Analysis::read_job_config( const QString& xmlfile )
 
    if ( !job_config.errors.isEmpty() )
    {
-      abort( "Invalid job " + xmlfile + ": " + job_config.errors.join( "; " ) );
+      abort_all( "Invalid job " + xmlfile + ": " + job_config.errors.join( "; " ) );
    }
 }
 

@@ -336,7 +336,10 @@ QString US_MPI_Analysis::find_job_file( const QString& hpcfile )
    else
       xmlfile = files[ 0 ];
 
-   if ( files.size() != 1 ) abort( "Could not find unique hpc input file." );
+   if ( files.size() != 1 )
+   {
+      abort_all( "Could not find unique hpc input file." );
+   }
 
    return xmlfile;
 }
@@ -411,62 +414,57 @@ void US_MPI_Analysis::announce_start( const QString& tarfile )
 // Load the edited data of each dataset and apply its noise files
 void US_MPI_Analysis::load_data( void )
 {
-   // Read data 
-   for ( int ii = 0; ii < data_sets.size(); ii++ )
+   // Read data; the first error ends the reading on this rank, and all
+   //  ranks then abort with the error of the first rank that has one
+   QString error;
+
+   for ( int ii = 0; ii < data_sets.size() && error.isEmpty(); ii++ )
    {
-      US_SolveSim::DataSet* dset = data_sets[ ii ];
+      US_SolveSim::DataSet* dset = data_sets[ii];
+      int                   result;
 
       try
       {
-         int result = US_DataIO::loadData( ".", dset->edit_file,
-                                                dset->run_data );
-
-         // Test hook: debug_text "fail_load_rank=<n>" lets rank n fail
-         //  to read the data, as an I/O error on one node would
-         if ( job_config.debug_value( "fail_load_rank" ) == QString::number( my_rank ) )
-            result = US_DataIO::CANTOPEN;
-
-         if ( result != US_DataIO::OK ) throw result;
+         result = US_DataIO::loadData( ".", dset->edit_file, dset->run_data );
       }
-      catch ( int error )
+      catch ( int ierror )
       {
-         QString msg = "Bad data file " + dset->auc_file + " "
-                                        + dset->edit_file;
-         DbgLv( 0 ) << "BAD DATA. error" << error << "rank" << my_rank;
-         abort( msg, error );
+         result = ierror;
       }
-      catch ( US_DataIO::ioError error )
+      catch ( US_DataIO::ioError ioerror )
       {
-         QString msg = "Bad data file " + dset->auc_file + " "
-                                        + dset->edit_file;
-         DbgLv( 0 ) << "BAD DATA. ioError" << error << "rank" << my_rank << proc_count;
-         //if(proc_count!=16)
-         abort( msg, error );
+         result = ioerror;
       }
-      //DbgLv(0) << "Good DATA. rank" << my_rank;
 
-      for ( int jj = 0; jj < dset->noise_files.size(); jj++ )
+      // Test hook: debug_text "fail_load_rank=<n>" lets rank n fail
+      //  to read the data, as an I/O error on one node would
+      if ( job_config.debug_value( "fail_load_rank" ) == QString::number( my_rank ) )
       {
-          US_Noise noise;
+         result = US_DataIO::CANTOPEN;
+      }
 
-          int err = noise.load( dset->noise_files[ jj ] );
+      if ( result != US_DataIO::OK )
+      {
+         DbgLv( 0 ) << "BAD DATA. error" << result << "rank" << my_rank;
+         error = "Bad data file " + dset->auc_file + " " + dset->edit_file;
+         break;
+      }
 
-          if ( err != 0 )
-          {
-             QString msg = "Bad noise file " + dset->noise_files[ jj ];
-             abort( msg );
-          }
+      for ( int jj = 0; jj < dset->noise_files.size() && error.isEmpty(); jj++ )
+      {
+         US_Noise noise;
 
-          if ( noise.apply_to_data( dset->run_data  ) != 0 )
-          {
-             QString msg = "Bad noise file " + dset->noise_files[ jj ];
-             abort( msg );
-          }
+         if ( noise.load( dset->noise_files[jj] ) != 0 || noise.apply_to_data( dset->run_data ) != 0 )
+         {
+            error = "Bad noise file " + dset->noise_files[jj];
+         }
       }
 
       dset->temperature = dset->run_data.average_temperature();
       dset->vbartb      = US_Math2::calcCommonVbar( dset->solution_rec, dset->temperature );
    }
+
+   abort_if_any( error );
 }
 
 // Iteration counts, meniscus and bottom fit values, and the checks of
@@ -554,12 +552,12 @@ void US_MPI_Analysis::set_fit_controls( void )
 
       if ( meniscus_points > 1 )
       {
-         abort( "Meniscus fit is not compatible with global fit" );
+         abort_all( "Meniscus fit is not compatible with global fit" );
       }
 
       if ( concentrations.count() < count_datasets )
       {
-         abort( "Unable to obtain all total_concentrations with global fit" );
+         abort_all( "Unable to obtain all total_concentrations with global fit" );
       }
 
       else
@@ -571,7 +569,7 @@ void US_MPI_Analysis::set_fit_controls( void )
          }
          if ( concen_min <= 0.0 )
          {
-            abort( "Unable to obtain all total_concentrations with global fit" );
+            abort_all( "Unable to obtain all total_concentrations with global fit" );
          }
       }
 
@@ -579,7 +577,7 @@ void US_MPI_Analysis::set_fit_controls( void )
 
    if ( meniscus_points > 1  &&  mc_iterations > 1 )
    {
-      abort( "Meniscus fit is not compatible with Monte Carlo analysis" );
+      abort_all( "Meniscus fit is not compatible with Monte Carlo analysis" );
    }
 
    bool noise = job_config.params.tinoise_option > 0 || job_config.params.rinoise_option > 0;
@@ -587,12 +585,12 @@ void US_MPI_Analysis::set_fit_controls( void )
    if ( ! analysis_type.startsWith( "PCSA" )  &&
         mc_iterations > 1  &&  noise )
    {
-      abort( "Monte Carlo iteration is not compatible with noise computation" );
+      abort_all( "Monte Carlo iteration is not compatible with noise computation" );
    }
 
    if ( is_global_fit  &&  noise )
    {
-      abort( "Global fit is not compatible with noise computation" );
+      abort_all( "Global fit is not compatible with noise computation" );
    }
 
    // Calculate meniscus values
@@ -631,7 +629,7 @@ void US_MPI_Analysis::set_fit_controls( void )
          qDebug() << " last_meniscus" << last_meniscus;
          qDebug() << " left_data" << start_range;
       }
-      abort( "Meniscus value extends into data" );
+      abort_all( "Meniscus value extends into data" );
    }
 
    // Calculate bottom values
@@ -1089,7 +1087,7 @@ void US_MPI_Analysis::check_grid_size( void )
    if ( analysis_type == "GA" )
    {
       if ( buckets.size() < 1 )
-         abort( "No buckets defined" );
+         abort_all( "No buckets defined" );
 
       QList< QRectF > bucket_rects;
       x_max             = buckets[ 0 ].x_max;
@@ -1145,7 +1143,7 @@ void US_MPI_Analysis::check_grid_size( void )
                   continue;
                }
 
-               abort( "Buckets overlap" );
+               abort_all( "Buckets overlap" );
             }
          }
       }
@@ -1218,7 +1216,7 @@ void US_MPI_Analysis::check_grid_size( void )
          qDebug() << smsg;
          printf( "%s", smsg.toLatin1().data() );
       }
-      abort( "Implied Grid Size is Too Large!" );
+      abort_all( "Implied Grid Size is Too Large!" );
    }
    //else
    // qDebug() << "check_grid_size FALSE  x_max" << x_max
@@ -1481,36 +1479,87 @@ void US_MPI_Analysis::phys_memory( qint64& total, qint64& avail )
 #endif
 }
 
-// Send an abort message and do orderly MPI abort
+// Abort the job from this rank alone: report the message (rank 0 also to
+//  the udp server, and archive the outputs), then MPI_Abort.  The other
+//  ranks need not take part, so any rank may call it at any time.
 void US_MPI_Analysis::abort( const QString& message, int error )
 {
+   QString text = ( my_rank == 0 ) ? message : QString( "%1 (rank %2)" ).arg( message ).arg( my_rank );
+   printf( "\n  ***ABORTED***:  %s\n\n", text.toLatin1().data() );
+   fflush( stdout );
+
    if ( my_rank == 0 )
-   { // Send abort message to both stdout and udp
-      US_Sleep::msleep( 1100 );       // Delay a bit so rank 0 completes first
+   {
+      send_udp( "Abort.  " + message );
+      archive_outputs();
+   }
+
+   DbgLv( 0 ) << my_rank << ": " << message;
+   MPI_Abort( MPI_COMM_WORLD, error );
+   exit( error );
+}
+
+// Abort the job from all ranks, which found the same error: rank 0 reports
+//  it and archives the outputs while the others wait, then MPI_Abort.
+//  Collective over MPI_COMM_WORLD.
+void US_MPI_Analysis::abort_all( const QString& message, int error )
+{
+   if ( my_rank == 0 )
+   {
       printf( "\n  ***ABORTED***:  %s\n\n", message.toLatin1().data() );
       fflush( stdout );
       send_udp( "Abort.  " + message );
+      archive_outputs();
    }
 
-   MPI_Barrier( MPI_COMM_WORLD );     // Sync everybody up so stdout msg first
+   MPI_Barrier( MPI_COMM_WORLD ); // Rank 0 reports before the job ends
 
-   if ( my_rank == 0 )
-   { // Create archive file of outputs and remove other output files.
-      //  Before all input is read the current directory is the work
-      //  directory, which holds the job's input files: leave it alone.
-      static bool archiving = false; // update_outputs() may abort, too
-      QDir        odir( output_dir );
-
-      if ( !archiving && !output_dir.isEmpty() && QDir::current() == odir && !odir.entryList( QDir::Files ).isEmpty() )
-      {
-         archiving = true;
-         update_outputs( true );
-      }
-   }
-
-   DbgLv(0) << my_rank << ": " << message;
+   DbgLv( 0 ) << my_rank << ": " << message;
    MPI_Abort( MPI_COMM_WORLD, error );
    exit( error );
+}
+
+// Abort the job from all ranks if any rank found an error (a non-empty
+//  local_error): the message of the first such rank is reported.
+//  Collective over MPI_COMM_WORLD.
+void US_MPI_Analysis::abort_if_any( const QString& local_error )
+{
+   int failed = local_error.isEmpty() ? proc_count : my_rank;
+   int first  = proc_count;
+   MPI_Allreduce( &failed, &first, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD );
+
+   if ( first == proc_count )
+   {
+      return; // No rank failed
+   }
+
+   QByteArray text  = local_error.toUtf8();
+   int        nsize = text.size();
+   MPI_Bcast( &nsize, 1, MPI_INT, first, MPI_COMM_WORLD );
+   text.resize( nsize );
+   MPI_Bcast( text.data(), nsize, MPI_BYTE, first, MPI_COMM_WORLD );
+
+   QString message = QString::fromUtf8( text );
+   if ( first != 0 )
+   {
+      message += QString( " (rank %1)" ).arg( first );
+   }
+   abort_all( message );
+}
+
+// Create the archive of the outputs and remove the other output files
+//  (rank 0).  Before all input is read the current directory is the work
+//  directory, which holds the job's input files: leave it alone.
+void US_MPI_Analysis::archive_outputs( void )
+{
+   static bool archiving = false; // update_outputs() may abort, too
+   QDir        odir( output_dir );
+
+   if ( !archiving && !output_dir.isEmpty() && QDir::current() == odir && !odir.entryList( QDir::Files ).isEmpty() )
+   {
+      archiving = true;
+      update_outputs( true );
+   }
 }
 
 // Create output statistics file
