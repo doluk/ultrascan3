@@ -404,6 +404,7 @@ class US_MPI_Analysis : public QObject
         void                   set_ga_controls( void );
         void                   prepare_datasets( bool&, int&, int&, int& );
         void                   prepare_timestates( int, int, int );
+        static QString         timestate_path( const QString&, const QString& );
         void                   prepare_speed_steps( bool );
         void                   check_grid_size( void );
         void                   choose_groups( void );

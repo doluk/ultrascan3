@@ -661,6 +661,18 @@ void US_MPI_Analysis::set_ga_controls( void )
    minimize_opt               = ( minimize_opt == 0 ? 2 : minimize_opt );
 }
 
+// The path of a dataset's timestate file from the output directory the
+//  analysis runs in: the given file in the work directory, or
+//  <runID>.time_state.tmst if none is given
+QString US_MPI_Analysis::timestate_path( const QString& tmst_file, const QString& runID )
+{
+   if ( tmst_file.isEmpty() )
+   {
+      return "../" + runID + ".time_state.tmst";
+   }
+   return tmst_file.startsWith( "../" ) ? tmst_file : "../" + tmst_file;
+}
+
 // Per dataset: s and D corrections, simulation parameters, data points and
 //  maximum OD (data scaled for a global fit); flag speed steps to compute
 //  from the data and count the timestate files given, existing and at
@@ -742,7 +754,7 @@ void US_MPI_Analysis::prepare_datasets( bool& redo_ss, int& ntmsf_ne, int& ntmsf
       if ( ! ds->tmst_file.isEmpty() )
       {  // Dataset has non-empty timestate file string
          ntmsf_ne++;
-         QString tmst_fpath = "../" + ds->tmst_file;
+         QString   tmst_fpath = timestate_path( ds->tmst_file, ds->run_data.runID );
          QFileInfo check_file( tmst_fpath );
 
          if ( ( check_file.exists() )  &&  ( check_file.isFile() ) )
@@ -831,14 +843,14 @@ void US_MPI_Analysis::prepare_timestates( int ntmsf_ne, int ntmsf_ex, int ntmsf_
          {  // Examine each data set for associated timestate
             US_SolveSim::DataSet*  ds    = data_sets[ ee ];
             ds->simparams.sim  = is_sim;
-            QString tmst_fpath = "../" + ds->tmst_file;
+            QString tmst_fpath           = timestate_path( ds->tmst_file, ds->run_data.runID );
             QString tmst_fdefs = QString( tmst_fpath ).replace( ".tmst", ".xml" );
             QString tmst_fpsav = tmst_fpath + "-orig";
             QString tmst_fdsav = tmst_fdefs + "-orig";
 
             if ( ntmsf_ne == 0 )
             {  // No tmst_file given:  create one
-               tmst_fpath         = "../" + ds->run_data.runID + ".time_state.tmst";
+               tmst_fpath         = timestate_path( QString(), ds->run_data.runID );
                tmst_fdefs         = QString( tmst_fpath ).replace( ".tmst", ".xml" );
 
                if ( ee == 0 )
@@ -867,7 +879,7 @@ void US_MPI_Analysis::prepare_timestates( int ntmsf_ne, int ntmsf_ex, int ntmsf_
                tmst_fdsav         = tmst_fdefs + "-orig";
                QString tmst_fpold = tmst_fpath;
                QString tmst_fdold = tmst_fdefs;
-               tmst_fpath         = "../" + ds->run_data.runID + ".time_state.tmst";
+               tmst_fpath         = timestate_path( QString(), ds->run_data.runID );
                tmst_fdefs         = QString( tmst_fpath ).replace( ".tmst", ".xml" );
 
                if ( ee == 0 )
@@ -892,7 +904,7 @@ void US_MPI_Analysis::prepare_timestates( int ntmsf_ne, int ntmsf_ex, int ntmsf_
                tmst_fdsav         = tmst_fdefs + "-orig";
                QString tmst_fpold = tmst_fpath;
                QString tmst_fdold = tmst_fdefs;
-               tmst_fpath         = "../" + ds->run_data.runID + ".time_state.tmst";
+               tmst_fpath         = timestate_path( QString(), ds->run_data.runID );
                tmst_fdefs         = QString( tmst_fpath ).replace( ".tmst", ".xml" );
 
                if ( ! tmsf_fs.contains( tmst_fpath )  &&
@@ -914,7 +926,7 @@ void US_MPI_Analysis::prepare_timestates( int ntmsf_ne, int ntmsf_ex, int ntmsf_
             else if ( !QFile( tmst_fpath ).exists() )
             { // Timestate file given, but not present:  create one as if
                //  none were given
-               tmst_fpath = "../" + ds->run_data.runID + ".time_state.tmst";
+               tmst_fpath = timestate_path( QString(), ds->run_data.runID );
 
                if ( !tmsf_fs.contains( tmst_fpath ) )
                {
@@ -968,10 +980,7 @@ void US_MPI_Analysis::prepare_timestates( int ntmsf_ne, int ntmsf_ex, int ntmsf_
    for ( int ee = 0; ee < count_datasets; ee++ )
    {
       US_SolveSim::DataSet*  ds    = data_sets[ ee ];
-      ds->tmst_file      = ds->tmst_file.isEmpty() ?
-                           "../" + ds->run_data.runID + ".time_state.tmst" :
-                           ( ds->tmst_file.startsWith( "../" ) ?
-                             ds->tmst_file : "../" + ds->tmst_file );
+      ds->tmst_file                = timestate_path( ds->tmst_file, ds->run_data.runID );
 
       if ( QFile( ds->tmst_file ).exists() )
       {
