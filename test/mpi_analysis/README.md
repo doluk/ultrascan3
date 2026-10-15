@@ -63,6 +63,8 @@ leave the job's input files in the work directory.
 | Case | Input | Expected |
 |---|---|---|
 | `input_hpcxml_missing` | no hpcrequest XML in the archive | abort "Could not find unique hpc input file" |
+| `input_hpcxml_two` | two hpcrequest files in the archive | abort "Could not find unique hpc input file" |
+| `input_hpcxml_named` | the same, `-hpcrequest <file>` | result as `2dsa_basic` |
 | `input_hpcxml_unreadable` | hpcrequest XML cannot be opened | abort "Cannot open ..." |
 | `input_walltime_jobxml_without` | `jobxmlfile.xml` without walltime, `-walltime 60` | maxwalltime 60 |
 | `input_walltime_cmdline_precedence` | `jobxmlfile.xml` walltime 30, `-walltime 60` | maxwalltime 60 (command line wins) |

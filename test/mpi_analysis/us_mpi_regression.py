@@ -224,6 +224,13 @@ def no_hpc_xml(inputs):
     (inputs / HPC_XML).rename(inputs / ("job-" + HPC_XML))
 
 
+def second_hpc_xml(inputs):
+    # Another hpcrequest file; it would abort (unknown method) if read
+    text = (inputs / HPC_XML).read_text()
+    (inputs / "hpcrequest-local-other-2.xml").write_text(
+        re.sub(r'method="[^"]*"', 'method="2DXA"', text, count=1))
+
+
 def unreadable_hpc_xml(inputs):
     # A directory matches the hpc*.xml pattern but cannot be opened as a file
     path = inputs / HPC_XML
@@ -330,6 +337,16 @@ INPUT_CASES = {
         "2dsa_timestate", timestate="missing", debug_log=True,
         expect={"same_as": "2dsa_timestate",
                 "log_absent": r"timestate file does not exist"}),
+
+    # Two hpcrequest files: not unique without -hpcrequest, the one named
+    #  with it
+    "input_hpcxml_two": input_case(
+        "2dsa_basic", prepare=second_hpc_xml,
+        expect={"abort": r"Could not find unique hpc input file"}),
+    "input_hpcxml_named": input_case(
+        "2dsa_basic", prepare=second_hpc_xml,
+        args=["-walltime", "60", "-mgroupcount", "1", "-hpcrequest", HPC_XML],
+        expect={"same_as": "2dsa_basic"}),
 
     # Validation of job parameters (US_MPI_JobConfig::validate)
     "input_invalid_number": input_case(
