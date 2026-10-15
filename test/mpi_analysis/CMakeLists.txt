@@ -89,6 +89,7 @@ set(US_MPI_INPUT_CASES
     input_jobxml_truncated
     input_timestate_missing
     input_master_abort
+    input_single_rank
     input_load_fails_on_worker
     input_invalid_number
     input_missing_required

@@ -354,6 +354,10 @@ INPUT_CASES = {
     "input_master_abort": input_case(
         "2dsa_customgrid", cgrid_subgrids=0, timeout=90,
         expect={"abort": r"no subgrids"}),
+    # One process: the master waited for workers that do not exist
+    "input_single_rank": input_case(
+        "2dsa_basic", np=1, timeout=60,
+        expect={"abort": r"at least 2 processes"}),
     # D2: a data read failing on one worker only (test hook in debug_text)
     "input_load_fails_on_worker": input_case(
         "2dsa_basic", params=lambda p: dict(p, debug_text="fail_load_rank=1"),
