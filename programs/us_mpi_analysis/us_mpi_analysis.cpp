@@ -421,6 +421,11 @@ void US_MPI_Analysis::load_data( void )
          int result = US_DataIO::loadData( ".", dset->edit_file,
                                                 dset->run_data );
 
+         // Test hook: debug_text "fail_load_rank=<n>" lets rank n fail
+         //  to read the data, as an I/O error on one node would
+         if ( job_config.debug_value( "fail_load_rank" ) == QString::number( my_rank ) )
+            result = US_DataIO::CANTOPEN;
+
          if ( result != US_DataIO::OK ) throw result;
       }
       catch ( int error )

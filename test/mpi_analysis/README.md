@@ -74,6 +74,8 @@ leave the job's input files in the work directory.
 | `input_rotor_stretch_short` | `rotor_stretch` with one value | abort naming rotor_stretch |
 | `input_xml_truncated` | global fit XML cut off after the first dataset | abort naming the XML error |
 | `input_jobxml_truncated` | `jobxmlfile.xml` cut off inside its Header | abort naming the XML error |
+| `input_master_abort` | custom grid model without subgrids: the master aborts alone during the run | abort naming the model (was: hang) |
+| `input_load_fails_on_worker` | data read fails on rank 1 only (`debug_text` `fail_load_rank=1`) | abort naming the data file and rank |
 | `input_timestate_missing` | timestate file listed, not in the archive | result as `2dsa_timestate`, timestate created |
 
 | `input_invalid_number` | 2DSA `s_max="ten"` | abort naming `s_max` (was: segfault) |

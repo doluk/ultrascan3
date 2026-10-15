@@ -27,6 +27,7 @@ import math
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tarfile
@@ -348,6 +349,16 @@ INPUT_CASES = {
         args=["-walltime", "60", "-mgroupcount", "1", "-hpcrequest", HPC_XML],
         expect={"same_as": "2dsa_basic"}),
 
+    # D2: an abort on the master alone, during the run: abort() waited in a
+    #     barrier the workers never reach
+    "input_master_abort": input_case(
+        "2dsa_customgrid", cgrid_subgrids=0, timeout=90,
+        expect={"abort": r"no subgrids"}),
+    # D2: a data read failing on one worker only (test hook in debug_text)
+    "input_load_fails_on_worker": input_case(
+        "2dsa_basic", params=lambda p: dict(p, debug_text="fail_load_rank=1"),
+        timeout=90, expect={"abort": r"Bad data file.*rank 1"}),
+
     # Validation of job parameters (US_MPI_JobConfig::validate)
     "input_invalid_number": input_case(
         "2dsa_basic", params=lambda p: dict(p, s_max="ten"),
@@ -450,7 +461,8 @@ def build_archive(name, case, testdata, casedir):
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for kind in ("cgrid", "dmga"):
         if kind in case:
-            subprocess.run([testdata, kind, str(inputs), case[kind]],
+            extra = [str(case["cgrid_subgrids"])] if kind == "cgrid" and "cgrid_subgrids" in case else []
+            subprocess.run([testdata, kind, str(inputs), case[kind]] + extra,
                            check=True, stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL)
     text = job_xml(name, case)
@@ -505,14 +517,17 @@ def run_job(name, case, args):
     cmd += [archive.name]
     # The log is kept outside the work directory, which a defect may clear
     log = casedir.parent / ("%s.log" % name)
-    try:
-        with open(log, "w") as out:
-            proc = subprocess.run(cmd, cwd=casedir, env=env, stdout=out,
-                                  stderr=subprocess.STDOUT,
-                                  timeout=case.get("timeout", args.timeout))
-        status = proc.returncode
-    except subprocess.TimeoutExpired:
-        status = "timeout"
+    with open(log, "w") as out:
+        # Own process group, so that a hanging run is stopped completely
+        proc = subprocess.Popen(cmd, cwd=casedir, env=env, stdout=out,
+                                stderr=subprocess.STDOUT,
+                                start_new_session=True)
+        try:
+            status = proc.wait(timeout=case.get("timeout", args.timeout))
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait()
+            status = "timeout"
     results = casedir / "output" / "analysis-results.tar"
     return status, log.read_text(errors="replace"), results
 
@@ -689,7 +704,7 @@ def all_finite(summary):
 
 def check_input_case(name, case, args, reference):
     """Run an input case; return a list of errors (empty if it passed)."""
-    case = dict(case, timeout=min(args.timeout, INPUT_TIMEOUT))
+    case = dict(case, timeout=min(args.timeout, case.get("timeout", INPUT_TIMEOUT)))
     expect = case["expect"]
     status, text, results = run_job(name, case, args)
     tail = "\n      ".join(text.splitlines()[-12:])

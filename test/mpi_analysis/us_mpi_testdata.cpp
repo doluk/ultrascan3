@@ -10,7 +10,7 @@
 //!
 //! Usage:
 //!   us_mpi_testdata data   <outdir> <runID> <cell> <seed> <scale> [tmst]
-//!   us_mpi_testdata cgrid  <outdir> <filename>
+//!   us_mpi_testdata cgrid  <outdir> <filename> [subgrids]
 //!   us_mpi_testdata dmga   <outdir> <filename>
 //!
 //! "data" writes <runID>.RI.<cell>.A.260.auc and the edit file
@@ -252,14 +252,14 @@ int write_data( const QString& outdir, const QString& runID, int cell, uint64_t 
    return 0;
 }
 
-int write_custom_grid( const QString& outdir, const QString& filename )
+int write_custom_grid( const QString& outdir, const QString& filename, int subgrids )
 {
    // A small s/vbar custom grid with fixed f/f0, split into 4 subgrids
    US_Model model;
    model.description = "regression custom grid";
    model.modelGUID   = "00000000-0000-4000-8000-00000000c9d0";
    model.analysis    = US_Model::CUSTOMGRID;
-   model.subGrids    = 4;
+   model.subGrids    = subgrids;
 
    for ( int ii = 0; ii < 24; ii++ )
    {
@@ -344,9 +344,9 @@ int main( int argc, char* argv[] )
       return write_data( args[2], args[3], args[4].toInt(), args[5].toULongLong(), args[6].toDouble(), args.size() == 8 );
    }
 
-   if ( args.size() == 4 && args[1] == "cgrid" )
+   if ( ( args.size() == 4 || args.size() == 5 ) && args[1] == "cgrid" )
    {
-      return write_custom_grid( args[2], args[3] );
+      return write_custom_grid( args[2], args[3], args.size() == 5 ? args[4].toInt() : 4 );
    }
 
    if ( args.size() == 4 && args[1] == "dmga" )
@@ -356,7 +356,7 @@ int main( int argc, char* argv[] )
 
    fprintf( stderr,
             "usage: %s data <outdir> <runID> <cell> <seed> <scale> [tmst]\n"
-            "       %s cgrid <outdir> <filename>\n"
+            "       %s cgrid <outdir> <filename> [subgrids]\n"
             "       %s dmga  <outdir> <filename>\n",
             argv[0],
             argv[0],
