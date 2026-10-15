@@ -421,7 +421,9 @@ void US_MPI_Analysis::load_data( void )
 {
    // Read data; the first error ends the reading on this rank, and all
    //  ranks then abort with the error of the first rank that has one
-   QString error;
+   QString       error;
+   QElapsedTimer timer;
+   timer.start();
 
    for ( int ii = 0; ii < data_sets.size() && error.isEmpty(); ii++ )
    {
@@ -467,6 +469,25 @@ void US_MPI_Analysis::load_data( void )
 
       dset->temperature = dset->run_data.average_temperature();
       dset->vbartb      = US_Math2::calcCommonVbar( dset->solution_rec, dset->temperature );
+   }
+
+   if ( dbg_timing )
+   { // Time to read the data, over the ranks (each reads all datasets)
+      double msecs = (double) timer.elapsed();
+      double npts  = 0.0;
+      for ( US_SolveSim::DataSet* dset : data_sets )
+      {
+         npts += (double) dset->run_data.scanCount() * dset->run_data.pointCount();
+      }
+      double tmin = 0.0, tmax = 0.0, tsum = 0.0;
+      MPI_Reduce( &msecs, &tmin, 1, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD );
+      MPI_Reduce( &msecs, &tmax, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD );
+      MPI_Reduce( &msecs, &tsum, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD );
+      if ( my_rank == 0 )
+      {
+         DbTiming << "TIMING: load_data ranks" << proc_count << "datasets" << data_sets.size() << "points" << npts
+                  << "msec min mean max" << tmin << tsum / proc_count << tmax;
+      }
    }
 
    abort_if_any( error );
