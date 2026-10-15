@@ -362,8 +362,12 @@ void US_MPI_Analysis::parse_dataset( QXmlStreamReader& xml, DATASET* dataset )
 
       if ( xml.name() == "rotor_stretch" )
       {
-         QStringList stretch  = 
-            a.value( "value" ).toString().split( " ", Qt::SkipEmptyParts );
+         QString     svalue   = a.value( "value" ).toString();
+         QStringList stretch  = svalue.split( " ", Qt::SkipEmptyParts );
+
+         if ( stretch.size() < 2 )
+            abort( "Invalid rotor_stretch value \"" + svalue
+                   + "\": two coefficients expected" );
 
          dataset->rotor_stretch[ 0 ] = stretch[ 0 ].toDouble();
          dataset->rotor_stretch[ 1 ] = stretch[ 1 ].toDouble();
