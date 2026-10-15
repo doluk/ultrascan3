@@ -273,12 +273,12 @@ int write_dmga_constraints( const QString& outdir, const QString& filename )
    // s and f/f0 float in a range around each simulated species, vbar is
    //  fixed, the concentration floats
    typedef US_dmGA_Constraints C;
-   US_Model bmodel = sample_model( 1.0 );
-   C        constraints;
+   US_Model                    bmodel = sample_model( 1.0 );
+   C                           constraints;
    constraints.load_base_model( &bmodel );
 
-   QVector< C::Constraint > cnsv;
-   auto add = [ &cnsv ]( C::AttribType atype, int mcompx, double low, double high, bool floats )
+   QVector<C::Constraint> cnsv;
+   auto                   add = [&cnsv]( C::AttribType atype, int mcompx, double low, double high, bool floats )
    {
       C::Constraint cns;
       cns.atype  = atype;
