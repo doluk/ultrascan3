@@ -69,6 +69,19 @@ leave the job's input files in the work directory.
 | `input_xml_truncated` | global fit XML cut off after the first dataset | abort naming the XML error |
 | `input_jobxml_truncated` | `jobxmlfile.xml` cut off inside its Header | abort naming the XML error |
 
+Cases marked *pending* document a defect whose fix is still to come.  They
+are reported as XFAIL while they fail and as an error (XPASS) once they
+pass, so that the marker gets removed with the fix.
+
+| Case (pending phase 2) | Input | Current behaviour | Expected |
+|---|---|---|---|
+| `input_invalid_number` | 2DSA `s_max="ten"` | segfault | abort naming `s_max` |
+| `input_missing_required` | 2DSA without `s_max` | segfault | abort naming `s_max` |
+| `input_unknown_method` | method `2DXA` | "finished successfully", no output | abort naming the method |
+| `input_meniscus_points_negative` | `meniscus_points="-3"` | run without meniscus fit | abort naming `meniscus_points` |
+| `input_bucket_inverted` | GA bucket with s_min > s_max | runs | abort naming the bucket |
+| `input_unknown_key` | additional parameter `s_mx` | ignored silently | warning, result as `2dsa_basic` |
+
 ## Running
 
 The tests need a build with MPI, programs and tests, without the database:

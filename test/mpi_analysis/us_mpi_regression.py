@@ -240,6 +240,12 @@ def jobxml_file(truncate=False, **entries):
     return prepare
 
 
+def set_method(method):
+    def edit(text):
+        return re.sub(r'method="[^"]*"', 'method="%s"' % method, text, count=1)
+    return edit
+
+
 def truncate_after_first_dataset(text):
     # As a file cut off in transfer: the second dataset is missing entirely
     end = text.index("</dataset>") + len("</dataset>")
@@ -260,6 +266,10 @@ def input_case(base, **changes):
 #   same_as     case whose result this run must reproduce exactly
 #   finite      all fitted values must be finite numbers
 #   loose_vs    case whose RMSD this run must not exceed by more than 15 %
+#   log         regex the run log must match
+# A case with "pending" documents a defect whose fix is still to come: it is
+# reported as XFAIL while it fails and as an error once it passes, so that
+# the marker gets removed.
 INPUT_CASES = {
     # A9: an abort before the inputs are read archives and removes the
     #     files of the work directory (the job's input files)
@@ -303,6 +313,28 @@ INPUT_CASES = {
     "input_jobxml_truncated": input_case(
         "2dsa_basic", prepare=jobxml_file(truncate=True, walltime="30"),
         expect={"abort": r"XML"}),
+
+    # Validation of job parameters (JobConfig, phase 2)
+    "input_invalid_number": input_case(
+        "2dsa_basic", params=lambda p: dict(p, s_max="ten"),
+        expect={"abort": r"s_max"}, pending="phase 2"),
+    "input_missing_required": input_case(
+        "2dsa_basic", params=lambda p: without(p, ("s_max",)),
+        expect={"abort": r"s_max"}, pending="phase 2"),
+    "input_unknown_method": input_case(
+        "2dsa_basic", edit_xml=set_method("2DXA"),
+        expect={"abort": r"2DXA"}, pending="phase 2"),
+    "input_meniscus_points_negative": input_case(
+        "2dsa_meniscus", params=lambda p: dict(p, meniscus_points="-3"),
+        expect={"abort": r"meniscus_points"}, pending="phase 2"),
+    "input_bucket_inverted": input_case(
+        "ga_np2", buckets=GA_BUCKETS + [(9.5, 8.6, 1.0, 2.0)],
+        expect={"abort": r"[Bb]ucket"}, pending="phase 2"),
+    # An unknown parameter is reported, the run goes on
+    "input_unknown_key": input_case(
+        "2dsa_basic", params=lambda p: dict(p, s_mx="10.0"),
+        expect={"same_as": "2dsa_basic", "log": r"[Uu]nknown parameter.*s_mx"},
+        pending="phase 2"),
 }
 
 # Default comparison tolerances.  RMSD differences are relative; solute
@@ -641,6 +673,8 @@ def check_input_case(name, case, args, reference):
         return ["us_mpi_analysis failed (exit %s)\n      %s" % (status, tail)]
 
     errors = []
+    if "log" in expect and not re.search(expect["log"], text):
+        errors.append("log does not match /%s/" % expect["log"])
     summary = summarize(results)
     for key, value in expect.get("statistics", {}).items():
         got = job_statistics(results).get(key)
@@ -704,12 +738,22 @@ def main():
         if name in INPUT_CASES:
             if args.command == "update":
                 continue    # Input cases have no baseline
-            errors = check_input_case(name, INPUT_CASES[name], args, reference)
-            if errors:
+            case = INPUT_CASES[name]
+            errors = check_input_case(name, case, args, reference)
+            pending = case.get("pending")
+            if errors and pending:
+                print("%s: XFAIL (pending %s)" % (name, pending))
+                for err in errors[:5]:
+                    print("   " + err)
+            elif errors:
                 failed += 1
                 print("%s: FAIL" % name)
                 for err in errors[:40]:
                     print("   " + err)
+            elif pending:
+                failed += 1
+                print("%s: XPASS -- remove the pending marker (%s)"
+                      % (name, pending))
             else:
                 print("%s: OK" % name)
             continue

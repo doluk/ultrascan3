@@ -59,6 +59,12 @@ set(US_MPI_INPUT_CASES
     input_rotor_stretch_short
     input_xml_truncated
     input_jobxml_truncated
+    input_invalid_number
+    input_missing_required
+    input_unknown_method
+    input_meniscus_points_negative
+    input_bucket_inverted
+    input_unknown_key
 )
 
 foreach(case ${US_MPI_CASES} ${US_MPI_INPUT_CASES})
