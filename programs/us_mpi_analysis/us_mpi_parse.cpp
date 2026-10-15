@@ -100,6 +100,13 @@ if (my_rank==0) DbgLv(0) << "PF: solute_type" << d->solute_type
       }
    }
 
+   if ( xml.hasError() )
+   {  // A malformed or truncated file: do not run with what was read
+      abort( QString( "XML error in %1, line %2 column %3: %4" )
+             .arg( xmlfile ).arg( xml.lineNumber() )
+             .arg( xml.columnNumber() ).arg( xml.errorString() ) );
+   }
+
    file.close();
 
    if ( parameters.contains( "debug_text" ) )
