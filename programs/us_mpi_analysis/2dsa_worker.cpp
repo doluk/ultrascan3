@@ -49,39 +49,14 @@ DbgLv(1) << "w:" << my_rank << ": job_recvd  length" << job.length
       int noisflag       = ( parameters[ "tinoise_option" ].toInt() > 0 ?  1 : 0 )
                          + ( parameters[ "rinoise_option" ].toInt() > 0 ?  2 : 0 );
 DbgLv(1) << "w:" << my_rank << ": offs cnt" << offset << dataset_count;
-      data_sets[ offset ]->simparams.primaryFit = primaryFit;
-      data_sets[ offset ]->simparams.secondaryFit = secondaryFit;
-      if (primaryFit != US_SimulationParameters::NOTHING)
-      {
-         data_sets[ offset ]->simparams.set_parameter_value( primaryFit, meniscus_value );
-      }
-      if (secondaryFit != US_SimulationParameters::NOTHING)
-      {
-         data_sets[ offset ]->simparams.set_parameter_value( secondaryFit, bottom_value );
-      }
-      data_sets[ offset ]->run_data.meniscus  = data_sets[ offset ]->simparams.meniscus;
-      data_sets[ offset ]->run_data.bottom   = data_sets[ offset ]->simparams.bottom;
-      data_sets[ offset ]->vbar20 = data_sets[offset]->simparams.vbar;
-      if ( primaryFit == US_SimulationParameters::VBAR || secondaryFit == US_SimulationParameters::VBAR )
-      {
-         double avTemp = data_sets[offset]->run_data.average_temperature();
-         US_Math2::SolutionData sd;
-         sd.density      = data_sets[offset]->solution_rec.buffer.density;
-         sd.viscosity    = data_sets[offset]->solution_rec.buffer.viscosity;
-         sd.vbar20       = data_sets[offset]->vbar20;
-         sd.vbar         = US_Math2::adjust_vbar20(sd.vbar20, avTemp);
-         sd.manual       = data_sets[offset]->solution_rec.buffer.manual;
-         US_Math2::data_correction( avTemp, sd );
-         data_sets[offset]->s20w_correction = sd.s20w_correction;
-         data_sets[offset]->D20w_correction = sd.D20w_correction;
-      }
-
 
       switch( job.command )
       {
 
          case MPI_Job::PROCESS:  // Process solutes
             {
+               worker_fit_context( offset, meniscus_value, bottom_value );
+
                US_SolveSim::Simulation simulation_values;
                simulation_values.noisflag    = noisflag;
                simulation_values.dbg_level   = dbg_level;
@@ -230,18 +205,11 @@ DbgLv(1) << "w:" << my_rank << ":   result sols size" << size[0]
                   gb_need         = qRound( gb_need * 1000.0 ) * 0.001;
                   double gb_used  = (double)memused / mb_bytes;
                   gb_used         = qRound( gb_used * 1000.0 ) * 0.001;
-                  long pgavail    = sysconf( _SC_PHYS_PAGES );
-                  long pgsize     = sysconf( _SC_PAGE_SIZE );
-                  long memavail   = pgavail * pgsize;
+                  qint64 memavail         = 0;
+                  qint64 memcurav         = 0; // Stays 0 where not reported (macOS)
+                  phys_memory( memavail, memcurav );
                   double gb_avail = (double)memavail / gb_bytes;
                   gb_avail        = qRound( gb_avail * 1000.0 ) * 0.001;
-#ifdef _SC_AVPHYS_PAGES
-                  long pgcurav    = sysconf( _SC_AVPHYS_PAGES );
-                  long memcurav   = pgcurav * pgsize;
-#else
-                  // _SC_AVPHYS_PAGES is Linux-only; on macOS report 0
-                  long memcurav   = 0L;
-#endif
                   double gb_curav = (double)memcurav / gb_bytes;
                   gb_curav        = qRound( gb_curav * 1000.0 ) * 0.001;
 
@@ -326,3 +294,45 @@ DbgLv(1) << "newD:" << my_rank << "  length index" << job_length << index
    }  // repeat_loop
 }
 
+// Apply a job's primary and secondary fit values (carried as the meniscus
+//  and bottom values) to its dataset.  This is the workers' fit-context
+//  entry point; returns true if the simulation parameters differ from
+//  those of the previous job.
+bool US_MPI_Analysis::worker_fit_context( int offset, double meniscus, double bottom )
+{
+   US_SolveSim::DataSet* ds = data_sets[offset];
+   ds->simparams.primaryFit   = primaryFit;
+   ds->simparams.secondaryFit = secondaryFit;
+   if ( primaryFit != US_SimulationParameters::NOTHING )
+   {
+      ds->simparams.set_parameter_value( primaryFit, meniscus );
+   }
+   if ( secondaryFit != US_SimulationParameters::NOTHING )
+   {
+      ds->simparams.set_parameter_value( secondaryFit, bottom );
+   }
+   ds->run_data.meniscus = ds->simparams.meniscus;
+   ds->run_data.bottom   = ds->simparams.bottom;
+   ds->vbar20            = ds->simparams.vbar;
+   if ( primaryFit == US_SimulationParameters::VBAR || secondaryFit == US_SimulationParameters::VBAR )
+   {
+      double avTemp = ds->run_data.average_temperature();
+      US_Math2::SolutionData sd;
+      sd.density   = ds->solution_rec.buffer.density;
+      sd.viscosity = ds->solution_rec.buffer.viscosity;
+      sd.vbar20    = ds->vbar20;
+      sd.vbar      = US_Math2::adjust_vbar20( sd.vbar20, avTemp );
+      sd.manual    = ds->solution_rec.buffer.manual;
+      US_Math2::data_correction( avTemp, sd );
+      ds->s20w_correction = sd.s20w_correction;
+      ds->D20w_correction = sd.D20w_correction;
+   }
+
+   bool sim_changed = ( fit_context.dataset != offset || fit_context.meniscus != meniscus || fit_context.bottom != bottom );
+
+   fit_context.dataset  = offset;
+   fit_context.meniscus = meniscus;
+   fit_context.bottom   = bottom;
+
+   return sim_changed;
+}

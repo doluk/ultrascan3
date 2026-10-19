@@ -40,8 +40,7 @@ class US_UTIL_EXTERN US_StiffBase
       //! \param D    Diffusion coefficient
       //! \param sw2  Omega-squared
       //! \param Stif Stif matrix
-      void CompLocalStifRect( double, double, double, double, double,
-                              double** ) const;
+      void CompLocalStifRect( double x0, double x1, double dt, double D, double sw2, double** Stif ) const;
 
    private:
       // parameters for triangular elements
@@ -76,11 +75,11 @@ class US_UTIL_EXTERN US_StiffBase
       //  (phi) and derivatives (d/dxi = phi1, d/deta = phi2), weighted by
       //  1, xi or xi^2, for rectangle elements (CompLocalStifRect):
       //  A = phi2_j phi_i, B = phi1_j phi1_i, C = phi_j phi1_i
-      double   momA[ 2 ][ 4 ][ 4 ];
-      double   momB[ 2 ][ 4 ][ 4 ];
-      double   momC[ 3 ][ 4 ][ 4 ];
+      double   momA[2][4][4];
+      double   momB[2][4][4];
+      double   momC[3][4][4];
 
-      void RectMoments( void );
+      void     RectMoments();
 }; 
 #endif
 
