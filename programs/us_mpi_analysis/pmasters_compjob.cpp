@@ -52,9 +52,9 @@ DbgLv(1) << "COMM_SPLIT (g r m)" << my_group << group_rank << my_rank
    }
 
 DbgLv(1) << "Final-my_rank" << my_rank << " msecs=" << startTime.msecsTo(QDateTime::currentDateTime());
-free_node_comm();
-MPI_Finalize();
-exit( 0 );
+   free_node_comm();
+   MPI_Finalize();
+   exit( 0 );
 }
 
 // Parallel-masters supervisor

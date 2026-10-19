@@ -12,11 +12,13 @@ void US_MPI_Analysis::_2dsa_worker( void )
 
    // Use 4 here because the master will be reading 4 with the
    // same instruction when reading ::READY or ::RESULTS.
-   int x[ 4 ];
+   int x[ 4 ] = { 0, 0, 0, 0 };
 
    while ( repeat_loop )
    {
-      MPI_Send( x, // Basically don't care
+      x[ 3 ] = (int)max_rss();  // Memory use, as with ::RESULTS
+
+      MPI_Send( x,
                 4,
                 MPI_INT,
                 MPI_Job::MASTER,
