@@ -20,6 +20,13 @@ bottom, and all stop at the latest when the grid is exhausted):
                 scanned meniscus and a scanned bottom line, then descent
   line_descent  one meniscus line through the centre bottom, then descent
   descent       descent from the centre
+  gn            Gauss-Newton on meniscus and bottom (svbench.gn), emulated
+                on a cubic-spline surrogate of RMSD^2 between the grid
+                nodes; continuous, so every estimator column holds the
+                Gauss-Newton result.  n_eval counts every simulation of
+                the proposal as a 2DSA fit; n_eval_proj counts only the
+                baseline and the line-search trials (perturbations as cheap
+                forward simulations with the fitted solutes held fixed).
 
 Descent (on the grid):  evaluate the 3x3 around the current point; move to
 the best of them if it is strictly better than the current point; repeat.
@@ -66,9 +73,12 @@ import os
 
 import numpy as np
 
+from . import gn as gnmod
 from .design import ARMS, FACTORS
 
-STRATEGIES = ["full", "lines", "lines_fill", "line_descent", "descent"]
+STRATEGIES = ["full", "lines", "lines_fill", "line_descent", "descent",
+              "gn"]
+GRID_STRATEGIES = STRATEGIES[:-1]
 ESTIMATORS = ["legacy", "local", "none", "quad", "best"]
 
 
@@ -303,6 +313,9 @@ def replay(run):
     ref = estimate(full, "legacy")
     rows = []
     for s in STRATEGIES:
+        if s == "gn":
+            rows.append(_gn_row(run, full, gmin, gargs, ref))
+            continue
         g = Grid(pts)
         STRATEGY_FN[s](g)
         b = g.best()
@@ -310,7 +323,7 @@ def replay(run):
                "build": run.get("build", ""),
                "workflow": run.get("workflow", ""), "strategy": s,
                "grid": "%dx%d" % (g.nm, g.nb), "n_grid": g.nm * g.nb,
-               "n_eval": len(g.known),
+               "n_eval": len(g.known), "n_eval_proj": len(g.known),
                "found_min": g.known[b] == gmin,
                "dist_min": min(max(abs(b[0] - q[0]), abs(b[1] - q[1]))
                                for q in gargs),
@@ -322,14 +335,56 @@ def replay(run):
             row["bot_err_" + e] = bt - truth["bottom"]
             row["men_dref_" + e] = m - ref[0]
             row["bot_dref_" + e] = bt - ref[1]
-        for f in FACTORS:
-            row[f] = t.get(f, "")
-        row["identifiable"] = run["metrics"].get("identifiable", "")
-        row["reasonable"] = run["metrics"].get("reasonable", "")
-        row["bottom_edit_err"] = truth["edit_bottom"] - truth["bottom"]
-        row["meniscus_edit_err"] = truth["edit_meniscus"] - truth["meniscus"]
+        _context(row, run)
         rows.append(row)
     return rows, ref
+
+
+def _context(row, run):
+    t, truth = run["task"], run["truth"]
+    for f in FACTORS:
+        row[f] = t.get(f, "")
+    row["identifiable"] = run["metrics"].get("identifiable", "")
+    row["reasonable"] = run["metrics"].get("reasonable", "")
+    row["bottom_edit_err"] = truth["edit_bottom"] - truth["bottom"]
+    row["meniscus_edit_err"] = truth["edit_meniscus"] - truth["meniscus"]
+
+
+def _surrogate(full):
+    return gnmod.Surrogate(full.meni, full.bott, full.rmsd)
+
+
+def _gn_row(run, full, gmin, gargs, ref):
+    """Gauss-Newton from the grid centre (the edit values)."""
+    truth = run["truth"]
+    res = gnmod.gauss_newton(_surrogate(full),
+                             (full.meni[full.nm // 2], full.bott[full.nb // 2]))
+    hm = (full.meni[-1] - full.meni[0]) / max(full.nm - 1, 1)
+    hb = (full.bott[-1] - full.bott[0]) / max(full.nb - 1, 1)
+    near = (int(round((res["meniscus"] - full.meni[0]) / hm)) if full.nm > 1
+            else 0,
+            int(round((res["bottom"] - full.bott[0]) / hb)) if full.nb > 1
+            else 0)
+    row = {"task": run["task"]["task"], "arm": run["arm"],
+           "build": run.get("build", ""), "workflow": run.get("workflow", ""),
+           "strategy": "gn", "grid": "%dx%d" % (full.nm, full.nb),
+           "n_grid": full.nm * full.nb, "n_eval": res["fits_full"],
+           "n_eval_proj": res["fits_proj"],
+           "found_min": full.known[near] == gmin,
+           "dist_min": min(max(abs(near[0] - q[0]), abs(near[1] - q[1]))
+                           for q in gargs),
+           "on_edge": near[0] in (0, full.nm - 1)
+           or near[1] in (0, full.nb - 1),
+           "rmsd_excess": full.known[near] / gmin - 1.0,
+           "gn_status": res["status"], "gn_iterations": res["iterations"],
+           "gn_bottom_flat": res["bottom_flat"]}
+    for e in ESTIMATORS:
+        row["men_err_" + e] = res["meniscus"] - truth["meniscus"]
+        row["bot_err_" + e] = res["bottom"] - truth["bottom"]
+        row["men_dref_" + e] = res["meniscus"] - ref[0]
+        row["bot_dref_" + e] = res["bottom"] - ref[1]
+    _context(row, run)
+    return row
 
 
 START_EST = ["legacy", "quad"]
@@ -342,6 +397,7 @@ def start_scan(run):
     full = Grid(pts)
     s_full(full)
     f_est = {e: estimate(full, e) for e in START_EST}
+    sur = _surrogate(full)
     rows = []
     for i in range(full.nm):
         g = Grid(pts)
@@ -354,6 +410,10 @@ def start_scan(run):
         for e in START_EST:
             row["men_err_" + e] = estimate(g, e)[0] - truth["meniscus"]
             row["men_err_full_" + e] = f_est[e][0] - truth["meniscus"]
+        res = gnmod.gauss_newton(sur, (full.meni[i], full.bott[full.nb // 2]))
+        row["men_err_gn"] = res["meniscus"] - truth["meniscus"]
+        row["n_eval_gn"] = res["fits_full"]
+        row["n_eval_gn_proj"] = res["fits_proj"]
         rows.append(row)
     return rows
 
@@ -365,9 +425,9 @@ def _start_report(srows, arms):
     print("\nDescent started from every meniscus grid point (identifiable "
           "runs);\n|start - truth| in um; full = full grid, same runs.  "
           "med/p95 of |meniscus error| (um)")
-    print("%-11s %-9s %6s %5s | %-15s %-15s | %-15s %-15s" % (
+    print("%-11s %-9s %6s %5s | %-15s %-15s | %-15s %-15s | %-15s %s" % (
         "arm", "start", "n", "evals", "descent legacy", "full legacy",
-        "descent quad", "full quad"))
+        "descent quad", "full quad", "gauss-newton", "fits full/proj"))
     for arm in arms:
         ar = [r for r in srows if r["arm"] == arm
               and r["identifiable"] is True]
@@ -379,10 +439,12 @@ def _start_report(srows, arms):
             def mq(k):
                 v = np.abs([r[k] for r in b]) * u
                 return "%6.1f %6.1f  " % (_q(v, 50), _q(v, 95))
-            print("%-11s %3d-%3d   %6d %5.1f | %s %s | %s %s" % (
+            print("%-11s %3d-%3d   %6d %5.1f | %s %s | %s %s | %s %5.1f/%4.1f" % (
                 arm, lo, hi, len(b), np.mean([r["n_eval"] for r in b]),
                 mq("men_err_legacy"), mq("men_err_full_legacy"),
-                mq("men_err_quad"), mq("men_err_full_quad")))
+                mq("men_err_quad"), mq("men_err_full_quad"),
+                mq("men_err_gn"), np.mean([r["n_eval_gn"] for r in b]),
+                np.mean([r["n_eval_gn_proj"] for r in b])))
 
 
 def load(outdir):
@@ -417,7 +479,12 @@ def _summ(rows):
            "eval_fraction": (n / np.array([r["n_grid"] for r in rows])).mean(),
            "found_min": np.mean([r["found_min"] for r in rows]),
            "dist_min_max": max(r["dist_min"] for r in rows),
-           "rmsd_excess_p95": _q([r["rmsd_excess"] for r in rows], 95)}
+           "rmsd_excess_p95": _q([r["rmsd_excess"] for r in rows], 95),
+           "n_eval_proj_mean": np.mean([r["n_eval_proj"] for r in rows])}
+    st = [r["gn_status"] for r in rows if "gn_status" in r]
+    if st:
+        out["gn_converged"] = np.mean([x == "converged" for x in st])
+        out["gn_bottom_flat"] = np.mean([r["gn_bottom_flat"] for r in rows])
     for e in ESTIMATORS:
         for k in ("men", "bot"):
             err = np.abs([r["%s_err_%s" % (k, e)] for r in rows])
@@ -526,7 +593,9 @@ def run(outdir, dest, check=True):
                       mismatch, skipped, dest))
     print("um = 1e-4 cm.  excess: RMSD of the best point found / grid "
           "minimum - 1 (p95, %).\n|dfull|: difference to the full-grid "
-          "legacy fit (p95).  med/p95: absolute error against the truth.")
+          "legacy fit (p95).  med/p95: absolute error against the truth.\n"
+          "n proj: 2DSA fits if perturbations are forward simulations "
+          "(Gauss-Newton only; equal to n otherwise).")
     u = 1e4
     for arm in arms:
         for sub in ("all", "identifiable"):
@@ -536,25 +605,31 @@ def run(outdir, dest, check=True):
             print("\n%s (build %s, workflow %s), %s runs: %d"
                   % (arm, sa[0]["build"], sa[0]["workflow"], sub,
                      sa[0]["runs"]))
-            print("%-13s %6s %6s %7s | %-24s | %-24s | %s" % (
-                "", "n", "found", "excess", "meniscus legacy (um)",
-                "meniscus none (um)", "bottom legacy (um)"))
-            print("%-13s %6s %6s %7s | %7s %7s %8s | %7s %7s %8s | "
-                  "%7s %7s %8s" % (("strategy", "mean", "min", "p95 %")
-                                   + ("med", "p95", "|dfull|") * 3))
+            print("%-13s %6s %6s %6s %7s | %-24s | %-24s | %s" % (
+                "", "n", "n", "found", "excess", "meniscus legacy (um)",
+                "meniscus quad (um)", "bottom legacy (um)"))
+            print("%-13s %6s %6s %6s %7s | %7s %7s %8s | %7s %7s %8s | "
+                  "%7s %7s %8s" % (("strategy", "mean", "proj", "min",
+                                    "p95 %") + ("med", "p95", "|dfull|") * 3))
             for x in sa:
-                print("%-13s %6.1f %6.3f %7.3f | %7.1f %7.1f %8.1f | "
+                print("%-13s %6.1f %6.1f %6.3f %7.3f | %7.1f %7.1f %8.1f | "
                       "%7.1f %7.1f %8.1f | %7.1f %7.1f %8.1f" % (
-                          x["strategy"], x["n_eval_mean"], x["found_min"],
+                          x["strategy"], x["n_eval_mean"],
+                          x["n_eval_proj_mean"], x["found_min"],
                           100 * x["rmsd_excess_p95"],
                           u * x["men_abserr_median_legacy"],
                           u * x["men_abserr_p95_legacy"],
                           u * x["men_dref_p95_legacy"],
-                          u * x["men_abserr_median_none"],
-                          u * x["men_abserr_p95_none"],
-                          u * x["men_dref_p95_none"],
+                          u * x["men_abserr_median_quad"],
+                          u * x["men_abserr_p95_quad"],
+                          u * x["men_dref_p95_quad"],
                           u * x["bot_abserr_median_legacy"],
                           u * x["bot_abserr_p95_legacy"],
                           u * x["bot_dref_p95_legacy"]))
+                if "gn_converged" in x:
+                    print("%-13s converged %.1f %%, bottom undetermined "
+                          "(meniscus-only steps) %.1f %%" % (
+                              "", 100 * x["gn_converged"],
+                              100 * x["gn_bottom_flat"]))
     _start_report(srows, arms)
     return 0

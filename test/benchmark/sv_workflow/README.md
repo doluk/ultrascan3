@@ -284,6 +284,15 @@ python3 -m svbench mbsearch $SCRATCH/svbench --out mbsearch
   bottom, then descent), and `descent` (descent from the edit values).
   Descent moves to the best point of the 3×3 around the current point
   until that point is the minimum of its complete 3×3.
+  `gn` is the Gauss–Newton proposal (finite-difference Jacobian,
+  2×2 normal equations, backtracking line search; `svbench/gn.py`). It is
+  continuous, so the replay evaluates it on a cubic-spline surrogate of
+  RMSD² between the grid nodes. That is a best case: it shows the effect
+  of the surface shape and the start point, not the finite-difference
+  noise of real 2DSA fits. Its cost is given twice: `n` counts every
+  simulation as a 2DSA fit, `n proj` counts only the baseline and the
+  line-search trials (perturbations as forward simulations with the
+  fitted solutes held fixed).
 - Estimators, all using the 3×3 around the best evaluated point:
   - `legacy`: weights 1/rmsd − 1/rmsd_max over the evaluated points. For
     the full grid this is us_fit_meniscus; the replay checks it against
