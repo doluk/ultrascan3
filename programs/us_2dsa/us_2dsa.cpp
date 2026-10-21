@@ -581,16 +581,33 @@ void US_2dsa::save( void )
    bool    cusGrid      = model.description.contains( "CUSTOMGRID" );
    bool    refIter      = model.description.contains( "REFITERS" );
 DbgLv(1) << "2DSA:SV: cusGrid" << cusGrid << "desc" << model.description;
-   bool    fitMeni      = ( model.global == US_Model::MENISCUS );
-   bool    fitBott      = ( model.global == US_Model::BOTTOM );
-   bool    fitMeBo      = ( model.global == US_Model::MENIBOTT );
-   bool    fitAngle     = ( model.global == US_Model::ANGLE );
-   bool    fitMeAngle   = ( model.global == US_Model::MENIANGLE );
    bool    montCar      = model.monteCarlo;
+   QMap< US_SimulationParameters::FitType, QString > maDescMap;
+   maDescMap.insert( US_SimulationParameters::NOTHING, "" );
+   maDescMap.insert( US_SimulationParameters::MENISCUS, "M" );
+   maDescMap.insert( US_SimulationParameters::BOTTOM, "B" );
+   maDescMap.insert( US_SimulationParameters::ANGLE, "A" );
+   maDescMap.insert( US_SimulationParameters::BAND_VOLUME, "V" );
+   maDescMap.insert( US_SimulationParameters::SIGMA, "S" );
+   maDescMap.insert( US_SimulationParameters::DELTA, "D" );
+   maDescMap.insert( US_SimulationParameters::VBAR, "R" );
+   maDescMap.insert( US_SimulationParameters::FF0, "F" );
+   maDescMap.insert( US_SimulationParameters::TEMPERATURE, "T" );
+   const US_SimulationParameters::FitType primFit = dset.simparams.primaryFit;
+   const US_SimulationParameters::FitType secFit  = dset.simparams.secondaryFit;
+   bool    is_param_fit = ( primFit != US_SimulationParameters::NOTHING  ||
+                            secFit  != US_SimulationParameters::NOTHING );
+   bool    fitsMeni     = ( primFit == US_SimulationParameters::MENISCUS  ||
+                            secFit  == US_SimulationParameters::MENISCUS );
+   bool    fitsBott     = ( primFit == US_SimulationParameters::BOTTOM  ||
+                            secFit  == US_SimulationParameters::BOTTOM );
+   // Fit code as in the report file names (e.g., "-FMB"), so that
+   //  us_fit_meniscus can match models with their fit table file
+   QString fitCode      = is_param_fit ?
+                          "-F" + maDescMap[ primFit ] + maDescMap[ secFit ] :
+                          "";
    QString analysisType = QString( cusGrid ? "2DSA-CG" : "2DSA" )
-                        + QString( fitMeni ? "-FM" : "" )
-                        + QString( (fitBott || fitAngle) ? "-FB" : "" )
-                        + QString( (fitMeBo || fitMeAngle) ? "-FMB" : "" )
+                        + fitCode
                         + QString( refIter ? "-IT" : "" )
                         + QString( montCar ? "-MC" : "" );
    QString requestID    = "local";
@@ -692,35 +709,37 @@ DbgLv(1) << "2DSA:SV: cusGrid" << cusGrid << "desc" << model.description;
       QString mdesc     = model.description;    // description from processor
       double  variance  = mdesc.mid( mdesc.indexOf( "VARI=" ) + 5 )
                           .section( ' ', 0, 0 ).toDouble();
-      angle  = mdesc.mid( mdesc.indexOf( "ANGLE=" ) + 6 )
-                          .section( ' ', 0, 0 ).toDouble();
+      if ( mdesc.contains( "ANGLE=" ) )
+         angle  = mdesc.mid( mdesc.indexOf( "ANGLE=" ) + 6 )
+                             .section( ' ', 0, 0 ).toDouble();
       // create the iteration part of model description:
       // e.g.,"i01" normally; "i03-m60190" for meniscus; "mc017" for monte carlo
       QString iterID    = "i01";
       int     iterNum   = jj + 1;
-      QStringList fitTypeAttr;
-      fitTypeAttr << "NOTHING" << "MENISCUS" << "BOTTOM" << "ANGLE" << "VOLUME" << "SIGMA" << "DELTA"
-                  << "VBAR" << "FF0" << "TEMPERATURE";
       if ( montCar )
          iterID = QString::asprintf( "mc%04d", iterNum );
 
-      else if ( dset.simparams.primaryFit != US_SimulationParameters::NOTHING || dset.simparams.secondaryFit != US_SimulationParameters::NOTHING )
-      {
-         QString prim = fitTypeAttr[dset.simparams.primaryFit] + "=";
-         QString sec = fitTypeAttr[dset.simparams.secondaryFit] + "=";
-         meniscus          = mdesc.mid( mdesc.indexOf( prim ) + prim.length() )
-                             .section( ' ', 0, 0 ).toDouble();
-         bottom            = mdesc.mid( mdesc.indexOf( sec ) + sec.length() )
-                             .section( ' ', 0, 0 ).toDouble();
-         if ( bottom > 0.0 )
-         {
-            iterID.asprintf( "i%02d-m%05db%05d", iterNum, qRound( meniscus * 10000 ),
-                             qRound( bottom * 10000 ) );
-         }
+      else if ( is_param_fit )
+      {  // Meniscus and bottom are only in the description when fitted
+         if ( fitsMeni )
+            meniscus          = mdesc.mid( mdesc.indexOf( "MENISCUS=" ) + 9 )
+                                .section( ' ', 0, 0 ).toDouble();
+         if ( fitsBott )
+            bottom            = mdesc.mid( mdesc.indexOf( "BOTTOM=" ) + 7 )
+                                .section( ' ', 0, 0 ).toDouble();
+
+         if ( fitsMeni  &&  fitsBott )
+            iterID = QString::asprintf( "i%02d-m%05db%05d", iterNum,
+                                        qRound( meniscus * 10000 ),
+                                        qRound( bottom * 10000 ) );
+         else if ( fitsMeni )
+            iterID = QString::asprintf( "i%02d-m%05d", iterNum,
+                                        qRound( meniscus * 10000 ) );
+         else if ( fitsBott )
+            iterID = QString::asprintf( "i%02d-b%05d", iterNum,
+                                        qRound( bottom * 10000 ) );
          else
-         {
-            iterID.asprintf( "i%02d-m%05d", iterNum, qRound( meniscus * 10000 ) );
-         }
+            iterID = QString::asprintf( "i%02d", iterNum );
       }
 
       // fill in actual model parameters needed for output
@@ -912,31 +931,7 @@ DbgLv(1) << "2DSA:SV: cusGrid" << cusGrid << "desc" << model.description;
 
    reppath           = reppath + "/" + runID + "/";
    respath           = respath + "/" + runID + "/";
-   QString analybase = montCar ? "2DSA-MC" : "2DSA";
-   QMap< US_SimulationParameters::FitType, QString > maDescMap;
-   maDescMap.insert( US_SimulationParameters::NOTHING, "" );
-   maDescMap.insert( US_SimulationParameters::MENISCUS, "M" );
-   maDescMap.insert( US_SimulationParameters::BOTTOM, "B" );
-   maDescMap.insert( US_SimulationParameters::ANGLE, "A" );
-   maDescMap.insert( US_SimulationParameters::BAND_VOLUME, "V" );
-   maDescMap.insert( US_SimulationParameters::SIGMA, "S" );
-   maDescMap.insert( US_SimulationParameters::DELTA, "D" );
-   maDescMap.insert( US_SimulationParameters::VBAR, "R" );
-   maDescMap.insert( US_SimulationParameters::FF0, "F" );
-   maDescMap.insert( US_SimulationParameters::TEMPERATURE, "T" );
-   bool is_param_fit = dset.simparams.primaryFit != US_SimulationParameters::NOTHING || dset.simparams.secondaryFit != US_SimulationParameters::NOTHING;
-   if (is_param_fit)
-   {
-      analybase += "-F";
-   }
-   if (dset.simparams.primaryFit != US_SimulationParameters::NOTHING)
-   {
-      analybase += maDescMap[dset.simparams.primaryFit];
-   }
-   if (dset.simparams.secondaryFit != US_SimulationParameters::NOTHING)
-   {
-      analybase += maDescMap[dset.simparams.secondaryFit];
-   }
+   QString analybase = ( montCar ? "2DSA-MC" : "2DSA" ) + fitCode;
    QString analynode = "/" + analybase + ".";
    QString maDesc("");
     if ( model.description.startsWith( runID ) )
@@ -949,7 +944,9 @@ DbgLv(1) << "2DSA:SV: cusGrid" << cusGrid << "desc" << model.description;
    QString plot2File = filebase + "residuals.png";
    QString plot3File = filebase + "rbitmap.png";
    QString plot4File = filebase + "velocity_nc.svgz";
-   QString fitFile   = filebase + ( (dset.simparams.secondaryFit != US_SimulationParameters::NOTHING) ?
+   // A bottom fit without meniscus has a "fitbot" file, as us_fit_meniscus
+   //  expects from the "-b" model iteration ID
+   QString fitFile   = filebase + ( ( fitsBott  &&  ! fitsMeni ) ?
                                     "fitbot.dat" :
                                     "fitmen.dat" );
    QString fresFile  = respath  + QString( fitFile )
@@ -1515,29 +1512,33 @@ model.global == US_Model::MENIBOTT || model.global == US_Model::ANGLE || model.g
       const double var_rang = dset.simparams.primary_range;
       const QString parm = fitType[var_parm];
 
-      mstr += table_row( tr( qPrintable( "Primary Parameter" + parm + " Range:" )  ),
+      // The processor restores the base value after the fit
+      const double base_val = dset.simparams.get_parameter_value( var_parm );
+
+      mstr += table_row( tr( qPrintable( "Primary Parameter " + parm + " Range:" )  ),
                          QString::number( var_rang ) + " (" + QString::number( dset.simparams.primary_variations) + " variations)" );
       mstr += table_row( tr( qPrintable("Base Experiment " + parm + ":") ),
-                         QString::number( dset.simparams.get_parameter_value( var_parm ) - var_rang / 2.0 ) );
+                         QString::number( base_val ) );
       mstr += table_row( tr( qPrintable("Start Fit " + parm + ":") ),
-                         QString::number( dset.simparams.get_parameter_value( var_parm ) - var_rang ) );
+                         QString::number( base_val - var_rang / 2.0 ) );
       mstr += table_row( tr( qPrintable("End Fit " + parm + ":") ),
-                         QString::number( dset.simparams.get_parameter_value( var_parm ) ) );
+                         QString::number( base_val + var_rang / 2.0 ) );
    }
    if ( dset.simparams.secondaryFit != US_SimulationParameters::NOTHING )
    {
       const US_SimulationParameters::FitType var_parm = dset.simparams.secondaryFit;
       const double var_rang = dset.simparams.secondary_range;
       const QString parm = fitType[var_parm];
+      const double base_val = dset.simparams.get_parameter_value( var_parm );
 
-      mstr += table_row( tr( qPrintable( "Primary Parameter" + parm + " Range:" )  ),
+      mstr += table_row( tr( qPrintable( "Secondary Parameter " + parm + " Range:" )  ),
                          QString::number( var_rang ) + " (" + QString::number( dset.simparams.secondary_variations) + " variations)" );
       mstr += table_row( tr( qPrintable("Base Experiment " + parm + ":") ),
-                         QString::number( dset.simparams.get_parameter_value( var_parm ) - var_rang / 2.0 ) );
+                         QString::number( base_val ) );
       mstr += table_row( tr( qPrintable("Start Fit " + parm + ":") ),
-                         QString::number( dset.simparams.get_parameter_value( var_parm ) - var_rang ) );
+                         QString::number( base_val - var_rang / 2.0 ) );
       mstr += table_row( tr( qPrintable("End Fit " + parm + ":") ),
-                         QString::number( dset.simparams.get_parameter_value( var_parm ) ) );
+                         QString::number( base_val + var_rang / 2.0 ) );
    }
 
    mstr += indent( 4 ) + "</table>\n\n";

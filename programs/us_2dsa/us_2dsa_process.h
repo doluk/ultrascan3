@@ -150,6 +150,8 @@ private:
       
       US_SimulationParameters*   simparms;   // simulation parameters
       US_SimulationParameters    bsimparms;  // base simulation parameteres
+      double                     bs20w_corr; // base s20w correction
+      double                     bD20w_corr; // base D20w correction
 
 
       QList<US_CosedComponent> cosed_components; // cosedimenting component
@@ -236,6 +238,7 @@ private:
       void final_computes(   void );
       void iterate(          void );
       void set_meniscus(     void );
+      void restore_fit_parameters( void );
       void set_monteCarlo(   void );
       void set_gaussians(    void );
       void requeue_tasks(    void );

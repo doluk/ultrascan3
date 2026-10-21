@@ -1697,7 +1697,8 @@ void US_AnalysisControl2D::primary_range_changed(double range)
       case (US_SimulationParameters::BOTTOM):
          {
             // check for a reasonable meniscus range
-            double bmenis = edata->bottom;
+            // the base bottom (edata->bottom is 0 for an unedited bottom)
+            double bmenis = sparms->bottom;
             double hmenis = bmenis - range * 0.5;
             double lrdata = edata->xvalues.last();
             if ( hmenis <= lrdata )
@@ -1791,7 +1792,8 @@ void US_AnalysisControl2D::secondary_range_changed(double range)
       case (US_SimulationParameters::BOTTOM):
          {
             // check for a reasonable meniscus range
-            double bmenis = edata->bottom;
+            // the base bottom (edata->bottom is 0 for an unedited bottom)
+            double bmenis = sparms->bottom;
             double hmenis = bmenis - range * 0.5;
             double lrdata = edata->xvalues.last();
             if ( hmenis <= lrdata )

@@ -41,8 +41,10 @@ US_2dsaProcess::US_2dsaProcess( QList< SS_DATASET* >& dsets,
    itvaris  .clear();                 // iteration variances
    ical_sols.clear();                 // iteration final calculated solutes
    simparms = &dsets[ 0 ]->simparams; // pointer to simulation parameters
-   bsimparms = dsets[ 0 ]->simparams; // pointer to simulation parameters
-   bsimparms.vbar = dsets[0]->vbar20;
+   simparms->vbar = dsets[ 0 ]->vbar20;   // vbar is not set from the data
+   bsimparms = dsets[ 0 ]->simparams; // base simulation parameters
+   bs20w_corr = dsets[ 0 ]->s20w_correction;
+   bD20w_corr = dsets[ 0 ]->D20w_correction;
    if ( bdata->bottom == simparms->bottom_position )
    {
       bdata->bottom    = 0.0;
@@ -705,6 +707,14 @@ void US_2dsaProcess::set_iters( int    mxiter, int    mciter,
                                 int    jgref )
 {
    maxiters   = mxiter;
+
+   // Take the base values and fit settings of this run (they may have
+   //  changed since the last run); vbar is not set from the data
+   simparms->vbar = dsets[ 0 ]->vbar20;
+   bsimparms  = *simparms;
+   bs20w_corr = dsets[ 0 ]->s20w_correction;
+   bD20w_corr = dsets[ 0 ]->D20w_correction;
+
    int mniter = 0;
    menrange = 0.0;
    angle_range = 0.0;
@@ -780,6 +790,9 @@ DbgLv(1) << "  STOPTHR:  thread deleted";
    maxdepth  = 0;
    ntisols   = 0;
    ntcsols   = 0;
+
+   if ( mmtype == 1 )
+      restore_fit_parameters();
 
    emit message_update( pmessage_head() +
    tr( "All computations have been aborted." ), false );
@@ -1563,6 +1576,9 @@ if(mtiters>50)
    s_primary          = QString::number( simparms->get_parameter_value( simparms->primaryFit ));
    s_secondary        = QString::number( simparms->get_parameter_value( simparms->secondaryFit ));
 
+   if ( mmtype == 1 )
+      restore_fit_parameters();
+
    emit process_complete( 9 );     // signal that all processing is complete
 }
 
@@ -2217,6 +2233,26 @@ void US_2dsaProcess::set_meniscus()
       requeue_tasks();
 DbgLv(1) << "SET_MEN:    RQUE RETURN";
    }
+}
+
+// Restore the base values of the fitted parameters after a fit run
+void US_2dsaProcess::restore_fit_parameters()
+{
+   if ( bsimparms.primaryFit != US_SimulationParameters::NOTHING )
+      simparms->set_parameter_value( bsimparms.primaryFit,
+         bsimparms.get_parameter_value( bsimparms.primaryFit ) );
+
+   if ( bsimparms.secondaryFit != US_SimulationParameters::NOTHING )
+      simparms->set_parameter_value( bsimparms.secondaryFit,
+         bsimparms.get_parameter_value( bsimparms.secondaryFit ) );
+
+   simparms->current_primary_variation   = 0;
+   simparms->current_secondary_variation = 0;
+   dsets[ 0 ]->vbar20          = bsimparms.vbar;
+   dsets[ 0 ]->s20w_correction = bs20w_corr;
+   dsets[ 0 ]->D20w_correction = bD20w_corr;
+DbgLv(1) << "RESTORE_FIT: meniscus bottom vbar" << simparms->meniscus
+ << simparms->bottom << dsets[ 0 ]->vbar20;
 }
 
 // Set up for another monte carlo pass
