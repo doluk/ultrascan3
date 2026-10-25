@@ -255,6 +255,171 @@ static FitResult fit_2dsa( const QVector<QVector<double>>& A, const QVector<US_S
 }
 
 // ---------------------------------------------------------------------------
+// Real (SEDFIT .ip) data: 2DSA uncorrected (iter 0) and C1 skew-corrected
+// (iter 1..NIT, kappa' known). Config file: key=value lines.
+static int run_real( const QString& outdir, const QString& cfgfile )
+{
+   QMap<QString, QString> cf;
+   { QFile f( cfgfile ); f.open( QIODevice::ReadOnly );
+     for ( QString l : QString( f.readAll() ).split( '\n' ) ) { l = l.trimmed(); int e = l.indexOf( '=' );
+        if ( e > 0 && !l.startsWith( '#' ) ) cf[ l.left( e ).trimmed() ] = l.mid( e + 1 ).trimmed(); } }
+   QString id = cf["id"], dir = cf["dir"];
+   double meniscus = cf["meniscus"].toDouble(), bottom = cf["bottom"].toDouble();
+   double x0 = cf["x0"].toDouble(), x1 = cf["x1"].toDouble(), kappa = cf["kappa"].toDouble();
+   double smin = cf["smin"].toDouble(), smax = cf["smax"].toDouble(), vbar = cf.value( "vbar", "0.73" ).toDouble();
+   double dr = cf.value( "dr", "0.0007" ).toDouble();
+   int stride = cf.value( "stride", "1" ).toInt(), simpts = cf.value( "simpoints", "500" ).toInt();
+   int NIT = cf.value( "nit", "6" ).toInt();
+   QStringList menis = cf.value( "meniscus_scan", "" ).split( ',', Qt::SkipEmptyParts );
+
+   // read list + scans
+   QStringList files;
+   { QFile f( dir + "/" + cf["list"] ); f.open( QIODevice::ReadOnly );
+     QStringList L = QString( f.readAll() ).split( '\n' );
+     for ( int i = 2; i < L.size(); i++ ) if ( !L[i].trimmed().isEmpty() ) files << L[i].trimmed(); }
+   QVector<double> tsec, w2t; QVector<QVector<double>> rr, vv; int rpm = 0;
+   for ( int i = 0; i < files.size(); i += stride ) {
+      QFile f( dir + "/" + files[i] ); if ( !f.open( QIODevice::ReadOnly ) ) { fprintf( stderr, "missing %s\n", qPrintable( files[i] ) ); continue; }
+      QStringList L = QString( f.readAll() ).split( '\n' );
+      QStringList h = L[1].split( ' ', Qt::SkipEmptyParts );
+      rpm = h[3].toInt(); tsec << h[4].toDouble(); w2t << h[5].toDouble();
+      QVector<double> r, v;
+      for ( int k = 2; k < L.size(); k++ ) { QStringList p = L[k].split( ' ', Qt::SkipEmptyParts );
+         if ( p.size() >= 2 ) { r << p[0].toDouble(); v << p[1].toDouble(); } }
+      rr << r; vv << v;
+   }
+   int ns = tsec.size();
+   double om2 = sq( rpm * M_PI / 30.0 );
+   double Ta = 1.5 * ( tsec[0] - w2t[0] / om2 );
+   int acc = qBound( 50, qRound( rpm / qMax( Ta, 1.0 ) ), 2000 );
+   fprintf( stderr, "%s: %d scans, rpm %d, ramp %.0f s -> accel %d rpm/s\n", qPrintable( id ), ns, rpm, Ta, acc );
+
+   // grids
+   QVector<double> xe; QVector<int> fsub;
+   for ( double r = meniscus + 0.002; r <= qMin( x1 + 0.05, bottom - 0.005 ) + 1e-9; r += dr ) {
+      if ( r >= x0 && r <= x1 ) fsub << xe.size();
+      xe << r; }
+   int npe = xe.size(), np = fsub.size();
+   QVector<double> xfit; for ( int p : fsub ) xfit << xe[p];
+
+   // data on fit grid (linear interpolation)
+   QVector<double> b( ns * np );
+   for ( int s = 0; s < ns; s++ ) { int j = 0; const QVector<double>& r = rr[s]; const QVector<double>& v = vv[s];
+      for ( int p = 0; p < np; p++ ) { double x = xfit[p];
+         while ( j < r.size() - 2 && r[j+1] < x ) j++;
+         double w = qBound( 0.0, ( x - r[j] ) / ( r[j+1] - r[j] ), 1.0 );
+         b[ s*np+p ] = v[j] + w * ( v[j+1] - v[j] ); } }
+
+   // UltraScan simulation setup: scan times from headers, ramp from first scan
+   auto make_setup = [&]( Setup& su, const QVector<double>& x, double meni, const QString& tmst, bool wts ) {
+      US_SimulationParameters& sp = su.sp;
+      US_SimulationParameters::SpeedProfile st;
+      st.rotorspeed = rpm; st.avg_speed = rpm; st.set_speed = rpm; st.scans = ns;
+      st.acceleration = acc; st.acceleration_flag = true;
+      st.delay_hours = 0; st.delay_minutes = tsec[0] / 60.0; st.duration_hours = 0; st.duration_minutes = tsec[ns-1] / 60.0;
+      sp.meniscus = meni; sp.bottom = bottom; sp.bottom_position = bottom; sp.sim = true; sp.simpoints = simpts;
+      sp.rotorcoeffs[0] = 0.0; sp.rotorcoeffs[1] = 0.0;
+      US_DataIO::RawData rd; rd.type[0] = 'I'; rd.type[1] = 'P'; memset( rd.rawGUID, 0, sizeof( rd.rawGUID ) );
+      rd.cell = 1; rd.channel = 'A'; rd.description = id; rd.xvalues = x;
+      for ( int s = 0; s < ns; s++ ) { US_DataIO::Scan sc; sc.temperature = NORMAL_TEMP; sc.rpm = rpm; sc.seconds = tsec[s];
+         sc.omega2t = US_AstfemMath::calc_omega2t( 0.0, 0.0, 0.0, rpm, acc, sc.seconds ); sc.wavelength = 655; sc.plateau = 0;
+         sc.delta_r = dr; sc.nz_stddev = false; sc.rvalues.fill( 0.0, x.size() ); rd.scanData << sc; }
+      st.time_first = qRound( tsec[0] ); st.w2t_first = rd.scanData.first().omega2t;
+      st.time_last = qRound( tsec[ns-1] ); st.w2t_last = rd.scanData.last().omega2t;
+      sp.speed_step.clear(); sp.speed_step << st;
+      if ( wts ) US_AstfemMath::writetimestate( tmst, sp, rd );
+      sp.simSpeedsFromTimeState( tmst );
+      US_DataIO::EditedData& ed = su.ed;
+      ed.expType = "velocity"; ed.runID = id; ed.editID = "0"; ed.dataType = "IP"; ed.cell = "1"; ed.channel = "A";
+      ed.wavelength = "655"; ed.description = id; ed.meniscus = meni; ed.bottom = bottom; ed.plateau = x1; ed.baseline = 0;
+      ed.ODlimit = 1e20; ed.floatingData = false; ed.xvalues = rd.xvalues; ed.scanData = rd.scanData;
+      ed.bl_corr_slope = 0; ed.bl_corr_yintercept = 0;
+      double mx = 0; for ( int s = 0; s < ns; s++ ) mx = qMax( mx, fabs( rd.scanData[s].omega2t / w2t[s] - 1.0 ) );
+      return mx; };
+
+   QVector<US_Solute> grid;
+   for ( int is = 0; is < NGS; is++ ) for ( int ik = 0; ik < NGK; ik++ )
+      grid << US_Solute( smin + ( smax - smin ) * is / ( NGS - 1 ), KMIN + ( KMAX - KMIN ) * ik / ( NGK - 1 ), 0.0 );
+   auto gidx = [&]( const US_Solute& so ) {
+      return qRound( ( so.s - smin ) / ( smax - smin ) * ( NGS - 1 ) ) * NGK + qRound( ( so.k - KMIN ) / ( KMAX - KMIN ) * ( NGK - 1 ) ); };
+   auto sim_basis = [&]( double meni, QVector<QVector<float>>& Ae ) {
+      QString tmst = outdir + "/" + id + ".time_state.tmst";
+      Setup su; double mx = make_setup( su, xe, meni, tmst, true );
+      fprintf( stderr, "  meniscus %.4f: max |w2t_sim/w2t_data - 1| = %.2e\n", meni, mx );
+      Ae.resize( grid.size() );
+      for ( int c = 0; c < grid.size(); c++ ) {
+         QVector<double> v = simulate1( su, grid[c].s, grid[c].k, vbar, 1.0 );
+         Ae[c].resize( v.size() ); for ( int i = 0; i < v.size(); i++ ) Ae[c][i] = (float) v[i]; } };
+
+   QVector<QVector<double>> A( grid.size(), QVector<double>( ns * np ) );
+   QVector<int> sj( ns * np ); QVector<double> sw( ns * np );
+   auto build = [&]( const QVector<QVector<float>>& Ae, const QVector<US_Solute>& sol, double kap, double& maxdr ) {
+      maxdr = 0; QVector<double> cfv( npe ), rho( npe );
+      for ( int s = 0; s < ns; s++ ) {
+         cfv.fill( 0.0 );
+         for ( auto& so : sol ) { const float* a = Ae[ gidx( so ) ].constData() + s * npe; for ( int i = 0; i < npe; i++ ) cfv[i] += so.c * a[i]; }
+         for ( int i = 0; i < npe; i++ ) { int i0 = qMax( 0, i - 1 ), i1 = qMin( npe - 1, i + 1 );
+            double d = kap * ( cfv[i1] - cfv[i0] ) / ( xe[i1] - xe[i0] ); rho[i] = xe[i] + d;
+            if ( i > 0 && rho[i] < rho[i-1] ) rho[i] = rho[i-1] + 1e-9;
+            if ( xe[i] >= x0 && xe[i] <= x1 ) maxdr = qMax( maxdr, fabs( d ) ); }
+         int j = 0;
+         for ( int p = 0; p < np; p++ ) { double x = xfit[p];
+            while ( j < npe - 2 && rho[j+1] < x ) j++;
+            while ( j > 0 && rho[j] > x ) j--;
+            double w = ( x <= rho[0] ) ? 0.0 : ( x >= rho[npe-1] ? 1.0 : ( x - rho[j] ) / ( rho[j+1] - rho[j] ) );
+            if ( x >= rho[npe-1] ) j = npe - 2;
+            sj[ s*np+p ] = j; sw[ s*np+p ] = qBound( 0.0, w, 1.0 ); } }
+      std::atomic<int> next{0};
+      auto work = [&]() { for ( int c; ( c = next++ ) < grid.size(); ) { const float* a = Ae[c].constData(); double* o = A[c].data();
+         for ( int s = 0; s < ns; s++ ) for ( int p = 0; p < np; p++ ) { int k = s*np+p, j = sj[k]; double w = sw[k];
+            o[k] = ( 1.0 - w ) * a[ s*npe + j ] + w * a[ s*npe + j + 1 ]; } } };
+      std::vector<std::thread> th; for ( int t = 0; t < 4; t++ ) th.emplace_back( work ); for ( auto& t : th ) t.join(); };
+
+   QJsonObject cj; cj["id"] = id; cj["kappa"] = kappa; cj["ns"] = ns; cj["np"] = np;
+   QJsonArray xs; for ( double v : xfit ) xs << v; cj["x"] = xs;
+   QJsonArray ts; for ( double v : tsec ) ts << v; cj["t"] = ts;
+   QJsonArray fits;
+   QVector<QVector<float>> Ae;
+   double meni_best = meniscus;
+   if ( !menis.isEmpty() ) {   // meniscus scan (uncorrected 2DSA), as UltraScan's meniscus fit
+      double best = 1e99;
+      for ( auto& m : menis ) { double mv = m.toDouble(); sim_basis( mv, Ae ); double md;
+         build( Ae, {}, 0.0, md ); FitResult fr = fit_2dsa( A, grid, b, ns, np, 3 );
+         fprintf( stderr, "  meniscus %.4f rmsd %.5f\n", mv, fr.rmsd );
+         QJsonObject o; o["meniscus"] = mv; o["rmsd"] = fr.rmsd; fits << o;
+         if ( fr.rmsd < best ) { best = fr.rmsd; meni_best = mv; } }
+      cj["meniscus_scan"] = fits; fits = QJsonArray();
+   }
+   cj["meniscus"] = meni_best;
+   sim_basis( meni_best, Ae );
+   QVector<US_Solute> sol;
+   for ( int it = 0; it <= NIT; it++ ) {
+      double md; build( Ae, sol, it == 0 ? 0.0 : kappa, md );
+      QElapsedTimer et; et.start();
+      FitResult fr = fit_2dsa( A, grid, b, ns, np, 3 );
+      sol = fr.sol;
+      fprintf( stderr, "  iter %d: rmsd %.5f nsol %d maxdr %.1f um (%.1f s)\n", it, fr.rmsd, fr.sol.size(), md * 1e4, et.elapsed() / 1000.0 );
+      QJsonObject o; o["iter"] = it; o["rmsd"] = fr.rmsd; o["maxdr"] = md;
+      QJsonArray sa; for ( auto& so : fr.sol ) sa << QJsonArray{ so.s, so.k, so.c }; o["solutes"] = sa;
+      QJsonArray ta; for ( double v : fr.ti ) ta << v; o["ti"] = ta;
+      fits << o;
+      if ( it == 0 || it == NIT ) {
+         QFile f( outdir + "/" + id + "_it" + QString::number( it ) + "_resid.bin" ); f.open( QIODevice::WriteOnly );
+         f.write( (const char*) fr.resid.constData(), fr.resid.size() * 8 );
+         QVector<double> fit( ns * np ); for ( int i = 0; i < ns * np; i++ ) fit[i] = b[i] - fr.resid[i];
+         QFile g( outdir + "/" + id + "_it" + QString::number( it ) + "_fit.bin" ); g.open( QIODevice::WriteOnly );
+         g.write( (const char*) fit.constData(), fit.size() * 8 );
+      }
+      if ( kappa == 0.0 ) break;
+   }
+   { QFile f( outdir + "/" + id + "_data.bin" ); f.open( QIODevice::WriteOnly ); f.write( (const char*) b.constData(), b.size() * 8 ); }
+   cj["fits"] = fits;
+   QFile jf( outdir + "/" + id + "_real.json" ); jf.open( QIODevice::WriteOnly );
+   jf.write( QJsonDocument( cj ).toJson( QJsonDocument::Compact ) );
+   return 0;
+}
+
+// ---------------------------------------------------------------------------
 int main( int argc, char** argv )
 {
    QCoreApplication app( argc, argv );
@@ -288,6 +453,7 @@ int main( int argc, char** argv )
                                 { "r0.005", 0.005, true, 3, 3 }, { "r0.01", 0.01, true, 3, 3 },
                                 { "r0.02", 0.02, true, 3, 3 } };
 
+   if ( only == "REAL" ) return run_real( outdir, argc > 3 ? argv[3] : "" );
    if ( getenv( "WT0" ) ) for ( Case& cs : cases ) cs.t0 = atof( getenv( "WT0" ) );
    for ( const Case& cs : cases ) {
       if ( !only.isEmpty() && cs.id != only ) continue;
