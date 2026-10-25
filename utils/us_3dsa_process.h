@@ -78,6 +78,15 @@ class US_UTIL_EXTERN US_3dsaProcess : public QObject
             //! threshold.  The fitted vbar is then not a measurement; this
             //! exists for tests and for deliberate diagnostic runs.
             bool   ignore_contrast;
+
+            //! Simulate every solute at sedimentation equilibrium in the
+            //! density of each scan's moment (US_SolveSim::
+            //! equilibrium_profile) instead of solving the Lamm equation:
+            //! for the last scan of an ABDE run, where a finite-volume solve
+            //! per grid point would make a v-bar grid fine enough for its
+            //! narrow bands impractical.  Shape does not enter, so hold f/f0
+            //! or use mask_w_k_v().
+            bool   equilibrium;
       };
 
       //! \brief Outputs of one fit
@@ -186,7 +195,7 @@ class US_UTIL_EXTERN US_3dsaProcess : public QObject
       //!
       //! A series whose every data set holds a single scan is, for practical
       //! purposes, sedimentation equilibrium (an ABDE edit keeps the last
-      //! scan).  There a solute's profile depends on its molar mass and vbar
+      //! scan), as is any series fitted with Parameters::equilibrium.  There a solute's profile depends on its molar mass and vbar
       //! alone, so a grid that varies two hydrodynamic axes (s and f/f0, or s
       //! and D) has a direction along which every point fits alike.  The fit
       //! still runs; the note says to hold one of them to a single value and
@@ -201,6 +210,10 @@ class US_UTIL_EXTERN US_3dsaProcess : public QObject
 
       //! \brief The alternate axis mask: s, D, vbar
       static int mask_s_d_v( void );
+
+      //! \brief The equilibrium axis mask: molar mass, f/f0, vbar.  At
+      //!        equilibrium a band's width gives the molar mass directly.
+      static int     mask_w_k_v( void );
 
    signals:
       //! \brief Progress: tasks completed, tasks expected

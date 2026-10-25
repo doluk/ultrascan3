@@ -2,20 +2,26 @@
 #include "us_3dsa_cli.h"
 
 #include "us_astfem_math.h"
+#include "us_astfem_rsa.h"
 #include "us_buffer.h"
 #include "us_dataIO.h"
+#include "us_fvm_gradients.h"
+#include "us_lamm_astfvm.h"
 #include "us_math2.h"
 #include "us_model.h"
 #include "us_simparms.h"
 #include "us_solute.h"
+#include "us_util.h"
 
 #include <QCoreApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <random>
 
 namespace
 {
@@ -112,6 +118,12 @@ void US_3dsaCli::usage()
          << "      model / buffer / simulation-parameter XML each data set needs,\n"
          << "      and manifest.json naming the us_astfem_sim runs that produce\n"
          << "      the data.\n\n"
+         << "  us_3dsa_cli simulate --config <case.json> [--seed N]\n\n"
+         << "      Simulate the case's species into every data set's .auc, with\n"
+         << "      the simulator its simulation parameters select.  An ASTFVM data\n"
+         << "      set with a gradient-forming buffer (\"buffer\": a US_Buffer XML)\n"
+         << "      is simulated in its gradient.  Scans are spread evenly over the\n"
+         << "      speed step's duration.\n\n"
          << "  us_3dsa_cli --help\n";
    out().flush();
 }
@@ -229,8 +241,13 @@ bool US_3dsaCli::read_case( const QString& path, Case& kase, QString& emsg )
       ds.tinoise     = jnum( o, "tinoise", 0.0 );
       ds.rinoise     = jnum( o, "rinoise", 0.0 );
       ds.rmsd_max    = jnum( o, "rmsd_max", 0.0 );
-      ds.run_dir     = o.value( "run_dir" ).toString();
-      ds.run_id      = o.value( "run_id" ).toString();
+      ds.run_dir        = o.value( "run_dir" ).toString();
+      ds.run_id         = o.value( "run_id" ).toString();
+      ds.edit           = o.value( "edit" ).toString();
+      ds.buffer         = o.value( "buffer" ).toString();
+      ds.has_density    = o.contains( "density" );
+      ds.has_viscosity  = o.contains( "viscosity" );
+      ds.last_scan_only = jbool( o, "last_scan_only", false );
       kase.datasets << ds;
    }
 
@@ -250,6 +267,10 @@ bool US_3dsaCli::read_case( const QString& path, Case& kase, QString& emsg )
    kase.v_max          = jnum( g, "v_max", kase.v_max );
    kase.v_res          = jint( g, "v_res", kase.v_res );
    kase.grid_reps      = jint( g, "grid_reps", kase.grid_reps );
+   kase.mask           = g.contains( "mask" ) ? g.value( "mask" ).toString() : kase.mask;
+   kase.w_min          = jnum( g, "w_min", kase.w_min );
+   kase.w_max          = jnum( g, "w_max", kase.w_max );
+   kase.w_res          = jint( g, "w_res", kase.w_res );
 
    const QJsonObject fo    = root.value( "fit" ).toObject();
    kase.threads            = jint( fo, "threads", kase.threads );
@@ -259,6 +280,14 @@ bool US_3dsaCli::read_case( const QString& path, Case& kase, QString& emsg )
    kase.edit_bottom_margin = jnum( fo, "edit_bottom_margin", kase.edit_bottom_margin );
    kase.ignore_contrast    = jbool( fo, "ignore_contrast", kase.ignore_contrast );
    kase.decoy_vbar         = jnum( fo, "decoy_vbar", kase.decoy_vbar );
+   kase.equilibrium        = jbool( fo, "equilibrium", kase.equilibrium );
+   kase.verify             = jbool( fo, "verify", kase.verify );
+
+   if ( kase.mask != "s_k_v" && kase.mask != "s_d_v" && kase.mask != "w_k_v" )
+   {
+      emsg = QString( "%1: unknown grid mask \"%2\"" ).arg( path ).arg( kase.mask );
+      return false;
+   }
 
    const QJsonObject ex = root.value( "expect" ).toObject();
    kase.vbar_tol        = jnum( ex, "vbar_tol", kase.vbar_tol );
@@ -284,24 +313,8 @@ bool US_3dsaCli::load_datasets( const Case& kase, QList<US_SolveSim::DataSet*>& 
 
    for ( int ii = 0; ii < kase.datasets.size(); ii++ )
    {
-      const DataSetSpec& spec = kase.datasets[ii];
-
-      US_DataIO::RawData raw;
-      const int          rc = US_DataIO::readRawData( spec.auc, raw );
-
-      if ( rc != US_DataIO::OK )
-      {
-         emsg = QString( "cannot read %1 (code %2)" ).arg( spec.auc ).arg( rc );
-         return false;
-      }
-
-      if ( raw.scanCount() < 1 || raw.pointCount() < 1 )
-      {
-         emsg = QString( "%1 holds no scans" ).arg( spec.auc );
-         return false;
-      }
-
-      US_SolveSim::DataSet* d = new US_SolveSim::DataSet;
+      const DataSetSpec&    spec = kase.datasets[ii];
+      US_SolveSim::DataSet* d    = new US_SolveSim::DataSet;
 
       // Simulation parameters: the same file the data was generated from, so
       // the fit's forward model matches the simulator exactly.
@@ -315,86 +328,67 @@ bool US_3dsaCli::load_datasets( const Case& kase, QList<US_SolveSim::DataSet*>& 
          }
       }
 
-      d->run_data.runID      = QFileInfo( spec.auc ).completeBaseName();
-      d->run_data.dataType   = "RA";
-      d->run_data.cell       = QString::number( raw.cell );
-      d->run_data.channel    = QString( QChar( raw.channel ) );
-      d->run_data.wavelength = QString::number( qRound( raw.scanData[0].wavelength ) );
-      d->run_data.expType    = "velocity";
-      d->run_data.meniscus   = d->simparams.meniscus;
-      d->run_data.bottom     = d->simparams.bottom;
-      d->run_data.baseline   = 0.0;
-      d->run_data.plateau    = 0.0;
-      d->run_data.ODlimit    = 1.0e+30;
-
-      // Trim to an edited radial range, as us_edit would.  The simulator
-      // writes the full cell, meniscus to bottom inclusive; the fit
-      // interpolates its own simulation onto these radii and refuses a range
-      // that reaches the ends exactly.  Real edited data never does.
-      //
-      // The bottom margin is the larger of the two: that is where the
-      // boundary piles up, and it matches what us_astfem_sim writes into the
-      // edit profile it registers alongside the data.  The harness rewrites
-      // that profile to exactly this window, so a 2DSA cross-check analyses
-      // the same radii this fit does.
-      const double r_lo = d->simparams.meniscus + edit_margin;
-      const double r_hi = d->simparams.bottom - edit_bmargin;
-
-      QVector<int> keep;
-      keep.reserve( raw.xvalues.size() );
-
-      for ( int rr = 0; rr < raw.xvalues.size(); rr++ )
+      if ( !spec.edit.isEmpty() )
       {
-         if ( raw.xvalues[rr] >= r_lo && raw.xvalues[rr] <= r_hi )
+         // Real data, edited: what us_edit kept is what the fit sees
+         if ( !load_edited( spec.edit, d->run_data, emsg ) )
          {
-            keep << rr;
+            delete d;
+            return false;
+         }
+
+         d->simparams.meniscus = d->run_data.meniscus;
+         if ( d->run_data.bottom > 0.0 )
+         {
+            d->simparams.bottom = d->run_data.bottom;
+         }
+
+         // The run's timestate sits beside its data
+         const QFileInfo efi( spec.edit );
+         const QString   tmst = efi.dir().filePath( d->run_data.runID + ".time_state.tmst" );
+
+         if ( QFileInfo( tmst ).isFile() )
+         {
+            d->tmst_file = tmst;
          }
       }
-
-      if ( keep.size() < 10 )
+      else if ( !load_trimmed( spec, edit_margin, edit_bmargin, d, emsg ) )
       {
-         emsg = QString( "%1: only %2 points survive the %3 / %4 cm edit"
-                         " margins" )
-                   .arg( spec.auc )
-                   .arg( keep.size() )
-                   .arg( edit_margin )
-                   .arg( edit_bmargin );
          delete d;
          return false;
       }
 
-      d->run_data.xvalues.clear();
-      d->run_data.xvalues.reserve( keep.size() );
-      for ( int rr : keep )
+      if ( spec.last_scan_only && d->run_data.scanData.size() > 1 )
       {
-         d->run_data.xvalues << raw.xvalues[rr];
-      }
-
-      d->run_data.scanData.clear();
-      d->run_data.scanData.reserve( raw.scanData.size() );
-
-      for ( int ss = 0; ss < raw.scanData.size(); ss++ )
-      {
-         US_DataIO::Scan sc = raw.scanData[ss];
-         sc.rvalues.clear();
-         sc.rvalues.reserve( keep.size() );
-         for ( int rr : keep )
-         {
-            sc.rvalues << raw.scanData[ss].rvalues[rr];
-         }
-         d->run_data.scanData << sc;
+         d->run_data.scanData.remove( 0, d->run_data.scanData.size() - 1 );
       }
 
       US_SimulationParameters::computeSpeedSteps( &d->run_data.scanData, d->simparams.speed_step );
 
-      d->density     = spec.density;
-      d->viscosity   = spec.viscosity;
+      double density   = spec.density;
+      double viscosity = spec.viscosity;
+
+      if ( !spec.buffer.isEmpty() )
+      {
+         if ( !d->solution_rec.buffer.readFromDisk( spec.buffer ) )
+         {
+            emsg = QString( "cannot read buffer %1" ).arg( spec.buffer );
+            delete d;
+            return false;
+         }
+
+         density   = spec.has_density ? density : d->solution_rec.buffer.density;
+         viscosity = spec.has_viscosity ? viscosity : d->solution_rec.buffer.viscosity;
+      }
+
+      d->density     = density;
+      d->viscosity   = viscosity;
       d->temperature = spec.temperature;
       d->manual      = false;
       d->compress    = 0.0;
       d->vbar20      = spec.vbar20;
 
-      US_Math2::SolutionData sd = corrections( spec.vbar20, spec.density, spec.viscosity, spec.temperature );
+      US_Math2::SolutionData sd = corrections( spec.vbar20, density, viscosity, spec.temperature );
       d->vbartb                 = sd.vbar;
       d->s20w_correction        = sd.s20w_correction;
       d->D20w_correction        = sd.D20w_correction;
@@ -418,6 +412,219 @@ bool US_3dsaCli::load_datasets( const Case& kase, QList<US_SolveSim::DataSet*>& 
    }
 
    return true;
+}
+
+// ---------------------------------------------------------------------------
+// A synthetic data set: the whole simulated cell, trimmed to an edited range.
+bool US_3dsaCli::load_trimmed( const DataSetSpec&    spec,
+                               double                edit_margin,
+                               double                edit_bmargin,
+                               US_SolveSim::DataSet* d,
+                               QString&              emsg )
+{
+   US_DataIO::RawData raw;
+   const int          rc = US_DataIO::readRawData( spec.auc, raw );
+
+   if ( rc != US_DataIO::OK )
+   {
+      emsg = QString( "cannot read %1 (code %2)" ).arg( spec.auc ).arg( rc );
+      return false;
+   }
+
+   if ( raw.scanCount() < 1 || raw.pointCount() < 1 )
+   {
+      emsg = QString( "%1 holds no scans" ).arg( spec.auc );
+      return false;
+   }
+
+   d->run_data.runID      = QFileInfo( spec.auc ).completeBaseName();
+   d->run_data.dataType   = "RA";
+   d->run_data.cell       = QString::number( raw.cell );
+   d->run_data.channel    = QString( QChar( raw.channel ) );
+   d->run_data.wavelength = QString::number( qRound( raw.scanData[0].wavelength ) );
+   d->run_data.expType    = "velocity";
+   d->run_data.meniscus   = d->simparams.meniscus;
+   d->run_data.bottom     = d->simparams.bottom;
+   d->run_data.baseline   = 0.0;
+   d->run_data.plateau    = 0.0;
+   d->run_data.ODlimit    = 1.0e+30;
+
+   // Trim to an edited radial range, as us_edit would.  The simulator
+   // writes the full cell, meniscus to bottom inclusive; the fit
+   // interpolates its own simulation onto these radii and refuses a range
+   // that reaches the ends exactly.  Real edited data never does.
+   //
+   // The bottom margin is the larger of the two: that is where the
+   // boundary piles up, and it matches what us_astfem_sim writes into the
+   // edit profile it registers alongside the data.  The harness rewrites
+   // that profile to exactly this window, so a 2DSA cross-check analyses
+   // the same radii this fit does.
+   const double r_lo = d->simparams.meniscus + edit_margin;
+   const double r_hi = d->simparams.bottom - edit_bmargin;
+
+   QVector<int> keep;
+   keep.reserve( raw.xvalues.size() );
+
+   for ( int rr = 0; rr < raw.xvalues.size(); rr++ )
+   {
+      if ( raw.xvalues[rr] >= r_lo && raw.xvalues[rr] <= r_hi )
+      {
+         keep << rr;
+      }
+   }
+
+   if ( keep.size() < 10 )
+   {
+      emsg = QString( "%1: only %2 points survive the %3 / %4 cm edit"
+                      " margins" )
+                .arg( spec.auc )
+                .arg( keep.size() )
+                .arg( edit_margin )
+                .arg( edit_bmargin );
+      return false;
+   }
+
+   d->run_data.xvalues.clear();
+   d->run_data.xvalues.reserve( keep.size() );
+   for ( int rr : keep )
+   {
+      d->run_data.xvalues << raw.xvalues[rr];
+   }
+
+   d->run_data.scanData.clear();
+   d->run_data.scanData.reserve( raw.scanData.size() );
+
+   for ( int ss = 0; ss < raw.scanData.size(); ss++ )
+   {
+      US_DataIO::Scan sc = raw.scanData[ss];
+      sc.rvalues.clear();
+      sc.rvalues.reserve( keep.size() );
+      for ( int rr : keep )
+      {
+         sc.rvalues << raw.scanData[ss].rvalues[rr];
+      }
+      d->run_data.scanData << sc;
+   }
+
+   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Real data through its edit profile.  US_DataIO::loadData reports a failure
+// by throwing its error code.
+bool US_3dsaCli::load_edited( const QString& edit_path, US_DataIO::EditedData& ed, QString& emsg )
+{
+   const QFileInfo efi( edit_path );
+
+   try
+   {
+      const int rc = US_DataIO::loadData( efi.absolutePath(), efi.fileName(), ed );
+
+      if ( rc != US_DataIO::OK )
+      {
+         emsg = QString( "cannot load %1: %2" ).arg( edit_path ).arg( US_DataIO::errorString( rc ) );
+         return false;
+      }
+   }
+   catch ( US_DataIO::ioError rc )
+   {
+      emsg = QString( "cannot load %1: %2" ).arg( edit_path ).arg( US_DataIO::errorString( rc ) );
+      return false;
+   }
+
+   if ( ed.scanData.isEmpty() || ed.xvalues.size() < 10 )
+   {
+      emsg = QString( "%1 keeps %2 scans of %3 points" ).arg( edit_path ).arg( ed.scanData.size() ).arg( ed.xvalues.size() );
+      return false;
+   }
+
+   // The linear baseline us_edit fitted, which the analyses subtract
+   if ( ed.bl_corr_slope != 0.0 || ed.bl_corr_yintercept != 0.0 )
+   {
+      for ( US_DataIO::Scan& sc : ed.scanData )
+      {
+         for ( int jj = 0; jj < sc.rvalues.size(); jj++ )
+         {
+            sc.rvalues[jj] -= ed.xvalues[jj] * ed.bl_corr_slope + ed.bl_corr_yintercept;
+         }
+      }
+   }
+
+   return true;
+}
+
+// ---------------------------------------------------------------------------
+// The fitted solutes, simulated by the Lamm-equation solver (the ASTFVM
+// where the data set selects it) instead of the closed form, with their
+// amplitudes refitted by NNLS.  An RMSD near the closed form's says the
+// solutes had reached equilibrium in their gradient; one well above it says
+// the run was too short for the closed form.  A solve can take many seconds,
+// so only the solutes carrying the signal are checked: the largest, down to
+// half a percent each, at most VERIFY_MAX of them.
+double US_3dsaCli::verify_with_solver( QList<US_SolveSim::DataSet*>& dsets,
+                                       const US_3dsaProcess::Result& result,
+                                       int                           noisflag,
+                                       int&                          nchecked,
+                                       double&                       share )
+{
+   const int                            VERIFY_MAX = 16;
+   QList<US_Model::SimulationComponent> comps      = result.model.components.toList();
+   std::sort( comps.begin(),
+              comps.end(),
+              []( const US_Model::SimulationComponent& a, const US_Model::SimulationComponent& b )
+              { return a.signal_concentration > b.signal_concentration; } );
+
+   double total = 0.0;
+   for ( const US_Model::SimulationComponent& c : comps )
+   {
+      total += c.signal_concentration;
+   }
+
+   QList<US_Model::SimulationComponent> checked;
+   double                               kept = 0.0;
+   for ( const US_Model::SimulationComponent& c : comps )
+   {
+      if ( checked.size() >= VERIFY_MAX || c.signal_concentration < 0.005 * total )
+      {
+         break;
+      }
+      checked << c;
+      kept += c.signal_concentration;
+   }
+
+   nchecked = checked.size();
+   share    = ( total > 0.0 ) ? kept / total : 0.0;
+
+   QString       msg;
+   QTemporaryDir tdir;
+
+   if ( !US_3dsaProcess::prepare_timestates( dsets, tdir.path(), msg ) || !US_3dsaProcess::prepare_gradients( dsets, msg ) )
+   {
+      err() << "verify: " << msg << "\n";
+      err().flush();
+      return -1.0;
+   }
+
+   for ( US_SolveSim::DataSet* dset : dsets )
+   {
+      dset->solute_type = US_3dsaProcess::mask_s_k_v();
+      dset->fit_vbar    = true;
+      dset->equilibrium = false;
+   }
+
+   US_SolveSim::Simulation sv;
+   for ( const US_Model::SimulationComponent& c : checked )
+   {
+      sv.solutes << US_Solute( c.s, c.f_f0, 0.0, c.vbar20, c.D );
+   }
+   sv.noisflag   = noisflag;
+   sv.dbg_level  = 0;
+   sv.dbg_timing = false;
+   sv.scales     = result.scales;
+
+   US_SolveSim solver( dsets, 0, false );
+   solver.calc_residuals( 0, dsets.size(), sv );
+   return sqrt( qMax( 0.0, sv.variance ) );
 }
 
 // ---------------------------------------------------------------------------
@@ -509,6 +716,19 @@ int US_3dsaCli::run_fit( const QStringList& args )
    p.noisflag        = kase.noisflag;
    p.fit_scales      = kase.fit_scales;
    p.ignore_contrast = kase.ignore_contrast;
+   p.equilibrium     = kase.equilibrium;
+
+   if ( kase.mask == "s_d_v" )
+   {
+      p.s_mask = US_3dsaProcess::mask_s_d_v();
+   }
+   else if ( kase.mask == "w_k_v" )
+   {
+      p.s_mask = US_3dsaProcess::mask_w_k_v();
+      p.x_min  = kase.w_min;
+      p.x_max  = kase.w_max;
+      p.x_res  = kase.w_res;
+   }
 
    US_3dsaProcess         proc( dsets );
    US_3dsaProcess::Result result;
@@ -583,12 +803,13 @@ int US_3dsaCli::run_fit( const QStringList& args )
 
    out() << "\n";
    out() << QString( "  components %1   depth levels %2   NNLS solves %3"
-                     "   Lamm solves %4   %5 s\n" )
+                     "   %6 %4   %5 s\n" )
                .arg( result.model.components.size() )
                .arg( result.ndepths )
                .arg( result.ntasks )
                .arg( result.nsimul )
-               .arg( result.msecs / 1000.0, 0, 'f', 1 );
+               .arg( result.msecs / 1000.0, 0, 'f', 1 )
+               .arg( kase.equilibrium ? "equilibrium profiles" : "Lamm solves" );
    out() << QString( "  contrast %1 (mL/g)^-1, implied vbar resolution"
                      " %2 mL/g, %3 amplitude iterations\n" )
                .arg( result.contrast, 0, 'f', 3 )
@@ -728,6 +949,64 @@ int US_3dsaCli::run_fit( const QStringList& args )
    }
    out() << "\n";
    out().flush();
+
+   // ---- the solutes found ---------------------------------------------------
+   {
+      QList<US_Model::SimulationComponent> comps = result.model.components.toList();
+      std::sort( comps.begin(),
+                 comps.end(),
+                 []( const US_Model::SimulationComponent& a, const US_Model::SimulationComponent& b )
+                 { return a.vbar20 > b.vbar20; } );
+
+      double total = 0.0;
+      for ( const US_Model::SimulationComponent& c : comps )
+      {
+         total += c.signal_concentration;
+      }
+
+      out() << QString( "  %1 %2 %3 %4 %5 %6 %7\n" )
+                  .arg( "s20w (S)", 10 )
+                  .arg( "f/f0", 7 )
+                  .arg( "M (kDa)", 11 )
+                  .arg( "vbar20", 8 )
+                  .arg( "1/vbar", 8 )
+                  .arg( "signal", 10 )
+                  .arg( "share", 7 );
+
+      for ( const US_Model::SimulationComponent& c : comps )
+      {
+         out() << QString( "  %1 %2 %3 %4 %5 %6 %7\n" )
+                     .arg( c.s * 1.0e13, 10, 'f', 2 )
+                     .arg( c.f_f0, 7, 'f', 3 )
+                     .arg( c.mw / 1000.0, 11, 'f', 1 )
+                     .arg( c.vbar20, 8, 'f', 4 )
+                     .arg( c.vbar20 > 0.0 ? 1.0 / c.vbar20 : 0.0, 8, 'f', 4 )
+                     .arg( c.signal_concentration, 10, 'f', 5 )
+                     .arg( total > 0.0 ? QString( "%1%" ).arg( 100.0 * c.signal_concentration / total, 0, 'f', 1 ) : QString( "-" ),
+                           7 );
+      }
+
+      out() << "\n";
+      out().flush();
+   }
+
+   // ---- the closed form, checked by the Lamm-equation solver ----------------
+   if ( kase.equilibrium && kase.verify )
+   {
+      int          nchecked = 0;
+      double       share    = 0.0;
+      const double vrmsd    = verify_with_solver( dsets, result, kase.noisflag, nchecked, share );
+      out() << QString( "  verify: the %1 largest solutes (%2% of the signal), refitted with the"
+                        " Lamm-equation solver, give RMSD %3 (closed form %4)%5\n\n" )
+                  .arg( nchecked )
+                  .arg( 100.0 * share, 0, 'f', 1 )
+                  .arg( vrmsd, 0, 'e', 4 )
+                  .arg( result.rmsd, 0, 'e', 4 )
+                  .arg( vrmsd > 2.0 * result.rmsd ? QString( " -- the run had not reached equilibrium" ) : QString() );
+      jr["verify_rmsd"]  = vrmsd;
+      jr["verify_share"] = share;
+      out().flush();
+   }
 
    jr["rmsd_spread"]       = spread;
    jr["datasets_over_cap"] = ds_over;
@@ -1727,6 +2006,226 @@ int US_3dsaCli::run_gen_cases( const QStringList& args )
 }
 
 // ---------------------------------------------------------------------------
+int US_3dsaCli::run_simulate( const QStringList& args )
+{
+   QString  cfg_path;
+   unsigned seed = 1;
+
+   for ( int ii = 0; ii < args.size(); ii++ )
+   {
+      if ( args[ii] == "--config" && ii + 1 < args.size() )
+      {
+         cfg_path = args[++ii];
+      }
+      else if ( args[ii] == "--seed" && ii + 1 < args.size() )
+      {
+         seed = args[++ii].toUInt();
+      }
+      else
+      {
+         err() << "unknown simulate option: " << args[ii] << "\n";
+         err().flush();
+         return 2;
+      }
+   }
+
+   Case    kase;
+   QString emsg;
+
+   if ( cfg_path.isEmpty() || !read_case( cfg_path, kase, emsg ) )
+   {
+      err() << "simulate needs --config <case.json>" << ( emsg.isEmpty() ? QString() : ": " + emsg ) << "\n";
+      err().flush();
+      return 2;
+   }
+
+   if ( kase.species.isEmpty() )
+   {
+      err() << cfg_path << ": no species to simulate\n";
+      err().flush();
+      return 2;
+   }
+
+   for ( int ii = 0; ii < kase.datasets.size(); ii++ )
+   {
+      const DataSetSpec&      spec = kase.datasets[ii];
+      US_SimulationParameters sp;
+
+      if ( spec.simparams.isEmpty() || sp.load_simparms( spec.simparams ) != 0 || spec.auc.isEmpty() )
+      {
+         err() << "data set " << ii << ": simulate needs readable \"simparams\" and an \"auc\" to write\n";
+         err().flush();
+         return 3;
+      }
+
+      US_Buffer buffer;
+      buffer.density   = spec.density;
+      buffer.viscosity = spec.viscosity;
+      buffer.manual    = false;
+
+      if ( !spec.buffer.isEmpty() && !buffer.readFromDisk( spec.buffer ) )
+      {
+         err() << "data set " << ii << ": cannot read buffer " << spec.buffer << "\n";
+         err().flush();
+         return 3;
+      }
+
+      if ( !spec.buffer.isEmpty() )
+      {
+         buffer.density   = spec.has_density ? spec.density : buffer.density;
+         buffer.viscosity = spec.has_viscosity ? spec.viscosity : buffer.viscosity;
+      }
+
+      const bool fvm = ( sp.meshType == US_SimulationParameters::ASTFVM );
+
+      if ( US_FvmGradients::forms_gradient( buffer ) && !fvm )
+      {
+         err() << "data set " << ii << ": its buffer forms a gradient, which only the ASTFVM simulates\n";
+         err().flush();
+         return 3;
+      }
+
+      // The grid: the whole cell, and scans spread over the speed step after
+      // the rotor reaches speed, omega-squared-t integrated over the
+      // acceleration
+      US_SimulationParameters::SpeedProfile& step     = sp.speed_step[0];
+      const double                           dr       = ( sp.radial_resolution > 0.0 ) ? sp.radial_resolution : 0.001;
+      const double                           duration = step.duration_hours * 3600.0 + step.duration_minutes * 60.0;
+      const int                              nscans   = qMax( 1, step.scans );
+      const double                           rpm      = step.rotorspeed;
+      const double                           w2       = sq( rpm * M_PI / 30.0 );
+      const double       t_acc = ( step.acceleration_flag && step.acceleration > 0 ) ? rpm / step.acceleration : 0.0;
+
+      US_DataIO::RawData sim;
+      sim.type[0]     = 'R';
+      sim.type[1]     = 'A';
+      sim.cell        = ii + 1;
+      sim.channel     = 'A';
+      sim.description = kase.name + ": " + ( spec.label.isEmpty() ? QString::number( ii ) : spec.label );
+      US_Util::uuid_parse( US_Util::new_guid(), (unsigned char*) sim.rawGUID );
+
+      const int nrad = qRound( ( sp.bottom - sp.meniscus ) / dr ) + 1;
+      for ( int jj = 0; jj < nrad; jj++ )
+      {
+         sim.xvalues << sp.meniscus + jj * dr;
+      }
+
+      for ( int kk = 0; kk < nscans; kk++ )
+      {
+         US_DataIO::Scan sc;
+         sc.temperature = sp.temperature;
+         sc.rpm         = rpm;
+         sc.seconds     = qMax( t_acc + 1.0, duration * ( kk + 1 ) / nscans );
+         sc.omega2t     = w2 * ( sc.seconds - t_acc ) + w2 * t_acc / 3.0;
+         sc.wavelength  = 280.0;
+         sc.plateau     = 0.0;
+         sc.delta_r     = dr;
+         sc.rvalues     = QVector<double>( nrad, 0.0 );
+         sim.scanData << sc;
+      }
+
+      US_SimulationParameters::computeSpeedSteps( &sim.scanData, sp.speed_step );
+
+      QTemporaryDir tdir;
+      const QString tmst = tdir.filePath( "sim.time_state.tmst" );
+      US_AstfemMath::writetimestate( tmst, sp, sim );
+      sp.simSpeedsFromTimeState( tmst );
+
+      // The truth model.  The ASTFVM corrects s and D where the solute is,
+      // from the standard-space values; the ASTFEM wants them corrected to
+      // the buffer.
+      US_Model model;
+      for ( const Species& spc : kase.species )
+      {
+         US_Model::SimulationComponent c;
+         c.s                    = spc.s20w;
+         c.f_f0                 = spc.ff0;
+         c.vbar20               = spc.vbar20;
+         c.D                    = 0.0;
+         c.mw                   = 0.0;
+         c.f                    = 0.0;
+         c.signal_concentration = spc.conc * spec.loading;
+         model.components << c;
+      }
+      model.update_coefficients();
+
+      if ( fvm )
+      {
+         US_FvmGradients grads;
+         const double    t_end = sim.scanData.last().seconds;
+
+         if ( !grads.prepare( buffer, sp, US_FvmGradients::gradient_grid( sp, t_end, 100, qMin( 0.002, dr ) ), emsg ) )
+         {
+            err() << "data set " << ii << ": " << emsg << "\n";
+            err().flush();
+            return 3;
+         }
+
+         if ( grads.is_gradient() )
+         {
+            out() << QString( "  %1: gradient %2 to %3 g/mL\n" )
+                        .arg( spec.auc )
+                        .arg( grads.density_lo(), 0, 'f', 4 )
+                        .arg( grads.density_hi(), 0, 'f', 4 );
+         }
+
+         US_LammAstfvm astfvm( model, sp );
+         astfvm.set_buffer( buffer, grads.band_forming(), grads.cosed() );
+         astfvm.calculate( sim );
+      }
+      else
+      {
+         for ( US_Model::SimulationComponent& c : model.components )
+         {
+            const US_Math2::SolutionData sd = corrections( c.vbar20, buffer.density, buffer.viscosity, sp.temperature );
+            c.s /= sd.s20w_correction;
+            c.D /= sd.D20w_correction;
+         }
+
+         US_Astfem_RSA astfem( model, sp );
+         astfem.calculate( sim );
+      }
+
+      const double rnoise = ( spec.rnoise > 0.0 ) ? spec.rnoise : kase.rnoise;
+
+      if ( rnoise > 0.0 )
+      {
+         std::mt19937               gen( seed + 7919u * ii );
+         std::normal_distribution<> gauss( 0.0, rnoise );
+
+         for ( US_DataIO::Scan& sc : sim.scanData )
+         {
+            for ( double& vv : sc.rvalues )
+            {
+               vv += gauss( gen );
+            }
+         }
+      }
+
+      QDir().mkpath( QFileInfo( spec.auc ).absolutePath() );
+      const int rc = US_DataIO::writeRawData( spec.auc, sim );
+
+      if ( rc != US_DataIO::OK )
+      {
+         err() << "cannot write " << spec.auc << ": " << US_DataIO::errorString( rc ) << "\n";
+         err().flush();
+         return 3;
+      }
+
+      out() << QString( "  wrote %1: %2 scans of %3 points, %4 to %5 s%6\n" )
+                  .arg( spec.auc )
+                  .arg( sim.scanData.size() )
+                  .arg( sim.xvalues.size() )
+                  .arg( sim.scanData.first().seconds, 0, 'f', 0 )
+                  .arg( sim.scanData.last().seconds, 0, 'f', 0 )
+                  .arg( rnoise > 0.0 ? QString( ", noise %1 OD" ).arg( rnoise ) : QString() );
+      out().flush();
+   }
+
+   return 0;
+}
+
+// ---------------------------------------------------------------------------
 int US_3dsaCli::main( int argc, char** argv )
 {
    QStringList args;
@@ -1751,6 +2250,10 @@ int US_3dsaCli::main( int argc, char** argv )
    {
       return run_gen_cases( args );
    }
+   if ( cmd == "simulate" )
+   {
+      return run_simulate( args );
+   }
 
    err() << "unknown command: " << cmd << "\n";
    err().flush();
@@ -1758,8 +2261,26 @@ int US_3dsaCli::main( int argc, char** argv )
    return 2;
 }
 
+// The simulators write their progress through qDebug, some of it
+// unconditionally; a headless driver keeps only the warnings, unless
+// US3DSA_DEBUG is set.
+void quiet_debug( QtMsgType type, const QMessageLogContext&, const QString& msg )
+{
+   if ( type == QtDebugMsg || type == QtInfoMsg )
+   {
+      return;
+   }
+
+   std::fprintf( stderr, "%s\n", msg.toLocal8Bit().constData() );
+}
+
 int main( int argc, char** argv )
 {
+   if ( qEnvironmentVariableIsEmpty( "US3DSA_DEBUG" ) )
+   {
+      qInstallMessageHandler( quiet_debug );
+   }
+
    QCoreApplication app( argc, argv );
    QCoreApplication::setApplicationName( "us_3dsa_cli" );
    return US_3dsaCli::main( argc, argv );

@@ -2137,10 +2137,16 @@ QByteArray US_SolveSim::simulate( US_Model& model, DataSet* dset, US_DataIO::Edi
          dskey->sim       = sparms.sim;
          dskey->key       = US_SimCache::dataset_key( sparms, *edata );
 
-         // An ASTFVM simulation also depends on the buffer's gradient
-         if ( uses_fvm( dset ) )
+         // An ASTFVM simulation also depends on the buffer's gradient, and
+         // an equilibrium profile is not a Lamm solution
+         if ( uses_fvm( dset ) || dset->equilibrium )
          {
             dskey->key += US_FvmGradients::key( dset->solution_rec.buffer, sparms );
+         }
+
+         if ( dset->equilibrium )
+         {
+            dskey->key += QByteArray( "equilibrium" ) + QByteArray::number( dset->density, 'g', 17 );
          }
       }
 
@@ -2152,7 +2158,11 @@ QByteArray US_SolveSim::simulate( US_Model& model, DataSet* dset, US_DataIO::Edi
       }
    }
 
-   if ( uses_fvm( dset ) )
+   if ( dset->equilibrium )
+   {
+      equilibrium_profile( model.components[0], dset, simdat );
+   }
+   else if ( uses_fvm( dset ) )
    {
       US_FvmGradients* grads = dset->fvm.data();
       US_LammAstfvm    astfvm( model, dset->simparams );
@@ -2175,6 +2185,96 @@ QByteArray US_SolveSim::simulate( US_Model& model, DataSet* dset, US_DataIO::Edi
    }
 
    return simkey;
+}
+
+// The closed-form equilibrium profile.  The exponent is integrated on a grid
+// of the whole cell fine enough for the narrowest band, then the profile is
+// interpolated onto the experiment's radii.
+void US_SolveSim::equilibrium_profile( const US_Model::SimulationComponent& comp, DataSet* dset, US_DataIO::RawData& simdat )
+{
+   const double meniscus = dset->simparams.meniscus;
+   const double bottom   = dset->simparams.bottom;
+   const int    npts     = simdat.xvalues.size();
+   const double data_dr  = ( npts > 1 ) ? ( simdat.xvalues.last() - simdat.xvalues.first() ) / ( npts - 1 ) : 0.001;
+   const double dr_fine  = qMin( 0.0005, 0.5 * data_dr );
+   const int    nfine    = qMax( 2, (int) std::ceil( ( bottom - meniscus ) / dr_fine ) + 1 );
+   const double step     = ( bottom - meniscus ) / ( nfine - 1 );
+   const double loading  = comp.signal_concentration;
+
+   double       mw = comp.mw;
+
+   if ( mw <= 0.0 && comp.D > 0.0 )
+   {
+      // Svedberg, from the standard-space s and D
+      mw = comp.s * R_GC * K20 / ( comp.D * ( 1.0 - comp.vbar20 * DENS_20W ) );
+   }
+
+   QVector<double> xf( nfine );
+   for ( int jj = 0; jj < nfine; jj++ )
+   {
+      xf[jj] = meniscus + step * jj;
+   }
+
+   QVector<double> lnc( nfine );
+   QVector<double> cf( nfine );
+   QVector<double> plain;
+
+   for ( US_DataIO::Scan& scan : simdat.scanData )
+   {
+      const double           temp  = scan.temperature;
+      const double           vbar  = US_Math2::adjust_vbar20( comp.vbar20, temp );
+      const double           omega = scan.rpm * M_PI / 30.0;
+      const double           fac   = mw * omega * omega / ( R_GC * ( K0 + temp ) );
+
+      const QVector<double>* rho = nullptr;
+
+      if ( dset->fvm )
+      {
+         rho = &dset->fvm->density_at( scan.seconds, temp, xf );
+      }
+      else
+      {
+         plain.fill( dset->density, nfine );
+         rho = &plain;
+      }
+
+      // ln c by the trapezoid rule, from the meniscus
+      lnc[0]       = 0.0;
+      double lnmax = 0.0;
+
+      for ( int jj = 1; jj < nfine; jj++ )
+      {
+         const double g0 = ( 1.0 - vbar * ( *rho )[jj - 1] ) * xf[jj - 1];
+         const double g1 = ( 1.0 - vbar * ( *rho )[jj] ) * xf[jj];
+         lnc[jj]         = lnc[jj - 1] + fac * 0.5 * ( g0 + g1 ) * step;
+         lnmax           = qMax( lnmax, lnc[jj] );
+      }
+
+      // Conserve the signal over the sector: int c r dr = c0 (b^2 - m^2) / 2
+      double total = 0.0;
+
+      for ( int jj = 0; jj < nfine; jj++ )
+      {
+         cf[jj] = std::exp( lnc[jj] - lnmax );
+         if ( jj > 0 )
+         {
+            total += 0.5 * ( cf[jj] * xf[jj] + cf[jj - 1] * xf[jj - 1] ) * step;
+         }
+      }
+
+      const double norm = ( total > 0.0 ) ? loading * 0.5 * ( bottom * bottom - meniscus * meniscus ) / total : 0.0;
+
+      scan.rvalues.resize( npts );
+
+      for ( int ii = 0; ii < npts; ii++ )
+      {
+         const double rr  = simdat.xvalues[ii];
+         const double fx  = qBound( 0.0, ( rr - meniscus ) / step, (double) ( nfine - 1 ) );
+         const int    j0  = qMin( (int) fx, nfine - 2 );
+         const double wt  = fx - j0;
+         scan.rvalues[ii] = norm * ( ( 1.0 - wt ) * cf[j0] + wt * cf[j0 + 1] );
+      }
+   }
 }
 
 // Debug message with thread/processor number and elapsed time value

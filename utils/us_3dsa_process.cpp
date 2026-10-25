@@ -43,6 +43,7 @@ US_3dsaProcess::Parameters::Parameters()
    scale_toler     = 1.0e-4;
    use_cache       = true;
    ignore_contrast = false;
+   equilibrium     = false;
 }
 
 US_3dsaProcess::Result::Result()
@@ -134,7 +135,7 @@ QString US_3dsaProcess::equilibrium_note( const QList<US_SolveSim::DataSet*>& ds
 
    for ( const US_SolveSim::DataSet* dset : dsets )
    {
-      if ( dset->run_data.scanData.size() != 1 )
+      if ( dset->run_data.scanData.size() != 1 && !parms.equilibrium )
       {
          return QString();
       }
@@ -159,10 +160,11 @@ QString US_3dsaProcess::equilibrium_note( const QList<US_SolveSim::DataSet*>& ds
       return QString();
    }
 
-   return tr( "Every data set holds a single scan, which at sedimentation equilibrium depends on a solute's"
-              " molar mass and vbar only: the grid's two hydrodynamic axes are not both determined, and the"
-              " fit can spread a solute along a line of constant molar mass.  Hold f/f0 (or D) to a single"
-              " value and read molar mass and vbar from the result." );
+   return tr( "%1, and at sedimentation equilibrium a solute's profile depends on its molar mass and vbar"
+              " only: the grid's two hydrodynamic axes are not both determined, and the fit can spread a"
+              " solute along a line of constant molar mass.  Hold f/f0 (or D) to a single value and read"
+              " molar mass and vbar from the result." )
+      .arg( parms.equilibrium ? tr( "The fit simulates equilibrium" ) : tr( "Every data set holds a single scan" ) );
 }
 
 int US_3dsaProcess::mask_s_k_v()
@@ -173,6 +175,11 @@ int US_3dsaProcess::mask_s_k_v()
 int US_3dsaProcess::mask_s_d_v()
 {
    return ( US_Solute::ATTR_S << 6 ) | ( US_Solute::ATTR_D << 3 ) | US_Solute::ATTR_V;
+}
+
+int US_3dsaProcess::mask_w_k_v()
+{
+   return ( US_Solute::ATTR_W << 6 ) | ( US_Solute::ATTR_K << 3 ) | US_Solute::ATTR_V;
 }
 
 void US_3dsaProcess::abort_fit()
@@ -850,6 +857,7 @@ bool US_3dsaProcess::fit( const Parameters& parms, Result& result )
       {
          thr_store[tt][dd].solute_type = parms.s_mask;
          thr_store[tt][dd].fit_vbar    = fits_vbar;
+         thr_store[tt][dd].equilibrium = parms.equilibrium;
       }
    }
 
@@ -1019,7 +1027,7 @@ bool US_3dsaProcess::fit( const Parameters& parms, Result& result )
    }
 
    result.report = tr( "3DSA: %1 grid points, %2 subgrids, %3 depth levels,"
-                       " %4 NNLS solves, %5 Lamm solves, %6 components,"
+                       " %4 NNLS solves, %5 %11, %6 components,"
                        " RMSD %7, contrast %8 (mL/g)^-1, vbar resolution"
                        " %9 mL/g, %10 s" )
                       .arg( result.ngrid )
@@ -1031,7 +1039,8 @@ bool US_3dsaProcess::fit( const Parameters& parms, Result& result )
                       .arg( result.rmsd, 0, 'e', 4 )
                       .arg( result.contrast, 0, 'f', 3 )
                       .arg( result.vbar_resol, 0, 'f', 4 )
-                      .arg( result.msecs / 1000.0, 0, 'f', 1 );
+                      .arg( result.msecs / 1000.0, 0, 'f', 1 )
+                      .arg( parms.equilibrium ? tr( "equilibrium profiles" ) : tr( "Lamm solves" ) );
 
    if ( !eq_note.isEmpty() )
    {

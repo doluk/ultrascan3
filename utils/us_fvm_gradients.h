@@ -102,6 +102,16 @@ class US_UTIL_EXTERN US_FvmGradients
       //! \param dr       Radial spacing, cm
       static US_DataIO::RawData gradient_grid( const US_SimulationParameters&, double, int = 100, double = 0.002 );
 
+      //! \brief The density at given radii and time, g/mL, as the solver
+      //!        forms it: the buffer's own, plus each gradient's increment.
+      //!        Kept per time, since a fit asks for the same few scans over
+      //!        and over; the radii must be the same at each call.
+      //! \param t      Time, s
+      //! \param temp   Temperature, C
+      //! \param x      Radii, cm
+      //! \returns      Density at each radius
+      const QVector<double>&    density_at( double, double, const QVector<double>& );
+
       //! \brief Bytes identifying the gradient-forming conditions, for
       //!        simulation-cache keys: two data sets with the same grid but
       //!        different buffers must not share simulations
@@ -109,7 +119,10 @@ class US_UTIL_EXTERN US_FvmGradients
 
    private:
       // Lowest and highest density over the cell at the grid's scan times
-      void                                              measure_span( const US_Buffer&, const US_DataIO::RawData& );
+      void measure_span( const US_DataIO::RawData& );
+
+      // Density and viscosity at radii and a time, from the buffer's own
+      void fill_density( double t, double temp, const QVector<double>& x, QVector<double>& dens, QVector<double>& visc );
 
       QList<US_CosedComponent>                          components; // What cosed_ points at
       QScopedPointer<US_LammAstfvm::CosedData>          cosed_;
@@ -118,5 +131,8 @@ class US_UTIL_EXTERN US_FvmGradients
       double                                            base_viscosity;
       double                                            dens_lo;
       double                                            dens_hi;
+      double                                            buf_density; // The buffer's own
+      double                                            buf_viscosity;
+      QHash<qint64, QVector<double>>                    density_cache; // By time, ms
 };
 #endif

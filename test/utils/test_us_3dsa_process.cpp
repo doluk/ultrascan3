@@ -1117,3 +1117,132 @@ TEST_F( TestUS3dsaProcess, NotesAnUnresolvableEquilibriumGrid )
    parms.y_res  = 3;
    EXPECT_FALSE( US_3dsaProcess::equilibrium_note( eq, parms ).isEmpty() );
 }
+
+// The closed-form equilibrium profile, in a plain buffer, is the textbook
+// one: c(r) = c0 sigma (b^2 - m^2) / 2 exp( sigma (r^2 - m^2) / 2 ) /
+// ( exp( sigma (b^2 - m^2) / 2 ) - 1 ), sigma = M (1 - vbar rho) w^2 / RT.
+TEST_F( TestUS3dsaProcess, EquilibriumProfileIsTheTextbookOneInAPlainBuffer )
+{
+   US_SolveSim::DataSet dset;
+   dset.simparams.meniscus = 6.0;
+   dset.simparams.bottom   = 7.2;
+   dset.density            = 0.998234;
+
+   US_DataIO::RawData sim;
+   for ( double rr = 6.01; rr <= 7.19 + 1.0e-9; rr += 0.005 )
+   {
+      sim.xvalues << rr;
+   }
+   US_DataIO::Scan sc;
+   sc.seconds     = 1.0e+5;
+   sc.rpm         = 15000.0;
+   sc.temperature = 20.0;
+   sc.rvalues     = QVector<double>( sim.xvalues.size(), 0.0 );
+   sim.scanData << sc;
+
+   US_Model::SimulationComponent comp;
+   comp.mw                   = 6.6e+4;
+   comp.vbar20               = 0.73;
+   comp.signal_concentration = 0.8;
+   US_SolveSim::equilibrium_profile( comp, &dset, sim );
+
+   const double omega = 15000.0 * M_PI / 30.0;
+   const double sigma = comp.mw * ( 1.0 - 0.73 * 0.998234 ) * omega * omega / ( R_GC * ( K0 + 20.0 ) );
+   const double span  = 0.5 * ( 7.2 * 7.2 - 6.0 * 6.0 );
+   double       worst = 0.0;
+
+   for ( int jj = 0; jj < sim.xvalues.size(); jj++ )
+   {
+      const double rr    = sim.xvalues[jj];
+      const double exact = 0.8 * sigma * span * std::exp( sigma * 0.5 * ( rr * rr - 36.0 ) ) / ( std::exp( sigma * span ) - 1.0 );
+      worst              = qMax( worst, std::fabs( sim.scanData[0].rvalues[jj] / exact - 1.0 ) );
+   }
+
+   EXPECT_LT( worst, 1.0e-4 );
+}
+
+// Equilibrium in a CsCl gradient: two species banded at their own densities
+// (here generated with the closed form itself), fitted on a v-bar grid fine
+// enough for the bands -- 355 points in well under a second, where a
+// finite-volume solve per point would take minutes.  Each band's v-bar and
+// share of the signal come back; its molar mass need not, since a band's
+// width can be traded between molar mass and a spread in density.
+TEST_F( TestUS3dsaProcess, EquilibriumFitFindsEachBandsDensity )
+{
+   std::unique_ptr<US_SolveSim::DataSet> eq( make_gradient_dataset( gradient_truth(), gradient_buffer( GRAD_CSCL ), 0.80 ) );
+   eq->run_data.scanData.remove( 0, eq->run_data.scanData.size() - 1 ); // the last scan, as ABDE keeps
+
+   QList<US_SolveSim::DataSet*> one{ eq.get() };
+   QTemporaryDir                tdir;
+   QString                      msg;
+   ASSERT_TRUE( US_3dsaProcess::prepare_timestates( one, tdir.path(), msg ) ) << msg.toStdString();
+   ASSERT_TRUE( US_3dsaProcess::prepare_gradients( one, msg ) ) << msg.toStdString();
+
+   struct Band
+   {
+         double mw, vbar, conc;
+   };
+   const Band         bands[2] = { { 3.0e+6, 0.830, 0.3 }, { 5.0e+6, 0.800, 0.5 } };
+   US_DataIO::Scan&   data     = eq->run_data.scanData[0];
+   US_DataIO::RawData sim;
+   US_AstfemMath::initSimData( sim, eq->run_data, 0.0 );
+   data.rvalues.fill( 0.0 );
+
+   for ( const Band& b : bands )
+   {
+      US_Model::SimulationComponent comp;
+      comp.mw                   = b.mw;
+      comp.vbar20               = b.vbar;
+      comp.signal_concentration = b.conc;
+      US_SolveSim::equilibrium_profile( comp, eq.get(), sim );
+      for ( int jj = 0; jj < data.rvalues.size(); jj++ )
+      {
+         data.rvalues[jj] += sim.scanData[0].rvalues[jj];
+      }
+   }
+
+   US_3dsaProcess::Parameters parms = gradient_parameters();
+   parms.s_mask                     = US_3dsaProcess::mask_w_k_v();
+   parms.x_min                      = 2.0e+6;
+   parms.x_max                      = 6.0e+6;
+   parms.x_res                      = 5;
+   parms.y_min                      = 1.3;
+   parms.y_max                      = 1.3;
+   parms.y_res                      = 1;
+   parms.z_min                      = 0.78;
+   parms.z_max                      = 0.85;
+   parms.z_res                      = 71; // step 0.001
+   parms.equilibrium                = true;
+
+   US_3dsaProcess         proc( one );
+   US_3dsaProcess::Result result;
+   ASSERT_TRUE( proc.fit( parms, result ) ) << proc.lastError().toStdString();
+   std::printf( "\n  %s\n", result.report.toStdString().c_str() );
+
+   EXPECT_LT( result.msecs, 20000 );
+   EXPECT_LT( result.rmsd, 1.0e-3 );
+
+   double total = 0.0;
+   for ( const US_Model::SimulationComponent& c : result.model.components )
+   {
+      total += c.signal_concentration;
+   }
+
+   for ( const Band& b : bands )
+   {
+      double conc = 0.0;
+      double vsum = 0.0;
+      for ( const US_Model::SimulationComponent& c : result.model.components )
+      {
+         if ( std::fabs( c.vbar20 - b.vbar ) < 0.015 )
+         {
+            conc += c.signal_concentration;
+            vsum += c.signal_concentration * c.vbar20;
+         }
+      }
+      ASSERT_GT( conc, 0.0 ) << "no band near vbar " << b.vbar;
+      std::printf( "  band at vbar %.3f: fitted %.4f, share %.3f\n", b.vbar, vsum / conc, conc / total );
+      EXPECT_NEAR( vsum / conc, b.vbar, 0.001 );
+      EXPECT_NEAR( conc / total, b.conc / 0.8, 0.02 );
+   }
+}

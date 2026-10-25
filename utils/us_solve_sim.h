@@ -85,6 +85,13 @@ class US_UTIL_EXTERN US_SolveSim : public QObject
             //! gradients once (US_FvmGradients::prepare) and set them here;
             //! a thread needs its own copy.
             QSharedPointer<US_FvmGradients> fvm;
+
+            //! Simulate each solute at sedimentation equilibrium in the
+            //! density of each scan's moment (equilibrium_profile) instead of
+            //! solving the Lamm equation.  Right for the last scan of an ABDE
+            //! run, and for equilibrium data in a plain buffer; wrong for a
+            //! scan still on its way there.
+            bool                            equilibrium = false;
     };
 
     //! \brief Whether a data set is simulated by the ASTFVM rather than the
@@ -93,6 +100,23 @@ class US_UTIL_EXTERN US_SolveSim : public QObject
     {
        return dset->simparams.meshType == US_SimulationParameters::ASTFVM;
     }
+
+    //! \brief A solute's sedimentation-equilibrium profile, in closed form
+    //!
+    //! For each scan of \c simdat, at its time, speed and temperature:
+    //! \f$ c(r) \propto \exp\left( \frac{M\omega^2}{RT} \int_m^r
+    //! (1 - \bar v\rho(r'))\,r'\,dr' \right) \f$, with \f$\rho\f$ the data
+    //! set's density at that moment (its gradient's, or the buffer's) and the
+    //! solute's signal conserved over the cell, meniscus to bottom.  A solute
+    //! that equilibrates faster than its gradient changes -- the bands of an
+    //! ABDE run -- follows it to well within noise, and costs microseconds
+    //! where a finite-volume solve costs seconds.  Shape does not enter.
+    //! \param comp    The solute, standard space: molar mass, vbar20 and
+    //!                 signal concentration are used
+    //! \param dset    Its data set: simparams' meniscus and bottom, the
+    //!                 buffer density, and the prepared gradient if any
+    //! \param simdat  Simulation data on the experiment grid; filled in
+    static void equilibrium_profile( const US_Model::SimulationComponent&, DataSet*, US_DataIO::RawData& );
 
     //! Class for communicating simulation
     class US_UTIL_EXTERN Simulation

@@ -18,6 +18,10 @@
 //!                     buffer and simulation-parameter XML for every data
 //!                     set, plus a manifest naming the us_astfem_sim runs
 //!                     that produce the data.
+//! \li \c simulate  -- simulate a case's species into each data set's .auc
+//!                     with the simulator the fit will use, the ASTFVM with
+//!                     its density gradients included.  us_astfem_sim cannot
+//!                     simulate a gradient buffer yet.
 //!
 //! Everything here links only against usutils, so the tool builds in the
 //! headless HPC profile as well as the full application build.
@@ -66,6 +70,25 @@ class US_3dsaCli
             //! and analyte the simulator registered are found through them.
             QString run_dir;
             QString run_id;
+
+            //! An edit profile (us_edit's XML) to load real data through
+            //! instead of trimming \c auc: the .auc it names is read from the
+            //! same directory, its excluded scans dropped, its range, meniscus
+            //! and bottom applied and its linear baseline subtracted.  The
+            //! meniscus and bottom replace the simulation parameters'.
+            QString edit;
+
+            //! A buffer XML (US_Buffer::writeToDisk).  A buffer with
+            //! co-sedimenting or co-diffusing components forms a density
+            //! gradient; its simulation parameters must select the ASTFVM.
+            //! The buffer's density and viscosity apply unless the case gives
+            //! its own.
+            QString buffer;
+            bool    has_density   = false;
+            bool    has_viscosity = false;
+
+            //! Keep only the last scan, as an ABDE edit does
+            bool    last_scan_only = false;
       };
 
       //! A complete case
@@ -117,6 +140,19 @@ class US_3dsaCli
             double               decoy_vbar = 0.0;
 
             // Fit
+            //! Grid axes: "s_k_v" (default), "s_d_v" or "w_k_v".  With
+            //! "w_k_v" the first axis is molar mass, from w_min .. w_max.
+            QString              mask  = "s_k_v";
+            double               w_min = 1.0e+5, w_max = 1.0e+7;
+            int                  w_res = 24;
+
+            //! Simulate every solute at sedimentation equilibrium in the
+            //! density of each scan's moment (ABDE), and, with verify, refit
+            //! the solutes found with the Lamm-equation solver to check
+            //! that the closed form held
+            bool                 equilibrium = false;
+            bool                 verify      = false;
+
             int                  threads         = 4;
             int                  noisflag        = 0;
             bool                 fit_scales      = true;
@@ -143,6 +179,7 @@ class US_3dsaCli
    private:
       static int    run_fit( const QStringList& );
       static int    run_gen_cases( const QStringList& );
+      static int    run_simulate( const QStringList& );
       static void   usage( void );
 
       static bool   read_case( const QString&, Case&, QString& );
@@ -150,6 +187,11 @@ class US_3dsaCli
 
       // Build the engine inputs from a case
       static bool   load_datasets( const Case&, QList<US_SolveSim::DataSet*>&, QString& );
+      static bool   load_trimmed( const DataSetSpec&, double, double, US_SolveSim::DataSet*, QString& );
+      static bool   load_edited( const QString&, US_DataIO::EditedData&, QString& );
+
+      // RMSD of a fit's solutes simulated by the Lamm-equation solver
+      static double verify_with_solver( QList<US_SolveSim::DataSet*>&, const US_3dsaProcess::Result&, int, int&, double& );
 
       // Concentration-weighted attribute of a model
       static double weighted( const US_Model&, int attr );

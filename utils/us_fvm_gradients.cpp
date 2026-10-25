@@ -11,6 +11,8 @@ US_FvmGradients::US_FvmGradients()
    base_viscosity = 0.0;
    dens_lo        = 0.0;
    dens_hi        = 0.0;
+   buf_density    = 0.0;
+   buf_viscosity  = 0.0;
 }
 
 US_FvmGradients::US_FvmGradients( const US_FvmGradients& other )
@@ -20,6 +22,8 @@ US_FvmGradients::US_FvmGradients( const US_FvmGradients& other )
    base_viscosity = other.base_viscosity;
    dens_lo        = other.dens_lo;
    dens_hi        = other.dens_hi;
+   buf_density    = other.buf_density;
+   buf_viscosity  = other.buf_viscosity;
 
    if ( other.cosed_ )
    {
@@ -137,6 +141,9 @@ bool US_FvmGradients::prepare( const US_Buffer&               buffer,
    base_viscosity = 0.0;
    dens_lo        = buffer.density;
    dens_hi        = buffer.density;
+   buf_density    = buffer.density;
+   buf_viscosity  = buffer.viscosity;
+   density_cache.clear();
 
    if ( !forms_gradient( buffer ) )
    {
@@ -310,7 +317,7 @@ bool US_FvmGradients::prepare( const US_Buffer&               buffer,
       bfg_->calculate_gradient( sparms, &work );
    }
 
-   measure_span( buffer, grid );
+   measure_span( grid );
 
    if ( !std::isfinite( dens_lo ) || !std::isfinite( dens_hi ) )
    {
@@ -322,32 +329,54 @@ bool US_FvmGradients::prepare( const US_Buffer&               buffer,
    return true;
 }
 
-void US_FvmGradients::measure_span( const US_Buffer& buffer, const US_DataIO::RawData& grid )
+void US_FvmGradients::fill_density( double t, double temp, const QVector<double>& x, QVector<double>& dens, QVector<double>& visc )
 {
-   const int       npts = grid.xvalues.size();
-   QVector<double> xx   = grid.xvalues;
-   QVector<double> dens( npts );
-   QVector<double> visc( npts );
+   const int npts = x.size();
+
+   // As US_LammAstfvm::AdjustSD forms them: the buffer's own values, then
+   // each gradient's increment
+   dens.fill( buf_density, npts );
+   visc.fill( buf_viscosity, npts );
+   const double* xx = x.constData();
+
+   if ( cosed_ )
+   {
+      cosed_->InterpolateCCosed( npts, xx, t, dens.data(), visc.data() );
+   }
+
+   if ( bfg_ )
+   {
+      bfg_->interpolateCCodiff( npts, xx, t, temp + K0, dens.data(), visc.data() );
+   }
+}
+
+const QVector<double>& US_FvmGradients::density_at( double t, double temp, const QVector<double>& x )
+{
+   const qint64 key = qRound64( t * 1000.0 );
+   auto         it  = density_cache.find( key );
+
+   if ( it == density_cache.end() || it->size() != x.size() )
+   {
+      QVector<double> dens;
+      QVector<double> visc;
+      fill_density( t, temp, x, dens, visc );
+      it = density_cache.insert( key, dens );
+   }
+
+   return it.value();
+}
+
+void US_FvmGradients::measure_span( const US_DataIO::RawData& grid )
+{
+   QVector<double> dens;
+   QVector<double> visc;
 
    dens_lo = 1.0e+99;
    dens_hi = -1.0e+99;
 
    for ( const US_DataIO::Scan& scan : grid.scanData )
    {
-      // As US_LammAstfvm::AdjustSD forms them: the buffer's own values, then
-      // each gradient's increment.
-      dens.fill( buffer.density );
-      visc.fill( buffer.viscosity );
-
-      if ( cosed_ )
-      {
-         cosed_->InterpolateCCosed( npts, xx.data(), scan.seconds, dens.data(), visc.data() );
-      }
-
-      if ( bfg_ )
-      {
-         bfg_->interpolateCCodiff( npts, xx.data(), scan.seconds, scan.temperature + K0, dens.data(), visc.data() );
-      }
+      fill_density( scan.seconds, scan.temperature, grid.xvalues, dens, visc );
 
       for ( double dd : dens )
       {
