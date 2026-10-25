@@ -128,7 +128,7 @@ numbers, the cause and the caveats are in `doc/develop/3dsa_design.md` §8.3.
 
 ## The cases
 
-Thirty-three cases. Every species is declared in standard (20W) space;
+Forty cases. Every species is declared in standard (20W) space;
 `us_astfem_sim` converts to experimental space per component using that
 component's own v̄ and the buffer it is given, and the fit has to invert that.
 That round trip is the point.
@@ -168,10 +168,32 @@ That round trip is the point.
 | 31 | `series_uneven_5_steps` | 10/35/55/70/95 % D₂O — unevenly spaced, no H₂O cell |
 | 32 | `subgrids_threaded` | eight subgrids, four threads requested |
 | 33 | `series_different_run_timing` | each cell at its own speed and run time |
+| 34 | `crossing_pair` | 4.2 S / v̄ 0.66 and 5.1 S / v̄ 0.805 **swap order in s** between 50 and 100 % D₂O |
+| 35 | `crossing_pair_5buffers` | the same pair over five steps, the swap inside the series |
+| 36 | `crossing_coincide_at_50` | a pair that sediments together in the 50 % cell |
+| 37 | `crossing_pair_all_noise` | the crossing pair with random + TI + RI noise |
+| 38 | `crossing_pair_low_signal` | the crossing pair at 0.10 / 0.08 OD, random noise 0.003 |
+| 39 | `vbar_ladder_5species` | five species, v̄ rising with s from 0.645 to 0.82; the top two swap |
+| 40 | `anticorrelated_pair_control` | different v̄, order kept — the control for 34–39 |
 
 Cases 20 and 21 pass by being **refused**: neither series carries enough
 buoyancy contrast to determine v̄, and a fit that ran anyway would be reporting
 a grid artefact. They are there to keep the gate honest.
+
+### Species that change places
+
+A species of high v̄ loses more of its buoyancy to D₂O than one of low v̄, so
+two species can swap order in *s* from one cell to the next. Cases 34–39 are
+built so they do. A method that pairs the cells by boundary fraction, as
+`us_density_match` does, then compares one species in H₂O with the other in
+D₂O; a global fit has no pairing to get wrong. Case 40 is the control: two
+v̄ that differ as much, arranged so the order holds.
+
+Unlike cases 1–33, every *s*, *f/f₀* and v̄ in 34–40 lies off both the 3DSA
+grid and the default 2DSA grid, so neither method is helped by a truth that
+sits exactly on a grid point. A truth between grid points fits only to the
+grid's own residual floor, so the noise-free ones among them are capped at
+1.5 × 10⁻³ rather than 10⁻³.
 
 ### Noise that differs from cell to cell
 

@@ -855,12 +855,13 @@ double truth_vbar_of( const QVector<GenSpecies>& species )
    return ( den > 0.0 ) ? ( num / den ) : TYPICAL_VBAR;
 }
 
-// The 24 cases the harness runs.  Between them they cover every axis the
+// The 40 cases the harness runs.  Between them they cover every axis the
 // request named: species differing in s, in D, in vbar and in combination;
 // mixtures sharing a vbar while differing in s and D; unequal cell loadings;
-// random, time-invariant and radially-invariant noise; and D2O series of two
-// to five isotope concentrations, including two that are deliberately too
-// weak to determine vbar at all.
+// random, time-invariant and radially-invariant noise; D2O series of two to
+// five isotope concentrations, including two that are deliberately too weak
+// to determine vbar at all; and mixtures whose species change places in s
+// across the series.
 QVector<GenCase> build_cases()
 {
    QVector<GenCase> cases;
@@ -1275,6 +1276,114 @@ QVector<GenCase> build_cases()
       c.datasets << GenDataSet{ 0.0, 1.0, -1.0, -1.0, -1.0, 0.0, 45000, 5 }
                  << GenDataSet{ 50.0, 1.0, -1.0, -1.0, -1.0, 0.0, 50000, 4 }
                  << GenDataSet{ 100.0, 1.0, -1.0, -1.0, -1.0, 0.0, 38000, 6 };
+      add( c );
+   }
+
+   // ---- 34-40: species that change places across the series -------------
+   //
+   // A species of high vbar loses more of its buoyancy to D2O than one of low
+   // vbar, so two species can swap order in s from one cell to the next.  A
+   // method that pairs the cells by boundary fraction, as us_density_match
+   // does, then compares one species' s in H2O with the other's in D2O; a
+   // global fit has no pairing to get wrong.  Unlike the cases above, every
+   // s, f/f0 and vbar here lies off both the 3DSA grid and the default 2DSA
+   // grid, so neither method is helped by a truth that sits on a grid point.
+   //
+   // That costs the noise-free cases their usual residual: a truth between
+   // grid points fits to the grid's own floor, 6e-4 to 1e-3 here rather than
+   // the ~1e-4 of the cases above, so their cap is raised to match.
+   const GenSpecies P{ 4.20e-13, 1.35, 0.6600, 0.50 }; // slower in H2O, faster in D2O
+   const GenSpecies Q{ 5.10e-13, 1.60, 0.8050, 0.40 }; // the other way round
+   const double     OFF_GRID_RMSD_MAX = 1.5e-3;
+
+   {
+      GenCase c;
+      c.name        = "case34_crossing_pair";
+      c.description = "4.2 S / vbar 0.66 and 5.1 S / vbar 0.805: they swap order between 50 and 100% D2O";
+      c.species << P << Q;
+      c.vbar_tol = 0.02;
+      c.rmsd_max = OFF_GRID_RMSD_MAX;
+      c.datasets << GenDataSet{ 0.0, 1.0 } << GenDataSet{ 50.0, 1.0 } << GenDataSet{ 100.0, 1.0 };
+      add( c );
+   }
+
+   {
+      GenCase c;
+      c.name        = "case35_crossing_pair_5buffers";
+      c.description = "The crossing pair over five isotope steps; the swap falls inside the series";
+      c.species << P << Q;
+      c.vbar_tol = 0.02;
+      c.rmsd_max = OFF_GRID_RMSD_MAX;
+      c.datasets << GenDataSet{ 0.0, 1.0 } << GenDataSet{ 25.0, 1.0 } << GenDataSet{ 50.0, 1.0 } << GenDataSet{ 75.0, 1.0 }
+                 << GenDataSet{ 100.0, 1.0 };
+      add( c );
+   }
+
+   {
+      GenCase c;
+      c.name        = "case36_crossing_coincide_at_50";
+      c.description = "Crossing pair tuned to sediment together in the 50% D2O cell";
+      // 4.82 S at vbar 0.805 has the same s as 4.2 S at vbar 0.66 in 50% D2O
+      c.species << P << GenSpecies{ 4.82e-13, 1.60, 0.8050, 0.40 };
+      c.vbar_tol = 0.02;
+      c.rmsd_max = OFF_GRID_RMSD_MAX;
+      c.datasets << GenDataSet{ 0.0, 1.0 } << GenDataSet{ 50.0, 1.0 } << GenDataSet{ 100.0, 1.0 };
+      add( c );
+   }
+
+   {
+      GenCase c;
+      c.name        = "case37_crossing_pair_all_noise";
+      c.description = "The crossing pair with random + TI + RI noise, both noises fitted";
+      c.species << P << Q;
+      c.rnoise          = 0.002;
+      c.tinoise         = 0.005;
+      c.rinoise         = 0.005;
+      c.noisflag        = 3;
+      c.vbar_tol        = 0.025;
+      c.rmsd_max        = 0.0040;
+      c.rmsd_spread_max = 5.0;
+      c.datasets << GenDataSet{ 0.0, 1.0 } << GenDataSet{ 50.0, 1.0 } << GenDataSet{ 100.0, 1.0 };
+      add( c );
+   }
+
+   {
+      GenCase c;
+      c.name        = "case38_crossing_pair_low_signal";
+      c.description = "The crossing pair at a fifth of the loading (0.10 / 0.08 OD), random noise 0.003";
+      c.species << GenSpecies{ P.s20w, P.ff0, P.vbar20, 0.10 } << GenSpecies{ Q.s20w, Q.ff0, Q.vbar20, 0.08 };
+      c.rnoise   = 0.003;
+      c.vbar_tol = 0.03;
+      c.rmsd_max = 0.0050; // random noise is not fitted; it stays in
+      c.datasets << GenDataSet{ 0.0, 1.0 } << GenDataSet{ 50.0, 1.0 } << GenDataSet{ 100.0, 1.0 };
+      add( c );
+   }
+
+   {
+      GenCase c;
+      c.name        = "case39_vbar_ladder_5species";
+      c.description = "Five species, vbar rising with s from 0.645 to 0.82; the top two swap in D2O";
+      // vbar rising with s compresses the distribution in D2O: by 100% the
+      // fastest species has fallen behind the second fastest and level with
+      // the middle one.
+      c.species << GenSpecies{ 3.10e-13, 1.30, 0.6450, 0.15 } << GenSpecies{ 4.05e-13, 1.40, 0.6900, 0.15 }
+                << GenSpecies{ 5.05e-13, 1.55, 0.7350, 0.15 } << GenSpecies{ 6.05e-13, 1.65, 0.7800, 0.15 }
+                << GenSpecies{ 7.10e-13, 1.80, 0.8200, 0.15 };
+      c.vbar_tol = 0.02;
+      c.rmsd_max = OFF_GRID_RMSD_MAX;
+      c.datasets << GenDataSet{ 0.0, 1.0 } << GenDataSet{ 25.0, 1.0 } << GenDataSet{ 50.0, 1.0 } << GenDataSet{ 75.0, 1.0 }
+                 << GenDataSet{ 100.0, 1.0 };
+      add( c );
+   }
+
+   {
+      GenCase c;
+      c.name        = "case40_anticorrelated_pair_control";
+      c.description = "Control: vbar 0.79 at 4.2 S and 0.66 at 6.3 S -- the order holds and the gap widens";
+      c.species << GenSpecies{ 4.20e-13, 1.35, 0.7900, 0.50 } << GenSpecies{ 6.30e-13, 1.60, 0.6600, 0.40 };
+      c.vbar_tol = 0.02;
+      c.rmsd_max = OFF_GRID_RMSD_MAX;
+      c.datasets << GenDataSet{ 0.0, 1.0 } << GenDataSet{ 50.0, 1.0 } << GenDataSet{ 100.0, 1.0 };
       add( c );
    }
 

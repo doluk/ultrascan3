@@ -882,7 +882,7 @@ produced the estimate. The existing `US_SolveSim::checkGridSize()` guard needs i
 reports the **global RMSD and the RMSD of every data set**. `test/3dsa_harness/README.md`
 documents it; `run_harness.py --outdir DIR --bindir BINDIR` runs it.
 
-Thirty-three cases, covering every axis that matters:
+Forty cases, covering every axis that matters:
 
 | group | cases | what they exercise |
 |---|---|---|
@@ -894,6 +894,7 @@ Thirty-three cases, covering every axis that matters:
 | Noise per cell | 25–28 | a **different noise level in every cell**, random and fitted, with loading varying against it |
 | Irregular series | 29–31 | 0/30/50, 0/20/40/60 and 10/35/55/70/95 % D₂O — no pure cell at either end, uneven spacing |
 | Solver state | 32–33 | eight subgrids with four threads requested, so a level has tasks to share out; and a series whose cells ran at **different speeds and run times** (45 krpm/5 h, 50 krpm/4 h, 38 krpm/6 h) — §3D |
+| Crossing species | 34–40 | mixtures whose species **swap order in *s*** across the series — a pair, the same pair over five steps, a pair that co-sediments in one cell, with noise, at low signal, a five-species v̄ ladder — and a control that keeps its order; every truth off both methods' grids (§8.3) |
 
 Every species is declared in standard (20W) space. `us_astfem_sim` converts to experimental space
 per component using that component's own v̄ and the buffer it is given, and the fit has to invert
@@ -996,6 +997,39 @@ fine 2DSA grid: on 3DSA's own 19 × 9 *s* × *f/f₀* grid its median per-specie
 answers the weak-contrast series that 3DSA refuses (case20) without warning, 0.024 off even with
 the corrected input.
 
+**Species that change places (cases 34–40).** Every series above keeps its species in the same
+order of *s* in every cell, which is what DM's pairing of the cells by boundary fraction assumes.
+A species of high v̄ loses more of its buoyancy to D₂O than one of low v̄, though, and falls behind
+it. Cases 34–39 are built to do that, with every *s*, *f/f₀* and v̄ off both methods' grids; case
+40 is the control, as far apart in v̄ but in an order that holds. Against DM with its input
+corrected, worst species v̄ error in mL/g and serial wall time:
+
+| Case | 3DSA | DM | 3DSA s | DM s |
+|---|---|---|---|---|
+| 34 — pair, 4.2 S / 0.66 and 5.1 S / 0.805, swapping between 50 and 100 % D₂O | 0.007 | 0.081 | 40 | 26 |
+| 35 — the same pair over five cells | 0.005 | 0.080 | 59 | 42 |
+| 36 — a pair that sediments together in the 50 % cell | 0.056; 0.004 on a finer grid | 0.110 | 36; 64 | 25 |
+| 37 — pair 34 with random, TI and RI noise | 0.005 | 0.077 | 37 | 25 |
+| 38 — pair 34 at 0.10 / 0.08 OD, random noise 0.003 | 0.004 | 0.082 | 38 | 25 |
+| 39 — five species, v̄ rising with *s* from 0.645 to 0.82 | 0.009 | 0.031 | 179 | 45 |
+| 40 — control, order kept | 0.009 | 0.002 | 45 | 28 |
+
+Once the order flips, DM's line runs through one species in H₂O and the other in D₂O. On exact *s*
+values, case34's pair paired by boundary fraction gives 0.752 and 0.772 for a true 0.66 and 0.805,
+so no grid can help. In cases 34, 35, 37 and 38 both species come back near the mean, with molar
+masses 37–65 % off. 3DSA has no pairing to get wrong: there it recovers both species within 0.007
+and their MW within 14 %.
+
+Case36 defeats both on the harness grid, 3DSA because its two species share the 4.5 S grid point.
+On a grid twice as fine in *s* and v̄ (25 × 13 × 21, two grid repetitions) it resolves them: within
+0.0005 and 0.0044, MW within 6 %, in two populations with nothing between v̄ 0.69 and 0.79. The same
+grid takes case34 to 0.0015 and 0.0038.
+
+This is where 3DSA earns its place. For a mixture whose species keep their order in *s*, DM with its
+input corrected is as accurate and faster; on the control it is the more accurate. For a mixture
+whose v̄ differ enough to reorder its species — the heterogeneous complexes a density series is run
+for — DM cannot be right, and 3DSA is about ten times more accurate per species.
+
 **Cost**, serial throughout (§3D):
 
 | | Wall time, 31 series | Lamm solves |
@@ -1010,7 +1044,8 @@ which brings the solves down to one per grid point and data set with bit-identic
 33 cases. 3DSA is still faster in only 8 of the 31: what remains is the NNLS (§7.2).
 
 **Caveats.** Where the truth sits on a grid point the numbers flatter: 3DSA on case22 and case23,
-and DM whenever the 2DSA was given the true v̄; the decoy runs are the representative ones. 20 °C
+and DM whenever the 2DSA was given the true v̄; the decoy runs are the representative ones, and
+cases 34–40 keep every truth off the grids. 20 °C
 only. The driver is not in the tree — it compiles the 2DSA engine with two GUI headers stubbed out,
 which belongs in a test once that engine lives in `utils/`.
 
@@ -1041,7 +1076,7 @@ not identity.
 | **2 — Engine** ✅ | `US_3dsaProcess`, the parallel level runner, the amplitude loop. Driven headless from a test harness. | **Done** — see §3B. v̄ recovered to 1×10⁻⁴ mL/g and the loadings to four decimals on a synthetic three-buffer series; 7 engine tests green. The column cache was measured and withdrawn; two bugs outside 3DSA found and fixed. | 2 wk |
 | **2a — Noise** ✅ | Every run of a series carries its own TI and RI noise. First as `US_SolveSimMDS`, a copy of the solver with data-set-aware noise; then fixed in `US_SolveSim` itself by the review merged in `552482e`, and the copy retired. | **Done** — see §3C. All 31 harness cases pass, including the six that fit noise; on the first fix the worst per-data-set RMSD on the TI case fell 45× and on the RI case 60×, and the merged solver fits noise-free data with injected TI and RI to machine precision. | 3 d |
 | **2b — Solver safety** ✅ | Make the engine independent of the headless solver's process-wide state: a timestate per data set before any solve, serial solves in `NO_DB` builds. Two harness cases that exercise it. | **Done** — see §3D. A series with different run timings returns the right v̄ (0.7295, was 0.7923); eight subgrids at four threads no longer crash and match the serial fit bit for bit; all 33 harness cases pass. The upstream defects are reported, not fixed here. | 1 d |
-| **2c — Cross-check** ✅ | §8.3 on the harness series: `us_2dsa` + `us_density_match` against 3DSA on the same data. The simulation cache it showed was missing. | **Done** — DM agrees with 3DSA once its input is corrected (species v̄ median 0.0014 against 0.0017) and cannot recover v̄ from `us_2dsa`'s models as shipped (median 0.31); the cache cuts 3DSA's Lamm solves by 69 % with bit-identical models. | 1 d |
+| **2c — Cross-check** ✅ | §8.3 on the harness series: `us_2dsa` + `us_density_match` against 3DSA on the same data. The simulation cache it showed was missing. | **Done** — DM agrees with 3DSA once its input is corrected (species v̄ median 0.0014 against 0.0017) and cannot recover v̄ from `us_2dsa`'s models as shipped (median 0.31). Where species swap order in *s* across the series, even corrected DM misses by 0.03–0.11 and 3DSA is about ten times more accurate per species. The cache cuts 3DSA's Lamm solves by 69 % with bit-identical models. | 2 d |
 | **3 — GUI** | `us_3dsa` main window + dataset-series manager, control panel, gate, plots, launcher registration. | An analyst can run the §8.2 case end to end from the menu. | 3 wk |
 | **4 — MPI** | `3dsa_master`/`3dsa_worker`, parser, model writer, gate in the parser. LIMS coordination in parallel. | Cluster job completes and returns models equivalent to the desktop run. | 2 wk |
 | **5 — Docs & integration** | `doc/manual/source/3dsa/`, help pages wired to `showHelp`, downstream consumer smoke tests, §8.3 cross-check on real data. | Manual builds; consumers verified; real-data cross-check documented. | 1 wk |
@@ -1050,7 +1085,7 @@ Phases 0–2 are the ones that can invalidate the concept, and they are delibera
 Phases 0, 1, 2, 2a, 2b and 2c have now run: §3.4 reproduced (§3A), the shared `utils/` layer in
 place, the engine recovering v̄ from a synthetic series (§3B), every data set of a series carrying
 its own systematic noise (§3C), the engine independent of the headless solver's process-wide state
-(§3D), and the synthetic cross-check against `us_density_match` (§8.3). The design stands, with D7 withdrawn on measurement. All 33 harness cases pass. Phase 3 can
+(§3D), and the synthetic cross-check against `us_density_match` (§8.3). The design stands, with D7 withdrawn on measurement. All 40 harness cases pass. Phase 3 can
 begin.
 
 ### Future work (explicitly out of scope here)
