@@ -261,6 +261,27 @@ the solver's work arrays; the report says so:
 Without one the engine writes a timestate per data set itself, identical to the
 one the solver would have written.
 
+## Gradient data, real data, and equilibrium
+
+`us_astfem_sim` cannot simulate a buffer that forms a density gradient, so
+gradient cases bypass the harness: `us_3dsa_cli simulate --config case.json`
+writes each data set's `auc` with the solver the fit will use (the ASTFVM, its
+gradients included; §3E of the design document). A case's data sets then take,
+beside the fields above:
+
+| Field | Meaning |
+|---|---|
+| `buffer` | A `US_Buffer` XML. Co-sedimenting or co-diffusing components make a gradient; the simulation parameters must select the ASTFVM (`meshType="ASTFVM"`). Its density and viscosity apply unless the data set gives its own. |
+| `edit` | An edit profile of real data, used instead of `auc`: its .auc is read from the same directory, the excluded scans dropped, the range, meniscus and bottom applied, and its linear baseline subtracted. The run's `<run_id>.time_state.tmst` beside it is used when present. |
+| `last_scan_only` | Keep the last scan, as an ABDE edit does. |
+
+and the `fit` and `grid` blocks take `"equilibrium": true` (simulate every solute
+at sedimentation equilibrium in the density of the scan's moment, in closed
+form), `"verify": true` (refit the solutes found with the Lamm-equation solver
+and report both RMSDs) and `"mask": "w_k_v"` with `w_min`, `w_max`, `w_res`
+(molar mass instead of *s* on the first axis). The fit lists the solutes it
+found with their v̄, buoyant density 1/v̄ and share of the signal.
+
 ## Reading the report
 
 Per case the driver prints the global RMSD, the fitted and true

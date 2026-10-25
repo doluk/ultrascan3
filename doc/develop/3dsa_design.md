@@ -593,11 +593,148 @@ unit tests are built with the database.
 
 ---
 
+## 3E. Density gradients — one run can determine v̄
+
+§3.3's degeneracy rests on one assumption: every solute in a run sees the same density. A buffer
+that forms a gradient during the run breaks it. Co-sedimenting components (CsCl, Nycodenz) sediment
+into a density gradient; a band-forming cell whose lamella and cell solution differ in a
+co-diffusing component (sucrose) relaxes into one. A solute's local sedimentation coefficient is
+then
+
+$$s(r,t)=s_{20,W}\,\frac{\eta_{20,W}}{\eta(r,t)}\,\frac{1-\bar v\,\rho(r,t)}{1-\bar v\,\rho_{20,W}}$$
+
+and it moves through a range of densities within one cell. ABDE and DGE run that to its limit: a
+solute bands where ρ = 1/v̄. This section brings those experiments into 3DSA.
+
+### The solver: ASTFVM from the `cosedimenting` branch
+
+ASTFEM has no ρ(*r*, *t*) (§9, future work). The finite-volume solver on the `cosedimenting`
+branch has: `US_LammAstfvm` adjusts *s* and *D* at every node and time step from a density and
+viscosity built as the buffer's own values plus each gradient's increment. Two gradient sources:
+
+* **co-sedimenting** — `US_LammAstfvm::CosedData`, the gradient-forming components themselves
+  simulated (with ASTFEM) on the experiment's grid, and interpolated in *r* and *t*;
+* **co-diffusing** — `US_Math_BF::Band_Forming_Gradient`, the analytic (Bessel-series) relaxation
+  of a lamella's excess component, tabulated over the run.
+
+The solver, `US_Math_BF`, `US_Buffer`'s co-sedimenting components, `US_SimulationParameters`' band
+forming fields and the matching `US_Astfem_RSA` overload were taken from that branch as they are
+(`4751867`). ASTFEM fits are bit-identical before and after: the unit suite and seven harness
+refits were compared.
+
+### What 3DSA does with it
+
+| Piece | What it does |
+|---|---|
+| `US_FvmGradients` (new, `utils/`) | Prepares a data set's gradients **once per fit**, as the cosedimenting 2DSA does: splits the components into lamella and cell solution, takes the base buffer, simulates each co-sedimenting component and builds the band-forming solution. The grid is the whole cell (meniscus to bottom, ≤ 0.002 cm) at 100 times from the end of acceleration to the last scan, so an edit that keeps one scan still gets the gradient's history. Records the lowest and highest density in the cell. Copy-constructed per worker thread, since both gradients keep working state while read. |
+| `US_SolveSim` | A data set whose simparams select the ASTFVM is simulated by `US_LammAstfvm` with the prepared gradients, from the **standard-space** solute (the solver corrects locally; correcting it first would apply the buffer twice). The simulation-cache key includes the gradient-forming conditions. |
+| `buoyancy_contrast()` | A gradient data set contributes its lowest and highest density, a plain one its `density_tb`. So a single gradient run passes the gate on its own, and a plain single run is still refused. |
+| `US_3dsaProcess` | Prepares gradients after the timestates and before the gate. Refuses a gradient-forming buffer on an ASTFEM mesh (it would be ignored). `equilibrium_note()`: see below. |
+| `us_3dsa_cli` | A data set may name an `edit` (real data: excludes, range, meniscus, bottom and linear baseline applied, the run's timestate found beside it), a `buffer` XML and `last_scan_only`. A `simulate` subcommand writes synthetic data with the same simulator, since `us_astfem_sim` on this branch cannot simulate a gradient buffer. `"equilibrium"`, `"verify"` and `"mask": "w_k_v"` select the closed form below, its check and a molar-mass axis; the fit lists the solutes found with their densities and shares. |
+| `US_Buffer::writeToDisk` | **Bug fix.** Co-sedimenting coefficients were written with empty attribute names (`QString::asprintf` is static and its result was discarded) and five decimals, so a gradient buffer saved to disk read back with no gradient. |
+
+### Equilibrium data: a closed form instead of the solver
+
+An ABDE edit keeps the last scan. Two things follow.
+
+**The bands are too narrow for a coarse v̄ grid.** A band is a few hundredths of a centimetre wide;
+in a gradient of 0.33 g/mL per cm a v̄ step of 0.01 moves it by 0.016 cm, more than its width. On
+the synthetic AAV case below, a 5 × 1 × 9 grid (v̄ step 0.01) solved with the ASTFVM took 883 s and
+left RMSD 1.58 against noise of 0.003. The data determine v̄ to about 10⁻⁴, so the grid has to
+step near 0.0005 — hundreds of v̄ values — and at 15 s per finite-volume solve that is hours.
+
+**At equilibrium the profile has a closed form.** A solute that equilibrates faster than its
+gradient changes sits at sedimentation equilibrium in the density of the moment:
+
+$$c(r)\propto\exp\!\left(\frac{M\omega^2}{RT}\int_m^r\bigl(1-\bar v\,\rho(r',t)\bigr)\,r'\,dr'\right)$$
+
+with its signal conserved over the sector. `US_SolveSim::equilibrium_profile()` computes it on a
+fine whole-cell grid (≤ 0.0005 cm) from the prepared gradient's density at the scan's time
+(`US_FvmGradients::density_at()`, cached), or from the buffer's density, and interpolates onto the
+data. `Parameters::equilibrium` selects it for every data set (`DataSet::equilibrium`), and the
+cache key says so. Against the ASTFVM on the AAV case it puts the bands at the same radius to the
+0.002 cm grid, with peak heights within 0.05 % and the largest local difference about 1 % of the
+peak — in well under a millisecond instead of 6–24 s per solute.
+
+It is only as good as the equilibrium. After 2 h in 1.5 M CsCl (the unit tests' run) the solutes
+are still travelling: the solver's peaks lie up to 0.11 cm from the closed form's and the profiles
+differ by 83–88 % of the peak. So `us_3dsa_cli`'s `verify` refits the solutes that carry the signal
+(down to 0.5 % each, at most 16) with the Lamm-equation solver and reports both RMSDs; one well
+above the other says the run was too short for the closed form.
+
+**What one equilibrium scan determines.** A band's position gives its density, 1/v̄, and its area
+the signal. Its width is set by the molar mass *and* by any spread in density, and NNLS can trade
+one against the other: on the AAV case every band went to the largest molar mass on the grid,
+spread over v̄ values 0.001–0.002 apart. Shape (*f/f₀*) does not enter at all. So the fit reports
+densities and shares; the molar mass needs the approach to equilibrium (the full scan set and the
+ASTFVM) or an assumption. `equilibrium_note()` says this in the progress messages and the report
+whenever every data set holds a single scan, or the fit simulates equilibrium, and two hydrodynamic
+axes vary; `mask_w_k_v()` puts molar mass on the first axis.
+
+### Measured
+
+| Case | Data | Grid | Result | Cost |
+|---|---|---|---|---|
+| CsCl run, unit test `RecoversVbarFromOneGradientRun` | 1.5 M CsCl, 48 krpm, 2 h, 6 scans; 10 S, *f/f₀* 1.5, v̄ 0.80 | 5 × 3 × 5 | v̄ 0.8000, *s* 10.000 S, RMSD 1.6 × 10⁻⁵; the same cell in water is refused | 75 solves, 11.8 s |
+| Band forming, `RecoversVbarFromABandFormingRun` | 15 µL lamella with 0.3 M sucrose onto 1.5 M CsCl; same solute | 3 × 1 × 5 | v̄ 0.8000, *s* 10.000 S, RMSD 1.0 × 10⁻⁶ | 15 solves, 18.3 s, plus ≈ 12 s for the band-forming table |
+| ABDE-like, ASTFVM per point | AAV empty (64 S, v̄ 0.763, 0.3 OD) and full (95 S, v̄ 0.709, 0.5 OD) in 2.8 M CsCl, 48 krpm, 9.7 h, 3 × 10⁻³ OD noise; **last scan only** | 5 × 1 × 9, v̄ step 0.01 | RMSD 1.58 — the v̄ grid is far too coarse for the bands | 45 solves, 883 s |
+| ABDE-like, closed form (`"equilibrium": true`) | the same | 5 × 1 × 161, v̄ step 0.0005 | RMSD 2.94 × 10⁻³ (noise 3 × 10⁻³). Empty: v̄ 0.76305, density 1.3105 (1.3106), signal 0.3001. Full: v̄ 0.70897, density 1.4105 (1.4104), signal 0.5001. Empty fraction 37.5 % (37.5 %). Refitted with the ASTFVM (`verify`, 30 solutes): RMSD 2.9404 × 10⁻³ | 805 profiles, 0.6 s; verify ≈ 16 min |
+| Closed form, `EquilibriumFitFindsEachBandsDensity` | two bands (v̄ 0.83 and 0.80) in the 1.5 M CsCl gradient, noise-free, from the closed form | 5 × 1 × 71 (*M*, *f/f₀*, v̄) | each band's v̄ to 10⁻⁴, shares 0.375 / 0.625 | 355 profiles, 0.2 s |
+
+The contrast the gate reports for a gradient cell (19–100 (mL/g)⁻¹ above) is far beyond any D₂O
+series (§3.4), and the fits show it: v̄ to the grid step from one cell.
+
+**Cost.** An ASTFVM solve in a gradient is much dearer than an ASTFEM one: 0.16 s for the 2 h CsCl
+test, ≈ 15 s for the 9.7 h AAV case (large *s*, bands a few hundredths of a centimetre wide). The
+time goes to the finite-volume steps themselves — exponentials in the step, the gradient
+interpolation, mesh refinement (sampled with a debugger) — not to one fixable hot spot. Band
+forming steps at the band-forming table's interval (≥ 5 s). And `NO_DB` builds run serially (§3D).
+For velocity data in a gradient that is the price; for an equilibrium scan the closed form removes
+it.
+
+### Limits, and defects found in the ported code
+
+For the branch's author; none is worked around here except where noted.
+
+1. **Base buffer summed.** The cosedimenting 2DSA and the solver's internal fallback sum the base
+   components' constant coefficient. The buffer editor gives every component the base buffer's
+   density, so *n* base components give *n* × ρ. `US_FvmGradients` takes the mean, as
+   `US_Math_BF` does.
+2. **Only lamella excesses form a co-diffusing gradient.** `US_Math_BF` iterates over the overlay's
+   excess components only ("for now iterate only over upper_cosed"). A lamella on a denser
+   co-diffusing cell solution (the classic H₂O sample on D₂O) forms no gradient in the model, and
+   since the editor's base excludes diffusing components, the D₂O's density is lost altogether.
+3. `validate_csd()` never sets `co_sed`, so the solver's own fallback discards the salt data it
+   computes; `salt_value == NAN` can never be true; `sqrt` of a slightly negative interpolated
+   concentration gives NaN.
+4. `InterpolateCCosed` can index one past the salt grid when the FVM mesh reaches beyond it.
+5. `set_buffer()` allocates an empty `Band_Forming_Gradient` per call when there is no co-diffusing
+   component, and never frees it.
+6. `Band_Forming_Gradient::calculate_gradient` swaps the interpolation weights between scans and
+   extrapolates rpm and ω²t with the temperature slope; it affects the tabulated temperature, and
+   through it *D*, slightly.
+7. Unconditional `qDebug` output (`fixed_dt`, `steps_per_transit`) per solve; `us_3dsa_cli` filters
+   debug messages unless `US3DSA_DEBUG` is set.
+8. The 2DSA's gradient debug dump passes density and viscosity in swapped order.
+
+### Not done
+
+* Real data. The ABDE run supplied (AAV, 61 wavelengths, last scan at 9.5 h) loads through its
+  edits, but its buffer — the gradient former's concentration, *s*, *D*, v̄ and density and
+  viscosity coefficients — is not in the archive, and without it there is no gradient to fit in.
+* The desktop and MPI programs: they need the buffer's co-sedimenting components loaded with the
+  solution and the ASTFVM selectable, exactly as the cosedimenting 2DSA does.
+* Molar mass from ABDE: fit the approach to equilibrium (all scans, ASTFVM) — the hydrodynamics
+  are in the early scans — or regularise toward the fewest bands.
+* Validity of the closed form judged inside the engine rather than by `verify` in the CLI.
+
+---
+
 ## 4. Design decisions
 
 | # | Decision | Rationale |
 |---|---|---|
-| **D1** | 3DSA is a **global, multi-dataset** analysis. Single-dataset operation is refused (not merely warned). | §3.3 — the fit is meaningless otherwise. Shipping a mode that silently returns a grid artefact would be worse than shipping nothing. |
+| **D1** | 3DSA is a **global, multi-dataset** analysis. Single-dataset operation is refused (not merely warned) — unless the data set's buffer forms a density gradient (§3E), which the gate measures. | §3.3 — the fit is meaningless otherwise. Shipping a mode that silently returns a grid artefact would be worse than shipping nothing. A gradient cell spans its own range of densities, so the gate's contrast is real. |
 | **D2** | Primary grid is (*s*<sub>20,W</sub>, *f/f₀*, v̄<sub>20</sub>). (*s*, *D*, v̄) offered as an alternate axis mapping. | *f/f₀* has a bounded, physically meaningful range (1–4) that is independent of *s*. A rectangular *s*×*D* grid spends most of its points on *f/f₀* < 1 — physically impossible shapes. *D* is reported as a derived output, so "fitting *s*, *D* and v̄" is satisfied either way. `US_Model::calc_coefficients()` supports the "s and D" input branch directly (`utils/us_model.cpp:224`), so the alternate mapping is nearly free — add an *f/f₀* ≥ 1 filter to drop non-physical points. |
 | **D3** | New program `programs/us_3dsa/`, not a mode of `us_2dsa`. | (a) The GUI needs a multi-dataset series manager that `US_AnalysisBase2` does not provide; (b) 2DSA is GMP-validated and heavily used — a third axis in its control panel is a regression risk; (c) the MPI dispatch keys off `analysis_type`. Matches the existing `us_pcsa` precedent. |
 | **D4** | Reuse `US_SolveSim::calc_residuals()` as-is for the inner solve; share grid generation and the identifiability metric via `utils/`. | The `stype > 9` path already does exactly the right thing per dataset. Duplicating a 1,800-line solver would be the single largest source of divergence bugs. |
@@ -628,6 +765,9 @@ unit tests are built with the database.
 | `us_3dsa_process.h/.cpp` | **new** [done] | The engine (§3B). Since §3D it also gives every data set its own timestate before any solve (`prepare_timestates()`) and runs serially in `NO_DB` builds (`concurrent_solves_safe()`), reporting the thread count it used. Since §8.3 each fit carries a `US_SimCache` (`Parameters::use_cache`, on by default), so the amplitude iterations reuse the grid's simulations instead of solving them again. |
 | `us_solve_sim.cpp` | *(not needed)* | `check_grid_size()` was listed for a 3-D extension, but it bounds Lamm-equation *time steps* from `s_max` alone. That is already dimension-independent. |
 | `us_zsolute.h/.cpp` | *(no change)* | Already generalised; kept as the PCSA path. |
+| `us_lamm_astfvm`, `us_math_bf`, `us_buffer`, `us_simparms`, `us_astfem_rsa`, `us_astfem_math`, `us_hardware`, `us_constants` | **ported** [done, §3E] | From the `cosedimenting` branch as they are (`4751867`); ASTFEM fits bit-identical. `US_Buffer::writeToDisk` fixed: co-sedimenting coefficients were written with empty names. |
+| `us_fvm_gradients.h/.cpp` | **new** [done, §3E] | A data set's gradients, prepared once per fit and copied per thread; the density span for the gate; the density at a scan's time for the closed form. |
+| `us_solve_sim.h/.cpp` | **new** [done, §3E] | ASTFVM dispatch from the standard-space solute; `buoyancy_contrast()` over gradient spans; `equilibrium_profile()` and `DataSet::equilibrium`. |
 
 **Note on the second fix.** For a single-dataset fit `dset == data_sets[0]`, so results are
 bit-identical; the change is visible only in a global fit through the mask path, which is precisely
@@ -1092,10 +1232,10 @@ begin.
 
 * **Per-dataset H/D exchange correction** for D₂O series (§3.5). The data-model hook is in Phase 1;
   the correction itself is a separate piece of physics work.
-* **Radial density gradient ρ(*r*)** — self-generating gradients (CsCl, Nycodenz) make v̄
-  identifiable *within a single run*, which would remove the multi-dataset requirement entirely.
-  `US_Model::coSedSolute` already exists as a placeholder, but the ASTFEM engine has no ρ(*r*)
-  support, so this is a substantial solver project.
+* ~~**Radial density gradient ρ(*r*)**~~ — done with the `cosedimenting` branch's ASTFVM (§3E):
+  co-sedimenting and band-forming gradients, single-run v̄, and a closed form for ABDE scans.
+  The desktop and MPI programs still need to load the buffer's gradient-forming components and
+  offer the ASTFVM.
 * Tikhonov regularisation tuned for the 3-D grid; Monte Carlo error bars on v̄.
 
 ---
@@ -1119,8 +1259,10 @@ begin.
 
 *Can we fit s, D and v̄ simultaneously, the way 2DSA fits s and D?*
 
-**Not from one experiment** — the Lamm equation cannot see v̄, so the third axis is unidentifiable
-and any value returned would be a grid artefact.
+**Not from one experiment in a uniform buffer** — the Lamm equation cannot see v̄, so the third axis
+is unidentifiable and any value returned would be a grid artefact. **Yes from one experiment in a
+density gradient** (ABDE, DGE, band forming onto CsCl; §3E), where each solute meets a range of
+densities in its own cell.
 
 **Yes from a buoyancy-contrast series** — and the existing UltraScan solver is already most of the
 way there: it stacks datasets into one NNLS problem and already has a code path that varies v̄ per
