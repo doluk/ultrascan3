@@ -1,0 +1,74 @@
+--- utils/us_lamm_astfvm.h	2026-10-25 13:34:02.496792282 +0000
++++ utils/us_lamm_astfvm.h	2026-10-25 13:34:02.511290007 +0000
+@@ -16,6 +16,19 @@
+ #endif
+ 
+ //! \brief Module to calculate simulation data by AST Finite Volume Method
++//! \brief Mean-field hindered-sedimentation hook (Wiener-skew study prototype).
++//!        When set, non-ideal case 1 uses s = s0*H(phi), D = D0*K(phi) with
++//!        phi from phi(); Fiore et al. hindered settling (Chaturvedi & Schuck 2024 SI).
++struct US_UTIL_EXTERN US_MFHook
++{
++   virtual ~US_MFHook() {}
++   //! volume fraction at radius x, time t; conc = own concentration u/x
++   virtual double phi( double x, double t, double conc ) const = 0;
++   int    dmode = 0;     //!< 0: D/D0 per SI Eq. 16; 1: D/D0 = (u/u0)/S(0), Eqs. 12-13
++   double tau   = 0.0;   //!< Baxter temperature; <=0: non-sticky hard spheres
++};
++extern US_UTIL_EXTERN const US_MFHook* us_mf_hook;
++
+ class US_UTIL_EXTERN US_LammAstfvm : public QObject
+ {
+    Q_OBJECT
+--- utils/us_lamm_astfvm.cpp	2026-10-25 13:34:02.494933124 +0000
++++ utils/us_lamm_astfvm.cpp	2026-10-25 13:34:02.513139729 +0000
+@@ -2304,6 +2304,31 @@
+    }
+ }
+ 
++const US_MFHook* us_mf_hook = nullptr;
++
++// Hindered settling of (sticky) hard spheres, Fiore et al. 2018 (SI Eqs. 11-16)
++static inline void hindered_factors( double phi, const US_MFHook* hk, double& hs, double& hd )
++{
++   phi = qBound( 0.0, phi, 0.6 );
++   const double om = 1.0 - phi;
++   double fst = 0.0, lam = 0.0;
++   if ( hk->tau > 0.0 && phi > 0.0 )
++   {
++      const double q = phi / hk->tau;
++      fst = q * pow( 1.0 + 0.43 * pow( q, 1.85 ), -1.0 / 1.85 );
++      const double a = hk->tau / phi + 1.0 / om;
++      lam = 6.0 * a - sqrt( qMax( 0.0, 36.0 * a * a - 12.0 * ( 1.0 + 0.5 * phi ) / ( phi * om * om ) ) );
++   }
++   hs = pow( om, 4.27 ) / ( 1.0 + 2.28 * phi - 0.89 * fst );
++   if ( hk->dmode == 0 && hk->tau <= 0.0 )
++      hd = ( 1.0 + 2.0 * phi ) * pow( om, 2.27 ) / ( 1.0 + 2.28 * phi );
++   else
++   {
++      const double s0 = sq( om * om / ( 1.0 + 2.0 * phi - lam * phi * om ) );
++      hd = hs / s0;
++   }
++}
++
+ ///////////////////////////////////////////////////////////////
+ //
+ //  Find the adjusted s and D values according to time t, location x,
+@@ -2340,6 +2365,17 @@
+          break;
+ 
+       case 1: // concentration dependent
++         if ( us_mf_hook != nullptr )
++         {  // mean-field / hindered settling prototype
++            for ( int jj = 0; jj < Nv; jj++ )
++            {
++               double hs, hd;
++               hindered_factors( us_mf_hook->phi( x[jj], t, u[jj] / x[jj] ), us_mf_hook, hs, hd );
++               s_adj[jj] = param_s * hs;
++               D_adj[jj] = param_D * hd;
++            }
++            break;
++         }
+          {
+             // Precompute sigma and delta handling
+             const bool sigma_pos = sigma > 0.0;

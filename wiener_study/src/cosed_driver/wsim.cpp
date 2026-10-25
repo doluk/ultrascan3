@@ -38,7 +38,7 @@ static const int    DECIM    = 2;        // fit grid = every 2nd point (0.001 cm
 static const int    SIMPTS_TRUE = 1000;
 static const int    SIMPTS_FIT  = 200;   // UltraScan default
 static int          NGS = 113, NGK = 31;  // 2DSA grid (s x f/f0)
-static const double KMIN = 1.0, KMAX = 4.0;
+static double       KMIN = 1.0, KMAX = 4.0;
 static int          SUBS = 8, SUBK = 4;  // subgrid interleave factors (24 subgrids)
 static int          NTHREADS = 4;
 
@@ -282,6 +282,159 @@ static FitResult fit_2dsa( const QVector<QVector<double>>& A, const QVector<US_S
 }
 
 // ---------------------------------------------------------------------------
+// Mean-field hooks for the patched ASTFVM (non-ideal case 1)
+struct SelfHook : US_MFHook {          // phi from own concentration (single species: exact)
+   double scale = 0.0;                 // phi = scale * conc
+   mutable double cmax = 0, cmin = 1e99, tmax = 0; mutable long ncall = 0;
+   double phi( double, double t, double conc ) const override { cmax = qMax( cmax, conc ); cmin = qMin( cmin, conc ); tmax = qMax( tmax, t ); ncall++; return scale * conc; }
+};
+struct FieldHook : US_MFHook {         // phi(r,t) from tabulated field (mean field)
+   QVector<double> xr, tt, ph;         // ph[ it * nx + ix ]
+   double phi( double x, double t, double ) const override {
+      int nx = xr.size(), nt = tt.size();
+      int ix = std::upper_bound( xr.begin(), xr.end(), x ) - xr.begin() - 1; ix = qBound( 0, ix, nx - 2 );
+      int it = std::upper_bound( tt.begin(), tt.end(), t ) - tt.begin() - 1; it = qBound( 0, it, nt - 2 );
+      double wx = qBound( 0.0, ( x - xr[ix] ) / ( xr[ix+1] - xr[ix] ), 1.0 );
+      double wt = qBound( 0.0, ( t - tt[it] ) / ( tt[it+1] - tt[it] ), 1.0 );
+      auto v = [&]( int a, int b ) { return ph[ a * nx + b ]; };
+      return ( 1 - wt ) * ( ( 1 - wx ) * v( it, ix ) + wx * v( it, ix + 1 ) ) + wt * ( ( 1 - wx ) * v( it + 1, ix ) + wx * v( it + 1, ix + 1 ) );
+   }
+};
+
+// single species, ASTFVM with hindered settling via hook (sigma>0 only triggers case 1)
+static QVector<double> simulate1_mf( Setup& su, double s, double k, double vbar, double conc, const US_MFHook* hk )
+{
+   US_Model m; US_Model::SimulationComponent c;
+   c.s = s * 1e-13; c.f_f0 = k; c.vbar20 = vbar; c.mw = 0; c.D = 0; c.f = 0; c.signal_concentration = conc;
+   US_Model::calc_coefficients( c );
+   c.sigma = hk ? 1e-30 : 0.0; c.delta = 0.0;
+   m.components << c; m.coSedSolute = -1;
+   US_DataIO::RawData sd; US_AstfemMath::initSimData( sd, su.ed, 0.0 );
+   su.sp.meshType = US_SimulationParameters::ASTFVM; su.sp.sigma = c.sigma; su.sp.delta = 0.0; su.sp.temperature = NORMAL_TEMP;
+   US_Buffer buf; buf.density = DENS_20W; buf.viscosity = VISC_20W; buf.compressibility = 0.0; buf.manual = true;
+   us_mf_hook = hk;
+   US_LammAstfvm fvm( m, su.sp ); fvm.set_buffer( buf, nullptr, nullptr ); fvm.calculate( sd );
+   us_mf_hook = nullptr;
+   int np = sd.pointCount(), ns = sd.scanCount(); QVector<double> v( ns * np );
+   for ( int i = 0; i < ns; i++ ) for ( int j = 0; j < np; j++ ) v[ i * np + j ] = sd.value( i, j );
+   return v;
+}
+
+
+// ---------------------------------------------------------------------------
+// Shared: read SEDFIT .ip scans listed in a list file (or all f*.ip? in dir)
+struct IPData { QVector<double> tsec, w2t; QVector<QVector<double>> r, v; int rpm = 0; };
+static IPData read_ip( const QString& dir, const QString& list, int stride )
+{
+   IPData d; QStringList files;
+   if ( !list.isEmpty() ) { QFile f( dir + "/" + list ); f.open( QIODevice::ReadOnly );
+      QStringList L = QString( f.readAll() ).split( '\n' );
+      for ( int i = 2; i < L.size(); i++ ) if ( !L[i].trimmed().isEmpty() ) files << L[i].trimmed(); }
+   else { QDir q( dir ); files = q.entryList( QStringList() << "f*.ip*", QDir::Files, QDir::Name ); }
+   for ( int i = 0; i < files.size(); i += stride ) {
+      QFile f( dir + "/" + files[i] ); if ( !f.open( QIODevice::ReadOnly ) ) continue;
+      QStringList L = QString( f.readAll() ).split( '\n' ); QStringList h = L[1].split( ' ', Qt::SkipEmptyParts );
+      d.rpm = h[3].toInt(); d.tsec << h[4].toDouble(); d.w2t << h[5].toDouble();
+      QVector<double> r, v;
+      for ( int k = 2; k < L.size(); k++ ) { QStringList p = L[k].split( ' ', Qt::SkipEmptyParts ); if ( p.size() >= 2 ) { r << p[0].toDouble(); v << p[1].toDouble(); } }
+      d.r << r; d.v << v; }
+   return d;
+}
+
+static double setup_times( Setup& su, const QVector<double>& x, double meni, double bottom, int rpm, int acc,
+                           const QVector<double>& tsec, const QVector<double>& w2t, int simpts, const QString& tmst, const QString& id )
+{
+   int ns = tsec.size(); double dr = x[1] - x[0];
+   US_SimulationParameters& sp = su.sp; US_SimulationParameters::SpeedProfile st;
+   st.rotorspeed = rpm; st.avg_speed = rpm; st.set_speed = rpm; st.scans = ns; st.acceleration = acc; st.acceleration_flag = true;
+   st.delay_hours = 0; st.delay_minutes = tsec[0] / 60.0; st.duration_hours = 0; st.duration_minutes = tsec[ns-1] / 60.0;
+   sp.meniscus = meni; sp.bottom = bottom; sp.bottom_position = bottom; sp.sim = true; sp.simpoints = simpts;
+   sp.rotorcoeffs[0] = 0.0; sp.rotorcoeffs[1] = 0.0;
+   US_DataIO::RawData rd; rd.type[0] = 'I'; rd.type[1] = 'P'; memset( rd.rawGUID, 0, sizeof( rd.rawGUID ) );
+   rd.cell = 1; rd.channel = 'A'; rd.description = id; rd.xvalues = x;
+   for ( int s = 0; s < ns; s++ ) { US_DataIO::Scan sc; sc.temperature = NORMAL_TEMP; sc.rpm = rpm; sc.seconds = tsec[s];
+      sc.omega2t = US_AstfemMath::calc_omega2t( 0.0, 0.0, 0.0, rpm, acc, sc.seconds ); sc.wavelength = 655; sc.plateau = 0;
+      sc.delta_r = dr; sc.nz_stddev = false; sc.rvalues.fill( 0.0, x.size() ); rd.scanData << sc; }
+   st.time_first = qRound( tsec[0] ); st.w2t_first = rd.scanData.first().omega2t;
+   st.time_last = qRound( tsec[ns-1] ); st.w2t_last = rd.scanData.last().omega2t;
+   sp.speed_step.clear(); sp.speed_step << st;
+   US_AstfemMath::writetimestate( tmst, sp, rd ); sp.simSpeedsFromTimeState( tmst );
+   US_DataIO::EditedData& ed = su.ed;
+   ed.expType = "velocity"; ed.runID = id; ed.editID = "0"; ed.dataType = "IP"; ed.cell = "1"; ed.channel = "A";
+   ed.wavelength = "655"; ed.description = id; ed.meniscus = meni; ed.bottom = bottom; ed.plateau = x.last(); ed.baseline = 0;
+   ed.ODlimit = 1e20; ed.floatingData = false; ed.xvalues = rd.xvalues; ed.scanData = rd.scanData; ed.bl_corr_slope = 0; ed.bl_corr_yintercept = 0;
+   double mx = 0; for ( int s = 0; s < ns; s++ ) mx = qMax( mx, fabs( rd.scanData[s].omega2t / w2t[s] - 1.0 ) );
+   return mx;
+}
+
+// Validation: forward simulation of a single species vs SEDFIT simulation files
+static int run_valid( const QString& outdir, const QString& cfgfile )
+{
+   QMap<QString, QString> cf;
+   { QFile f( cfgfile ); f.open( QIODevice::ReadOnly );
+     for ( QString l : QString( f.readAll() ).split( '\n' ) ) { l = l.trimmed(); int e = l.indexOf( '=' );
+        if ( e > 0 && !l.startsWith( '#' ) ) cf[ l.left( e ).trimmed() ] = l.mid( e + 1 ).trimmed(); } }
+   QString id = cf["id"];
+   IPData d = read_ip( cf["dir"], cf.value( "list", "" ), 1 );
+   int ns = d.tsec.size();
+   double om2 = sq( d.rpm * M_PI / 30.0 ), Ta = 1.5 * ( d.tsec[0] - d.w2t[0] / om2 );
+   int acc = qBound( 50, qRound( d.rpm / qMax( Ta, 1.0 ) ), 2000 );
+   double x0 = 0, x1 = 1e9; for ( auto& r : d.r ) { x0 = qMax( x0, r.first() ); x1 = qMin( x1, r.last() ); }
+   QVector<double> x = d.r[0]; QVector<double> xs; for ( double v : x ) if ( v >= x0 && v <= x1 ) xs << v;
+   int np = xs.size(); QVector<double> b( ns * np );
+   for ( int s = 0; s < ns; s++ ) { int j = 0; for ( int p = 0; p < np; p++ ) { while ( j < d.r[s].size() - 2 && d.r[s][j+1] < xs[p] ) j++;
+      double w = qBound( 0.0, ( xs[p] - d.r[s][j] ) / ( d.r[s][j+1] - d.r[s][j] ), 1.0 ); b[ s*np+p ] = d.v[s][j] + w * ( d.v[s][j+1] - d.v[s][j] ); } }
+   double sv = cf["s"].toDouble(), ff0 = cf["ff0"].toDouble(), vbar = cf.value( "vbar", "0.73" ).toDouble(), conc = cf["conc"].toDouble();
+   double bottom = cf["bottom"].toDouble(); int simpts = cf.value( "simpoints", "500" ).toInt();
+   QString model = cf.value( "model", "ideal" );
+   SelfHook hk; hk.scale = cf.value( "ksred", "1" ).toDouble() * pow( ff0, 3 ) * vbar * 1e-3 / cf.value( "signal_per_mgml", "1" ).toDouble();
+   hk.dmode = cf.value( "dmode", "0" ).toInt(); hk.tau = cf.value( "tau", "0" ).toDouble();
+   QStringList menis = cf["meniscus"].split( ',', Qt::SkipEmptyParts );
+   QJsonArray out;
+   for ( auto& ms : menis ) {
+      double meni = ms.toDouble(); Setup su;
+      double mx = setup_times( su, xs, meni, bottom, d.rpm, acc, d.tsec, d.w2t, simpts, outdir + "/" + id + ".tmst", id );
+      QElapsedTimer et; et.start();
+      if ( model == "hs_fieldtest" ) {
+         // exact single-species field from the self-consistent simulation on a time grid
+         int dense = cf.value( "dense", "1" ).toInt();
+         QVector<double> tt, w2;   // field times: dense subdivision of [t0/dense ... t_last]
+         double tprev = 0.0;
+         for ( int s = 0; s < ns; s++ ) { for ( int k = 1; k <= dense; k++ ) { double tv = tprev + ( d.tsec[s] - tprev ) * k / dense;
+               tt << tv; w2 << US_AstfemMath::calc_omega2t( 0.0, 0.0, 0.0, d.rpm, acc, tv ); } tprev = d.tsec[s]; }
+         QVector<double> xfld; for ( double r = meni + 0.001; r <= bottom - 0.001; r += 0.0007 ) xfld << r;
+         Setup sf; setup_times( sf, xfld, meni, bottom, d.rpm, acc, tt, w2, simpts, outdir + "/" + id + "_f.tmst", id );
+         QVector<double> vf = simulate1_mf( sf, sv, ff0, vbar, conc, &hk );
+         FieldHook fh; fh.dmode = hk.dmode; fh.tau = hk.tau; fh.xr = xfld; fh.tt << 0.0; fh.tt << tt;
+         int nx = xfld.size(); fh.ph.fill( hk.scale * conc, nx );
+         for ( int i = 0; i < vf.size(); i++ ) fh.ph << hk.scale * qMax( 0.0, vf[i] );
+         Setup s2; setup_times( s2, xs, meni, bottom, d.rpm, acc, d.tsec, d.w2t, simpts, outdir + "/" + id + "_2.tmst", id );
+         QVector<double> vs = simulate1_mf( s2, sv, ff0, vbar, conc, &hk );                 // self-consistent
+         QVector<double> vm = simulate1_mf( s2, sv, ff0, vbar, 1.0, &fh );                  // in the field
+         double ss = 0, sd = 0, mxd = 0; for ( int i = 0; i < ns * np; i++ ) { double e = vm[i] * conc - vs[i]; ss += e * e; mxd = qMax( mxd, fabs( e ) );
+            sd += sq( vs[i] - b[i] ); }
+         fprintf( stderr, "%s fieldtest dense %d: |field-sim - self-sim| rmsd %.5f max %.4f ; self vs SEDFIT rmsd %.5f\n", qPrintable( id ), dense,
+                  sqrt( ss / ( ns * np ) ), mxd, sqrt( sd / ( ns * np ) ) );
+         continue;
+      }
+      QVector<double> v = model == "ideal_fem" ? simulate1( su, sv, ff0, vbar, conc )
+                        : simulate1_mf( su, sv, ff0, vbar, conc, model == "hs" ? &hk : nullptr );
+      double ss = 0, mxd = 0; for ( int i = 0; i < ns * np; i++ ) { double e = v[i] - b[i]; ss += e * e; mxd = qMax( mxd, fabs( e ) ); }
+      double rmsd = sqrt( ss / ( ns * np ) );
+      fprintf( stderr, "  hook: calls %ld conc %.4g..%.4g tmax %.1f scale %.4g\n", hk.ncall, hk.cmin, hk.cmax, hk.tmax, hk.scale );
+      fprintf( stderr, "%s model %s dmode %d meniscus %.4f: rmsd %.5f max %.4f (w2t mismatch %.1e, %.1f s)\n", qPrintable( id ),
+               qPrintable( model ), hk.dmode, meni, rmsd, mxd, mx, et.elapsed() / 1000.0 );
+      QJsonObject o; o["meniscus"] = meni; o["rmsd"] = rmsd; o["max"] = mxd; out << o;
+      QFile f( outdir + "/" + id + "_m" + ms + "_sim.bin" ); f.open( QIODevice::WriteOnly ); f.write( (const char*) v.constData(), v.size() * 8 );
+   }
+   { QFile f( outdir + "/" + id + "_data.bin" ); f.open( QIODevice::WriteOnly ); f.write( (const char*) b.constData(), b.size() * 8 ); }
+   QJsonObject cj; cj["id"] = id; cj["ns"] = ns; cj["np"] = np; cj["runs"] = out;
+   QJsonArray xa; for ( double v : xs ) xa << v; cj["x"] = xa;
+   QFile jf( outdir + "/" + id + "_valid.json" ); jf.open( QIODevice::WriteOnly ); jf.write( QJsonDocument( cj ).toJson( QJsonDocument::Compact ) );
+   return 0;
+}
+
+// ---------------------------------------------------------------------------
 // Real (SEDFIT .ip) data: 2DSA uncorrected (iter 0) and C1 skew-corrected
 // (iter 1..NIT, kappa' known). Config file: key=value lines.
 static int run_real( const QString& outdir, const QString& cfgfile )
@@ -303,6 +456,13 @@ static int run_real( const QString& outdir, const QString& cfgfile )
    NGS = cf.value( "ngs", QString::number( NGS ) ).toInt(); NGK = cf.value( "ngk", QString::number( NGK ) ).toInt();
    SUBS = cf.value( "subs", QString::number( SUBS ) ).toInt(); SUBK = cf.value( "subk", QString::number( SUBK ) ).toInt();
    if ( cf.contains( "tag" ) ) id += "_" + cf["tag"];
+   bool   use_mf  = cf.value( "mf", "0" ).toInt() != 0;      // mean-field hindered settling
+   int    MFIT    = cf.value( "mfit", "6" ).toInt();
+   double damp    = cf.value( "damp", "0.5" ).toDouble();
+   double fpm     = cf.value( "fringes_per_mgml", "1" ).toDouble();
+   FieldHook fhook; fhook.dmode = cf.value( "dmode", "1" ).toInt(); fhook.tau = cf.value( "tau", "0" ).toDouble();
+   double phi_scale = cf.value( "ksred", "1" ).toDouble() * pow( cf.value( "ff0_phi", "1.5" ).toDouble(), 3 ) * vbar * 1e-3 / fpm;
+   if ( cf.contains( "kfix" ) ) { KMIN = KMAX = cf["kfix"].toDouble(); NGK = 1; SUBK = 1; }
 
    // read list + scans
    QStringList files;
@@ -328,7 +488,8 @@ static int run_real( const QString& outdir, const QString& cfgfile )
 
    // grids
    QVector<double> xe; QVector<int> fsub;
-   for ( double r = meniscus + 0.002; r <= qMin( x1 + 0.05, bottom - 0.005 ) + 1e-9; r += dr ) {
+   double xe_end = cf.value( "xe_bottom", "0" ).toInt() ? bottom - 0.004 : qMin( x1 + 0.05, bottom - 0.005 );
+   for ( double r = meniscus + 0.002; r <= xe_end + 1e-9; r += dr ) {
       if ( r >= x0 && r <= x1 ) fsub << xe.size();
       xe << r; }
    int npe = xe.size(), np = fsub.size();
@@ -371,16 +532,17 @@ static int run_real( const QString& outdir, const QString& cfgfile )
 
    QVector<US_Solute> grid;
    for ( int is = 0; is < NGS; is++ ) for ( int ik = 0; ik < NGK; ik++ )
-      grid << US_Solute( smin + ( smax - smin ) * is / ( NGS - 1 ), KMIN + ( KMAX - KMIN ) * ik / ( NGK - 1 ), 0.0 );
+      grid << US_Solute( smin + ( smax - smin ) * is / ( NGS - 1 ), ( NGK > 1 ? KMIN + ( KMAX - KMIN ) * ik / ( NGK - 1 ) : KMIN ), 0.0 );
    auto gidx = [&]( const US_Solute& so ) {
-      return qRound( ( so.s - smin ) / ( smax - smin ) * ( NGS - 1 ) ) * NGK + qRound( ( so.k - KMIN ) / ( KMAX - KMIN ) * ( NGK - 1 ) ); };
+      return qRound( ( so.s - smin ) / ( smax - smin ) * ( NGS - 1 ) ) * NGK + ( NGK > 1 ? qRound( ( so.k - KMIN ) / ( KMAX - KMIN ) * ( NGK - 1 ) ) : 0 ); };
    auto sim_basis = [&]( double meni, QVector<QVector<float>>& Ae ) {
       QString tmst = outdir + "/" + id + ".time_state.tmst";
       Setup su; double mx = make_setup( su, xe, meni, tmst, true );
       fprintf( stderr, "  meniscus %.4f: max |w2t_sim/w2t_data - 1| = %.2e\n", meni, mx );
       Ae.resize( grid.size() );
       for ( int c = 0; c < grid.size(); c++ ) {
-         QVector<double> v = use_fvm ? simulate1_fvm( su, grid[c].s, grid[c].k, vbar, fsigma, fdelta )
+         QVector<double> v = ( use_mf && !fhook.ph.isEmpty() ) ? simulate1_mf( su, grid[c].s, grid[c].k, vbar, 1.0, &fhook )
+                           : use_fvm ? simulate1_fvm( su, grid[c].s, grid[c].k, vbar, fsigma, fdelta )
                                      : simulate1( su, grid[c].s, grid[c].k, vbar, 1.0 );
          Ae[c].resize( v.size() ); for ( int i = 0; i < v.size(); i++ ) Ae[c][i] = (float) v[i]; } };
 
@@ -424,6 +586,90 @@ static int run_real( const QString& outdir, const QString& cfgfile )
       cj["meniscus_scan"] = fits; fits = QJsonArray();
    }
    cj["meniscus"] = meni_best;
+   if ( use_mf ) {
+      // ---------------- mean-field hindered settling + C1 skew (SI Eqs. 7, 9-17) -------------
+      auto save = [&]( const FitResult& fr, int it, const QString& tagi ) {
+         QFile f( outdir + "/" + id + "_" + tagi + "_resid.bin" ); f.open( QIODevice::WriteOnly );
+         f.write( (const char*) fr.resid.constData(), fr.resid.size() * 8 );
+         QVector<double> fit( ns * np ); for ( int i = 0; i < ns * np; i++ ) fit[i] = b[i] - fr.resid[i];
+         QFile g( outdir + "/" + id + "_" + tagi + "_fit.bin" ); g.open( QIODevice::WriteOnly ); g.write( (const char*) fit.constData(), fit.size() * 8 );
+         (void) it; };
+      auto record = [&]( const FitResult& fr, int it, double md, const QString& kind ) {
+         QJsonObject o; o["iter"] = it; o["kind"] = kind; o["rmsd"] = fr.rmsd; o["maxdr"] = md;
+         QJsonArray sa; for ( auto& so : fr.sol ) sa << QJsonArray{ so.s, so.k, so.c }; o["solutes"] = sa; fits << o; };
+      auto ctot_of = [&]( const QVector<US_Solute>& sl ) {       // model total on extended grid, per scan
+         QVector<double> ct( ns * npe, 0.0 );
+         for ( auto& so : sl ) { const float* a = Ae[ gidx( so ) ].constData(); for ( int i = 0; i < ns * npe; i++ ) ct[i] += so.c * a[i]; }
+         return ct; };
+      auto skew_from = [&]( const QVector<double>& ct, double kap, double& maxdr ) {   // C1 map from c_tot, applied to Ae
+         maxdr = 0; QVector<double> rho( npe );
+         for ( int s = 0; s < ns; s++ ) { const double* cfv = ct.constData() + s * npe;
+            for ( int i = 0; i < npe; i++ ) { int i0 = qMax( 0, i - 1 ), i1 = qMin( npe - 1, i + 1 );
+               double d = kap * ( cfv[i1] - cfv[i0] ) / ( xe[i1] - xe[i0] ); rho[i] = xe[i] + d;
+               if ( i > 0 && rho[i] < rho[i-1] ) rho[i] = rho[i-1] + 1e-9;
+               if ( xe[i] >= x0 && xe[i] <= x1 ) maxdr = qMax( maxdr, fabs( d ) ); }
+            int j = 0;
+            for ( int p = 0; p < np; p++ ) { double x = xfit[p];
+               while ( j < npe - 2 && rho[j+1] < x ) j++; while ( j > 0 && rho[j] > x ) j--;
+               double w = ( x <= rho[0] ) ? 0.0 : ( x >= rho[npe-1] ? 1.0 : ( x - rho[j] ) / ( rho[j+1] - rho[j] ) );
+               if ( x >= rho[npe-1] ) j = npe - 2; sj[ s*np+p ] = j; sw[ s*np+p ] = qBound( 0.0, w, 1.0 ); } }
+         for ( int c = 0; c < grid.size(); c++ ) { const float* a = Ae[c].constData(); double* o = A[c].data();
+            for ( int k = 0; k < ns * np; k++ ) { int s = k / np, jj = sj[k]; o[k] = ( 1.0 - sw[k] ) * a[ s*npe + jj ] + sw[k] * a[ s*npe + jj + 1 ]; } } };
+      // (0) ideal basis + fit: TI/RI estimate for data-based initial field
+      sim_basis( meni_best, Ae ); double md = 0;
+      skew_from( QVector<double>( ns * npe, 0.0 ), 0.0, md );
+      FitResult fr = fit_2dsa( A, grid, b, ns, np, 3 );
+      fprintf( stderr, "  MF it 0 (ideal): rmsd %.5f nsol %d\n", fr.rmsd, fr.sol.size() );
+      record( fr, 0, 0.0, "ideal" ); save( fr, 0, "ideal" );
+      // dense time grid for the mean field (field at scan times only is too coarse; see validation)
+      int dense = cf.value( "dense", "10" ).toInt();
+      QVector<double> tdn, w2dn; QVector<int> srow; double tprev = 0.0;
+      for ( int s = 0; s < ns; s++ ) { for ( int k = 1; k <= dense; k++ ) { double tv = tprev + ( tsec[s] - tprev ) * k / dense;
+            tdn << tv; w2dn << US_AstfemMath::calc_omega2t( 0.0, 0.0, 0.0, rpm, acc, tv ); } srow << tdn.size() - 1; tprev = tsec[s]; }
+      int nd = tdn.size();
+      Setup sd; setup_times( sd, xe, meni_best, bottom, rpm, acc, tdn, w2dn, simpts, outdir + "/" + id + "_dense.tmst", id );
+      // loading signal and initial s for the first field
+      double ctot_fit = 0, sw_fit = 0; for ( auto& so : fr.sol ) { ctot_fit += so.c; sw_fit += so.c * so.s; }
+      double c0 = cf.contains( "c0" ) ? cf["c0"].toDouble() : cf.contains( "c0_init" ) ? cf["c0_init"].toDouble() : ctot_fit;
+      double sinit = cf.contains( "s_init" ) ? cf["s_init"].toDouble() : sw_fit / qMax( ctot_fit, 1e-30 );
+      fprintf( stderr, "  init field: single species s %.3f S, f/f0 %.3f, c0 %.3f fringes (phi0 %.4f), %d field times\n", sinit, KMIN, c0, phi_scale * c0, nd );
+      SelfHook h0; h0.scale = phi_scale; h0.dmode = fhook.dmode; h0.tau = fhook.tau;
+      QVector<double> ctd = simulate1_mf( sd, sinit, KMIN, vbar, c0, &h0 );      // nd x npe
+      auto set_field = [&]( const QVector<double>& c ) {
+         fhook.xr = xe; fhook.tt.clear(); fhook.tt << 0.0 << tdn;
+         fhook.ph.resize( ( nd + 1 ) * npe );
+         for ( int i = 0; i < npe; i++ ) fhook.ph[i] = phi_scale * c0;
+         for ( int i = 0; i < nd * npe; i++ ) fhook.ph[ npe + i ] = phi_scale * qMax( 0.0, c[i] ); };
+      QVector<QVector<float>> Ad( grid.size() );
+      for ( int it = 1; it <= MFIT; it++ ) {
+         set_field( ctd );
+         QElapsedTimer et; et.start();
+         for ( int c = 0; c < grid.size(); c++ ) {                  // basis in the hindered mean field (dense times)
+            QVector<double> v = simulate1_mf( sd, grid[c].s, grid[c].k, vbar, 1.0, &fhook );
+            Ad[c].resize( v.size() ); for ( int i = 0; i < v.size(); i++ ) Ad[c][i] = (float) v[i];
+            Ae[c].resize( ns * npe ); for ( int s = 0; s < ns; s++ ) for ( int i = 0; i < npe; i++ ) Ae[c][ s*npe+i ] = Ad[c][ srow[s]*npe+i ]; }
+         double tsim = et.restart() / 1000.0;
+         QVector<double> cts( ns * npe ); for ( int s = 0; s < ns; s++ ) for ( int i = 0; i < npe; i++ ) cts[ s*npe+i ] = ctd[ srow[s]*npe+i ];
+         skew_from( cts, kappa, md );
+         FitResult f1 = fit_2dsa( A, grid, b, ns, np, 3 );
+         QVector<double> cm( nd * npe, 0.0 );
+         for ( auto& so : f1.sol ) { const float* a = Ad[ gidx( so ) ].constData(); for ( int i = 0; i < nd * npe; i++ ) cm[i] += so.c * a[i]; }
+         double dch = 0, nrm = 0; for ( int s = 0; s < ns; s++ ) for ( int i = 0; i < npe; i++ ) if ( xe[i] <= x1 ) {
+            int k = srow[s]*npe+i; dch += sq( cm[k] - ctd[k] ); nrm += sq( ctd[k] ); }
+         double csum = 0; for ( auto& so : f1.sol ) csum += so.c;
+         fprintf( stderr, "  MF it %d: rmsd %.5f nsol %d c_tot %.3f maxdr %.1f um  field change %.2e  (sim %.0f s)\n", it, f1.rmsd, f1.sol.size(),
+                  csum, md * 1e4, sqrt( dch / qMax( nrm, 1e-30 ) ), tsim );
+         record( f1, it, md, "mf" );
+         if ( it == MFIT ) save( f1, it, "mf" );
+         for ( int i = 0; i < nd * npe; i++ ) ctd[i] = damp * ctd[i] + ( 1.0 - damp ) * cm[i];
+         if ( !cf.contains( "c0" ) ) c0 = damp * c0 + ( 1.0 - damp ) * csum;
+      }
+      { QFile f( outdir + "/" + id + "_data.bin" ); f.open( QIODevice::WriteOnly ); f.write( (const char*) b.constData(), b.size() * 8 ); }
+      cj["fits"] = fits; cj["mf"] = true; cj["ksred"] = cf.value( "ksred", "1" ).toDouble(); cj["ff0_phi"] = cf.value( "ff0_phi", "1.5" ).toDouble();
+      QFile jf( outdir + "/" + id + "_real.json" ); jf.open( QIODevice::WriteOnly );
+      jf.write( QJsonDocument( cj ).toJson( QJsonDocument::Compact ) );
+      return 0;
+   }
    sim_basis( meni_best, Ae );
    QVector<US_Solute> sol;
    for ( int it = 0; it <= NIT; it++ ) {
@@ -488,6 +734,7 @@ int main( int argc, char** argv )
                                 { "r0.02", 0.02, true, 3, 3 } };
 
    if ( only == "REAL" ) return run_real( outdir, argc > 3 ? argv[3] : "" );
+   if ( only == "VALID" ) return run_valid( outdir, argc > 3 ? argv[3] : "" );
    if ( getenv( "WT0" ) ) for ( Case& cs : cases ) cs.t0 = atof( getenv( "WT0" ) );
    for ( const Case& cs : cases ) {
       if ( !only.isEmpty() && cs.id != only ) continue;
@@ -580,7 +827,7 @@ int main( int argc, char** argv )
          int npe = xe.size();
          QVector<US_Solute> grid;
          for ( int is = 0; is < NGS; is++ ) for ( int ik = 0; ik < NGK; ik++ )
-            grid << US_Solute( cs.smin + ( cs.smax - cs.smin ) * is / ( NGS - 1 ), KMIN + ( KMAX - KMIN ) * ik / ( NGK - 1 ), 0.0 );
+            grid << US_Solute( cs.smin + ( cs.smax - cs.smin ) * is / ( NGS - 1 ), ( NGK > 1 ? KMIN + ( KMAX - KMIN ) * ik / ( NGK - 1 ) : KMIN ), 0.0 );
          auto gidx = [&]( const US_Solute& so ) {
             int is = qRound( ( so.s - cs.smin ) / ( cs.smax - cs.smin ) * ( NGS - 1 ) );
             int ik = qRound( ( so.k - KMIN ) / ( KMAX - KMIN ) * ( NGK - 1 ) );
@@ -679,7 +926,7 @@ int main( int argc, char** argv )
       // 2DSA basis on fit grid (UltraScan default simpoints)
       QVector<US_Solute> grid;
       for ( int is = 0; is < NGS; is++ ) for ( int ik = 0; ik < NGK; ik++ )
-         grid << US_Solute( cs.smin + ( cs.smax - cs.smin ) * is / ( NGS - 1 ), KMIN + ( KMAX - KMIN ) * ik / ( NGK - 1 ), 0.0 );
+         grid << US_Solute( cs.smin + ( cs.smax - cs.smin ) * is / ( NGS - 1 ), ( NGK > 1 ? KMIN + ( KMAX - KMIN ) * ik / ( NGK - 1 ) : KMIN ), 0.0 );
       QVector<QVector<double>> A;
       if ( getenv( "WDEBUG" ) ) {   // direct check: basis = true solutes only
          QVector<QVector<double>> Bt; simulate_many( cs, xfit, SIMPTS_FIT, tmst, tsol, Bt );
