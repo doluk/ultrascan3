@@ -2045,14 +2045,14 @@ void
    double*       phiL  = phi + 3;
    double*       phiR  = phiL + 6;
    QElapsedTimer timer;
-   static int    k_time1 = 0;
-   static int    k_time2 = 0;
-   static int    k_time3 = 0;
-   static int    k_time4 = 0;
-   static int    k_time5 = 0;
-   static int    k_time6 = 0;
-   static int    k_time7 = 0;
-   static int    k_time8 = 0;
+   static thread_local int k_time1 = 0; // Debug timing, per thread
+   static thread_local int k_time2 = 0; // Debug timing, per thread
+   static thread_local int k_time3 = 0; // Debug timing, per thread
+   static thread_local int k_time4 = 0; // Debug timing, per thread
+   static thread_local int k_time5 = 0; // Debug timing, per thread
+   static thread_local int k_time6 = 0; // Debug timing, per thread
+   static thread_local int k_time7 = 0; // Debug timing, per thread
+   static thread_local int k_time8 = 0; // Debug timing, per thread
    timer.start();
    // calculate Sv, Dv at t+dt on xg=(xl, xr)
    for ( int j = 0; j < Ng; j += 2 )
@@ -2317,8 +2317,8 @@ void US_LammAstfvm::AdjustSD(
 {
    const double  vbar = model.components[comp_x].vbar20;
    QElapsedTimer timer;
-   static int    kst1                 = 0;
-   static int    kst2                 = 0;
+   static thread_local int kst1                 = 0; // Debug timing, per thread
+   static thread_local int kst2                 = 0; // Debug timing, per thread
    const double  local_s20w           = param_s20w;
    const double  local_D20w           = param_D20w;
    const double  D20w_correction_stem = ( simparams.temperature + K0 ) * VISC_20W / K20 * local_D20w;

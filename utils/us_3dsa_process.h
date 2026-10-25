@@ -87,6 +87,13 @@ class US_UTIL_EXTERN US_3dsaProcess : public QObject
             //! narrow bands impractical.  Shape does not enter, so hold f/f0
             //! or use mask_w_k_v().
             bool   equilibrium;
+
+            //! The grid as an explicit list of solutes (values in the slots
+            //! s_mask names), in place of the rectangular x/y/z grid: for
+            //! axes that are not uniform, such as the vbar values of the bands
+            //! an equilibrium fit found.  Dealt into grid_reps^3 subgrids,
+            //! or more to keep each within max_tsols.
+            QVector<US_Solute> solutes;
       };
 
       //! \brief Outputs of one fit
@@ -148,6 +155,12 @@ class US_UTIL_EXTERN US_3dsaProcess : public QObject
       //! Parameters::nthreads asks for.  Desktop builds allocate per call and
       //! keep their threads.  See doc/develop/3dsa_design.md section 3D.
       static bool concurrent_solves_safe( void );
+
+      //! \brief Whether a fit of these data sets may solve concurrently:
+      //!        always in desktop builds, and in NO_DB builds when no data
+      //!        set is simulated by the ASTFEM -- the ASTFVM and the closed
+      //!        equilibrium form keep no state between solves
+      static bool    concurrent_solves_safe( const QList<US_SolveSim::DataSet*>&, const Parameters& );
 
       //! \brief Give every data set its own loaded timestate
       //!

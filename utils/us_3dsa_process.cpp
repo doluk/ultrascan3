@@ -199,6 +199,24 @@ bool US_3dsaProcess::concurrent_solves_safe()
 #endif
 }
 
+bool US_3dsaProcess::concurrent_solves_safe( const QList<US_SolveSim::DataSet*>& dsets, const Parameters& parms )
+{
+   if ( concurrent_solves_safe() || parms.equilibrium )
+   {
+      return true;
+   }
+
+   for ( const US_SolveSim::DataSet* dset : dsets )
+   {
+      if ( !US_SolveSim::uses_fvm( dset ) )
+      {
+         return false;
+      }
+   }
+
+   return !dsets.isEmpty();
+}
+
 // ---------------------------------------------------------------------------
 // Timestates
 //
@@ -715,7 +733,7 @@ bool US_3dsaProcess::fit( const Parameters& parms, Result& result )
    // ---- worker set-up -----------------------------------------------------
    int nthreads = qMax( 1, parms.nthreads );
 
-   if ( nthreads > 1 && !concurrent_solves_safe() )
+   if ( nthreads > 1 && !concurrent_solves_safe( dsets, parms ) )
    {
       emit message_update( tr( "%1 threads requested; running serially, because this build's"
                                " Lamm-equation solver cannot run concurrent solves" )
@@ -807,18 +825,40 @@ bool US_3dsaProcess::fit( const Parameters& parms, Result& result )
 
    // ---- the grid ----------------------------------------------------------
    QList<QVector<US_Solute>> subgrids;
-   const int                 reps = US_Solute::init_solutes_3d( parms.x_min,
-                                                parms.x_max,
-                                                parms.x_res,
-                                                parms.y_min,
-                                                parms.y_max,
-                                                parms.y_res,
-                                                parms.z_min,
-                                                parms.z_max,
-                                                parms.z_res,
-                                                parms.grid_reps,
-                                                parms.s_mask,
-                                                subgrids );
+
+   if ( !parms.solutes.isEmpty() )
+   {
+      // An explicit list, dealt round-robin so each subgrid spans its range,
+      // into grid_reps^3 subgrids as the rectangular grid makes -- never a
+      // number that depends on the threads, since the subgrids shape the fit
+      const int nsolutes = parms.solutes.size();
+      const int reps3    = parms.grid_reps * parms.grid_reps * parms.grid_reps;
+      const int nsub     = qBound( 1, qMax( reps3, ( nsolutes + parms.max_tsols - 1 ) / qMax( 1, parms.max_tsols ) ), nsolutes );
+
+      for ( int kk = 0; kk < nsub; kk++ )
+      {
+         subgrids << QVector<US_Solute>();
+      }
+
+      for ( int ii = 0; ii < nsolutes; ii++ )
+      {
+         subgrids[ii % nsub] << parms.solutes[ii];
+      }
+   }
+
+   const int reps = !parms.solutes.isEmpty() ? 1
+                                             : US_Solute::init_solutes_3d( parms.x_min,
+                                                                           parms.x_max,
+                                                                           parms.x_res,
+                                                                           parms.y_min,
+                                                                           parms.y_max,
+                                                                           parms.y_res,
+                                                                           parms.z_min,
+                                                                           parms.z_max,
+                                                                           parms.z_res,
+                                                                           parms.grid_reps,
+                                                                           parms.s_mask,
+                                                                           subgrids );
 
    if ( reps < 1 || subgrids.isEmpty() )
    {

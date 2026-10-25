@@ -1246,3 +1246,55 @@ TEST_F( TestUS3dsaProcess, EquilibriumFitFindsEachBandsDensity )
       EXPECT_NEAR( conc / total, b.conc / 0.8, 0.02 );
    }
 }
+
+// A fit of gradient data sets only uses its threads even in a NO_DB build:
+// the ASTFVM keeps no state between solves, unlike the ASTFEM there.  Four
+// threads give the fit one thread gives, bit for bit -- here over an
+// explicit solute list, dealt into subgrids, as a non-uniform vbar axis is.
+TEST_F( TestUS3dsaProcess, GradientFitsUseTheirThreads )
+{
+   std::unique_ptr<US_SolveSim::DataSet> grad( make_gradient_dataset( gradient_truth(), gradient_buffer( GRAD_CSCL ), 0.80 ) );
+   QList<US_SolveSim::DataSet*>          one{ grad.get() };
+
+   US_3dsaProcess::Parameters            parms = gradient_parameters();
+   parms.grid_reps                             = 2; // eight subgrids
+   for ( double vv : { 0.78, 0.80, 0.82 } )
+   {
+      for ( double kk : { 1.25, 1.5 } )
+      {
+         for ( double ss : { 8.0e-13, 10.0e-13, 12.0e-13 } )
+         {
+            parms.solutes << US_Solute( ss, kk, 0.0, vv, 0.0 );
+         }
+      }
+   }
+
+   EXPECT_TRUE( US_3dsaProcess::concurrent_solves_safe( one, parms ) );
+
+   US_3dsaProcess::Result serial;
+   US_3dsaProcess::Result threaded;
+   {
+      US_3dsaProcess proc( one );
+      parms.nthreads = 1;
+      ASSERT_TRUE( proc.fit( parms, serial ) ) << proc.lastError().toStdString();
+   }
+   {
+      US_3dsaProcess proc( one );
+      parms.nthreads = 4;
+      ASSERT_TRUE( proc.fit( parms, threaded ) ) << proc.lastError().toStdString();
+   }
+
+   EXPECT_EQ( threaded.nthreads, 4 );
+   EXPECT_EQ( serial.ngrid, 18 );
+   EXPECT_EQ( serial.nsubgrids, 8 );
+   EXPECT_EQ( threaded.nsubgrids, 8 );
+   EXPECT_NEAR( weighted_vbar( serial.model ), 0.80, 0.005 );
+   EXPECT_EQ( serial.rmsd, threaded.rmsd );
+   ASSERT_EQ( serial.model.components.size(), threaded.model.components.size() );
+   for ( int cc = 0; cc < serial.model.components.size(); cc++ )
+   {
+      EXPECT_EQ( serial.model.components[cc].s, threaded.model.components[cc].s );
+      EXPECT_EQ( serial.model.components[cc].vbar20, threaded.model.components[cc].vbar20 );
+      EXPECT_EQ( serial.model.components[cc].signal_concentration, threaded.model.components[cc].signal_concentration );
+   }
+}

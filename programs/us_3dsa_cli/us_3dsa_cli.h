@@ -143,6 +143,10 @@ class US_3dsaCli
             //! Grid axes: "s_k_v" (default), "s_d_v" or "w_k_v".  With
             //! "w_k_v" the first axis is molar mass, from w_min .. w_max.
             QString              mask  = "s_k_v";
+
+            //! Explicit vbar values for the third axis, in place of v_min ..
+            //! v_max: the bands an equilibrium fit found, say
+            QVector<double>      v_list;
             double               w_min = 1.0e+5, w_max = 1.0e+7;
             int                  w_res = 24;
 

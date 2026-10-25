@@ -271,6 +271,10 @@ bool US_3dsaCli::read_case( const QString& path, Case& kase, QString& emsg )
    kase.w_min          = jnum( g, "w_min", kase.w_min );
    kase.w_max          = jnum( g, "w_max", kase.w_max );
    kase.w_res          = jint( g, "w_res", kase.w_res );
+   for ( const QJsonValue& v : g.value( "v_list" ).toArray() )
+   {
+      kase.v_list << v.toDouble();
+   }
 
    const QJsonObject fo    = root.value( "fit" ).toObject();
    kase.threads            = jint( fo, "threads", kase.threads );
@@ -820,6 +824,41 @@ int US_3dsaCli::run_fit( const QStringList& args )
       p.x_res  = kase.w_res;
    }
 
+   if ( !kase.v_list.isEmpty() )
+   {
+      // The x and y axes as gridded, crossed with the listed vbar values
+      for ( double vv : kase.v_list )
+      {
+         for ( int jj = 0; jj < p.y_res; jj++ )
+         {
+            const double yy = ( p.y_res > 1 ) ? p.y_min + ( p.y_max - p.y_min ) * jj / ( p.y_res - 1 ) : p.y_min;
+
+            for ( int ii = 0; ii < p.x_res; ii++ )
+            {
+               const double xx = ( p.x_res > 1 ) ? p.x_min + ( p.x_max - p.x_min ) * ii / ( p.x_res - 1 ) : p.x_min;
+               US_Solute    solute( 0.0, yy, 0.0, vv, 0.0 );
+
+               if ( kase.mask == "w_k_v" )
+               {
+                  solute.d = xx;
+               }
+               else
+               {
+                  solute.s = xx;
+               }
+
+               if ( kase.mask == "s_d_v" )
+               {
+                  solute.k = 0.0;
+                  solute.d = yy;
+               }
+
+               p.solutes << solute;
+            }
+         }
+      }
+   }
+
    US_3dsaProcess         proc( dsets );
    US_3dsaProcess::Result result;
 
@@ -908,7 +947,7 @@ int US_3dsaCli::run_fit( const QStringList& args )
    out() << QString( "  threads requested %1, used %2%3\n" )
                .arg( kase.threads )
                .arg( result.nthreads )
-               .arg( result.nthreads < kase.threads && !US_3dsaProcess::concurrent_solves_safe()
+               .arg( result.nthreads < kase.threads && !US_3dsaProcess::concurrent_solves_safe( dsets, p )
                         ? QString( " (this build cannot run concurrent Lamm solves)" )
                         : QString( "" ) );
 
