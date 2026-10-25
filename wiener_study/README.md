@@ -103,3 +103,41 @@ Paper cases (Chaturvedi & Schuck, Chem. Methods 2024) simulated ideally (no conc
 - **Conclusion:** the σ fit of the branch is not sufficient for concentrated mixtures. Stage 2 (mean-field coupling to c_tot(r,t), and a hindered-settling functional form) is needed.
 
 **Limitations:** coarse grid (57 × 13), simpoints 200, δ fixed at 0 (in the branch both signs of δ decrease D).
+
+## Stage 2: mean-field hindered settling + Wiener skew (paper SI model) — `stage2_meanfield/`
+
+**Model (SI Eqs. 7, 9–17).**
+- s_i(r,t) = s₀,i·H(φ) and D_i(r,t) = D₀,i·K(φ) for all species, with φ(r,t) = k_S,red·(f/f₀)³·v̄·c̃_tot(r,t) (mean field).
+- Hard-sphere hindered settling (Fiore et al.): H = (1−φ)^4.27/(1+2.28φ). K = H/S(0) with S(0) = [(1−φ)²/(1+2φ)]² (SI Eqs. 12–13). The sticky-sphere form with τ (Eqs. 11, 14) is implemented but was not used.
+- Wiener skew is applied per species through the same c̃_tot (SI Eq. 7; our C1 operator).
+
+**Implementation** (`us_lamm_astfvm_meanfield.patch` against branch `cosedimenting`; driver `src/cosed_driver/wsim.cpp`).
+- `US_MFHook` in non-ideal case 1 of `US_LammAstfvm::AdjustSD` supplies φ(r,t), either from an external tabulated field (mean field) or from the component's own concentration (exact for a single species).
+- Fit, as in SEDFIT c_HS(s₀): 1D s grid (100 points) with f/f₀ fixed (IgG 1.5, BSA 1.43) and k_S,red from the paper's fit files (0.513, 0.527, 0.660); TI+RI noise fitted.
+- Fixed-point iteration over c̃_tot(r,t) with damping 0.3–0.5. The initial field is a self-consistent single-species hindered simulation at the nominal loading concentration.
+
+**Validation against SEDFIT simulations** (Dataverse, Fig. 3/4).
+- Ideal ASTFEM vs `50mgmlideal`: 0.0045 mg/ml RMS (0.01 %).
+- Hindered single species (own-concentration hook) vs `50mgmlHinderedHS` (k_S,red 0.565, f/f₀ 1.559): 0.035 mg/ml RMS for r < 6.95 cm with the Eqs. 12–13 form of K. Eq. 16 as printed gives 0.31, so **SEDFIT evidently uses Eqs. 12–13; Eq. 16 in the SI appears to be a typo.**
+- The mean field must be tabulated on a **dense time grid**. With the field only at the scan times, the field-driven simulation deviates from the self-consistent one by 0.32 mg/ml; with 5× / 20× denser times by 0.015 / 0.0016.
+- ASTFVM converges for simpoints 200–800 but degrades at ≥ 1000 (0.05 → 0.6 mg/ml), which looks like a solver issue in the branch.
+- Mean-field fit of the synthetic `50mgmlHinderedHS` data: 95 % at 6.48 S (truth 6.5 S). RMSD 0.30 mg/ml (0.6 %), dominated by the bottom packing zone in the last scans near the end of the fit range; 0.11 mg/ml for r < 6.9 cm.
+
+**Results on the paper data** (RMSD in fringes):
+
+| data set | model | RMSD | monomer | dimer | paper (c_HS(s₀)) |
+|---|---|---|---|---|---|
+| hIgG 10 mg/ml, 12 mm | MF + skew | **0.041** | 75.8 % @ 6.38 S | 15.3 % @ 9.39 S | 74.1 % @ 6.44 S; 15.8 % @ 9.3 S; rmsd 0.041 |
+| | MF, no skew | 0.087 | 71.7 % @ 6.42 S | 16.2 % @ 9.24 S | |
+| hIgG 46 mg/ml, 1 mm | MF + skew | **0.075** | 75.6 % @ 6.78 S | 13.8 % @ 9.50 S | 71.1 % @ 6.73 S; 16.5 % @ 9.4 S |
+| | MF, no skew | 0.108 | 71.1 % @ 6.68 S | 18.1 % @ 9.12 S | |
+| BSA 140 mg/ml, 1 mm | MF + skew | **0.168** | 75.3 % @ 3.84 S | 23.7 % @ 6.31 S | 3.9 S; dimer 22 %; rmsd 0.175 |
+| | MF, no skew | 0.264 | 67.0 % @ 3.84 S | 24.4 % @ 6.15 S | |
+
+For comparison, the best previous UltraScan models were the ideal 2DSA + C1 (IgG 10: 0.039, but with spurious f/f₀ and MW) and the branch σ fit (IgG 46: 0.054, composition wrong; BSA: ≥ 0.97).
+
+**Interpretation.**
+- With the mean-field hindered-settling model plus Wiener skew, UltraScan's solver reproduces the paper's c_HS(s₀) results within a few percent in s and composition, and matches or beats the paper's RMSD (IgG 10: 0.041 vs 0.041; BSA 140: 0.168 vs 0.175).
+- **Wiener skew matters at these concentrations.** Omitting it raises the RMSD by 40–110 % and shifts the composition by several percent (BSA monomer 75 → 67 %, aggregates 0.2 → 4.4 %; IgG 46 dimer 13.8 → 18.1 %).
+- **BSA bottom boundary:** SEDFIT uses an effective bottom of 6.60 cm with a *non-reflecting* boundary to exclude the packing zone. UltraScan's solvers only reflect, so the real bottom (7.2 cm) has to be used instead (with bottom 6.60 the fit fails completely).
+- **Cost:** ASTFVM with the field takes about 2–6 s per basis function (100 basis functions, 200–360 s per iteration; 6–10 iterations). That is acceptable for a 1D c(s)-type grid, but too slow for a full 2DSA s × f/f₀ grid without parallelisation.
