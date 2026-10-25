@@ -365,6 +365,117 @@ int main( int argc, char** argv )
       // RI noise per scan
       QVector<double> ri( ns ); for ( auto& v : ri ) v = 0.3 * nd( rti );
 
+      if ( getenv( "WCORR" ) ) {
+         // ------------------------------------------------------------------
+         // C1 prototype: fixed-point Wiener-skew correction with known kappa.
+         // Basis simulated on an extended radial range (sources for skewed
+         // points), skew operator rebuilt from the current fitted total signal,
+         // applied to every basis column, 2DSA refit; TI/RI by mean removal.
+         // ------------------------------------------------------------------
+         const int NIT = getenv( "WNIT" ) ? atoi( getenv( "WNIT" ) ) : 6;
+         QVector<double> xe; QVector<int> fsub;
+         for ( int i = 0; i < nf; i += DECIM ) if ( xfull[i] <= cs.x1 + 0.05 ) {
+            if ( xfull[i] >= cs.x0 && xfull[i] <= cs.x1 ) fsub << xe.size();
+            xe << xfull[i]; }
+         int npe = xe.size();
+         QVector<US_Solute> grid;
+         for ( int is = 0; is < NGS; is++ ) for ( int ik = 0; ik < NGK; ik++ )
+            grid << US_Solute( cs.smin + ( cs.smax - cs.smin ) * is / ( NGS - 1 ), KMIN + ( KMAX - KMIN ) * ik / ( NGK - 1 ), 0.0 );
+         auto gidx = [&]( const US_Solute& so ) {
+            int is = qRound( ( so.s - cs.smin ) / ( cs.smax - cs.smin ) * ( NGS - 1 ) );
+            int ik = qRound( ( so.k - KMIN ) / ( KMAX - KMIN ) * ( NGK - 1 ) );
+            return is * NGK + ik; };
+         QElapsedTimer et; et.start();
+         QVector<QVector<float>> Ae( grid.size() );
+         for ( int c0 = 0; c0 < grid.size(); c0 += 200 ) {
+            QVector<US_Solute> chunk = grid.mid( c0, 200 ); QVector<QVector<double>> tmp;
+            simulate_many( cs, xe, SIMPTS_FIT, tmst, chunk, tmp );
+            for ( int k = 0; k < tmp.size(); k++ ) { Ae[ c0 + k ].resize( tmp[k].size() );
+               for ( int i = 0; i < tmp[k].size(); i++ ) Ae[ c0 + k ][i] = (float) tmp[k][i]; }
+         }
+         fprintf( stderr, "extended basis %d sims (%d pts) in %.1f s\n", grid.size(), npe, et.elapsed() / 1000.0 );
+
+         // skew operator: per (scan, fit point) source index j and weight w
+         QVector<int> sj( ns * np ); QVector<double> sw( ns * np );
+         QVector<QVector<double>> A( grid.size(), QVector<double>( ns * np ) );
+         auto build = [&]( const QVector<US_Solute>& sol, double kap, double& maxdr ) {
+            maxdr = 0;
+            QVector<double> cf( npe ), rho( npe );
+            for ( int s = 0; s < ns; s++ ) {
+               cf.fill( 0.0 );
+               for ( auto& so : sol ) { const float* a = Ae[ gidx( so ) ].constData() + s * npe;
+                  for ( int i = 0; i < npe; i++ ) cf[i] += so.c * a[i]; }
+               for ( int i = 0; i < npe; i++ ) {
+                  int i0 = qMax( 0, i - 1 ), i1 = qMin( npe - 1, i + 1 );
+                  double dr = kap * ( cf[i1] - cf[i0] ) / ( xe[i1] - xe[i0] );
+                  rho[i] = xe[i] + dr;
+                  if ( i > 0 && rho[i] < rho[i-1] ) rho[i] = rho[i-1] + 1e-9;   // enforce monotonic map
+                  if ( xe[i] >= cs.x0 && xe[i] <= cs.x1 ) maxdr = qMax( maxdr, fabs( dr ) );
+               }
+               int j = 0;
+               for ( int p = 0; p < np; p++ ) {
+                  double x = xe[ fsub[p] ];
+                  while ( j < npe - 2 && rho[j+1] < x ) j++;
+                  while ( j > 0 && rho[j] > x ) j--;
+                  double w = ( x <= rho[0] ) ? 0.0 : ( x >= rho[npe-1] ? 1.0 : ( x - rho[j] ) / ( rho[j+1] - rho[j] ) );
+                  if ( x >= rho[npe-1] ) j = npe - 2;
+                  sj[ s*np+p ] = j; sw[ s*np+p ] = qBound( 0.0, w, 1.0 );
+               }
+            }
+            std::atomic<int> next{0};
+            auto work = [&]() { for ( int c; ( c = next++ ) < grid.size(); ) {
+               const float* a = Ae[c].constData(); double* o = A[c].data();
+               for ( int s = 0; s < ns; s++ ) for ( int p = 0; p < np; p++ ) {
+                  int k = s*np+p, j = sj[k]; double w = sw[k];
+                  o[k] = ( 1.0 - w ) * a[ s*npe + j ] + w * a[ s*npe + j + 1 ]; } } };
+            std::vector<std::thread> th; for ( int t = 0; t < 4; t++ ) th.emplace_back( work ); for ( auto& t : th ) t.join();
+         };
+
+         QJsonObject cj;
+         cj["id"] = cs.id; cj["desc"] = cs.desc; cj["kappa"] = cs.kappa; cj["ctot"] = cs.ctot; cj["ns"] = ns; cj["np"] = np;
+         QJsonArray tj; for ( int k = 0; k < tsol.size(); k++ ) { QJsonObject o; o["name"] = cs.sp[k].name;
+            o["s"] = tsol[k].s; o["k"] = tsol[k].k; o["c"] = tsol[k].c; o["mw"] = cs.sp[k].mw; tj << o; }
+         cj["truth"] = tj;
+         QJsonArray xs; for ( double v : xfit ) xs << v; cj["x"] = xs;
+         QJsonArray fits;
+         struct CC { QString id; double rnd; bool tiri; int flag; int seed; };
+         QVector<CC> cc = { { "none", 0, false, 0, 0 }, { "TIRI_only", 0, true, 3, 0 }, { "r0.005", 0.005, true, 3, 0 },
+                            { "r0.01", 0.01, true, 3, 0 }, { "r0.01", 0.01, true, 3, 1 }, { "r0.01", 0.01, true, 3, 2 },
+                            { "r0.02", 0.02, true, 3, 0 } };
+         for ( auto& c : cc ) {
+            // same noise realisation as the main study (seed scheme identical)
+            std::mt19937 rg( 1000 + c.seed );
+            QVector<double> b = obs[1][ c.tiri ? 1 : 0 ];
+            for ( int s = 0; s < ns; s++ ) for ( int p = 0; p < np; p++ ) {
+               double& v = b[ s * np + p ];
+               if ( c.tiri ) v += ri[s];
+               if ( c.rnd > 0 ) v += c.rnd * nd( rg );
+            }
+            QVector<US_Solute> sol;
+            for ( int it = 0; it <= NIT; it++ ) {
+               double maxdr = 0;
+               build( sol, it == 0 ? 0.0 : cs.kappa, maxdr );
+               et.restart();
+               FitResult fr = fit_2dsa( A, grid, b, ns, np, c.flag );
+               sol = fr.sol;
+               fprintf( stderr, "  %-9s seed %d iter %d : rmsd %.5f nsol %d maxdr %.1f um (%.1f s)\n", qPrintable( c.id ), c.seed, it,
+                        fr.rmsd, fr.sol.size(), maxdr * 1e4, et.elapsed() / 1000.0 );
+               QJsonObject o; o["cond"] = c.id; o["rnd"] = c.rnd; o["seed"] = c.seed; o["iter"] = it; o["skew"] = 1;
+               o["rmsd"] = fr.rmsd; o["maxdr"] = maxdr;
+               QJsonArray sa; for ( auto& so : fr.sol ) sa << QJsonArray{ so.s, so.k, so.c }; o["solutes"] = sa;
+               fits << o;
+               if ( c.seed == 0 && ( it == NIT ) ) {
+                  QFile f( outdir + "/" + cs.id + "_" + c.id + "_corr_resid.bin" );
+                  f.open( QIODevice::WriteOnly ); f.write( (const char*) fr.resid.constData(), fr.resid.size() * 8 );
+               }
+            }
+         }
+         cj["fits"] = fits;
+         QFile jf( outdir + "/" + cs.id + "_corr.json" ); jf.open( QIODevice::WriteOnly );
+         jf.write( QJsonDocument( cj ).toJson( QJsonDocument::Compact ) );
+         continue;
+      }
+
       // 2DSA basis on fit grid (UltraScan default simpoints)
       QVector<US_Solute> grid;
       for ( int is = 0; is < NGS; is++ ) for ( int ik = 0; ik < NGK; ik++ )
