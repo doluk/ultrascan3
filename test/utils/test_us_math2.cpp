@@ -98,6 +98,34 @@ double result = US_Math2::box_muller(mean, 0.0);
 EXPECT_DOUBLE_EQ(result, mean) << "Box-Muller with std=0 should return mean";
 }
 
+TEST_F( TestUSMath2Unit, BoxMullerReseedDiscardsCachedDeviate )
+{
+   // After reseeding, the sequence must not depend on how many deviates
+   //  were drawn before (an odd count leaves the second deviate of a pair)
+   US_Math2::randomize( 4711u );
+   QVector<double> fresh;
+   for ( int i = 0; i < 4; i++ )
+   {
+      fresh << US_Math2::box_muller( 0.0, 1.0 );
+   }
+
+   for ( int drawn = 1; drawn <= 3; drawn++ )
+   {
+      US_Math2::randomize( 1234u );
+      for ( int i = 0; i < drawn; i++ )
+      {
+         US_Math2::box_muller( 0.0, 1.0 );
+      }
+
+      US_Math2::randomize( 4711u );
+      for ( int i = 0; i < 4; i++ )
+      {
+         EXPECT_DOUBLE_EQ( US_Math2::box_muller( 0.0, 1.0 ), fresh[i] )
+            << "deviate " << i << " after " << drawn << " earlier draws";
+      }
+   }
+}
+
 // ============================================================================
 // LINE FITTING TESTS
 // ============================================================================
@@ -617,7 +645,7 @@ TEST_F( TestUSMath2Unit, NnlsSatisfiesKuhnTuckerConditions )
       }
 
       double rsumsq = 0.0;
-      for ( double val : resid )
+      for ( const double val : resid )
       {
          rsumsq += val * val;
       }
@@ -642,6 +670,40 @@ TEST_F( TestUSMath2Unit, NnlsSatisfiesKuhnTuckerConditions )
          }
       }
    }
+}
+
+TEST_F( TestUSMath2Unit, NnlsAbortFlagStopsWithFeasibleSolution )
+{
+   // A raised abort flag stops nnls at the next outer iteration (return 3)
+   // with x >= 0 and the residual norm of that x
+   double            amat[12] = { 1.0, 0.0, 0.0, 0.0, // Column-major 4 x 3
+                                  0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0 };
+   double            bvec[4]  = { 1.0, 2.0, 3.0, 4.0 };
+   double            xvec[3]  = { -1.0, -1.0, -1.0 };
+   double            rnorm    = -1.0;
+   std::atomic<bool> abort_flag{ true };
+
+   int               ret = US_Math2::nnls( amat, 4, 4, 3, bvec, xvec, &rnorm, NULL, NULL, NULL, 0, &abort_flag );
+
+   EXPECT_EQ( ret, 3 );
+   for ( int jj = 0; jj < 3; jj++ )
+   {
+      EXPECT_EQ( xvec[jj], 0.0 );
+   }
+   EXPECT_NEAR( rnorm, sqrt( 30.0 ), 1e-12 );
+
+   // A lowered flag does not change the result
+   double amat2[12] = { 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0 };
+   double bvec2[4]  = { 1.0, 2.0, 3.0, 4.0 };
+   abort_flag       = false;
+
+   ret = US_Math2::nnls( amat2, 4, 4, 3, bvec2, xvec, &rnorm, NULL, NULL, NULL, 0, &abort_flag );
+
+   EXPECT_EQ( ret, 0 );
+   EXPECT_NEAR( xvec[0], 1.0, 1e-12 );
+   EXPECT_NEAR( xvec[1], 2.0, 1e-12 );
+   EXPECT_NEAR( xvec[2], 3.0, 1e-12 );
+   EXPECT_NEAR( rnorm, 4.0, 1e-12 );
 }
 
 TEST_F( TestUSMath2Unit, NnlsIterationLimitReturnsLastFeasibleSolution )

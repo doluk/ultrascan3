@@ -331,15 +331,15 @@ TEST_F( US_StiffBaseTest, RectangleElementMatchesQuadrilateralQuadrature )
    double** stifR  = createMatrix( 4 );
    double   maxerr = 0.0;
 
-   for ( double x0 : { 5.9, 6.5, 7.1 } )
+   for ( const double x0 : { 5.9, 6.5, 7.1 } )
    {
-      for ( double h : { 0.001, 0.0065, 0.05 } )
+      for ( const double h : { 0.001, 0.0065, 0.05 } )
       {
-         for ( double dt : { 0.1, 2.0, 30.0, 300.0 } )
+         for ( const double dt : { 0.1, 2.0, 30.0, 300.0 } )
          {
-            for ( double D : { 1.0e-7, 6.0e-7 } )
+            for ( const double D : { 1.0e-7, 6.0e-7 } )
             {
-               for ( double sw2 : { 0.0, 1.4e-5, 5.5e-5 } )
+               for ( const double sw2 : { 0.0, 1.4e-5, 5.5e-5 } )
                {
                   double xd[4][2] = { { x0, 0.0 }, { x0 + h, 0.0 }, { x0 + h, dt }, { x0, dt } };
                   stiffBase->CompLocalStif( 4, xd, D, sw2, stifQ );
