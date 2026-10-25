@@ -379,7 +379,7 @@ the cache and is withdrawn with it. Corrected in §7 below.
 `test/3dsa_harness/` (§8.2) runs synthetic series through `us_astfem_sim` and
 `us_3dsa_cli`. On its first run, with 24 cases, nineteen behaved as designed.
 The five that fit noise exposed a defect that was not in 3DSA at all. It is now
-fixed in `US_SolveSim` itself, for every caller, and all 31 cases pass. This
+fixed in `US_SolveSim` itself, for every caller, and every case passes. This
 section records what was wrong, how it was fixed, and a claim made here earlier
 that turned out to be wrong.
 
@@ -512,6 +512,85 @@ before the copy was removed: identical wherever no noise is fitted, and an equal
 or lower residual from `US_SolveSim` on every case that fits it (15–19 and 28),
 with all 31 cases passing either way.
 
+## 3D. What threading found — the headless solver keeps process-wide state
+
+Investigating a `main` test that fails in this container
+(`TestUSSolveSimCache.FitIsUnchangedByCacheInThreads`) turned up two defects in
+the Lamm-equation solver, both confined to `NO_DB` builds — the HPC profile that
+`us_mpi_analysis` and `us_3dsa_cli` are built in. Both assume that a process only
+ever runs one ASTFEM solve at a time. They were confirmed with ThreadSanitizer,
+with a patch that removes each one, and with standalone reproductions; the
+upstream report is in hand.
+
+1. **Function-static work arrays.** `US_Astfem_RSA::calculate_ni`, its three
+   `ComputeCoefMatrix*` helpers and `US_AstfemMath::tridiag` keep their scratch
+   storage in function-local statics, sized once and reused by every later call.
+   Each solve fills them with coefficients for its own solute, so two threads
+   overwrite each other's matrices, and a larger grid frees them under a running
+   solve. The desktop build allocates per call and is unaffected.
+2. **A temporary timestate named by process and second.** A data set without a
+   loaded timestate makes `US_Astfem_RSA::calculate()` write
+   `../p<pid>t<yyMMddhhmmss>.time_state.tmst` — only if that file does not exist
+   yet — and read it back. Concurrent threads read each other's half-written
+   file; and, **single-threaded**, a second data set with a different speed
+   profile simulated within the same second gets the first one's.
+
+### What it did to 3DSA
+
+| Situation, HPC build | Before | After |
+|---|---|---|
+| Eight subgrids, four threads requested | 2 of 3 runs segfault; the third returns RMSD 2.16 × 10⁻³ against 3.26 × 10⁻⁴ serial | runs serially, says why, bit-identical to the serial fit (3 of 3) |
+| Series whose cells ran at different speeds and run times (harness case 33), **one thread** | v̄ **0.7923** against a truth of 0.7300, residual 3.49 × 10⁻² — every run, identically | v̄ 0.7295, residual 1.86 × 10⁻⁴ |
+
+The second row is the serious one: a real buoyancy-contrast series is several
+runs, rarely at one speed, and the old engine returned a confidently wrong v̄ for
+it with nothing to show anything was amiss.
+
+The harness never saw either. Its cases fit one subgrid (`grid_reps` = 1), so
+every level is a single task and the engine runs it on one thread whatever
+`--threads` says; and every series ran all its cells at one speed for one time,
+so a shared speed profile happened to be the right one.
+
+### What 3DSA does now
+
+Neither defect can be fixed from outside `us_astfem_rsa.cpp` and
+`us_astfem_math.cpp`, so the engine avoids both, without touching the shared
+solver:
+
+- **Every data set gets its own timestate before any solve**
+  (`US_3dsaProcess::prepare_timestates()`): its run's own file when
+  `DataSet::tmst_file` names one, otherwise one written exactly as `calculate()`
+  would write it — same grid, same scans, same `sim` flag — under a name of its own
+  in a private temporary directory. This runs in the calling thread on the
+  engine's own copies of the data sets; the callers' data sets are not touched.
+  No solve reaches the temporary-file path any more. The synthesized file
+  reproduces `calculate()`'s own exactly: a fit through it is bit-identical to
+  the old single-threaded fit, and on case 33 the run's own files and the
+  synthesized ones give the same fit to the last digit.
+- **Solves run serially where they cannot run concurrently**
+  (`US_3dsaProcess::concurrent_solves_safe()`, false in `NO_DB` builds).
+  `fit()` caps the worker count at one there, emits a message saying why, and
+  reports the count actually used in `Result::nthreads`; `us_3dsa_cli` prints
+  "threads requested 4, used 1" and records both in its JSON result. Desktop
+  builds keep their threads.
+- `us_3dsa_cli` points each data set at `<run_dir>/<run_id>.time_state.tmst`
+  when the simulator wrote one, as a real analysis would use the run's own.
+
+The cost is speed in the headless CLI only: with the work arrays made per-call
+in a scratch build, four threads ran case 9 at eight subgrids 3.2× faster
+(4.5 s against 14.5 s) with a bit-identical result. That is what lifting the cap
+will buy once `main` allocates per call (or per thread) in `NO_DB` builds;
+`concurrent_solves_safe()` is the one place to change. The MPI path (Phase 4) is
+one solve per process and unaffected by the first defect; its workers will still
+need a timestate per data set, and `prepare_timestates()` is there for that.
+
+### Not verified here
+
+The desktop build's threaded path cannot be built in this container (no Qwt for
+Qt 6). `TestUS3dsaProcess.ThreadsDoNotChangeTheFit` asserts that four threads and
+one give a bit-identical fit, and will exercise exactly that path in CI, where the
+unit tests are built with the database.
+
 ---
 
 ## 4. Design decisions
@@ -545,7 +624,8 @@ with all 31 cases passing either way.
 | `us_solve_sim.h/.cpp` | **bug fix** [merged] | Per-data-set TI and RI noise, by the review merged in `552482e`: `nnls_noise()` centres each data set's rows by its own means and solves NNLS on the projected design matrix (§3C). Applies to every caller, global 2DSA included. 3DSA uses it directly; the interim copy `US_SolveSimMDS` is retired. |
 | `us_solve_sim.h/.cpp` | **new static** [done] | `buoyancy_contrast( QList<DataSet*>&, double vbar_mid, QString& msg )` returning the largest pairwise gain over the series, plus `vbar_resolution()` and the `VBAR_CONTRAST_REFUSE` / `VBAR_CONTRAST_WARN` thresholds. Evaluates at `SolutionData::density_tb`, per §3A. |
 | `us_model.h/.cpp` | **new enum value** [done] | `THREEDSA` appended to `AnalysisType`; `"3DSA"` added to the `typeText()` map. |
-| `us_solve_sim.h/.cpp` | *(deferred to Phase 2)* | `Simulation::scales`. A field nothing reads is a trap — a caller sets it and is silently ignored — so it lands with the outer loop that consumes it (§6.4). |
+| `us_solve_sim.h/.cpp` | **new field** [done, Phase 2] | `Simulation::scales`, one amplitude factor per data set, applied to each data set's simulated block before it reaches the A matrix (§6.4). Applied after the simulation cache takes its copy, so the cache only ever holds unscaled simulations. |
+| `us_3dsa_process.h/.cpp` | **new** [done] | The engine (§3B). Since §3D it also gives every data set its own timestate before any solve (`prepare_timestates()`) and runs serially in `NO_DB` builds (`concurrent_solves_safe()`), reporting the thread count it used. |
 | `us_solve_sim.cpp` | *(not needed)* | `check_grid_size()` was listed for a 3-D extension, but it bounds Lamm-equation *time steps* from `s_max` alone. That is already dimension-independent. |
 | `us_zsolute.h/.cpp` | *(no change)* | Already generalised; kept as the PCSA path. |
 
@@ -708,7 +788,10 @@ appears to cost: *n<sub>v</sub>* × a 2DSA run per dataset — **16× at the def
 number of datasets, plus the amplitude iterations (7 measured, each a full pass).
 
 Measured throughput on the Phase 2 test geometry (4 scans × 261 points, 200 simpoints) was ≈ 1,200
-Lamm solves per second across four threads. A production geometry is one to two orders of magnitude
+Lamm solves per second across four threads. That figure came from the headless build, where
+concurrent solves turned out to share work arrays (§3D); it stands as a rate, but the headless
+engine now runs serially, about a quarter of it on four cores, and the desktop build's threaded
+rate should be re-measured in Phase 3. A production geometry is one to two orders of magnitude
 heavier per solve, which puts a full 64 × 64 × 16 three-dataset fit in the region of several hours
 on four cores and tens of minutes on a cluster: **desktop-marginal, cluster-comfortable**. That is
 now measurement-backed rather than estimated.
@@ -765,6 +848,14 @@ produced the estimate. The existing `US_SolveSim::checkGridSize()` guard needs i
   `calc_residuals` removes TI and RI from ASTFEM simulations, including a global fit of two data
   sets of different sizes recovered to 10⁻⁹, and keeps columns aligned with Tikhonov rows before
   and after a norm cut.
+* `test_us_3dsa_process.cpp` gained three checks with §3D:
+  `PreparesATimestateOfItsOwnForEachDataSet` (one file and one speed profile per data set, and a
+  data set that already has a timestate keeps it); `RunTimingMayDifferAcrossTheSeries` (a series at
+  45, 50 and 38 krpm recovers v̄ — with the timestate preparation disabled it fails all three of its
+  checks, residual 0.14); and `ThreadsDoNotChangeTheFit` (eight subgrids, four threads requested
+  against one: the thread count used is reported, the fits are bit-identical, and the callers' data
+  sets are left without a timestate). The engine's own test series is now generated with a timestate
+  per run as well, so a `NO_DB` build cannot give the generated data a shared speed profile either.
 
 ### 8.2 Synthetic end-to-end — the harness
 
@@ -773,7 +864,7 @@ produced the estimate. The existing `US_SolveSim::checkGridSize()` guard needs i
 reports the **global RMSD and the RMSD of every data set**. `test/3dsa_harness/README.md`
 documents it; `run_harness.py --outdir DIR --bindir BINDIR` runs it.
 
-Thirty-one cases, covering every axis that matters:
+Thirty-three cases, covering every axis that matters:
 
 | group | cases | what they exercise |
 |---|---|---|
@@ -784,6 +875,7 @@ Thirty-one cases, covering every axis that matters:
 | Gates and edges | 20–24 | weak contrast and a single dataset, both of which **must be refused**; v̄ at both grid edges; a 1.5 S / 8.0 S mixture |
 | Noise per cell | 25–28 | a **different noise level in every cell**, random and fitted, with loading varying against it |
 | Irregular series | 29–31 | 0/30/50, 0/20/40/60 and 10/35/55/70/95 % D₂O — no pure cell at either end, uneven spacing |
+| Solver state | 32–33 | eight subgrids with four threads requested, so a level has tasks to share out; and a series whose cells ran at **different speeds and run times** (45 krpm/5 h, 50 krpm/4 h, 38 krpm/6 h) — §3D |
 
 Every species is declared in standard (20W) space. `us_astfem_sim` converts to experimental space
 per component using that component's own v̄ and the buffer it is given, and the fit has to invert
@@ -804,6 +896,11 @@ Runs are thirty scans. Twelve resolved a boundary but left the fit short of the 
 that separates *s* from *D*, and the noise cases in particular were being asked to separate
 systematic noise from the model on a dozen time points. Thirty cut case 16's residual four-fold
 (8.0 × 10⁻⁴ → 1.9 × 10⁻⁴) and case 18's v̄ error five-fold (0.0082 → 0.0016).
+
+Every other case fits one subgrid, so each of its levels is a single task and runs on one thread
+whatever `--threads` asks for; case 32 is the only one in which the engine has work to share. In the
+headless build that work still runs serially (§3D), and the report says so ("threads requested 4,
+used 1").
 
 Two caveats stand, both recorded in the harness README: D₂O density and viscosity are interpolated
 linearly (harmless, since the same numbers reach both the simulator and the fit), and H/D exchange
@@ -864,15 +961,17 @@ not identity.
 | **1 — utils** ✅ | 3-D grid generation, mask validation, `buoyancy_contrast()`, `THREEDSA`, the `attr_z != 3` fix, `fit_vbar`. | **Done** — 27 tests green across `test_us_solute3d.cpp` and `test_us_solve_sim_vbar.cpp`; the full HPC target including `us_mpi_analysis` builds clean; both solver fixes are no-ops for existing single-dataset callers. A second latent bug found and fixed — see §5.1. | 3 d |
 | **2 — Engine** ✅ | `US_3dsaProcess`, the parallel level runner, the amplitude loop. Driven headless from a test harness. | **Done** — see §3B. v̄ recovered to 1×10⁻⁴ mL/g and the loadings to four decimals on a synthetic three-buffer series; 7 engine tests green. The column cache was measured and withdrawn; two bugs outside 3DSA found and fixed. | 2 wk |
 | **2a — Noise** ✅ | Every run of a series carries its own TI and RI noise. First as `US_SolveSimMDS`, a copy of the solver with data-set-aware noise; then fixed in `US_SolveSim` itself by the review merged in `552482e`, and the copy retired. | **Done** — see §3C. All 31 harness cases pass, including the six that fit noise; on the first fix the worst per-data-set RMSD on the TI case fell 45× and on the RI case 60×, and the merged solver fits noise-free data with injected TI and RI to machine precision. | 3 d |
+| **2b — Solver safety** ✅ | Make the engine independent of the headless solver's process-wide state: a timestate per data set before any solve, serial solves in `NO_DB` builds. Two harness cases that exercise it. | **Done** — see §3D. A series with different run timings returns the right v̄ (0.7295, was 0.7923); eight subgrids at four threads no longer crash and match the serial fit bit for bit; all 33 harness cases pass. The upstream defects are reported, not fixed here. | 1 d |
 | **3 — GUI** | `us_3dsa` main window + dataset-series manager, control panel, gate, plots, launcher registration. | An analyst can run the §8.2 case end to end from the menu. | 3 wk |
 | **4 — MPI** | `3dsa_master`/`3dsa_worker`, parser, model writer, gate in the parser. LIMS coordination in parallel. | Cluster job completes and returns models equivalent to the desktop run. | 2 wk |
 | **5 — Docs & integration** | `doc/manual/source/3dsa/`, help pages wired to `showHelp`, downstream consumer smoke tests, §8.3 cross-check. | Manual builds; consumers verified; cross-check documented. | 1 wk |
 
 Phases 0–2 are the ones that can invalidate the concept, and they are deliberately front-loaded.
-Phases 0, 1, 2 and 2a have now run: §3.4 reproduced (§3A), the shared `utils/` layer in place, the
-engine recovering v̄ from a synthetic series (§3B), and every data set of a series carrying its own
-systematic noise (§3C). The design stands, with D7 withdrawn on measurement. All 31 harness cases
-pass. Phase 3 can begin.
+Phases 0, 1, 2, 2a and 2b have now run: §3.4 reproduced (§3A), the shared `utils/` layer in place,
+the engine recovering v̄ from a synthetic series (§3B), every data set of a series carrying its own
+systematic noise (§3C), and the engine independent of the headless solver's process-wide state
+(§3D). The design stands, with D7 withdrawn on measurement. All 33 harness cases pass. Phase 3 can
+begin.
 
 ### Future work (explicitly out of scope here)
 
@@ -893,7 +992,9 @@ pass. Phase 3 can begin.
 | The degeneracy is not accepted and single-dataset 3DSA is requested anyway | Ships a number that looks like a measurement and is not | §8.1 test (2) as an executable guard; the gate refuses rather than warns; the manual states it plainly |
 | LIMS-side work not scheduled | Cluster path unusable; desktop-only release | Raise at Phase 0; Phases 0–3 deliver a usable desktop program independently |
 | Buffer ρ/η metadata inaccurate in real datasets | v̄ biased with the §3.4 gain | Series panel shows provenance of each value; cross-check §8.3 |
-| Wall-clock worse than the §7.2 estimate | Desktop path impractical | Phase 2 measures it headless, before GUI investment; column-cache tolerance is tunable |
+| Wall-clock worse than the §7.2 estimate | Desktop path impractical | Phase 2 measured it headless, before GUI investment; the coarse-then-refine v̄ scan (§6.3) is the remaining lever |
+| The headless solver's process-wide state (§3D) is not fixed upstream | `us_3dsa_cli` stays serial, ~4× slower on four cores | Correctness does not depend on it: the engine prepares timestates itself and runs serially where unsafe. Lifting the cap is one function once `main` allocates per call in `NO_DB` builds |
+| Some other shared state in the solver path that §3D's checks did not reach | Wrong fits only under threads, in the desktop build | `ThreadsDoNotChangeTheFit` compares a four-thread and a one-thread fit bit for bit in CI's desktop-style build |
 | Copy-and-adapt duplication (`us_2dsa` → `us_3dsa`) drifts over time | Maintenance burden | Shared code pushed into `utils/` wherever it is genuinely shared; the duplication is confined to the scheduler and GUI, matching the existing `us_pcsa` precedent |
 
 ---
@@ -908,5 +1009,6 @@ and any value returned would be a grid artefact.
 **Yes from a buoyancy-contrast series** — and the existing UltraScan solver is already most of the
 way there: it stacks datasets into one NNLS problem and already has a code path that varies v̄ per
 solute with per-dataset corrections. The work is a 3-D grid generator, a scheduler with cubic
-subgrid counts, per-dataset amplitude scaling, a column cache to keep the cost down, a GUI that
-manages the dataset series and refuses under-determined fits, and the MPI plumbing to match.
+subgrid counts, per-dataset amplitude scaling, a GUI that manages the dataset series and refuses
+under-determined fits, and the MPI plumbing to match. (A column cache to keep the cost down was
+planned and withdrawn on measurement, §6.3; the third axis costs what it appears to cost.)

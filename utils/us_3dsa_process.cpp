@@ -56,6 +56,7 @@ US_3dsaProcess::Result::Result()
    ntasks     = 0;
    nsimul     = 0;
    nscaliter  = 0;
+   nthreads   = 1;
    msecs      = 0;
 }
 
@@ -65,8 +66,9 @@ US_3dsaProcess::US_3dsaProcess( QList<US_SolveSim::DataSet*>& dsets, QObject* pa
 {
    dbg_level    = US_Settings::us_debug();
    errMsg       = QString( "" );
-   tasks_done   = 0;
-   tasks_expect = 0;
+   tasks_done    = 0;
+   tasks_expect  = 0;
+   nthreads_used = 1;
    abort_flag.storeRelaxed( 0 );
 }
 
@@ -83,6 +85,68 @@ int US_3dsaProcess::mask_s_d_v()
 void US_3dsaProcess::abort_fit()
 {
    abort_flag.storeRelaxed( 1 );
+}
+
+bool US_3dsaProcess::concurrent_solves_safe()
+{
+#ifdef NO_DB
+   // Function-static ASTFEM work arrays; see the header.  Lift this once
+   // us_astfem_rsa.cpp and us_astfem_math.cpp allocate per call (or per
+   // thread) in NO_DB builds too.
+   return false;
+#else
+   return true;
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// Timestates
+//
+// Done in the calling thread, before any worker starts, with one file per
+// data set, so neither the cross-experiment reuse nor the cross-thread race
+// in US_Astfem_RSA::calculate()'s temporary timestate can occur.
+// ---------------------------------------------------------------------------
+bool US_3dsaProcess::prepare_timestates( QList<US_SolveSim::DataSet*>& dsets, const QString& dir, QString& msg )
+{
+   msg = QString( "" );
+
+   for ( int dd = 0; dd < dsets.size(); dd++ )
+   {
+      US_SolveSim::DataSet*    dset = dsets[dd];
+      US_SimulationParameters& sp   = dset->simparams;
+
+      if ( sp.tsobj != nullptr && !sp.sim_speed_prof.isEmpty() )
+      {
+         continue; // Already loaded by the caller
+      }
+
+      QString tmst_path = dset->tmst_file;
+
+      // No timestate of its own:  write one exactly as calculate() would, from
+      // this data set's grid, scans and speed steps
+      if ( tmst_path.isEmpty() || !QFileInfo( tmst_path ).isFile() )
+      {
+         US_DataIO::RawData simdat;
+         US_AstfemMath::initSimData( simdat, dset->run_data, 0.0 );
+         sp.sim = ( simdat.channel == 'S' );
+
+         tmst_path = QDir( dir ).filePath( QString::asprintf( "dataset%03d.time_state.tmst", dd ) );
+
+         if ( US_AstfemMath::writetimestate( tmst_path, sp, simdat ) <= 0 )
+         {
+            msg = tr( "Could not write a timestate for data set %1 to %2" ).arg( dd + 1 ).arg( tmst_path );
+            return false;
+         }
+      }
+
+      if ( sp.simSpeedsFromTimeState( tmst_path ) <= 0 )
+      {
+         msg = tr( "Could not load the timestate %1 for data set %2" ).arg( tmst_path ).arg( dd + 1 );
+         return false;
+      }
+   }
+
+   return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -191,7 +255,7 @@ bool US_3dsaProcess::run_level( const QVector<Task>& tasks, QVector<TaskResult>&
    const int ntasks = tasks.size();
    results.resize( ntasks );
 
-   const int nthreads = qBound( 1, parms.nthreads, ntasks );
+   const int nthreads = qBound( 1, nthreads_used, ntasks );
 
    if ( nthreads == 1 )
    {
@@ -597,8 +661,48 @@ bool US_3dsaProcess::fit( const Parameters& parms, Result& result )
    }
 
    // ---- worker set-up -----------------------------------------------------
-   const int nthreads = qMax( 1, parms.nthreads );
+   int nthreads = qMax( 1, parms.nthreads );
+
+   if ( nthreads > 1 && !concurrent_solves_safe() )
+   {
+      emit message_update( tr( "%1 threads requested; running serially, because this build's"
+                               " Lamm-equation solver cannot run concurrent solves" )
+                              .arg( nthreads ) );
+      nthreads = 1;
+   }
+
+   nthreads_used   = nthreads;
+   result.nthreads = nthreads;
    make_thread_datasets( nthreads );
+
+   // Every data set gets its own timestate before any solve, prepared once
+   // on the first thread's copies and shared with the others' -- the copies
+   // only read the speed profile.  The callers' data sets stay untouched.
+   tmst_dir.reset( new QTemporaryDir() );
+
+   if ( !tmst_dir->isValid() )
+   {
+      errMsg = tr( "Could not create a directory for timestates" );
+      return false;
+   }
+
+   {
+      QString tmst_msg;
+
+      if ( !prepare_timestates( thr_dsets[0], tmst_dir->path(), tmst_msg ) )
+      {
+         errMsg = tmst_msg;
+         return false;
+      }
+
+      for ( int tt = 1; tt < nthreads; tt++ )
+      {
+         for ( int dd = 0; dd < ndsets; dd++ )
+         {
+            thr_store[tt][dd].simparams = thr_store[0][dd].simparams;
+         }
+      }
+   }
 
    // Every data set fits vbar per solute, so the buffer corrections must be
    // recomputed from each solute's own vbar rather than taken from the set.

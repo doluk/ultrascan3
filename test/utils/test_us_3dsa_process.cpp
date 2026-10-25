@@ -13,6 +13,7 @@
 #include "qt_test_base.h"
 
 #include "us_3dsa_process.h"
+#include "us_astfem_math.h"
 #include "us_astfem_rsa.h"
 #include "us_dataIO.h"
 #include "us_math2.h"
@@ -66,7 +67,7 @@ US_Math2::SolutionData corrections( double vbar20, const Buffer& b )
    return sd;
 }
 
-US_SimulationParameters make_simparams()
+US_SimulationParameters make_simparams( int rpm = RPM )
 {
    US_SimulationParameters sp;
    sp.simpoints                       = SIMPOINTS;
@@ -81,16 +82,16 @@ US_SimulationParameters make_simparams()
    sp.speed_step[0].delay_hours       = 0;
    sp.speed_step[0].delay_minutes     = 0.0;
    sp.speed_step[0].scans             = NSCANS;
-   sp.speed_step[0].rotorspeed        = RPM;
+   sp.speed_step[0].rotorspeed        = rpm;
    sp.speed_step[0].acceleration      = 400;
    sp.speed_step[0].acceleration_flag = false;
    return sp;
 }
 
 // An empty data grid on the geometry above, ready for the solver to fill.
-void make_grid( US_DataIO::RawData& data )
+void make_grid( US_DataIO::RawData& data, int rpm = RPM )
 {
-   const double w2 = std::pow( RPM * M_PI / 30.0, 2.0 );
+   const double w2 = std::pow( rpm * M_PI / 30.0, 2.0 );
 
    data.xvalues.clear();
    data.scanData.clear();
@@ -106,7 +107,7 @@ void make_grid( US_DataIO::RawData& data )
    {
       US_DataIO::Scan sc;
       sc.temperature = 20.0;
-      sc.rpm         = (double) RPM;
+      sc.rpm         = (double) rpm;
       sc.seconds     = 2400.0 * ( ii + 1 );
       sc.omega2t     = w2 * sc.seconds;
       sc.wavelength  = 280.0;
@@ -119,7 +120,7 @@ void make_grid( US_DataIO::RawData& data )
 
 // Simulate a standard-space (20W) model as it would be observed in one
 // buffer, scaled by that cell's loading.
-void simulate_in( const US_Model& truth_20w, const Buffer& b, double loading, US_DataIO::RawData& out )
+void simulate_in( const US_Model& truth_20w, const Buffer& b, double loading, US_DataIO::RawData& out, int rpm = RPM )
 {
    US_Model expt = truth_20w;
 
@@ -131,10 +132,22 @@ void simulate_in( const US_Model& truth_20w, const Buffer& b, double loading, US
       expt.components[cc].signal_concentration *= loading;
    }
 
-   make_grid( out );
+   make_grid( out, rpm );
 
-   US_SimulationParameters sp = make_simparams();
+   US_SimulationParameters sp = make_simparams( rpm );
    US_SimulationParameters::computeSpeedSteps( &out.scanData, sp.speed_step );
+
+   // A timestate of this run's own.  Left to US_Astfem_RSA, a NO_DB build
+   // would name it by process and second only, and a second run simulated
+   // within the same second -- at another speed -- would be generated with
+   // this one's speed profile.  (Design document section 3D.)
+   // The sim flag first, from the channel, exactly as calculate() sets it
+   // before writing a timestate itself.
+   QTemporaryDir tmst_dir;
+   const QString tmst = tmst_dir.filePath( "simulated.time_state.tmst" );
+   sp.sim             = ( out.channel == 'S' );
+   US_AstfemMath::writetimestate( tmst, sp, out );
+   sp.simSpeedsFromTimeState( tmst );
 
    US_Astfem_RSA astfem( expt, sp );
    astfem.set_debug_flag( 0 );
@@ -142,10 +155,10 @@ void simulate_in( const US_Model& truth_20w, const Buffer& b, double loading, US
 }
 
 // Wrap simulated data as an edited dataset the solver will accept.
-US_SolveSim::DataSet* make_dataset( const US_Model& truth_20w, const Buffer& b, double loading, double nominal_vbar )
+US_SolveSim::DataSet* make_dataset( const US_Model& truth_20w, const Buffer& b, double loading, double nominal_vbar, int rpm = RPM )
 {
    US_DataIO::RawData sim;
-   simulate_in( truth_20w, b, loading, sim );
+   simulate_in( truth_20w, b, loading, sim, rpm );
 
    US_SolveSim::DataSet* d = new US_SolveSim::DataSet;
 
@@ -163,7 +176,7 @@ US_SolveSim::DataSet* make_dataset( const US_Model& truth_20w, const Buffer& b, 
    d->run_data.xvalues    = sim.xvalues;
    d->run_data.scanData   = sim.scanData;
 
-   d->simparams = make_simparams();
+   d->simparams = make_simparams( rpm );
    US_SimulationParameters::computeSpeedSteps( &d->run_data.scanData, d->simparams.speed_step );
 
    d->density     = b.density;
@@ -235,9 +248,9 @@ double weighted_s( const US_Model& m )
 class Series
 {
    public:
-      void add( const Buffer& b, double loading )
+      void add( const Buffer& b, double loading, int rpm = RPM )
       {
-         owned_.emplace_back( make_dataset( truth_model(), b, loading, TRUE_VBAR ) );
+         owned_.emplace_back( make_dataset( truth_model(), b, loading, TRUE_VBAR, rpm ) );
          list_ << owned_.back().get();
       }
       QList<US_SolveSim::DataSet*>& list()
@@ -515,5 +528,101 @@ TEST_F( TestUS3dsaProcess, ProducesAStandardSpaceModel )
       EXPECT_LE( c.s * 1.0e13, 6.0 + 1.0e-9 );
       EXPECT_GE( c.vbar20, 0.65 - 1.0e-9 );
       EXPECT_LE( c.vbar20, 0.81 + 1.0e-9 );
+   }
+}
+
+// ---------------------------------------------------------------------------
+// The headless build's Lamm-equation solver keeps process-wide state (design
+// document section 3D):  a temporary timestate named by process and second,
+// and function-static work arrays.  The engine must not depend on either.
+// ---------------------------------------------------------------------------
+TEST_F( TestUS3dsaProcess, PreparesATimestateOfItsOwnForEachDataSet )
+{
+   Series series;
+   series.add( BUF_WATER, 1.0, 45000 );
+   series.add( BUF_D2O, 1.0, 30000 );
+
+   QTemporaryDir dir;
+   ASSERT_TRUE( dir.isValid() );
+   QString msg;
+   ASSERT_TRUE( US_3dsaProcess::prepare_timestates( series.list(), dir.path(), msg ) ) << msg.toStdString();
+
+   const int expected_rpm[] = { 45000, 30000 };
+   for ( int dd = 0; dd < 2; dd++ )
+   {
+      const US_SimulationParameters& sp = series.list()[dd]->simparams;
+      EXPECT_NE( sp.tsobj, nullptr );
+      ASSERT_FALSE( sp.sim_speed_prof.isEmpty() );
+      EXPECT_EQ( sp.sim_speed_prof[0].rotorspeed, expected_rpm[dd] ) << "data set " << dd;
+   }
+
+   // One file each, not one per process and second
+   EXPECT_EQ( QDir( dir.path() ).entryList( QStringList( "*.tmst" ), QDir::Files ).size(), 2 );
+
+   // A data set that already has a timestate keeps it
+   US_TimeState* before = series.list()[0]->simparams.tsobj;
+   ASSERT_TRUE( US_3dsaProcess::prepare_timestates( series.list(), dir.path(), msg ) );
+   EXPECT_EQ( series.list()[0]->simparams.tsobj, before );
+}
+
+TEST_F( TestUS3dsaProcess, RunTimingMayDifferAcrossTheSeries )
+{
+   // A real series is several runs, rarely at one speed.  Before each data set
+   // got its own timestate, a NO_DB build simulated every cell with the speed
+   // profile of whichever was simulated first in that second, and the fitted
+   // vbar was wrong with nothing to show for it.
+   Series series;
+   series.add( BUF_WATER, 1.00, 45000 );
+   series.add( BUF_HALF, 0.70, 50000 );
+   series.add( BUF_D2O, 1.40, 38000 );
+
+   US_3dsaProcess         proc( series.list() );
+   US_3dsaProcess::Result result;
+   ASSERT_TRUE( proc.fit( base_parameters(), result ) ) << proc.lastError().toStdString();
+
+   EXPECT_NEAR( weighted_vbar( result.model ), TRUE_VBAR, 0.005 );
+   EXPECT_NEAR( weighted_s( result.model ) * 1.0e13, TRUE_S * 1.0e13, 0.05 );
+   EXPECT_LT( result.rmsd, 1.0e-3 );
+}
+
+TEST_F( TestUS3dsaProcess, ThreadsDoNotChangeTheFit )
+{
+#ifdef NO_DB
+   EXPECT_FALSE( US_3dsaProcess::concurrent_solves_safe() );
+#else
+   EXPECT_TRUE( US_3dsaProcess::concurrent_solves_safe() );
+#endif
+
+   Series series;
+   series.add( BUF_WATER, 1.00 );
+   series.add( BUF_HALF, 0.70 );
+   series.add( BUF_D2O, 1.40 );
+
+   // Eight subgrids, so the first level really has tasks to share out
+   US_3dsaProcess::Parameters parms = base_parameters();
+   parms.grid_reps                  = 2;
+
+   parms.nthreads = 4;
+   US_3dsaProcess         threaded( series.list() );
+   US_3dsaProcess::Result rthr;
+   ASSERT_TRUE( threaded.fit( parms, rthr ) ) << threaded.lastError().toStdString();
+   EXPECT_EQ( rthr.nthreads, US_3dsaProcess::concurrent_solves_safe() ? 4 : 1 );
+
+   parms.nthreads = 1;
+   US_3dsaProcess         serial( series.list() );
+   US_3dsaProcess::Result rser;
+   ASSERT_TRUE( serial.fit( parms, rser ) ) << serial.lastError().toStdString();
+   EXPECT_EQ( rser.nthreads, 1 );
+
+   // Tasks are independent and merged in task order, so the answer must not
+   // depend on how many threads ran them
+   EXPECT_DOUBLE_EQ( rthr.rmsd, rser.rmsd );
+   EXPECT_DOUBLE_EQ( weighted_vbar( rthr.model ), weighted_vbar( rser.model ) );
+   EXPECT_EQ( rthr.model.components.size(), rser.model.components.size() );
+
+   // The engine works on copies: the callers' data sets stay as they were
+   for ( US_SolveSim::DataSet* dset : series.list() )
+   {
+      EXPECT_EQ( dset->simparams.tsobj, nullptr );
    }
 }

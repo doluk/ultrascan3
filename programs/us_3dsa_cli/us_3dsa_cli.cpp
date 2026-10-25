@@ -400,6 +400,20 @@ bool US_3dsaCli::load_datasets( const Case& kase, QList<US_SolveSim::DataSet*>& 
       d->D20w_correction        = sd.D20w_correction;
       d->centerpiece_bottom     = d->simparams.bottom;
 
+      // The run's own timestate, when the simulator wrote one next to the
+      // data (us_astfem_sim saves <run_id>.time_state.tmst in the run
+      // directory), as a real analysis would use it.  Without one the engine
+      // synthesizes a timestate per data set from the scans.
+      if ( !spec.run_dir.isEmpty() && !spec.run_id.isEmpty() )
+      {
+         const QString tmst = QDir( spec.run_dir ).filePath( spec.run_id + ".time_state.tmst" );
+
+         if ( QFileInfo( tmst ).isFile() )
+         {
+            d->tmst_file = tmst;
+         }
+      }
+
       dsets << d;
    }
 
@@ -580,6 +594,12 @@ int US_3dsaCli::run_fit( const QStringList& args )
                .arg( result.contrast, 0, 'f', 3 )
                .arg( result.vbar_resol, 0, 'f', 4 )
                .arg( result.nscaliter );
+   out() << QString( "  threads requested %1, used %2%3\n" )
+               .arg( kase.threads )
+               .arg( result.nthreads )
+               .arg( result.nthreads < kase.threads && !US_3dsaProcess::concurrent_solves_safe()
+                        ? QString( " (this build cannot run concurrent Lamm solves)" )
+                        : QString( "" ) );
 
    out() << "\n  GLOBAL RMSD  " << QString::number( result.rmsd, 'e', 6 ) << "\n\n";
 
@@ -722,6 +742,8 @@ int US_3dsaCli::run_fit( const QStringList& args )
    jr["vbar_resol"]  = result.vbar_resol;
    jr["components"]  = result.model.components.size();
    jr["nscaliter"]   = result.nscaliter;
+   jr["threads_requested"] = kase.threads;
+   jr["threads_used"]      = result.nthreads;
    jr["nsimul"]      = result.nsimul;
    jr["msecs"]       = (double) result.msecs;
    jr["pass"]        = pass;
@@ -768,6 +790,8 @@ struct GenDataSet
       double tinoise  = -1.0;
       double rinoise  = -1.0;
       double rmsd_max = 0.0;
+      int    rpm      = 0; // 0: SIM_RPM
+      int    hours    = 0; // 0: SIM_HOURS
 };
 
 struct GenCase
@@ -790,6 +814,7 @@ struct GenCase
       double              v_min = 0.60, v_max = 0.85;
       double              edit_margin        = 0.02;
       double              edit_bottom_margin = 0.10;
+      int                 grid_reps          = 1;
 };
 
 // The v-bar to plant in the analyte and solution records in place of the
@@ -1223,6 +1248,36 @@ QVector<GenCase> build_cases()
       add( c );
    }
 
+   // ---- 32-33: the solver's own process-wide state -----------------------
+   //
+   // Every earlier case fits one subgrid, so each level is a single task and
+   // runs on one thread however many are requested; and every earlier series
+   // runs all its cells at one speed for one time.  Both hid defects in the
+   // headless build's Lamm-equation solver (design document section 3D).
+   {
+      GenCase c;
+      c.name        = "case32_subgrids_threaded";
+      c.description = "Eight interleaved subgrids, four threads requested";
+      c.species << A << B;
+      c.grid_reps = 2;
+      c.vbar_tol  = 0.02;
+      c.datasets << GenDataSet{ 0.0, 1.0 } << GenDataSet{ 50.0, 1.0 } << GenDataSet{ 100.0, 1.0 };
+      add( c );
+   }
+
+   {
+      GenCase c;
+      c.name        = "case33_series_different_run_timing";
+      c.description = "Each cell at its own speed and run time: 45k/5h, 50k/4h, 38k/6h";
+      c.species << A;
+      // Simulated within one second of each other, these cells used to share
+      // the first cell's timestate and be fitted at the wrong speed.
+      c.datasets << GenDataSet{ 0.0, 1.0, -1.0, -1.0, -1.0, 0.0, 45000, 5 }
+                 << GenDataSet{ 50.0, 1.0, -1.0, -1.0, -1.0, 0.0, 50000, 4 }
+                 << GenDataSet{ 100.0, 1.0, -1.0, -1.0, -1.0, 0.0, 38000, 6 };
+      add( c );
+   }
+
    return cases;
 }
 
@@ -1245,16 +1300,21 @@ bool write_simparams( const QString& path, const GenCase& c, const GenDataSet& d
    sp.baseline          = 0.0;
    sp.sim               = true;
 
-   sp.speed_step[0].duration_hours    = SIM_HOURS;
+   // A cell may run at its own speed and for its own time; a real series is
+   // rarely one run, so the cells' speed profiles need not agree.
+   const int rpm   = ( ds.rpm > 0 ) ? ds.rpm : SIM_RPM;
+   const int hours = ( ds.hours > 0 ) ? ds.hours : SIM_HOURS;
+
+   sp.speed_step[0].duration_hours    = hours;
    sp.speed_step[0].duration_minutes  = 0.0;
    sp.speed_step[0].delay_hours       = 0;
    sp.speed_step[0].delay_minutes     = 4.0;
    sp.speed_step[0].scans             = SIM_SCANS;
-   sp.speed_step[0].rotorspeed        = SIM_RPM;
+   sp.speed_step[0].rotorspeed        = rpm;
    sp.speed_step[0].acceleration      = 400;
    sp.speed_step[0].acceleration_flag = true;
-   sp.speed_step[0].set_speed         = SIM_RPM;
-   sp.speed_step[0].avg_speed         = (double) SIM_RPM;
+   sp.speed_step[0].set_speed         = rpm;
+   sp.speed_step[0].avg_speed         = (double) rpm;
 
    return ( sp.save_simparms( path ) == 0 );
 }
@@ -1460,6 +1520,8 @@ int US_3dsaCli::run_gen_cases( const QStringList& args )
          jd["temperature"] = SIM_TEMP;
          jd["loading"]     = ds.loading;
          jd["vbar20"]      = nominal_vbar;
+         jd["rpm"]         = ( ds.rpm > 0 ) ? ds.rpm : SIM_RPM;
+         jd["hours"]       = ( ds.hours > 0 ) ? ds.hours : SIM_HOURS;
          jd["rnoise"]      = ( ds.rnoise >= 0.0 ) ? ds.rnoise : c.rnoise;
          jd["tinoise"]     = ( ds.tinoise >= 0.0 ) ? ds.tinoise : c.tinoise;
          jd["rinoise"]     = ( ds.rinoise >= 0.0 ) ? ds.rinoise : c.rinoise;
@@ -1479,7 +1541,7 @@ int US_3dsaCli::run_gen_cases( const QStringList& args )
       grid["v_min"]     = c.v_min;
       grid["v_max"]     = c.v_max;
       grid["v_res"]     = c.v_res; // step 0.025
-      grid["grid_reps"] = 1;
+      grid["grid_reps"] = c.grid_reps;
 
       QJsonObject noise;
       noise["random"] = c.rnoise;

@@ -91,6 +91,7 @@ class US_UTIL_EXTERN US_3dsaProcess : public QObject
             int             ntasks;     //!< NNLS solves performed
             int             nsimul;     //!< Lamm-equation solves performed
             int             nscaliter;  //!< Scale-factor iterations run
+            int             nthreads;   //!< Worker threads actually used
             qint64          msecs;      //!< Wall-clock time
             QString         report;     //!< Human-readable summary
       };
@@ -114,6 +115,42 @@ class US_UTIL_EXTERN US_3dsaProcess : public QObject
       {
          return errMsg;
       }
+
+      //! \brief Whether Lamm-equation solves may run in concurrent threads
+      //!
+      //! False in NO_DB (HPC) builds.  There, US_Astfem_RSA::calculate_ni,
+      //! its ComputeCoefMatrix* helpers and US_AstfemMath::tridiag keep their
+      //! work arrays in function-local statics, sized once and reused by
+      //! every later call in the process -- an optimisation for
+      //! us_mpi_analysis, which runs one solve per process at a time.  Two
+      //! threads overwrite each other's coefficient matrices mid-solve, and a
+      //! larger grid frees them under a running solve: wrong fits and
+      //! segfaults.  fit() therefore runs serially in such builds, whatever
+      //! Parameters::nthreads asks for.  Desktop builds allocate per call and
+      //! keep their threads.  See doc/develop/3dsa_design.md section 3D.
+      static bool concurrent_solves_safe( void );
+
+      //! \brief Give every data set its own loaded timestate
+      //!
+      //! A data set whose simulation parameters carry no timestate makes
+      //! US_Astfem_RSA::calculate() write one to a temporary file named only
+      //! by the process id and the current second, reusing that file if it
+      //! already exists.  Two data sets with different speed profiles
+      //! simulated within one second then share the first one's profile, and
+      //! concurrent threads read each other's half-written file.
+      //!
+      //! This loads, for each data set that has none, its run's own timestate
+      //! (DataSet::tmst_file) if that file exists, or else writes one exactly
+      //! as calculate() would -- from the data set's own scans and speed steps
+      //! -- under a name of its own in \p dir, and loads that.  Afterwards no
+      //! solve on these data sets reaches the temporary-file path.
+      //!
+      //! \param dsets  Data sets to prepare; their simparams are modified
+      //! \param dir    Existing directory for synthesized timestate files,
+      //!               which must outlive the solves
+      //! \param msg    Returned description of a failure
+      //! \returns      True when every data set has a loaded timestate
+      static bool prepare_timestates( QList<US_SolveSim::DataSet*>&, const QString&, QString& );
 
       //! \brief The default axis mask: s, f/f0, vbar
       static int mask_s_k_v( void );
@@ -177,6 +214,12 @@ class US_UTIL_EXTERN US_3dsaProcess : public QObject
       QList<US_SolveSim::DataSet*>&          dsets;
       QVector<QList<US_SolveSim::DataSet*>>  thr_dsets;
       QVector<QVector<US_SolveSim::DataSet>> thr_store;
+
+      // Synthesized timestates for the current fit (see prepare_timestates)
+      QScopedPointer<QTemporaryDir>          tmst_dir;
+
+      // Worker threads in use for the current fit
+      int                                    nthreads_used;
 
       QString                                errMsg;
       QAtomicInt                             abort_flag;

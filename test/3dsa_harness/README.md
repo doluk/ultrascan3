@@ -32,7 +32,7 @@ Useful options:
 |---|---|
 | `--only 'case1*'` | run a subset |
 | `--jobs N` | fit N cases concurrently |
-| `--threads N` | worker threads inside each fit |
+| `--threads N` | worker threads inside each fit (see "Threads and timestates") |
 | `--skip-gen` | reuse an existing case tree |
 | `--skip-sim` | reuse existing `.auc` data and only re-fit |
 | `--us-astfem-sim PATH`, `--us-3dsa-cli PATH` | explicit binary paths |
@@ -119,7 +119,7 @@ should land on.
 
 ## The cases
 
-Thirty-one cases. Every species is declared in standard (20W) space;
+Thirty-three cases. Every species is declared in standard (20W) space;
 `us_astfem_sim` converts to experimental space per component using that
 component's own v̄ and the buffer it is given, and the fit has to invert that.
 That round trip is the point.
@@ -157,6 +157,8 @@ That round trip is the point.
 | 29 | `series_0_30_50` | 0/30/50 % D₂O — no pure-D₂O cell |
 | 30 | `series_0_20_40_60` | 0/20/40/60 % D₂O, mixture — half the usual contrast |
 | 31 | `series_uneven_5_steps` | 10/35/55/70/95 % D₂O — unevenly spaced, no H₂O cell |
+| 32 | `subgrids_threaded` | eight subgrids, four threads requested |
+| 33 | `series_different_run_timing` | each cell at its own speed and run time |
 
 Cases 20 and 21 pass by being **refused**: neither series carries enough
 buoyancy contrast to determine v̄, and a fit that ran anyway would be reporting
@@ -204,6 +206,29 @@ per-data-set RMSD to the best: a fit that cleans up one data set and leaves
 the rest passes every aggregate check but fails that one — which is exactly
 what the old solver did, with a spread of 609×. See §3C of the design
 document.
+
+### Threads and timestates
+
+Cases 32 and 33 exist because the headless build's Lamm-equation solver keeps
+process-wide state (§3D of the design document). Every other case fits one
+subgrid, so each level of the fit is a single task and runs on one thread
+whatever `--threads` asks for; case 32 gives the engine eight. And every other
+series runs all its cells at one speed for one time; case 33 runs them at
+45 krpm for 5 h, 50 krpm for 4 h and 38 krpm for 6 h. Before the engine gave
+each data set its own timestate, that series came back with v̄ = 0.79 against
+a truth of 0.73, single-threaded, every time.
+
+In the HPC build the fit runs serially, because concurrent solves there share
+the solver's work arrays; the report says so:
+
+```
+  threads requested 4, used 1 (this build cannot run concurrent Lamm solves)
+```
+
+`us_astfem_sim` writes each run's timestate next to its data as
+`<run_id>.time_state.tmst`, and `us_3dsa_cli` uses it, as a real analysis would.
+Without one the engine writes a timestate per data set itself, identical to the
+one the solver would have written.
 
 ## Reading the report
 
