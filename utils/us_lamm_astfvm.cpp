@@ -596,7 +596,13 @@ radius( Nx - 2 )
       if ( dir.mkpath( saltDataPath ) )
       {
          saltDataPath = saltDataPath + "/salt_data.RA.1.S.260.auc";
-         US_DataIO::writeRawData( saltDataPath, sa_data );
+         const int wstat = US_DataIO::writeRawData( saltDataPath, sa_data );
+
+         if ( wstat != US_DataIO::OK )
+         {  // Report the QC write failure without interrupting the solve.
+            qDebug() << "*ERROR* Unable to write salt QC data" << saltDataPath
+                     << ":" << US_DataIO::errorString( wstat );
+         }
       }
    }
 

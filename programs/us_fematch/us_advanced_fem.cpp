@@ -112,12 +112,12 @@ US_AdvancedFem::US_AdvancedFem( US_Model* amodel,
    ct_bandvolume->setSingleStep(  0.1 );
    ct_parameter ->setSingleStep(     1 );
 
-   connect( pb_help,    SIGNAL( clicked() ),
-            this,       SLOT(   help()    ) );
-   connect( pb_cancel,  SIGNAL( clicked() ),
-            this,       SLOT(   reject()  ) );
-   connect( pb_accept,  SIGNAL( clicked() ),
-            this,       SLOT(   done()    ) );
+   connect( pb_help,    &QAbstractButton::clicked,
+            this,       &US_AdvancedFem::help );
+   connect( pb_cancel,  &QAbstractButton::clicked,
+            this,       &QDialog::reject );
+   connect( pb_accept,  &QAbstractButton::clicked,
+            this,       &US_AdvancedFem::done );
 
 qDebug() << "AdvF:Pre-adjust size" << size();
    adjustSize();

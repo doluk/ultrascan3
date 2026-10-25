@@ -1761,6 +1761,15 @@ int US_Hydrodyn::create_vdw_beads( QString & error_string, bool quiet ) {
             }
             QString hybrid_name = residue_atom_hybrid_map[mapkey];
             QString this_atom_name = hybrid_name == "ABB" ? "ABB" : this_atom->name;
+            // Derive an entry for an atom name the table has never seen rather than failing the
+            // whole bead build on it -- see US_Hydrodyn::ensure_atom_entry.
+            {
+               QString how;
+               if ( ensure_atom_entry( atom_map, this_atom_name, hybrid_name, &how )
+                    && !how.isEmpty() ) {
+                  editor_msg( "dark blue", QString( us_tr( "Note: %1\n" ) ).arg( how ) );
+               }
+            }
             if ( !atom_map.count( this_atom_name + "~" + hybrid_name ) ) {
                editor_msg( "red", QString( us_tr( "Error: Missing hybrid name for key %1" ) ).arg( mapkey ) );
                return -1;
@@ -2807,18 +2816,6 @@ void US_Hydrodyn::hullrad_process_next() {
    hullrad = new QProcess( this );
    //   hullrad->setWorkingDirectory( dir );
    // us_qdebug( "prog is " + hullrad_prog );
-#if QT_VERSION < 0x040000
-   hullrad->addArgument( hullrad_prog );
-   hullrad->addArgument( hullrad_last_processed );
-
-   connect( hullrad, SIGNAL(readyReadStandardOutput()), this, SLOT(hullrad_readFromStdout()) );
-   connect( hullrad, SIGNAL(readyReadStandardError()), this, SLOT(hullrad_readFromStderr()) );
-   connect( hullrad, SIGNAL(finished( int, QProcess::ExitStatus )), this, SLOT(hullrad_finished( int, QProcess::ExitStatus )) );
-   connect( hullrad, SIGNAL(started()), this, SLOT(hullrad_started()) );
-
-   editor_msg( "black", "\nStarting Hullrad\n");
-   hullrad->start();
-#else
    {
       QStringList args;
       args << hullrad_last_processed;
@@ -2831,7 +2828,6 @@ void US_Hydrodyn::hullrad_process_next() {
       editor_msg( "black", "\nStarting Hullrad\n");
       hullrad->start( hullrad_prog, args, QIODevice::ReadOnly );
    }
-#endif
    
    return;
 }
@@ -2839,18 +2835,9 @@ void US_Hydrodyn::hullrad_process_next() {
 void US_Hydrodyn::hullrad_readFromStdout()
 {
    // us_qdebug( QString( "hullrad_readFromStdout %1" ).arg( hullrad_filename ) );
-#if QT_VERSION < 0x040000
-   while ( hullrad->canReadLineStdout() )
-   {
-      QString qs = hullrad->readLineStdout() + "\n";
-      hullrad_stdout += qs;
-      editor_msg("brown", qs );
-   }
-#else
    QString qs = QString( hullrad->readAllStandardOutput() );
    hullrad_stdout += qs;
    editor_msg( "brown", qs );
-#endif   
    //  qApp->processEvents();
 }
    
@@ -2858,14 +2845,7 @@ void US_Hydrodyn::hullrad_readFromStderr()
 {
    // us_qdebug( QString( "hullrad_readFromStderr %1" ).arg( hullrad_filename ) );
 
-#if QT_VERSION < 0x040000
-   while ( hullrad->canReadLineStderr() )
-   {
-      editor_msg("red", hullrad->readLineStderr() + "\n");
-   }
-#else
    editor_msg( "red", QString( hullrad->readAllStandardError() ) );
-#endif   
    //  qApp->processEvents();
 }
 

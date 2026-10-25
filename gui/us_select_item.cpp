@@ -180,14 +180,16 @@ void US_SelectItem::build_layout( const QString titl )
    // Search line
    QLabel* lb_filtdata = us_label( tr( "Search" ) );
    le_dfilter          = us_lineedit();
+   le_dfilter->setAccessibleName( tr( "Search" ) );
+   lb_filtdata->setBuddy( le_dfilter );
    dsearch             = QString( "" );
 
    int row             = 0;
    top->addWidget( lb_filtdata, row,   0, 1, 1 );
    top->addWidget( le_dfilter,  row++, 1, 1, 3 );
 
-   connect( le_dfilter,  SIGNAL( textChanged( const QString& ) ),
-                         SLOT  ( search     ( const QString& ) ) );
+   connect( le_dfilter,  &QLineEdit::textChanged,
+                         this, &US_SelectItem::search );
 
    main->addLayout( top );
 
@@ -207,6 +209,7 @@ void US_SelectItem::build_layout( const QString titl )
    // Construct the table widget 
 
    tw_data = new QTableWidget( 20, ncols, this );
+   tw_data->setAccessibleName( tr( "Selection List" ) );
    tw_data->setFrameStyle ( QFrame::NoFrame );
    tw_data->setPalette    ( US_GuiSettings::editColor() );
    tw_data->setFont       ( tw_font );
@@ -263,12 +266,12 @@ void US_SelectItem::build_layout( const QString titl )
    buttons->addWidget( pb_mark_unmark_failed_autoflow );
    buttons->addWidget( pb_refresh_state_autoflow );
 
-   connect( pb_cancel, SIGNAL( clicked() ), SLOT( cancelled() ) );
-   connect( pb_accept, SIGNAL( clicked() ), SLOT( accepted() ) );
-   connect( pb_delete, SIGNAL( clicked() ), SLOT( deleted() ) );
-   connect( pb_delete_autoflow, SIGNAL( clicked() ), SLOT( deleted_autoflow() ) );
-   connect( pb_mark_unmark_failed_autoflow, SIGNAL( clicked() ), SLOT( set_unset_failed_autoflow() ) );
-   connect( pb_refresh_state_autoflow, SIGNAL( clicked() ), SLOT( do_refresh_state_autoflow() ) );
+   connect( pb_cancel, &QPushButton::clicked, this, &US_SelectItem::cancelled );
+   connect( pb_accept, &QPushButton::clicked, this, &US_SelectItem::accepted );
+   connect( pb_delete, &QPushButton::clicked, this, &US_SelectItem::deleted );
+   connect( pb_delete_autoflow, &QPushButton::clicked, this, &US_SelectItem::deleted_autoflow );
+   connect( pb_mark_unmark_failed_autoflow, &QPushButton::clicked, this, &US_SelectItem::set_unset_failed_autoflow );
+   connect( pb_refresh_state_autoflow, &QPushButton::clicked, this, &US_SelectItem::do_refresh_state_autoflow );
 
    if ( !deleted_button )
      pb_delete->hide();
@@ -885,7 +888,7 @@ void US_SelectItem::set_unset_failed_autoflow()
 	   if (  protocol_details[ "gmpRun" ] == "YES " )
 	     {
 	       US_FailedRunGui * fdiag = new US_FailedRunGui( protocol_details );
-	       connect( fdiag, SIGNAL( failed_status_set() ), this, SLOT( show_autoflow_run_as_failed() ));
+	       connect( fdiag, &US_FailedRunGui::failed_status_set, this, &US_SelectItem::show_autoflow_run_as_failed );
 	       fdiag -> show();
 	     }
 	   else // For non-GMP: just repeat as for GMP, but create "empty" autoflowFailed record & attach to the autoflow 

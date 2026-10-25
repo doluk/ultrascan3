@@ -29,6 +29,26 @@ One could also take hints from this [Dockerfile](https://github.com/ehb54/ultras
 
 Please create an issue or [contact us](https://www.ultrascan3.aucsolutions.com/contacts.php) if you have further questions.
 
+### Toolchains in forks
+
+GitHub application builds use the artifact locations and checksums in
+`buildsys/toolchain.lock.json`. Forks inherit upstream toolchains when they sync;
+automatic toolchain builds and scheduled nightlies run only in `ehb54/ultrascan3`.
+
+On pushes, toolchain builds select targets whose tracked inputs differ from their
+published `inputs_digest`. Platform scripts and Dockerfiles affect their targets;
+shared dependency inputs and toolchain workflow changes affect all targets. Pins
+without a fingerprint rebuild once to record it. Unchanged targets are skipped,
+and a run with no selected targets does not publish or commit pins.
+
+To test dependency changes in a fork, run **Toolchain build** manually on a feature
+branch. Manual runs rebuild the selected targets even when their inputs match.
+The workflow publishes to the fork and updates the pins for those targets on
+that branch. Unselected targets keep their existing sources. Uncheck `open_pr` to
+publish without committing pins; on `main`, enabling it creates a pin PR that is
+automatically merged after validation. Published archives are retained so older
+revisions and forks can still fetch their pinned dependencies.
+
 ### Container environment
 
 Assuming you are experienced with containers...
@@ -51,3 +71,22 @@ Run the compiled application ```LD_LIBRARY_PATH=/ultrascan3/lib:/qwt-6.1.5/lib /
 
 Note - subprocesses do not currently run in the container, so you must run any compiled application individually, e.g. `us_fematch`
 
+
+## Code style
+
+The style of the UltraScan III coding standards ([wiki](https://github.com/ehb54/ultrascan3/wiki/UltraScan-III-Coding-Standards))
+is encoded in `.clang-format` (clang-format 18) and enforced **on changed lines only**, by a pre-commit hook and the `Code Style` GitHub action.
+
+    sudo apt install clang-format-18 python3-pygments   # clang-format-18 includes git-clang-format
+    git config core.hooksPath .githooks                  # or: pre-commit install
+    scripts/check-format.sh --fix --staged               # format staged changes, then git add
+
+In addition to formatting, `scripts/check-conventions.py` checks changed code for `connect( a, &A::sig, b, &B::slot )`
+(not `SIGNAL`/`SLOT`; a justified exception is marked with `// NOLINT(us3-old-connect)`), a trailing newline and an include
+guard; new files must start with `//! \file <name>` and headers must use the guard `<NAME>_H` (`us_foo.h` -> `US_FOO_H`).
+Includes are sorted within each block. `nullptr` (not `NULL`) and `f()` (not `f( void )`) are enforced by clang-tidy (below).
+
+`clang-tidy` (`.clang-tidy`) runs in the *Static Analysis* workflow on the changed lines of each pull request: security findings
+(`clang-analyzer-*`, `bugprone-*`) are annotated as errors first, style findings (`modernize-use-nullptr`,
+`modernize-redundant-void-arg`) as warnings with fix suggestions on the PR and a `clang-tidy-fixes` patch artifact.
+Locally (needs a `compile_commands.json`): `scripts/run-clang-tidy-diff.sh --fix origin/main <build-dir>`.

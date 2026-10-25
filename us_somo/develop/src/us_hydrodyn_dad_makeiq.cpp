@@ -9,11 +9,9 @@
 #include "../include/us_hydrodyn_dad_fit.h"
 #include "../include/us_hydrodyn_dad_fit_global.h"
 #include "../include/us_lm.h"
-#if QT_VERSION >= 0x040000
 #include <qwt_scale_engine.h>
 //Added by qt3to4:
 #include <QTextStream>
-#endif
 
 #define TSO QTextStream(stdout)
 
@@ -2130,7 +2128,7 @@ bool US_Hydrodyn_Dad::create_unified_ggaussian_target( QStringList & files, bool
            && ( ( US_Hydrodyn * ) us_hydrodyn )->gparams[ "dad_cb_gg_smooth" ] == "true"
            && ( ( US_Hydrodyn * ) us_hydrodyn )->gparams.count( "dad_gg_smooth" )
            && ( ( US_Hydrodyn * ) us_hydrodyn )->gparams[ "dad_gg_smooth" ].toInt() > 0 ) {
-         editor_msg( "darkred", QString( "Experimental smoothing points %1 will be applied\n" ).arg( ( ( US_Hydrodyn * ) us_hydrodyn )->gparams[ "dad_gg_smooth" ].toInt() ) );
+         editor_msg( "darkred", QString( "Smoothing radius %1 will be applied\n" ).arg( ( ( US_Hydrodyn * ) us_hydrodyn )->gparams[ "hplc_gg_smooth" ].toInt() ) );
       }
 
       if ( !initial_ggaussian_fit( files, only_init_unset ) )

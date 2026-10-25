@@ -9,9 +9,7 @@
 #include "../include/us_hydrodyn_mals_saxs_fit_global.h"
 #include "../include/us_hydrodyn_mals_saxs_conc_csv_frames.h"
 #include "../include/us_lm.h"
-#if QT_VERSION >= 0x040000
 #include <qwt_scale_engine.h>
-#endif
 #include <qpalette.h>
 //Added by qt3to4:
 #include <QFrame>
@@ -463,6 +461,9 @@ US_Hydrodyn_Mals_Saxs::US_Hydrodyn_Mals_Saxs(
         !started_in_expert_mode ) {
       ( ( US_Hydrodyn * ) us_hydrodyn )->gparams[ "mals_saxs_ampl_width_min"        ] = "1e-12";
    }
+   if ( !( ( US_Hydrodyn * ) us_hydrodyn )->gparams.count( "mals_saxs_ampl_min"        ) ) {
+      ( ( US_Hydrodyn * ) us_hydrodyn )->gparams[ "mals_saxs_ampl_min"              ] = "1e-12";
+   }
    if ( !( ( US_Hydrodyn * ) us_hydrodyn )->gparams.count( "mals_saxs_lock_min_retry"        ) ||
         !started_in_expert_mode ) {
       ( ( US_Hydrodyn * ) us_hydrodyn )->gparams[ "mals_saxs_lock_min_retry"        ] = "false";
@@ -530,9 +531,7 @@ US_Hydrodyn_Mals_Saxs::US_Hydrodyn_Mals_Saxs(
    setWindowTitle(us_tr("US-SOMO: MALS+SAXS"));
    order_ascending = false;
    conc_widget     = false;
-#if QT_VERSION >= 0x040000
    legend_vis      = false;
-#endif
    usu             = new US_Saxs_Util();
 
    QDir::setCurrent( ((US_Hydrodyn *)us_hydrodyn)->somo_dir + QDir::separator() + "saxs" );
@@ -3292,23 +3291,9 @@ void US_Hydrodyn_Mals_Saxs::set_conc_file( QString file )
 
    if ( f_qs.count( lbl_conc_file->text() ) )
    {
-#if QT_VERSION < 0x040000
-      long curve;
-      curve = plot_ref->insertCurve( "concentration" );
-      plot_ref->setCurveStyle( curve, QwtCurve::Lines );
-#else
       QwtPlotCurve *curve = new QwtPlotCurve( "concentration" );
       curve->setStyle( QwtPlotCurve::Lines );
-#endif
 
-#if QT_VERSION < 0x040000
-      plot_ref->setCurvePen( curve, QPen( plot_colors[ 0 ], use_line_width, Qt::SolidLine ) );
-      plot_ref->setCurveData( curve,
-                              (double *)&f_qs[ lbl_conc_file->text() ][ 0 ],
-                              (double *)&f_Is[ lbl_conc_file->text() ][ 0 ],
-                              f_qs[ lbl_conc_file->text() ].size()
-                              );
-#else
       curve->setPen( QPen( plot_colors[ 0 ], use_line_width, Qt::SolidLine ) );
       curve->setSamples(
                      (double *)&f_qs[ lbl_conc_file->text() ][ 0 ],
@@ -3316,7 +3301,6 @@ void US_Hydrodyn_Mals_Saxs::set_conc_file( QString file )
                      f_qs[ lbl_conc_file->text() ].size()
                      );
       curve->attach( plot_ref );
-#endif
       plot_dist->setAxisScale( QwtPlot::xBottom, f_qs[ lbl_conc_file->text() ][ 0 ], f_qs[ lbl_conc_file->text() ].back() );
       
       if ( !suppress_replot )
@@ -4323,8 +4307,8 @@ void US_Hydrodyn_Mals_Saxs::smooth( QStringList files )
 {
    bool ok;
    int smoothing = US_Static::getInteger(
-                                            us_tr( "SOMO: HPLC enter smoothing" ),
-                                            us_tr( "Enter the number of points of smoothing:" ),
+                                            us_tr( "SOMO: enter smoothing" ),
+                                            us_tr( "Enter the smoothing radius:" ),
                                             1, 
                                             1,
                                             50,
@@ -5235,18 +5219,6 @@ void US_Hydrodyn_Mals_Saxs::zoom_info()
 {
    if ( plot_dist_zoomer )
    {
-#if QT_VERSION < 0x040000
-      TSO << QString( "zoomrect: %1 %2 %3 %4\n" )
-         .arg( plot_dist_zoomer->zoomRect().x1() )
-         .arg( plot_dist_zoomer->zoomRect().x2() )
-         .arg( plot_dist_zoomer->zoomRect().y1() )
-         .arg( plot_dist_zoomer->zoomRect().y2() );
-      TSO << QString( "zoombase: %1 %2 %3 %4\n" )
-         .arg( plot_dist_zoomer->zoomBase().x1() )
-         .arg( plot_dist_zoomer->zoomBase().x2() )
-         .arg( plot_dist_zoomer->zoomBase().y1() )
-         .arg( plot_dist_zoomer->zoomBase().y2() );
-#else
       TSO << QString( "zoomrect: %1 %2 %3 %4\n" )
          .arg( plot_dist_zoomer->zoomRect().left() )
          .arg( plot_dist_zoomer->zoomRect().right() )
@@ -5257,7 +5229,6 @@ void US_Hydrodyn_Mals_Saxs::zoom_info()
          .arg( plot_dist_zoomer->zoomBase().right() )
          .arg( plot_dist_zoomer->zoomBase().top() )
          .arg( plot_dist_zoomer->zoomBase().bottom() );
-#endif
    } else {
       TSO << "no current zoomer\n";
    }
@@ -5277,17 +5248,10 @@ void US_Hydrodyn_Mals_Saxs::plot_mouse( const QMouseEvent & /* me */ )
 
 void US_Hydrodyn_Mals_Saxs::select_vis()
 {
-#if QT_VERSION < 0x040000
-   double zrx1  = plot_dist_zoomer->zoomRect().x1();
-   double zrx2  = plot_dist_zoomer->zoomRect().x2();
-   double zry1  = plot_dist_zoomer->zoomRect().y1();
-   double zry2  = plot_dist_zoomer->zoomRect().y2();
-#else
    double zrx1  = plot_dist_zoomer->zoomRect().left();
    double zrx2  = plot_dist_zoomer->zoomRect().right();
    double zry1  = plot_dist_zoomer->zoomRect().top();
    double zry2  = plot_dist_zoomer->zoomRect().bottom();
-#endif
    // find curves within zoomRect & select only them
    map < QString, bool > selected_files;
    for ( int i = 0; i < lb_files->count(); i++ )
@@ -5335,17 +5299,10 @@ void US_Hydrodyn_Mals_Saxs::select_vis()
 
 void US_Hydrodyn_Mals_Saxs::remove_vis()
 {
-#if QT_VERSION < 0x040000
-   double zrx1  = plot_dist_zoomer->zoomRect().x1();
-   double zrx2  = plot_dist_zoomer->zoomRect().x2();
-   double zry1  = plot_dist_zoomer->zoomRect().y1();
-   double zry2  = plot_dist_zoomer->zoomRect().y2();
-#else
    double zrx1  = plot_dist_zoomer->zoomRect().left();
    double zrx2  = plot_dist_zoomer->zoomRect().right();
    double zry1  = plot_dist_zoomer->zoomRect().top();
    double zry2  = plot_dist_zoomer->zoomRect().bottom();
-#endif
    // find curves within zoomRect & select only them
    TSO << "select visible\n";
    QStringList selected_files;
@@ -5462,17 +5419,10 @@ void US_Hydrodyn_Mals_Saxs::crop_left()
 
    // is the rectangle contained?
    if ( 
-#if QT_VERSION < 0x040000
-       minx < plot_dist_zoomer->zoomRect().x1() ||
-       maxx > plot_dist_zoomer->zoomRect().x2() ||
-       miny < plot_dist_zoomer->zoomRect().y1() ||
-       maxy > plot_dist_zoomer->zoomRect().y2() )
-#else
        minx < plot_dist_zoomer->zoomRect().left()  ||
        maxx > plot_dist_zoomer->zoomRect().right() ||
        miny < plot_dist_zoomer->zoomRect().top()   ||
        maxy > plot_dist_zoomer->zoomRect().bottom() )
-#endif
    {
       all_lefts_visible = false;
    }
@@ -5485,13 +5435,8 @@ void US_Hydrodyn_Mals_Saxs::crop_left()
       double dx = maxx - minx;
       double dy = maxy - miny;
 
-#if QT_VERSION < 0x040000
-      double zdx = plot_dist_zoomer->zoomRect().x2() - plot_dist_zoomer->zoomRect().x1();
-      double zdy = plot_dist_zoomer->zoomRect().y2() - plot_dist_zoomer->zoomRect().y1();
-#else
       double zdx = plot_dist_zoomer->zoomRect().right()  - plot_dist_zoomer->zoomRect().left();
       double zdy = plot_dist_zoomer->zoomRect().bottom() - plot_dist_zoomer->zoomRect().top();
-#endif
       if ( zdx > dx * 1.1 && zdy > dy * 1.1 )
       {
          // we can fit
@@ -5523,23 +5468,6 @@ void US_Hydrodyn_Mals_Saxs::crop_left()
       {
          newminy = 0e0;
       }
-#if QT_VERSION < 0x040000
-      dr.setX1( newminx );
-      dr.setY1( newminy );
-
-      if ( zdx > dx * 1.1 )
-      {
-         dr.setX2( newminx + zdx );
-      } else {         
-         dr.setX2( newminx + dx * 1.1 );
-      }
-      if ( zdy > dy * 1.1 )
-      {
-         dr.setY2( newminy + zdy );
-      } else {         
-         dr.setY2( newminy + dy * 1.1 );
-      }
-#else
       dr.setLeft( newminx );
       dr.setTop ( newminy );
 
@@ -5555,7 +5483,6 @@ void US_Hydrodyn_Mals_Saxs::crop_left()
       } else {         
          dr.setBottom( newminy + dy * 1.1 );
       }
-#endif
 
       plot_dist_zoomer->zoom( dr );
       return;
@@ -5693,17 +5620,10 @@ void US_Hydrodyn_Mals_Saxs::crop_right()
 
    // is the rectangle contained?
    if ( 
-#if QT_VERSION < 0x040000
-       minx < plot_dist_zoomer->zoomRect().x1() ||
-       maxx > plot_dist_zoomer->zoomRect().x2() ||
-       miny < plot_dist_zoomer->zoomRect().y1() ||
-       maxy > plot_dist_zoomer->zoomRect().y2() )
-#else
        minx < plot_dist_zoomer->zoomRect().left()  ||
        maxx > plot_dist_zoomer->zoomRect().right() ||
        miny < plot_dist_zoomer->zoomRect().top()   ||
        maxy > plot_dist_zoomer->zoomRect().bottom() )
-#endif
    {
       all_rights_visible = false;
    }
@@ -5716,13 +5636,8 @@ void US_Hydrodyn_Mals_Saxs::crop_right()
       double dx = maxx - minx;
       double dy = maxy - miny;
 
-#if QT_VERSION < 0x040000
-      double zdx = plot_dist_zoomer->zoomRect().x2() - plot_dist_zoomer->zoomRect().x1();
-      double zdy = plot_dist_zoomer->zoomRect().y2() - plot_dist_zoomer->zoomRect().y1();
-#else
       double zdx = plot_dist_zoomer->zoomRect().right()  - plot_dist_zoomer->zoomRect().left();
       double zdy = plot_dist_zoomer->zoomRect().bottom() - plot_dist_zoomer->zoomRect().top();
-#endif
       if ( zdx > dx * 1.1 && zdy > dy * 1.1 )
       {
          // we can fit
@@ -5754,23 +5669,6 @@ void US_Hydrodyn_Mals_Saxs::crop_right()
       {
          newminy = 0e0;
       }
-#if QT_VERSION < 0x040000
-      dr.setX1( newminx );
-      dr.setY1( newminy );
-
-      if ( zdx > dx * 1.1 )
-      {
-         dr.setX2( newminx + zdx );
-      } else {         
-         dr.setX2( newminx + dx * 1.1 );
-      }
-      if ( zdy > dy * 1.1 )
-      {
-         dr.setY2( newminy + zdy );
-      } else {         
-         dr.setY2( newminy + dy * 1.1 );
-      }
-#else
       dr.setLeft( newminx );
       dr.setTop ( newminy );
 
@@ -5786,7 +5684,6 @@ void US_Hydrodyn_Mals_Saxs::crop_right()
       } else {         
          dr.setBottom( newminy + dy * 1.1 );
       }
-#endif
 
       plot_dist_zoomer->zoom( dr );
       return;
@@ -6504,8 +6401,6 @@ void US_Hydrodyn_Mals_Saxs::legend()
 
 void US_Hydrodyn_Mals_Saxs::legend_set()
 {
-#if QT_VERSION >= 0x040000
-# if QT_VERSION >= 0x050000
    if ( legend_vis ) {
       QwtLegend* legend_saxs = new QwtLegend;
       // legend_saxs->setFrameStyle( QFrame::Box | QFrame::Sunken );
@@ -6513,18 +6408,6 @@ void US_Hydrodyn_Mals_Saxs::legend_set()
    } else {      
       plot_dist->insertLegend( NULL );
    }
-# else
-   QwtPlotItemList ilist = plot_dist->itemList();
-   for ( int ii = 0; ii < ilist.size(); ii++ )
-   {
-      QwtPlotItem* plitem = ilist[ ii ];
-      if ( plitem->rtti() != QwtPlotItem::Rtti_PlotCurve )
-         continue;
-      plitem->setItemAttribute( QwtPlotItem::Legend, legend_vis );
-   }
-   plot_dist->legend()->setVisible( legend_vis );
-# endif
-#endif
 }
 
 void US_Hydrodyn_Mals_Saxs::similar_files()
@@ -6612,12 +6495,10 @@ void US_Hydrodyn_Mals_Saxs::regex_load()
 }
 
 void US_Hydrodyn_Mals_Saxs::rename_from_context( const QPoint & pos ) {
-#if QT_VERSION >= 0x040000
    QListWidgetItem * lwi = lb_created_files->itemAt( pos );
    if ( lwi ) {
       return rename_created( lwi, pos );
    }
-#endif
 }
 
 void US_Hydrodyn_Mals_Saxs::rename_created( QListWidgetItem *lbi, const QPoint & )
@@ -7112,17 +6993,9 @@ void US_Hydrodyn_Mals_Saxs::update_gauss_pos()
          {
             if ( gaussian_pos + 2 == i && !le_gauss_fit_start->hasFocus() && !le_gauss_fit_end->hasFocus() )
             {
-#if QT_VERSION < 0x040000
-               plot_dist->setMarkerPen       ( plotted_markers[ i ], QPen( Qt::magenta, 2, DashDotDotLine));
-#else
                plotted_markers[ i ]->setLinePen( QPen( Qt::magenta, 2, Qt::DashDotDotLine ) );
-#endif
             } else {
-#if QT_VERSION < 0x040000
-               plot_dist->setMarkerPen       ( plotted_markers[ i ], QPen( Qt::blue, 2, DashDotDotLine));
-#else
                plotted_markers[ i ]->setLinePen( QPen( Qt::blue, 2, Qt::DashDotDotLine ) );
-#endif
             }
          }
          if ( !suppress_replot )
@@ -7214,17 +7087,9 @@ void US_Hydrodyn_Mals_Saxs::update_gauss_pos()
          {
             if ( gaussian_pos + 2 == i && !le_gauss_fit_start->hasFocus() && !le_gauss_fit_end->hasFocus() )
             {
-#if QT_VERSION < 0x040000
-               plot_dist->setMarkerPen       ( plotted_markers[ i ], QPen( Qt::magenta, 2, DashDotDotLine));
-#else
                plotted_markers[ i ]->setLinePen( QPen( Qt::magenta, 2, Qt::DashDotDotLine));
-#endif
             } else {
-#if QT_VERSION < 0x040000
-               plot_dist->setMarkerPen       ( plotted_markers[ i ], QPen( Qt::blue, 2, DashDotDotLine));
-#else
                plotted_markers[ i ]->setLinePen( QPen( Qt::blue, 2, Qt::DashDotDotLine));
-#endif
             }
          }
          if ( !suppress_replot )
@@ -7298,11 +7163,7 @@ void US_Hydrodyn_Mals_Saxs::gauss_start()
       return;
    }
 
-#if QT_VERSION < 0x040000
-   plot_dist->setCurvePen( plotted_curves[ wheel_file ], QPen( Qt::cyan, use_line_width, SolidLine));
-#else
    plotted_curves[ wheel_file ]->setPen( QPen( Qt::cyan, use_line_width, Qt::SolidLine ) );
-#endif
 
    org_gaussians = gaussians;
 
@@ -7696,28 +7557,16 @@ void US_Hydrodyn_Mals_Saxs::gauss_pos_text( const QString & text )
                //    .arg( x[1] )
                //    .arg( y[1] )
                //    ;
-#if QT_VERSION < 0x040000
-               plot_dist->setCurveData( plotted_hlines[ gaussian_pos ],
-                                        (double *)&x[ 0 ],
-                                        (double *)&y[ 0 ],
-                                        2
-                                        );
-#else
                plotted_hlines[ gaussian_pos ]->setSamples(
                                                        (double *)&x[ 0 ],
                                                        (double *)&y[ 0 ],
                                                        2
                                                        );
-#endif
             }
          }
       }
       
-#if QT_VERSION < 0x040000
-      plot_dist->setMarkerPos( plotted_markers[ 2 + gaussian_pos ], text.toDouble(), 0e0 );
-#else
       plotted_markers[ 2 + gaussian_pos ]->setXValue( text.toDouble() );
-#endif
       if ( !wheel_is_pressed && qwtw_wheel->value() != text.toDouble() )
       {
          disconnect( qwtw_wheel, SIGNAL( valueChanged( double ) ), 0, 0 );
@@ -7795,19 +7644,11 @@ void US_Hydrodyn_Mals_Saxs::gauss_pos_width_text( const QString & text )
                //    .arg( x[1] )
                //    .arg( y[1] )
                //    ;
-#if QT_VERSION < 0x040000
-               plot_dist->setCurveData( plotted_hlines[ gaussian_pos ],
-                                        (double *)&x[ 0 ],
-                                        (double *)&y[ 0 ],
-                                        2
-                                        );
-#else
                plotted_hlines[ gaussian_pos ]->setSamples(
                                                        (double *)&x[ 0 ],
                                                        (double *)&y[ 0 ],
                                                        2
                                                        );
-#endif
             }
          }
       }
@@ -7938,11 +7779,7 @@ void US_Hydrodyn_Mals_Saxs::gauss_pos_dist2_text( const QString & text )
 
 void US_Hydrodyn_Mals_Saxs::gauss_fit_start_text( const QString & text )
 {
-#if QT_VERSION < 0x040000
-   plot_dist->setMarkerPos( plotted_markers[ 0 ], text.toDouble(), 0e0 );
-#else
    plotted_markers[ 0 ]->setXValue( text.toDouble() );
-#endif
    if ( !wheel_is_pressed && qwtw_wheel->value() != text.toDouble() )
    {
       qwtw_wheel->setValue( text.toDouble() );
@@ -7968,11 +7805,7 @@ void US_Hydrodyn_Mals_Saxs::gauss_fit_start_text( const QString & text )
 
 void US_Hydrodyn_Mals_Saxs::gauss_fit_end_text( const QString & text )
 {
-#if QT_VERSION < 0x040000
-   plot_dist->setMarkerPos( plotted_markers[ 1 ], text.toDouble(), 0e0 );
-#else
    plotted_markers[ 1 ]->setXValue( text.toDouble() );
-#endif
    if ( !wheel_is_pressed && qwtw_wheel->value() != text.toDouble() )
    {
       qwtw_wheel->setValue( text.toDouble() );
@@ -7998,24 +7831,11 @@ void US_Hydrodyn_Mals_Saxs::gauss_fit_end_text( const QString & text )
 void US_Hydrodyn_Mals_Saxs::gauss_add_marker( double pos, 
                                               QColor color, 
                                               QString text, 
-#if QT_VERSION < 0x040000
-                                              int 
-#else
                                               Qt::Alignment
-#endif
                                               align )
 {
    int line_width = use_line_width < 3 ? ( use_line_width + 1 ) : use_line_width;
 
-#if QT_VERSION < 0x040000
-   long marker = plot_dist->insertMarker();
-   plot_dist->setMarkerLineStyle ( marker, QwtMarker::VLine );
-   plot_dist->setMarkerPos       ( marker, pos, 0e0 );
-   plot_dist->setMarkerLabelAlign( marker, align );
-   plot_dist->setMarkerPen       ( marker, QPen( color, line_width, DashDotDotLine));
-   plot_dist->setMarkerFont      ( marker, QFont("Courier", 11, QFont::Bold));
-   plot_dist->setMarkerLabelText ( marker, text );
-#else
    QwtPlotMarker * marker = new QwtPlotMarker;
    marker->setLineStyle       ( QwtPlotMarker::VLine );
    marker->setLinePen         ( QPen( color, line_width, Qt::DashDotDotLine ) );
@@ -8028,7 +7848,6 @@ void US_Hydrodyn_Mals_Saxs::gauss_add_marker( double pos,
       marker->setLabel           ( qwtt );
    }
    marker->attach             ( plot_dist );
-#endif
    plotted_markers.push_back( marker );
 }   
 
@@ -8059,25 +7878,11 @@ void US_Hydrodyn_Mals_Saxs::gauss_add_hline( double center, double width )
    //    .arg( y[1] )
    //    ;
 
-#if QT_VERSION < 0x040000
-   long curve;
-   curve = plot_dist->insertCurve( "hline" );
-   plot_dist->setCurveStyle( curve, QwtCurve::Lines );
-#else
    QwtPlotCurve *curve = new QwtPlotCurve( "hline" );
    curve->setStyle( QwtPlotCurve::Lines );
-#endif
 
    plotted_hlines.push_back( curve );
 
-#if QT_VERSION < 0x040000
-   plot_dist->setCurvePen( curve, QPen( Qt::green, use_line_width, Qt::SolidLine ) );
-   plot_dist->setCurveData( curve,
-                            (double *)&x[ 0 ],
-                            (double *)&y[ 0 ],
-                            2
-                            );
-#else
    curve->setPen( QPen( Qt::green, use_line_width, Qt::SolidLine ) );
    curve->setSamples(
                   (double *)&x[ 0 ],
@@ -8085,7 +7890,6 @@ void US_Hydrodyn_Mals_Saxs::gauss_add_hline( double center, double width )
                   2
                   );
    curve->attach( plot_dist );
-#endif
 }   
 
 void US_Hydrodyn_Mals_Saxs::gauss_init_markers()
@@ -8123,9 +7927,7 @@ void US_Hydrodyn_Mals_Saxs::gauss_init_markers()
       
    if ( !suppress_replot )
    {
-#if QT_VERSION >= 0x040000
       legend_set();
-#endif
       plot_dist->replot();
    }
 }
@@ -8133,13 +7935,8 @@ void US_Hydrodyn_Mals_Saxs::gauss_init_markers()
 
 void US_Hydrodyn_Mals_Saxs::gauss_delete_markers()
 {
-#if QT_VERSION < 0x040000
-   plot_dist->removeMarkers();
-#else
    plot_dist->detachItems( QwtPlotItem::Rtti_PlotMarker );
-#endif
 
-#if QT_VERSION >= 0x040000
    set < QwtPlotItem * > current_items;
    {
       const QwtPlotItemList &list = plot_dist->itemList();
@@ -8150,30 +7947,21 @@ void US_Hydrodyn_Mals_Saxs::gauss_delete_markers()
          // us_qdebug( QString( "item name %1 addr %2" ).arg( item->title().text() ).arg( (unsigned long) item ) );
       }
    }
-#endif
 
 
    for ( unsigned int i = 0; i < ( unsigned int )plotted_hlines.size(); i++ )
    {
-#if QT_VERSION < 0x040000
-      plot_dist->removeCurve( plotted_hlines[ i ] );
-#else
       if ( current_items.count( plotted_hlines[ i ] ) ) {
          plotted_hlines[ i ]->detach();
       }
-#endif
    }
    plotted_markers.clear( );
    plotted_hlines.clear( );
    for ( unsigned int i = 0; i < ( unsigned int ) plotted_baseline.size(); i++ )
    {
-#if QT_VERSION < 0x040000
-      plot_dist->removeCurve( plotted_baseline[ i ] );
-#else
       if ( current_items.count( plotted_baseline[ i ] ) ) {
          plotted_baseline[ i ]->detach();
       }
-#endif
    }
    plotted_baseline.clear( );
 }
@@ -8241,20 +8029,12 @@ void US_Hydrodyn_Mals_Saxs::gauss_replot_gaussian()
    vector < double > x = f_qs[ wheel_file ];
    vector < double > y = gaussian( &(gaussians[ (vector<double>::size_type) gaussian_pos * gaussian_type_size ] ) );
 
-#if QT_VERSION < 0x040000
-   plot_dist->setCurveData( plotted_gaussians[ gaussian_pos ],
-                            (double *)&x[ 0 ],
-                            (double *)&y[ 0 ],
-                            x.size()
-                            );
-#else
    plotted_gaussians[ gaussian_pos ]->setSamples(
                                               (double *)&x[ 0 ],
                                               (double *)&y[ 0 ],
                                               x.size()
                                               );
 
-#endif
    replot_gaussian_sum();
 }
 
@@ -8264,25 +8044,11 @@ void US_Hydrodyn_Mals_Saxs::gauss_add_gaussian( double *g, QColor color )
    vector < double > x = f_qs[ wheel_file ];
    vector < double > y = gaussian( g );
 
-#if QT_VERSION < 0x040000
-   long curve;
-   curve = plot_dist->insertCurve( "gaussian" );
-   plot_dist->setCurveStyle( curve, QwtCurve::Lines );
-#else
    QwtPlotCurve *curve = new QwtPlotCurve( "gaussian" );
    curve->setStyle( QwtPlotCurve::Lines );
-#endif
 
    plotted_gaussians.push_back( curve );
 
-#if QT_VERSION < 0x040000
-   plot_dist->setCurveData( curve, 
-                            (double *)&x[ 0 ],
-                            (double *)&y[ 0 ],
-                            x.size()
-                            );
-   plot_dist->setCurvePen( curve, QPen( color , use_line_width, Qt::DashLine ) );
-#else
    curve->setSamples(
                   (double *)&x[ 0 ],
                   (double *)&y[ 0 ],
@@ -8291,7 +8057,6 @@ void US_Hydrodyn_Mals_Saxs::gauss_add_gaussian( double *g, QColor color )
 
    curve->setPen( QPen( color, use_line_width, Qt::DashLine ) );
    curve->attach( plot_dist );
-#endif
 }
 
 void US_Hydrodyn_Mals_Saxs::gauss_init_gaussians()
@@ -8316,19 +8081,11 @@ void US_Hydrodyn_Mals_Saxs::gauss_delete_gaussians()
 {
    for ( unsigned int i = 0; i < ( unsigned int ) plotted_gaussians.size(); i++ )
    {
-#if QT_VERSION < 0x040000
-      plot_dist->removeCurve( plotted_gaussians[ i ] );
-#else
       plotted_gaussians[ i ]->detach();
-#endif
    }
    for ( unsigned int i = 0; i < ( unsigned int ) plotted_gaussian_sum.size(); i++ )
    {
-#if QT_VERSION < 0x040000
-      plot_dist->removeCurve( plotted_gaussian_sum[ i ] );
-#else
       plotted_gaussian_sum[ i ]->detach();
-#endif
    }
 }
 
@@ -8451,22 +8208,14 @@ void US_Hydrodyn_Mals_Saxs::plot_gaussian_sum()
    {
       for ( unsigned int j = 0; j < x.size(); j++ )
       {
-#if QT_VERSION < 0x040000
-         y[ j ] = plot_dist->curve( plotted_gaussians[ 0 ] )->sample( j ).y();
-#else
          y[ j ] = plotted_gaussians[ 0 ]->sample( j ).y();
-#endif
       }
 
       for ( unsigned int i = 1; i < plotted_gaussians.size(); i++ )
       {
          for ( unsigned int j = 0; j < x.size(); j++ )
          {
-#if QT_VERSION < 0x040000
-            y[ j ] += plot_dist->curve( plotted_gaussians[ i ] )->sample( j ).y();
-#else
             y[ j ] += plotted_gaussians[ i ]->sample( j ).y();
-#endif
          }
       }
    } else {
@@ -8476,25 +8225,11 @@ void US_Hydrodyn_Mals_Saxs::plot_gaussian_sum()
       }
    }
 
-#if QT_VERSION < 0x040000
-   long curve;
-   curve = plot_dist->insertCurve( "gaussian_sum" );
-   plot_dist->setCurveStyle( curve, QwtCurve::Lines );
-#else
    QwtPlotCurve *curve = new QwtPlotCurve( "gaussian_sum" );
    curve->setStyle( QwtPlotCurve::Lines );
-#endif
 
    plotted_gaussian_sum.push_back( curve );
 
-#if QT_VERSION < 0x040000
-   plot_dist->setCurveData( curve, 
-                            (double *)&x[ 0 ],
-                            (double *)&y[ 0 ],
-                            x.size()
-                            );
-   plot_dist->setCurvePen( curve, QPen( Qt::yellow , use_line_width, Qt::DashLine ) );
-#else
    curve->setSamples(
                   (double *)&x[ 0 ],
                   (double *)&y[ 0 ],
@@ -8503,7 +8238,6 @@ void US_Hydrodyn_Mals_Saxs::plot_gaussian_sum()
 
    curve->setPen( QPen( Qt::yellow, use_line_width, Qt::DashLine ) );
    curve->attach( plot_dist );
-#endif
    replot_gaussian_sum();
 }
 
@@ -8523,11 +8257,7 @@ void US_Hydrodyn_Mals_Saxs::replot_gaussian_sum()
    {
       for ( unsigned int j = 0; j < x.size(); j++ )
       {
-#if QT_VERSION < 0x040000
-         y[ j ] = plot_dist->curve( plotted_gaussians[ 0 ] )->sample( j ).y();
-#else
          y[ j ] = plotted_gaussians[ 0 ]->sample( j ).y();
-#endif
       }
    } else {
       for ( unsigned int j = 0; j < x.size(); j++ )
@@ -8540,28 +8270,16 @@ void US_Hydrodyn_Mals_Saxs::replot_gaussian_sum()
    {
       for ( unsigned int j = 0; j < x.size(); j++ )
       {
-#if QT_VERSION < 0x040000
-         y[ j ] += plot_dist->curve( plotted_gaussians[ i ] )->sample( j ).y();
-#else
          y[ j ] += plotted_gaussians[ i ]->sample( j ).y();
-#endif
       }
    }
 
-#if QT_VERSION < 0x040000
-   plot_dist->setCurveData( plotted_gaussian_sum[ 0 ],
-                            (double *)&x[ 0 ],
-                            (double *)&y[ 0 ],
-                            x.size()
-                            );
-#else
    plotted_gaussian_sum[ 0 ]->setSamples(
                                       (double *)&x[ 0 ],
                                       (double *)&y[ 0 ],
                                       x.size()
                                       );
 
-#endif
    double rmsd  = 0e0;
    double start = le_gauss_fit_start->text().toDouble();
    double end   = le_gauss_fit_end  ->text().toDouble();
