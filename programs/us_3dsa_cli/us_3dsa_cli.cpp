@@ -110,7 +110,7 @@ void US_3dsaCli::usage()
 {
    out() << "us_3dsa_cli -- headless 3DSA fit driver\n\n"
          << "  us_3dsa_cli fit --config <case.json> [--out <result.json>]\n"
-         << "                  [--model <model.xml>] [--threads N] [--quiet]\n\n"
+         << "                  [--model <model.xml>] [--curves <curves.csv>] [--threads N] [--quiet]\n\n"
          << "      Fit the buoyancy-contrast series the case file describes and\n"
          << "      report the global RMSD and the RMSD of every data set.\n\n"
          << "  us_3dsa_cli gen-cases --outdir <dir>\n\n"
@@ -599,7 +599,7 @@ double US_3dsaCli::verify_with_solver( QList<US_SolveSim::DataSet*>& dsets,
    QString       msg;
    QTemporaryDir tdir;
 
-   if ( !US_3dsaProcess::prepare_timestates( dsets, tdir.path(), msg ) || !US_3dsaProcess::prepare_gradients( dsets, msg ) )
+   if ( !prepare_refit( dsets, tdir.path(), msg ) )
    {
       err() << "verify: " << msg << "\n";
       err().flush();
@@ -608,32 +608,108 @@ double US_3dsaCli::verify_with_solver( QList<US_SolveSim::DataSet*>& dsets,
 
    // The same solutes fitted both ways, so a subset that leaves part of the
    // signal unexplained costs both fits alike
-   const auto refit = [&]( bool equilibrium )
+   US_SolveSim::Simulation closed;
+   US_SolveSim::Simulation solver;
+   refit_solutes( dsets, checked, noisflag, result.scales, true, closed );
+   refit_solutes( dsets, checked, noisflag, result.scales, false, solver );
+   closed_rmsd = sqrt( qMax( 0.0, closed.variance ) );
+   return sqrt( qMax( 0.0, solver.variance ) );
+}
+
+// ---------------------------------------------------------------------------
+// Data sets ready for refit_solutes(): the fit leaves the callers' own
+// without timestates or gradients
+bool US_3dsaCli::prepare_refit( QList<US_SolveSim::DataSet*>& dsets, const QString& tmst_dir, QString& msg )
+{
+   return US_3dsaProcess::prepare_timestates( dsets, tmst_dir, msg ) && US_3dsaProcess::prepare_gradients( dsets, msg );
+}
+
+// Given solutes refitted to the data, their concentrations by NNLS, with the
+// closed form or the Lamm-equation solver.  sv returns the fit, its
+// simulation and its residuals.
+void US_3dsaCli::refit_solutes( QList<US_SolveSim::DataSet*>&               dsets,
+                                const QList<US_Model::SimulationComponent>& comps,
+                                int                                         noisflag,
+                                const QVector<double>&                      scales,
+                                bool                                        equilibrium,
+                                US_SolveSim::Simulation&                    sv )
+{
+   for ( US_SolveSim::DataSet* dset : dsets )
    {
-      for ( US_SolveSim::DataSet* dset : dsets )
+      dset->solute_type = US_3dsaProcess::mask_s_k_v();
+      dset->fit_vbar    = true;
+      dset->equilibrium = equilibrium;
+   }
+
+   sv.solutes.clear();
+   for ( const US_Model::SimulationComponent& c : comps )
+   {
+      sv.solutes << US_Solute( c.s, c.f_f0, 0.0, c.vbar20, c.D );
+   }
+   sv.noisflag   = noisflag;
+   sv.dbg_level  = 0;
+   sv.dbg_timing = false;
+   sv.scales     = scales;
+
+   US_SolveSim solver( dsets, 0, false );
+   solver.calc_residuals( 0, dsets.size(), sv );
+}
+
+// ---------------------------------------------------------------------------
+// The fit's curves, for plotting: per data set and scan, each radius with the
+// data, the fit (model plus fitted noise) and the residual
+bool US_3dsaCli::write_curves( const QString&                path,
+                               QList<US_SolveSim::DataSet*>& dsets,
+                               const Case&                   kase,
+                               const US_3dsaProcess::Result& result,
+                               double&                       rmsd )
+{
+   QString       msg;
+   QTemporaryDir tdir;
+
+   if ( !prepare_refit( dsets, tdir.path(), msg ) )
+   {
+      err() << "curves: " << msg << "\n";
+      err().flush();
+      return false;
+   }
+
+   US_SolveSim::Simulation sv;
+   refit_solutes( dsets, result.model.components.toList(), kase.noisflag, result.scales, kase.equilibrium, sv );
+   rmsd = sqrt( qMax( 0.0, sv.variance ) );
+
+   QFile f( path );
+
+   if ( !f.open( QIODevice::WriteOnly | QIODevice::Text ) )
+   {
+      err() << "curves: cannot write " << path << "\n";
+      err().flush();
+      return false;
+   }
+
+   QTextStream ts( &f );
+   ts << "dataset,label,scan,seconds,radius,data,fit,residual\n";
+   int scnx = 0;
+
+   for ( int dd = 0; dd < dsets.size(); dd++ )
+   {
+      const US_DataIO::EditedData& ed    = dsets[dd]->run_data;
+      const QString                label = kase.datasets[dd].label;
+
+      for ( int ss = 0; ss < ed.scanData.size(); ss++, scnx++ )
       {
-         dset->solute_type = US_3dsaProcess::mask_s_k_v();
-         dset->fit_vbar    = true;
-         dset->equilibrium = equilibrium;
+         for ( int rr = 0; rr < ed.xvalues.size(); rr++ )
+         {
+            const double data  = ed.scanData[ss].rvalues[rr];
+            const double resid = sv.residuals.value( scnx, rr );
+            ts << dd << ",\"" << label << "\"," << ss << "," << ed.scanData[ss].seconds << ","
+               << QString::number( ed.xvalues[rr], 'f', 5 ) << "," << QString::number( data, 'g', 8 ) << ","
+               << QString::number( data - resid, 'g', 8 ) << "," << QString::number( resid, 'g', 8 ) << "\n";
+         }
       }
+   }
 
-      US_SolveSim::Simulation sv;
-      for ( const US_Model::SimulationComponent& c : checked )
-      {
-         sv.solutes << US_Solute( c.s, c.f_f0, 0.0, c.vbar20, c.D );
-      }
-      sv.noisflag   = noisflag;
-      sv.dbg_level  = 0;
-      sv.dbg_timing = false;
-      sv.scales     = result.scales;
-
-      US_SolveSim solver( dsets, 0, false );
-      solver.calc_residuals( 0, dsets.size(), sv );
-      return sqrt( qMax( 0.0, sv.variance ) );
-   };
-
-   closed_rmsd = refit( true );
-   return refit( false );
+   return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -642,6 +718,7 @@ int US_3dsaCli::run_fit( const QStringList& args )
    QString cfg_path;
    QString out_path;
    QString model_path;
+   QString curves_path;
    int     threads = -1;
    bool    quiet   = false;
 
@@ -660,6 +737,10 @@ int US_3dsaCli::run_fit( const QStringList& args )
       else if ( a == "--model" && ii + 1 < args.size() )
       {
          model_path = args[++ii];
+      }
+      else if ( a == "--curves" && ii + 1 < args.size() )
+      {
+         curves_path = args[++ii];
       }
       else if ( a == "--threads" && ii + 1 < args.size() )
       {
@@ -1053,6 +1134,16 @@ int US_3dsaCli::run_fit( const QStringList& args )
    if ( !model_path.isEmpty() )
    {
       result.model.write( model_path );
+   }
+
+   if ( !curves_path.isEmpty() )
+   {
+      double crmsd = 0.0;
+      if ( write_curves( curves_path, dsets, kase, result, crmsd ) )
+      {
+         out() << QString( "  curves written to %1 (refitted RMSD %2)\n" ).arg( curves_path ).arg( crmsd, 0, 'e', 4 );
+         out().flush();
+      }
    }
 
    qDeleteAll( dsets );

@@ -190,6 +190,20 @@ class US_3dsaCli
       static bool   load_trimmed( const DataSetSpec&, double, double, US_SolveSim::DataSet*, QString& );
       static bool   load_edited( const QString&, US_DataIO::EditedData&, QString& );
 
+      // Refitting a fit's solutes: for its curves, and to check the closed form
+      static bool   prepare_refit( QList<US_SolveSim::DataSet*>&, const QString&, QString& );
+      static void   refit_solutes( QList<US_SolveSim::DataSet*>&,
+                                   const QList<US_Model::SimulationComponent>&,
+                                   int,
+                                   const QVector<double>&,
+                                   bool,
+                                   US_SolveSim::Simulation& );
+      static bool   write_curves( const QString&,
+                                  QList<US_SolveSim::DataSet*>&,
+                                  const Case&,
+                                  const US_3dsaProcess::Result&,
+                                  double& );
+
       // RMSD of a fit's solutes simulated by the Lamm-equation solver
       static double verify_with_solver( QList<US_SolveSim::DataSet*>&, const US_3dsaProcess::Result&, int, int&, double&, double& );
 
