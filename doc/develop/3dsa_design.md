@@ -716,12 +716,23 @@ For the branch's author; none is worked around here except where noted.
 7. Unconditional `qDebug` output (`fixed_dt`, `steps_per_transit`) per solve; `us_3dsa_cli` filters
    debug messages unless `US3DSA_DEBUG` is set.
 8. The 2DSA's gradient debug dump passes density and viscosity in swapped order.
+9. **A salt is simulated as one ideal, neutral solute.** `CosedData` sediments CsCl with a constant
+   *s* and *D*, so its equilibrium gradient follows *M*(1 − v̄ρ)/*RT* for a single particle. CsCl
+   is two ions and far from ideal; its real gradient is ω²*r*/β, β ≈ 1.2 × 10⁹. At 48 krpm,
+   *r* ≈ 6.4 cm, that is 0.135 g/mL per cm, where *s* = 1.06 S, *D* = 2.0 × 10⁻⁵ cm²/s (the
+   values *M*, v̄ and *D* imply) gives about 0.34. An effective *s* near 0.41 S brings it to
+   0.125. On the ABDE run 2098 this choice moves the two bands' density difference from about
+   0.12 to about 0.06 g/mL — as large an effect as the loading concentration. The component
+   database's CsCl density coefficients are listed for 0–1.916 M; AAV ABDE loads near 3 M.
 
 ### Not done
 
 * Real data. The ABDE run supplied (AAV, 61 wavelengths, last scan at 9.5 h) loads through its
-  edits, but its buffer — the gradient former's concentration, *s*, *D*, v̄ and density and
-  viscosity coefficients — is not in the archive, and without it there is no gradient to fit in.
+  edits and fits in seconds with the closed form. Its solution record holds the PBS base only
+  (1.00552 g/mL); the reference channel's description, the bands forming during the run and the
+  absence of any UV-absorbing background say the gradient former is CsCl, at a loading
+  concentration not recorded. The fitted densities move by 0.02–0.03 g/mL per 0.2 M assumed, and
+  with the CsCl model (item 9 above), so no density from this run is reported here.
 * The desktop and MPI programs: they need the buffer's co-sedimenting components loaded with the
   solution and the ASTFVM selectable, exactly as the cosedimenting 2DSA does.
 * Molar mass from ABDE: fit the approach to equilibrium (all scans, ASTFVM) — the hydrodynamics
