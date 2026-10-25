@@ -565,7 +565,8 @@ double US_3dsaCli::verify_with_solver( QList<US_SolveSim::DataSet*>& dsets,
                                        const US_3dsaProcess::Result& result,
                                        int                           noisflag,
                                        int&                          nchecked,
-                                       double&                       share )
+                                       double&                       share,
+                                       double&                       closed_rmsd )
 {
    const int                            VERIFY_MAX = 16;
    QList<US_Model::SimulationComponent> comps      = result.model.components.toList();
@@ -605,26 +606,34 @@ double US_3dsaCli::verify_with_solver( QList<US_SolveSim::DataSet*>& dsets,
       return -1.0;
    }
 
-   for ( US_SolveSim::DataSet* dset : dsets )
+   // The same solutes fitted both ways, so a subset that leaves part of the
+   // signal unexplained costs both fits alike
+   const auto refit = [&]( bool equilibrium )
    {
-      dset->solute_type = US_3dsaProcess::mask_s_k_v();
-      dset->fit_vbar    = true;
-      dset->equilibrium = false;
-   }
+      for ( US_SolveSim::DataSet* dset : dsets )
+      {
+         dset->solute_type = US_3dsaProcess::mask_s_k_v();
+         dset->fit_vbar    = true;
+         dset->equilibrium = equilibrium;
+      }
 
-   US_SolveSim::Simulation sv;
-   for ( const US_Model::SimulationComponent& c : checked )
-   {
-      sv.solutes << US_Solute( c.s, c.f_f0, 0.0, c.vbar20, c.D );
-   }
-   sv.noisflag   = noisflag;
-   sv.dbg_level  = 0;
-   sv.dbg_timing = false;
-   sv.scales     = result.scales;
+      US_SolveSim::Simulation sv;
+      for ( const US_Model::SimulationComponent& c : checked )
+      {
+         sv.solutes << US_Solute( c.s, c.f_f0, 0.0, c.vbar20, c.D );
+      }
+      sv.noisflag   = noisflag;
+      sv.dbg_level  = 0;
+      sv.dbg_timing = false;
+      sv.scales     = result.scales;
 
-   US_SolveSim solver( dsets, 0, false );
-   solver.calc_residuals( 0, dsets.size(), sv );
-   return sqrt( qMax( 0.0, sv.variance ) );
+      US_SolveSim solver( dsets, 0, false );
+      solver.calc_residuals( 0, dsets.size(), sv );
+      return sqrt( qMax( 0.0, sv.variance ) );
+   };
+
+   closed_rmsd = refit( true );
+   return refit( false );
 }
 
 // ---------------------------------------------------------------------------
@@ -995,16 +1004,20 @@ int US_3dsaCli::run_fit( const QStringList& args )
    {
       int          nchecked = 0;
       double       share    = 0.0;
-      const double vrmsd    = verify_with_solver( dsets, result, kase.noisflag, nchecked, share );
-      out() << QString( "  verify: the %1 largest solutes (%2% of the signal), refitted with the"
-                        " Lamm-equation solver, give RMSD %3 (closed form %4)%5\n\n" )
+      double       crmsd    = 0.0;
+      const double vrmsd    = verify_with_solver( dsets, result, kase.noisflag, nchecked, share, crmsd );
+      out() << QString( "  verify: the %1 largest solutes (%2% of the signal), refitted: RMSD %3 with the"
+                        " Lamm-equation solver, %4 with the closed form%5\n\n" )
                   .arg( nchecked )
                   .arg( 100.0 * share, 0, 'f', 1 )
                   .arg( vrmsd, 0, 'e', 4 )
-                  .arg( result.rmsd, 0, 'e', 4 )
-                  .arg( vrmsd > 2.0 * result.rmsd ? QString( " -- the run had not reached equilibrium" ) : QString() );
-      jr["verify_rmsd"]  = vrmsd;
-      jr["verify_share"] = share;
+                  .arg( crmsd, 0, 'e', 4 )
+                  .arg( vrmsd > 1.5 * crmsd ? QString( " -- the closed form does not hold: the run had not reached"
+                                                       " equilibrium" )
+                                            : QString() );
+      jr["verify_rmsd"]        = vrmsd;
+      jr["verify_closed_rmsd"] = crmsd;
+      jr["verify_share"]       = share;
       out().flush();
    }
 

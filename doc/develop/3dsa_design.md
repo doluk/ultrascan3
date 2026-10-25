@@ -659,8 +659,8 @@ peak — in well under a millisecond instead of 6–24 s per solute.
 It is only as good as the equilibrium. After 2 h in 1.5 M CsCl (the unit tests' run) the solutes
 are still travelling: the solver's peaks lie up to 0.11 cm from the closed form's and the profiles
 differ by 83–88 % of the peak. So `us_3dsa_cli`'s `verify` refits the solutes that carry the signal
-(down to 0.5 % each, at most 16) with the Lamm-equation solver and reports both RMSDs; one well
-above the other says the run was too short for the closed form.
+(down to 0.5 % each, at most 16) with the Lamm-equation solver and with the closed form, and
+reports both RMSDs; the solver's well above the closed form's says the run was too short for it.
 
 **What one equilibrium scan determines.** A band's position gives its density, 1/v̄, and its area
 the signal. Its width is set by the molar mass *and* by any spread in density, and NNLS can trade
@@ -678,7 +678,7 @@ axes vary; `mask_w_k_v()` puts molar mass on the first axis.
 | CsCl run, unit test `RecoversVbarFromOneGradientRun` | 1.5 M CsCl, 48 krpm, 2 h, 6 scans; 10 S, *f/f₀* 1.5, v̄ 0.80 | 5 × 3 × 5 | v̄ 0.8000, *s* 10.000 S, RMSD 1.6 × 10⁻⁵; the same cell in water is refused | 75 solves, 11.8 s |
 | Band forming, `RecoversVbarFromABandFormingRun` | 15 µL lamella with 0.3 M sucrose onto 1.5 M CsCl; same solute | 3 × 1 × 5 | v̄ 0.8000, *s* 10.000 S, RMSD 1.0 × 10⁻⁶ | 15 solves, 18.3 s, plus ≈ 12 s for the band-forming table |
 | ABDE-like, ASTFVM per point | AAV empty (64 S, v̄ 0.763, 0.3 OD) and full (95 S, v̄ 0.709, 0.5 OD) in 2.8 M CsCl, 48 krpm, 9.7 h, 3 × 10⁻³ OD noise; **last scan only** | 5 × 1 × 9, v̄ step 0.01 | RMSD 1.58 — the v̄ grid is far too coarse for the bands | 45 solves, 883 s |
-| ABDE-like, closed form (`"equilibrium": true`) | the same | 5 × 1 × 161, v̄ step 0.0005 | RMSD 2.94 × 10⁻³ (noise 3 × 10⁻³). Empty: v̄ 0.76305, density 1.3105 (1.3106), signal 0.3001. Full: v̄ 0.70897, density 1.4105 (1.4104), signal 0.5001. Empty fraction 37.5 % (37.5 %). Refitted with the ASTFVM (`verify`, 30 solutes): RMSD 2.9404 × 10⁻³ | 805 profiles, 0.6 s; verify ≈ 16 min |
+| ABDE-like, closed form (`"equilibrium": true`) | the same | 5 × 1 × 161, v̄ step 0.0005 | RMSD 2.94 × 10⁻³ (noise 3 × 10⁻³). Empty: v̄ 0.76305, density 1.3105 (1.3106), signal 0.3001. Full: v̄ 0.70897, density 1.4105 (1.4104), signal 0.5001. Empty fraction 37.5 % (37.5 %). Refitted with the ASTFVM (all 30 solutes, before `verify` took a subset): RMSD 2.9404 × 10⁻³ | 805 profiles, 0.6 s; verify ≈ 16 min |
 | Closed form, `EquilibriumFitFindsEachBandsDensity` | two bands (v̄ 0.83 and 0.80) in the 1.5 M CsCl gradient, noise-free, from the closed form | 5 × 1 × 71 (*M*, *f/f₀*, v̄) | each band's v̄ to 10⁻⁴, shares 0.375 / 0.625 | 355 profiles, 0.2 s |
 
 The contrast the gate reports for a gradient cell (19–100 (mL/g)⁻¹ above) is far beyond any D₂O
@@ -691,6 +691,36 @@ interpolation, mesh refinement (sampled with a debugger) — not to one fixable 
 forming steps at the band-forming table's interval (≥ 5 s). And `NO_DB` builds run serially (§3D).
 For velocity data in a gradient that is the price; for an equilibrium scan the closed form removes
 it.
+
+### Real data: ABDE run 2098
+
+AAV in PBS (1.00552 g/mL) loaded at 1.40 g/mL CsCl — 3.105 M by the component's density
+polynomial on the PBS base — 48 krpm, 20 °C, the edit keeping the scan at 9.5 h; 61 wavelengths,
+230–290 nm, each fitted on its own with the closed form (*M* 2–20 MDa, *f/f₀* held, v̄ 0.62–0.86
+in steps of 0.0005: 1924 points, ≈ 1 s per wavelength), RI noise fitted. CsCl's *s* was set so its
+equilibrium gradient is ω²*r*/β at the loading concentration (item 9 below): 0.393 S for
+β = 1.25 × 10⁹, with 1.20 and 1.30 × 10⁹ as the bracket.
+
+| Band (radius) | Density, g/mL, 61 wavelengths | Across β 1.20–1.30 × 10⁹ | Ideal neutral CsCl (1.06 S) | A₂₆₀/A₂₈₀ of its signal | Reading |
+|---|---|---|---|---|---|
+| upper (6.165 cm) | 1.3442 ± 0.0010 | 1.340–1.347 | 1.257–1.262 | 0.51 | protein: empty capsids |
+| main (6.675 cm) | 1.3994 ± 0.0007 | 1.399–1.400 | 1.387–1.389 | 1.16 | DNA-loaded: full capsids |
+| heavy shoulder (6.76–7.1 cm) | ≈ 1.433 | 1.431–1.435 | ≈ 1.48 | 1.32 | denser, DNA-rich particles |
+
+The main band sits next to the cell's isoconcentration point, where the density is the loading
+density whatever the gradient's steepness, so its density hardly depends on the CsCl model. The
+upper band is half a centimetre away and moves with it. The data prefer the β-matched gradient
+where the signal is strongest: at 230 nm (the upper band's peak is 0.59 OD) its RMSD is
+5.2 × 10⁻³, the ideal neutral model's 1.8 × 10⁻². The shares are of absorbance at each wavelength,
+not of particles: a particle ratio needs the empty and full capsids' extinction coefficients.
+
+The closed form holds here. Refitting the 16 largest solutes of the 260 nm fit (55 % of its
+signal) gives RMSD 1.787 × 10⁻² with the ASTFVM and 1.775 × 10⁻² with the closed form — the same
+subset, so the unexplained rest costs both alike. And AAV-sized particles simulated with the ASTFVM
+in this run's gradient (3.6 MDa at 1.344 g/mL, 5.4 MDa at 1.399) put the full band where the
+closed form does, to 0.2 % of its peak; the empty band, nearer the meniscus where the gradient is
+still forming, lags 0.006 cm behind its equilibrium place — about −0.001 g/mL in the fitted
+density, inside the β bracket.
 
 ### Limits, and defects found in the ported code
 
@@ -727,12 +757,6 @@ For the branch's author; none is worked around here except where noted.
 
 ### Not done
 
-* Real data. The ABDE run supplied (AAV, 61 wavelengths, last scan at 9.5 h) loads through its
-  edits and fits in seconds with the closed form. Its solution record holds the PBS base only
-  (1.00552 g/mL); the reference channel's description, the bands forming during the run and the
-  absence of any UV-absorbing background say the gradient former is CsCl, at a loading
-  concentration not recorded. The fitted densities move by 0.02–0.03 g/mL per 0.2 M assumed, and
-  with the CsCl model (item 9 above), so no density from this run is reported here.
 * The desktop and MPI programs: they need the buffer's co-sedimenting components loaded with the
   solution and the ASTFVM selectable, exactly as the cosedimenting 2DSA does.
 * Molar mass from ABDE: fit the approach to equilibrium (all scans, ASTFVM) — the hydrodynamics

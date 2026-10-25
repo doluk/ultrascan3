@@ -191,7 +191,7 @@ class US_3dsaCli
       static bool   load_edited( const QString&, US_DataIO::EditedData&, QString& );
 
       // RMSD of a fit's solutes simulated by the Lamm-equation solver
-      static double verify_with_solver( QList<US_SolveSim::DataSet*>&, const US_3dsaProcess::Result&, int, int&, double& );
+      static double verify_with_solver( QList<US_SolveSim::DataSet*>&, const US_3dsaProcess::Result&, int, int&, double&, double& );
 
       // Concentration-weighted attribute of a model
       static double weighted( const US_Model&, int attr );
