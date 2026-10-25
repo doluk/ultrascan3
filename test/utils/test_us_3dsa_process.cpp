@@ -316,6 +316,37 @@ US_Buffer    gradient_buffer( double molar )
    return b;
 }
 
+// The buffer of a band-forming cell: the cell holds the CsCl buffer, and the
+// sample is layered on from a lamella of buffer with sucrose in it.  The
+// lamella is still the lighter (1.04 g/mL against 1.19), so the band is
+// stable; its sucrose diffuses down while the CsCl sediments.
+US_Buffer band_forming_buffer( double cscl_molar, double sucrose_molar )
+{
+   US_Buffer         b        = gradient_buffer( cscl_molar );
+   const double      dtab[6]  = { 0.0, -0.21963, 13.23726, -1.83647, 0.0, -25.13871 };
+   const double      vtab[6]  = { 0.0, -52.13491, 107.94530, 0.0, 11916.33984, 0.0 };
+   const double      scale[6] = { 1.0, 1.0e-3, 1.0e-2, 1.0e-3, 1.0e-4, 1.0e-6 };
+
+   US_CosedComponent su;
+   su.id          = 3;
+   su.componentID = "86";
+   su.GUID        = "3dsa-test-sucrose";
+   su.name        = "Sucrose";
+   for ( int jj = 0; jj < 6; jj++ )
+   {
+      su.dens_coeff[jj] = dtab[jj] * scale[jj];
+      su.visc_coeff[jj] = vtab[jj] * scale[jj];
+   }
+   su.s_coeff    = 0.0;
+   su.d_coeff    = 5.2e-6;
+   su.vbar       = 0.63;
+   su.conc       = sucrose_molar;
+   su.overlaying = true;
+   b.description = "Band forming on CsCl";
+   b.cosed_component << su;
+   return b;
+}
+
 US_SimulationParameters gradient_simparams()
 {
    US_SimulationParameters sp;
@@ -335,6 +366,18 @@ US_SimulationParameters gradient_simparams()
    sp.speed_step[0].rotorspeed        = GRAD_RPM;
    sp.speed_step[0].acceleration      = 400;
    sp.speed_step[0].acceleration_flag = true;
+   return sp;
+}
+
+// The same run, with the sample layered on from a 15 uL lamella through a
+// band-forming centerpiece
+US_SimulationParameters band_forming_simparams()
+{
+   US_SimulationParameters sp = gradient_simparams();
+   sp.band_forming            = true;
+   sp.band_volume             = 0.015;
+   sp.cp_pathlen              = 1.2;
+   sp.cp_angle                = 2.5;
    return sp;
 }
 
@@ -372,10 +415,13 @@ void make_gradient_grid( US_DataIO::RawData& data )
 // One run in a gradient buffer, simulated the way the fit will simulate it:
 // the ASTFVM, from the standard-space model, with the gradient prepared on
 // the same grid the engine will prepare it on.
-US_SolveSim::DataSet* make_gradient_dataset( const US_Model& truth_20w, const US_Buffer& buffer, double nominal_vbar )
+US_SolveSim::DataSet* make_gradient_dataset( const US_Model&                truth_20w,
+                                             const US_Buffer&               buffer,
+                                             double                         nominal_vbar,
+                                             const US_SimulationParameters& run_sp = gradient_simparams() )
 {
    US_DataIO::RawData      sim;
-   US_SimulationParameters sp = gradient_simparams();
+   US_SimulationParameters sp = run_sp;
    make_gradient_grid( sim );
    US_SimulationParameters::computeSpeedSteps( &sim.scanData, sp.speed_step );
 
@@ -412,7 +458,7 @@ US_SolveSim::DataSet* make_gradient_dataset( const US_Model& truth_20w, const US
    d->run_data.xvalues     = sim.xvalues;
    d->run_data.scanData    = sim.scanData;
 
-   d->simparams = gradient_simparams();
+   d->simparams = run_sp;
    US_SimulationParameters::computeSpeedSteps( &d->run_data.scanData, d->simparams.speed_step );
    d->solution_rec.buffer = buffer;
 
@@ -968,4 +1014,106 @@ TEST_F( TestUS3dsaProcess, RecoversVbarFromOneGradientRun )
    US_3dsaProcess::Result                rplain;
    EXPECT_FALSE( refused.fit( gradient_parameters(), rplain ) );
    EXPECT_TRUE( refused.lastError().contains( "vbar" ) ) << refused.lastError().toStdString();
+}
+
+// A band-forming run onto CsCl: the sample starts as a thin lamella with
+// sucrose in it.  The engine prepares both gradients -- the sucrose that
+// diffuses out of the lamella and the CsCl that sediments -- and the band's
+// passage through them determines vbar from the one run.
+TEST_F( TestUS3dsaProcess, RecoversVbarFromABandFormingRun )
+{
+   const US_SimulationParameters         bfe = band_forming_simparams();
+   std::unique_ptr<US_SolveSim::DataSet> band(
+      make_gradient_dataset( gradient_truth(), band_forming_buffer( GRAD_CSCL, 0.3 ), 0.80, bfe ) );
+
+   // The band is a band: most of the signal of the last scan sits within
+   // half a centimetre
+   const US_DataIO::Scan& last  = band->run_data.scanData.last();
+   double                 total = 0.0;
+   double                 peak  = 0.0;
+   int                    kpeak = 0;
+   for ( int jj = 0; jj < last.rvalues.size(); jj++ )
+   {
+      total += last.rvalues[jj];
+      if ( last.rvalues[jj] > peak )
+      {
+         peak  = last.rvalues[jj];
+         kpeak = jj;
+      }
+   }
+   double in_band = 0.0;
+   for ( int jj = 0; jj < last.rvalues.size(); jj++ )
+   {
+      if ( std::fabs( band->run_data.xvalues[jj] - band->run_data.xvalues[kpeak] ) < 0.25 )
+      {
+         in_band += last.rvalues[jj];
+      }
+   }
+   ASSERT_GT( total, 0.0 );
+   EXPECT_GT( in_band / total, 0.8 );
+
+   QList<US_SolveSim::DataSet*> one{ band.get() };
+   QTemporaryDir                tdir;
+   QString                      msg;
+   ASSERT_TRUE( US_3dsaProcess::prepare_timestates( one, tdir.path(), msg ) ) << msg.toStdString();
+   ASSERT_TRUE( US_3dsaProcess::prepare_gradients( one, msg ) ) << msg.toStdString();
+   ASSERT_FALSE( band->fvm.isNull() );
+   EXPECT_NE( band->fvm->cosed(), nullptr );
+   EXPECT_NE( band->fvm->band_forming(), nullptr );
+   std::printf( "\n  band-forming cell: density %.4f to %.4f g/mL\n", band->fvm->density_lo(), band->fvm->density_hi() );
+   EXPECT_GT( band->fvm->density_hi() - band->fvm->density_lo(), 0.05 );
+
+   US_3dsaProcess         proc( one );
+   US_3dsaProcess::Result result;
+   QObject::connect(
+      &proc, &US_3dsaProcess::message_update, []( QString m ) { std::printf( "  | %s\n", m.toStdString().c_str() ); } );
+
+   // Each band-forming solve steps at the sucrose gradient's few seconds, so
+   // the grid is cut to the vbar axis and a few s values around the truth
+   US_3dsaProcess::Parameters parms = gradient_parameters();
+   parms.x_min                      = 8.0e-13;
+   parms.x_max                      = 12.0e-13;
+   parms.x_res                      = 3;
+   parms.y_min                      = 1.5;
+   parms.y_max                      = 1.5;
+   parms.y_res                      = 1;
+
+   ASSERT_TRUE( proc.fit( parms, result ) ) << proc.lastError().toStdString();
+   std::printf( "\n  %s\n  weighted vbar %.4f   weighted s %.3f S\n",
+                result.report.toStdString().c_str(),
+                weighted_vbar( result.model ),
+                weighted_s( result.model ) * 1.0e13 );
+
+   EXPECT_NEAR( weighted_vbar( result.model ), 0.80, 0.005 );
+   EXPECT_NEAR( weighted_s( result.model ) * 1.0e13, 10.0, 0.5 );
+   EXPECT_LT( result.rmsd, 1.0e-3 );
+}
+
+// A single-scan series -- an ABDE edit keeps the equilibrium scan -- cannot
+// resolve both s and f/f0, and the engine says so; it says nothing once one
+// of them is held, or when the data carry the approach to equilibrium.
+TEST_F( TestUS3dsaProcess, NotesAnUnresolvableEquilibriumGrid )
+{
+   US_SolveSim::DataSet one_scan;
+   US_DataIO::Scan      sc;
+   one_scan.run_data.scanData << sc;
+   US_SolveSim::DataSet two_scans;
+   two_scans.run_data.scanData << sc << sc;
+
+   QList<US_SolveSim::DataSet*> eq{ &one_scan };
+   QList<US_SolveSim::DataSet*> vel{ &two_scans };
+   QList<US_SolveSim::DataSet*> mixed{ &one_scan, &two_scans };
+
+   US_3dsaProcess::Parameters   parms = gradient_parameters(); // s, f/f0, vbar
+   EXPECT_TRUE( US_3dsaProcess::equilibrium_note( eq, parms ).contains( "molar mass" ) );
+   EXPECT_TRUE( US_3dsaProcess::equilibrium_note( vel, parms ).isEmpty() );
+   EXPECT_TRUE( US_3dsaProcess::equilibrium_note( mixed, parms ).isEmpty() );
+
+   parms.y_min = parms.y_max = 1.5;
+   parms.y_res               = 1;
+   EXPECT_TRUE( US_3dsaProcess::equilibrium_note( eq, parms ).isEmpty() );
+
+   parms.s_mask = US_3dsaProcess::mask_s_d_v();
+   parms.y_res  = 3;
+   EXPECT_FALSE( US_3dsaProcess::equilibrium_note( eq, parms ).isEmpty() );
 }

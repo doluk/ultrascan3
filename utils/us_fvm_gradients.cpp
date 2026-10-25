@@ -201,6 +201,11 @@ bool US_FvmGradients::prepare( const US_Buffer&               buffer,
       ( cc.overlaying ? upper : lower )[cc.name] = cc;
    }
 
+   // The buffer editor gives every component the base buffer's density and
+   // viscosity as its constant coefficient, so the base is their mean, as
+   // US_Math_BF takes it.  (The cosedimenting 2DSA sums them, which is right
+   // only for a single base component.)
+   int nbase = 0;
    for ( const US_CosedComponent& cc : components )
    {
       if ( !cc.overlaying && lower.contains( cc.name ) && std::fabs( lower[cc.name].conc - cc.conc ) < GSL_ROOT5_DBL_EPSILON &&
@@ -208,7 +213,14 @@ bool US_FvmGradients::prepare( const US_Buffer&               buffer,
       {
          base_density += cc.dens_coeff[0];
          base_viscosity += cc.visc_coeff[0];
+         nbase++;
       }
+   }
+
+   if ( nbase > 0 )
+   {
+      base_density /= nbase;
+      base_viscosity /= nbase;
    }
 
    if ( base_density <= 0.0 || base_viscosity <= 0.0 )
@@ -298,7 +310,7 @@ bool US_FvmGradients::prepare( const US_Buffer&               buffer,
       bfg_->calculate_gradient( sparms, &work );
    }
 
-   measure_span( grid );
+   measure_span( buffer, grid );
 
    if ( !std::isfinite( dens_lo ) || !std::isfinite( dens_hi ) )
    {
@@ -310,7 +322,7 @@ bool US_FvmGradients::prepare( const US_Buffer&               buffer,
    return true;
 }
 
-void US_FvmGradients::measure_span( const US_DataIO::RawData& grid )
+void US_FvmGradients::measure_span( const US_Buffer& buffer, const US_DataIO::RawData& grid )
 {
    const int       npts = grid.xvalues.size();
    QVector<double> xx   = grid.xvalues;
@@ -324,8 +336,8 @@ void US_FvmGradients::measure_span( const US_DataIO::RawData& grid )
    {
       // As US_LammAstfvm::AdjustSD forms them: the buffer's own values, then
       // each gradient's increment.
-      dens.fill( base_density );
-      visc.fill( base_viscosity );
+      dens.fill( buffer.density );
+      visc.fill( buffer.viscosity );
 
       if ( cosed_ )
       {

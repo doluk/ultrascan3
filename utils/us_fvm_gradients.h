@@ -109,7 +109,7 @@ class US_UTIL_EXTERN US_FvmGradients
 
    private:
       // Lowest and highest density over the cell at the grid's scan times
-      void                                              measure_span( const US_DataIO::RawData& );
+      void                                              measure_span( const US_Buffer&, const US_DataIO::RawData& );
 
       QList<US_CosedComponent>                          components; // What cosed_ points at
       QScopedPointer<US_LammAstfvm::CosedData>          cosed_;

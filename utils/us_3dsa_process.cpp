@@ -125,6 +125,46 @@ bool US_3dsaProcess::prepare_gradients( QList<US_SolveSim::DataSet*>& dsets, QSt
    return true;
 }
 
+QString US_3dsaProcess::equilibrium_note( const QList<US_SolveSim::DataSet*>& dsets, const Parameters& parms )
+{
+   if ( dsets.isEmpty() )
+   {
+      return QString();
+   }
+
+   for ( const US_SolveSim::DataSet* dset : dsets )
+   {
+      if ( dset->run_data.scanData.size() != 1 )
+      {
+         return QString();
+      }
+   }
+
+   // The axes that vary, other than vbar: equilibrium fixes one combination
+   // of them (the molar mass), so two leave a direction undetermined.
+   const int attrs[3] = { ( parms.s_mask >> 6 ) & 7, ( parms.s_mask >> 3 ) & 7, parms.s_mask & 7 };
+   const int nres[3]  = { parms.x_res, parms.y_res, parms.z_res };
+   int       nvary    = 0;
+
+   for ( int ax = 0; ax < 3; ax++ )
+   {
+      if ( attrs[ax] != US_Solute::ATTR_V && nres[ax] > 1 )
+      {
+         nvary++;
+      }
+   }
+
+   if ( nvary < 2 )
+   {
+      return QString();
+   }
+
+   return tr( "Every data set holds a single scan, which at sedimentation equilibrium depends on a solute's"
+              " molar mass and vbar only: the grid's two hydrodynamic axes are not both determined, and the"
+              " fit can spread a solute along a line of constant molar mass.  Hold f/f0 (or D) to a single"
+              " value and read molar mass and vbar from the result." );
+}
+
 int US_3dsaProcess::mask_s_k_v()
 {
    return ( US_Solute::ATTR_S << 6 ) | ( US_Solute::ATTR_K << 3 ) | US_Solute::ATTR_V;
@@ -749,7 +789,14 @@ bool US_3dsaProcess::fit( const Parameters& parms, Result& result )
       return false;
    }
 
-   emit                      message_update( contrast_msg );
+   emit          message_update( contrast_msg );
+
+   const QString eq_note = equilibrium_note( dsets, parms );
+
+   if ( !eq_note.isEmpty() )
+   {
+      emit message_update( eq_note );
+   }
 
    // ---- the grid ----------------------------------------------------------
    QList<QVector<US_Solute>> subgrids;
@@ -985,6 +1032,11 @@ bool US_3dsaProcess::fit( const Parameters& parms, Result& result )
                       .arg( result.contrast, 0, 'f', 3 )
                       .arg( result.vbar_resol, 0, 'f', 4 )
                       .arg( result.msecs / 1000.0, 0, 'f', 1 );
+
+   if ( !eq_note.isEmpty() )
+   {
+      result.report += "  " + eq_note;
+   }
 
    emit message_update( result.report );
 

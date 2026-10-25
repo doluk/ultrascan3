@@ -182,6 +182,20 @@ class US_UTIL_EXTERN US_3dsaProcess : public QObject
       //! \returns      True when every data set is ready to simulate
       static bool prepare_gradients( QList<US_SolveSim::DataSet*>&, QString& );
 
+      //! \brief A note for a grid the data cannot resolve: equilibrium data
+      //!
+      //! A series whose every data set holds a single scan is, for practical
+      //! purposes, sedimentation equilibrium (an ABDE edit keeps the last
+      //! scan).  There a solute's profile depends on its molar mass and vbar
+      //! alone, so a grid that varies two hydrodynamic axes (s and f/f0, or s
+      //! and D) has a direction along which every point fits alike.  The fit
+      //! still runs; the note says to hold one of them to a single value and
+      //! to read molar mass and vbar from the result.
+      //! \param dsets  Data sets of the series
+      //! \param parms  Fit inputs
+      //! \returns      The note, or an empty string when the grid is resolvable
+      static QString equilibrium_note( const QList<US_SolveSim::DataSet*>&, const Parameters& );
+
       //! \brief The default axis mask: s, f/f0, vbar
       static int mask_s_k_v( void );
 
