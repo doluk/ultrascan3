@@ -54,3 +54,28 @@ Paper cases (Chaturvedi & Schuck, Chem. Methods 2024) simulated ideally (no conc
 - The BSA remainder of 0.028 fringe sits only in scan 1 at r < 5.95 cm, where the map folds over at the meniscus. Excluding that region gives 0.0027 fringe, equal to the no-skew fit.
 - Mean-subtracting TI noise (which is skewed in the data) adds only about 0.001 fringe; an explicit fit of skewed TI noise is not needed here.
 - Remaining limitations: κ′ was known exactly, skew was simulated without concentration dependence, and the map's fold-over region is not modelled (exclude it, or the first scan, instead).
+
+## Paper data (Chaturvedi & Schuck 2024, Harvard Dataverse) — `paper_data/`
+
+**Check of the skew operator against SEDFIT.** We applied our skew operator (κ′ = 2.69e-5 cm²/fringe) to SEDFIT's unskewed Fig. 3 simulation (`hinderedsingle`) and compared the result with SEDFIT's skewed version (`skewed`). They agree to 0.0029 fringe RMS, against a total skew effect of 0.47 fringe RMS. The largest local difference is 0.18 fringe, in scan 1 at the meniscus. So the two implementations use the same skew model.
+
+**Real data, UltraScan-type ideal 2DSA, without and with C1 correction (κ′ from paper Table 1).**
+- Settings: meniscus and fit range from the SEDFIT fit files; TI+RI noise fitted; data interpolated onto a 0.0007 cm grid.
+- Scans used: all scans for IgG; every 10th scan for BSA 140 mg/ml; every 5th scan for the BSA control.
+- Timing: the rotor acceleration was estimated from scan 1, and the resulting ω²t matches the file headers to within 0.1 %.
+- BSA control meniscus: fitted (6.077 cm).
+
+| data set | fit | RMSD (fringe) | monomer frac / s / f/f0 / MW | dimer frac / s / f/f0 / MW | paper |
+|---|---|---|---|---|---|
+| hIgG 10 mg/ml, 12 mm | 2DSA | 0.0577 | 0.785 / 6.07 / 1.93 / 199 | 0.132 / 9.09 / 3.81 / 948 | c_HS(s₀): 6.44 S 74.1 %; 9.3 S 15.8 %; SEDFIT rmsd 0.041 (ScanRms.dat) |
+| | 2DSA + C1 | 0.0391 | 0.759 / 6.10 / 1.88 / 183 | 0.141 / 8.98 / 2.24 / 468 | |
+| hIgG 46 mg/ml, 1 mm | 2DSA | 0.0978 | main peak at 4.8 S (apparent) | – | 6.73 S 71.1 %; 9.4 S 16.5 % |
+| | 2DSA + C1 | 0.1133 | – | – | |
+| BSA 140 mg/ml, 1 mm | 2DSA | 1.85 (1.88 with bottom 6.60) | main peak at 1.3 S (apparent) | – | 3.9 S; dimer 22 %; rmsd 0.175 |
+| | 2DSA + C1 | 1.98 | – | – | |
+| BSA 0.5 mg/ml (control) | 2DSA | 0.0030 | 0.647 / 4.19 / 1.48 / 73 | 0.236 / 6.34 / 1.65 / 171 | c(s): 4.2 S; dimer 19 %; f/f0 1.43 |
+
+**Interpretation.**
+- **10 mg/ml IgG, 12 mm:** the skew correction lowers the RMSD by 32 %, to the level of the paper's SEDFIT fit (0.039 vs 0.041). It also halves the spurious dimer MW (948 → 468 kDa). What remains (monomer 6.1 vs 6.44 S; dimer MW still too high) is consistent with uncorrected nonideality: k_s·c ≈ 0.1 at 10 mg/ml.
+- **46 and 140 mg/ml:** the ideal 2DSA cannot describe the self-sharpened boundaries (diagonal residual band; RMSD 0.10 and 1.9 fringe). Applying the skew correction on top of this wrong boundary model makes the RMSD worse. The skew correction can therefore be judged on these data only together with a concentration-dependent sedimentation model (e.g. the paper's hindered settling, c_HS(s₀)), which UltraScan's 2DSA does not have.
+- **BSA control:** consistent with the paper (4.19 vs 4.2 S; dimer 24 % vs 19 % within the 5.2–7.6 S window; f/f0 1.48 vs 1.43).

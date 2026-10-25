@@ -16,6 +16,8 @@ SETS = {
                       paper="c_HS(s0): monomer 6.73 S, 71.1 %; dimer 9.4 S, 16.5 %"),
     "BSA140_1mm": dict(win=[("monomer", 2.5, 5.2), ("dimer", 5.2, 7.6)], title="BSA 140 mg/ml, 1 mm",
                        paper="c_HS(s0): monomer 3.9 S; dimer 22 %; rmsd 0.175 fringe (k_S,red 0.66)"),
+    "BSA140_1mm_b660": dict(win=[("monomer", 2.5, 5.2), ("dimer", 5.2, 7.6)], title="BSA 140 mg/ml, 1 mm, bottom 6.60",
+                       paper="c_HS(s0): monomer 3.9 S; dimer 22 %; rmsd 0.175 fringe (k_S,red 0.66)"),
     "BSA05_dilute": dict(win=[("monomer", 2.5, 5.2), ("dimer", 5.2, 7.6)], title="BSA 0.5 mg/ml (control)",
                          paper="c(s): monomer 4.2 S; dimer 19 %; f/f0 1.43"),
 }
