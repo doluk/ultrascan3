@@ -185,21 +185,27 @@ double       US_SolveSim::buoyancy_contrast( QList<DataSet*>& data_sets, double 
    msg              = QString( "" );
    const int ndsets = data_sets.size();
 
-   if ( ndsets < 2 )
-   {
-      msg = tr( "A single data set carries no buoyancy contrast, so vbar is"
-                " not determined by the data at all.  Fitting vbar needs a"
-                " series of runs in buffers of differing density." );
-      return 0.0;
-   }
-
-   // The temperature-corrected density each data set's corrections are built
-   // from.  Reuse data_correction() rather than repeating its water model.
-   QVector<double> rho_tb( ndsets, 0.0 );
+   // The densities the data sample.  A plain buffer gives one: the
+   // temperature-corrected density its corrections are built from (reuse
+   // data_correction() rather than repeating its water model).  A data set
+   // with a gradient gives the lowest and highest density its cell reaches
+   // during the run, so a single such run can carry contrast of its own.
+   QVector<double> rho_pts;
+   QVector<int>    pt_dset;
+   int             ngrad = 0;
 
    for ( int dd = 0; dd < ndsets; dd++ )
    {
-      DataSet*               dset = data_sets[dd];
+      DataSet* dset = data_sets[dd];
+
+      if ( dset->fvm && dset->fvm->is_gradient() )
+      {
+         rho_pts << dset->fvm->density_lo() << dset->fvm->density_hi();
+         pt_dset << dd << dd;
+         ngrad++;
+         continue;
+      }
+
       US_Math2::SolutionData sd;
       sd.density   = dset->density;
       sd.viscosity = dset->viscosity;
@@ -207,33 +213,45 @@ double       US_SolveSim::buoyancy_contrast( QList<DataSet*>& data_sets, double 
       sd.vbar20    = vbar_mid;
       sd.vbar      = US_Math2::adjust_vbar20( vbar_mid, dset->temperature );
       US_Math2::data_correction( dset->temperature, sd );
-      rho_tb[dd] = sd.density_tb;
+      rho_pts << sd.density_tb;
+      pt_dset << dd;
+   }
+
+   const int npts = rho_pts.size();
+
+   if ( npts < 2 )
+   {
+      msg = tr( "A single data set carries no buoyancy contrast, so vbar is"
+                " not determined by the data at all.  Fitting vbar needs a"
+                " series of runs in buffers of differing density, or a run"
+                " whose buffer forms a density gradient." );
+      return 0.0;
    }
 
    // Largest pairwise gain.  A buoyancy term at or below zero means the
-   // species would not sediment in that buffer; skip such pairs rather than
-   // reporting a spurious pole.
+   // species would not sediment at that density; skip such pairs rather
+   // than reporting a spurious pole.
    double gain_max = 0.0;
    int    jmax     = 0;
    int    kmax     = 1;
 
-   for ( int jj = 0; jj < ndsets; jj++ )
+   for ( int jj = 0; jj < npts; jj++ )
    {
-      const double bj = 1.0 - vbar_mid * rho_tb[jj];
+      const double bj = 1.0 - vbar_mid * rho_pts[jj];
       if ( qAbs( bj ) < 1.0e-6 )
       {
          continue;
       }
 
-      for ( int kk = jj + 1; kk < ndsets; kk++ )
+      for ( int kk = jj + 1; kk < npts; kk++ )
       {
-         const double bk = 1.0 - vbar_mid * rho_tb[kk];
+         const double bk = 1.0 - vbar_mid * rho_pts[kk];
          if ( qAbs( bk ) < 1.0e-6 )
          {
             continue;
          }
 
-         const double gain = qAbs( rho_tb[jj] / bj - rho_tb[kk] / bk );
+         const double gain = qAbs( rho_pts[jj] / bj - rho_pts[kk] / bk );
 
          if ( gain > gain_max )
          {
@@ -249,17 +267,23 @@ double       US_SolveSim::buoyancy_contrast( QList<DataSet*>& data_sets, double 
                            : ( gain_max < VBAR_CONTRAST_WARN ) ? tr( "Marginal contrast: vbar will be poorly resolved." )
                                                                : tr( "Adequate contrast." );
 
-   msg = tr( "%1 data sets; densities %2 to %3 g/mL.  Widest pair is"
-             " %4 / %5, giving a contrast of %6 (mL/g)^-1 and a vbar"
+   const QString source =
+      ( pt_dset[jmax] == pt_dset[kmax] ) ? tr( " (both within data set %1's gradient)" ).arg( pt_dset[jmax] + 1 ) : QString();
+   const QString grads = ( ngrad > 0 ) ? tr( "  %1 of them form a density gradient." ).arg( ngrad ) : QString();
+
+   msg = tr( "%1 data sets; densities %2 to %3 g/mL.%9  Widest pair is"
+             " %4 / %5%10, giving a contrast of %6 (mL/g)^-1 and a vbar"
              " resolution near %7 mL/g at 1% precision on the s ratio.  %8" )
             .arg( ndsets )
-            .arg( *std::min_element( rho_tb.begin(), rho_tb.end() ), 0, 'f', 4 )
-            .arg( *std::max_element( rho_tb.begin(), rho_tb.end() ), 0, 'f', 4 )
-            .arg( rho_tb[jmax], 0, 'f', 4 )
-            .arg( rho_tb[kmax], 0, 'f', 4 )
+            .arg( *std::min_element( rho_pts.begin(), rho_pts.end() ), 0, 'f', 4 )
+            .arg( *std::max_element( rho_pts.begin(), rho_pts.end() ), 0, 'f', 4 )
+            .arg( rho_pts[jmax], 0, 'f', 4 )
+            .arg( rho_pts[kmax], 0, 'f', 4 )
             .arg( gain_max, 0, 'f', 3 )
             .arg( vbar_resolution( gain_max, 0.01 ), 0, 'f', 4 )
-            .arg( verdict );
+            .arg( verdict )
+            .arg( grads )
+            .arg( source );
 
    return gain_max;
 }
@@ -540,9 +564,13 @@ DbgLv(2) << "   CR:BF s20wcorr D20wcorr" << dset->s20w_correction
 // << model.components[0].mw << model.components[0].vbar20
 // << model.components[0].D << model.components[0].signal_concentration;
 
-            // Convert to experimental space
-            model.components[ 0 ].s   /= dset->s20w_correction;
-            model.components[ 0 ].D   /= dset->D20w_correction;
+            // Convert to experimental space; the ASTFVM takes 20,W values
+            // and applies the buffer itself, locally
+            if ( !uses_fvm( dset ) )
+            {
+               model.components[0].s /= dset->s20w_correction;
+               model.components[0].D /= dset->D20w_correction;
+            }
 //DbgLv(1) << "CR:     exp.space model s,k,w,v,d,c"
 // << model.components[0].s << model.components[0].f_f0
 // << model.components[0].mw << model.components[0].vbar20
@@ -863,8 +891,11 @@ DbgLv(1) << "CR: cc" << cc << " use_zsol" << use_zsol;
                sd.D20w_correction = dset->D20w_correction;
             }
 
-            model.components[ 0 ].s   /= sd.s20w_correction;
-            model.components[ 0 ].D   /= sd.D20w_correction;
+            if ( !uses_fvm( dset ) )
+            {
+               model.components[0].s /= sd.s20w_correction;
+               model.components[0].D /= sd.D20w_correction;
+            }
 //DbgLv(1) << "CR:     exp.space model s,k,w,v,d,c"
 // << model.components[0].s << model.components[0].f_f0
 // << model.components[0].mw << model.components[0].vbar20
@@ -1109,8 +1140,11 @@ DbgLv(1)<<" Special case of custom grid";
 
             US_Math2::data_correction( avtemp, sd );
 
-            model.components[ 0 ].s   /= sd.s20w_correction;
-            model.components[ 0 ].D   /= sd.D20w_correction;
+            if ( !uses_fvm( dset ) )
+            {
+               model.components[0].s /= sd.s20w_correction;
+               model.components[0].D /= sd.D20w_correction;
+            }
 
             // Initialize simulation data with the experiment's grid
             US_AstfemMath::initSimData( simdat, *edata, 0.0 );
@@ -2063,7 +2097,8 @@ int US_SolveSim::nnls_noise( const int                noisflag,
 
 // Simulate a single-component model for a data set (simulation data
 //  initialized to the experiment grid), or get the simulation from the cache.
-//  A cache hit skips US_Astfem_RSA::calculate and so its side effects on
+//  A cache hit skips the simulator (US_Astfem_RSA, or US_LammAstfvm for an
+//  ASTFVM data set) and so its side effects on
 //  dset->simparams (timestate load, speed_step expansion, the sim flag);
 //  nothing after the simulation in calc_residuals may depend on them.
 QByteArray US_SolveSim::simulate( US_Model& model, DataSet* dset, US_DataIO::EditedData* edata, US_DataIO::RawData& simdat )
@@ -2101,6 +2136,12 @@ QByteArray US_SolveSim::simulate( US_Model& model, DataSet* dset, US_DataIO::Edi
          dskey->nsimprofs = sparms.sim_speed_prof.size();
          dskey->sim       = sparms.sim;
          dskey->key       = US_SimCache::dataset_key( sparms, *edata );
+
+         // An ASTFVM simulation also depends on the buffer's gradient
+         if ( uses_fvm( dset ) )
+         {
+            dskey->key += US_FvmGradients::key( dset->solution_rec.buffer, sparms );
+         }
       }
 
       simkey = US_SimCache::sim_key( dskey->key, model.components[0] );
@@ -2111,11 +2152,22 @@ QByteArray US_SolveSim::simulate( US_Model& model, DataSet* dset, US_DataIO::Edi
       }
    }
 
-   US_Astfem_RSA astfem_rsa( model, dset->simparams );
+   if ( uses_fvm( dset ) )
+   {
+      US_FvmGradients* grads = dset->fvm.data();
+      US_LammAstfvm    astfvm( model, dset->simparams );
 
-   astfem_rsa.set_debug_flag( dbg_level );
+      astfvm.set_buffer( dset->solution_rec.buffer, grads ? grads->band_forming() : nullptr, grads ? grads->cosed() : nullptr );
+      astfvm.calculate( simdat );
+   }
+   else
+   {
+      US_Astfem_RSA astfem_rsa( model, dset->simparams );
 
-   astfem_rsa.calculate( simdat );
+      astfem_rsa.set_debug_flag( dbg_level );
+
+      astfem_rsa.calculate( simdat );
+   }
 
    if ( simcache != 0 )
    {

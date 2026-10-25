@@ -9,6 +9,7 @@
 #include "us_astfem_rsa.h"
 #include "us_constants.h"
 #include "us_dataIO.h"
+#include "us_fvm_gradients.h"
 #include "us_model.h"
 #include "us_noise.h"
 #include "us_sim_cache.h"
@@ -74,7 +75,24 @@ class US_UTIL_EXTERN US_SolveSim : public QObject
             //! vbar set this; leaving it false preserves the older behaviour
             //! exactly.
             bool                    fit_vbar = false;
+
+            //! \brief Density gradients for an ASTFVM data set, or null
+            //!
+            //! A data set whose simparams select the ASTFVM is simulated by
+            //! US_LammAstfvm, from standard-space (20,W) s, D and vbar: the
+            //! solver applies the buffer's density and viscosity locally,
+            //! through any gradient its components form.  Prepare the
+            //! gradients once (US_FvmGradients::prepare) and set them here;
+            //! a thread needs its own copy.
+            QSharedPointer<US_FvmGradients> fvm;
     };
+
+    //! \brief Whether a data set is simulated by the ASTFVM rather than the
+    //!        ASTFEM
+    static bool uses_fvm( const DataSet* dset )
+    {
+       return dset->simparams.meshType == US_SimulationParameters::ASTFVM;
+    }
 
     //! Class for communicating simulation
     class US_UTIL_EXTERN Simulation
@@ -178,6 +196,12 @@ class US_UTIL_EXTERN US_SolveSim : public QObject
     //! the largest such gain over all pairs of data sets, in (mL/g)^-1.  A
     //! single data set, or a set of runs in one buffer, gives zero: vbar is
     //! then not determined at all, however good the data.
+    //!
+    //! A data set whose buffer forms a density gradient (DataSet::fvm
+    //! prepared) is different: its solutes meet a range of densities within
+    //! the one run, so it contributes the lowest and highest density its
+    //! cell reaches rather than a single value, and can carry contrast on
+    //! its own.
     //!
     //! The densities used are the temperature-corrected ones that
     //! US_Math2::data_correction() forms, not the nominal 20 C buffer

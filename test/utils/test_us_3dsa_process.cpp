@@ -15,7 +15,10 @@
 #include "us_3dsa_process.h"
 #include "us_astfem_math.h"
 #include "us_astfem_rsa.h"
+#include "us_buffer.h"
 #include "us_dataIO.h"
+#include "us_fvm_gradients.h"
+#include "us_lamm_astfvm.h"
 #include "us_math2.h"
 #include "us_model.h"
 #include "us_sim_cache.h"
@@ -243,6 +246,226 @@ double weighted_s( const US_Model& m )
    }
 
    return ( den > 0.0 ) ? ( num / den ) : 0.0;
+}
+
+// ---- a density gradient --------------------------------------------------
+//
+// A cell of CsCl: the salt sediments during the run and forms a density
+// gradient across the cell, so a solute meets a different density at every
+// radius and its own vbar shapes its simulation.  Short and coarse, for a
+// unit test.
+const int    GRAD_RPM       = 48000;
+const double GRAD_MENISCUS  = 6.0;
+const double GRAD_BOTTOM    = 7.2;
+const double GRAD_DELTA_R   = 0.004;
+const int    GRAD_SIMPOINTS = 50;
+const int    GRAD_SCANS     = 6;
+const double GRAD_CSCL      = 1.5; // M
+
+// Water as the buffer's base, plus CsCl as a co-sedimenting component.  The
+// density and viscosity coefficients are etc/bufferComponents.xml's,
+// scaled the way US_Buffer::compositeCoeffs scales them so a polynomial in
+// molar concentration gives g/mL and cP; s, D and vbar are literature-scale
+// values for CsCl.
+US_Buffer    gradient_buffer( double molar )
+{
+   US_Buffer b;
+   b.description = "CsCl gradient";
+   b.density     = BUF_WATER.density;
+   b.viscosity   = BUF_WATER.viscosity;
+   b.manual      = false;
+
+   US_CosedComponent water;
+   water.id            = 1;
+   water.componentID   = "1";
+   water.GUID          = "3dsa-test-water";
+   water.name          = "Water";
+   water.dens_coeff[0] = BUF_WATER.density;
+   water.visc_coeff[0] = BUF_WATER.viscosity;
+   water.s_coeff       = 0.0;
+   water.d_coeff       = 0.0;
+   water.vbar          = 1.0;
+   water.conc          = 1.0;
+   water.overlaying    = false;
+   b.cosed_component << water;
+
+   if ( molar > 0.0 )
+   {
+      const double      dtab[6]  = { 0.0, 0.0, 12.68641, 1.27445, -11.95400, 258.86600 };
+      const double      vtab[6]  = { 0.0, -19.41040, -4.07863, 11.54890, -21.77400, 0.0 };
+      const double      scale[6] = { 1.0, 1.0e-3, 1.0e-2, 1.0e-3, 1.0e-4, 1.0e-6 };
+
+      US_CosedComponent cs;
+      cs.id          = 2;
+      cs.componentID = "13";
+      cs.GUID        = "3dsa-test-cscl";
+      cs.name        = "Cesium chloride";
+      for ( int jj = 0; jj < 6; jj++ )
+      {
+         cs.dens_coeff[jj] = dtab[jj] * scale[jj];
+         cs.visc_coeff[jj] = vtab[jj] * scale[jj];
+      }
+      cs.s_coeff    = 1.06e-13;
+      cs.d_coeff    = 2.0e-5;
+      cs.vbar       = 0.23;
+      cs.conc       = molar;
+      cs.overlaying = false;
+      b.cosed_component << cs;
+   }
+
+   return b;
+}
+
+US_SimulationParameters gradient_simparams()
+{
+   US_SimulationParameters sp;
+   sp.meshType                        = US_SimulationParameters::ASTFVM;
+   sp.simpoints                       = GRAD_SIMPOINTS;
+   sp.radial_resolution               = GRAD_DELTA_R;
+   sp.meniscus                        = GRAD_MENISCUS;
+   sp.bottom                          = GRAD_BOTTOM;
+   sp.bottom_position                 = GRAD_BOTTOM;
+   sp.temperature                     = 20.0;
+   sp.sim                             = false;
+   sp.speed_step[0].duration_hours    = 2;
+   sp.speed_step[0].duration_minutes  = 0.0;
+   sp.speed_step[0].delay_hours       = 0;
+   sp.speed_step[0].delay_minutes     = 0.0;
+   sp.speed_step[0].scans             = GRAD_SCANS;
+   sp.speed_step[0].rotorspeed        = GRAD_RPM;
+   sp.speed_step[0].acceleration      = 400;
+   sp.speed_step[0].acceleration_flag = true;
+   return sp;
+}
+
+// Scans over two hours, with the rotor reaching speed at 400 rpm/s so that
+// omega-squared-t is what a real run records.
+void make_gradient_grid( US_DataIO::RawData& data )
+{
+   const double w2    = std::pow( GRAD_RPM * M_PI / 30.0, 2.0 );
+   const double t_acc = GRAD_RPM / 400.0;
+
+   data.xvalues.clear();
+   data.scanData.clear();
+   data.channel = 'A';
+
+   for ( double rr = GRAD_MENISCUS; rr <= GRAD_BOTTOM + 1.0e-9; rr += GRAD_DELTA_R )
+   {
+      data.xvalues << rr;
+   }
+
+   for ( int ii = 0; ii < GRAD_SCANS; ii++ )
+   {
+      US_DataIO::Scan sc;
+      sc.temperature = 20.0;
+      sc.rpm         = (double) GRAD_RPM;
+      sc.seconds     = 1200.0 * ( ii + 1 );
+      sc.omega2t     = w2 * ( sc.seconds - t_acc ) + w2 * t_acc / 3.0;
+      sc.wavelength  = 280.0;
+      sc.plateau     = 0.0;
+      sc.delta_r     = GRAD_DELTA_R;
+      sc.rvalues     = QVector<double>( data.xvalues.size(), 0.0 );
+      data.scanData << sc;
+   }
+}
+
+// One run in a gradient buffer, simulated the way the fit will simulate it:
+// the ASTFVM, from the standard-space model, with the gradient prepared on
+// the same grid the engine will prepare it on.
+US_SolveSim::DataSet* make_gradient_dataset( const US_Model& truth_20w, const US_Buffer& buffer, double nominal_vbar )
+{
+   US_DataIO::RawData      sim;
+   US_SimulationParameters sp = gradient_simparams();
+   make_gradient_grid( sim );
+   US_SimulationParameters::computeSpeedSteps( &sim.scanData, sp.speed_step );
+
+   QTemporaryDir tmst_dir;
+   const QString tmst = tmst_dir.filePath( "gradient.time_state.tmst" );
+   US_AstfemMath::writetimestate( tmst, sp, sim );
+   sp.simSpeedsFromTimeState( tmst );
+
+   US_FvmGradients grads;
+   QString         msg;
+   const double    t_end = sim.scanData.last().seconds;
+   if ( !grads.prepare( buffer, sp, US_FvmGradients::gradient_grid( sp, t_end, 100, qMin( 0.002, GRAD_DELTA_R ) ), msg ) )
+   {
+      ADD_FAILURE() << msg.toStdString();
+   }
+
+   US_Model      model = truth_20w;
+   US_LammAstfvm astfvm( model, sp );
+   astfvm.set_buffer( buffer, grads.band_forming(), grads.cosed() );
+   astfvm.calculate( sim );
+
+   US_SolveSim::DataSet* d = new US_SolveSim::DataSet;
+   d->run_data.runID       = "gradient";
+   d->run_data.dataType    = "RA";
+   d->run_data.cell        = "1";
+   d->run_data.channel     = "A";
+   d->run_data.wavelength  = "280";
+   d->run_data.expType     = "velocity";
+   d->run_data.meniscus    = GRAD_MENISCUS;
+   d->run_data.bottom      = GRAD_BOTTOM;
+   d->run_data.baseline    = 0.0;
+   d->run_data.plateau     = 0.0;
+   d->run_data.ODlimit     = 1.0e+30;
+   d->run_data.xvalues     = sim.xvalues;
+   d->run_data.scanData    = sim.scanData;
+
+   d->simparams = gradient_simparams();
+   US_SimulationParameters::computeSpeedSteps( &d->run_data.scanData, d->simparams.speed_step );
+   d->solution_rec.buffer = buffer;
+
+   const Buffer base{ buffer.density, buffer.viscosity, 20.0 };
+   d->density                = base.density;
+   d->viscosity              = base.viscosity;
+   d->temperature            = 20.0;
+   d->manual                 = false;
+   d->vbar20                 = nominal_vbar;
+   US_Math2::SolutionData sd = corrections( nominal_vbar, base );
+   d->vbartb                 = sd.vbar;
+   d->s20w_correction        = sd.s20w_correction;
+   d->D20w_correction        = sd.D20w_correction;
+   d->solute_type            = US_3dsaProcess::mask_s_k_v();
+   d->centerpiece_bottom     = GRAD_BOTTOM;
+   return d;
+}
+
+US_Model gradient_truth()
+{
+   US_Model m;
+   m.components.resize( 1 );
+   m.components[0].s                    = 10.0e-13;
+   m.components[0].f_f0                 = 1.5;
+   m.components[0].vbar20               = 0.80;
+   m.components[0].D                    = 0.0;
+   m.components[0].mw                   = 0.0;
+   m.components[0].f                    = 0.0;
+   m.components[0].signal_concentration = 0.5;
+   m.update_coefficients();
+   return m;
+}
+
+// A grid around the gradient truth, with the truth on a grid point.
+US_3dsaProcess::Parameters gradient_parameters()
+{
+   US_3dsaProcess::Parameters p;
+   p.x_min      = 6.0e-13;
+   p.x_max      = 14.0e-13;
+   p.x_res      = 5; // step 2 S
+   p.y_min      = 1.25;
+   p.y_max      = 1.75;
+   p.y_res      = 3; // step 0.25
+   p.z_min      = 0.76;
+   p.z_max      = 0.84;
+   p.z_res      = 5; // step 0.02
+   p.grid_reps  = 1;
+   p.s_mask     = US_3dsaProcess::mask_s_k_v();
+   p.nthreads   = 1;
+   p.noisflag   = 0;
+   p.max_tsols  = 200;
+   p.fit_scales = false;
+   return p;
 }
 
 // Owns a series of datasets and hands out the QList the engine wants.
@@ -679,4 +902,70 @@ TEST_F( TestUS3dsaProcess, CacheDoesNotChangeTheFit )
       EXPECT_EQ( a.vbar20, b.vbar20 ) << "component " << cc;
       EXPECT_EQ( a.signal_concentration, b.signal_concentration ) << "component " << cc;
    }
+}
+
+
+// ---------------------------------------------------------------------------
+// A buffer that forms a density gradient: prepared once per data set, over
+// the whole cell, and only for the ASTFVM.
+// ---------------------------------------------------------------------------
+TEST_F( TestUS3dsaProcess, PreparesTheGradientOfACosedimentingBuffer )
+{
+   std::unique_ptr<US_SolveSim::DataSet> grad( make_gradient_dataset( gradient_truth(), gradient_buffer( GRAD_CSCL ), 0.80 ) );
+   std::unique_ptr<US_SolveSim::DataSet> plain( make_gradient_dataset( gradient_truth(), gradient_buffer( 0.0 ), 0.80 ) );
+
+   QList<US_SolveSim::DataSet*>          list{ grad.get(), plain.get() };
+   QTemporaryDir                         tdir;
+   QString                               msg;
+   ASSERT_TRUE( US_3dsaProcess::prepare_timestates( list, tdir.path(), msg ) ) << msg.toStdString();
+   ASSERT_TRUE( US_3dsaProcess::prepare_gradients( list, msg ) ) << msg.toStdString();
+
+   // The CsCl cell spans a real range of densities; the water cell, though
+   // simulated by the ASTFVM too, prepares nothing
+   ASSERT_FALSE( grad->fvm.isNull() );
+   EXPECT_TRUE( grad->fvm->is_gradient() );
+   EXPECT_TRUE( std::isfinite( grad->fvm->density_lo() ) );
+   EXPECT_GT( grad->fvm->density_lo(), 1.05 );
+   EXPECT_GT( grad->fvm->density_hi() - grad->fvm->density_lo(), 0.05 );
+   EXPECT_TRUE( plain->fvm.isNull() );
+
+   // The ASTFEM would ignore the gradient: refuse rather than fit it wrong
+   grad->simparams.meshType = US_SimulationParameters::ASTFEM;
+   grad->fvm.reset();
+   EXPECT_FALSE( US_3dsaProcess::prepare_gradients( list, msg ) );
+   EXPECT_TRUE( msg.contains( "ASTFVM" ) ) << msg.toStdString();
+}
+
+// ---------------------------------------------------------------------------
+// In a gradient, one run determines vbar: the solute's buoyancy changes along
+// its path, by an amount that depends on its own vbar.  The same species in
+// a plain buffer is still refused.
+// ---------------------------------------------------------------------------
+TEST_F( TestUS3dsaProcess, RecoversVbarFromOneGradientRun )
+{
+   std::unique_ptr<US_SolveSim::DataSet> grad( make_gradient_dataset( gradient_truth(), gradient_buffer( GRAD_CSCL ), 0.80 ) );
+   QList<US_SolveSim::DataSet*>          one{ grad.get() };
+
+   US_3dsaProcess                        proc( one );
+   US_3dsaProcess::Result                result;
+   QObject::connect(
+      &proc, &US_3dsaProcess::message_update, []( QString m ) { std::printf( "  | %s\n", m.toStdString().c_str() ); } );
+
+   ASSERT_TRUE( proc.fit( gradient_parameters(), result ) ) << proc.lastError().toStdString();
+   std::printf( "\n  %s\n  weighted vbar %.4f   weighted s %.3f S\n",
+                result.report.toStdString().c_str(),
+                weighted_vbar( result.model ),
+                weighted_s( result.model ) * 1.0e13 );
+
+   EXPECT_GT( result.contrast, US_SolveSim::VBAR_CONTRAST_WARN );
+   EXPECT_NEAR( weighted_vbar( result.model ), 0.80, 0.005 );
+   EXPECT_NEAR( weighted_s( result.model ) * 1.0e13, 10.0, 0.5 );
+   EXPECT_LT( result.rmsd, 1.0e-3 );
+
+   std::unique_ptr<US_SolveSim::DataSet> plain( make_gradient_dataset( gradient_truth(), gradient_buffer( 0.0 ), 0.80 ) );
+   QList<US_SolveSim::DataSet*>          lone{ plain.get() };
+   US_3dsaProcess                        refused( lone );
+   US_3dsaProcess::Result                rplain;
+   EXPECT_FALSE( refused.fit( gradient_parameters(), rplain ) );
+   EXPECT_TRUE( refused.lastError().contains( "vbar" ) ) << refused.lastError().toStdString();
 }

@@ -162,6 +162,26 @@ class US_UTIL_EXTERN US_3dsaProcess : public QObject
       //! \returns      True when every data set has a loaded timestate
       static bool prepare_timestates( QList<US_SolveSim::DataSet*>&, const QString&, QString& );
 
+      //! \brief Prepare the density gradients of every ASTFVM data set
+      //!
+      //! A buffer with co-sedimenting or co-diffusing components forms a
+      //! density gradient during the run.  Each solute then sediments
+      //! through densities that change along its path, so its simulation
+      //! depends on its own vbar, and a single such run can determine vbar.
+      //! Only the ASTFVM simulates this.
+      //!
+      //! For each data set whose simparams select the ASTFVM and whose buffer
+      //! forms a gradient, this prepares the gradient (US_FvmGradients) over
+      //! the whole cell and the run's duration and sets DataSet::fvm.  A data
+      //! set whose buffer forms a gradient but whose simparams select the
+      //! ASTFEM is an error: the ASTFEM would ignore the gradient.  Timestates
+      //! must be loaded first (prepare_timestates).
+      //!
+      //! \param dsets  Data sets to prepare; their fvm members are set
+      //! \param msg    Returned description of a failure
+      //! \returns      True when every data set is ready to simulate
+      static bool prepare_gradients( QList<US_SolveSim::DataSet*>&, QString& );
+
       //! \brief The default axis mask: s, f/f0, vbar
       static int mask_s_k_v( void );
 

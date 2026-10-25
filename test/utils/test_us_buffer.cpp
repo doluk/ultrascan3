@@ -175,3 +175,48 @@ bool result = testBuffer.readFromDB(mockDb.get(), "123");
 
 EXPECT_FALSE(result);
 }
+
+// A co-sedimenting component's density and viscosity coefficients survive a
+// write to disk and a read back.  The writer used to discard the attribute
+// names and keep five decimals, so a gradient buffer saved to disk read back
+// with no gradient at all.
+TEST_F( US_BufferTest, CosedComponentsSurviveADiskRoundTrip )
+{
+   US_CosedComponent cs;
+   cs.componentID       = "13";
+   cs.GUID              = "cosed-cscl-guid";
+   cs.name              = "Cesium chloride";
+   cs.conc              = 1.5;
+   cs.s_coeff           = 1.06e-13;
+   cs.d_coeff           = 2.0e-5;
+   cs.vbar              = 0.23;
+   cs.overlaying        = false;
+   const double dens[6] = { 0.0, 0.0, 0.1268641, 0.00127445, -0.0011954, 0.000258866 };
+   const double visc[6] = { 0.0, -0.0194104, -0.0407863, 0.0115489, -0.0021774, 0.0 };
+   for ( int jj = 0; jj < 6; jj++ )
+   {
+      cs.dens_coeff[jj] = dens[jj];
+      cs.visc_coeff[jj] = visc[jj];
+   }
+   buffer.cosed_component << cs;
+
+   QTemporaryDir tdir;
+   ASSERT_TRUE( tdir.isValid() );
+   const QString path = tdir.filePath( "cosed_buffer.xml" );
+   ASSERT_TRUE( buffer.writeToDisk( path ) );
+
+   US_Buffer readback;
+   ASSERT_TRUE( readback.readFromDisk( path ) );
+   ASSERT_EQ( readback.cosed_component.size(), 1 );
+
+   const US_CosedComponent& rc = readback.cosed_component[0];
+   EXPECT_EQ( rc.name, cs.name );
+   EXPECT_DOUBLE_EQ( rc.conc, cs.conc );
+   EXPECT_NEAR( rc.s_coeff, cs.s_coeff, 1.0e-18 );
+   EXPECT_NEAR( rc.d_coeff, cs.d_coeff, 1.0e-11 );
+   for ( int jj = 0; jj < 6; jj++ )
+   {
+      EXPECT_NEAR( rc.dens_coeff[jj], dens[jj], 1.0e-12 ) << "density c" << jj;
+      EXPECT_NEAR( rc.visc_coeff[jj], visc[jj], 1.0e-12 ) << "viscosity c" << jj;
+   }
+}

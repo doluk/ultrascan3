@@ -73,6 +73,58 @@ US_3dsaProcess::US_3dsaProcess( QList<US_SolveSim::DataSet*>& dsets, QObject* pa
    abort_flag.storeRelaxed( 0 );
 }
 
+// ---------------------------------------------------------------------------
+// Density gradients of the ASTFVM data sets
+// ---------------------------------------------------------------------------
+bool US_3dsaProcess::prepare_gradients( QList<US_SolveSim::DataSet*>& dsets, QString& msg )
+{
+   msg = QString();
+
+   for ( int dd = 0; dd < dsets.size(); dd++ )
+   {
+      US_SolveSim::DataSet* dset     = dsets[dd];
+      const bool            gradient = US_FvmGradients::forms_gradient( dset->solution_rec.buffer );
+
+      if ( !US_SolveSim::uses_fvm( dset ) || !gradient )
+      {
+         if ( gradient )
+         {
+            msg = tr( "Data set %1: its buffer forms a density gradient, which only the ASTFVM"
+                      " simulates; select the ASTFVM in its simulation parameters." )
+                     .arg( dd + 1 );
+            return false;
+         }
+
+         dset->fvm.reset();
+         continue;
+      }
+
+      if ( dset->simparams.sim_speed_prof.isEmpty() || dset->run_data.scanCount() < 1 || dset->run_data.pointCount() < 2 )
+      {
+         msg = tr( "Data set %1: a gradient needs the run's timestate and at least one scan." ).arg( dd + 1 );
+         return false;
+      }
+
+      const QVector<double>& xx  = dset->run_data.xvalues;
+      const double           drx = ( xx.last() - xx.first() ) / ( xx.size() - 1 );
+      US_DataIO::RawData     grid =
+         US_FvmGradients::gradient_grid( dset->simparams, dset->run_data.scanData.last().seconds, 100, qMin( 0.002, drx ) );
+
+      QSharedPointer<US_FvmGradients> grads( new US_FvmGradients );
+      QString                         gmsg;
+
+      if ( !grads->prepare( dset->solution_rec.buffer, dset->simparams, grid, gmsg ) )
+      {
+         msg = tr( "Data set %1: %2" ).arg( dd + 1 ).arg( gmsg );
+         return false;
+      }
+
+      dset->fvm = grads;
+   }
+
+   return true;
+}
+
 int US_3dsaProcess::mask_s_k_v()
 {
    return ( US_Solute::ATTR_S << 6 ) | ( US_Solute::ATTR_K << 3 ) | US_Solute::ATTR_V;
@@ -613,56 +665,6 @@ bool US_3dsaProcess::fit( const Parameters& parms, Result& result )
       return false;
    }
 
-   // ---- and the series has to be able to determine vbar -------------------
-   const bool   fits_vbar = ( ( ( parms.s_mask >> 6 ) & 7 ) == US_Solute::ATTR_V ||
-                            ( ( parms.s_mask >> 3 ) & 7 ) == US_Solute::ATTR_V || ( parms.s_mask & 7 ) == US_Solute::ATTR_V );
-
-   const double vbar_mid = ( parms.z_min + parms.z_max ) * 0.5;
-   QString      contrast_msg;
-   result.contrast   = US_SolveSim::buoyancy_contrast( dsets, vbar_mid, contrast_msg );
-   result.vbar_resol = US_SolveSim::vbar_resolution( result.contrast, 0.01 );
-
-   if ( fits_vbar && result.contrast < US_SolveSim::VBAR_CONTRAST_REFUSE && !parms.ignore_contrast )
-   {
-      errMsg = tr( "This series cannot determine vbar.  %1" ).arg( contrast_msg );
-      return false;
-   }
-
-   emit                      message_update( contrast_msg );
-
-   // ---- the grid ----------------------------------------------------------
-   QList<QVector<US_Solute>> subgrids;
-   const int                 reps = US_Solute::init_solutes_3d( parms.x_min,
-                                                parms.x_max,
-                                                parms.x_res,
-                                                parms.y_min,
-                                                parms.y_max,
-                                                parms.y_res,
-                                                parms.z_min,
-                                                parms.z_max,
-                                                parms.z_res,
-                                                parms.grid_reps,
-                                                parms.s_mask,
-                                                subgrids );
-
-   if ( reps < 1 || subgrids.isEmpty() )
-   {
-      errMsg = tr( "The grid could not be generated." );
-      return false;
-   }
-
-   result.nsubgrids = subgrids.size();
-   for ( const QVector<US_Solute>& sv : subgrids )
-   {
-      result.ngrid += sv.size();
-   }
-
-   if ( result.ngrid < 1 )
-   {
-      errMsg = tr( "The grid contains no usable points." );
-      return false;
-   }
-
    // ---- worker set-up -----------------------------------------------------
    int nthreads = qMax( 1, parms.nthreads );
 
@@ -705,6 +707,81 @@ bool US_3dsaProcess::fit( const Parameters& parms, Result& result )
             thr_store[tt][dd].simparams = thr_store[0][dd].simparams;
          }
       }
+   }
+
+   // Every data set simulated by the ASTFVM gets its density gradients next,
+   // prepared once on the first thread's copies; each other thread gets its
+   // own copy, since a gradient keeps working state while it is read.
+   {
+      QString grad_msg;
+
+      if ( !prepare_gradients( thr_dsets[0], grad_msg ) )
+      {
+         errMsg = grad_msg;
+         return false;
+      }
+
+      for ( int tt = 1; tt < nthreads; tt++ )
+      {
+         for ( int dd = 0; dd < ndsets; dd++ )
+         {
+            const QSharedPointer<US_FvmGradients>& grads = thr_store[0][dd].fvm;
+            thr_store[tt][dd].fvm.reset( grads ? new US_FvmGradients( *grads ) : nullptr );
+         }
+      }
+   }
+
+   // ---- and the series has to be able to determine vbar -------------------
+   //
+   // Judged on the prepared copies: a data set whose buffer forms a gradient
+   // brings the density span of its own cell.
+   const bool   fits_vbar = ( ( ( parms.s_mask >> 6 ) & 7 ) == US_Solute::ATTR_V ||
+                            ( ( parms.s_mask >> 3 ) & 7 ) == US_Solute::ATTR_V || ( parms.s_mask & 7 ) == US_Solute::ATTR_V );
+
+   const double vbar_mid = ( parms.z_min + parms.z_max ) * 0.5;
+   QString      contrast_msg;
+   result.contrast   = US_SolveSim::buoyancy_contrast( thr_dsets[0], vbar_mid, contrast_msg );
+   result.vbar_resol = US_SolveSim::vbar_resolution( result.contrast, 0.01 );
+
+   if ( fits_vbar && result.contrast < US_SolveSim::VBAR_CONTRAST_REFUSE && !parms.ignore_contrast )
+   {
+      errMsg = tr( "This series cannot determine vbar.  %1" ).arg( contrast_msg );
+      return false;
+   }
+
+   emit                      message_update( contrast_msg );
+
+   // ---- the grid ----------------------------------------------------------
+   QList<QVector<US_Solute>> subgrids;
+   const int                 reps = US_Solute::init_solutes_3d( parms.x_min,
+                                                parms.x_max,
+                                                parms.x_res,
+                                                parms.y_min,
+                                                parms.y_max,
+                                                parms.y_res,
+                                                parms.z_min,
+                                                parms.z_max,
+                                                parms.z_res,
+                                                parms.grid_reps,
+                                                parms.s_mask,
+                                                subgrids );
+
+   if ( reps < 1 || subgrids.isEmpty() )
+   {
+      errMsg = tr( "The grid could not be generated." );
+      return false;
+   }
+
+   result.nsubgrids = subgrids.size();
+   for ( const QVector<US_Solute>& sv : subgrids )
+   {
+      result.ngrid += sv.size();
+   }
+
+   if ( result.ngrid < 1 )
+   {
+      errMsg = tr( "The grid contains no usable points." );
+      return false;
    }
 
    // One simulation cache for the fit, shared by its threads.  Every data set
