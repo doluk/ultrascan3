@@ -2192,6 +2192,19 @@ void US_LammAstfvm::LigandField( const double t, const int N, const double* x, d
    {
       const double temp = simparams.temperature + K0;
 
+      if ( bandFormingGradient->simparms.meshType != US_SimulationParameters::ASTFEM &&
+           bandFormingGradient->conc_bfg_data.scanData.size() > 1 &&
+           bandFormingGradient->upper_comps.size() == 1 )
+      {  // The gradient was precomputed on a grid and the ligand is its only
+         //  component, so its concentration is the gradient's: interpolate
+         //  it instead of summing the eigenfunction series at every point
+         QVector<double> dens( N, 0.0 );
+         QVector<double> visc( N, 0.0 );
+         std::fill( lig, lig + N, 0.0 );
+         bandFormingGradient->interpolateCCodiff( N, x, t, temp, dens.data(), visc.data(), lig );
+         return;
+      }
+
       for ( int jf = 0; jf < N; jf++ )
       {
          lig[jf] = bandFormingGradient->calc_comp_conc( x[jf], t, temp, exch_lig_comp );
