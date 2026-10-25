@@ -2028,7 +2028,13 @@ void
    double*   MemDouble = _MemDouble.data();
    double*   flux_p[3];
 
-   const double dt2    = dt_ * 0.5;
+   // Time weighting of the corrector step: dtI on the fluxes at t+dt (matrix),
+   // dtE on the fluxes at t (rhs). theta_impl = 0.5 is Crank-Nicolson, which
+   // leaves the stiff diffusive grid modes (D*dt/h^2 >> 1) undamped; the
+   // traced-foot flux at t does not cancel them exactly, so they can grow on
+   // fine meshes. theta_impl slightly above 0.5 damps them.
+   const double dtI    = dt_ * theta_impl;
+   const double dtE    = dt_ - dtI;
    double*      xt     = MemDouble;
    double*      xi     = xt + Ng;
    double*      xg0    = xi + Ng;
@@ -2217,9 +2223,9 @@ void
    {
       const double h = 0.5 * ( x1[( i - 1 ) / 2 + 1] - x1[( i - 1 ) / 2] );
       Mtx[i][0]      = 0.0;
-      Mtx[i][1]      = h / 24.0 + dt2 * ( flux_p[0][i - 1] - flux_p[0][i] );
-      Mtx[i][2]      = h * 22.0 / 24.0 + dt2 * ( flux_p[1][i - 1] - flux_p[1][i] );
-      Mtx[i][3]      = h / 24.0 + dt2 * ( flux_p[2][i - 1] - flux_p[2][i] );
+      Mtx[i][1]      = h / 24.0 + dtI * ( flux_p[0][i - 1] - flux_p[0][i] );
+      Mtx[i][2]      = h * 22.0 / 24.0 + dtI * ( flux_p[1][i - 1] - flux_p[1][i] );
+      Mtx[i][3]      = h / 24.0 + dtI * ( flux_p[2][i - 1] - flux_p[2][i] );
       Mtx[i][4]      = 0.0;
    }
 
@@ -2228,39 +2234,39 @@ void
       const int    k  = i / 2;
       const double hL = 0.5 * ( x1[k] - x1[k - 1] );
       const double hR = 0.5 * ( x1[k + 1] - x1[k] );
-      Mtx[i][0]       = -hL / 24.0 + dt2 * flux_p[0][i - 1];
-      Mtx[i][1]       = hL * 5.0 / 24.0 + dt2 * flux_p[1][i - 1];
-      Mtx[i][2]       = hL * 8.0 / 24.0 + dt2 * flux_p[2][i - 1] + hR * 8.0 / 24.0 - dt2 * flux_p[0][i];
-      Mtx[i][3]       = hR * 5.0 / 24.0 - dt2 * flux_p[1][i];
-      Mtx[i][4]       = -hR / 24.0 - dt2 * flux_p[2][i];
+      Mtx[i][0]       = -hL / 24.0 + dtI * flux_p[0][i - 1];
+      Mtx[i][1]       = hL * 5.0 / 24.0 + dtI * flux_p[1][i - 1];
+      Mtx[i][2]       = hL * 8.0 / 24.0 + dtI * flux_p[2][i - 1] + hR * 8.0 / 24.0 - dtI * flux_p[0][i];
+      Mtx[i][3]       = hR * 5.0 / 24.0 - dtI * flux_p[1][i];
+      Mtx[i][4]       = -hR / 24.0 - dtI * flux_p[2][i];
    }
 
    {
       // Boundary at i = 0
       constexpr int i = 0;
       const double  h = 0.5 * ( x1[1] - x1[0] );
-      Mtx[i][2]       = h * 8.0 / 24.0 - dt2 * flux_p[0][0];
-      Mtx[i][3]       = h * 5.0 / 24.0 - dt2 * flux_p[1][0];
-      Mtx[i][4]       = -h / 24.0 - dt2 * flux_p[2][0];
+      Mtx[i][2]       = h * 8.0 / 24.0 - dtI * flux_p[0][0];
+      Mtx[i][3]       = h * 5.0 / 24.0 - dtI * flux_p[1][0];
+      Mtx[i][4]       = -h / 24.0 - dtI * flux_p[2][0];
    }
    {
       // Boundary at i = Ng
       const int    i = Ng;
       const double h = 0.5 * ( x1[M1] - x1[M1 - 1] );
-      Mtx[i][0]      = -h / 24.0 + dt2 * flux_p[0][i - 1];
-      Mtx[i][1]      = h * 5.0 / 24.0 + dt2 * flux_p[1][i - 1];
-      Mtx[i][2]      = h * 8.0 / 24.0 + dt2 * flux_p[2][i - 1];
+      Mtx[i][0]      = -h / 24.0 + dtI * flux_p[0][i - 1];
+      Mtx[i][1]      = h * 5.0 / 24.0 + dtI * flux_p[1][i - 1];
+      Mtx[i][2]      = h * 8.0 / 24.0 + dtI * flux_p[2][i - 1];
    }
 
    // Assemble the right-hand side
    {
       // Using IntQs as provided
-      rhs[0] = IntQs( x0, u0, 0, -1.0, ke[0], xi[0] ) + dt2 * flux_u[0];
+      rhs[0] = IntQs( x0, u0, 0, -1.0, ke[0], xi[0] ) + dtE * flux_u[0];
       for ( int i = 1; i < Ng; i++ )
       {
-         rhs[i] = IntQs( x0, u0, ke[i - 1], xi[i - 1], ke[i], xi[i] ) + dt2 * ( flux_u[i] - flux_u[i - 1] );
+         rhs[i] = IntQs( x0, u0, ke[i - 1], xi[i - 1], ke[i], xi[i] ) + dtE * ( flux_u[i] - flux_u[i - 1] );
       }
-      rhs[Ng] = IntQs( x0, u0, ke[Ng - 1], xi[Ng - 1], M0 - 1, 1.0 ) + dt2 * ( -flux_u[Ng - 1] );
+      rhs[Ng] = IntQs( x0, u0, ke[Ng - 1], xi[Ng - 1], M0 - 1, 1.0 ) + dtE * ( -flux_u[Ng - 1] );
    }
 
    // Solve the 5-diagonal linear system (solver routine remains unchanged)
@@ -3264,6 +3270,11 @@ void US_LammAstfvm::setStepsPerTransit( const int k )
 void US_LammAstfvm::setFixedDt( const double dt_fixed )
 {
    fixed_dt = dt_fixed;
+}
+
+void US_LammAstfvm::setImplicitWeight( const double theta )
+{
+   theta_impl = qBound( 0.5, theta, 1.0 );
 }
 
 void US_LammAstfvm::setUniformMesh( const bool on )

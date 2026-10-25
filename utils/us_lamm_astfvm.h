@@ -198,6 +198,12 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
       //!                  dt formula is used, i.e. unchanged behavior.
       void setFixedDt( double dt_fixed );
 
+      //! \brief Set the implicit weight of the corrector time step.
+      //! \param theta  0.5 = Crank-Nicolson (marginally stable for stiff
+      //!               diffusive modes on fine meshes), 1 = backward Euler.
+      //!               Clamped to [0.5,1]; default 0.55.
+      void setImplicitWeight( double theta );
+
       //! \brief Keep the initial mesh uniform (skip the setup adaptive refine).
       //! \param on  When true, combined with SetMeshRefineOpt(0), Nv stays
       //!            constant across all steps (= initial elements + 1).
@@ -364,6 +370,7 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
       int     init_Nelem   = 0;      // >0 => initial element count override
       int     steps_per_transit = 0; // >0 => steps-per-transit dt control
       double  fixed_dt     = 0.0;    // >0 => use this dt directly
+      double  theta_impl   = 0.55;   // implicit weight of the corrector step
       bool    uniformMesh  = false;  // true => skip setup adaptive refine
       bool    refineOptSet = false;  // true => external SetMeshRefineOpt honored
       bool    meshSpeedSet = false;  // true => external SetMeshSpeedFactor honored
