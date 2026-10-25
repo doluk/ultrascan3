@@ -625,7 +625,7 @@ unit tests are built with the database.
 | `us_solve_sim.h/.cpp` | **new static** [done] | `buoyancy_contrast( QList<DataSet*>&, double vbar_mid, QString& msg )` returning the largest pairwise gain over the series, plus `vbar_resolution()` and the `VBAR_CONTRAST_REFUSE` / `VBAR_CONTRAST_WARN` thresholds. Evaluates at `SolutionData::density_tb`, per §3A. |
 | `us_model.h/.cpp` | **new enum value** [done] | `THREEDSA` appended to `AnalysisType`; `"3DSA"` added to the `typeText()` map. |
 | `us_solve_sim.h/.cpp` | **new field** [done, Phase 2] | `Simulation::scales`, one amplitude factor per data set, applied to each data set's simulated block before it reaches the A matrix (§6.4). Applied after the simulation cache takes its copy, so the cache only ever holds unscaled simulations. |
-| `us_3dsa_process.h/.cpp` | **new** [done] | The engine (§3B). Since §3D it also gives every data set its own timestate before any solve (`prepare_timestates()`) and runs serially in `NO_DB` builds (`concurrent_solves_safe()`), reporting the thread count it used. |
+| `us_3dsa_process.h/.cpp` | **new** [done] | The engine (§3B). Since §3D it also gives every data set its own timestate before any solve (`prepare_timestates()`) and runs serially in `NO_DB` builds (`concurrent_solves_safe()`), reporting the thread count it used. Since §8.3 each fit carries a `US_SimCache` (`Parameters::use_cache`, on by default), so the amplitude iterations reuse the grid's simulations instead of solving them again. |
 | `us_solve_sim.cpp` | *(not needed)* | `check_grid_size()` was listed for a 3-D extension, but it bounds Lamm-equation *time steps* from `s_max` alone. That is already dimension-independent. |
 | `us_zsolute.h/.cpp` | *(no change)* | Already generalised; kept as the PCSA path. |
 
@@ -679,7 +679,8 @@ against a 3DSA model, not new code.
 
 `us_density_match` becomes the **independent cross-check**: its post-hoc v̄ estimate and 3DSA's
 fitted v̄ should agree on the same data. This is the strongest validation available and is built
-into the plan (§8.3).
+into the plan (§8.3). Run on the harness series, it agrees — but only once its input is corrected:
+`us_density_match` as shipped cannot recover v̄ from the models `us_2dsa` writes (§8.3).
 
 ---
 
@@ -729,6 +730,13 @@ A natural companion: extend the existing `_NORM_CUTOFF_` column culling
 (`utils/us_solve_sim.cpp:616`), which currently drops near-*zero* columns, to also drop
 near-*collinear* ones via a cheap Gram test.
 
+**Not to be confused with the simulation cache.** What the engine does reuse is exact: the
+simulation of the same solute on the same data set, which every amplitude iteration after the first
+asks for again (§6.4) — a simulation depends on the solute and the data set, never on the
+amplitudes. Since §8.3 each fit carries `main`'s `US_SimCache`, keyed on values and returning
+simulations exactly as computed. Over the 33 harness cases it cuts Lamm solves by 69 % and wall
+time by 32 %, with bit-identical models.
+
 ### 6.4 Per-dataset amplitude scale factors
 
 Alternating outer loop around the existing NNLS:
@@ -741,6 +749,9 @@ Alternating outer loop around the existing NNLS:
 4. Fix the gauge (e.g. α₁ ≡ 1, or Σα<sub>e</sub> = *N*) so the scales and the concentrations are
    not jointly degenerate.
 5. Iterate to convergence — expected in a handful of passes, since step 3 is exact given **x**.
+
+Each pass is a full NNLS over the grid, but not a full set of Lamm solves: the simulations do not
+depend on α, and the fit's simulation cache (§6.3) serves every pass after the first.
 
 Report the fitted α<sub>e</sub> in the run report: a value far from the ratio of nominal loading
 concentrations is a strong signal of a data problem.
@@ -785,7 +796,8 @@ Three independent factors, none of them speculative:
 
 **Net expectation, corrected after Phase 2.** With the cache withdrawn, the third axis costs what it
 appears to cost: *n<sub>v</sub>* × a 2DSA run per dataset — **16× at the default** — times the
-number of datasets, plus the amplitude iterations (7 measured, each a full pass).
+number of datasets, plus the amplitude iterations (7 measured, each a full NNLS pass; their Lamm
+solves are paid once, since the fit's simulation cache serves every later pass — §6.3).
 
 Measured throughput on the Phase 2 test geometry (4 scans × 261 points, 200 simpoints) was ≈ 1,200
 Lamm solves per second across four threads. That figure came from the headless build, where
@@ -799,6 +811,12 @@ now measurement-backed rather than estimated.
 Two mitigations remain and both are real — the v̄ axis is intrinsically coarse (§3.4), and only
 depth 0 is proportional to the grid size. A third, the coarse-then-refine v̄ scan of §6.3, is the
 replacement for the cache and should be evaluated before the GUI settles its defaults.
+
+Measured against `us_2dsa` on the harness series (§8.3), serially and before the cache: 3.6 ms of
+wall time per Lamm solve against 2.2 ms. The difference is the NNLS — one problem over the whole
+grid per amplitude pass at `grid_reps` 1, where the 2DSA solves 64-column subgrids — and with the
+cache `grid_reps` 2 more than halves the same fit (case32 against case06, 29 s against 63 s). With the cache in place, the NNLS is now the larger cost; subgrids by default, or
+amplitude passes over the survivors with one confirming pass over the full grid, are the levers.
 
 ### 7.3 Memory
 
@@ -934,10 +952,71 @@ then fixes two things about what was registered:
 Each case then gets a `results/<case>.analysis.json` naming the work tree, each run's edit profile
 and radial range, the records now carrying the decoy, and the truth they no longer mention.
 
-The comparison itself is not automated: `us_2dsa` and `us_density_match` are GUI programs, and
-neither they nor `us_astfem_sim` can be built in a headless container (Qwt has no Qt6 package). The
-harness leaves the runs loadable and says where everything is; driving the two programs is manual
-for now.
+The GUI programs themselves still cannot be built in a headless container (Qwt has no Qt6
+package), but what they compute can be run.
+
+**Run on the synthetic series (2026-10-25).** `US_2dsaProcess` depends on the GUI only through two
+headers it includes and does not use, so a scratch driver ran it unmodified: one fit per cell at
+the GUI defaults (s 1–10 S × f/f₀ 1–4 at 64 × 64, 8 grid repetitions, one iteration, the case's
+noise flag), then a line-for-line port of `us_density_match`'s v̄ extraction — 51 boundary
+fractions from 5 % to 95 %, simple D averaging, `US_Math2::linefit` of density against s at each
+fraction, v̄ = 1/intercept, MW from the 0 % D₂O model. A second, independent port reproduces it to
+10⁻⁹. Both methods saw the same `.auc` files, radii and timestates. Every distribution — 3DSA's,
+DM's and the truth's — is read the way DM reads one, and a species' v̄ is the mean over the
+boundary fractions in the inner 80 % of that species' interval. 31 series, 49 species:
+
+| Input to `us_density_match` | Species v̄ error, median / max (mL/g) | Species MW error, median |
+|---|---|---|
+| s20w as `us_2dsa` writes them, analyte v̄ = the decoy | 0.31 / 14 | 53 % |
+| … with the analyte carrying the true v̄ | 0.23 / 19 | 440 % |
+| water declared as every cell's buffer | 0.073 / 0.12 | 55 % |
+| the same s with the buoyancy correction undone | 0.0014 / 0.073 | 1.6 % |
+| *3DSA, for comparison* | *0.0017 / 0.012* | *0.8 %* |
+
+**`us_density_match` cannot recover v̄ from the models `us_2dsa` writes**, whatever v̄ the analyte
+carries. The 2DSA's s20w is already corrected for buoyancy with the analyte's v̄ₐ, so across the
+series
+
+  s20w ∝ (1 − v̄ρ) / (1 − v̄ₐρ),
+
+while DM fits ρ linear in s and reads v̄ from the intercept — exact only for s ∝ (1 − v̄ρ), that is
+for v̄ₐ = 0. At v̄ₐ = v̄ the s20w are equal and the line is undefined; at any other v̄ₐ the pole at
+ρ = 1/v̄ₐ throws the extrapolation far off. For case02 (true v̄ 0.73, v̄ₐ 0.68) the analytic
+prediction is 0.426 and the pipeline gives 0.422; a sweep of v̄ₐ over 0.60–0.80 returns anything
+from 0.35 to 8.9, or the 1.0 fallback. Declaring water instead removes the buoyancy factor but
+also the viscosity correction, and D₂O's 25 % higher viscosity biases v̄ by +0.04 to +0.12. The fix
+belongs in `us_density_match`, which already reads each component's `vbar20` and the buffer's
+density and can undo the correction as it loads a model; it is drafted for upstream.
+
+**Given the s its line assumes, DM agrees with 3DSA** — the cross-check this section asks for, and
+it passes: the median error of the mean v̄ is 0.0006 for both, per species 0.0014 against 0.0017.
+DM's tail is longer — slow, noisy species (case19's 2 S species, +0.073) and mixtures of equal s and
+different v̄ (case30, +0.018), where 3DSA's worst over all 49 species is 0.012. DM also needs the
+fine 2DSA grid: on 3DSA's own 19 × 9 *s* × *f/f₀* grid its median per-species error triples. And it
+answers the weak-contrast series that 3DSA refuses (case20) without warning, 0.024 off even with
+the corrected input.
+
+**Cost**, serial throughout (§3D):
+
+| | Wall time, 31 series | Lamm solves |
+|---|---|---|
+| DM pipeline, one 2DSA per cell | 949 s | 430,080 |
+| 3DSA, re-simulating the grid every amplitude pass | 2,278 s | 642,540 |
+| 3DSA with the simulation cache | 1,546 s | 197,505 |
+
+Most of 3DSA's excess was simulating the whole grid again on every amplitude pass — case04's seven
+passes cost 39,759 solves for a 3 × 1,881 grid. Each fit now carries a simulation cache (§6.3),
+which brings the solves down to one per grid point and data set with bit-identical models in all
+33 cases. 3DSA is still faster in only 8 of the 31: what remains is the NNLS (§7.2).
+
+**Caveats.** Where the truth sits on a grid point the numbers flatter: 3DSA on case22 and case23,
+and DM whenever the 2DSA was given the true v̄; the decoy runs are the representative ones. 20 °C
+only. The driver is not in the tree — it compiles the 2DSA engine with two GUI headers stubbed out,
+which belongs in a test once that engine lives in `utils/`.
+
+**What remains for Phase 5** is the comparison this section opened with — on real density-series
+data, against `us_density_match` with the corrected input — and the physics synthetic data leaves
+out, the mass of exchangeable hydrogens in D₂O, which shifts both methods.
 
 ### 8.4 Regression
 
@@ -962,15 +1041,16 @@ not identity.
 | **2 — Engine** ✅ | `US_3dsaProcess`, the parallel level runner, the amplitude loop. Driven headless from a test harness. | **Done** — see §3B. v̄ recovered to 1×10⁻⁴ mL/g and the loadings to four decimals on a synthetic three-buffer series; 7 engine tests green. The column cache was measured and withdrawn; two bugs outside 3DSA found and fixed. | 2 wk |
 | **2a — Noise** ✅ | Every run of a series carries its own TI and RI noise. First as `US_SolveSimMDS`, a copy of the solver with data-set-aware noise; then fixed in `US_SolveSim` itself by the review merged in `552482e`, and the copy retired. | **Done** — see §3C. All 31 harness cases pass, including the six that fit noise; on the first fix the worst per-data-set RMSD on the TI case fell 45× and on the RI case 60×, and the merged solver fits noise-free data with injected TI and RI to machine precision. | 3 d |
 | **2b — Solver safety** ✅ | Make the engine independent of the headless solver's process-wide state: a timestate per data set before any solve, serial solves in `NO_DB` builds. Two harness cases that exercise it. | **Done** — see §3D. A series with different run timings returns the right v̄ (0.7295, was 0.7923); eight subgrids at four threads no longer crash and match the serial fit bit for bit; all 33 harness cases pass. The upstream defects are reported, not fixed here. | 1 d |
+| **2c — Cross-check** ✅ | §8.3 on the harness series: `us_2dsa` + `us_density_match` against 3DSA on the same data. The simulation cache it showed was missing. | **Done** — DM agrees with 3DSA once its input is corrected (species v̄ median 0.0014 against 0.0017) and cannot recover v̄ from `us_2dsa`'s models as shipped (median 0.31); the cache cuts 3DSA's Lamm solves by 69 % with bit-identical models. | 1 d |
 | **3 — GUI** | `us_3dsa` main window + dataset-series manager, control panel, gate, plots, launcher registration. | An analyst can run the §8.2 case end to end from the menu. | 3 wk |
 | **4 — MPI** | `3dsa_master`/`3dsa_worker`, parser, model writer, gate in the parser. LIMS coordination in parallel. | Cluster job completes and returns models equivalent to the desktop run. | 2 wk |
-| **5 — Docs & integration** | `doc/manual/source/3dsa/`, help pages wired to `showHelp`, downstream consumer smoke tests, §8.3 cross-check. | Manual builds; consumers verified; cross-check documented. | 1 wk |
+| **5 — Docs & integration** | `doc/manual/source/3dsa/`, help pages wired to `showHelp`, downstream consumer smoke tests, §8.3 cross-check on real data. | Manual builds; consumers verified; real-data cross-check documented. | 1 wk |
 
 Phases 0–2 are the ones that can invalidate the concept, and they are deliberately front-loaded.
-Phases 0, 1, 2, 2a and 2b have now run: §3.4 reproduced (§3A), the shared `utils/` layer in place,
-the engine recovering v̄ from a synthetic series (§3B), every data set of a series carrying its own
-systematic noise (§3C), and the engine independent of the headless solver's process-wide state
-(§3D). The design stands, with D7 withdrawn on measurement. All 33 harness cases pass. Phase 3 can
+Phases 0, 1, 2, 2a, 2b and 2c have now run: §3.4 reproduced (§3A), the shared `utils/` layer in
+place, the engine recovering v̄ from a synthetic series (§3B), every data set of a series carrying
+its own systematic noise (§3C), the engine independent of the headless solver's process-wide state
+(§3D), and the synthetic cross-check against `us_density_match` (§8.3). The design stands, with D7 withdrawn on measurement. All 33 harness cases pass. Phase 3 can
 begin.
 
 ### Future work (explicitly out of scope here)
@@ -992,7 +1072,8 @@ begin.
 | The degeneracy is not accepted and single-dataset 3DSA is requested anyway | Ships a number that looks like a measurement and is not | §8.1 test (2) as an executable guard; the gate refuses rather than warns; the manual states it plainly |
 | LIMS-side work not scheduled | Cluster path unusable; desktop-only release | Raise at Phase 0; Phases 0–3 deliver a usable desktop program independently |
 | Buffer ρ/η metadata inaccurate in real datasets | v̄ biased with the §3.4 gain | Series panel shows provenance of each value; cross-check §8.3 |
-| Wall-clock worse than the §7.2 estimate | Desktop path impractical | Phase 2 measured it headless, before GUI investment; the coarse-then-refine v̄ scan (§6.3) is the remaining lever |
+| Wall-clock worse than the §7.2 estimate | Desktop path impractical | Phase 2 measured it headless, before GUI investment; the simulation cache took the repeated Lamm solves out of the amplitude passes (§8.3). The NNLS is the remaining cost: subgrids by default, amplitude passes over the survivors, and the coarse-then-refine v̄ scan (§6.3) |
+| `us_density_match` disagrees with 3DSA on real data | A correct 3DSA result looks doubtful, or a wrong DM one is believed | §8.3: as shipped, DM cannot recover v̄ from `us_2dsa`'s models — compare against DM with the buoyancy correction undone, and get the fix into `us_density_match` |
 | The headless solver's process-wide state (§3D) is not fixed upstream | `us_3dsa_cli` stays serial, ~4× slower on four cores | Correctness does not depend on it: the engine prepares timestates itself and runs serially where unsafe. Lifting the cap is one function once `main` allocates per call in `NO_DB` builds |
 | Some other shared state in the solver path that §3D's checks did not reach | Wrong fits only under threads, in the desktop build | `ThreadsDoNotChangeTheFit` compares a four-thread and a one-thread fit bit for bit in CI's desktop-style build |
 | Copy-and-adapt duplication (`us_2dsa` → `us_3dsa`) drifts over time | Maintenance burden | Shared code pushed into `utils/` wherever it is genuinely shared; the duplication is confined to the scheduler and GUI, matching the existing `us_pcsa` precedent |
@@ -1011,4 +1092,5 @@ way there: it stacks datasets into one NNLS problem and already has a code path 
 solute with per-dataset corrections. The work is a 3-D grid generator, a scheduler with cubic
 subgrid counts, per-dataset amplitude scaling, a GUI that manages the dataset series and refuses
 under-determined fits, and the MPI plumbing to match. (A column cache to keep the cost down was
-planned and withdrawn on measurement, §6.3; the third axis costs what it appears to cost.)
+planned and withdrawn on measurement, §6.3; the third axis costs what it appears to cost. Exact
+reuse of simulations across the amplitude passes is in, §8.3.)

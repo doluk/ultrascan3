@@ -41,6 +41,7 @@ US_3dsaProcess::Parameters::Parameters()
    fit_scales      = true;
    scale_iters     = 12;
    scale_toler     = 1.0e-4;
+   use_cache       = true;
    ignore_contrast = false;
 }
 
@@ -201,13 +202,15 @@ void US_3dsaProcess::run_task( int thrx, const Task& task, TaskResult& res, cons
    sim_vals.dbg_timing = false;
    sim_vals.scales     = task.scales;
 
-   // Each solute costs one Lamm-equation solve per data set.
+   // Each solute costs one Lamm-equation solve per data set, unless the
+   // cache already holds it; fit() then reports the cache's count instead.
    res.nsimul = task.isolutes.size() * tdsets.size();
 
    // 3DSA is global over a buoyancy-contrast series, and each run in it
    // carries its own TI and RI noise; US_SolveSim fits a separate noise
    // vector per data set.
    US_SolveSim solver( tdsets, thrx + 1, false );
+   solver.set_sim_cache( sim_cache.data() );
 
    if ( abort_flag.loadRelaxed() != 0 )
    {
@@ -704,6 +707,17 @@ bool US_3dsaProcess::fit( const Parameters& parms, Result& result )
       }
    }
 
+   // One simulation cache for the fit, shared by its threads.  Every data set
+   // has its timestate loaded by now, so a reused simulation skips nothing a
+   // solve would have set up.  The cache can claim a good share of the
+   // available memory, so it goes however the fit ends.
+   if ( parms.use_cache )
+   {
+      sim_cache.reset( US_SimCache::create_default() );
+   }
+
+   const auto release_cache = qScopeGuard( [this] { sim_cache.reset(); } );
+
    // Every data set fits vbar per solute, so the buffer corrections must be
    // recomputed from each solute's own vbar rather than taken from the set.
    for ( int tt = 0; tt < nthreads; tt++ )
@@ -874,6 +888,11 @@ bool US_3dsaProcess::fit( const Parameters& parms, Result& result )
    result.variances = final_res.variances;
    result.rmsd      = sqrt( qMax( 0.0, final_res.variance ) );
    result.msecs     = timer.elapsed();
+
+   if ( sim_cache )
+   {
+      result.nsimul = sim_cache->stats().misses;
+   }
 
    result.report = tr( "3DSA: %1 grid points, %2 subgrids, %3 depth levels,"
                        " %4 NNLS solves, %5 Lamm solves, %6 components,"

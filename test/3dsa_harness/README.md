@@ -117,6 +117,15 @@ apparent values move with buffer density. That number is what `us_3dsa_cli`
 reports directly as `vbar_fit`, and `truth_vbar` in the same file is what both
 should land on.
 
+Run that way, it does not land there. `us_2dsa` corrects each cell's *s* for
+buoyancy with the analyte's v̄ before `us_density_match` sees it, and the
+density-against-*s* line `us_density_match` fits holds only for *s* without
+that correction: on the 31 series of this harness it misses by a median
+0.31 mL/g with the decoy, and is no better with the true v̄. With the correction
+undone it agrees with 3DSA (median per-species error 0.0014 against 0.0017).
+The comparison was run by driving the two programs' engines directly; the
+numbers, the cause and the caveats are in `doc/develop/3dsa_design.md` §8.3.
+
 ## The cases
 
 Thirty-three cases. Every species is declared in standard (20W) space;

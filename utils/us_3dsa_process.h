@@ -6,6 +6,7 @@
 
 #include "us_extern.h"
 #include "us_model.h"
+#include "us_sim_cache.h"
 #include "us_solute.h"
 #include "us_solve_sim.h"
 
@@ -64,6 +65,15 @@ class US_UTIL_EXTERN US_3dsaProcess : public QObject
             int    scale_iters; //!< Maximum scale-factor iterations
             double scale_toler; //!< Relative convergence tolerance
 
+            //! Reuse simulations within the fit (see US_SimCache).  A
+            //! simulation does not depend on the amplitude factors, so every
+            //! scale-factor iteration after the first finds its whole grid
+            //! already simulated.  The fit is the same either way; this
+            //! exists to show it.  The cache's size follows
+            //! US_SimCache::default_max_bytes(), which "SimCache=off" in the
+            //! debug text also turns off.
+            bool   use_cache;
+
             //! Proceed even when the buoyancy contrast is below the refusal
             //! threshold.  The fitted vbar is then not a measurement; this
             //! exists for tests and for deliberate diagnostic runs.
@@ -89,7 +99,7 @@ class US_UTIL_EXTERN US_3dsaProcess : public QObject
             int             nsubgrids;  //!< Depth-0 subgrids
             int             ndepths;    //!< Depth levels executed
             int             ntasks;     //!< NNLS solves performed
-            int             nsimul;     //!< Lamm-equation solves performed
+            int             nsimul;     //!< Lamm-equation solves run, not reused
             int             nscaliter;  //!< Scale-factor iterations run
             int             nthreads;   //!< Worker threads actually used
             qint64          msecs;      //!< Wall-clock time
@@ -217,6 +227,10 @@ class US_UTIL_EXTERN US_3dsaProcess : public QObject
 
       // Synthesized timestates for the current fit (see prepare_timestates)
       QScopedPointer<QTemporaryDir>          tmst_dir;
+
+      // Simulations of the current fit, shared by its threads; null between
+      // fits and when Parameters::use_cache is off
+      QScopedPointer<US_SimCache>            sim_cache;
 
       // Worker threads in use for the current fit
       int                                    nthreads_used;

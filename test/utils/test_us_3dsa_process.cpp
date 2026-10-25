@@ -18,6 +18,7 @@
 #include "us_dataIO.h"
 #include "us_math2.h"
 #include "us_model.h"
+#include "us_sim_cache.h"
 #include "us_simparms.h"
 #include "us_solute.h"
 #include "us_solve_sim.h"
@@ -624,5 +625,58 @@ TEST_F( TestUS3dsaProcess, ThreadsDoNotChangeTheFit )
    for ( US_SolveSim::DataSet* dset : series.list() )
    {
       EXPECT_EQ( dset->simparams.tsobj, nullptr );
+   }
+}
+
+// ---------------------------------------------------------------------------
+// The amplitudes change from one iteration to the next, the simulations do
+// not: the cache must cut the solves to one per grid point and data set
+// without changing the answer at all.
+// ---------------------------------------------------------------------------
+TEST_F( TestUS3dsaProcess, CacheDoesNotChangeTheFit )
+{
+   Series series;
+   series.add( BUF_WATER, 1.00 );
+   series.add( BUF_HALF, 0.70 );
+   series.add( BUF_D2O, 1.40 );
+
+   US_3dsaProcess::Parameters parms = base_parameters();
+
+   parms.use_cache = false;
+   US_3dsaProcess         plain( series.list() );
+   US_3dsaProcess::Result rpl;
+   ASSERT_TRUE( plain.fit( parms, rpl ) ) << plain.lastError().toStdString();
+
+   parms.use_cache = true;
+   US_3dsaProcess         cached( series.list() );
+   US_3dsaProcess::Result rca;
+   ASSERT_TRUE( cached.fit( parms, rca ) ) << cached.lastError().toStdString();
+
+   // The unequal loadings take several amplitude iterations, and without the
+   // cache each one simulates the whole grid again
+   const int nsolves = rpl.ngrid * series.list().size();
+   ASSERT_GT( rpl.nscaliter, 1 );
+   EXPECT_GE( rpl.nsimul, rpl.nscaliter * nsolves );
+
+   // "SimCache=off" in the debug text turns the cache off everywhere
+   if ( US_SimCache::default_max_bytes() > 0 )
+   {
+      EXPECT_EQ( rca.nsimul, nsolves );
+   }
+
+   // Simulations are reused exactly as computed, so the fit is identical
+   EXPECT_EQ( rca.nscaliter, rpl.nscaliter );
+   EXPECT_EQ( rca.rmsd, rpl.rmsd );
+   EXPECT_EQ( rca.scales, rpl.scales );
+   ASSERT_EQ( rca.model.components.size(), rpl.model.components.size() );
+
+   for ( int cc = 0; cc < rca.model.components.size(); cc++ )
+   {
+      const US_Model::SimulationComponent& a = rca.model.components[cc];
+      const US_Model::SimulationComponent& b = rpl.model.components[cc];
+      EXPECT_EQ( a.s, b.s ) << "component " << cc;
+      EXPECT_EQ( a.D, b.D ) << "component " << cc;
+      EXPECT_EQ( a.vbar20, b.vbar20 ) << "component " << cc;
+      EXPECT_EQ( a.signal_concentration, b.signal_concentration ) << "component " << cc;
    }
 }
