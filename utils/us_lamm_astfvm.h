@@ -1,7 +1,7 @@
 //! \file us_lamm_astfvm.h
 #ifndef US_LAMMASTFVM_H
 #define US_LAMMASTFVM_H
-
+#include<QFile>
 #include "us_extern.h"
 #include "us_model.h"
 #include "us_simparms.h"
@@ -9,6 +9,7 @@
 #include "us_dataIO.h"
 #include "us_astfem_math.h"
 #include "us_astfem_rsa.h"
+#include "us_math_bf.h"
 
 #ifndef DbgLv
 #define DbgLv(a) if(dbg_level>=a)qDebug() //!< debug-level-conditioned qDebug()
@@ -40,13 +41,27 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
             //! \param s  Sedimentation coefficient
             //! \param D  Diffusion coefficient
             //! \param w2 Omega squared
-            void InitMesh( double, double, double );
+            void InitMesh( double s, double D, double w2);
 
             //! \brief Refine mesh
             //! \param u0     Current concentration array
             //! \param u1     Next concentration array
             //! \param ErrTol Error tolerance
-            void RefineMesh( double*, double*, double );
+            void RefineMesh( const double* u0, const double* u1, double ErrTol);
+
+            //! \brief Refine mesh around a specific point
+            //! \param r_min  Start of refinement region
+            //! \param width  Width of refinement region
+            //! \param ErrTol Error tolerance
+            void RefineAround( double r_min, double width, double ErrTol );
+
+            //! \brief Read-only access to the per-element mesh density array
+            //!        (Ne entries). Used by the solution-trace export.
+            const double* meshDensity() const { return MeshDen; }
+
+            //! \brief Allow/skip the one-time adaptive refine in InitMesh.
+            //!        When false, InitMesh keeps the uniform mesh as-is.
+            bool    allowInitRefine = true;
 
             int     Nv;       //!< Number of grids
             int     Ne;       //!< Number of elements
@@ -66,66 +81,65 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
             int*    Mark;     // ref/unref marker
 
             // private functions
-            void ComputeMeshDen_D3( double*, double* );
-            void Smoothing( int, double*, double, int );
+            void ComputeMeshDen_D3( const double*, const double* ) const;
+            static void Smoothing( int, double*, double, int );
             void Unrefine(  double );
             void Refine(    double );
       };
 
-      //! \brief Salt data for co-sedimenting
-      class SaltData
+      //! \brief data for co-sedimenting
+      class US_UTIL_EXTERN CosedData
       {
          public:
-
-            //! \brief Create salt data
+            //! \brief Create cosed data
             //! \param amodel    Model with all components to simulate
             //! \param asparms   Simulation parameters for all components
             //! \param asim_data Simulation AUC data for all components
-            SaltData( US_Model, US_SimulationParameters,
-                      US_DataIO::RawData* );
+            CosedData( const US_Model&, US_SimulationParameters,
+                      US_DataIO::RawData*, QList<US_CosedComponent>*, double&, double& );
 
-            //! \brief Destroy salt data
-            ~SaltData();
+            //! \brief Default constructor for empty CosedData
+            CosedData();
 
             //! \brief Initialize time & concentration arrays for a component
-            void initSalt();
+            void initCosed(double*, double*, double*);
 
-            //! \brief Interpolate concentrations of salt
+            //! \brief Interpolate concentrations of cosed
             //! \param N     Number of elements in arrays
             //! \param x     X (radius) array
             //! \param t     Current time value
-            //! \param Csalt Concentration of salt for current time
-            void InterpolateCSalt( int, double*, double, double* );
+            //! \param Denscosed Density of cosed buffer for current time
+            //! \param Visccosed Viscosity of cosed buffer for current time
+            void InterpolateCCosed( int, const double*, double, double*, double*);
 
-            US_DataIO::RawData      sa_data;   //!< salt data 1-component
+            US_DataIO::RawData      sa_data;   //!< cosed data 1-component
                                                //!<  simulation for co-sed
+            QMap<QString, US_DataIO::RawData> cosed_comp_data;
+            QList<US_CosedComponent>* cosed_components;
+            US_Model                model;     // cosed data co-sed model
+            US_SimulationParameters simparms;  // cosed simulation parameters
+            bool is_empty;
          private:
 
-            US_Model                model;     // salt data co-sed model
-            US_SimulationParameters simparms;  // salt simulation parameters
 
+
+            int count;
             int     Nx;       // number of points in radial direction
             int     Nt;       // number of points in time direction
-            int     scn;      // index to next available salt data scan
-            double* xs;       // grids in radial direction
-            double  t0;       // 1st time intervals in use.
-            double  t1;       // 2nd time intervals in use.
-            double* Cs0;      // salt concentration for the 1st time interval
-            double* Cs1;      // salt concentration for the 2nd time interval
             int     dbg_level;          // debug level
-            QVector< double > xsVec;    // Vector for xs
-            QVector< double > Cs0Vec;   // Vector for Cs0
-            QVector< double > Cs1Vec;   // Vector for Cs1
+            double dens;
+            double visc;
       };
+      CosedData* saltdata;      // data handle for cosedimenting
 
+      US_Math_BF::Band_Forming_Gradient* bandFormingGradient;
+      QMap<QString, US_DataIO::RawData> cosed_comp_data;
       //! \brief Create Lamm equations AST Finite Volume Method solver
       //! \param rmodel     Reference to model on which solution is based
       //! \param rsimparms  Reference to simulation parameters
       //! \param parent     Parent object (may be 0)
-      US_LammAstfvm( US_Model&, US_SimulationParameters&, QObject* = 0 );
+      US_LammAstfvm( US_Model&, US_SimulationParameters&, QObject* = nullptr );
 
-      //! \brief Destroy FVM solver
-      ~US_LammAstfvm();
 
       //! \brief Main method to calculate FVM solution
       //! \param sim_data Reference to simulated AUC data to produce
@@ -134,7 +148,9 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
 
       //! \brief Set buffer parameters: density, compressibility
       //! \param buffer Buffer object to examine
-      void set_buffer( US_Buffer );
+      //! \param bfg  pointer to Band forming Gradient from previous calculations (may be 0)
+      //! \param csD  pointer to cosed Data from previous calculations (may be 0)
+      void set_buffer( US_Buffer , US_Math_BF::Band_Forming_Gradient* = nullptr, CosedData* = nullptr);
 
       //! \brief Calculate solution for a model component
       //! \param compx Index to model component to use in solution pass
@@ -153,9 +169,91 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
       //! \param flag    Flag for whether to stop
       void setStopFlag ( bool );
 
+      //! \brief validate band forming gradient and recalculate if needed
+      void validate_bfg( void );
+
+      //! \brief validate cosedimenting components and recalculate if needed
+      void validate_csd( void );
+
       //! \brief Set a flag for whether to emit signals for movie mode.
       //! \param flag    Flag for whether or not to operate in show-movie mode.
       void setMovieFlag( bool );
+
+            // ---- Instrumentation & convergence controls (Chapter 4 / ASTFVM) ----
+      // All of the following are opt-in. When none are called and tracing is
+      // off, the solver output is byte-for-byte identical to the default path.
+
+      //! \brief Set the initial number of mesh elements.
+      //! \param n  Element count (>0). When <=0 (default) the value derived
+      //!           from simparams.simpoints is used, i.e. unchanged behavior.
+      void setInitElements( int n );
+
+      //! \brief Set the number of time steps per sedimentation transit.
+      //! \param k  Steps per transit (>0); scales dt ~ 1/k. When <=0 (default)
+      //!           the original dt formula is used, i.e. unchanged behavior.
+      void setStepsPerTransit( int k );
+
+      //! \brief Force a fixed time step, bypassing the dt formula.
+      //! \param dt_fixed  Time step in seconds (>0). When <=0 (default) the
+      //!                  dt formula is used, i.e. unchanged behavior.
+      void setFixedDt( double dt_fixed );
+
+      //! \brief Keep the initial mesh uniform (skip the setup adaptive refine).
+      //! \param on  When true, combined with SetMeshRefineOpt(0), Nv stays
+      //!            constant across all steps (= initial elements + 1).
+      void setUniformMesh( bool on );
+
+      //! \brief Set the mesh-refinement error tolerance (err_tol).
+      //! \param tol  Error tolerance (>0). When <=0 (default) the internal
+      //!             value is used, i.e. unchanged behavior.
+      void setErrorTolerance( double tol );
+
+      //! \brief Enable/disable the per-step solution trace (adaptive mesh +
+      //!        solution + mass). Off by default with zero overhead.
+      //! \param on   Turn tracing on/off.
+      //! \param dir  Output directory (default: US_Settings::tmpDir()).
+      //! \param tag  Run tag used in filenames (default: timestamp).
+      void setSolutionTrace( bool on, const QString& dir = QString(),
+                             const QString& tag = QString() );
+
+      //! \brief Emit a trace record every Nth calculated time step.
+      //! \param every_n_steps  Stride (>=1, default 1 = every step).
+      void setTraceStride( int every_n_steps );
+
+      //! \brief Emit a trace record on a wall-clock cadence rather than a step
+      //!        count (overrides stride, overridden by setTraceTimes). Runs that
+      //!        differ only in dt then record at the SAME model times, which is
+      //!        what makes them directly comparable in a convergence study.
+      //! \param seconds  Cadence in model seconds; <=0 (default) => use stride.
+      void setTraceInterval( double seconds );
+
+      //! \brief Restrict the trace to specific model times (overrides stride).
+      //! \param times  Model times (s); empty (default) => use stride.
+      void setTraceTimes( const QVector<double>& times );
+
+      // ---- Non-constant physics extensions (opt-in) ----
+
+      //! \brief Barus pressure-viscosity coefficient for the compressibility
+      //!        case: eta(r) = eta0 * exp(b_eta * P(r)), giving
+      //!        D(r) = D0 * eta0/eta(r) and the eta0/eta(r) factor in s(r).
+      //! \param b_eta  Coefficient in the same (scaled) units as the buffer
+      //!               compressibility. <=0 (default) => no pressure-viscosity
+      //!               (D constant across r, but still run-condition corrected).
+      void setPressureViscosity( double b_eta );
+
+      //! \brief Prescribe a time-varying intrinsic s(t), D(t) (20C-water
+      //!        referenced) via a table; linearly interpolated, ends clamped.
+      //!        Fewer than 2 points (default) => constant s, D (unchanged).
+      void setGrowthSchedule( const QVector<double>& t_s,
+                              const QVector<double>& s20w_of_t,
+                              const QVector<double>& D20w_of_t );
+
+      //! \brief Prescribe diffusion-limited growth R(t)=sqrt(R0^2+2*kappa*t)
+      //!        with s(t) proportional to R^2 and D(t) proportional to 1/R,
+      //!        anchored so R0 corresponds to the component's base s, D.
+      //! \param R0     Initial (t=0) radius (arbitrary length unit).
+      //! \param kappa  Growth rate; R0<=0 or kappa<=0 (default) => no growth.
+      void setGrowthLawDLG( double R0, double kappa );
 
    signals:
       //! \brief Signal calculation start and give maximum steps
@@ -167,7 +265,7 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
       void calc_progress( int istep );
 
       //! \brief Signal that calculations are complete
-      void calc_done( void );
+      void calc_done( );
 
       //! \brief Signal component progress, giving running component number
       //! \param icomp Current component begun (1,...)
@@ -182,6 +280,19 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
       //! The connected slot receives the scan time value from calc. functions.a
       void new_time     ( double );
 
+      //! \brief Signal that a calculate_ni()/calculate_ra2() step is complete.
+      //! The connected slot receives the integer step count from loops in
+      //! functions calculate_ni() and calculate_ra2().
+      void current_speed    ( int    );
+
+      //! \brief Signal carrying the adaptive mesh (not the output grid).
+      //! The connected slot receives the internal mesh radii, the U=r*C
+      //! array, the vertex count and the current time. Used for live
+      //! visualization of mesh adaptivity; emitted only when tracing/movie.
+      void new_mesh_scan( QVector< double >*, double*, int, double );
+
+
+
    private:
 
       US_Model&                 model;       // input model
@@ -190,7 +301,7 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
 
       US_AstfemMath::MfemData   af_data;     // internal data
 
-      Mesh*   msh;             // radial grid
+//      Mesh*   msh;             // radial grid
 
       int     NonIdealCaseNo;  // non-ideal case number
                                // = 0 : ideal, constant s, D
@@ -204,10 +315,15 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
                                // s = s_0/(1+sigma*C), D=D_0/(1+delta*C)
 
       double  density;         // buffer density
+      double  viscosity;       // buffer viscosity
       double  compressib;      // factor for compressibility
+      bool    manual;          // buffer manual
+      bool    cosed_needed;
+      bool    codiff_needed;
       double  vbar_salt;       // vbar of the salt
+      QList<US_CosedComponent> cosed_components;
 
-      SaltData* saltdata;      // data handle for cosedimenting
+
 
       double  MeshSpeedFactor; // = 1: mesh following sedimentation
                                // = 0: fixed mesh in each time step
@@ -223,20 +339,78 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
 
       double  param_m;         // m of cell (meniscus)
       double  param_b;         // b of cell (bottom)
+      double  param_s20w;      // base s value (sedimentation coefficient)
+      double  param_D20w;       // base D value (diffusion coefficient)
       double  param_s;         // base s value (sedimentation coefficient)
       double  param_D;         // base D value (diffusion coefficient)
+      double  param_s20w_corr = 1.0; // cached s20w_correction (run conditions)
+      double  param_D20w_corr = 1.0; // cached D20w_correction (run conditions)
+      double  param_dens_tb   = 0.0; // run-temp buffer density (rho_ref, case 3)
+      double  param_visc_tb   = 0.0; // run-temp buffer viscosity (eta_ref, case 3)
       double  param_w2;        // rpm-based omega-sq-t, w2=(rpm*pi/30)^2
+      double  param_w2_t0;      // rpm-based omega-sq-t at time t0, w2=(rpm(t0)*pi/30)^2
+      double  param_w2_t0dt;     // rpm-based omega-sq-t at time t0+dt, w2=(rpm(t0+dt)*pi/30)^2
+      QVector<double> rpm_timestate;
+      QVector<double> w2t_timestate;
+      QVector<int> sim_speed_prof_idx_timestate;
 
       double  err_tol;         // error tolerance for mesh refinement
 
-      double  d_coeff[ 6 ];    // SD Adjust buffer density coefficients
-      double  v_coeff[ 6 ];    // SD Adjust buffer viscosity coefficients
+      double  d_coeff[ 6 ]{};    // SD Adjust buffer density coefficients
+      double  v_coeff[ 6 ]{};    // SD Adjust buffer viscosity coefficients
+      double dt;
+
+      // ---- Instrumentation & convergence controls ----
+      int     init_Nelem   = 0;      // >0 => initial element count override
+      int     steps_per_transit = 0; // >0 => steps-per-transit dt control
+      double  fixed_dt     = 0.0;    // >0 => use this dt directly
+      bool    uniformMesh  = false;  // true => skip setup adaptive refine
+      bool    refineOptSet = false;  // true => external SetMeshRefineOpt honored
+      bool    meshSpeedSet = false;  // true => external SetMeshSpeedFactor honored
+      bool    errTolSet    = false;  // true => user err_tol override in effect
+      double  user_err_tol = 0.0;    // user-supplied err_tol (when errTolSet)
+
+      // ---- Non-constant physics extensions ----
+      double  pviscB       = 0.0;    // >0 => Barus pressure-viscosity coeff (case 3);
+                                     //       same (scaled) units as compressib
+      int             growMode = 0;  // 0=off, 1=tabulated s(t)/D(t), 2=DLG growth law
+      QVector<double> grow_t;        // schedule times (s), growMode==1
+      QVector<double> grow_s20w;     // s20w(t) table, growMode==1
+      QVector<double> grow_D20w;     // D20w(t) table, growMode==1
+      double  dlg_R0    = 0.0;       // initial radius R0, growMode==2
+      double  dlg_kappa = 0.0;       // growth rate in R(t)=sqrt(R0^2+2*kappa*t)
+
+      // Solution-trace export state
+      bool             traceFlag    = false;   // master on/off (default off)
+      QString          traceDir;               // resolved output directory
+      QString          traceTag;               // run tag used in filenames
+      int              traceStride  = 1;        // emit every Nth step
+      double           traceInterval = 0.0;    // >0 => cadence (s), beats stride
+      QVector<double>  traceTimes;             // empty => interval, else stride
+      QFile*           traceNodesFile = nullptr; // per-node-per-step rows
+      QFile*           traceStepsFile = nullptr; // per-step scalar rows
+      bool             traceHdrDone   = false;   // header written for cur. comp
+      double           traceMass0     = 0.0;     // first recorded mass (drift ref)
+      bool             traceMass0Set  = false;    // whether traceMass0 is valid
 
       // private functions
+      void   openTraceFiles( int compx );
+      void   writeTraceRecord( int compx, int jt, double time, double dt_,
+                               const double* x1, const double* u1, int N1,
+                               const Mesh* msh );
+      void   closeTraceFiles();
+      bool   traceThisStep( int jt, double t0, double t1 ) const;
 
       //! \brief Get the non-ideal case number from model parameters
       //! \returns Non-zero if multiple non-ideal conditions
-      int  nonIdealCaseNo( void );
+      int  nonIdealCaseNo( );
+
+      //! \brief Evaluate the run-corrected base s, D at time t, applying the
+      //!        growth schedule when set. growMode==0 => constant param_s/param_D.
+      //! \param t    Model time (s)
+      //! \param s_t  Output run-condition s at time t
+      //! \param D_t  Output run-condition D at time t
+      void baseSD( double t, double& s_t, double& D_t ) const;
 
       //! \brief Set up non-ideal case type 1 (concentration-dependent)
       //! \param sigma_k Sigma constant to modify sedimentation coefficient
@@ -244,51 +418,75 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
       void SetNonIdealCase_1( double, double );
 
       //! \brief Set up non-ideal case type 2 (co-sedimenting)
-      void SetNonIdealCase_2( void   );
+      void SetNonIdealCase_2( );
 
       //! \brief Set up non-ideal case type 3 (compressibility)
       //! \param mropt   Reference to mesh refine option flag to set
       //! \param err_tol Reference to error tolerance factor to set
-      void SetNonIdealCase_3( int&, double& );
+      static void SetNonIdealCase_3( int&, double& );
+
+      //! \brief Set up non-ideal case type 4 (co-diffusing)
+      void SetNonIdealCase_4( );
 
       // Lamm equation step for sedimentation difference - predict
-      void LammStepSedDiff_P( double, double, int, double*, double*, double* );
+      void LammStepSedDiff_P( double, double, int, const double*, const double*, double*, const int* scan_hint = nullptr ) const;
 
       // Lamm equation step for sedimentation difference - calculate
-      void LammStepSedDiff_C( double, double, int, double*, double*, 
-                              int, double*, double*, double* );
+      //! \brief  Correction step of solving Lamm equation (sedimentation-diffusion only) Given the solution (x0, u0)
+      //! at t, and estimate (x0, u_est) of the solution at t+dt, and mesh x1, to find solution (x1, u1) at time t+dt
+      //! \param t Time of the given solution
+      //! \param dt_ Time difference to target time
+      //! \param M0 Number of elements in x0
+      //! \param x0 List of radial positions at time t
+      //! \param u0 piecewise quadratic solution at t on mesh x0
+      //! \param M1 Number of elments in x1
+      //! \param x1 List of radial positions at time t + dt_
+      //! \param u1p piecewise quadratic estimated solution at t+dt on mesh x1
+      //! \param u1 piecewise quadratic solution at t+dt on mesh x1 (output)
+      //! \param scan_hint Scan hint for adjusting s and D in cosedimenting cases
+      void LammStepSedDiff_C( double t, double dt_, int M0, const double *x0, const double *u0, int M1, const double *x1,
+                              const double *u1p, double *u1, const int* scan_hint = nullptr) const;
 
       // Project piecewise quadratic solution onto mesh
-      void   ProjectQ(   int, double*, double*, int, double*, double* );
+      void   ProjectQ(   int, const double*, const double*, int, const double*, double* ) const;
 
       // Integrate piecewise quadratic function defined on mesh
-      double IntQs(      double*, double*, int, double, int, double );
+      static double IntQs( const double*, const double*, int, double, int, double );
 
       // Perform quadratic interpolation to fill out radius,conc. vectors
-      void   quadInterpolate( double*, double*, int,
-                              QVector< double >&, QVector< double >& );
+      static void   quadInterpolate( const double*, const double*, int, const QVector< double >&, QVector< double >& );
 
-      void   LocateStar( int, double*, int, double*, int*, double* );
+      static void   LocateStar( int, const double*, int, const double*, int*, double* );
 
       // Adjust s and D arrays
-      void   AdjustSD(   double, int, double*, double*, double*, double* );
+      void   AdjustSD( const double, const int, const double*, const double*, double*, double*, const int* ) const;
 
-      void   fun_phi(    double, double* );
+      static void   fun_phi(    double, double* );
 
-      void   fun_dphi(   double, double* );
+      static void   fun_dphi(   double, double* );
 
-      void   fun_Iphi(   double, double* );
+      static void   fun_Iphi(   double, double* );
 
-      double IntQ(       double*, double*, double, double );
+      static double IntQ(       const double*, const double*, double, double );
 
 
-      void LsSolver53(   int, double**, double*, double* );
+      static void LsSolver53(   int, double**, double*, double* );
 
       // load internal data from caller's raw data
       void load_mfem_data(  US_DataIO::RawData&, US_AstfemMath::MfemData&,
-                            bool = true );
+                            bool = true ) const;
 
       // store internal data to caller's raw data
-      void store_mfem_data( US_DataIO::RawData&, US_AstfemMath::MfemData& );
+      void store_mfem_data( US_DataIO::RawData&, US_AstfemMath::MfemData& ) const;
+
+      mutable QVector< int >    _ke;
+      mutable QVector< double > _MemDouble;
+      mutable QVector< double > _rhs;
+      mutable QVector< double > _Mtx_data;
+      mutable QVector< double* > _Mtx;
+      mutable QVector< double > _ux;
+      mutable QVector< double > _xi;
+      mutable QVector< double > _ViscVec;
+      mutable QVector< double > _DensVec;
 };
 #endif
