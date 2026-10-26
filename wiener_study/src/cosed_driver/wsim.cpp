@@ -634,7 +634,21 @@ static int run_real( const QString& outdir, const QString& cfgfile )
       double sinit = cf.contains( "s_init" ) ? cf["s_init"].toDouble() : sw_fit / qMax( ctot_fit, 1e-30 );
       fprintf( stderr, "  init field: single species s %.3f S, f/f0 %.3f, c0 %.3f fringes (phi0 %.4f), %d field times\n", sinit, KMIN, c0, phi_scale * c0, nd );
       SelfHook h0; h0.scale = phi_scale; h0.dmode = fhook.dmode; h0.tau = fhook.tau;
-      QVector<double> ctd = simulate1_mf( sd, sinit, KMIN, vbar, c0, &h0 );      // nd x npe
+      QVector<double> ctd;                                                       // nd x npe
+      if ( cf.contains( "field_in" ) && QFile::exists( cf["field_in"] ) ) {
+         // warm start: converged c_tot(r,t) of a previous fit, interpolated onto this radial grid
+         QFile f( cf["field_in"] ); f.open( QIODevice::ReadOnly ); QDataStream ds( &f );
+         qint32 nd0, np0; double c00; QVector<double> xo, co; ds >> nd0 >> np0 >> c00 >> xo >> co;
+         if ( nd0 != nd ) { fprintf( stderr, "field_in time grid mismatch (%d vs %d)\n", nd0, nd ); return 1; }
+         ctd.resize( nd * npe );
+         for ( int i = 0; i < npe; i++ ) {
+            int j = std::upper_bound( xo.begin(), xo.end(), xe[i] ) - xo.begin() - 1; j = qBound( 0, j, np0 - 2 );
+            double w = qBound( 0.0, ( xe[i] - xo[j] ) / ( xo[j+1] - xo[j] ), 1.0 );
+            for ( int k = 0; k < nd; k++ ) ctd[ k*npe+i ] = co[ k*np0+j ] + w * ( co[ k*np0+j+1 ] - co[ k*np0+j ] ); }
+         if ( !cf.contains( "c0" ) ) c0 = c00;
+         fprintf( stderr, "  warm start from %s (c0 %.3f)\n", qPrintable( cf["field_in"] ), c0 );
+      }
+      else ctd = simulate1_mf( sd, sinit, KMIN, vbar, c0, &h0 );
       auto set_field = [&]( const QVector<double>& c ) {
          fhook.xr = xe; fhook.tt.clear(); fhook.tt << 0.0 << tdn;
          fhook.ph.resize( ( nd + 1 ) * npe );
@@ -660,10 +674,14 @@ static int run_real( const QString& outdir, const QString& cfgfile )
          fprintf( stderr, "  MF it %d: rmsd %.5f nsol %d c_tot %.3f maxdr %.1f um  field change %.2e  (sim %.0f s)\n", it, f1.rmsd, f1.sol.size(),
                   csum, md * 1e4, sqrt( dch / qMax( nrm, 1e-30 ) ), tsim );
          record( f1, it, md, "mf" );
-         if ( it == MFIT ) save( f1, it, "mf" );
+         bool conv = sqrt( dch / qMax( nrm, 1e-30 ) ) < cf.value( "tol", "0" ).toDouble();
+         if ( it == MFIT || conv ) save( f1, it, "mf" );
          for ( int i = 0; i < nd * npe; i++ ) ctd[i] = damp * ctd[i] + ( 1.0 - damp ) * cm[i];
          if ( !cf.contains( "c0" ) ) c0 = damp * c0 + ( 1.0 - damp ) * csum;
+         if ( conv ) { fprintf( stderr, "  converged (field change < tol)\n" ); break; }
       }
+      { QFile f( outdir + "/" + id + "_field.bin" ); f.open( QIODevice::WriteOnly ); QDataStream ds( &f );
+        ds << (qint32) nd << (qint32) npe << c0 << xe << ctd; }
       { QFile f( outdir + "/" + id + "_data.bin" ); f.open( QIODevice::WriteOnly ); f.write( (const char*) b.constData(), b.size() * 8 ); }
       cj["fits"] = fits; cj["mf"] = true; cj["ksred"] = cf.value( "ksred", "1" ).toDouble(); cj["ff0_phi"] = cf.value( "ff0_phi", "1.5" ).toDouble();
       QFile jf( outdir + "/" + id + "_real.json" ); jf.open( QIODevice::WriteOnly );

@@ -141,3 +141,26 @@ For comparison, the best previous UltraScan models were the ideal 2DSA + C1 (IgG
 - **Wiener skew matters at these concentrations.** Omitting it raises the RMSD by 40–110 % and shifts the composition by several percent (BSA monomer 75 → 67 %, aggregates 0.2 → 4.4 %; IgG 46 dimer 13.8 → 18.1 %).
 - **BSA bottom boundary:** SEDFIT uses an effective bottom of 6.60 cm with a *non-reflecting* boundary to exclude the packing zone. UltraScan's solvers only reflect, so the real bottom (7.2 cm) has to be used instead (with bottom 6.60 the fit fails completely).
 - **Cost:** ASTFVM with the field takes about 2–6 s per basis function (100 basis functions, 200–360 s per iteration; 6–10 iterations). That is acceptable for a 1D c(s)-type grid, but too slow for a full 2DSA s × f/f₀ grid without parallelisation.
+
+### Fitting k_S,red, meniscus and bottom — `stage2_meanfield/fitted/`
+
+**Procedure** (`src/paramfit.py`).
+- Coordinate descent per dataset: k_S,red ±10 %, then meniscus ±0.002 cm, then bottom ±0.05 cm, then k_S,red ±5 %. Each step uses 3 points plus the parabola vertex.
+- Every evaluation is warm-started from the c̃_tot field of the current best point; a final fit of 4 more iterations follows.
+- BSA was repeated as a converged 3 × 3 grid (k_S,red × meniscus; field change < 0.3 %).
+
+**Methodological finding.** The mean-field fixed point is not a least-squares minimum over the field: RMSD values from non-converged fields are not comparable. For example, BSA at meniscus 5.8488 gives 0.158 after 2 iterations starting from the baseline field, but 0.181 when iterated further. Parameter values must therefore be compared at converged fields; the convergence criterion `tol` was added for this. The remaining uncertainty of the converged RMSD is about ±0.005 fringe for BSA and ±0.0005 fringe for IgG.
+
+**Results** (converged; RMSD in fringes):
+
+| data set | k_S,red (paper → fitted) | meniscus (cm) | bottom (cm) | RMSD (paper params → fitted) | monomer | dimer | paper |
+|---|---|---|---|---|---|---|---|
+| hIgG 10 mg/ml, 12 mm | 0.513 → 0.540 | 6.0399 (unchanged) | 7.2506 → 7.2006 | 0.0410 → 0.0407 | 77.1 % @ 6.43 S | 13.0 % @ 9.45 S | 74.1 % @ 6.44 S; 15.8 % @ 9.3 S |
+| hIgG 46 mg/ml, 1 mm | 0.527 → 0.480 | 6.0782 → 6.0775 | 7.35 (unchanged) | 0.0753 → 0.0724 | 73.5 % @ 6.59 S | 15.6 % @ 9.06 S | 71.1 % @ 6.73 S; 16.5 % @ 9.4 S |
+| BSA 140 mg/ml, 1 mm | 0.660 → 0.66 | 5.8468 → 5.8478 | 7.20 (unchanged) | 0.167 → 0.162 | 75.4 % @ 3.83 S | 24.0 % @ 6.27 S | 3.9 S; dimer 22 %; rmsd 0.175 |
+
+**Interpretation.**
+- Fitting k_S,red, meniscus and bottom improves the RMSD by only 1–4 %, which is about the size of the convergence uncertainty. The paper's parameters are already close to optimal for our implementation.
+- Fitted k_S,red values agree with the paper's within −9 to +5 %. The meniscus moves by ≤ 0.001 cm. The bottom is insensitive, because the fit ranges end well before it.
+- Composition changes by at most about 3 percentage points (e.g. IgG 46 monomer 75.6 → 73.5 %, dimer 13.8 → 15.6 %, closer to the paper). This is within the spread expected from the correlation between k_S,red and the s distribution.
+- For a production implementation, k_S,red and the meniscus should be fitted with a tightly converged inner fixed point (tol ≈ 1e-4, possibly accelerated, e.g. Anderson mixing) or by joint non-linear regression as in SEDFIT.
