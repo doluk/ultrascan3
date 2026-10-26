@@ -752,6 +752,20 @@ a profile's shape, and conserving the former's mass at its loading concentration
 (`--to-meniscus`/`--to-bottom` map it onto the absorbance data's cell, which the two optics place
 up to 0.01 cm apart.)
 
+**Run 1322, prepared for a cluster.** Three cells loaded at 1.12660, 1.12835 and 1.13077 g/mL
+sucrose (0.985–1.017 M), 12 mm path. Two findings shape the fit:
+* **The speed history.** The run held 3500 rpm for 35 minutes before stepping to 40 krpm. The
+  timestate synthesized from the 40 krpm scans is a slow ramp with twice the recorded ω²t at the
+  first scan. `us_3dsa_cli timestate` writes the real program instead: every scan's ω²t puts the
+  step at 2081.5 s, to ±3 s over 90 h.
+* **The particles' density follows the medium.** Each cell's band sits within 0.03 cm of its own
+  isoconcentration point, at 1.1269, 1.1289 and 1.1316 g/mL. Particles of fixed density would have
+  banded about 0.4 cm apart. So each cell is fitted on its own, not globally.
+
+The package (data, timestate, measured gradients, buffers, cases, scripts) runs its pilots in
+seconds and a four-solute check in 30 s. The fits proper are cluster jobs: 135 to 858 ASTFVM
+solves per cell, the 64 subgrids keeping 64 cores busy.
+
 **Cost near the isopycnic point.** The ASTFVM sizes its time step for the solute's *s* in the
 buffer's own density — in a gradient buffer, the base buffer's. Run 1322's particles (about 400 S
 in water, v̄ ≈ 0.93, banding at ≈ 1.07 g/mL) take 13 minutes per solve over its 90 hours. Sizing the
