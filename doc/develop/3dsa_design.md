@@ -722,6 +722,20 @@ closed form does, to 0.2 % of its peak; the empty band, nearer the meniscus wher
 still forming, lags 0.006 cm behind its equilibrium place — about −0.001 g/mL in the fitted
 density, inside the β bracket.
 
+**s and D are not determined by this run, as modelled.** The early scans do carry them: at a fixed
+5.4 MDa the full band at 2.7 h sits at 6.775, 6.715 or 6.679 cm for *s* = 60, 95 or 140 S, and at
+9.5 h at 6.661 cm for all three. But an ASTFVM fit of all 14 scans (660 solutes: *s* 60–140 S,
+*f/f₀* 1.0–1.6, v̄ in steps of 0.001 across the bands; 57 min on four threads, §3E threads) does
+not reach the noise — RMSD 0.010–0.022 OD per scan against ≈ 0.003 — its solutes sit on the grid's
+edges, and its band averages move with the grid (full capsids 62 S on an 11-value v̄ list, 71 ± 18 S
+on this one; empty 91 and 102 ± 38 S, the wrong way round for AAV). The model fits any one late
+scan; it is the sequence it cannot follow. The likeliest cause is the CsCl gradient's formation,
+which the effective neutral solute of item 9 matches at equilibrium only; data effects add to it —
+a feature fixed at 6.32 cm in every scan, already there at 42 min (optical, not a species), a
+meniscus spike at 2.7 h, and the last scan's baseline correction applied to all. A sedimentation
+velocity run in PBS measures *s* and *D* directly; from ABDE they need a gradient-former model that
+is right in time, not only at equilibrium.
+
 ### Limits, and defects found in the ported code
 
 For the branch's author; none is worked around here except where noted.
