@@ -1090,6 +1090,7 @@ bool US_3dsaProcess::fit( const Parameters& parms, Result& result )
    result.scales    = scales;
    result.ti_noise  = final_res.ti_noise;
    result.ri_noise  = final_res.ri_noise;
+   result.sim_data  = final_res.sim_data;
    result.variance  = final_res.variance;
    result.variances = final_res.variances;
    result.rmsd      = sqrt( qMax( 0.0, final_res.variance ) );

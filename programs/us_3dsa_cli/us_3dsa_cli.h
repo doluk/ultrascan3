@@ -96,6 +96,10 @@ class US_3dsaCli
             //! must list as co-sedimenting
             QString gradient;
             QString gradient_former;
+
+            //! The run's timestate, when neither run_dir/run_id nor an edit
+            //! finds one (the timestate subcommand writes one)
+            QString timestate;
       };
 
       //! A complete case
@@ -192,6 +196,7 @@ class US_3dsaCli
       static int    run_gen_cases( const QStringList& );
       static int    run_simulate( const QStringList& );
       static int    run_gradient_from_interference( const QStringList& );
+      static int    run_timestate( const QStringList& );
       static void   usage( void );
 
       static bool   read_case( const QString&, Case&, QString& );

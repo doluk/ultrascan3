@@ -106,6 +106,9 @@ class US_UTIL_EXTERN US_3dsaProcess : public QObject
             QVector<double> scales;     //!< Fitted per-data-set amplitudes
             QVector<double> ti_noise;   //!< Time-invariant noise, or empty
             QVector<double> ri_noise;   //!< Radially-invariant noise
+            //! The final fit's simulation: every data set's scans in order,
+            //! model only; data minus it and the noise is the residual
+            US_DataIO::RawData sim_data;
             QVector<double> variances;  //!< Variance per data set
             double          variance;   //!< Total variance
             double          rmsd;       //!< Total RMSD

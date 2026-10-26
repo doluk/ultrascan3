@@ -1364,3 +1364,41 @@ TEST_F( TestUS3dsaProcess, MeasuredGradientDrivesTheFitAsTheSimulatedOne )
    EXPECT_NEAR( weighted_vbar( result.model ), 0.80, 0.005 );
    EXPECT_NEAR( weighted_s( result.model ) * 1.0e13, 10.0, 0.5 );
 }
+
+// The result carries the final fit's simulation: data minus it is the
+// residual whose RMSD the fit reports, so a caller can plot the fit without
+// solving anything again.
+TEST_F( TestUS3dsaProcess, ResultCarriesTheFinalSimulation )
+{
+   std::unique_ptr<US_SolveSim::DataSet> grad( make_gradient_dataset( gradient_truth(), gradient_buffer( GRAD_CSCL ), 0.80 ) );
+   QList<US_SolveSim::DataSet*>          one{ grad.get() };
+   US_3dsaProcess::Parameters            parms = gradient_parameters();
+   parms.noisflag                              = 2; // radially invariant: one offset per scan
+   for ( double vv : { 0.79, 0.80, 0.81 } )
+   {
+      for ( double ss : { 9.0e-13, 10.0e-13, 11.0e-13 } )
+      {
+         parms.solutes << US_Solute( ss, 1.5, 0.0, vv, 0.0 );
+      }
+   }
+
+   US_3dsaProcess         proc( one );
+   US_3dsaProcess::Result result;
+   ASSERT_TRUE( proc.fit( parms, result ) ) << proc.lastError().toStdString();
+
+   const US_DataIO::EditedData& ed = grad->run_data;
+   ASSERT_EQ( result.sim_data.scanData.size(), ed.scanData.size() );
+   ASSERT_EQ( result.ri_noise.size(), ed.scanData.size() );
+   double ss2 = 0.0;
+   int    nn  = 0;
+   for ( int ss = 0; ss < ed.scanData.size(); ss++ )
+   {
+      for ( int rr = 0; rr < ed.xvalues.size(); rr++ )
+      {
+         const double resid = ed.scanData[ss].rvalues[rr] - result.sim_data.value( ss, rr ) - result.ri_noise[ss];
+         ss2 += resid * resid;
+         nn++;
+      }
+   }
+   EXPECT_NEAR( std::sqrt( ss2 / nn ), result.rmsd, 1.0e-9 * qMax( 1.0, result.rmsd ) );
+}

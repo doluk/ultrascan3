@@ -11,6 +11,7 @@
 #include "us_model.h"
 #include "us_simparms.h"
 #include "us_solute.h"
+#include "us_time_state.h"
 #include "us_util.h"
 
 #include <QCoreApplication>
@@ -127,10 +128,16 @@ void US_3dsaCli::usage()
          << "  us_3dsa_cli gradient-from-interference --ip <interference.auc> --out <molar.auc>\n"
          << "         --meniscus <cm> --bottom <cm> --loading <g/mL> --dndc <mL/g> --molar-mass <g/mol>\n"
          << "         [--path <cm>] [--wavelength <nm>] [--stride N] [--dr <cm>]\n"
-         << "         [--to-meniscus <cm> --to-bottom <cm>]\n\n"
+         << "         [--to-meniscus <cm> --to-bottom <cm>] [--start <s>]\n\n"
          << "      Turn interference scans of a gradient former into its molar\n"
          << "      concentration over the run, conserving its mass over the cell,\n"
          << "      for a data set's \"gradient\".\n\n"
+         << "  us_3dsa_cli timestate --out <run.time_state.tmst> --program t:rpm,t:rpm,...\n"
+         << "         [--temperature <C>]\n\n"
+         << "      Write a timestate for a speed program, rpm linear between the\n"
+         << "      knots, when the synthesized one would be wrong (a run that held\n"
+         << "      a low speed before its step, say).  Data sets name it with\n"
+         << "      \"timestate\".\n\n"
          << "  us_3dsa_cli --help\n";
    out().flush();
 }
@@ -216,6 +223,11 @@ bool US_3dsaCli::read_case( const QString& path, Case& kase, QString& emsg )
       return false;
    }
 
+   // Paths in a case file are relative to the case file
+   const QDir case_dir( QFileInfo( path ).absolutePath() );
+   const auto resolve = [&case_dir]( const QString& file )
+   { return ( file.isEmpty() || QFileInfo( file ).isAbsolute() ) ? file : case_dir.filePath( file ); };
+
    const QJsonObject root = doc.object();
    kase.name              = root.value( "name" ).toString();
    kase.description       = root.value( "description" ).toString();
@@ -235,8 +247,8 @@ bool US_3dsaCli::read_case( const QString& path, Case& kase, QString& emsg )
    {
       const QJsonObject o = v.toObject();
       DataSetSpec       ds;
-      ds.auc         = o.value( "auc" ).toString();
-      ds.simparams   = o.value( "simparams" ).toString();
+      ds.auc             = resolve( o.value( "auc" ).toString() );
+      ds.simparams       = resolve( o.value( "simparams" ).toString() );
       ds.label       = o.value( "label" ).toString();
       ds.d2o_percent = jnum( o, "d2o_percent", 0.0 );
       ds.density     = jnum( o, "density", H2O_DENSITY );
@@ -248,15 +260,16 @@ bool US_3dsaCli::read_case( const QString& path, Case& kase, QString& emsg )
       ds.tinoise     = jnum( o, "tinoise", 0.0 );
       ds.rinoise     = jnum( o, "rinoise", 0.0 );
       ds.rmsd_max    = jnum( o, "rmsd_max", 0.0 );
-      ds.run_dir        = o.value( "run_dir" ).toString();
+      ds.run_dir         = resolve( o.value( "run_dir" ).toString() );
       ds.run_id         = o.value( "run_id" ).toString();
-      ds.edit           = o.value( "edit" ).toString();
-      ds.buffer         = o.value( "buffer" ).toString();
+      ds.edit            = resolve( o.value( "edit" ).toString() );
+      ds.buffer          = resolve( o.value( "buffer" ).toString() );
       ds.has_density    = o.contains( "density" );
       ds.has_viscosity  = o.contains( "viscosity" );
       ds.last_scan_only = jbool( o, "last_scan_only", false );
-      ds.gradient        = o.value( "gradient" ).toString();
+      ds.gradient        = resolve( o.value( "gradient" ).toString() );
       ds.gradient_former = o.value( "gradient_former" ).toString();
+      ds.timestate       = resolve( o.value( "timestate" ).toString() );
       kase.datasets << ds;
    }
 
@@ -430,6 +443,18 @@ bool US_3dsaCli::load_datasets( const Case& kase, QList<US_SolveSim::DataSet*>& 
       d->s20w_correction        = sd.s20w_correction;
       d->D20w_correction        = sd.D20w_correction;
       d->centerpiece_bottom     = d->simparams.bottom;
+
+      // A timestate named by the case
+      if ( !spec.timestate.isEmpty() )
+      {
+         if ( !QFileInfo( spec.timestate ).isFile() )
+         {
+            emsg = QString( "no timestate %1" ).arg( spec.timestate );
+            delete d;
+            return false;
+         }
+         d->tmst_file = spec.timestate;
+      }
 
       // The run's own timestate, when the simulator wrote one next to the
       // data (us_astfem_sim saves <run_id>.time_state.tmst in the run
@@ -701,19 +726,66 @@ bool US_3dsaCli::write_curves( const QString&                path,
                                const US_3dsaProcess::Result& result,
                                double&                       rmsd )
 {
-   QString       msg;
-   QTemporaryDir tdir;
-
-   if ( !prepare_refit( dsets, tdir.path(), msg ) )
+   // The fit's own final simulation and noise, when it kept them: no solve
+   int ntotal = 0;
+   for ( const US_SolveSim::DataSet* dset : dsets )
    {
-      err() << "curves: " << msg << "\n";
-      err().flush();
-      return false;
+      ntotal += dset->run_data.scanData.size();
    }
 
-   US_SolveSim::Simulation sv;
-   refit_solutes( dsets, result.model.components.toList(), kase.noisflag, result.scales, kase.equilibrium, sv );
-   rmsd = sqrt( qMax( 0.0, sv.variance ) );
+   US_DataIO::RawData residuals;
+   const bool         kept = ( result.sim_data.scanData.size() == ntotal );
+
+   if ( kept )
+   {
+      residuals  = result.sim_data;
+      int scnx   = 0;
+      int tioffs = 0;
+      int rioffs = 0;
+      for ( const US_SolveSim::DataSet* dset : dsets )
+      {
+         const US_DataIO::EditedData& ed = dset->run_data;
+         for ( int ss = 0; ss < ed.scanData.size(); ss++, scnx++ )
+         {
+            const double ri = ( ss + rioffs < result.ri_noise.size() ) ? result.ri_noise[ss + rioffs] : 0.0;
+            for ( int rr = 0; rr < ed.xvalues.size(); rr++ )
+            {
+               const double ti                      = ( rr + tioffs < result.ti_noise.size() ) ? result.ti_noise[rr + tioffs] : 0.0;
+               residuals.scanData[scnx].rvalues[rr] = ed.scanData[ss].rvalues[rr] - result.sim_data.value( scnx, rr ) - ti - ri;
+            }
+         }
+         tioffs += ed.xvalues.size();
+         rioffs += ed.scanData.size();
+      }
+   }
+   else
+   { // Refit the solutes: one solve each, on one thread
+      QString       msg;
+      QTemporaryDir tdir;
+
+      if ( !prepare_refit( dsets, tdir.path(), msg ) )
+      {
+         err() << "curves: " << msg << "\n";
+         err().flush();
+         return false;
+      }
+
+      US_SolveSim::Simulation sv;
+      refit_solutes( dsets, result.model.components.toList(), kase.noisflag, result.scales, kase.equilibrium, sv );
+      residuals = sv.residuals;
+   }
+
+   double ss2 = 0.0;
+   int    nn  = 0;
+   for ( const US_DataIO::Scan& sc : residuals.scanData )
+   {
+      for ( double vv : sc.rvalues )
+      {
+         ss2 += vv * vv;
+         nn++;
+      }
+   }
+   rmsd = sqrt( ss2 / qMax( 1, nn ) );
 
    QFile f( path );
 
@@ -738,7 +810,7 @@ bool US_3dsaCli::write_curves( const QString&                path,
          for ( int rr = 0; rr < ed.xvalues.size(); rr++ )
          {
             const double data  = ed.scanData[ss].rvalues[rr];
-            const double resid = sv.residuals.value( scnx, rr );
+            const double resid = residuals.value( scnx, rr );
             ts << dd << ",\"" << label << "\"," << ss << "," << ed.scanData[ss].seconds << ","
                << QString::number( ed.xvalues[rr], 'f', 5 ) << "," << QString::number( data, 'g', 8 ) << ","
                << QString::number( data - resid, 'g', 8 ) << "," << QString::number( resid, 'g', 8 ) << "\n";
@@ -1213,7 +1285,7 @@ int US_3dsaCli::run_fit( const QStringList& args )
       double crmsd = 0.0;
       if ( write_curves( curves_path, dsets, kase, result, crmsd ) )
       {
-         out() << QString( "  curves written to %1 (refitted RMSD %2)\n" ).arg( curves_path ).arg( crmsd, 0, 'e', 4 );
+         out() << QString( "  curves written to %1 (RMSD %2)\n" ).arg( curves_path ).arg( crmsd, 0, 'e', 4 );
          out().flush();
       }
    }
@@ -2425,6 +2497,7 @@ int US_3dsaCli::run_gradient_from_interference( const QStringList& args )
    int     stride     = 1;
    double  to_men     = 0.0; // Geometry of the data set the gradient serves
    double  to_bot     = 0.0;
+   double  t_start    = 0.0; // Uniform until the speed that forms it starts
 
    for ( int ii = 0; ii + 1 < args.size(); ii += 2 )
    {
@@ -2490,6 +2563,10 @@ int US_3dsaCli::run_gradient_from_interference( const QStringList& args )
       {
          to_bot = v.toDouble();
       }
+      else if ( a == "--start" )
+      {
+         t_start = v.toDouble();
+      }
       else
       {
          err() << "unknown gradient-from-interference option: " << a << "\n";
@@ -2545,6 +2622,12 @@ int US_3dsaCli::run_gradient_from_interference( const QStringList& args )
    start.omega2t         = 0.0;
    start.rvalues         = QVector<double>( ngrid, loading / molar_mass * 1000.0 );
    molar.scanData << start;
+
+   if ( t_start > 0.0 && t_start < ip.scanData.first().seconds )
+   { // Still uniform when the forming speed starts
+      start.seconds = t_start;
+      molar.scanData << start;
+   }
 
    // Least-squares line through the data on [a, b]
    const auto line = [&]( const US_DataIO::Scan& sc, double a, double b, double& c0, double& c1 )
@@ -2650,6 +2733,126 @@ int US_3dsaCli::run_gradient_from_interference( const QStringList& args )
 }
 
 // ---------------------------------------------------------------------------
+// A timestate from a speed program: knots "time:rpm", rpm linear between
+// them, one record per second, omega-squared-t integrated.  A knot's rpm is
+// the set speed of the segment that ends at it; set speeds below 1500 rpm do
+// not make a speed step of their own.
+int US_3dsaCli::run_timestate( const QStringList& args )
+{
+   QString out_path;
+   QString program;
+   double  temperature = 20.0;
+
+   for ( int ii = 0; ii + 1 < args.size(); ii += 2 )
+   {
+      if ( args[ii] == "--out" )
+      {
+         out_path = args[ii + 1];
+      }
+      else if ( args[ii] == "--program" )
+      {
+         program = args[ii + 1];
+      }
+      else if ( args[ii] == "--temperature" )
+      {
+         temperature = args[ii + 1].toDouble();
+      }
+      else
+      {
+         err() << "unknown timestate option: " << args[ii] << "\n";
+         err().flush();
+         return 2;
+      }
+   }
+
+   QVector<double> kt;
+   QVector<double> kr;
+   for ( const QString& knot : program.split( ',', Qt::SkipEmptyParts ) )
+   {
+      const QStringList tr = knot.split( ':' );
+      if ( tr.size() != 2 )
+      {
+         continue;
+      }
+      kt << tr[0].toDouble();
+      kr << tr[1].toDouble();
+   }
+
+   if ( out_path.isEmpty() || kt.size() < 2 || kt[0] != 0.0 )
+   {
+      err() << "timestate needs --out and --program t:rpm,... starting at time 0\n";
+      err().flush();
+      return 2;
+   }
+
+   US_TimeState ts;
+   if ( ts.open_write_data( out_path, 1.0, 0.0 ) != 0 )
+   {
+      err() << "cannot write " << out_path << "\n";
+      err().flush();
+      return 3;
+   }
+   ts.set_key( "Time", "I4" );
+   ts.set_key( "RawSpeed", "F4" );
+   ts.set_key( "SetSpeed", "I4" );
+   ts.set_key( "Omega2T", "F4" );
+   ts.set_key( "Temperature", "F4" );
+   ts.set_key( "Step", "I2" );
+   ts.set_key( "Scan", "I2" );
+
+   const int t_end   = (int) kt.last();
+   double    omega2t = 0.0;
+   double    rpm_p   = kr[0];
+   int       seg     = 0;
+   int       step    = 0;
+   int       set_p   = 0;
+
+   for ( int tt = 0; tt <= t_end; tt++ )
+   {
+      while ( seg + 1 < kt.size() - 1 && tt > kt[seg + 1] )
+      {
+         seg++;
+      }
+      const double t0  = kt[seg];
+      const double t1  = kt[seg + 1];
+      const double fr  = ( t1 > t0 ) ? qBound( 0.0, ( tt - t0 ) / ( t1 - t0 ), 1.0 ) : 1.0;
+      const double rpm = kr[seg] + ( kr[seg + 1] - kr[seg] ) * fr;
+      const int    set = (int) kr[seg + 1];
+
+      if ( tt > 0 )
+      { // trapezoid in omega^2 over the second just past
+         const double w0 = rpm_p * M_PI / 30.0;
+         const double w1 = rpm * M_PI / 30.0;
+         omega2t += ( w0 * w0 + w0 * w1 + w1 * w1 ) / 3.0;
+      }
+      if ( set != set_p && set_p >= 1500 && set >= 1500 )
+      {
+         step++;
+      }
+      set_p = set;
+      rpm_p = rpm;
+
+      ts.set_value( "Time", tt );
+      ts.set_value( "RawSpeed", rpm );
+      ts.set_value( "SetSpeed", set );
+      ts.set_value( "Omega2T", omega2t );
+      ts.set_value( "Temperature", temperature );
+      ts.set_value( "Step", step );
+      ts.set_value( "Scan", 0 );
+      ts.flush_record();
+   }
+
+   ts.close_write_data();
+   ts.setTimeStateType( US_TimeState::TIMESTATE_TYPE::CALCULATED );
+   ts.setImportType( US_TimeState::IMPORT_TYPE::XLA );
+   ts.write_defs( 1.0 );
+
+   out() << QString( "  wrote %1: %2 s, omega2t at the end %3\n" ).arg( out_path ).arg( t_end ).arg( omega2t, 0, 'e', 6 );
+   out().flush();
+   return 0;
+}
+
+// ---------------------------------------------------------------------------
 int US_3dsaCli::main( int argc, char** argv )
 {
    QStringList args;
@@ -2681,6 +2884,10 @@ int US_3dsaCli::main( int argc, char** argv )
    if ( cmd == "gradient-from-interference" )
    {
       return run_gradient_from_interference( args );
+   }
+   if ( cmd == "timestate" )
+   {
+      return run_timestate( args );
    }
 
    err() << "unknown command: " << cmd << "\n";
