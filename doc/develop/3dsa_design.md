@@ -749,6 +749,15 @@ exactly as it does a simulated one — identical simulations to 10⁻⁶ of the 
 keeps such a gradient (`MeasuredGradientDrivesTheFitAsTheSimulatedOne`).
 `us_3dsa_cli gradient-from-interference` makes the table from interference scans: a fringe fixes
 a profile's shape, and conserving the former's mass at its loading concentration fixes its level.
+(`--to-meniscus`/`--to-bottom` map it onto the absorbance data's cell, which the two optics place
+up to 0.01 cm apart.)
+
+**Cost near the isopycnic point.** The ASTFVM sizes its time step for the solute's *s* in the
+buffer's own density — in a gradient buffer, the base buffer's. Run 1322's particles (about 400 S
+in water, v̄ ≈ 0.93, banding at ≈ 1.07 g/mL) take 13 minutes per solve over its 90 hours. Sizing the
+step for the largest *s* inside the gradient instead was 15 times faster and diverged — to ten
+times the band's peak — since the mesh is built for the base-buffer *s*; that change is not kept.
+A grid for such particles is a cluster job.
 
 ### Limits, and defects found in the ported code
 

@@ -126,7 +126,8 @@ void US_3dsaCli::usage()
          << "      speed step's duration.\n\n"
          << "  us_3dsa_cli gradient-from-interference --ip <interference.auc> --out <molar.auc>\n"
          << "         --meniscus <cm> --bottom <cm> --loading <g/mL> --dndc <mL/g> --molar-mass <g/mol>\n"
-         << "         [--path <cm>] [--wavelength <nm>] [--stride N] [--dr <cm>]\n\n"
+         << "         [--path <cm>] [--wavelength <nm>] [--stride N] [--dr <cm>]\n"
+         << "         [--to-meniscus <cm> --to-bottom <cm>]\n\n"
          << "      Turn interference scans of a gradient former into its molar\n"
          << "      concentration over the run, conserving its mass over the cell,\n"
          << "      for a data set's \"gradient\".\n\n"
@@ -2422,6 +2423,8 @@ int US_3dsaCli::run_gradient_from_interference( const QStringList& args )
    double  top_margin = 0.012;
    double  bot_margin = 0.025;
    int     stride     = 1;
+   double  to_men     = 0.0; // Geometry of the data set the gradient serves
+   double  to_bot     = 0.0;
 
    for ( int ii = 0; ii + 1 < args.size(); ii += 2 )
    {
@@ -2479,6 +2482,14 @@ int US_3dsaCli::run_gradient_from_interference( const QStringList& args )
       {
          bot_margin = v.toDouble();
       }
+      else if ( a == "--to-meniscus" )
+      {
+         to_men = v.toDouble();
+      }
+      else if ( a == "--to-bottom" )
+      {
+         to_bot = v.toDouble();
+      }
       else
       {
          err() << "unknown gradient-from-interference option: " << a << "\n";
@@ -2515,9 +2526,17 @@ int US_3dsaCli::run_gradient_from_interference( const QStringList& args )
    molar.channel     = ip.channel;
    molar.description = QString( "molar gradient former from %1" ).arg( QFileInfo( ip_path ).fileName() );
    US_Util::uuid_parse( US_Util::new_guid(), (unsigned char*) molar.rawGUID );
+   // The interference optics and the data the gradient serves may place the
+   // cell slightly differently: the gradient is mapped meniscus to meniscus
+   // and bottom to bottom
+   const bool      remap  = ( to_bot > to_men && to_men > 0.0 );
+   const double    t_men  = remap ? to_men : meniscus;
+   const double    t_step = remap ? ( to_bot - to_men ) / ( ngrid - 1 ) : step;
+   QVector<double> ipx;
    for ( int kk = 0; kk < ngrid; kk++ )
    {
-      molar.xvalues << meniscus + step * kk;
+      ipx << meniscus + step * kk;
+      molar.xvalues << t_men + t_step * kk;
    }
 
    // The start of the run: uniform
@@ -2563,7 +2582,7 @@ int US_3dsaCli::run_gradient_from_interference( const QStringList& args )
       QVector<double> jv( ngrid );
       for ( int kk = 0; kk < ngrid; kk++ )
       {
-         const double rr = molar.xvalues[kk];
+         const double rr = ipx[kk];
          if ( rr < lo )
          {
             jv[kk] = a0 + a1 * rr;
@@ -2594,8 +2613,8 @@ int US_3dsaCli::run_gradient_from_interference( const QStringList& args )
       {
          const double r0 = molar.xvalues[kk - 1];
          const double r1 = molar.xvalues[kk];
-         num += 0.5 * ( jv[kk - 1] * r0 + jv[kk] * r1 ) * step;
-         den += 0.5 * ( r0 + r1 ) * step;
+         num += 0.5 * ( jv[kk - 1] * r0 + jv[kk] * r1 ) * t_step;
+         den += 0.5 * ( r0 + r1 ) * t_step;
       }
       const double    jmean = num / den;
 
@@ -2606,7 +2625,7 @@ int US_3dsaCli::run_gradient_from_interference( const QStringList& args )
          const double conc = loading + ( jv[kk] - jmean ) * fringe_to_conc; // g/mL
          out.rvalues[kk]   = qMax( 0.0, conc ) / molar_mass * 1000.0;       // mol/L
       }
-      out.delta_r = step;
+      out.delta_r = t_step;
       molar.scanData << out;
    }
 
