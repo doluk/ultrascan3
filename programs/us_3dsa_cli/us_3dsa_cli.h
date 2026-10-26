@@ -89,6 +89,13 @@ class US_3dsaCli
 
             //! Keep only the last scan, as an ABDE edit does
             bool    last_scan_only = false;
+
+            //! A measured gradient: the gradient former's molar concentration
+            //! over the run (gradient-from-interference writes one), used
+            //! instead of simulating the former named here, which the buffer
+            //! must list as co-sedimenting
+            QString gradient;
+            QString gradient_former;
       };
 
       //! A complete case
@@ -184,6 +191,7 @@ class US_3dsaCli
       static int    run_fit( const QStringList& );
       static int    run_gen_cases( const QStringList& );
       static int    run_simulate( const QStringList& );
+      static int    run_gradient_from_interference( const QStringList& );
       static void   usage( void );
 
       static bool   read_case( const QString&, Case&, QString& );

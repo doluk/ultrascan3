@@ -100,6 +100,12 @@ bool US_3dsaProcess::prepare_gradients( QList<US_SolveSim::DataSet*>& dsets, QSt
          continue;
       }
 
+      // A measured gradient, set by the caller, stays
+      if ( dset->fvm && dset->fvm->is_measured() )
+      {
+         continue;
+      }
+
       if ( dset->simparams.sim_speed_prof.isEmpty() || dset->run_data.scanCount() < 1 || dset->run_data.pointCount() < 2 )
       {
          msg = tr( "Data set %1: a gradient needs the run's timestate and at least one scan." ).arg( dd + 1 );
@@ -800,10 +806,38 @@ bool US_3dsaProcess::fit( const Parameters& parms, Result& result )
    //
    // Judged on the prepared copies: a data set whose buffer forms a gradient
    // brings the density span of its own cell.
-   const bool   fits_vbar = ( ( ( parms.s_mask >> 6 ) & 7 ) == US_Solute::ATTR_V ||
-                            ( ( parms.s_mask >> 3 ) & 7 ) == US_Solute::ATTR_V || ( parms.s_mask & 7 ) == US_Solute::ATTR_V );
+   // vbar is fitted when an axis carries it and that axis takes more than
+   // one value; held at one value, it is an input like any buffer's.
+   const int    attrs[3]  = { ( parms.s_mask >> 6 ) & 7, ( parms.s_mask >> 3 ) & 7, parms.s_mask & 7 };
+   const int    nres[3]   = { parms.x_res, parms.y_res, parms.z_res };
+   const double vlo[3]    = { parms.x_min, parms.y_min, parms.z_min };
+   const double vhi[3]    = { parms.x_max, parms.y_max, parms.z_max };
+   bool         fits_vbar = false; // vbar varies: the contrast gate applies
+   bool         vbar_axis = false; // vbar per solute: corrections per solute
+   double       vbar_mid  = ( parms.z_min + parms.z_max ) * 0.5;
 
-   const double vbar_mid = ( parms.z_min + parms.z_max ) * 0.5;
+   for ( int ax = 0; ax < 3; ax++ )
+   {
+      if ( attrs[ax] == US_Solute::ATTR_V )
+      {
+         vbar_axis = true;
+         fits_vbar = parms.solutes.isEmpty() && nres[ax] > 1 && vhi[ax] > vlo[ax];
+         vbar_mid  = ( vlo[ax] + vhi[ax] ) * 0.5;
+      }
+   }
+
+   if ( !parms.solutes.isEmpty() )
+   {
+      double vmin = 1.0e+99;
+      double vmax = -1.0e+99;
+      for ( const US_Solute& solute : parms.solutes )
+      {
+         vmin = qMin( vmin, solute.v );
+         vmax = qMax( vmax, solute.v );
+      }
+      fits_vbar = ( vmax > vmin );
+      vbar_mid  = ( vmin + vmax ) * 0.5;
+   }
    QString      contrast_msg;
    result.contrast   = US_SolveSim::buoyancy_contrast( thr_dsets[0], vbar_mid, contrast_msg );
    result.vbar_resol = US_SolveSim::vbar_resolution( result.contrast, 0.01 );
@@ -896,7 +930,7 @@ bool US_3dsaProcess::fit( const Parameters& parms, Result& result )
       for ( int dd = 0; dd < ndsets; dd++ )
       {
          thr_store[tt][dd].solute_type = parms.s_mask;
-         thr_store[tt][dd].fit_vbar    = fits_vbar;
+         thr_store[tt][dd].fit_vbar    = vbar_axis;
          thr_store[tt][dd].equilibrium = parms.equilibrium;
       }
    }

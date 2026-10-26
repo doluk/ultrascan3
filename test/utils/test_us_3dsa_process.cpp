@@ -1298,3 +1298,69 @@ TEST_F( TestUS3dsaProcess, GradientFitsUseTheirThreads )
       EXPECT_EQ( serial.model.components[cc].signal_concentration, threaded.model.components[cc].signal_concentration );
    }
 }
+
+// A gradient taken as measured -- here the simulated one's own concentration
+// table, handed back as if an interference run had recorded it -- drives the
+// solver exactly as the simulated one does, and the engine keeps it.
+TEST_F( TestUS3dsaProcess, MeasuredGradientDrivesTheFitAsTheSimulatedOne )
+{
+   const US_Buffer                       buffer = gradient_buffer( GRAD_CSCL );
+   std::unique_ptr<US_SolveSim::DataSet> grad( make_gradient_dataset( gradient_truth(), buffer, 0.80 ) );
+   QList<US_SolveSim::DataSet*>          one{ grad.get() };
+   QTemporaryDir                         tdir;
+   QString                               msg;
+   ASSERT_TRUE( US_3dsaProcess::prepare_timestates( one, tdir.path(), msg ) ) << msg.toStdString();
+   ASSERT_TRUE( US_3dsaProcess::prepare_gradients( one, msg ) ) << msg.toStdString();
+   ASSERT_FALSE( grad->fvm.isNull() );
+   const US_DataIO::RawData        molar = grad->fvm->cosed()->sa_data;
+
+   QSharedPointer<US_FvmGradients> measured( new US_FvmGradients );
+   ASSERT_TRUE( measured->prepare_measured( buffer, "cesium chloride", molar, msg ) ) << msg.toStdString();
+   EXPECT_TRUE( measured->is_measured() );
+   EXPECT_NEAR( measured->density_lo(), grad->fvm->density_lo(), 0.002 );
+   EXPECT_NEAR( measured->density_hi(), grad->fvm->density_hi(), 0.002 );
+
+   // The same solute through either gradient
+   US_Model   model    = gradient_truth();
+   const auto simulate = [&]( US_FvmGradients* grads )
+   {
+      US_DataIO::RawData sim;
+      US_AstfemMath::initSimData( sim, grad->run_data, 0.0 );
+      US_SimulationParameters sp = grad->simparams;
+      US_LammAstfvm           astfvm( model, sp );
+      astfvm.set_buffer( buffer, nullptr, grads->cosed() );
+      astfvm.calculate( sim );
+      return sim;
+   };
+   const US_DataIO::RawData a    = simulate( grad->fvm.data() );
+   const US_DataIO::RawData b    = simulate( measured.data() );
+   double                   peak = 0.0;
+   double                   diff = 0.0;
+   for ( int ss = 0; ss < a.scanData.size(); ss++ )
+   {
+      for ( int rr = 0; rr < a.xvalues.size(); rr++ )
+      {
+         peak = qMax( peak, std::fabs( a.scanData[ss].rvalues[rr] ) );
+         diff = qMax( diff, std::fabs( a.scanData[ss].rvalues[rr] - b.scanData[ss].rvalues[rr] ) );
+      }
+   }
+   EXPECT_GT( peak, 0.1 );
+   EXPECT_LT( diff, 1.0e-6 * peak );
+
+   // And the engine keeps a measured gradient rather than simulating one
+   grad->fvm                        = measured;
+   US_3dsaProcess::Parameters parms = gradient_parameters();
+   for ( double vv : { 0.78, 0.80, 0.82 } )
+   {
+      for ( double ss : { 8.0e-13, 10.0e-13, 12.0e-13 } )
+      {
+         parms.solutes << US_Solute( ss, 1.5, 0.0, vv, 0.0 );
+      }
+   }
+   US_3dsaProcess         proc( one );
+   US_3dsaProcess::Result result;
+   ASSERT_TRUE( proc.fit( parms, result ) ) << proc.lastError().toStdString();
+   EXPECT_TRUE( grad->fvm->is_measured() );
+   EXPECT_NEAR( weighted_vbar( result.model ), 0.80, 0.005 );
+   EXPECT_NEAR( weighted_s( result.model ) * 1.0e13, 10.0, 0.5 );
+}

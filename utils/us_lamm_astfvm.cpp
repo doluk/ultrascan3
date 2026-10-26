@@ -785,6 +785,26 @@ US_LammAstfvm::CosedData::CosedData()
    visc             = 0.0;
 }
 
+US_LammAstfvm::CosedData::CosedData( const US_Model&           amodel,
+                                     const US_DataIO::RawData& measured,
+                                     QList<US_CosedComponent>* cosed_comps )
+{
+   dbg_level = US_Settings::us_debug();
+   model     = amodel;
+   model.components.resize( 1 );
+   simparms         = US_SimulationParameters();
+   sa_data          = measured;
+   cosed_components = cosed_comps;
+   cosed_comp_data.clear();
+   cosed_comp_data[model.components[0].analyteGUID] = measured;
+   count                                            = 0;
+   Nx                                               = sa_data.pointCount();
+   Nt                                               = sa_data.scanCount();
+   dens                                             = 0.0;
+   visc                                             = 0.0;
+   is_empty                                         = ( Nx < 2 || Nt < 2 );
+}
+
 
 // construct Lamm solver for finite volume method
 US_LammAstfvm::US_LammAstfvm( US_Model& rmodel, US_SimulationParameters& rsimparms, QObject* parent /*=0*/ ) : QObject(

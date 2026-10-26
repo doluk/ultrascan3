@@ -197,7 +197,9 @@ class US_UTIL_EXTERN US_3dsaProcess : public QObject
       //! the whole cell and the run's duration and sets DataSet::fvm.  A data
       //! set whose buffer forms a gradient but whose simparams select the
       //! ASTFEM is an error: the ASTFEM would ignore the gradient.  Timestates
-      //! must be loaded first (prepare_timestates).
+      //! must be loaded first (prepare_timestates).  A data set whose
+      //! gradient the caller set from measurement
+      //! (US_FvmGradients::prepare_measured) keeps it.
       //!
       //! \param dsets  Data sets to prepare; their fvm members are set
       //! \param msg    Returned description of a failure

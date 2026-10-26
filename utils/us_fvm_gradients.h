@@ -59,6 +59,28 @@ class US_UTIL_EXTERN US_FvmGradients
       //! \returns       True on success
       bool                      prepare( const US_Buffer&, const US_SimulationParameters&, const US_DataIO::RawData&, QString& );
 
+      //! \brief Take a measured gradient instead of simulating one
+      //!
+      //! For a gradient former the model describes poorly -- a concentrated,
+      //! non-ideal one such as sucrose or CsCl at the loads ABDE uses --
+      //! when the run measured it, by interference say.  The buffer must
+      //! list the former as a co-sedimenting component (non-zero s), whose
+      //! density and viscosity coefficients turn its concentration into
+      //! the solution's; its s and D are not used.
+      //! \param buffer    The data set's buffer
+      //! \param former    Name of the gradient-forming component
+      //! \param molar     Its molar concentration, meniscus to bottom, one
+      //!                   scan per time, from the start of the run
+      //! \param msg       Returned description of a failure
+      //! \returns         True on success
+      bool                      prepare_measured( const US_Buffer&, const QString&, const US_DataIO::RawData&, QString& );
+
+      //! \brief Whether the gradient was measured rather than simulated
+      bool                      is_measured( void ) const
+      {
+         return measured_;
+      }
+
       //! \brief The co-sedimenting gradient, or null
       US_LammAstfvm::CosedData* cosed( void )
       {
@@ -134,5 +156,6 @@ class US_UTIL_EXTERN US_FvmGradients
       double                                            buf_density; // The buffer's own
       double                                            buf_viscosity;
       QHash<qint64, QVector<double>>                    density_cache; // By time, ms
+      bool                                              measured_ = false;
 };
 #endif

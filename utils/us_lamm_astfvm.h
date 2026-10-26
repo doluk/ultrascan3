@@ -101,6 +101,18 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
             //! \brief Default constructor for empty CosedData
             CosedData();
 
+            //! \brief Cosed data from a measured gradient
+            //!
+            //! The concentrations are taken as given -- measured, for
+            //! instance, by interference -- instead of simulated.
+            //! \param amodel   One component: the gradient former, its
+            //!                  analyteGUID that of its US_CosedComponent
+            //! \param measured Its molar concentration over the cell, one
+            //!                  scan per time, meniscus to bottom
+            //! \param cosed_comps The buffer's cosed components, for the
+            //!                  density and viscosity coefficients
+            CosedData( const US_Model&, const US_DataIO::RawData&, QList<US_CosedComponent>* );
+
             //! \brief Initialize time & concentration arrays for a component
             void initCosed(double*, double*, double*);
 

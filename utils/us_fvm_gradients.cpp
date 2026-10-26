@@ -24,6 +24,7 @@ US_FvmGradients::US_FvmGradients( const US_FvmGradients& other )
    dens_hi        = other.dens_hi;
    buf_density    = other.buf_density;
    buf_viscosity  = other.buf_viscosity;
+   measured_      = other.measured_;
 
    if ( other.cosed_ )
    {
@@ -144,6 +145,7 @@ bool US_FvmGradients::prepare( const US_Buffer&               buffer,
    buf_density    = buffer.density;
    buf_viscosity  = buffer.viscosity;
    density_cache.clear();
+   measured_ = false;
 
    if ( !forms_gradient( buffer ) )
    {
@@ -323,6 +325,77 @@ bool US_FvmGradients::prepare( const US_Buffer&               buffer,
    {
       msg = QObject::tr( "The prepared gradient is not finite.  Check the buffer's co-sedimenting components and the"
                          " run's speed profile." );
+      return false;
+   }
+
+   return true;
+}
+
+bool US_FvmGradients::prepare_measured( const US_Buffer&          buffer,
+                                        const QString&            former,
+                                        const US_DataIO::RawData& molar,
+                                        QString&                  msg )
+{
+   msg = QString();
+   cosed_.reset();
+   bfg_.reset();
+   components     = buffer.cosed_component;
+   base_density   = buffer.density;
+   base_viscosity = buffer.viscosity;
+   buf_density    = buffer.density;
+   buf_viscosity  = buffer.viscosity;
+   density_cache.clear();
+   measured_ = false;
+
+   const US_CosedComponent* cc = nullptr;
+   for ( const US_CosedComponent& comp : components )
+   {
+      if ( comp.name.compare( former, Qt::CaseInsensitive ) == 0 )
+      {
+         cc = &comp;
+         break;
+      }
+   }
+
+   if ( cc == nullptr )
+   {
+      msg = QObject::tr( "The buffer has no component \"%1\" to take the measured gradient for." ).arg( former );
+      return false;
+   }
+
+   if ( cc->s_coeff == 0.0 )
+   {
+      msg = QObject::tr( "List \"%1\" as co-sedimenting (non-zero s) for a measured gradient: as co-diffusing,"
+                         " the solver would build a band-forming gradient of its own." )
+               .arg( former );
+      return false;
+   }
+
+   if ( molar.scanData.size() < 2 || molar.xvalues.size() < 2 )
+   {
+      msg = QObject::tr( "A measured gradient needs at least two scans of two radii." );
+      return false;
+   }
+
+   US_Model                      model;
+   US_Model::SimulationComponent comp;
+   comp.name                 = cc->name;
+   comp.analyteGUID          = cc->GUID;
+   comp.molar_concentration  = cc->conc;
+   comp.signal_concentration = cc->conc;
+   comp.vbar20               = cc->vbar;
+   comp.s                    = cc->s_coeff;
+   comp.D                    = cc->d_coeff;
+   comp.analyte_type         = 4;
+   model.components << comp;
+
+   cosed_.reset( new US_LammAstfvm::CosedData( model, molar, &components ) );
+   measured_ = true;
+   measure_span( molar );
+
+   if ( !std::isfinite( dens_lo ) || !std::isfinite( dens_hi ) )
+   {
+      msg = QObject::tr( "The measured gradient gives no finite density." );
       return false;
    }
 

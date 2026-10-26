@@ -124,6 +124,12 @@ void US_3dsaCli::usage()
          << "      set with a gradient-forming buffer (\"buffer\": a US_Buffer XML)\n"
          << "      is simulated in its gradient.  Scans are spread evenly over the\n"
          << "      speed step's duration.\n\n"
+         << "  us_3dsa_cli gradient-from-interference --ip <interference.auc> --out <molar.auc>\n"
+         << "         --meniscus <cm> --bottom <cm> --loading <g/mL> --dndc <mL/g> --molar-mass <g/mol>\n"
+         << "         [--path <cm>] [--wavelength <nm>] [--stride N] [--dr <cm>]\n\n"
+         << "      Turn interference scans of a gradient former into its molar\n"
+         << "      concentration over the run, conserving its mass over the cell,\n"
+         << "      for a data set's \"gradient\".\n\n"
          << "  us_3dsa_cli --help\n";
    out().flush();
 }
@@ -248,6 +254,8 @@ bool US_3dsaCli::read_case( const QString& path, Case& kase, QString& emsg )
       ds.has_density    = o.contains( "density" );
       ds.has_viscosity  = o.contains( "viscosity" );
       ds.last_scan_only = jbool( o, "last_scan_only", false );
+      ds.gradient        = o.value( "gradient" ).toString();
+      ds.gradient_former = o.value( "gradient_former" ).toString();
       kase.datasets << ds;
    }
 
@@ -383,6 +391,30 @@ bool US_3dsaCli::load_datasets( const Case& kase, QList<US_SolveSim::DataSet*>& 
 
          density   = spec.has_density ? density : d->solution_rec.buffer.density;
          viscosity = spec.has_viscosity ? viscosity : d->solution_rec.buffer.viscosity;
+      }
+
+      if ( !spec.gradient.isEmpty() )
+      {
+         US_DataIO::RawData molar;
+         QString            gmsg;
+
+         if ( US_DataIO::readRawData( spec.gradient, molar ) != US_DataIO::OK )
+         {
+            emsg = QString( "cannot read gradient %1" ).arg( spec.gradient );
+            delete d;
+            return false;
+         }
+
+         QSharedPointer<US_FvmGradients> grads( new US_FvmGradients );
+
+         if ( !grads->prepare_measured( d->solution_rec.buffer, spec.gradient_former, molar, gmsg ) )
+         {
+            emsg = QString( "%1: %2" ).arg( spec.gradient ).arg( gmsg );
+            delete d;
+            return false;
+         }
+
+         d->fvm = grads;
       }
 
       d->density     = density;
@@ -2369,6 +2401,236 @@ int US_3dsaCli::run_simulate( const QStringList& args )
 }
 
 // ---------------------------------------------------------------------------
+// A gradient former's molar concentration from interference scans.  A fringe
+// measures a change of refractive index, so each scan fixes the profile's
+// shape but not its level; the level is the one that conserves the former's
+// mass over the sector, at the loading concentration.  The scan nearest each
+// end of the cell is extrapolated from the last 0.03 cm of good data.  A
+// uniform scan at the loading concentration starts the run.
+int US_3dsaCli::run_gradient_from_interference( const QStringList& args )
+{
+   QString ip_path;
+   QString out_path;
+   double  meniscus   = 0.0;
+   double  bottom     = 0.0;
+   double  loading    = 0.0;   // g/mL
+   double  dndc       = 0.0;   // mL/g
+   double  molar_mass = 0.0;   // g/mol
+   double  path       = 1.2;   // cm
+   double  wavelength = 660.0; // nm
+   double  dr         = 0.005;
+   double  top_margin = 0.012;
+   double  bot_margin = 0.025;
+   int     stride     = 1;
+
+   for ( int ii = 0; ii + 1 < args.size(); ii += 2 )
+   {
+      const QString a = args[ii];
+      const QString v = args[ii + 1];
+      if ( a == "--ip" )
+      {
+         ip_path = v;
+      }
+      else if ( a == "--out" )
+      {
+         out_path = v;
+      }
+      else if ( a == "--meniscus" )
+      {
+         meniscus = v.toDouble();
+      }
+      else if ( a == "--bottom" )
+      {
+         bottom = v.toDouble();
+      }
+      else if ( a == "--loading" )
+      {
+         loading = v.toDouble();
+      }
+      else if ( a == "--dndc" )
+      {
+         dndc = v.toDouble();
+      }
+      else if ( a == "--molar-mass" )
+      {
+         molar_mass = v.toDouble();
+      }
+      else if ( a == "--path" )
+      {
+         path = v.toDouble();
+      }
+      else if ( a == "--wavelength" )
+      {
+         wavelength = v.toDouble();
+      }
+      else if ( a == "--stride" )
+      {
+         stride = qMax( 1, v.toInt() );
+      }
+      else if ( a == "--dr" )
+      {
+         dr = v.toDouble();
+      }
+      else if ( a == "--top-margin" )
+      {
+         top_margin = v.toDouble();
+      }
+      else if ( a == "--bottom-margin" )
+      {
+         bot_margin = v.toDouble();
+      }
+      else
+      {
+         err() << "unknown gradient-from-interference option: " << a << "\n";
+         err().flush();
+         return 2;
+      }
+   }
+
+   if ( ip_path.isEmpty() || out_path.isEmpty() || bottom <= meniscus || loading <= 0.0 || dndc <= 0.0 || molar_mass <= 0.0 )
+   {
+      err() << "gradient-from-interference needs --ip, --out, --meniscus, --bottom, --loading, --dndc and --molar-mass\n";
+      err().flush();
+      return 2;
+   }
+
+   US_DataIO::RawData ip;
+   if ( US_DataIO::readRawData( ip_path, ip ) != US_DataIO::OK || ip.scanData.isEmpty() )
+   {
+      err() << "cannot read " << ip_path << "\n";
+      err().flush();
+      return 3;
+   }
+
+   const double       fringe_to_conc = wavelength * 1.0e-7 / ( path * dndc ); // g/mL per fringe
+   const int          ngrid          = qMax( 2, qRound( ( bottom - meniscus ) / dr ) + 1 );
+   const double       step           = ( bottom - meniscus ) / ( ngrid - 1 );
+   const double       lo             = meniscus + top_margin;
+   const double       hi             = bottom - bot_margin;
+
+   US_DataIO::RawData molar;
+   molar.type[0]     = 'R';
+   molar.type[1]     = 'A';
+   molar.cell        = ip.cell;
+   molar.channel     = ip.channel;
+   molar.description = QString( "molar gradient former from %1" ).arg( QFileInfo( ip_path ).fileName() );
+   US_Util::uuid_parse( US_Util::new_guid(), (unsigned char*) molar.rawGUID );
+   for ( int kk = 0; kk < ngrid; kk++ )
+   {
+      molar.xvalues << meniscus + step * kk;
+   }
+
+   // The start of the run: uniform
+   US_DataIO::Scan start = ip.scanData.first();
+   start.seconds         = 0.0;
+   start.omega2t         = 0.0;
+   start.rvalues         = QVector<double>( ngrid, loading / molar_mass * 1000.0 );
+   molar.scanData << start;
+
+   // Least-squares line through the data on [a, b]
+   const auto line = [&]( const US_DataIO::Scan& sc, double a, double b, double& c0, double& c1 )
+   {
+      double sn = 0, sx = 0, sy = 0, sxx = 0, sxy = 0;
+      for ( int jj = 0; jj < ip.xvalues.size(); jj++ )
+      {
+         const double xx = ip.xvalues[jj];
+         if ( xx < a || xx > b )
+         {
+            continue;
+         }
+         sn += 1;
+         sx += xx;
+         sy += sc.rvalues[jj];
+         sxx += xx * xx;
+         sxy += xx * sc.rvalues[jj];
+      }
+      c1 = ( sn * sxy - sx * sy ) / qMax( 1.0e-30, sn * sxx - sx * sx );
+      c0 = ( sy - c1 * sx ) / qMax( 1.0, sn );
+   };
+
+   for ( int ss = 0; ss < ip.scanData.size(); ss++ )
+   {
+      if ( ss % stride != 0 && ss != ip.scanData.size() - 1 )
+      {
+         continue;
+      }
+
+      const US_DataIO::Scan& sc = ip.scanData[ss];
+      double                 a0, a1, b0, b1;
+      line( sc, lo, lo + 0.03, a0, a1 );
+      line( sc, hi - 0.03, hi, b0, b1 );
+
+      QVector<double> jv( ngrid );
+      for ( int kk = 0; kk < ngrid; kk++ )
+      {
+         const double rr = molar.xvalues[kk];
+         if ( rr < lo )
+         {
+            jv[kk] = a0 + a1 * rr;
+            continue;
+         }
+         if ( rr > hi )
+         {
+            jv[kk] = b0 + b1 * rr;
+            continue;
+         }
+         double sum = 0.0;
+         int    nn  = 0;
+         for ( int jj = 0; jj < ip.xvalues.size(); jj++ )
+         {
+            if ( qAbs( ip.xvalues[jj] - rr ) <= 0.5 * step )
+            {
+               sum += sc.rvalues[jj];
+               nn++;
+            }
+         }
+         jv[kk] = ( nn > 0 ) ? sum / nn : ( rr < 0.5 * ( lo + hi ) ? a0 + a1 * rr : b0 + b1 * rr );
+      }
+
+      // Level from mass conservation over the sector
+      double num = 0.0;
+      double den = 0.0;
+      for ( int kk = 1; kk < ngrid; kk++ )
+      {
+         const double r0 = molar.xvalues[kk - 1];
+         const double r1 = molar.xvalues[kk];
+         num += 0.5 * ( jv[kk - 1] * r0 + jv[kk] * r1 ) * step;
+         den += 0.5 * ( r0 + r1 ) * step;
+      }
+      const double    jmean = num / den;
+
+      US_DataIO::Scan out = sc;
+      out.rvalues.resize( ngrid );
+      for ( int kk = 0; kk < ngrid; kk++ )
+      {
+         const double conc = loading + ( jv[kk] - jmean ) * fringe_to_conc; // g/mL
+         out.rvalues[kk]   = qMax( 0.0, conc ) / molar_mass * 1000.0;       // mol/L
+      }
+      out.delta_r = step;
+      molar.scanData << out;
+   }
+
+   const int rc = US_DataIO::writeRawData( out_path, molar );
+   if ( rc != US_DataIO::OK )
+   {
+      err() << "cannot write " << out_path << "\n";
+      err().flush();
+      return 3;
+   }
+
+   const US_DataIO::Scan& last = molar.scanData.last();
+   out() << QString( "  wrote %1: %2 scans of %3 points; last scan %4 to %5 M (loading %6 M)\n" )
+               .arg( out_path )
+               .arg( molar.scanData.size() )
+               .arg( ngrid )
+               .arg( last.rvalues.first(), 0, 'f', 4 )
+               .arg( last.rvalues.last(), 0, 'f', 4 )
+               .arg( loading / molar_mass * 1000.0, 0, 'f', 4 );
+   out().flush();
+   return 0;
+}
+
+// ---------------------------------------------------------------------------
 int US_3dsaCli::main( int argc, char** argv )
 {
    QStringList args;
@@ -2396,6 +2658,10 @@ int US_3dsaCli::main( int argc, char** argv )
    if ( cmd == "simulate" )
    {
       return run_simulate( args );
+   }
+   if ( cmd == "gradient-from-interference" )
+   {
+      return run_gradient_from_interference( args );
    }
 
    err() << "unknown command: " << cmd << "\n";

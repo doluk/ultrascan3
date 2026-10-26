@@ -736,6 +736,20 @@ meniscus spike at 2.7 h, and the last scan's baseline correction applied to all.
 velocity run in PBS measures *s* and *D* directly; from ABDE they need a gradient-former model that
 is right in time, not only at equilibrium.
 
+### Measured gradients
+
+Item 9 below is not particular to CsCl: the solver sediments any gradient former as one dilute,
+ideal solute. Run 1322 (polystyrene–polydopamine particles in sucrose, 40 krpm for 84 h, with
+interference) shows it plainly — its sucrose gradient ends linear in *r*², the shape of a
+concentrated, non-ideal former, and no single ideal solute fits the interference time course
+(RMSD 1.3 fringes against ≈ 0.03 noise). Where the run measured its gradient, the model is not
+needed: `US_FvmGradients::prepare_measured()` takes the former's molar concentration over the run
+(the ported `CosedData` gains a constructor for a given table) and the ASTFVM interpolates it
+exactly as it does a simulated one — identical simulations to 10⁻⁶ of the peak, and the engine
+keeps such a gradient (`MeasuredGradientDrivesTheFitAsTheSimulatedOne`).
+`us_3dsa_cli gradient-from-interference` makes the table from interference scans: a fringe fixes
+a profile's shape, and conserving the former's mass at its loading concentration fixes its level.
+
 ### Limits, and defects found in the ported code
 
 For the branch's author; none is worked around here except where noted.
