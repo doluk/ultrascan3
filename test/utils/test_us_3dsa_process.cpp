@@ -1365,6 +1365,47 @@ TEST_F( TestUS3dsaProcess, MeasuredGradientDrivesTheFitAsTheSimulatedOne )
    EXPECT_NEAR( weighted_s( result.model ) * 1.0e13, 10.0, 0.5 );
 }
 
+// A cell whose recorded bottom lies short of the centerpiece's bottom at
+// rest, 7.2 cm unless the hardware says otherwise: the simulated former stays
+// in the cell the finite-volume solver simulates, and keeps its mass there.
+TEST_F( TestUS3dsaProcess, SimulatedGradientKeepsItsFormerInTheCell )
+{
+   const US_Buffer         buffer = gradient_buffer( GRAD_CSCL );
+   US_SimulationParameters sp     = gradient_simparams();
+   sp.bottom                      = GRAD_BOTTOM - 0.1;
+   sp.bottom_position             = 7.2;
+
+   US_DataIO::RawData sim;
+   make_gradient_grid( sim );
+   US_SimulationParameters::computeSpeedSteps( &sim.scanData, sp.speed_step );
+   QTemporaryDir tmst_dir;
+   const QString tmst = tmst_dir.filePath( "gradient.time_state.tmst" );
+   US_AstfemMath::writetimestate( tmst, sp, sim );
+   sp.simSpeedsFromTimeState( tmst );
+
+   US_FvmGradients grads;
+   QString         msg;
+   ASSERT_TRUE( grads.prepare( buffer, sp, US_FvmGradients::gradient_grid( sp, sim.scanData.last().seconds, 20, 0.002 ), msg ) )
+      << msg.toStdString();
+   ASSERT_NE( grads.cosed(), nullptr );
+   const US_DataIO::RawData& molar = grads.cosed()->sa_data;
+   ASSERT_NEAR( molar.xvalues.last(), sp.bottom, 1.0e-6 );
+
+   // Mean concentration over the sector, scan by scan
+   const double area = ( sp.bottom * sp.bottom - sp.meniscus * sp.meniscus ) / 2.0;
+   for ( const US_DataIO::Scan& sc : molar.scanData )
+   {
+      double mass = 0.0;
+      for ( int jj = 1; jj < molar.xvalues.size(); jj++ )
+      {
+         mass += 0.5 * ( sc.rvalues[jj] * molar.xvalues[jj] + sc.rvalues[jj - 1] * molar.xvalues[jj - 1] ) *
+                 ( molar.xvalues[jj] - molar.xvalues[jj - 1] );
+      }
+      EXPECT_NEAR( mass / area, GRAD_CSCL, 0.002 * GRAD_CSCL ) << "at " << sc.seconds << " s";
+   }
+   EXPECT_GT( molar.scanData.last().rvalues.last(), 1.05 * GRAD_CSCL );
+}
+
 // The result carries the final fit's simulation: data minus it is the
 // residual whose RMSD the fit reports, so a caller can plot the fit without
 // solving anything again.

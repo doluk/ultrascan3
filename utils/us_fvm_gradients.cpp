@@ -102,9 +102,11 @@ US_DataIO::RawData US_FvmGradients::gradient_grid( const US_SimulationParameters
    // Start once the rotor is at speed: the simulator leaves scans inside the
    // acceleration zone empty, and an empty first scan would read as no
    // gradient at all.  Before the first scan the solver holds that scan's
-   // gradient.
-   const double t_start = sparms.sim_speed_prof.isEmpty() ? 0.0 : (double) sparms.sim_speed_prof[0].time_e_accel + 1.0;
-   const double t_first = qMin( qMax( t_start, t_end / nscans ), t_end );
+   // gradient, so the first scan comes as soon as the rotor is at speed: a
+   // run that rested first would otherwise see a gradient formed during the
+   // rest.
+   const double t_first =
+      sparms.sim_speed_prof.isEmpty() ? t_end / nscans : qMin( (double) sparms.sim_speed_prof[0].time_e_accel + 1.0, t_end );
 
    for ( int kk = 0; kk < nscans; kk++ )
    {
@@ -244,6 +246,21 @@ bool US_FvmGradients::prepare( const US_Buffer&               buffer,
    sd.viscosity = base_viscosity;
    sd.manual    = true;
 
+   // The former is simulated with ASTFEM, which takes the cell's bottom
+   // from simparams only when it lies beyond the centerpiece's bottom at
+   // rest; otherwise it puts the bottom at the centerpiece's (7.2 cm unless
+   // the hardware says otherwise).  The finite-volume solver always takes
+   // simparams' bottom, so a cell whose recorded bottom lies short of that
+   // would have its former pile up past the solute's bottom, and the
+   // gradient lose that much of its mass.  Place the centerpiece's bottom
+   // so that ASTFEM's bottom at speed is the solver's.
+   US_SimulationParameters fem_parms = sparms;
+   {
+      const int    speed        = fem_parms.speed_step.isEmpty() ? 0 : (int) fem_parms.speed_step[0].rotorspeed;
+      const double stretch      = fem_parms.rotorcoeffs[0] * speed + fem_parms.rotorcoeffs[1] * sq( (double) speed );
+      fem_parms.bottom_position = fem_parms.bottom - stretch;
+   }
+
    bool                              codiff = false;
    US_Model                          cosed_model;
    QMap<QString, US_DataIO::RawData> comp_data;
@@ -299,7 +316,7 @@ bool US_FvmGradients::prepare( const US_Buffer&               buffer,
       one.components << comp;
       one.update_coefficients();
 
-      cosed_.reset( new US_LammAstfvm::CosedData( one, sparms, &work, &components, base_density, base_viscosity ) );
+      cosed_.reset( new US_LammAstfvm::CosedData( one, fem_parms, &work, &components, base_density, base_viscosity ) );
       comp_data[comp.analyteGUID] = cosed_->sa_data;
       cosed_model.update_coefficients();
       cosed_->model           = cosed_model;

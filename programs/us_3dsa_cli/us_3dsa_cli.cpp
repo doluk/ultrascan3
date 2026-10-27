@@ -128,16 +128,19 @@ void US_3dsaCli::usage()
          << "  us_3dsa_cli gradient-from-interference --ip <interference.auc> --out <molar.auc>\n"
          << "         --meniscus <cm> --bottom <cm> --loading <g/mL> --dndc <mL/g> --molar-mass <g/mol>\n"
          << "         [--path <cm>] [--wavelength <nm>] [--stride N] [--dr <cm>]\n"
-         << "         [--to-meniscus <cm> --to-bottom <cm>] [--start <s>]\n\n"
+         << "         [--to-meniscus <cm> --to-bottom <cm>] [--start <s>] [--baseline-scan N]\n\n"
          << "      Turn interference scans of a gradient former into its molar\n"
          << "      concentration over the run, conserving its mass over the cell,\n"
-         << "      for a data set's \"gradient\".\n\n"
+         << "      for a data set's \"gradient\".  --baseline-scan subtracts scan N\n"
+         << "      (from 0), taken before the former has moved, from every scan:\n"
+         << "      the cell's optical baseline.\n\n"
          << "  us_3dsa_cli timestate --out <run.time_state.tmst> --program t:rpm,t:rpm,...\n"
          << "         [--temperature <C>]\n\n"
          << "      Write a timestate for a speed program, rpm linear between the\n"
          << "      knots, when the synthesized one would be wrong (a run that held\n"
          << "      a low speed before its step, say).  Data sets name it with\n"
-         << "      \"timestate\".\n\n"
+         << "      \"timestate\".  A rest at the start keeps the run's clock: it is\n"
+         << "      written at the first step's set speed.\n\n"
          << "  us_3dsa_cli --help\n";
    out().flush();
 }
@@ -2498,6 +2501,7 @@ int US_3dsaCli::run_gradient_from_interference( const QStringList& args )
    double  to_men     = 0.0; // Geometry of the data set the gradient serves
    double  to_bot     = 0.0;
    double  t_start    = 0.0; // Uniform until the speed that forms it starts
+   int     base_scan  = -1;  // Scan taken as the cell's optical baseline
 
    for ( int ii = 0; ii + 1 < args.size(); ii += 2 )
    {
@@ -2567,6 +2571,10 @@ int US_3dsaCli::run_gradient_from_interference( const QStringList& args )
       {
          t_start = v.toDouble();
       }
+      else if ( a == "--baseline-scan" )
+      {
+         base_scan = v.toInt();
+      }
       else
       {
          err() << "unknown gradient-from-interference option: " << a << "\n";
@@ -2588,6 +2596,22 @@ int US_3dsaCli::run_gradient_from_interference( const QStringList& args )
       err() << "cannot read " << ip_path << "\n";
       err().flush();
       return 3;
+   }
+
+   // The cell's optical baseline: window distortions put a time-invariant
+   // pattern of a fraction of a fringe into every interference scan.  A scan
+   // taken just after reaching speed, before the former has moved, is that
+   // pattern alone; subtracting it from every scan removes it.
+   if ( base_scan >= 0 && base_scan < ip.scanData.size() )
+   {
+      const QVector<double> base = ip.scanData[base_scan].rvalues;
+      for ( US_DataIO::Scan& sc : ip.scanData )
+      {
+         for ( int jj = 0; jj < sc.rvalues.size() && jj < base.size(); jj++ )
+         {
+            sc.rvalues[jj] -= base[jj];
+         }
+      }
    }
 
    const double       fringe_to_conc = wavelength * 1.0e-7 / ( path * dndc ); // g/mL per fringe
@@ -2737,6 +2761,16 @@ int US_3dsaCli::run_gradient_from_interference( const QStringList& args )
 // them, one record per second, omega-squared-t integrated.  A knot's rpm is
 // the set speed of the segment that ends at it; set speeds below 1500 rpm do
 // not make a speed step of their own.
+//
+// A rest at the start of the program is written at the set speed of the step
+// that follows it.  US_SimulationParameters::ssProfFromTimeState drops the
+// records before the first non-zero set speed and restarts its clock there,
+// while the finite-volume solver reads the profile by the scans' own times: a
+// rest written at set speed zero would have the rotor at speed that much
+// early.  Kept, the rest becomes part of the first step's acceleration zone,
+// which the finite-volume solver reads second by second.  (ASTFEM runs an
+// acceleration zone as a straight ramp, so a gradient former it simulates
+// sees the rest as a slow start; a measured gradient is not affected.)
 int US_3dsaCli::run_timestate( const QStringList& args )
 {
    QString out_path;
@@ -2800,12 +2834,19 @@ int US_3dsaCli::run_timestate( const QStringList& args )
    ts.set_key( "Step", "I2" );
    ts.set_key( "Scan", "I2" );
 
-   const int t_end   = (int) kt.last();
-   double    omega2t = 0.0;
-   double    rpm_p   = kr[0];
-   int       seg     = 0;
-   int       step    = 0;
-   int       set_p   = 0;
+   const int t_end    = (int) kt.last();
+   double    omega2t  = 0.0;
+   double    rpm_p    = kr[0];
+   int       seg      = 0;
+   int       step     = 0;
+   int       set_p    = 0;
+   int       lead_set = 0; // Set speed of a leading rest
+   bool      started  = false;
+
+   for ( int kk = 1; kk < kr.size() && lead_set == 0; kk++ )
+   {
+      lead_set = (int) kr[kk];
+   }
 
    for ( int tt = 0; tt <= t_end; tt++ )
    {
@@ -2817,7 +2858,13 @@ int US_3dsaCli::run_timestate( const QStringList& args )
       const double t1  = kt[seg + 1];
       const double fr  = ( t1 > t0 ) ? qBound( 0.0, ( tt - t0 ) / ( t1 - t0 ), 1.0 ) : 1.0;
       const double rpm = kr[seg] + ( kr[seg + 1] - kr[seg] ) * fr;
-      const int    set = (int) kr[seg + 1];
+      int          set = (int) kr[seg + 1];
+
+      started = started || set != 0;
+      if ( !started )
+      {
+         set = lead_set;
+      }
 
       if ( tt > 0 )
       { // trapezoid in omega^2 over the second just past
