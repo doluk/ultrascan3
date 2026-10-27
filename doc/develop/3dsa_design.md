@@ -750,17 +750,35 @@ keeps such a gradient (`MeasuredGradientDrivesTheFitAsTheSimulatedOne`).
 `us_3dsa_cli gradient-from-interference` makes the table from interference scans: a fringe fixes
 a profile's shape, and conserving the former's mass at its loading concentration fixes its level.
 (`--to-meniscus`/`--to-bottom` map it onto the absorbance data's cell, which the two optics place
-up to 0.01 cm apart.)
+up to 0.01 cm apart. `--baseline-scan` subtracts a scan taken before the former has moved, the
+cell's optical baseline: in run 1322 a third of a fringe of tilt, which offset the levelled
+profile by half a millimolar.)
+
+Run 1322's measured gradient is shallow: at equilibrium ±3.7 % of the loading (±36 mM at
+0.985 M). Sucrose's buoyant molar mass at 40 krpm, with a thermodynamic factor of about 1.5 at
+1 M, predicts about ±15 %. What the reference sectors held decides which to believe; it is not
+settled here.
 
 **Run 1322, prepared for a cluster.** Three cells loaded at 1.12660, 1.12835 and 1.13077 g/mL
 sucrose (0.985–1.017 M), 12 mm path. Two findings shape the fit:
 * **The speed history.** The run held 3500 rpm for 35 minutes before stepping to 40 krpm. The
   timestate synthesized from the 40 krpm scans is a slow ramp with twice the recorded ω²t at the
   first scan. `us_3dsa_cli timestate` writes the real program instead: every scan's ω²t puts the
-  step at 2081.5 s, to ±3 s over 90 h.
-* **The particles' density follows the medium.** Each cell's band sits within 0.03 cm of its own
-  isoconcentration point, at 1.1269, 1.1289 and 1.1316 g/mL. Particles of fixed density would have
-  banded about 0.4 cm apart. So each cell is fitted on its own, not globally.
+  step at 2081.5 s, to ±3 s over 90 h. Until `06f8f33a1` it wrote the rest at set speed zero, and
+  the solver ran 35 minutes ahead of the run (limit 11).
+* **The band does not behave as one fixed density.** In the first scan, 7 minutes at 40 krpm
+  with the sucrose not yet moved inside the cell, the particles are already leaving the bottom:
+  boundaries 0.19, 0.29 and 0.33 cm up in cells 1–3, apparent *s* −36, −52 and −57 S. By 1.7 h
+  three quarters of the absorbance sits just below the meniscus. That is floating, faster in the
+  denser cells, as one density of about 1.121–1.123 g/mL would give. At 90 h, though, each band
+  sits within 0.03 cm of its own cell's isoconcentration point (1.1269, 1.1289 and 1.1316 g/mL in
+  the pilots), and from 50 to 90 h, with the gradient static, it still moves down about 0.006 cm
+  per 10 h. The ASTFVM shows that no fixed density does both. At 3000 S, 1.1226 g/mL puts the
+  first scan's boundary where the data have it (6.95 cm in cell 1, 6.78 cm in cell 3), but then
+  stays pressed against the meniscus and ends at 6.23 cm in cell 1 (data 6.67) and at the
+  meniscus in cell 3. 1.1269 g/mL ends at 6.666 cm, as the data do, but has not moved in the first
+  scan and comes up from the bottom. Each cell is fitted on its own, with a fixed density per
+  solute; the early scans are what such a model cannot follow.
 
 The package (data, timestate, measured gradients, buffers, cases, scripts) runs its pilots in
 seconds and a four-solute check in 30 s. The fits proper are cluster jobs: 135 to 858 ASTFVM
@@ -768,7 +786,7 @@ solves per cell, the 64 subgrids keeping 64 cores busy.
 
 **Cost near the isopycnic point.** The ASTFVM sizes its time step for the solute's *s* in the
 buffer's own density — in a gradient buffer, the base buffer's. Run 1322's particles (about 400 S
-in water, v̄ ≈ 0.93, banding at ≈ 1.07 g/mL) take 13 minutes per solve over its 90 hours. Sizing the
+in water, v̄ ≈ 0.887, banding near 1.127 g/mL) take 13 minutes per solve over its 90 hours. Sizing the
 step for the largest *s* inside the gradient instead was 15 times faster and diverged — to ten
 times the band's peak — since the mesh is built for the base-buffer *s*; that change is not kept.
 A grid for such particles is a cluster job.
@@ -805,6 +823,23 @@ For the branch's author; none is worked around here except where noted.
    0.125. On the ABDE run 2098 this choice moves the two bands' density difference from about
    0.12 to about 0.06 g/mL — as large an effect as the loading concentration. The component
    database's CsCl density coefficients are listed for 0–1.916 M; AAV ABDE loads near 3 M.
+10. **ASTFEM's bottom is the centerpiece's.** ASTFEM takes the cell bottom from simparams only when
+    it lies beyond the centerpiece's bottom at rest (`bottom_position`, 7.2 cm unless the
+    hardware sets it); otherwise it uses that plus the rotor stretch. The ASTFVM always takes
+    simparams' bottom. A former `CosedData` simulates for a cell whose recorded bottom is shorter
+    piles up past the solute's cell: run 1322's cells (7.116 cm) lost 3.5 % of their sucrose.
+    *Fixed here:* `US_FvmGradients::prepare()` places the centerpiece's bottom so that the two
+    agree (`SimulatedGradientKeepsItsFormerInTheCell`).
+11. **Two clocks.** `ssProfFromTimeState` drops a timestate's leading zero-speed records and
+    restarts its clock at the first non-zero set speed; the ASTFVM indexes the profile's
+    per-second rpm by the scans' own times. An Optima timestate starts with the rotor, so the two
+    differ by seconds; a written one with a rest at set speed zero shifts the solver's whole speed
+    history by the rest. *Fixed here* for `us_3dsa_cli timestate`, which writes a leading rest at
+    the first step's set speed. ASTFEM matches scans by ω²t and is not affected, but it runs an
+    acceleration zone as a straight ramp at its mean acceleration, taking only the reported rpm and
+    ω²t from the timestate: a rest kept inside the zone is, for a former ASTFEM simulates, a slow
+    start (run 1322: the sucrose 5 % depleted at the meniscus by the end of the ramp, instead of
+    about 1 %). Measured gradients are not affected.
 
 ### Not done
 
