@@ -5,6 +5,7 @@
 #include <QtCore>
 
 #include "us_buffer.h"
+#include "us_constants.h"
 #include "us_dataIO.h"
 #include "us_extern.h"
 #include "us_lamm_astfvm.h"
@@ -141,6 +142,49 @@ class US_UTIL_EXTERN US_FvmGradients
       //!        simulation-cache keys: two data sets with the same grid but
       //!        different buffers must not share simulations
       static QByteArray         key( const US_Buffer&, const US_SimulationParameters& );
+
+      //! \brief A gradient former's s and D fitted to interference scans, and
+      //!        what the fit needs
+      struct FormerFit
+      {
+         // In
+         US_DataIO::RawData      scans;                   //!< Interference scans, fringes
+         US_SimulationParameters sparms;                  //!< Timestate loaded; the scans' meniscus and bottom
+         double                  molar             = 0.0; //!< Loading, mol/L
+         double                  fringes_per_molar = 0.0; //!< Fringes per mol/L of the former
+         double                  vbar              = 0.63;
+         double                  base_density      = DENS_20W;
+         double                  base_viscosity    = VISC_20W;
+         double                  margin            = 0.03; //!< Left out at the meniscus and bottom, cm
+         int                     scan_stride       = 1;    //!< Every Nth scan
+         int                     radial_stride     = 1;    //!< Every Nth radius
+         bool                    concentration_dependent = false; //!< Fit sigma and delta too
+         // In as the start, out as the result
+         double                  s     = 1.0e-14; //!< s20,w, s
+         double                  D     = 2.5e-6;  //!< D20,w, cm^2/s
+         double                  sigma = 0.0;     //!< s / ( 1 + sigma c ), L/mol
+         double                  delta = 0.0;     //!< D / ( 1 + delta c ), L/mol
+         // Out
+         double                  rmsd        = 0.0; //!< Fringes, time- and radially invariant noise removed
+         int                     evaluations = 0;
+         US_DataIO::RawData      residuals;         //!< On the scans and radii fitted
+      };
+
+      //! \brief Fit a former's s and D to interference scans
+      //!
+      //! The former is simulated as in prepare(): the ASTFVM, from a uniform
+      //! loading, on the run's own clock, in the base buffer; its molar
+      //! concentration times fringes_per_molar is the model.  Interference
+      //! scans carry an arbitrary offset per scan and the cell's optical
+      //! baseline, so both are removed exactly (radially and time-invariant
+      //! noise) before the RMSD is taken.  The amplitude is not fitted: it
+      //! is set by the loading and dn/dc, and with it free the gradient's
+      //! amplitude and steepness cannot be told apart.  Nelder-Mead over
+      //! ln s, ln D (and the square roots of sigma and delta).
+      //! \param fit  Inputs, start values; returns the result
+      //! \param msg  Returned description of a failure
+      //! \returns    True on success
+      static bool               fit_former( FormerFit&, QString& );
 
    private:
       // Lowest and highest density over the cell at the grid's scan times

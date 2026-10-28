@@ -197,6 +197,7 @@ class US_3dsaCli
       static int    run_simulate( const QStringList& );
       static int    run_gradient_from_interference( const QStringList& );
       static int    run_timestate( const QStringList& );
+      static int    run_fit_former( const QStringList& );
       static void   usage( void );
 
       static bool   read_case( const QString&, Case&, QString& );

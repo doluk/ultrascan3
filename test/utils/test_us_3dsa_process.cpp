@@ -1488,6 +1488,65 @@ TEST_F( TestUS3dsaProcess, SimulatedGradientWaitsForTheRotor )
    EXPECT_GT( rested.density_at( t_end + rest, 20.0, xx )[2] - rho0, 0.01 );
 }
 
+// A former's s and D come back from interference scans of it, through an
+// offset per scan and an optical baseline common to all scans
+TEST_F( TestUS3dsaProcess, FitsAFormersSAndDToInterferenceScans )
+{
+   const double               s_true = 1.06e-13;
+   const double               d_true = 2.0e-5;
+   const double               frpm   = 50.0; // fringes per mol/L
+
+   US_FvmGradients::FormerFit fit;
+   fit.sparms = gradient_simparams();
+   make_gradient_grid( fit.scans );
+   US_SimulationParameters::computeSpeedSteps( &fit.scans.scanData, fit.sparms.speed_step );
+   QTemporaryDir tmst_dir;
+   const QString tmst = tmst_dir.filePath( "former.time_state.tmst" );
+   US_AstfemMath::writetimestate( tmst, fit.sparms, fit.scans );
+   fit.sparms.simSpeedsFromTimeState( tmst );
+
+   // The scans: the former simulated as the fit simulates it, in fringes
+   US_Model::SimulationComponent comp;
+   comp.molar_concentration  = GRAD_CSCL;
+   comp.signal_concentration = GRAD_CSCL;
+   comp.vbar20               = 0.23;
+   comp.analyte_type         = 4;
+   US_Model model;
+   model.components << comp;
+   model.update_coefficients();
+   model.components[0].s = s_true;
+   model.components[0].D = d_true;
+   US_Buffer base;
+   base.density   = BUF_WATER.density;
+   base.viscosity = BUF_WATER.viscosity;
+   base.manual    = true;
+   US_LammAstfvm astfvm( model, fit.sparms );
+   astfvm.set_buffer( base, nullptr, nullptr );
+   astfvm.calculate( fit.scans );
+   for ( int ii = 0; ii < fit.scans.scanData.size(); ii++ )
+   {
+      for ( int jj = 0; jj < fit.scans.xvalues.size(); jj++ )
+      {
+         double& vv = fit.scans.scanData[ii].rvalues[jj];
+         vv         = vv * frpm + 3.0 * ii - 7.0 + 0.3 * std::sin( 8.0 * fit.scans.xvalues[jj] );
+      }
+   }
+
+   fit.molar             = GRAD_CSCL;
+   fit.fringes_per_molar = frpm;
+   fit.vbar              = 0.23;
+   fit.base_density      = BUF_WATER.density;
+   fit.base_viscosity    = BUF_WATER.viscosity;
+   fit.s                 = 0.7e-13;
+   fit.D                 = 3.0e-5;
+   QString msg;
+   ASSERT_TRUE( US_FvmGradients::fit_former( fit, msg ) ) << msg.toStdString();
+   EXPECT_NEAR( fit.s / s_true, 1.0, 0.01 );
+   EXPECT_NEAR( fit.D / d_true, 1.0, 0.02 );
+   EXPECT_LT( fit.rmsd, 1.0e-3 );
+   EXPECT_EQ( fit.residuals.scanData.size(), fit.scans.scanData.size() );
+}
+
 // The result carries the final fit's simulation: data minus it is the
 // residual whose RMSD the fit reports, so a caller can plot the fit without
 // solving anything again.

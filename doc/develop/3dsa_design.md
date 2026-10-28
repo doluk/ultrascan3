@@ -759,6 +759,29 @@ Run 1322's measured gradient is shallow: at equilibrium ±3.7 % of the loading (
 1 M, predicts about ±15 %, and one ideal solute ±30 %. What the reference sectors held decides
 which to believe; the band positions favour a steep gradient (run 1322 below).
 
+**The former's *s* and *D* from interference.** `US_FvmGradients::fit_former()` (CLI
+`fit-former`) fits one ideal former to interference scans. The former is simulated exactly as for a
+simulated gradient (the ASTFVM, from the uniform loading, on the run's clock), its molar
+concentration times fringes per mol/L (from dn/dc, path and wavelength) is the model, and each
+scan's offset and the cell's optical baseline are removed exactly by double centring the
+scans-by-radii residual. The amplitude is fixed: freed, it trades against the steepness (run
+1322: ×4.1 with *s* ÷4, RMSD barely lower). Nelder–Mead over ln *s*, ln *D*, optionally σ and δ
+of concentration-dependent *s* and *D*; a simulation of 84 h takes 0.04 s, a fit 5 s on 100 scans.
+`FitsAFormersSAndDToInterferenceScans` recovers *s* to 1 % and *D* to 2 % through an offset per
+scan and a baseline. On run 1322, all 500 scans:
+
+| | cell 1 | cell 2 | cell 3 |
+|---|---|---|---|
+| *s*₂₀,w | 0.01699 S | 0.01758 S | 0.01742 S |
+| *D*₂₀,w | 2.510 × 10⁻⁶ | 2.498 × 10⁻⁶ | 2.520 × 10⁻⁶ cm²/s |
+| RMSD | 0.066 | 0.033 | 0.063 fringes |
+
+Past 3 h the residuals are within ±0.1 fringe; the first hours miss by up to 1.5 fringes at the
+cell's edges. *D* is about what 1 M sucrose's viscosity and thermodynamics give; *s*/*D* is a
+buoyant molar mass of 17 g/mol against about 66–100 for sucrose, the same 4–6-fold shortfall.
+Concentration dependence lowers the RMSD by 10–25 % but leaves σ and δ undetermined (0.004–3.2 and
+0.16–4.1 L/mol between cells), and *s* and *D* at the loading unchanged.
+
 **Run 1322, prepared for a cluster.** Three cells loaded at 1.12660, 1.12835 and 1.13077 g/mL
 sucrose (0.985–1.017 M) in 1 mM SDS, 12 mm path. Three findings shape the fit:
 * **The speed history.** The run held 3500 rpm for 35 minutes before stepping to 40 krpm. The
@@ -786,10 +809,14 @@ sucrose (0.985–1.017 M) in 1 mM SDS, 12 mm path. Three findings shape the fit:
   median, against 1.1274, 1.1287 and 1.1306 in the measured gradient, and fit 5 to 18 times
   better (RMSD 0.0018–0.0024 against 0.010–0.040). A fixed 1.1258 g/mL at 400 S comes in from
   the top in cells 1 and 3 at about the data's pace and ends 0.014 and 0.017 cm above the data;
-  1.1264 g/mL ends within 0.009 cm in both but comes up from the bottom in cell 1. The
-  interference most likely understates the gradient (see the amplitude above), and the particles'
-  density need not change at all. The package fits each cell in either gradient; a global fit of
-  the three cells in the simulated one is the next step.
+  1.1264 g/mL ends within 0.009 cm in both but comes up from the bottom in cell 1. If the
+  interference understates the gradient (see the amplitude above), the particles' density need not
+  change at all. But the interference itself is fitted by one ideal sucrose to a few hundredths of
+  a fringe, at the shallow amplitude (above), and a gradient simulated from that fit puts each band
+  at its own cell's loading again (pilots 1.1268, 1.1287, 1.1306 g/mL). The two readings cannot
+  both hold; the reference sectors' contents, or an independent measure of the particles' density,
+  decide. The package simulates each cell's gradient from its fitted sucrose by default and takes
+  the steep one on request.
 
 The package (data, timestate, measured gradients, buffers, cases, scripts) runs its pilots in
 seconds and a four-solute check in 30 s. The fits proper are cluster jobs: 135 to 858 ASTFVM

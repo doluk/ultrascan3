@@ -134,6 +134,17 @@ void US_3dsaCli::usage()
          << "      for a data set's \"gradient\".  --baseline-scan subtracts scan N\n"
          << "      (from 0), taken before the former has moved, from every scan:\n"
          << "      the cell's optical baseline.\n\n"
+         << "  us_3dsa_cli fit-former --ip <interference.auc> --simparams <xml> --timestate <tmst>\n"
+         << "         --meniscus <cm> --bottom <cm> --loading <g/mL> --dndc <mL/g> --molar-mass <g/mol>\n"
+         << "         [--path <cm>] [--wavelength <nm>] [--vbar <mL/g>] [--base-density <g/mL>]\n"
+         << "         [--base-viscosity <cP>] [--s0 <S>] [--D0 <1e-6 cm2/s>] [--margin <cm>]\n"
+         << "         [--scan-stride N] [--radial-stride N] [--concentration-dependent]\n"
+         << "         [--residuals <csv>]\n\n"
+         << "      Fit a gradient former's s20,w and D20,w to interference scans: the\n"
+         << "      former simulated by the ASTFVM over the run, as for a simulated\n"
+         << "      gradient, its amplitude set by the loading and dn/dc, with the\n"
+         << "      scans' offsets and optical baseline removed.  The values go into\n"
+         << "      the buffer's co-sedimenting component.\n\n"
          << "  us_3dsa_cli timestate --out <run.time_state.tmst> --program t:rpm,t:rpm,...\n"
          << "         [--temperature <C>]\n\n"
          << "      Write a timestate for a speed program, rpm linear between the\n"
@@ -2900,6 +2911,226 @@ int US_3dsaCli::run_timestate( const QStringList& args )
 }
 
 // ---------------------------------------------------------------------------
+// A gradient former's s and D from interference scans of it
+int US_3dsaCli::run_fit_former( const QStringList& args )
+{
+   QString                    ip_path;
+   QString                    sp_path;
+   QString                    tmst_path;
+   QString                    resid_path;
+   double                     meniscus   = 0.0;
+   double                     bottom     = 0.0;
+   double                     loading    = 0.0; // g/mL
+   double                     dndc       = 0.0; // mL/g
+   double                     molar_mass = 0.0; // g/mol
+   double                     path       = 1.2; // cm
+   double                     wavelength = 660.0;
+   double                     s0         = 0.1; // S
+   double                     d0         = 2.5; // 1e-6 cm^2/s
+   US_FvmGradients::FormerFit fit;
+   fit.base_density   = H2O_DENSITY;
+   fit.base_viscosity = H2O_VISCOSITY;
+   fit.scan_stride    = 5;
+   fit.radial_stride  = 4;
+
+   for ( int ii = 0; ii < args.size(); ii++ )
+   {
+      const QString a = args[ii];
+      if ( a == "--concentration-dependent" )
+      {
+         fit.concentration_dependent = true;
+         continue;
+      }
+      if ( ii + 1 >= args.size() )
+      {
+         err() << "fit-former: " << a << " needs a value\n";
+         err().flush();
+         return 2;
+      }
+      const QString v = args[++ii];
+      if ( a == "--ip" )
+      {
+         ip_path = v;
+      }
+      else if ( a == "--simparams" )
+      {
+         sp_path = v;
+      }
+      else if ( a == "--timestate" )
+      {
+         tmst_path = v;
+      }
+      else if ( a == "--residuals" )
+      {
+         resid_path = v;
+      }
+      else if ( a == "--meniscus" )
+      {
+         meniscus = v.toDouble();
+      }
+      else if ( a == "--bottom" )
+      {
+         bottom = v.toDouble();
+      }
+      else if ( a == "--loading" )
+      {
+         loading = v.toDouble();
+      }
+      else if ( a == "--dndc" )
+      {
+         dndc = v.toDouble();
+      }
+      else if ( a == "--molar-mass" )
+      {
+         molar_mass = v.toDouble();
+      }
+      else if ( a == "--path" )
+      {
+         path = v.toDouble();
+      }
+      else if ( a == "--wavelength" )
+      {
+         wavelength = v.toDouble();
+      }
+      else if ( a == "--vbar" )
+      {
+         fit.vbar = v.toDouble();
+      }
+      else if ( a == "--base-density" )
+      {
+         fit.base_density = v.toDouble();
+      }
+      else if ( a == "--base-viscosity" )
+      {
+         fit.base_viscosity = v.toDouble();
+      }
+      else if ( a == "--s0" )
+      {
+         s0 = v.toDouble();
+      }
+      else if ( a == "--D0" )
+      {
+         d0 = v.toDouble();
+      }
+      else if ( a == "--margin" )
+      {
+         fit.margin = v.toDouble();
+      }
+      else if ( a == "--scan-stride" )
+      {
+         fit.scan_stride = v.toInt();
+      }
+      else if ( a == "--radial-stride" )
+      {
+         fit.radial_stride = v.toInt();
+      }
+      else
+      {
+         err() << "unknown fit-former option: " << a << "\n";
+         err().flush();
+         return 2;
+      }
+   }
+
+   if ( ip_path.isEmpty() || sp_path.isEmpty() || tmst_path.isEmpty() || meniscus <= 0.0 || bottom <= meniscus || loading <= 0.0 ||
+        dndc <= 0.0 || molar_mass <= 0.0 )
+   {
+      err() << "fit-former needs --ip, --simparams, --timestate, --meniscus, --bottom, --loading, --dndc and"
+               " --molar-mass\n";
+      err().flush();
+      return 2;
+   }
+
+   if ( US_DataIO::readRawData( ip_path, fit.scans ) != US_DataIO::OK || fit.scans.scanData.isEmpty() )
+   {
+      err() << "cannot read " << ip_path << "\n";
+      err().flush();
+      return 3;
+   }
+
+   if ( fit.sparms.load_simparms( sp_path ) != 0 )
+   {
+      err() << "cannot read " << sp_path << "\n";
+      err().flush();
+      return 3;
+   }
+   fit.sparms.meniscus = meniscus;
+   fit.sparms.bottom   = bottom;
+   US_SimulationParameters::computeSpeedSteps( &fit.scans.scanData, fit.sparms.speed_step );
+   if ( fit.sparms.simSpeedsFromTimeState( tmst_path ) < 1 )
+   {
+      err() << "cannot read the timestate " << tmst_path << "\n";
+      err().flush();
+      return 3;
+   }
+
+   fit.molar             = loading / molar_mass * 1000.0;
+   fit.fringes_per_molar = molar_mass / 1000.0 * dndc * path / ( wavelength * 1.0e-7 );
+   fit.s                 = s0 * 1.0e-13;
+   fit.D                 = d0 * 1.0e-6;
+
+   QString msg;
+   if ( !US_FvmGradients::fit_former( fit, msg ) )
+   {
+      err() << msg << "\n";
+      err().flush();
+      return 4;
+   }
+
+   const double c0      = fit.molar;
+   const double s_load  = fit.s / ( 1.0 + fit.sigma * c0 );
+   const double d_load  = fit.D / ( 1.0 + fit.delta * c0 );
+   const double buoyant = s_load * R_GC * ( fit.sparms.temperature + K0 ) / d_load;
+
+   out() << QString( "  %1 scans of %2 radii, %3 to %4 cm; loading %5 M, %6 fringes per M\n" )
+               .arg( fit.residuals.scanData.size() )
+               .arg( fit.residuals.xvalues.size() )
+               .arg( fit.residuals.xvalues.first(), 0, 'f', 3 )
+               .arg( fit.residuals.xvalues.last(), 0, 'f', 3 )
+               .arg( c0, 0, 'f', 5 )
+               .arg( fit.fringes_per_molar, 0, 'f', 1 );
+   out() << QString( "  s20,w %1 S   D20,w %2 x 1e-6 cm2/s" ).arg( fit.s * 1.0e13, 0, 'f', 5 ).arg( fit.D * 1.0e6, 0, 'f', 4 );
+   if ( fit.concentration_dependent )
+   {
+      out() << QString( " at zero concentration;  sigma %1, delta %2 L/mol;  at the loading %3 S, %4 x 1e-6" )
+                  .arg( fit.sigma, 0, 'f', 3 )
+                  .arg( fit.delta, 0, 'f', 3 )
+                  .arg( s_load * 1.0e13, 0, 'f', 5 )
+                  .arg( d_load * 1.0e6, 0, 'f', 4 );
+   }
+   out() << QString( "\n  RMSD %1 fringes;  s/D gives M(1 - vbar rho) %2 g/mol;  %3 simulations\n" )
+               .arg( fit.rmsd, 0, 'f', 4 )
+               .arg( buoyant, 0, 'f', 1 )
+               .arg( fit.evaluations );
+   out().flush();
+
+   if ( !resid_path.isEmpty() )
+   {
+      QFile file( resid_path );
+      if ( !file.open( QIODevice::WriteOnly | QIODevice::Text ) )
+      {
+         err() << "cannot write " << resid_path << "\n";
+         err().flush();
+         return 3;
+      }
+      QTextStream ts( &file );
+      ts << "scan,seconds,radius,residual\n";
+      for ( int ii = 0; ii < fit.residuals.scanData.size(); ii++ )
+      {
+         const US_DataIO::Scan& scan = fit.residuals.scanData[ii];
+         for ( int jj = 0; jj < fit.residuals.xvalues.size(); jj++ )
+         {
+            ts << ii << ',' << QString::number( scan.seconds, 'f', 1 ) << ','
+               << QString::number( fit.residuals.xvalues[jj], 'f', 4 ) << ',' << QString::number( scan.rvalues[jj], 'g', 6 )
+               << '\n';
+         }
+      }
+   }
+
+   return 0;
+}
+
+// ---------------------------------------------------------------------------
 int US_3dsaCli::main( int argc, char** argv )
 {
    QStringList args;
@@ -2931,6 +3162,10 @@ int US_3dsaCli::main( int argc, char** argv )
    if ( cmd == "gradient-from-interference" )
    {
       return run_gradient_from_interference( args );
+   }
+   if ( cmd == "fit-former" )
+   {
+      return run_fit_former( args );
    }
    if ( cmd == "timestate" )
    {

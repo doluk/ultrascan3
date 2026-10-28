@@ -3,7 +3,9 @@
 #include "us_constants.h"
 #include "us_math2.h"
 
+#include <algorithm>
 #include <cmath>
+#include <numeric>
 
 // A former's molar concentration over the run, simulated by the ASTFVM as
 // one ideal solute: the solver, cell and clock of the solutes it will carry.
@@ -549,4 +551,299 @@ void US_FvmGradients::measure_span( const US_DataIO::RawData& grid )
          dens_hi = qMax( dens_hi, dd );
       }
    }
+}
+
+// The former's fringes on the fit's scans and radii, before noise
+static QVector<double> former_fringes( const US_FvmGradients::FormerFit& fit,
+                                       const US_DataIO::RawData&         grid,
+                                       double                            s,
+                                       double                            D,
+                                       double                            sigma,
+                                       double                            delta )
+{
+   US_Model::SimulationComponent comp;
+   comp.name                 = QString( "Gradient former" );
+   comp.molar_concentration  = fit.molar;
+   comp.signal_concentration = fit.molar;
+   comp.vbar20               = fit.vbar;
+   comp.f_f0                 = 0.0;
+   comp.analyte_type         = 4;
+
+   US_Model model;
+   model.components << comp;
+   model.update_coefficients();
+   model.components[0].s     = s;
+   model.components[0].D     = D;
+   model.components[0].sigma = sigma;
+   model.components[0].delta = delta;
+
+   US_Buffer base;
+   base.density   = fit.base_density;
+   base.viscosity = fit.base_viscosity;
+   base.manual    = true;
+
+   US_SimulationParameters sparms = fit.sparms;
+   sparms.meshType                = US_SimulationParameters::ASTFVM;
+   sparms.band_forming            = false;
+
+   US_DataIO::RawData sim = grid;
+   for ( US_DataIO::Scan& scan : sim.scanData )
+   {
+      scan.rvalues.fill( 0.0 );
+   }
+
+   US_LammAstfvm astfvm( model, sparms );
+   astfvm.set_buffer( base, nullptr, nullptr );
+   astfvm.calculate( sim );
+
+   QVector<double> out;
+   out.reserve( sim.scanData.size() * sim.xvalues.size() );
+   for ( const US_DataIO::Scan& scan : sim.scanData )
+   {
+      for ( double cc : scan.rvalues )
+      {
+         out << cc * fit.fringes_per_molar;
+      }
+   }
+   return out;
+}
+
+// A scans-by-radii table less its row and column means: what is left once
+// an offset per scan and a profile common to all scans are removed
+static void double_center( QVector<double>& vv, int nscans, int nradii )
+{
+   QVector<double> row( nscans, 0.0 );
+   QVector<double> col( nradii, 0.0 );
+   double          all = 0.0;
+
+   for ( int ii = 0; ii < nscans; ii++ )
+   {
+      for ( int jj = 0; jj < nradii; jj++ )
+      {
+         const double v = vv[ii * nradii + jj];
+         row[ii] += v / nradii;
+         col[jj] += v / nscans;
+         all += v;
+      }
+   }
+
+   all /= (double) nscans * nradii;
+   for ( int ii = 0; ii < nscans; ii++ )
+   {
+      for ( int jj = 0; jj < nradii; jj++ )
+      {
+         vv[ii * nradii + jj] -= row[ii] + col[jj] - all;
+      }
+   }
+}
+
+bool US_FvmGradients::fit_former( FormerFit& fit, QString& msg )
+{
+   msg                          = QString();
+   const US_DataIO::RawData& in = fit.scans;
+
+   if ( fit.molar <= 0.0 || fit.fringes_per_molar <= 0.0 || fit.s <= 0.0 || fit.D <= 0.0 )
+   {
+      msg = QObject::tr( "A former fit needs a positive loading, fringes per mol/L, and start s and D." );
+      return false;
+   }
+
+   // The scans and radii to fit, clear of the meniscus and bottom
+   US_DataIO::RawData grid = in;
+   grid.xvalues.clear();
+   grid.scanData.clear();
+   QVector<int> radii;
+
+   for ( int jj = 0; jj < in.xvalues.size(); jj += qMax( 1, fit.radial_stride ) )
+   {
+      const double rr = in.xvalues[jj];
+      if ( rr > fit.sparms.meniscus + fit.margin && rr < fit.sparms.bottom - fit.margin )
+      {
+         radii << jj;
+         grid.xvalues << rr;
+      }
+   }
+
+   for ( int kk = 0; kk < in.scanData.size(); kk += qMax( 1, fit.scan_stride ) )
+   {
+      US_DataIO::Scan scan = in.scanData[kk];
+      scan.rvalues.clear();
+      for ( int jj : radii )
+      {
+         scan.rvalues << in.scanData[kk].rvalues[jj];
+      }
+      grid.scanData << scan;
+   }
+
+   const int nscans = grid.scanData.size();
+   const int nradii = grid.xvalues.size();
+
+   if ( nscans < 3 || nradii < 3 )
+   {
+      msg = QObject::tr( "Too few scans or radii to fit a former to: %1 scans of %2 radii." ).arg( nscans ).arg( nradii );
+      return false;
+   }
+
+   QVector<double> data;
+   data.reserve( nscans * nradii );
+   for ( const US_DataIO::Scan& scan : grid.scanData )
+   {
+      data += scan.rvalues;
+   }
+   double_center( data, nscans, nradii );
+
+   fit.evaluations   = 0;
+   const auto unpack = []( const QVector<double>& pp, double& s, double& D, double& sigma, double& delta )
+   {
+      s     = std::exp( pp[0] ) * 1.0e-13;
+      D     = std::exp( pp[1] ) * 1.0e-6;
+      sigma = pp.size() > 2 ? pp[2] * pp[2] : 0.0;
+      delta = pp.size() > 3 ? pp[3] * pp[3] : 0.0;
+   };
+   const auto residual = [&]( const QVector<double>& pp, QVector<double>* res )
+   {
+      double s, D, sigma, delta;
+      unpack( pp, s, D, sigma, delta );
+      QVector<double> model = former_fringes( fit, grid, s, D, sigma, delta );
+      double_center( model, nscans, nradii );
+      double ss = 0.0;
+      for ( int kk = 0; kk < model.size(); kk++ )
+      {
+         const double ee = data[kk] - model[kk];
+         ss += ee * ee;
+         if ( res != nullptr )
+         {
+            ( *res )[kk] = ee;
+         }
+      }
+      fit.evaluations++;
+      return std::sqrt( ss / model.size() );
+   };
+
+   // Nelder-Mead
+   QVector<double> start{ std::log( fit.s * 1.0e13 ), std::log( fit.D * 1.0e6 ) };
+   if ( fit.concentration_dependent )
+   {
+      start << std::sqrt( fit.sigma > 0.0 ? fit.sigma : 0.25 ) << std::sqrt( fit.delta > 0.0 ? fit.delta : 0.25 );
+   }
+
+   const int                npar = start.size();
+   QVector<QVector<double>> xx( npar + 1, start );
+   QVector<double>          yy( npar + 1 );
+
+   for ( int round = 0; round < 2; round++ ) // restart once from the result
+   {
+      for ( int ii = 0; ii <= npar; ii++ )
+      {
+         xx[ii] = start;
+         if ( ii > 0 )
+         {
+            xx[ii][ii - 1] += 0.3;
+         }
+         yy[ii] = residual( xx[ii], nullptr );
+      }
+
+      for ( int it = 0; it < 200 * npar; it++ )
+      {
+         QVector<int> order( npar + 1 );
+         std::iota( order.begin(), order.end(), 0 );
+         std::sort( order.begin(), order.end(), [&]( int a, int b ) { return yy[a] < yy[b]; } );
+         const int best   = order[0];
+         const int worst  = order[npar];
+         const int second = order[npar - 1];
+
+         double    spread = 0.0;
+         for ( int ii = 0; ii <= npar; ii++ )
+         {
+            for ( int kk = 0; kk < npar; kk++ )
+            {
+               spread = qMax( spread, std::fabs( xx[ii][kk] - xx[best][kk] ) );
+            }
+         }
+         if ( spread < 1.0e-4 && yy[worst] - yy[best] < 1.0e-7 * yy[best] )
+         {
+            break;
+         }
+
+         QVector<double> cen( npar, 0.0 );
+         for ( int ii = 0; ii <= npar; ii++ )
+         {
+            if ( ii != worst )
+            {
+               for ( int kk = 0; kk < npar; kk++ )
+               {
+                  cen[kk] += xx[ii][kk] / npar;
+               }
+            }
+         }
+         const auto along = [&]( double tt )
+         {
+            QVector<double> pp( npar );
+            for ( int kk = 0; kk < npar; kk++ )
+            {
+               pp[kk] = cen[kk] + tt * ( xx[worst][kk] - cen[kk] );
+            }
+            return pp;
+         };
+
+         const QVector<double> refl = along( -1.0 );
+         const double          yref = residual( refl, nullptr );
+         if ( yref < yy[best] )
+         {
+            const QVector<double> expd = along( -2.0 );
+            const double          yexp = residual( expd, nullptr );
+            xx[worst]                  = ( yexp < yref ) ? expd : refl;
+            yy[worst]                  = qMin( yexp, yref );
+         }
+         else if ( yref < yy[second] )
+         {
+            xx[worst] = refl;
+            yy[worst] = yref;
+         }
+         else
+         {
+            const QVector<double> cont = along( 0.5 );
+            const double          ycon = residual( cont, nullptr );
+            if ( ycon < yy[worst] )
+            {
+               xx[worst] = cont;
+               yy[worst] = ycon;
+            }
+            else
+            {
+               for ( int ii = 0; ii <= npar; ii++ )
+               {
+                  if ( ii != best )
+                  {
+                     for ( int kk = 0; kk < npar; kk++ )
+                     {
+                        xx[ii][kk] = 0.5 * ( xx[ii][kk] + xx[best][kk] );
+                     }
+                     yy[ii] = residual( xx[ii], nullptr );
+                  }
+               }
+            }
+         }
+      }
+
+      start = xx[std::min_element( yy.begin(), yy.end() ) - yy.begin()];
+   }
+
+   QVector<double> res( nscans * nradii, 0.0 );
+   fit.rmsd = residual( start, &res );
+   unpack( start, fit.s, fit.D, fit.sigma, fit.delta );
+
+   fit.residuals = grid;
+   for ( int ii = 0; ii < nscans; ii++ )
+   {
+      fit.residuals.scanData[ii].rvalues = res.mid( ii * nradii, nradii );
+   }
+
+   if ( !std::isfinite( fit.rmsd ) )
+   {
+      msg = QObject::tr( "The former fit did not converge to a finite RMSD." );
+      return false;
+   }
+
+   return true;
 }
