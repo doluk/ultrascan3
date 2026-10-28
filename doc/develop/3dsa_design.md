@@ -756,19 +756,20 @@ profile by half a millimolar.)
 
 Run 1322's measured gradient is shallow: at equilibrium ±3.7 % of the loading (±36 mM at
 0.985 M). Sucrose's buoyant molar mass at 40 krpm, with a thermodynamic factor of about 1.5 at
-1 M, predicts about ±15 %. What the reference sectors held decides which to believe; it is not
-settled here.
+1 M, predicts about ±15 %, and one ideal solute ±30 %. What the reference sectors held decides
+which to believe; the band positions favour a steep gradient (run 1322 below).
 
 **Run 1322, prepared for a cluster.** Three cells loaded at 1.12660, 1.12835 and 1.13077 g/mL
-sucrose (0.985–1.017 M), 12 mm path. Two findings shape the fit:
+sucrose (0.985–1.017 M) in 1 mM SDS, 12 mm path. Three findings shape the fit:
 * **The speed history.** The run held 3500 rpm for 35 minutes before stepping to 40 krpm. The
   timestate synthesized from the 40 krpm scans is a slow ramp with twice the recorded ω²t at the
   first scan. `us_3dsa_cli timestate` writes the real program instead: every scan's ω²t puts the
   step at 2081.5 s, to ±3 s over 90 h. Until `06f8f33a1` it wrote the rest at set speed zero, and
   the solver ran 35 minutes ahead of the run (limit 11).
-* **The band does not behave as one fixed density.** In the first scan, 7 minutes at 40 krpm
-  with the sucrose not yet moved inside the cell, the particles are already leaving the bottom:
-  boundaries 0.19, 0.29 and 0.33 cm up in cells 1–3, apparent *s* −36, −52 and −57 S. By 1.7 h
+* **In the measured gradient the band does not behave as one fixed density.** In the first scan,
+  7 minutes at 40 krpm with the sucrose not yet moved inside the cell, the particles are already
+  leaving the bottom: boundaries 0.19, 0.29 and 0.33 cm up in cells 1–3, apparent *s* −36, −52
+  and −57 S. By 1.7 h
   three quarters of the absorbance sits just below the meniscus. That is floating, faster in the
   denser cells, as one density of about 1.121–1.123 g/mL would give. At 90 h, though, each band
   sits within 0.03 cm of its own cell's isoconcentration point (1.1269, 1.1289 and 1.1316 g/mL in
@@ -777,8 +778,18 @@ sucrose (0.985–1.017 M), 12 mm path. Two findings shape the fit:
   first scan's boundary where the data have it (6.95 cm in cell 1, 6.78 cm in cell 3), but then
   stays pressed against the meniscus and ends at 6.23 cm in cell 1 (data 6.67) and at the
   meniscus in cell 3. 1.1269 g/mL ends at 6.666 cm, as the data do, but has not moved in the first
-  scan and comes up from the bottom. Each cell is fitted on its own, with a fixed density per
-  solute; the early scans are what such a model cannot follow.
+  scan and comes up from the bottom.
+* **In a simulated gradient it does.** With the former simulated by the ASTFVM (below) as one ideal
+  sucrose solute, *s* 0.135 S and *D* 2.6 × 10⁻⁶ cm²/s (the dilute values divided by 1.76, so that
+  it forms on the measured gradient's ~10 h time constant, eight times steeper at equilibrium),
+  the three cells' last scans give one density: pilots 1.1268, 1.1287 and 1.1274 g/mL by signal
+  median, against 1.1274, 1.1287 and 1.1306 in the measured gradient, and fit 5 to 18 times
+  better (RMSD 0.0018–0.0024 against 0.010–0.040). A fixed 1.1258 g/mL at 400 S comes in from
+  the top in cells 1 and 3 at about the data's pace and ends 0.014 and 0.017 cm above the data;
+  1.1264 g/mL ends within 0.009 cm in both but comes up from the bottom in cell 1. The
+  interference most likely understates the gradient (see the amplitude above), and the particles'
+  density need not change at all. The package fits each cell in either gradient; a global fit of
+  the three cells in the simulated one is the next step.
 
 The package (data, timestate, measured gradients, buffers, cases, scripts) runs its pilots in
 seconds and a four-solute check in 30 s. The fits proper are cluster jobs: 135 to 858 ASTFVM
