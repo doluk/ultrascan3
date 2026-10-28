@@ -828,8 +828,8 @@ For the branch's author; none is worked around here except where noted.
     hardware sets it); otherwise it uses that plus the rotor stretch. The ASTFVM always takes
     simparams' bottom. A former `CosedData` simulates for a cell whose recorded bottom is shorter
     piles up past the solute's cell: run 1322's cells (7.116 cm) lost 3.5 % of their sucrose.
-    *Fixed here:* `US_FvmGradients::prepare()` places the centerpiece's bottom so that the two
-    agree (`SimulatedGradientKeepsItsFormerInTheCell`).
+    *Avoided here:* `US_FvmGradients::prepare()` simulates the former with the ASTFVM itself (see
+    below), whose cell is simparams' (`SimulatedGradientKeepsItsFormerInTheCell`).
 11. **Two clocks.** `ssProfFromTimeState` drops a timestate's leading zero-speed records and
     restarts its clock at the first non-zero set speed; the ASTFVM indexes the profile's
     per-second rpm by the scans' own times. An Optima timestate starts with the rotor, so the two
@@ -839,7 +839,19 @@ For the branch's author; none is worked around here except where noted.
     acceleration zone as a straight ramp at its mean acceleration, taking only the reported rpm and
     ω²t from the timestate: a rest kept inside the zone is, for a former ASTFEM simulates, a slow
     start (run 1322: the sucrose 5 % depleted at the meniscus by the end of the ramp, instead of
-    about 1 %). Measured gradients are not affected.
+    0.7 %). Measured gradients are not affected, and since the former is now simulated by the
+    ASTFVM, neither are simulated ones (`SimulatedGradientWaitsForTheRotor`).
+
+**The former, simulated by the ASTFVM.** `CosedData` simulates a co-sedimenting former with ASTFEM;
+`US_FvmGradients::prepare()` no longer uses that. It simulates each former with the ASTFVM, as one
+ideal solute in the base buffer, and hands the table to `CosedData` as it would a measured one. So
+the former shares the solutes' cell and clock: it holds its loading through a rest, follows the
+recorded speed second by second, and conserves its mass. The table runs from the uniform loading at
+time zero over at least 100 times from the rotor's start, spaced quadratically, so that the first
+hours, where the gradient changes fastest, are finely resolved. A former below a band-forming
+lamella starts uniform; only one in the lamella starts as the lamella. For run 1322's sucrose the
+90 h take 5 s, and at equilibrium agree with ASTFEM's (bottom corrected) to 10⁻⁴ M. The physics is
+unchanged: one ideal solute with constant *s* and *D* (limit 9).
 
 ### Not done
 

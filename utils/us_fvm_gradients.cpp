@@ -5,6 +5,105 @@
 
 #include <cmath>
 
+// A former's molar concentration over the run, simulated by the ASTFVM as
+// one ideal solute: the solver, cell and clock of the solutes it will carry.
+// The ASTFVM reads the speed profile second by second, so a rest or a slow
+// start is followed as recorded, and its cell is simparams' meniscus and
+// bottom.  The times start with the uniform loading at zero, then run from
+// the rotor's start to the grid's last scan, closer together early, where
+// the gradient changes fastest.
+static void simulate_former( const US_Model::SimulationComponent& comp,
+                             const US_SimulationParameters&       sparms,
+                             const US_DataIO::RawData&            grid,
+                             double                               base_density,
+                             double                               base_viscosity,
+                             bool                                 overlaying,
+                             US_DataIO::RawData&                  molar )
+{
+   QVector<double> rpm;
+   QVector<double> w2t;
+
+   for ( const US_SimulationParameters::SimSpeedProf& prof : sparms.sim_speed_prof )
+   {
+      rpm += prof.rpm_timestate;
+      w2t += prof.w2t_timestate;
+   }
+
+   const int ntimes  = qMin( rpm.size(), w2t.size() );
+   double    t_rotor = 0.0; // The rotor's start
+
+   while ( t_rotor < ntimes && rpm[(int) t_rotor] <= 0.0 )
+   {
+      t_rotor += 1.0;
+   }
+
+   if ( t_rotor >= ntimes )
+   {
+      t_rotor = 0.0;
+   }
+
+   const double t_end  = grid.scanData.last().seconds;
+   const int    nscans = qMax( 100, grid.scanData.size() );
+
+   molar = grid;
+   molar.scanData.clear();
+
+   for ( int kk = 1; kk <= nscans; kk++ )
+   {
+      const double    frac = (double) kk / nscans;
+      US_DataIO::Scan scan = grid.scanData[0];
+      scan.seconds         = t_rotor + ( t_end - t_rotor ) * frac * frac;
+      const int it         = qBound( 0, qRound( scan.seconds ), qMax( 0, ntimes - 1 ) );
+      scan.rpm             = ( ntimes > 0 ) ? rpm[it] : sparms.speed_step[0].rotorspeed;
+      scan.omega2t         = ( ntimes > 0 ) ? w2t[it] : 0.0;
+      scan.temperature     = sparms.temperature;
+      scan.rvalues         = QVector<double>( grid.xvalues.size(), 0.0 );
+      molar.scanData << scan;
+   }
+
+   US_Model model;
+   model.coSedSolute = -1;
+   model.components << comp;
+   model.update_coefficients();
+   model.components[0].s = comp.s;
+   model.components[0].D = comp.D;
+
+   US_Buffer base;
+   base.density     = base_density;
+   base.viscosity   = base_viscosity;
+   base.manual      = true;
+   base.description = QString( "Gradient former's base" );
+
+   // A former in the cell's solution starts uniform; only one in a
+   // band-forming lamella starts as the lamella
+   US_SimulationParameters fvm_parms = sparms;
+   fvm_parms.meshType                = US_SimulationParameters::ASTFVM;
+   fvm_parms.band_forming            = sparms.band_forming && overlaying;
+   US_LammAstfvm astfvm( model, fvm_parms );
+   astfvm.set_buffer( base, nullptr, nullptr );
+   astfvm.calculate( molar );
+
+   // A concentration never goes negative; the density polynomials take its
+   // square root
+   for ( US_DataIO::Scan& scan : molar.scanData )
+   {
+      for ( double& cc : scan.rvalues )
+      {
+         cc = qMax( 0.0, cc );
+      }
+   }
+
+   US_DataIO::Scan start = molar.scanData[0];
+   start.seconds         = 0.0;
+   start.rpm             = 0.0;
+   start.omega2t         = 0.0;
+   if ( !fvm_parms.band_forming )
+   {
+      start.rvalues.fill( comp.signal_concentration );
+   }
+   molar.scanData.prepend( start );
+}
+
 US_FvmGradients::US_FvmGradients()
 {
    base_density   = 0.0;
@@ -241,26 +340,6 @@ bool US_FvmGradients::prepare( const US_Buffer&               buffer,
       return false;
    }
 
-   US_Math2::SolutionData sd{};
-   sd.density   = base_density;
-   sd.viscosity = base_viscosity;
-   sd.manual    = true;
-
-   // The former is simulated with ASTFEM, which takes the cell's bottom
-   // from simparams only when it lies beyond the centerpiece's bottom at
-   // rest; otherwise it puts the bottom at the centerpiece's (7.2 cm unless
-   // the hardware says otherwise).  The finite-volume solver always takes
-   // simparams' bottom, so a cell whose recorded bottom lies short of that
-   // would have its former pile up past the solute's bottom, and the
-   // gradient lose that much of its mass.  Place the centerpiece's bottom
-   // so that ASTFEM's bottom at speed is the solver's.
-   US_SimulationParameters fem_parms = sparms;
-   {
-      const int    speed        = fem_parms.speed_step.isEmpty() ? 0 : (int) fem_parms.speed_step[0].rotorspeed;
-      const double stretch      = fem_parms.rotorcoeffs[0] * speed + fem_parms.rotorcoeffs[1] * sq( (double) speed );
-      fem_parms.bottom_position = fem_parms.bottom - stretch;
-   }
-
    bool                              codiff = false;
    US_Model                          cosed_model;
    QMap<QString, US_DataIO::RawData> comp_data;
@@ -292,40 +371,36 @@ bool US_FvmGradients::prepare( const US_Buffer&               buffer,
          continue;
       }
 
+      // The buffer gives s and D in standard conditions, as the ASTFVM takes
+      // them; it corrects them for the base buffer at the run's temperature
       US_Model::SimulationComponent comp;
       comp.name                 = cc.name;
       comp.analyteGUID          = cc.GUID;
       comp.molar_concentration  = cc.conc;
       comp.signal_concentration = cc.conc;
       comp.vbar20               = cc.vbar;
+      comp.s                    = cc.s_coeff;
+      comp.D                    = cc.d_coeff;
+      comp.f_f0                 = 0.0;
+      comp.analyte_type         = 4;
       if ( comp_data.contains( comp.analyteGUID ) )
       {
          continue;
       }
-      sd.vbar20 = cc.vbar;
-      sd.vbar   = cc.vbar;
-      US_Math2::data_correction( sparms.temperature, sd );
-      comp.s            = cc.s_coeff / sd.s20w_correction;
-      comp.D            = cc.d_coeff / sd.D20w_correction;
-      comp.f_f0         = 0.0;
-      comp.analyte_type = 4;
       cosed_model.components << comp;
 
-      US_Model one;
-      one.coSedSolute = -1;
-      one.components << comp;
-      one.update_coefficients();
-
-      cosed_.reset( new US_LammAstfvm::CosedData( one, fem_parms, &work, &components, base_density, base_viscosity ) );
-      comp_data[comp.analyteGUID] = cosed_->sa_data;
-      cosed_model.update_coefficients();
-      cosed_->model           = cosed_model;
-      cosed_->cosed_comp_data = comp_data;
+      US_DataIO::RawData molar;
+      simulate_former( comp, sparms, grid, base_density, base_viscosity, cc.overlaying, molar );
+      comp_data[comp.analyteGUID] = molar;
    }
 
-   if ( cosed_ && !comp_data.isEmpty() )
+   if ( !comp_data.isEmpty() )
    {
-      cosed_->sa_data = comp_data.first();
+      US_Model first;
+      first.components << cosed_model.components[0];
+      cosed_.reset( new US_LammAstfvm::CosedData( first, comp_data.value( first.components[0].analyteGUID ), &components ) );
+      cosed_->model           = cosed_model;
+      cosed_->cosed_comp_data = comp_data;
    }
 
    if ( codiff )

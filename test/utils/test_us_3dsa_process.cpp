@@ -25,6 +25,7 @@
 #include "us_simparms.h"
 #include "us_solute.h"
 #include "us_solve_sim.h"
+#include "us_time_state.h"
 
 #include <cmath>
 #include <memory>
@@ -1404,6 +1405,87 @@ TEST_F( TestUS3dsaProcess, SimulatedGradientKeepsItsFormerInTheCell )
       EXPECT_NEAR( mass / area, GRAD_CSCL, 0.002 * GRAD_CSCL ) << "at " << sc.seconds << " s";
    }
    EXPECT_GT( molar.scanData.last().rvalues.last(), 1.05 * GRAD_CSCL );
+}
+
+// A run that rests before its speed step forms its gradient on the run's own
+// clock: uniform through the rest, then exactly the gradient of a run that
+// started at once, later by the rest.
+TEST_F( TestUS3dsaProcess, SimulatedGradientWaitsForTheRotor )
+{
+   const US_Buffer buffer = gradient_buffer( GRAD_CSCL );
+   const int       rest   = 1800;
+   const int       t_end  = 7200;
+
+   // A speed program: at rest, then 400 rpm/s to speed and held there
+   const auto      prepared = [&]( int t_rest, US_FvmGradients& grads, QTemporaryDir& dir )
+   {
+      const QString tmst = dir.filePath( QString( "rest%1.time_state.tmst" ).arg( t_rest ) );
+      US_TimeState  ts;
+      ts.open_write_data( tmst, 1.0, 0.0 );
+      ts.set_key( "Time", "I4" );
+      ts.set_key( "RawSpeed", "F4" );
+      ts.set_key( "SetSpeed", "I4" );
+      ts.set_key( "Omega2T", "F4" );
+      ts.set_key( "Temperature", "F4" );
+      ts.set_key( "Step", "I2" );
+      ts.set_key( "Scan", "I2" );
+      double w2t = 0.0;
+      double w_p = 0.0;
+      for ( int tt = 0; tt <= t_end + t_rest; tt++ )
+      {
+         const double rpm = qBound( 0.0, 400.0 * ( tt - t_rest ), (double) GRAD_RPM );
+         const double ww  = rpm * M_PI / 30.0;
+         w2t += ( w_p * w_p + w_p * ww + ww * ww ) / 3.0;
+         w_p = ww;
+         ts.set_value( "Time", tt );
+         ts.set_value( "RawSpeed", rpm );
+         ts.set_value( "SetSpeed", GRAD_RPM );
+         ts.set_value( "Omega2T", w2t );
+         ts.set_value( "Temperature", 20.0 );
+         ts.set_value( "Step", 0 );
+         ts.set_value( "Scan", 0 );
+         ts.flush_record();
+      }
+      ts.close_write_data();
+      ts.write_defs( 1.0 );
+
+      US_SimulationParameters sp = gradient_simparams();
+      sp.simSpeedsFromTimeState( tmst );
+      QString msg;
+      EXPECT_TRUE( grads.prepare( buffer, sp, US_FvmGradients::gradient_grid( sp, t_end + t_rest, 20, 0.004 ), msg ) )
+         << msg.toStdString();
+   };
+
+   QTemporaryDir   dir;
+   US_FvmGradients at_once;
+   US_FvmGradients rested;
+   prepared( 0, at_once, dir );
+   prepared( rest, rested, dir );
+   ASSERT_NE( at_once.cosed(), nullptr );
+   ASSERT_NE( rested.cosed(), nullptr );
+   const US_DataIO::RawData& a = at_once.cosed()->sa_data;
+   const US_DataIO::RawData& b = rested.cosed()->sa_data;
+   ASSERT_EQ( a.scanData.size(), b.scanData.size() );
+
+   double worst = 0.0;
+   for ( int ss = 1; ss < a.scanData.size(); ss++ )
+   {
+      EXPECT_NEAR( b.scanData[ss].seconds, a.scanData[ss].seconds + rest, 1.0e-6 );
+      for ( int rr = 0; rr < a.xvalues.size(); rr++ )
+      {
+         worst = qMax( worst, std::fabs( b.scanData[ss].rvalues[rr] - a.scanData[ss].rvalues[rr] ) );
+      }
+   }
+   EXPECT_LT( worst, 2.0e-3 * GRAD_CSCL );
+
+   // Through the rest the cell holds its loading
+   QVector<double> xx{ GRAD_MENISCUS + 0.01, 6.6, GRAD_BOTTOM - 0.01 };
+   const double    rho0 = rested.density_at( 0.0, 20.0, xx )[1];
+   for ( double dd : rested.density_at( rest - 10.0, 20.0, xx ) )
+   {
+      EXPECT_NEAR( dd, rho0, 1.0e-6 );
+   }
+   EXPECT_GT( rested.density_at( t_end + rest, 20.0, xx )[2] - rho0, 0.01 );
 }
 
 // The result carries the final fit's simulation: data minus it is the

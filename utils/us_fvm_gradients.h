@@ -26,8 +26,10 @@
 //! internal fallback discards what it computes.  A caller that simulates many
 //! solutes against one data set -- a 2DSA or 3DSA fit -- prepares them here,
 //! once, and passes them to every US_LammAstfvm::set_buffer().  The
-//! preparation follows US_2dsaProcess on the cosedimenting branch step for
-//! step.
+//! preparation follows US_2dsaProcess on the cosedimenting branch, except
+//! that the former is simulated by the ASTFVM rather than ASTFEM: the same
+//! cell and clock as the solutes it carries, where ASTFEM puts the bottom at
+//! the centerpiece's and runs an acceleration zone as a straight ramp.
 //!
 //! An object owns its gradients and the component list they refer to.  The
 //! gradients keep working state while a simulation reads them, so each
@@ -48,9 +50,10 @@ class US_UTIL_EXTERN US_FvmGradients
 
       //! \brief Prepare the gradients for one data set
       //!
-      //! A co-sedimenting gradient is a simulation of the gradient-forming
-      //! components themselves over the experiment's scans; a co-diffusing
-      //! one is the band-forming solution of US_Math_BF.  A buffer that forms
+      //! A co-sedimenting gradient is an ASTFVM simulation of each
+      //! gradient-forming component as one ideal solute, from the uniform
+      //! loading at time zero to the grid's last scan; a co-diffusing one is
+      //! the band-forming solution of US_Math_BF.  A buffer that forms
       //! neither prepares nothing and succeeds.
       //! \param buffer  The data set's buffer
       //! \param sparms  Its simulation parameters, with the timestate loaded
