@@ -1575,7 +1575,7 @@ int US_LammAstfvm::solve_component( int compx )
          double f0 = ( t1 - ts ) / ( t1 - t0 ); // fraction of conc0
          double f1 = ( ts - t0 ) / ( t1 - t0 ); // fraction of conc1
          if ( speed_varies )
-         {  // The speed changed within the step: what happened by the scan
+         { // The speed changed within the step: what happened by the scan
             // goes with the omega-squared-t that had passed, not the time
             const double whole = w2_integral( t0, t1 );
             if ( whole > 0.0 )
@@ -2844,10 +2844,10 @@ double US_LammAstfvm::w2_integral( double ta, double tb ) const
       return rpm_timestate[ii] * ( 1.0 - ff ) + rpm_timestate[ii + 1] * ff;
    };
 
-   double integral = 0.0;
-   double tt       = qBound( 0.0, ta, t_end );
-   double rr       = rpm_at( tt );
-   const double te = qBound( 0.0, tb, t_end );
+   double       integral = 0.0;
+   double       tt       = qBound( 0.0, ta, t_end );
+   double       rr       = rpm_at( tt );
+   const double te       = qBound( 0.0, tb, t_end );
    while ( tt < te )
    {
       const double tn = qMin( te, std::floor( tt ) + 1.0 );
