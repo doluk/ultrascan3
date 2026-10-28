@@ -894,6 +894,24 @@ For the branch's author; none is worked around here except where noted.
     of tens of S and more, with steps of seconds, are unaffected; run 1322's sucrose fit over all
     scans moved by 10⁻⁴.
 
+**A former that follows the solution it forms.** `US_LammAstfvm::set_self_gradient()` makes a
+solute's own concentration set the density and viscosity at each point (the buffer's plus the
+former's co-sedimenting increments, as `InterpolateCCosed` forms them), and corrects its *s*₂₀,w
+and *D*₂₀,w to them as a solute's are in a co-sedimenting gradient: *s* by viscosity and
+buoyancy, *D* by viscosity, with σ and δ still applied. It is non-ideal case 5. Its time step is
+capped at 200 s, as the co-sedimenting case's is: with longer steps the predicted *s* and *D*
+let the profile dip near the bottom or go to NaN, depending on the mesh. `prepare()` always
+simulates formers this way, so a buffer's *s* and *D* for a former are standard values;
+`fit_former()` (`fit-former --buffer … --former …`) fits them so. At equilibrium the profile meets
+zero net flux, d ln *c*/d*r* = *s*(*c*)ω²*r*/*D*(*c*), to 0.5 % across 1 M sucrose, whose buoyancy
+falls 13 % from top to bottom (`FormerFollowsTheGradientItForms`). Run 1322's sucrose, all scans:
+*s*₂₀,w 0.068–0.074 S and *D*₂₀,w 7.9–8.3 × 10⁻⁶ cm²/s, which at the loading are the 0.017 S and
+2.5 × 10⁻⁶ of the base-buffer fit; RMSD 0.056, 0.026, 0.063 fringes against 0.066, 0.033, 0.063,
+the gain in the first hours. The 4–6-fold shortfall in *s*/*D* remains. With dilute sucrose's own
+*s* and *D* (0.24 S, 4.57 × 10⁻⁶) in this model, the pilots put the three cells' bands at about one
+density (1.1274, 1.1293, 1.1293 g/mL) and fit the last scans 4–8 times better than in the
+interference-fitted gradient (1.1268, 1.1287, 1.1306).
+
 **The former, simulated by the ASTFVM.** `CosedData` simulates a co-sedimenting former with ASTFEM;
 `US_FvmGradients::prepare()` no longer uses that. It simulates each former with the ASTFVM, as one
 ideal solute in the base buffer, and hands the table to `CosedData` as it would a measured one. So
