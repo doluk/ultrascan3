@@ -1488,6 +1488,51 @@ TEST_F( TestUS3dsaProcess, SimulatedGradientWaitsForTheRotor )
    EXPECT_GT( rested.density_at( t_end + rest, 20.0, xx )[2] - rho0, 0.01 );
 }
 
+// A slow solute's time steps span minutes, longer than the rotor's
+// acceleration: the ASTFVM still sediments it by the omega-squared-t the
+// rotor gave it, read here from the plateau's radial dilution,
+// c = c0 exp( -2 s omega-squared-t ).
+TEST_F( TestUS3dsaProcess, AstfvmFollowsTheRotorForASlowSolute )
+{
+   US_SimulationParameters sp = gradient_simparams();
+   US_DataIO::RawData      sim;
+   make_gradient_grid( sim );
+   US_SimulationParameters::computeSpeedSteps( &sim.scanData, sp.speed_step );
+   QTemporaryDir tmst_dir;
+   const QString tmst = tmst_dir.filePath( "slow.time_state.tmst" );
+   US_AstfemMath::writetimestate( tmst, sp, sim );
+   sp.simSpeedsFromTimeState( tmst );
+
+   const double                  s_slow = 0.05e-13;
+   US_Model::SimulationComponent comp;
+   comp.signal_concentration = 1.0;
+   comp.vbar20               = 0.72;
+   US_Model model;
+   model.components << comp;
+   model.update_coefficients();
+   model.components[0].s = s_slow;
+   model.components[0].D = 1.0e-8;
+   US_Buffer base;
+   base.density   = DENS_20W;
+   base.viscosity = VISC_20W;
+   base.manual    = true;
+   for ( US_DataIO::Scan& scan : sim.scanData )
+   {
+      scan.rvalues.fill( 0.0 );
+   }
+   US_LammAstfvm astfvm( model, sp );
+   astfvm.set_buffer( base, nullptr, nullptr );
+   astfvm.calculate( sim );
+
+   const double w2  = std::pow( GRAD_RPM * M_PI / 30.0, 2.0 );
+   const int    mid = sim.xvalues.size() / 2;
+   for ( const US_DataIO::Scan& scan : sim.scanData )
+   {
+      const double w2t = -std::log( scan.rvalues[mid] ) / ( 2.0 * s_slow );
+      EXPECT_NEAR( ( w2t - scan.omega2t ) / w2, 0.0, 3.0 ) << "seconds at speed, scan at " << scan.seconds << " s";
+   }
+}
+
 // A former's s and D come back from interference scans of it, through an
 // offset per scan and an optical baseline common to all scans
 TEST_F( TestUS3dsaProcess, FitsAFormersSAndDToInterferenceScans )

@@ -1439,18 +1439,41 @@ int US_LammAstfvm::solve_component( int compx )
       double rpm_prior = rpm_timestate[time_index_t0];
       double rpm_after = rpm_timestate[time_index_t01];
       // linear interpolation between for rpm_prior and rpm_after and time_index_t0 and time_index_t01 to t0
+      // (a is the fraction of the second past rpm_prior, so rpm_after takes it)
       double a = qMin(qMax((t0 - (static_cast<double>(time_index_t0))),0.0),1.0);
       double b = 1.0 - a;
-      const double rpm_t0 = rpm_prior * a + rpm_after * b;
+      const double rpm_t0 = rpm_prior * b + rpm_after * a;
 
       rpm_prior = rpm_timestate[time_index_t0dt];
       rpm_after = rpm_timestate[time_index_t0dt1];
       // linear interpolation between for rpm_prior and rpm_after and time_index_t0 and time_index_t01 to t0
       a = qMin(qMax((t0 + dt - (static_cast<double>(time_index_t0dt))),0.0),1.0);
       b = 1.0 - a;
-      const double rpm_t0dt = rpm_prior * a + rpm_after * b;
+      const double rpm_t0dt = rpm_prior * b + rpm_after * a;
       param_w2_t0 = sq( rpm_t0 * M_PI / 30.0 );
       param_w2_t0dt = sq( rpm_t0dt * M_PI / 30.0 );
+
+      // The step takes omega-squared as linear in time between its ends.  A
+      // step longer than the rotor's changes of speed -- a slow solute's step
+      // spans whole minutes -- would take a 100 s acceleration, or the end of
+      // a rest, as a ramp over the whole step, and integrate omega-squared-t
+      // wrongly by up to half the step.  Where that misses the step's exact
+      // mean of omega-squared, integrated over the per-second speed profile,
+      // by more than 0.1 %, both ends take the mean, so that the step
+      // sediments by the omega-squared-t the rotor gave it.  At constant
+      // speed nothing changes.
+      bool speed_varies = false; // Within this step
+      if ( tmst_size > 1 && dt > 0.0 )
+      {
+         const double w2_mean = w2_integral( t0, t0 + dt ) / dt;
+         const double w2_trap = 0.5 * ( param_w2_t0 + param_w2_t0dt );
+         if ( std::fabs( w2_trap - w2_mean ) > 1.0e-3 * qMax( w2_mean, w2_trap ) )
+         {
+            param_w2_t0   = w2_mean;
+            param_w2_t0dt = w2_mean;
+            speed_varies  = true;
+         }
+      }
 
       N0u = N0 + N0 - 1;
       DbgLv( 2 ) << "LAsc: MainLoop Time jt=" << jt << "kt=" << kt << "t0=" << t0 << "t1=" << t1 << "ts=" << ts << "N0="
@@ -1551,6 +1574,16 @@ int US_LammAstfvm::solve_component( int compx )
          // interpolate concentrations quadratically in x; linearly in time
          double f0 = ( t1 - ts ) / ( t1 - t0 ); // fraction of conc0
          double f1 = ( ts - t0 ) / ( t1 - t0 ); // fraction of conc1
+         if ( speed_varies )
+         {  // The speed changed within the step: what happened by the scan
+            // goes with the omega-squared-t that had passed, not the time
+            const double whole = w2_integral( t0, t1 );
+            if ( whole > 0.0 )
+            {
+               f1 = qBound( 0.0, w2_integral( t0, ts ) / whole, 1.0 );
+               f0 = 1.0 - f1;
+            }
+         }
          DbgLv( 2 ) << "LAsc: call qI  t0 ts t1" << t0 << ts << t1;
          // do quadratic interpolation to fill out concentrations at time t0
          quadInterpolate( x0, u0, N0, rads, conc0 );
@@ -2791,6 +2824,44 @@ void US_LammAstfvm::LsSolver53( const int m, double** __restrict A, double* __re
       x[j] = ( b[j] - Aj[3] * xjp ) / Aj[2];
       x[jm] = ( b[jm] - Ajm[3] * x[j] - Ajm[4] * xjp ) / Ajm[2];
    }
+}
+
+// Integral of omega-squared from ta to tb, s: rpm linear between the
+// timestate's seconds, the integral of its square exact over each piece
+double US_LammAstfvm::w2_integral( double ta, double tb ) const
+{
+   const int nn = rpm_timestate.size();
+   if ( nn < 2 )
+   {
+      return sq( simparams.speed_step[0].rotorspeed * M_PI / 30.0 ) * ( tb - ta );
+   }
+
+   const double t_end  = static_cast<double>( nn - 1 );
+   const auto   rpm_at = [&]( double tt )
+   {
+      const int    ii = qBound( 0, static_cast<int>( tt ), nn - 2 );
+      const double ff = qBound( 0.0, tt - ii, 1.0 );
+      return rpm_timestate[ii] * ( 1.0 - ff ) + rpm_timestate[ii + 1] * ff;
+   };
+
+   double integral = 0.0;
+   double tt       = qBound( 0.0, ta, t_end );
+   double rr       = rpm_at( tt );
+   const double te = qBound( 0.0, tb, t_end );
+   while ( tt < te )
+   {
+      const double tn = qMin( te, std::floor( tt ) + 1.0 );
+      const double rn = rpm_at( tn );
+      integral += ( rr * rr + rr * rn + rn * rn ) / 3.0 * ( tn - tt );
+      tt = tn;
+      rr = rn;
+   }
+   // Past the timestate's end, its last speed
+   if ( tb > t_end )
+   {
+      integral += sq( rpm_timestate[nn - 1] ) * ( tb - qMax( ta, t_end ) );
+   }
+   return integral * sq( M_PI / 30.0 );
 }
 
 // determine the non-ideal case number: 0/1/2/3/4

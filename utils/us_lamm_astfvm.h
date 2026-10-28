@@ -473,6 +473,10 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
       // Adjust s and D arrays
       void   AdjustSD( const double, const int, const double*, const double*, double*, double*, const int* ) const;
 
+      // Integral of omega-squared from one time to another, s, over the
+      // per-second speed profile
+      double w2_integral( double, double ) const;
+
       static void   fun_phi(    double, double* );
 
       static void   fun_dphi(   double, double* );

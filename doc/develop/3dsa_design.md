@@ -880,6 +880,20 @@ For the branch's author; none is worked around here except where noted.
     0.7 %). Measured gradients are not affected, and since the former is now simulated by the
     ASTFVM, neither are simulated ones (`SimulatedGradientWaitsForTheRotor`).
 
+12. **Long steps through speed changes.** The ASTFVM steps on a fixed grid, t₀ = *jt*·dt, with dt
+    sized from *s* (and capped at two thirds of the shortest scan interval), and takes ω² linear
+    in time between a step's ends. A slow solute's step spans minutes, so a 100 s acceleration,
+    or the end of a rest, became a ramp over the whole step: ω²t off by up to half a step (run
+    1322: +198 s of 40 krpm for 0.3 S, −48 s for its sucrose, −320 s for 0.05 S in the test cell),
+    and a scan inside such a step was interpolated by time though nearly all its sedimentation
+    came after the ramp. The per-second rpm was also interpolated with its weights swapped.
+    *Fixed here:* where the step's trapezoid misses the exact mean of ω² over the per-second
+    profile by more than 0.1 %, both ends take the mean, and a scan inside the step is
+    interpolated by the ω²t that had passed. Every *s* from 2 S to 0.017 S now integrates the
+    recorded ω²t of run 1322's scans to ±0.6 s (`AstfvmFollowsTheRotorForASlowSolute`). Solutes
+    of tens of S and more, with steps of seconds, are unaffected; run 1322's sucrose fit over all
+    scans moved by 10⁻⁴.
+
 **The former, simulated by the ASTFVM.** `CosedData` simulates a co-sedimenting former with ASTFEM;
 `US_FvmGradients::prepare()` no longer uses that. It simulates each former with the ASTFVM, as one
 ideal solute in the base buffer, and hands the table to `CosedData` as it would a measured one. So
