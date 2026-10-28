@@ -1533,6 +1533,118 @@ TEST_F( TestUS3dsaProcess, AstfvmFollowsTheRotorForASlowSolute )
    }
 }
 
+// Sucrose's density and viscosity coefficients (etc/bufferComponents.xml,
+// id 86), scaled for mol/L as US_Buffer holds them
+void sucrose_coefficients( double* dens, double* visc )
+{
+   const double dtab[6]  = { 0.0, -0.21963, 13.23726, -1.83647, 0.0, -25.13871 };
+   const double vtab[6]  = { 0.0, -52.13491, 107.94530, 0.0, 11916.33984, 0.0 };
+   const double scale[6] = { 1.0, 1.0e-3, 1.0e-2, 1.0e-3, 1.0e-4, 1.0e-6 };
+   for ( int jj = 0; jj < 6; jj++ )
+   {
+      dens[jj] = dtab[jj] * scale[jj];
+      visc[jj] = vtab[jj] * scale[jj];
+   }
+}
+
+// A former whose s and D follow the density and viscosity its own
+// concentration gives the solution comes to the equilibrium of that: no net
+// flux anywhere, d ln c / dr = s(c) omega^2 r / D(c), with s and D corrected
+// from standard conditions to the local solution.  For 1 M sucrose the
+// buoyancy then changes by 13 % across the cell, so the gradient is
+// noticeably shallower at the bottom than an ideal solute's.
+TEST_F( TestUS3dsaProcess, FormerFollowsTheGradientItForms )
+{
+   const double s20w = 0.24e-13; // sucrose
+   const double d20w = 4.57e-6;
+   const double vbar = 0.63;
+   const double load = 1.0; // mol/L
+   double       dens[6];
+   double       visc[6];
+   sucrose_coefficients( dens, visc );
+
+   // Scans every 20 h to 400 h: some 14 times the gradient's time constant
+   US_SimulationParameters sp = gradient_simparams();
+   sp.simpoints               = 200;
+   US_DataIO::RawData sim;
+   const double       w2    = std::pow( GRAD_RPM * M_PI / 30.0, 2.0 );
+   const double       t_acc = GRAD_RPM / 400.0;
+   for ( double rr = GRAD_MENISCUS; rr <= GRAD_BOTTOM + 1.0e-9; rr += 0.002 )
+   {
+      sim.xvalues << rr;
+   }
+   for ( int ii = 1; ii <= 20; ii++ )
+   {
+      US_DataIO::Scan sc;
+      sc.temperature = 20.0;
+      sc.rpm         = GRAD_RPM;
+      sc.seconds     = 72000.0 * ii;
+      sc.omega2t     = w2 * ( sc.seconds - t_acc ) + w2 * t_acc / 3.0;
+      sc.wavelength  = 660.0;
+      sc.delta_r     = 0.002;
+      sc.rvalues     = QVector<double>( sim.xvalues.size(), 0.0 );
+      sim.scanData << sc;
+   }
+   US_SimulationParameters::computeSpeedSteps( &sim.scanData, sp.speed_step );
+   QTemporaryDir tmst_dir;
+   const QString tmst = tmst_dir.filePath( "sucrose.time_state.tmst" );
+   US_AstfemMath::writetimestate( tmst, sp, sim );
+   sp.simSpeedsFromTimeState( tmst );
+
+   US_Model::SimulationComponent comp;
+   comp.signal_concentration = load;
+   comp.vbar20               = vbar;
+   US_Model model;
+   model.components << comp;
+   model.update_coefficients();
+   model.components[0].s = s20w;
+   model.components[0].D = d20w;
+   US_Buffer base;
+   base.density   = DENS_20W;
+   base.viscosity = VISC_20W;
+   base.manual    = true;
+   US_LammAstfvm astfvm( model, sp );
+   astfvm.set_buffer( base, nullptr, nullptr );
+   astfvm.set_self_gradient( dens, visc );
+   astfvm.calculate( sim );
+
+   // The local solution and the s/D it gives
+   const auto s_over_d = [&]( double cc )
+   {
+      const double pw[6] = { 1.0, std::sqrt( cc ), cc, cc * cc, cc * cc * cc, cc * cc * cc * cc };
+      double       rho   = DENS_20W;
+      for ( int jj = 1; jj < 6; jj++ )
+      {
+         rho += dens[jj] * pw[jj];
+      }
+      // Viscosity cancels; the buoyancy does not
+      return s20w * ( 1.0 - vbar * rho ) / ( 1.0 - vbar * DENS_20W ) / d20w;
+   };
+
+   const US_DataIO::Scan& last = sim.scanData.last();
+   QVector<double>        ratio;
+   for ( double rr : { 6.2, 6.6, 7.0 } )
+   {
+      // over +-0.02 cm: the output is interpolated from the solver's mesh
+      const int    jj    = qRound( ( rr - GRAD_MENISCUS ) / 0.002 );
+      const double slope = ( std::log( last.rvalues[jj + 10] ) - std::log( last.rvalues[jj - 10] ) ) /
+                           ( sim.xvalues[jj + 10] - sim.xvalues[jj - 10] );
+      const double want = s_over_d( last.rvalues[jj] ) * w2 * sim.xvalues[jj];
+      EXPECT_NEAR( slope / want, 1.0, 0.005 ) << "at " << rr << " cm";
+      ratio << s_over_d( last.rvalues[jj] );
+   }
+   // The buoyancy, and with it the steepness, falls toward the bottom
+   EXPECT_LT( ratio[2] / ratio[0], 0.92 );
+   // And the gradient keeps its mass
+   double mass = 0.0;
+   for ( int jj = 1; jj < sim.xvalues.size(); jj++ )
+   {
+      mass += 0.5 * ( last.rvalues[jj] * sim.xvalues[jj] + last.rvalues[jj - 1] * sim.xvalues[jj - 1] ) *
+              ( sim.xvalues[jj] - sim.xvalues[jj - 1] );
+   }
+   EXPECT_NEAR( mass / ( ( GRAD_BOTTOM * GRAD_BOTTOM - GRAD_MENISCUS * GRAD_MENISCUS ) / 2.0 ), load, 1.0e-3 );
+}
+
 // A former's s and D come back from interference scans of it, through an
 // offset per scan and an optical baseline common to all scans
 TEST_F( TestUS3dsaProcess, FitsAFormersSAndDToInterferenceScans )
@@ -1590,6 +1702,63 @@ TEST_F( TestUS3dsaProcess, FitsAFormersSAndDToInterferenceScans )
    EXPECT_NEAR( fit.D / d_true, 1.0, 0.02 );
    EXPECT_LT( fit.rmsd, 1.0e-3 );
    EXPECT_EQ( fit.residuals.scanData.size(), fit.scans.scanData.size() );
+}
+
+// And a former whose s and D follow the solution it forms: its standard
+// s20,w and D20,w come back from interference scans of it
+TEST_F( TestUS3dsaProcess, FitsAFormerThatFollowsItsOwnGradient )
+{
+   const double               s_true = 0.24e-13; // sucrose
+   const double               d_true = 4.57e-6;
+   const double               frpm   = 877.5; // fringes per mol/L: dn/dc 0.141, 12 mm, 660 nm
+
+   US_FvmGradients::FormerFit fit;
+   fit.sparms = gradient_simparams();
+   make_gradient_grid( fit.scans );
+   US_SimulationParameters::computeSpeedSteps( &fit.scans.scanData, fit.sparms.speed_step );
+   QTemporaryDir tmst_dir;
+   const QString tmst = tmst_dir.filePath( "former.time_state.tmst" );
+   US_AstfemMath::writetimestate( tmst, fit.sparms, fit.scans );
+   fit.sparms.simSpeedsFromTimeState( tmst );
+   sucrose_coefficients( fit.dens_coeff, fit.visc_coeff );
+
+   US_Model::SimulationComponent comp;
+   comp.signal_concentration = 1.0;
+   comp.vbar20               = 0.63;
+   US_Model model;
+   model.components << comp;
+   model.update_coefficients();
+   model.components[0].s = s_true;
+   model.components[0].D = d_true;
+   US_Buffer base;
+   base.density   = DENS_20W;
+   base.viscosity = VISC_20W;
+   base.manual    = true;
+   US_LammAstfvm astfvm( model, fit.sparms );
+   astfvm.set_buffer( base, nullptr, nullptr );
+   astfvm.set_self_gradient( fit.dens_coeff, fit.visc_coeff );
+   astfvm.calculate( fit.scans );
+   for ( int ii = 0; ii < fit.scans.scanData.size(); ii++ )
+   {
+      for ( double& vv : fit.scans.scanData[ii].rvalues )
+      {
+         vv = vv * frpm + 2.0 * ii;
+      }
+   }
+
+   fit.molar             = 1.0;
+   fit.fringes_per_molar = frpm;
+   fit.vbar              = 0.63;
+   fit.base_density      = DENS_20W;
+   fit.base_viscosity    = VISC_20W;
+   fit.self_gradient     = true;
+   fit.s                 = 0.17e-13;
+   fit.D                 = 6.0e-6;
+   QString msg;
+   ASSERT_TRUE( US_FvmGradients::fit_former( fit, msg ) ) << msg.toStdString();
+   EXPECT_NEAR( fit.s / s_true, 1.0, 0.02 );
+   EXPECT_NEAR( fit.D / d_true, 1.0, 0.02 );
+   EXPECT_LT( fit.rmsd, 1.0e-3 );
 }
 
 // The result carries the final fit's simulation: data minus it is the

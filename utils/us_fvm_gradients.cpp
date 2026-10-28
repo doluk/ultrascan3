@@ -7,8 +7,10 @@
 #include <cmath>
 #include <numeric>
 
-// A former's molar concentration over the run, simulated by the ASTFVM as
-// one ideal solute: the solver, cell and clock of the solutes it will carry.
+// A former's molar concentration over the run, simulated by the ASTFVM: the
+// solver, cell and clock of the solutes it will carry.  Its own
+// concentration sets the solution's density and viscosity through its
+// component's coefficients, and its s and D follow them.
 // The ASTFVM reads the speed profile second by second, so a rest or a slow
 // start is followed as recorded, and its cell is simparams' meniscus and
 // bottom.  The times start with the uniform loading at zero, then run from
@@ -20,6 +22,7 @@ static void simulate_former( const US_Model::SimulationComponent& comp,
                              double                               base_density,
                              double                               base_viscosity,
                              bool                                 overlaying,
+                             const US_CosedComponent&             own,
                              US_DataIO::RawData&                  molar )
 {
    QVector<double> rpm;
@@ -83,6 +86,7 @@ static void simulate_former( const US_Model::SimulationComponent& comp,
    fvm_parms.band_forming            = sparms.band_forming && overlaying;
    US_LammAstfvm astfvm( model, fvm_parms );
    astfvm.set_buffer( base, nullptr, nullptr );
+   astfvm.set_self_gradient( own.dens_coeff, own.visc_coeff );
    astfvm.calculate( molar );
 
    // A concentration never goes negative; the density polynomials take its
@@ -392,7 +396,7 @@ bool US_FvmGradients::prepare( const US_Buffer&               buffer,
       cosed_model.components << comp;
 
       US_DataIO::RawData molar;
-      simulate_former( comp, sparms, grid, base_density, base_viscosity, cc.overlaying, molar );
+      simulate_former( comp, sparms, grid, base_density, base_viscosity, cc.overlaying, cc, molar );
       comp_data[comp.analyteGUID] = molar;
    }
 
@@ -594,6 +598,10 @@ static QVector<double> former_fringes( const US_FvmGradients::FormerFit& fit,
 
    US_LammAstfvm astfvm( model, sparms );
    astfvm.set_buffer( base, nullptr, nullptr );
+   if ( fit.self_gradient )
+   {
+      astfvm.set_self_gradient( fit.dens_coeff, fit.visc_coeff );
+   }
    astfvm.calculate( sim );
 
    QVector<double> out;

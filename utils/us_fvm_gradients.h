@@ -52,9 +52,11 @@ class US_UTIL_EXTERN US_FvmGradients
       //! \brief Prepare the gradients for one data set
       //!
       //! A co-sedimenting gradient is an ASTFVM simulation of each
-      //! gradient-forming component as one ideal solute, from the uniform
-      //! loading at time zero to the grid's last scan; a co-diffusing one is
-      //! the band-forming solution of US_Math_BF.  A buffer that forms
+      //! gradient-forming component, from the uniform loading at time zero to
+      //! the grid's last scan; its s and D (the buffer's, in standard
+      //! conditions) follow the density and viscosity its own concentration
+      //! gives the solution.  A co-diffusing one is the band-forming solution
+      //! of US_Math_BF.  A buffer that forms
       //! neither prepares nothing and succeeds.
       //! \param buffer  The data set's buffer
       //! \param sparms  Its simulation parameters, with the timestate loaded
@@ -159,8 +161,11 @@ class US_UTIL_EXTERN US_FvmGradients
          int                     scan_stride       = 1;    //!< Every Nth scan
          int                     radial_stride     = 1;    //!< Every Nth radius
          bool                    concentration_dependent = false; //!< Fit sigma and delta too
+         bool                    self_gradient = false; //!< s and D follow the density and viscosity it forms
+         double                  dens_coeff[6] = {};    //!< The former's density coefficients, for self_gradient
+         double                  visc_coeff[6] = {};    //!< Its viscosity coefficients
          // In as the start, out as the result
-         double                  s     = 1.0e-14; //!< s20,w, s
+         double                  s     = 1.0e-14; //!< s20,w, s (in the base buffer unless self_gradient)
          double                  D     = 2.5e-6;  //!< D20,w, cm^2/s
          double                  sigma = 0.0;     //!< s / ( 1 + sigma c ), L/mol
          double                  delta = 0.0;     //!< D / ( 1 + delta c ), L/mol
@@ -173,8 +178,10 @@ class US_UTIL_EXTERN US_FvmGradients
       //! \brief Fit a former's s and D to interference scans
       //!
       //! The former is simulated as in prepare(): the ASTFVM, from a uniform
-      //! loading, on the run's own clock, in the base buffer; its molar
-      //! concentration times fringes_per_molar is the model.  Interference
+      //! loading, on the run's own clock, in the base buffer -- with
+      //! self_gradient, its s and D following the density and viscosity its
+      //! own concentration gives the solution; its molar concentration times
+      //! fringes_per_molar is the model.  Interference
       //! scans carry an arbitrary offset per scan and the cell's optical
       //! baseline, so both are removed exactly (radially and time-invariant
       //! noise) before the RMSD is taken.  The amplitude is not fitted: it

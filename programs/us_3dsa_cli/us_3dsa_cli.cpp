@@ -136,6 +136,7 @@ void US_3dsaCli::usage()
          << "      the cell's optical baseline.\n\n"
          << "  us_3dsa_cli fit-former --ip <interference.auc> --simparams <xml> --timestate <tmst>\n"
          << "         --meniscus <cm> --bottom <cm> --loading <g/mL> --dndc <mL/g> --molar-mass <g/mol>\n"
+         << "         [--buffer <xml> --former <name>] [--ideal]\n"
          << "         [--path <cm>] [--wavelength <nm>] [--vbar <mL/g>] [--base-density <g/mL>]\n"
          << "         [--base-viscosity <cP>] [--s0 <S>] [--D0 <1e-6 cm2/s>] [--margin <cm>]\n"
          << "         [--scan-stride N] [--radial-stride N] [--concentration-dependent]\n"
@@ -143,8 +144,11 @@ void US_3dsaCli::usage()
          << "      Fit a gradient former's s20,w and D20,w to interference scans: the\n"
          << "      former simulated by the ASTFVM over the run, as for a simulated\n"
          << "      gradient, its amplitude set by the loading and dn/dc, with the\n"
-         << "      scans' offsets and optical baseline removed.  The values go into\n"
-         << "      the buffer's co-sedimenting component.\n\n"
+         << "      scans' offsets and optical baseline removed.  With --buffer and\n"
+         << "      --former, its s and D follow the density and viscosity its own\n"
+         << "      concentration gives the solution (the buffer's base, the former's\n"
+         << "      coefficients and vbar), unless --ideal.  The values go into the\n"
+         << "      buffer's co-sedimenting component.\n\n"
          << "  us_3dsa_cli timestate --out <run.time_state.tmst> --program t:rpm,t:rpm,...\n"
          << "         [--temperature <C>]\n\n"
          << "      Write a timestate for a speed program, rpm linear between the\n"
@@ -2918,15 +2922,21 @@ int US_3dsaCli::run_fit_former( const QStringList& args )
    QString                    sp_path;
    QString                    tmst_path;
    QString                    resid_path;
-   double                     meniscus   = 0.0;
-   double                     bottom     = 0.0;
-   double                     loading    = 0.0; // g/mL
-   double                     dndc       = 0.0; // mL/g
-   double                     molar_mass = 0.0; // g/mol
-   double                     path       = 1.2; // cm
-   double                     wavelength = 660.0;
-   double                     s0         = 0.1; // S
-   double                     d0         = 2.5; // 1e-6 cm^2/s
+   QString                    buffer_path;
+   QString                    former;
+   bool                       ideal       = false;
+   bool                       have_base_d = false;
+   bool                       have_base_v = false;
+   bool                       have_vbar   = false;
+   double                     meniscus    = 0.0;
+   double                     bottom      = 0.0;
+   double                     loading     = 0.0; // g/mL
+   double                     dndc        = 0.0; // mL/g
+   double                     molar_mass  = 0.0; // g/mol
+   double                     path        = 1.2; // cm
+   double                     wavelength  = 660.0;
+   double                     s0          = 0.1; // S
+   double                     d0          = 2.5; // 1e-6 cm^2/s
    US_FvmGradients::FormerFit fit;
    fit.base_density   = H2O_DENSITY;
    fit.base_viscosity = H2O_VISCOSITY;
@@ -2939,6 +2949,11 @@ int US_3dsaCli::run_fit_former( const QStringList& args )
       if ( a == "--concentration-dependent" )
       {
          fit.concentration_dependent = true;
+         continue;
+      }
+      if ( a == "--ideal" )
+      {
+         ideal = true;
          continue;
       }
       if ( ii + 1 >= args.size() )
@@ -2994,15 +3009,26 @@ int US_3dsaCli::run_fit_former( const QStringList& args )
       }
       else if ( a == "--vbar" )
       {
-         fit.vbar = v.toDouble();
+         fit.vbar  = v.toDouble();
+         have_vbar = true;
       }
       else if ( a == "--base-density" )
       {
          fit.base_density = v.toDouble();
+         have_base_d      = true;
       }
       else if ( a == "--base-viscosity" )
       {
          fit.base_viscosity = v.toDouble();
+         have_base_v        = true;
+      }
+      else if ( a == "--buffer" )
+      {
+         buffer_path = v;
+      }
+      else if ( a == "--former" )
+      {
+         former = v;
       }
       else if ( a == "--s0" )
       {
@@ -3041,6 +3067,50 @@ int US_3dsaCli::run_fit_former( const QStringList& args )
       return 2;
    }
 
+   // The former's own coefficients and vbar, and the base, from its buffer
+   if ( !buffer_path.isEmpty() )
+   {
+      US_Buffer buffer;
+      if ( !buffer.readFromDisk( buffer_path ) )
+      {
+         err() << "cannot read " << buffer_path << "\n";
+         err().flush();
+         return 3;
+      }
+      const US_CosedComponent* cc = nullptr;
+      for ( const US_CosedComponent& comp : buffer.cosed_component )
+      {
+         if ( comp.name.compare( former, Qt::CaseInsensitive ) == 0 )
+         {
+            cc = &comp;
+         }
+      }
+      if ( cc == nullptr )
+      {
+         err() << "fit-former: no component \"" << former << "\" in " << buffer_path << "\n";
+         err().flush();
+         return 2;
+      }
+      for ( int jj = 0; jj < 6; jj++ )
+      {
+         fit.dens_coeff[jj] = cc->dens_coeff[jj];
+         fit.visc_coeff[jj] = cc->visc_coeff[jj];
+      }
+      fit.self_gradient = !ideal;
+      if ( !have_vbar )
+      {
+         fit.vbar = cc->vbar;
+      }
+      if ( !have_base_d )
+      {
+         fit.base_density = buffer.density;
+      }
+      if ( !have_base_v )
+      {
+         fit.base_viscosity = buffer.viscosity;
+      }
+   }
+
    if ( US_DataIO::readRawData( ip_path, fit.scans ) != US_DataIO::OK || fit.scans.scanData.isEmpty() )
    {
       err() << "cannot read " << ip_path << "\n";
@@ -3077,9 +3147,26 @@ int US_3dsaCli::run_fit_former( const QStringList& args )
       return 4;
    }
 
-   const double c0      = fit.molar;
-   const double s_load  = fit.s / ( 1.0 + fit.sigma * c0 );
-   const double d_load  = fit.D / ( 1.0 + fit.delta * c0 );
+   // s and D at the loading, in the solution there: the base buffer, or
+   // with self_gradient the loading's density and viscosity
+   const double c0     = fit.molar;
+   double       s_load = fit.s / ( 1.0 + fit.sigma * c0 );
+   double       d_load = fit.D / ( 1.0 + fit.delta * c0 );
+   double       dens0  = fit.base_density;
+   double       visc0  = fit.base_viscosity;
+   if ( fit.self_gradient )
+   {
+      const double pw[6] = { 1.0, std::sqrt( c0 ), c0, c0 * c0, c0 * c0 * c0, c0 * c0 * c0 * c0 };
+      double       dvis  = 0.0;
+      for ( int jj = 1; jj < 6; jj++ )
+      {
+         dens0 += fit.dens_coeff[jj] * pw[jj];
+         dvis += fit.visc_coeff[jj] * pw[jj];
+      }
+      visc0 += std::fabs( dvis );
+   }
+   s_load *= VISC_20W / visc0 * ( 1.0 - fit.vbar * dens0 ) / ( 1.0 - fit.vbar * DENS_20W );
+   d_load *= VISC_20W / visc0 * ( fit.sparms.temperature + K0 ) / K20;
    const double buoyant = s_load * R_GC * ( fit.sparms.temperature + K0 ) / d_load;
 
    out() << QString( "  %1 scans of %2 radii, %3 to %4 cm; loading %5 M, %6 fringes per M\n" )
@@ -3090,17 +3177,20 @@ int US_3dsaCli::run_fit_former( const QStringList& args )
                .arg( c0, 0, 'f', 5 )
                .arg( fit.fringes_per_molar, 0, 'f', 1 );
    out() << QString( "  s20,w %1 S   D20,w %2 x 1e-6 cm2/s" ).arg( fit.s * 1.0e13, 0, 'f', 5 ).arg( fit.D * 1.0e6, 0, 'f', 4 );
+   out() << ( fit.self_gradient ? "   (following the density and viscosity it forms)" : "   (in the base buffer)" );
    if ( fit.concentration_dependent )
    {
-      out() << QString( " at zero concentration;  sigma %1, delta %2 L/mol;  at the loading %3 S, %4 x 1e-6" )
-                  .arg( fit.sigma, 0, 'f', 3 )
-                  .arg( fit.delta, 0, 'f', 3 )
-                  .arg( s_load * 1.0e13, 0, 'f', 5 )
-                  .arg( d_load * 1.0e6, 0, 'f', 4 );
+      out() << QString( "\n  sigma %1, delta %2 L/mol" ).arg( fit.sigma, 0, 'f', 3 ).arg( fit.delta, 0, 'f', 3 );
    }
-   out() << QString( "\n  RMSD %1 fringes;  s/D gives M(1 - vbar rho) %2 g/mol;  %3 simulations\n" )
+   out() << QString( "\n  at the loading (%1 g/mL, %2 cP): s %3 S, D %4 x 1e-6 cm2/s" )
+               .arg( dens0, 0, 'f', 5 )
+               .arg( visc0, 0, 'f', 3 )
+               .arg( s_load * 1.0e13, 0, 'f', 5 )
+               .arg( d_load * 1.0e6, 0, 'f', 4 );
+   out() << QString( "\n  RMSD %1 fringes;  s/D there gives M(1 - vbar rho) %2 g/mol, M %3 g/mol;  %4 simulations\n" )
                .arg( fit.rmsd, 0, 'f', 4 )
                .arg( buoyant, 0, 'f', 1 )
+               .arg( buoyant / ( 1.0 - fit.vbar * dens0 ), 0, 'f', 1 )
                .arg( fit.evaluations );
    out().flush();
 

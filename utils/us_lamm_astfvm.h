@@ -164,6 +164,19 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
       //! \param csD  pointer to cosed Data from previous calculations (may be 0)
       void set_buffer( US_Buffer , US_Math_BF::Band_Forming_Gradient* = nullptr, CosedData* = nullptr);
 
+      //! \brief Have the solute's own concentration set the solution's
+      //!        density and viscosity, and through them its own s and D
+      //!
+      //! For a gradient former simulated on its own.  At each point the
+      //! density and viscosity are the buffer's plus the former's increments
+      //! at its local concentration (the co-sedimenting component's
+      //! coefficients, as US_Buffer stores them), and the model's s20,w and
+      //! D20,w are corrected to them as a solute's are in a co-sedimenting
+      //! gradient.  Sigma and delta still apply.  Pass nulls to switch it off.
+      //! \param dens_coeff  The former's six density coefficients
+      //! \param visc_coeff  Its six viscosity coefficients
+      void set_self_gradient( const double*, const double* );
+
       //! \brief Calculate solution for a model component
       //! \param compx Index to model component to use in solution pass
       //! \returns     Non-zero if multiple non-ideal conditions
@@ -329,6 +342,9 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
       double  density;         // buffer density
       double  viscosity;       // buffer viscosity
       double  compressib;      // factor for compressibility
+      bool    self_gradient = false; // solute's own concentration sets density, viscosity
+      double  self_dens[6]  = {};    // its density coefficients
+      double  self_visc[6]  = {};    // its viscosity coefficients
       bool    manual;          // buffer manual
       bool    cosed_needed;
       bool    codiff_needed;

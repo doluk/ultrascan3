@@ -1148,6 +1148,15 @@ int US_LammAstfvm::solve_component( int compx )
    {
       SetNonIdealCase_4(); // co-diffusing
    }
+   else if ( NonIdealCaseNo == 5 )
+   {
+      // own gradient: s and D change with the solution step by step, and the
+      // step takes them from a prediction; long steps are unstable, as in
+      // the co-sedimenting case, so cap them the same way
+      dt      = qMin( 200.0, dt );
+      solut_t = af_data.scan[nts - 1].time;
+      ntc     = static_cast<int>( solut_t / dt ) + 1;
+   }
    else
    {
       NonIdealCaseNo = 0;
@@ -2624,9 +2633,51 @@ void US_LammAstfvm::AdjustSD(
          DbgLv( 3 ) << "AdjSD:  times 1 2" << kst1 << kst2;
          break;
 
-      default:
-         qDebug( "invalid case number for non-ideal sedimentation" );
+         case 5: // the solute's own concentration sets density and viscosity
+         {
+            const double sigmas = model.components[comp_x].sigma;
+            const double deltas = model.components[comp_x].delta;
+            for ( int jj = 0; jj < Nv; jj++ )
+            {
+               // the buffer's density and viscosity plus the solute's
+               // increments, as CosedData::InterpolateCCosed forms them
+               const double conc    = qMax( u[jj] / x[jj], 0.0 );
+               const double croot   = std::sqrt( conc );
+               const double conc2   = conc * conc;
+               const double conc3   = conc2 * conc;
+               const double conc4   = conc3 * conc;
+               const double curDens = density + croot * self_dens[1] + conc * self_dens[2] + conc2 * self_dens[3] +
+                                      conc3 * self_dens[4] + conc4 * self_dens[5];
+               const double curVisc = viscosity + qAbs( croot * self_visc[1] + conc * self_visc[2] + conc2 * self_visc[3] +
+                                                        conc3 * self_visc[4] + conc4 * self_visc[5] );
+
+               double       sigma_corr = 1.0;
+               double       delta_corr = 1.0;
+               if ( sigmas > 0.0 )
+               {
+                  sigma_corr = 1.0 / ( 1.0 + sigmas * conc );
+               }
+               else if ( sigmas < 0.0 )
+               {
+                  sigma_corr = 1.0 + sigmas * conc;
+               }
+               if ( deltas > 0.0 )
+               {
+                  delta_corr = 1.0 / ( 1.0 + deltas * conc );
+               }
+               else if ( deltas < 0.0 )
+               {
+                  delta_corr = 1.0 + deltas * conc;
+               }
+               s_adj[jj] = s20w_correction_stem / curVisc * ( 1.0 - vbar * curDens ) * sigma_corr;
+               D_adj[jj] = D20w_correction_stem / curVisc * delta_corr;
+            }
+         }
          break;
+
+         default:
+            qDebug( "invalid case number for non-ideal sedimentation" );
+            break;
    } // switch
 }
 
@@ -2826,6 +2877,16 @@ void US_LammAstfvm::LsSolver53( const int m, double** __restrict A, double* __re
    }
 }
 
+void US_LammAstfvm::set_self_gradient( const double* dens_coeff, const double* visc_coeff )
+{
+   self_gradient = ( dens_coeff != nullptr && visc_coeff != nullptr );
+   for ( int ii = 0; ii < 6; ii++ )
+   {
+      self_dens[ii] = self_gradient ? dens_coeff[ii] : 0.0;
+      self_visc[ii] = self_gradient ? visc_coeff[ii] : 0.0;
+   }
+}
+
 // Integral of omega-squared from ta to tb, s: rpm linear between the
 // timestate's seconds, the integral of its square exact over each piece
 double US_LammAstfvm::w2_integral( double ta, double tb ) const
@@ -2899,6 +2960,18 @@ int US_LammAstfvm::nonIdealCaseNo()
       }
 
       NonIdealCaseNo = 2;
+   }
+
+   if ( self_gradient )
+   {
+      // the solute's own concentration sets density and viscosity: with
+      // sigma and delta, but not with another gradient or compressibility
+      if ( NonIdealCaseNo != 0 && NonIdealCaseNo != 1 )
+      {
+         rc = 5;
+      }
+
+      NonIdealCaseNo = 5;
    }
    DbgLv( 2 ) << "LammAstfvm: set NonIdealCaseNo:" << NonIdealCaseNo << rc;
    return rc;
