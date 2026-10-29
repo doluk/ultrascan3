@@ -66,3 +66,30 @@ foreach(case ${US_MPI_CASES})
         TIMEOUT 600
         RESOURCE_LOCK mpi_analysis)
 endforeach()
+
+# The node-shared simulation cache must not change results:  repeat cases
+# with the cache off and with a cache too small for the fit (keep-first,
+# most simulations not stored).
+set(US_MPI_CACHE_CASES
+    2dsa_refine_np4
+    2dsa_mc_pmasters3
+    2dsa_composite_menbot_pmasters
+    pcsa_sl
+)
+
+foreach(variant "off;SimCache=off" "small;SimCacheMB=1")
+    list(GET variant 0 tag)
+    list(GET variant 1 dtext)
+    add_test(NAME mpi_analysis_simcache_${tag}
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/us_mpi_regression.py
+            check ${US_MPI_CACHE_CASES}
+            --debug-text ${dtext}
+            --program $<TARGET_FILE:us_mpi_analysis>
+            --testdata $<TARGET_FILE:us_mpi_testdata>
+            --mpirun ${MPIEXEC_EXECUTABLE}
+            --workdir ${CMAKE_CURRENT_BINARY_DIR}/work_simcache_${tag})
+    set_tests_properties(mpi_analysis_simcache_${tag} PROPERTIES
+        LABELS "mpi;regression;simcache"
+        TIMEOUT 600
+        RESOURCE_LOCK mpi_analysis)
+endforeach()

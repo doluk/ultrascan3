@@ -30,9 +30,10 @@ SOURCES      += us_mpi_analysis.cpp  \
                 pcsa_worker.cpp      \
                 parallel_masters.cpp \
                 pmasters_compjob.cpp \
-                us_mpi_parse.cpp
+                us_mpi_parse.cpp     \
+                us_mpi_sim_cache.cpp
 
-HEADERS      += us_mpi_analysis.h
+HEADERS      += us_mpi_analysis.h us_mpi_sim_cache.h
 
 INCLUDEPATH  += ../../utils /usr/include/mysql
 DEPENDPATH   += ../../utils

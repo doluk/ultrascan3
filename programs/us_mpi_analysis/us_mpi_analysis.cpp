@@ -1080,6 +1080,7 @@ if (my_rank==0) DbgLv(0) << "ckGrSz: ssp count"
 
    // Collective over all ranks, so before any masters-group split
    create_node_comm();
+   create_sim_cache();
 
    if ( mgroup_count < 2 )
       start();                  // Start standard job
@@ -1092,8 +1093,7 @@ if (my_rank==0) DbgLv(0) << "ckGrSz: ssp count"
 }
 
 // Create the communicator of the ranks on this node, which can share
-//  memory (MPI_COMM_TYPE_SHARED).  Not used yet; a node-wide simulation
-//  cache will be built on it.
+//  memory (MPI_COMM_TYPE_SHARED).  The simulation cache is shared over it.
 void US_MPI_Analysis::create_node_comm( void )
 {
    MPI_Comm_split_type( MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, my_rank, MPI_INFO_NULL, &node_comm );
@@ -1111,8 +1111,121 @@ void US_MPI_Analysis::create_node_comm( void )
    }
 }
 
+// Create the simulation cache shared by the ranks of this node (collective
+//  over node_comm).  Its size comes from the node's first rank.
+void US_MPI_Analysis::create_sim_cache( void )
+{
+   qint64 cap = ( node_rank == 0 ) ? sim_cache_bytes() : 0;
+   MPI_Bcast( &cap, 1, MPI_LONG_LONG, 0, node_comm );
+
+   if ( cap <= 0 )
+   {
+      if ( my_rank == 0 )
+      {
+         DbgLv( 0 ) << "Simulation cache: off";
+      }
+      return;
+   }
+
+   // Expected bytes of one simulation:  the smallest data set grid
+   qint64 sim_bytes = 0;
+
+   for ( int ee = 0; ee < data_sets.size(); ee++ )
+   {
+      US_DataIO::EditedData& edata = data_sets[ee]->run_data;
+      qint64 nscans  = edata.scanCount();
+      qint64 npoints = edata.pointCount();
+      qint64 nbytes  = nscans * ( npoints * 8 + 128 ) + npoints * 8 + 256;
+      sim_bytes      = ( ee == 0 ) ? nbytes : qMin( sim_bytes, nbytes );
+   }
+
+   sim_cache = new US_MPI_NodeSimCache( node_comm, cap, sim_bytes );
+
+   if ( !sim_cache->valid() )
+   {
+      delete sim_cache;
+      sim_cache = nullptr;
+   }
+
+   if ( my_rank == 0 )
+   {
+      DbgLv( 0 ) << "Simulation cache:" << ( sim_cache ? "shared by the ranks of each node," : "could not be allocated;" )
+                 << cap / ( 1024 * 1024 ) << "MB per node";
+   }
+}
+
+// Bytes of the simulation cache of this node.  Debug text "SimCache=off"
+//  turns caching off and "SimCacheMB=N" sets N megabytes.  By default the
+//  node's ranks get their share (ranks / cores) of 80% of the node memory,
+//  but at most a quarter of the memory now available.
+qint64 US_MPI_Analysis::sim_cache_bytes( void )
+{
+   const qint64      MB     = 1024 * 1024;
+   const QStringList dbgtxt = US_Settings::debug_text();
+
+   for ( const QString& dtext : dbgtxt )
+   {
+      QString name  = dtext.section( "=", 0, 0 ).trimmed();
+      QString value = dtext.section( "=", 1, 1 ).trimmed();
+
+      if ( name.compare( "SimCache", Qt::CaseInsensitive ) == 0 &&
+           QStringList( { "off", "0", "false", "no" } ).contains( value, Qt::CaseInsensitive ) )
+      {
+         return 0;
+      }
+
+      if ( name.compare( "SimCacheMB", Qt::CaseInsensitive ) == 0 )
+      {
+         bool   ok    = false;
+         qint64 capmb = value.toLongLong( &ok );
+         if ( ok )
+         {
+            return qMax( (qint64) 0, capmb ) * MB;
+         }
+      }
+   }
+
+   int memavail = 0;
+   int memtotal = 0;
+   US_Memory::memory_profile( &memavail, &memtotal );
+   int    ncores = qMax( 1, QThread::idealThreadCount() );
+   double share  = 0.8 * (double) memtotal * (double) qMin( node_size, ncores ) / (double) ncores;
+   double capmb  = qMin( share, 0.25 * (double) memavail );
+
+   return qMax( (qint64) 0, (qint64) capmb ) * MB;
+}
+
+// Free the simulation cache and the node communicator (collective over the
+//  node's ranks).  The node's first rank reports the cache use.
 void US_MPI_Analysis::free_node_comm( void )
 {
+   if ( sim_cache != nullptr )
+   {
+      US_SimCache::Stats st     = sim_cache->node_stats();
+      qint64             nfetch = st.hits + st.misses;
+
+      if ( node_rank == 0 )
+      {
+         char hostname[MPI_MAX_PROCESSOR_NAME];
+         int  hlen = 0;
+         MPI_Get_processor_name( hostname, &hlen );
+         QString text = QString( "Simulation cache (%1): %2 of %3 simulations reused (%4%);"
+                                 " %5 stored in %6 of %7 MB; %8 not stored for lack of room" )
+                           .arg( QString::fromLatin1( hostname, hlen ) )
+                           .arg( st.hits )
+                           .arg( nfetch )
+                           .arg( nfetch > 0 ? 100.0 * st.hits / nfetch : 0.0, 0, 'f', 1 )
+                           .arg( st.entries )
+                           .arg( st.bytes / 1048576.0, 0, 'f', 1 )
+                           .arg( st.max_bytes / 1048576 )
+                           .arg( st.rejected );
+         qDebug().noquote() << text;
+      }
+
+      delete sim_cache;
+      sim_cache = nullptr;
+   }
+
    if ( node_comm != MPI_COMM_NULL )
    {
       MPI_Comm_free( &node_comm );
@@ -1536,6 +1649,7 @@ void US_MPI_Analysis::calc_residuals( int         offset,
    }
 
    US_SolveSim solvesim( data_sets, my_rank, false );
+   solvesim.set_sim_cache( sim_cache );
    solvesim.calc_residuals( offset, dataset_count, simu_values );
 
    simu_values.dbg_level = dbglvsv;
@@ -1785,6 +1899,7 @@ DbgLv(0) << "WrGlob: mciter mxdepth" << mc_iteration+1 << max_depth
    {
       // 2DSA: Recompute the global fit and save A and b matrices for later use
       US_SolveSim solvesim( data_sets, my_rank, false );
+      solvesim.set_sim_cache( sim_cache );
       solvesim.calc_residuals( 0, data_sets.size(), wksim_vals, false,
                                &gl_nnls_a, &gl_nnls_b );
 DbgLv(0) << "WrGlob:  glob recompute nsols" << wksim_vals.solutes.size()
@@ -1901,6 +2016,7 @@ DbgLv(0) << "WrGlob:    currds" << ee << "nsol ksol" << nsolutes << ksolutes;
    {  // GA:  Compute and output each dataset model
 //      wksim_vals           = simulation_values;
       US_SolveSim solvesim( data_sets, my_rank, false );
+      solvesim.set_sim_cache( sim_cache );
       solvesim.calc_residuals( 0, data_sets.size(), wksim_vals, false,
                                &gl_nnls_a, &gl_nnls_b );
 DbgLv(1) << "WrGlob:  glob recompute nsols" << wksim_vals.solutes.size()
@@ -1989,6 +2105,7 @@ DbgLv(1) << "WrGlob:    currds" << ee << "nsol ksol" << nsolutes << ksolutes;
    else if ( mdl_type == US_Model::PCSA )
    {  // PCSA: Recompute the global fit and save A and b matrices for later use
       US_SolveSim solvesim( data_sets, my_rank, false );
+      solvesim.set_sim_cache( sim_cache );
       solvesim.calc_residuals( 0, data_sets.size(), wksim_vals, false,
                                &gl_nnls_a, &gl_nnls_b );
       nsolutes             = gsim->zsolutes.size();

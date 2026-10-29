@@ -77,6 +77,22 @@ python3 test/mpi_analysis/us_mpi_regression.py check 2dsa_mc \
     --program build/bin/us_mpi_analysis --testdata build/bin/us_mpi_testdata
 ```
 
+## Simulation cache
+
+`us_mpi_analysis` reuses simulations through a cache shared by the ranks of
+each node.  The cache stores simulations exactly, so every case must give
+the same result with and without it.  `--debug-text` passes a `debug_text`
+job parameter to every case:
+
+```bash
+python3 test/mpi_analysis/us_mpi_regression.py check all --debug-text SimCache=off ...
+python3 test/mpi_analysis/us_mpi_regression.py check all --debug-text SimCacheMB=1 ...
+```
+
+CTest runs a few cases both ways (`ctest -L simcache`):  with the cache off,
+and with a 1 MB cache, too small for the fit, so most simulations are
+computed without being stored.
+
 ## Updating baselines
 
 Only when a change of results is intended:

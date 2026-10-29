@@ -15,6 +15,7 @@
 #include "us_solve_sim.h"
 #include "us_vector.h"
 #include "us_math2.h"
+#include "us_mpi_sim_cache.h"
 
 #define SIMULATION       US_SolveSim::Simulation
 #define DATASET          US_SolveSim::DataSet
@@ -69,6 +70,7 @@ class US_MPI_Analysis : public QObject
         MPI_Comm         node_comm = MPI_COMM_NULL; //!< Ranks sharing this node's memory
         int              node_rank = 0;             //!< Rank within node_comm
         int              node_size = 1;             //!< Number of ranks on this node
+        US_MPI_NodeSimCache* sim_cache = nullptr;   //!< Simulations shared by the node's ranks (or none)
 
         int current_dataset;      //!< Current dataset for global fit or composite
         int datasets_to_process;  //!< Datasets to process for global fit or composite
@@ -432,6 +434,8 @@ class US_MPI_Analysis : public QObject
         void                   begin_fit_context( void );
         void                   create_node_comm( void );
         void                   free_node_comm( void );
+        void                   create_sim_cache( void );
+        qint64                 sim_cache_bytes( void );
         bool                   worker_fit_context( int, double, double );
         double                 dataset_bottom( int );
         void     set_monteCarlo    ( void );
