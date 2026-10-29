@@ -14,9 +14,11 @@
 //!
 //! "data" writes <runID>.RI.<cell>.A.260.auc and the edit file
 //! <runID>.e1.RI.<cell>.A.260.xml.  "cgrid" writes a custom-grid model file.
-//! Options of "data":  scans=<n> (default 30) and nobottom (an edit file
+//! Options of "data":  scans=<n> (default 30), nobottom (an edit file
 //! without <bottom>, as older edit files lack the element; us_edit always
-//! writes it, with radius 0 when it has none).
+//! writes it, with radius 0 when it has none), noise=<sigma> (default 0.004)
+//! and species=<s>:<f/f0>:<c>[,...] (s in Svedberg at 20,W; replaces the
+//! default three-species sample, before <scale> is applied).
 
 #include <QtCore>
 #include <cmath>
@@ -153,28 +155,56 @@ bool write_edit( const QString& path, const QString& runID, const US_DataIO::Raw
    return ff.error() == QFileDevice::NoError;
 }
 
-US_Model sample_model( double scale )
+struct Species
 {
-   // Three species spanning the 2DSA grid used by the regression jobs
-   const double ss[3]  = { 2.5e-13, 4.5e-13, 7.0e-13 };
-   const double ff0[3] = { 1.25, 1.6, 2.1 };
-   const double cc[3]  = { 0.25, 0.40, 0.30 };
+   double s;   // Svedberg, 20,W
+   double ff0;
+   double c;
+};
 
-   US_Model     model;
-   for ( int ii = 0; ii < 3; ii++ )
+// Three species spanning the 2DSA grid used by the regression jobs
+const QVector< Species > kSample = { { 2.5, 1.25, 0.25 }, { 4.5, 1.6, 0.40 }, { 7.0, 2.1, 0.30 } };
+
+// Parse "s:f/f0:c,s:f/f0:c,..."
+bool parse_species( const QString& spec, QVector< Species >& species )
+{
+   species.clear();
+   for ( const QString& item : spec.split( ',', Qt::SkipEmptyParts ) )
+   {
+      QStringList parts = item.split( ':' );
+      bool        ok1, ok2, ok3;
+      if ( parts.size() != 3 )
+      {
+         return false;
+      }
+      Species sp = { parts[0].toDouble( &ok1 ), parts[1].toDouble( &ok2 ), parts[2].toDouble( &ok3 ) };
+      if ( !ok1 || !ok2 || !ok3 || sp.s <= 0.0 || sp.ff0 < 1.0 || sp.c < 0.0 )
+      {
+         return false;
+      }
+      species << sp;
+   }
+   return !species.isEmpty();
+}
+
+US_Model sample_model( const QVector< Species >& species, double scale )
+{
+   US_Model model;
+   for ( const Species& sp : species )
    {
       US_Model::SimulationComponent comp;
-      comp.s                    = ss[ii];
-      comp.f_f0                 = ff0[ii];
+      comp.s                    = sp.s * 1.0e-13;
+      comp.f_f0                 = sp.ff0;
       comp.vbar20               = kVbar20;
-      comp.signal_concentration = cc[ii] * scale;
+      comp.signal_concentration = sp.c * scale;
       model.components << comp;
    }
    model.update_coefficients();
    return model;
 }
 
-int write_data( const QString& outdir, const QString& runID, int cell, uint64_t seed, double scale, int scans, bool nobottom )
+int write_data( const QString& outdir, const QString& runID, int cell, uint64_t seed, double scale, int scans, bool nobottom,
+                const QVector< Species >& species, double sigma )
 {
    QString            triple   = QString( "RI.%1.A.260" ).arg( cell );
    QString            aucname  = runID + "." + triple + ".auc";
@@ -223,7 +253,7 @@ int write_data( const QString& outdir, const QString& runID, int cell, uint64_t 
    sd.vbar      = kVbar20;
    US_Math2::data_correction( 20.0, sd );
 
-   US_Model model = sample_model( scale );
+   US_Model model = sample_model( species, scale );
    for ( int ii = 0; ii < model.components.size(); ii++ )
    {
       model.components[ii].s /= sd.s20w_correction;
@@ -244,7 +274,7 @@ int write_data( const QString& outdir, const QString& runID, int cell, uint64_t 
       {
          int    er                    = rr - offset;
          double value                 = ( er >= 0 && er < simdat.pointCount() ) ? simdat.value( ss, er ) : 0.0;
-         raw.scanData[ss].rvalues[rr] = value + US_Math2::box_muller( 0.0, kNoiseSigma );
+         raw.scanData[ss].rvalues[rr] = value + US_Math2::box_muller( 0.0, sigma );
       }
    }
 
@@ -307,9 +337,11 @@ int main( int argc, char* argv[] )
 
    if ( args.size() >= 7 && args[1] == "data" )
    {
-      int  scans    = kScans;
-      bool nobottom = false;
-      bool argsok   = true;
+      int                scans    = kScans;
+      bool               nobottom = false;
+      bool               argsok   = true;
+      double             sigma    = kNoiseSigma;
+      QVector< Species > species  = kSample;
 
       for ( int ii = 7; ii < args.size(); ii++ )
       {
@@ -321,6 +353,15 @@ int main( int argc, char* argv[] )
          else if ( args[ii] == "nobottom" )
          {
             nobottom = true;
+         }
+         else if ( args[ii].startsWith( "noise=" ) )
+         {
+            sigma  = args[ii].mid( 6 ).toDouble( &argsok );
+            argsok = argsok && sigma >= 0.0;
+         }
+         else if ( args[ii].startsWith( "species=" ) )
+         {
+            argsok = parse_species( args[ii].mid( 8 ), species );
          }
          else
          {
@@ -334,7 +375,8 @@ int main( int argc, char* argv[] )
          }
       }
 
-      return write_data( args[2], args[3], args[4].toInt(), args[5].toULongLong(), args[6].toDouble(), scans, nobottom );
+      return write_data( args[2], args[3], args[4].toInt(), args[5].toULongLong(), args[6].toDouble(), scans, nobottom, species,
+                         sigma );
    }
 
    if ( args.size() == 4 && args[1] == "cgrid" )
@@ -344,6 +386,7 @@ int main( int argc, char* argv[] )
 
    fprintf( stderr,
             "usage: %s data <outdir> <runID> <cell> <seed> <scale> [scans=<n>] [nobottom]\n"
+            "                [noise=<sigma>] [species=<s>:<f/f0>:<c>[,...]]\n"
             "       %s cgrid <outdir> <filename>\n",
             argv[0],
             argv[0] );
