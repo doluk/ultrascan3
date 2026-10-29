@@ -587,8 +587,9 @@ void US_MPI_Analysis::mutate_gene( Gene& gene )
 
 void US_MPI_Analysis::mutate_s( US_Solute& solute, int b )
 {
-   // Consider paramaterizing the sigma and x calculations
-   double sigma = ( s_grid - 1 ) / ( 6.0 * ( log2( generation + 2 ) ) );
+   // Bucket width divided by gfactor = 6 log2(2 + 2g) (Brookes & Demeler,
+   //  GECCO 2007, eq. 5)
+   double sigma = ( s_grid - 1 ) / ( 6.0 * log2( 2.0 + 2.0 * generation ) );
    double x     = US_Math2::box_muller( 0.0, sigma );
    double delta = qRound( x );
 //DbgLv(1) << "    MUTATE_S x" << x << "sg sigma delta"
@@ -611,7 +612,7 @@ void US_MPI_Analysis::mutate_k( US_Solute& solute, int b )
 {
    //static const double mutate_sigma = parameters[ "mutate_sigma" ].toDouble();
 
-   double sigma   = ( k_grid - 1 ) / ( 6.0 * ( log2( generation + 2 ) ) );
+   double sigma   = ( k_grid - 1 ) / ( 6.0 * log2( 2.0 + 2.0 * generation ) );
    double x       = US_Math2::box_muller( 0.0, sigma );
    double delta   = qRound( x );
 //DbgLv(1) << "     MUTATE_K x" << x << "kg sigma delta"
