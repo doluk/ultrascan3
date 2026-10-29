@@ -222,25 +222,10 @@ DbTimMsg("Worker start rank/generation/elapsed-secs");
       std::sort( fitness.begin(), fitness.end() );
 DbTimMsg("Worker after get_fitness loop + sort");
 
-      // Refine with gradient search method (gsm) on last generation
-      if ( generation == generations - 1 )
-      {
-DbgLv(DL) << "Deme" << grp_nbr << deme_nbr
-         << ": At last generation minimize.";
-DbTimMsg("Worker before gsm rank/generation/elapsed");
-
-         fitness[ 0 ].fitness = minimize( genes[ fitness[ 0 ].index ], 
-                                          fitness[ 0 ].fitness );
-DbgLv(DL) << "Deme" << grp_nbr << deme_nbr
-         << ":   last generation minimize fitness=" << fitness[0].fitness;
-DbTimMsg("Worker after gsm rank/generation/elapsed");
-      }
+      // The gradient search refinement is done by the master on the
+      //  overall best gene (ga_master), after the generations end
 
       max_rss();
-
-      // Ensure gene is on grid
-      align_gene( genes[ fitness[ 0 ].index ] );
-DbTimMsg("Worker after align_gene");
 
       // Send best gene to master
 DbgLv(1) << "Best gene to master: gen" << generation << "worker" << deme_nbr;
@@ -941,6 +926,10 @@ DbgLv(DL) << Phd << "  g_s3" << g_s3 << "s1 s2 s3" << s1 << s2 << s3;
                      s1_s2 * s1_s3 * s2_s3;
 
          static const double max_a = 1.0e-25;
+
+         // The parabola through the three points has no minimum:
+         //  keep the best of them
+         if ( aa <= -max_a ) break;
 
 DbgLv(DL) << Phd << "   reps" << reps << "aa" << aa;
          if ( qAbs( aa ) < max_a )
