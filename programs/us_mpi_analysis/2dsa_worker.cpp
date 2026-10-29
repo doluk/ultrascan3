@@ -125,6 +125,13 @@ void US_MPI_Analysis::_2dsa_worker( void )
 
             break;
 
+         case MPI_Job::CLEARCACHE: // Clear this node's simulation cache
+            if ( sim_cache != nullptr )
+            {
+               sim_cache->clear();
+            }
+            break;
+
          case MPI_Job::NEWDATA:  // Reset data for Monte Carlo or global fit
          {
             const int mc_iter = job.solution;
