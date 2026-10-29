@@ -23,6 +23,12 @@ void US_MPI_Analysis::dmga_worker( void )
    current_dataset     = 0;
    datasets_to_process = data_sets.size();
    QStringList keys    = parameters.keys();
+
+   // With an explicit job seed every rank starts the same random sequence,
+   //  which would make all demes evolve identically:  offset it by rank
+   uint seed = parameters[ "seed" ].toUInt();
+   if ( seed != 0 )
+      US_Math2::randomize( seed + 7919u * (uint)my_rank );
    p_grid              = ( keys.contains( "p_grid" ) )
                          ? parameters[ "p_grid" ].toInt() : 100;
    QString dbgtext     = parameters[ "debug_text" ];
