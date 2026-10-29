@@ -479,7 +479,9 @@ DbgLv(2) << "get_fitness: sol_count conc_thresh" << solute_count << concentratio
       }
    }
 
-   fitness *= ( 1.0 + sq( regularization * solute_count ) );
+   // Parsimony penalty rmsd * (1 + (rf n)^2) (Brookes & Demeler, GECCO 2007,
+   //  eq. 4), applied to the variance as its square
+   fitness *= sq( 1.0 + sq( regularization * solute_count ) );
    fitness_map.insert( key, fitness ); 
 DbgLv(2) << "get_fitness:  out fitness" << fitness;
 //*DEBUG*
@@ -1398,7 +1400,7 @@ double US_MPI_Analysis::update_fitness( int index, US_Vector& v )
       }
 
       fitness  /= (double)( ntotal );
-      fitness  *= ( 1.0 + sq( regularization * ksol ) );
+      fitness  *= sq( 1.0 + sq( regularization * ksol ) );
    }
 
    return fitness;
