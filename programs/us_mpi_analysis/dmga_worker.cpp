@@ -449,13 +449,15 @@ DbgLv(0) << "gw:" << my_rank << ": re-do genes at gen" << generation
          generation   = 0;
       }
 
+      // Exchange emigrants first, while dgenes[] still matches the fitness
+      //  ranking (immigrants go to the slots after the elites)
+      int immigr_count = migrate_dgenes();
+
       // Create new generation from old
       // First copy elite genes
       for ( int gg = 0; gg < elitism; gg++ )
          dgenes[ gg ] = old_genes[ fitness[ gg ].index ];
 DbgLv(1) << "gw:" << my_rank << ": elites copied";
-
-      int immigr_count = migrate_dgenes();
 DbgLv(1) << "gw:" << my_rank << ": immigr_count" << immigr_count
          << "dgenes,old sizes" << dgenes.size() << old_genes.size() << population;
 
@@ -469,7 +471,7 @@ DbTimMsg("Worker before elitism loop");
          int  probability = u_random( p_plague );
 DbgLv(1) << "gw:" << my_rank << ":  gg" << gg << "gene_index" << gene_index
          << "probability" << probability;
-         dgene            = old_genes[ gene_index ];
+         dgene            = old_genes[ fitness[ gene_index ].index ];
 
          // Do a self-mutate on some genes
          if      ( probability < p_mutate    ) mutate_dgene( dgene );

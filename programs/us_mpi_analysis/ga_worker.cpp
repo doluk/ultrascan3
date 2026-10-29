@@ -342,12 +342,14 @@ DbgLv(1) << "gw:" << my_rank << ":  Dup cleaned: f0 f1 fit0 fit1"
       
       QList< Gene > old_genes = genes;
 
+      // Exchange emigrants first, while genes[] still matches the fitness
+      //  ranking (immigrants go to the slots after the elites)
+      int immigrants = migrate_genes();
+
       // Create new generation from old
       // First copy elite genes
       for ( int g = 0; g < elitism; g++ )
          genes[ g ] = old_genes[ fitness[ g ].index ];
-
-      int immigrants = migrate_genes();
 
 DbTimMsg("Worker before elitism loop");
 
@@ -356,7 +358,7 @@ DbTimMsg("Worker before elitism loop");
          // Select a random gene from old population using exponential 
          //  distribution
          int  gene_index  = e_random();
-         Gene gene        = old_genes[ gene_index ];
+         Gene gene        = old_genes[ fitness[ gene_index ].index ];
          int  probability = u_random( p_plague );
 
          if      ( probability < p_mutate    ) mutate_gene( gene );
