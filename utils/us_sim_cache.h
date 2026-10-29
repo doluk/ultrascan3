@@ -53,6 +53,9 @@ class US_UTIL_EXTERN US_SimCache
       //! \param max_bytes  Memory cap in bytes
       explicit US_SimCache( qint64 max_bytes );
 
+      //! \brief Destroy the cache (subclasses may hold other storage)
+      virtual ~US_SimCache() = default;
+
       //! \brief Create a cache with the default memory cap, unless debug
       //!        text turns caching off
       //!
@@ -83,7 +86,7 @@ class US_UTIL_EXTERN US_SimCache
       //! \param key     Simulation key
       //! \param simdat  Returned simulation, if found
       //! \returns       Flag whether found
-      bool                fetch( const QByteArray& key, US_DataIO::RawData& simdat );
+      virtual bool        fetch( const QByteArray& key, US_DataIO::RawData& simdat );
 
       //! \brief Store a simulation, or mark a stored one as a survivor
       //! \param key       Simulation key
@@ -91,19 +94,32 @@ class US_UTIL_EXTERN US_SimCache
       //! \param survivor  Flag the solute survived a NNLS:  keep it, evicting
       //!                  other simulations if need be
       //! \returns         Flag whether the simulation is now in the cache
-      bool                store( const QByteArray& key, const US_DataIO::RawData& simdat, bool survivor );
+      virtual bool        store( const QByteArray& key, const US_DataIO::RawData& simdat, bool survivor );
 
       //! \brief Remove all simulations (the counts are kept)
-      void                clear();
+      virtual void        clear();
 
       //! \brief Counts of cache use
-      Stats               stats() const;
+      virtual Stats       stats() const;
 
       //! \brief One-line text of the counts
       QString             stats_text() const;
 
       //! \brief Approximate bytes a simulation takes in the cache
       static qint64       sim_bytes( const US_DataIO::RawData& );
+
+      //! \brief Serialize a simulation (all values, bit-exact), e.g. for a
+      //!        cache in memory shared between processes
+      //! \param simdat  Simulation
+      //! \returns       Bytes from which unpack() restores the simulation
+      static QByteArray   pack( const US_DataIO::RawData& simdat );
+
+      //! \brief Restore a simulation serialized by pack()
+      //! \param data    Serialized bytes
+      //! \param size    Number of bytes
+      //! \param simdat  Restored simulation
+      //! \returns       Flag whether the bytes were a complete simulation
+      static bool         unpack( const char* data, qint64 size, US_DataIO::RawData& simdat );
 
    private:
       class Entry
