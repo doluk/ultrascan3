@@ -95,6 +95,17 @@ being stored, and with `NodeSplit=2`, which makes two groups of ranks act as
 separate nodes with separate caches (a test switch for multi-node behavior
 on one machine).
 
+### Benchmark
+
+`us_mpi_benchmark.py` times a larger 2DSA job (default 64 × 64 grid, 5
+refinement iterations) with the cache off and on and prints the speedup,
+the node cache reports and whether the RMSDs agree:
+
+```bash
+python3 test/mpi_analysis/us_mpi_benchmark.py --program build/bin/us_mpi_analysis \
+    --testdata build/bin/us_mpi_testdata --np 8 --grid 64 --refine 5 [--mc 3] [--mgroupcount 2]
+```
+
 ## Updating baselines
 
 Only when a change of results is intended:
