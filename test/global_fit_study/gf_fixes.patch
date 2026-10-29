@@ -1,0 +1,223 @@
+diff --git a/programs/us_mpi_analysis/us_mpi_analysis.cpp b/programs/us_mpi_analysis/us_mpi_analysis.cpp
+index 302671d..a3f0d27 100644
+--- a/programs/us_mpi_analysis/us_mpi_analysis.cpp
++++ b/programs/us_mpi_analysis/us_mpi_analysis.cpp
+@@ -646,6 +646,9 @@ if ( my_rank == 0 )
+ 
+       // Accumulate maximum OD for each dataset
+       //   and, if global-fit, normalize-scale the data
++      // FIX F1: scale the OD limit with the data, so the points excluded
++      //  are those above the OD limit in the units of the edited data
++      edata->ODlimit   *= ds_concen;
+       double odlim      = edata->ODlimit;
+       double odmax      = 0.0;
+ 
+@@ -1761,6 +1764,27 @@ DbgLv(1) << "WrO: wr_mrecs";
+    }
+ }
+ 
++// FIX F3: variance of an NNLS fit, from copies of A and b taken before
++//  US_Math2::nnls overwrites them
++static double nnls_variance( const QVector< double >& amat,
++      const QVector< double >& bvec, const QVector< double >& xvec,
++      int narows, int ncols )
++{
++   double vsum = 0.0;
++   int    nrow = 0;
++   for ( int rr = 0; rr < narows; rr++ )
++   {
++      if ( bvec[ rr ] == 0.0 )
++         continue;     // Row excluded by the OD limit (A and b zeroed)
++      nrow++;
++      double sval = 0.0;
++      for ( int cc = 0; cc < ncols; cc++ )
++         sval += amat[ cc * narows + rr ] * xvec[ cc ];
++      vsum += sq( bvec[ rr ] - sval );
++   }
++   return vsum / (double)qMax( nrow, 1 );
++}
++
+ // Write global model outputs at the end of an iteration
+ void US_MPI_Analysis::write_global( void )
+ {
+@@ -1787,6 +1811,8 @@ DbgLv(0) << "WrGlob: mciter mxdepth" << mc_iteration+1 << max_depth
+       US_SolveSim solvesim( data_sets, my_rank, false );
+       solvesim.calc_residuals( 0, data_sets.size(), wksim_vals, false,
+                                &gl_nnls_a, &gl_nnls_b );
++      // FIX F3: dataset variances of the global fit (normalized data units)
++      QVector< double > gl_vars = wksim_vals.variances;
+ DbgLv(0) << "WrGlob:  glob recompute nsols" << wksim_vals.solutes.size()
+  << "globrec A,b sizes" << gl_nnls_a.size() << gl_nnls_b.size();
+       nsolutes             = gsim->solutes.size();
+@@ -1800,6 +1826,17 @@ DbgLv(0) << "WrGlob:  glob recompute nsols" << wksim_vals.solutes.size()
+          sim.variances[ ee ]  = wksim_vals.variances[ ee ];
+       }
+       avg_conc            /= (double)( data_sets.size() );
++      {  // FIX F3: superglobal variance pooled over datasets in data units
++         double vsum = 0.0;
++         int    nsum = 0;
++         for ( int ee = 0; ee < data_sets.size(); ee++ )
++         {
++            vsum += gl_vars[ ee ] * sq( concentrations[ ee ] )
++                    * (double)ds_points[ ee ];
++            nsum += ds_points[ ee ];
++         }
++         sim.variance = vsum / (double)qMax( nsum, 1 );
++      }
+ 
+       for ( int cc = 0; cc < nsolutes; cc++ )
+       {
+@@ -1818,8 +1855,9 @@ DbgLv(0) << "WrGlob: dssize" << data_sets.size() << "concsize" << concentrations
+          US_DataIO::EditedData* edata = &data_sets[ ee ]->run_data;
+          current_dataset      = ee;
+          meniscus_value       = edata->meniscus;
+-         sim.variance         = sim.variances[ ee ];
+          double concentration = concentrations[ ee ];
++         // FIX F3: dataset variance in data units
++         sim.variance         = gl_vars[ ee ] * sq( concentration );
+          nsolutes             = gsim->solutes.size();
+ DbgLv(0) << "WrGlob:   currds" << ee << "concen" << concentration;
+ 
+@@ -1852,8 +1890,12 @@ DbgLv(0) << "WrGlob:    ks kp nar nav" << kscans << kpoints << narows << navals;
+          dset_matrices( ee, &nsolutes, nnls_a, nnls_b, c_used );
+ 
+ DbgLv(0) << "WrGlob:    mats built; calling NNLS";
++         QVector< double > nnls_a0 = nnls_a;   // FIX F3: keep A and b
++         QVector< double > nnls_b0 = nnls_b;
+          US_Math2::nnls( nnls_a.data(), narows, narows, nsolutes,
+                          nnls_b.data(), nnls_x.data() );
++         double refit_var = nnls_variance( nnls_a0, nnls_b0, nnls_x,
++                                           narows, nsolutes );
+ 
+ DbgLv(0) << "WrGlob:     building solutes from nnls_x";
+          for ( int cc = 0; cc < nsolutes; cc++ )
+@@ -1893,6 +1935,7 @@ if(soluval>1.0) {
+ DbgLv(0) << "WrGlob:    currds" << ee << "nsol ksol" << nsolutes << ksolutes;
+ 
+          // Output the model refitted to individual dataset
++         wksim_vals.variance  = refit_var;    // FIX F3
+          write_model( wksim_vals, mdl_type, false );
+       }
+    }
+@@ -1903,6 +1946,8 @@ DbgLv(0) << "WrGlob:    currds" << ee << "nsol ksol" << nsolutes << ksolutes;
+       US_SolveSim solvesim( data_sets, my_rank, false );
+       solvesim.calc_residuals( 0, data_sets.size(), wksim_vals, false,
+                                &gl_nnls_a, &gl_nnls_b );
++      // FIX F3: dataset variances of the global fit (normalized data units)
++      QVector< double > gl_vars = wksim_vals.variances;
+ DbgLv(1) << "WrGlob:  glob recompute nsols" << wksim_vals.solutes.size()
+  << "globrec A,b sizes" << gl_nnls_a.size() << gl_nnls_b.size();
+ 
+@@ -1916,6 +1961,17 @@ DbgLv(1) << "WrGlob:  glob recompute nsols" << wksim_vals.solutes.size()
+          avg_conc            += concentrations[ ee ];
+       }
+       avg_conc            /= (double)( data_sets.size() );
++      {  // FIX F3: superglobal variance pooled over datasets in data units
++         double vsum = 0.0;
++         int    nsum = 0;
++         for ( int ee = 0; ee < data_sets.size(); ee++ )
++         {
++            vsum += gl_vars[ ee ] * sq( concentrations[ ee ] )
++                    * (double)ds_points[ ee ];
++            nsum += ds_points[ ee ];
++         }
++         sim.variance = vsum / (double)qMax( nsum, 1 );
++      }
+ DbgLv(1) << "WrGlob:   avg_conc" << avg_conc;
+ 
+       for ( int cc = 0; cc < nsolutes; cc++ )
+@@ -1935,9 +1991,11 @@ DbgLv(1) << "WrGlob: dssize" << data_sets.size() << "concsize" << concentrations
+          US_DataIO::EditedData* edata = &data_sets[ ee ]->run_data;
+          current_dataset      = ee;
+          meniscus_value       = edata->meniscus;
+-         sim.variance         = sim.variances[ ee ];
+          double concentration = concentrations[ ee ];
++         // FIX F3: dataset variance in data units
++         sim.variance         = gl_vars[ ee ] * sq( concentration );
+ DbgLv(1) << "WrGlob:   currds" << ee << "concen" << concentration;
++         nsolutes             = gsim->solutes.size();   // FIX F2
+ 
+          for ( int cc = 0; cc < nsolutes; cc++ )
+          {
+@@ -1964,8 +2022,12 @@ DbgLv(1) << "WrGlob:     cc" << cc << "conc-in" << gsim->solutes[cc].c
+ 
+          dset_matrices( ee, &nsolutes, nnls_a, nnls_b, c_used );
+ 
++         QVector< double > nnls_a0 = nnls_a;   // FIX F3: keep A and b
++         QVector< double > nnls_b0 = nnls_b;
+          US_Math2::nnls( nnls_a.data(), narows, narows, nsolutes,
+                          nnls_b.data(), nnls_x.data() );
++         double refit_var = nnls_variance( nnls_a0, nnls_b0, nnls_x,
++                                           narows, nsolutes );
+ 
+          for ( int cc = 0; cc < nsolutes; cc++ )
+          {
+@@ -1981,6 +2043,7 @@ DbgLv(1) << "WrGlob:     cc" << cc << "conc-in" << gsim->solutes[cc].c
+          }
+ 
+          // Output the model refitted to the individual dataset
++         wksim_vals.variance  = refit_var;    // FIX F3
+          write_model( wksim_vals, mdl_type, false );
+ DbgLv(1) << "WrGlob:    currds" << ee << "nsol ksol" << nsolutes << ksolutes;
+       }
+@@ -1991,6 +2054,8 @@ DbgLv(1) << "WrGlob:    currds" << ee << "nsol ksol" << nsolutes << ksolutes;
+       US_SolveSim solvesim( data_sets, my_rank, false );
+       solvesim.calc_residuals( 0, data_sets.size(), wksim_vals, false,
+                                &gl_nnls_a, &gl_nnls_b );
++      // FIX F3: dataset variances of the global fit (normalized data units)
++      QVector< double > gl_vars = wksim_vals.variances;
+       nsolutes             = gsim->zsolutes.size();
+ DbgLv(1) << "WrGlob:  glob recompute nzsols" << wksim_vals.zsolutes.size() << nsolutes
+  << "globrec A,b sizes" << gl_nnls_a.size() << gl_nnls_b.size();
+@@ -2006,6 +2071,17 @@ DbgLv(1) << "WrGlob:   ALL dsum_b" << dsum_b;
+          avg_conc            += concentrations[ ee ];
+       }
+       avg_conc            /= (double)( data_sets.size() );
++      {  // FIX F3: superglobal variance pooled over datasets in data units
++         double vsum = 0.0;
++         int    nsum = 0;
++         for ( int ee = 0; ee < data_sets.size(); ee++ )
++         {
++            vsum += gl_vars[ ee ] * sq( concentrations[ ee ] )
++                    * (double)ds_points[ ee ];
++            nsum += ds_points[ ee ];
++         }
++         sim.variance = vsum / (double)qMax( nsum, 1 );
++      }
+ 
+       for ( int cc = 0; cc < nsolutes; cc++ )
+       {
+@@ -2028,9 +2104,11 @@ int kp=edata->pointCount();
+ DbgLv(1) << "WrGlob:  ee" << ee << "AA-dset(m)" << edata->value(ks/2,kp/2);
+          current_dataset      = ee;
+          meniscus_value       = edata->meniscus;
+-         sim.variance         = sim.variances[ ee ];
+          double concentration = concentrations[ ee ];
++         // FIX F3: dataset variance in data units
++         sim.variance         = gl_vars[ ee ] * sq( concentration );
+ DbgLv(1) << "WrGlob:   currds" << ee << "concen" << concentration;
++         nsolutes             = gsim->zsolutes.size();  // FIX F2
+ 
+          for ( int cc = 0; cc < nsolutes; cc++ )
+          {
+@@ -2065,8 +2143,12 @@ DbgLv(1) << "WrGlob:      ee" << ee << "dsum_b" << dsum_b
+ dsum_b_all += dsum_b;
+ 
+ DbgLv(1) << "WrGlob:    mats built; calling NNLS";
++         QVector< double > nnls_a0 = nnls_a;   // FIX F3: keep A and b
++         QVector< double > nnls_b0 = nnls_b;
+          US_Math2::nnls( nnls_a.data(), narows, narows, nsolutes,
+                          nnls_b.data(), nnls_x.data() );
++         double refit_var = nnls_variance( nnls_a0, nnls_b0, nnls_x,
++                                           narows, nsolutes );
+ 
+ DbgLv(1) << "WrGlob:     building solutes from nnls_x";
+ double sum_sol=0.0;
+@@ -2087,6 +2169,7 @@ DbgLv(1) << "WrGlob:    currds" << ee << "nsol ksol" << nsolutes << ksolutes
+  << sim.zsolutes.size() << "sum_sol" << sum_sol;
+ 
+          // Output the model refitted to individual dataset
++         wksim_vals.variance  = refit_var;    // FIX F3
+          write_model( wksim_vals, mdl_type, false );
+       }
+ DbgLv(1) << "WrGlob:     dsum_b_all" << dsum_b_all;
