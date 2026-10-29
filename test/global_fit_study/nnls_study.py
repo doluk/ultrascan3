@@ -90,7 +90,13 @@ def fit_variant(variant, dsets, cgiven, odlim, sig_est=None, n_alpha=15):
             m = b < ol                # limit in data units (F1)
         masks.append(m)
         scaled.append(bs)
-        qrs.append(qr_block(basis.A[m], bs[m]))
+
+    # As US_SolveSim:  A rows of excluded points are zeroed, then columns
+    #  whose norm over all datasets is below 1.0 are cut
+    norm2 = sum((basis.A[m] ** 2).sum(0) for (basis, _), m in zip(dsets, masks))
+    keep = np.sqrt(norm2) >= 1.0
+    for (basis, _), m, bs in zip(dsets, masks, scaled):
+        qrs.append(qr_block(basis.A[m][:, keep], bs[m]))
 
     def weights(alpha):
         if variant in ("cur", "F1"):
@@ -102,7 +108,12 @@ def fit_variant(variant, dsets, cgiven, odlim, sig_est=None, n_alpha=15):
         w = weights(alpha)
         return [(w[e], qrs[e][0], qrs[e][1], alpha[e]) for e in range(ne)]
 
-    x = solve(blocks(alpha))
+    def full(xk):
+        xf = np.zeros(len(keep))
+        xf[keep] = xk
+        return xf
+
+    x = full(solve(blocks(alpha)))
     if variant == "Wa":
         for _ in range(n_alpha):
             for e in range(1, ne):    # alpha_0 = 1 fixes the scale
@@ -110,7 +121,7 @@ def fit_variant(variant, dsets, cgiven, odlim, sig_est=None, n_alpha=15):
                 m = masks[e]
                 p = basis.A[m] @ x
                 alpha[e] = float(p @ scaled[e][m]) / float(p @ p)
-            x = solve(blocks(alpha))
+            x = full(solve(blocks(alpha)))
     return x, alpha, masks
 
 
