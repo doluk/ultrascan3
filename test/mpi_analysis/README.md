@@ -89,9 +89,11 @@ python3 test/mpi_analysis/us_mpi_regression.py check all --debug-text SimCache=o
 python3 test/mpi_analysis/us_mpi_regression.py check all --debug-text SimCacheMB=1 ...
 ```
 
-CTest runs a few cases both ways (`ctest -L simcache`):  with the cache off,
-and with a 1 MB cache, too small for the fit, so most simulations are
-computed without being stored.
+CTest repeats a few cases (`ctest -L simcache`):  with the cache off, with a
+1 MB cache, too small for the fit, so most simulations are computed without
+being stored, and with `NodeSplit=2`, which makes two groups of ranks act as
+separate nodes with separate caches (a test switch for multi-node behavior
+on one machine).
 
 ## Updating baselines
 

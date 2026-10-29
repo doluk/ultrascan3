@@ -71,6 +71,7 @@ class US_MPI_Analysis : public QObject
         int              node_rank = 0;             //!< Rank within node_comm
         int              node_size = 1;             //!< Number of ranks on this node
         US_MPI_NodeSimCache* sim_cache = nullptr;   //!< Simulations shared by the node's ranks (or none)
+        QVector< int >   node_leaders;              //!< World ranks of the first rank of each node
 
         int current_dataset;      //!< Current dataset for global fit or composite
         int datasets_to_process;  //!< Datasets to process for global fit or composite
@@ -202,7 +203,7 @@ class US_MPI_Analysis : public QObject
 
                 //! \enum Command
                 //! \brief Enumeration for MPI job commands
-                enum Command { IDLE, PROCESS, WAIT, SHUTDOWN, NEWDATA, PROCESS_MC };
+                enum Command { IDLE, PROCESS, WAIT, SHUTDOWN, NEWDATA, PROCESS_MC, CLEARCACHE };
 
                 //! \enum Status
                 //! \brief Enumeration for MPI job statuses
@@ -435,6 +436,7 @@ class US_MPI_Analysis : public QObject
         void                   create_node_comm( void );
         void                   free_node_comm( void );
         void                   create_sim_cache( void );
+        void                   clear_sim_caches( void );
         qint64                 sim_cache_bytes( void );
         bool                   worker_fit_context( int, double, double );
         double                 dataset_bottom( int );

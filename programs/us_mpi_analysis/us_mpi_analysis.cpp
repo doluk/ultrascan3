@@ -1096,14 +1096,43 @@ if (my_rank==0) DbgLv(0) << "ckGrSz: ssp count"
 //  memory (MPI_COMM_TYPE_SHARED).  The simulation cache is shared over it.
 void US_MPI_Analysis::create_node_comm( void )
 {
-   MPI_Comm_split_type( MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, my_rank, MPI_INFO_NULL, &node_comm );
+   // Debug text "NodeSplit=N" (for tests) splits the ranks into N groups
+   //  that act as separate nodes, each with its own shared memory
+   int nsplit = 0;
+
+   for ( const QString& dtext : US_Settings::debug_text() )
+   {
+      if ( dtext.section( "=", 0, 0 ).trimmed().compare( "NodeSplit", Qt::CaseInsensitive ) == 0 )
+      {
+         nsplit = dtext.section( "=", 1, 1 ).trimmed().toInt();
+      }
+   }
+
+   if ( nsplit > 1 )
+   {
+      MPI_Comm_split( MPI_COMM_WORLD, my_rank % nsplit, my_rank, &node_comm );
+   }
+   else
+   {
+      MPI_Comm_split_type( MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, my_rank, MPI_INFO_NULL, &node_comm );
+   }
    MPI_Comm_rank( node_comm, &node_rank );
    MPI_Comm_size( node_comm, &node_size );
 
-   // Number of nodes: count the node leaders (node rank 0)
-   int leader     = ( node_rank == 0 ) ? 1 : 0;
-   int node_count = 0;
-   MPI_Allreduce( &leader, &node_count, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD );
+   // World ranks of the node leaders (node rank 0)
+   QVector<int> node_ranks( proc_count );
+   MPI_Allgather( &node_rank, 1, MPI_INT, node_ranks.data(), 1, MPI_INT, MPI_COMM_WORLD );
+   node_leaders.clear();
+
+   for ( int rr = 0; rr < proc_count; rr++ )
+   {
+      if ( node_ranks[rr] == 0 )
+      {
+         node_leaders << rr;
+      }
+   }
+
+   int node_count = node_leaders.size();
 
    if ( my_rank == 0 )
    {

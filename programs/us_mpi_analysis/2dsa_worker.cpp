@@ -151,6 +151,13 @@ DbgLv(1) << "w:" << my_rank << ":   result sols size" << size[0]
 
             break;
 
+         case MPI_Job::CLEARCACHE: // Clear this node's simulation cache
+            if ( sim_cache != nullptr )
+            {
+               sim_cache->clear();
+            }
+            break;
+
          case MPI_Job::NEWDATA:  // Reset data for Monte Carlo or global fit
             { 
                int  mc_iter    = job.solution;
