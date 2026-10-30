@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Summarize gfit_e2e.py results:  markdown tables and a figure.
 
-Per scenario and variant (mean over seeds; SC = dataset models scaled from
-the global solutes):
+Per scenario and variant (mean over seeds), for SC (global solutes scaled to
+each dataset) and VR (global solutes refit to each dataset):
   frac   max |fraction error| over s windows, mean over datasets and seeds
   s      signal-weighted mean s, relative error (bias)
   tot    total concentration relative error per dataset (bias)
@@ -11,11 +11,18 @@ the global solutes):
   sigma  max |estimated sigma / true sigma - 1|
   rmsd   reported RMSD / true sigma, per dataset
 
+Diagnostic table (composition differences between datasets):
+  dtot   (total SC - total VR) / total VR per dataset
+  dfrac  max |fraction SC - fraction VR| over s windows, per dataset
+  grmsd  global RMSD / sigma, pooled over datasets from the SC models (the
+         global fit's prediction of each dataset), equal dataset weights
+
 Usage:  gfit_summary.py results.json [more.json] [--fig out.png] [--md out.md]
 """
 import argparse
 import json
 import math
+import os
 from collections import defaultdict
 
 import numpy as np
@@ -30,13 +37,13 @@ def collect(rows):
     return g
 
 
-def stats(runs):
+def stats(runs, kind="SC"):
     nds = len(runs[0]["true_scales"])
     fr, sm, tot, rm = [], [], [[] for _ in range(nds)], [[] for _ in range(nds)]
     scerr, sgerr = [], []
     for r in runs:
         for kk in range(nds):
-            key = "SC.%d" % kk
+            key = "%s.%d" % (kind, kk)
             for m in r["scores"].get(key, []):
                 fr.append(m["frac_maxerr"])
                 sm.append(m["s_mean_rel_err"])
@@ -61,14 +68,14 @@ def stats(runs):
     }
 
 
-def table(g, scen_order):
+def table(g, scen_order, kind="SC"):
     lines = ["| scenario | variant | n | max \\|Δfraction\\| | s̄ rel. err | total rel. err per dataset | total RMSE | max scale err | max σ̂ err | RMSD/σ per dataset |",
              "|---|---|---|---|---|---|---|---|---|---|"]
     for sn in scen_order:
         for vv in VORDER:
             if (sn, vv) not in g:
                 continue
-            st = stats(g[(sn, vv)])
+            st = stats(g[(sn, vv)], kind)
             lines.append("| %s | %s | %d | %.4f ± %.4f | %+.4f | %s | %.4f | %s | %s | %s |" % (
                 sn, vv, st["n"], st["frac"], st["frac_sd"], st["s"],
                 " / ".join("%+.4f" % t for t in st["tot"]), st["totR"],
@@ -78,7 +85,7 @@ def table(g, scen_order):
     return "\n".join(lines)
 
 
-def figure(g, scen_order, fn):
+def figure(g, scen_order, fn, kind="SC"):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -94,7 +101,7 @@ def figure(g, scen_order, fn):
             vals, errs = [], []
             for sn in scen_order:
                 if (sn, vv) in g:
-                    st = stats(g[(sn, vv)])
+                    st = stats(g[(sn, vv)], kind)
                     vals.append(st[key])
                     errs.append(st.get(key + "_sd", 0.0))
                 else:
@@ -112,10 +119,45 @@ def figure(g, scen_order, fn):
     axes[0].legend(ncol=4, fontsize=9)
     axes[-1].set_xticks(x)
     axes[-1].set_xticklabels(scen_order, rotation=30, ha="right", fontsize=8)
-    fig.suptitle("Global fit options vs. truth (real us_mpi_analysis; mean ± SD over seeds)\n"
-                 "none = defaults, W = gfit_weight, S = gfit_scale, WS = both")
+    fig.suptitle("Global fit options vs. truth, %s models (real us_mpi_analysis; mean ± SD "
+                 "over seeds)\nnone = defaults, W = gfit_weight, S = gfit_scale, WS = both" % kind)
     fig.tight_layout()
     fig.savefig(fn, dpi=110)
+
+
+def diag_stats(runs):
+    nds = len(runs[0]["true_scales"])
+    dtot, dfr = [[] for _ in range(nds)], [[] for _ in range(nds)]
+    gr = []
+    for r in runs:
+        sc_rm = []
+        for kk in range(nds):
+            for msc, mvr in zip(r["scores"].get("SC.%d" % kk, []),
+                                r["scores"].get("VR.%d" % kk, [])):
+                tsc, tvr = 1.0 + msc["total_rel_err"], 1.0 + mvr["total_rel_err"]
+                dtot[kk].append(tsc / tvr - 1.0)
+                dfr[kk].append(max(abs(a - b) for a, b in zip(msc["frac_err"], mvr["frac_err"])))
+            m = r["scores"].get("SC.%d" % kk, [])
+            if m:
+                sc_rm.append(np.mean([x["rmsd"] ** 2 for x in m]))
+        sig2 = np.mean(np.square(r["true_sigmas"]))
+        gr.append(math.sqrt(np.mean(sc_rm) / sig2))
+    return {"n": len(runs), "dtot": [float(np.mean(x)) for x in dtot],
+            "dfrac": [float(np.mean(x)) for x in dfr], "grmsd": float(np.mean(gr))}
+
+
+def diag_table(g, scen_order):
+    lines = ["| scenario | variant | n | (SC−VR)/VR total per dataset | max \\|Δfraction SC−VR\\| per dataset | global RMSD/σ |",
+             "|---|---|---|---|---|---|"]
+    for sn in scen_order:
+        for vv in VORDER:
+            if (sn, vv) not in g:
+                continue
+            st = diag_stats(g[(sn, vv)])
+            lines.append("| %s | %s | %d | %s | %s | %.3f |" % (
+                sn, vv, st["n"], " / ".join("%+.4f" % x for x in st["dtot"]),
+                " / ".join("%.4f" % x for x in st["dfrac"]), st["grmsd"]))
+    return "\n".join(lines)
 
 
 def main():
@@ -132,12 +174,17 @@ def main():
     for r in rows:
         if r["scenario"] not in scen_order:
             scen_order.append(r["scenario"])
-    md = table(g, scen_order)
+    md = "\n\n".join([
+        "### SC models (global solutes scaled to each dataset)", table(g, scen_order, "SC"),
+        "### VR models (global solutes refit to each dataset)", table(g, scen_order, "VR"),
+        "### Diagnostic: SC vs. VR and global RMSD", diag_table(g, scen_order)])
     print(md)
     if args.md:
         open(args.md, "w").write(md + "\n")
     if args.fig:
-        figure(g, scen_order, args.fig)
+        figure(g, scen_order, args.fig, "SC")
+        base, ext = os.path.splitext(args.fig)
+        figure(g, scen_order, base + "_vr" + ext, "VR")
 
 
 if __name__ == "__main__":

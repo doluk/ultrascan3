@@ -69,6 +69,15 @@ SCENARIOS = {
     "D2_ti_noise_unfitted": [ds("gfA", 1.0, ti=0.004), ds("gfB", 0.3, ti=0.004)],
     "D3_very_dilute_conc_err": [ds("gfA", 1.0), ds("gfB", 0.03, conc_factor=0.9)],
     "D4_slow_low_info": [ds("gfA", 1.0), ds("gfB", 0.5, conc_factor=1.1, rpm=15000)],
+    # G: composition differs between datasets (S/WS assume the same)
+    "G1_extra_species_in_A": [ds("gfA", 1.0, extra=0.10), ds("gfB", 1.0)],
+    "G2_three_extra_in_C": [ds("gfA", 1.0), ds("gfB", 1.0), ds("gfC", 1.0, extra=0.10)],
+    "G3_three_extra_in_C_dilute": [ds("gfA", 1.0), ds("gfB", 1.0),
+                                   ds("gfC", 0.3, extra=0.10)],
+    "G4_three_extra_in_C_slow": [ds("gfA", 1.0), ds("gfB", 1.0),
+                                 ds("gfC", 1.0, extra=0.10, rpm=30000)],
+    "G5_three_extra_in_A_loaded": [ds("gfA", 1.0, extra=0.10), ds("gfB", 0.3),
+                                   ds("gfC", 0.3, rpm=30000)],
 }
 EXTRA_SCEN = {
     # Monte Carlo with both options
