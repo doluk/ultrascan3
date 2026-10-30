@@ -21,6 +21,9 @@
 //!                  applied to the noiseless signal (default 0: linear detector)
 //!   odlim=<OD>     ODlimit written to the edit (default 1.5)
 //!   agg=<frac>     add a 150 S aggregate with this fraction of the total signal
+//!   extra=<frac>   add a 9 S species (f/f0 1.4) with this fraction of the signal
+//!   ti=<OD>        add time-invariant noise of this amplitude (same radial
+//!                  pattern in every scan, not fitted in a global fit)
 
 #include <QtCore>
 #include <cmath>
@@ -52,6 +55,8 @@ double       kNoiseSigma = 0.004;
 double       kStray      = 0.0;
 double       kODlimit    = 1.5;
 double       kAggFrac    = 0.0;
+double       kExtraFrac  = 0.0;
+double       kTiAmp      = 0.0;
 const int    kScans      = 30; // Default scan count
 const double kRadiusLo   = 5.95;
 const double kRadiusHi   = 7.15;
@@ -177,7 +182,16 @@ US_Model sample_model( double scale )
       comp.signal_concentration = 0.95 * kAggFrac * scale;
       model.components << comp;
    }
-   double       fmain = 1.0 - kAggFrac;
+   if ( kExtraFrac > 0.0 )
+   {  // Species present only in the data sets that ask for it
+      US_Model::SimulationComponent comp;
+      comp.s                    = 9.0e-13;
+      comp.f_f0                 = 1.4;
+      comp.vbar20               = kVbar20;
+      comp.signal_concentration = 0.95 * kExtraFrac * scale;
+      model.components << comp;
+   }
+   double       fmain = 1.0 - kAggFrac - kExtraFrac;
    for ( int ii = 0; ii < 3; ii++ )
    {
       US_Model::SimulationComponent comp;
@@ -255,6 +269,15 @@ int write_data( const QString& outdir, const QString& runID, int cell, uint64_t 
    // Copy simulation plus noise into the raw radial grid
    int offset = US_DataIO::index( raw.xvalues, edata.xvalues[0] );
    US_Math2::randomize( (uint) seed );
+
+   // Time-invariant noise:  a smooth and a random radial pattern, the same
+   //  in every scan
+   QVector<double> tinoise( raw.pointCount(), 0.0 );
+   for ( int rr = 0; rr < raw.pointCount() && kTiAmp > 0.0; rr++ )
+   {
+      tinoise[rr] = kTiAmp * ( 0.6 * sin( 2.0 * M_PI * raw.xvalues[rr] / 0.13 )
+                               + 0.4 * US_Math2::box_muller( 0.0, 1.0 ) );
+   }
    for ( int ss = 0; ss < raw.scanCount(); ss++ )
    {
       for ( int rr = 0; rr < raw.pointCount(); rr++ )
@@ -265,7 +288,7 @@ int write_data( const QString& outdir, const QString& runID, int cell, uint64_t 
          {  // Stray light:  the detector reads too low an OD at high OD
             value = -log10( ( pow( 10.0, -value ) + kStray ) / ( 1.0 + kStray ) );
          }
-         raw.scanData[ss].rvalues[rr] = value + US_Math2::box_muller( 0.0, kNoiseSigma );
+         raw.scanData[ss].rvalues[rr] = value + tinoise[rr] + US_Math2::box_muller( 0.0, kNoiseSigma );
       }
    }
 
@@ -363,6 +386,14 @@ int main( int argc, char* argv[] )
          {
             kAggFrac = args[ii].mid( 4 ).toDouble( &argsok );
          }
+         else if ( args[ii].startsWith( "extra=" ) )
+         {
+            kExtraFrac = args[ii].mid( 6 ).toDouble( &argsok );
+         }
+         else if ( args[ii].startsWith( "ti=" ) )
+         {
+            kTiAmp = args[ii].mid( 3 ).toDouble( &argsok );
+         }
          else
          {
             argsok = false;
@@ -386,6 +417,7 @@ int main( int argc, char* argv[] )
    fprintf( stderr,
             "usage: %s data <outdir> <runID> <cell> <seed> <scale> [scans=<n>] [nobottom]\n"
             "         [rpm=<rpm>] [sigma=<OD>] [stray=<frac>] [odlim=<OD>] [agg=<frac>]\n"
+            "         [extra=<frac>] [ti=<OD>]\n"
             "       %s cgrid <outdir> <filename>\n",
             argv[0],
             argv[0] );

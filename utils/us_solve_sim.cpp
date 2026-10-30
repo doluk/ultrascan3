@@ -250,6 +250,7 @@ if(thrnrank<2) DbgLv(1) << "CR:zthr lthr mxod mfac"
    //----------------------------------------------------------
    bool tikreg   = ( sim_vals.alpha != 0.0 );
    int  narows   = tikreg ? ( ntotal + nsolutes ) : ntotal;
+   sim_vals.dscales.fill( 1.0, dataset_count );  // Unless fitted below
 
    // Set up and clear work vectors
    int  navals   = narows * nsolutes;   // Size of "A" matrix
@@ -1306,10 +1307,34 @@ DbgLv(2) << "   CR:210  rss now" << US_Memory::rss_now() << "thrn" << thrnrank;
 DbgLv(1) << "no_ti_or_ri: CR: sv_nnls_a size" << sv_nnls_a.size() << nnls_a.size();
       }
 
+      // Global fit with data set weights and/or fitted signal scales
+      QVector<int>    drows;
+      QVector<double> dweights;
+      bool            glob_scale  = false;
+      bool            glob_weight = false;
+
+      for ( int ee = offset; ee < lim_offs; ee++ )
+      {
+         DataSet* dset = data_sets[ee];
+         drows << dset->run_data.scanCount() * dset->run_data.pointCount();
+         dweights << ( ( dset->fit_weight > 0.0 ) ? dset->fit_weight : 1.0 );
+         glob_scale  = glob_scale || dset->fit_scale;
+         glob_weight = glob_weight || ( dweights.last() != 1.0 );
+      }
+
+      bool glob_ws = ( dataset_count > 1 && !banddthr && ( glob_scale || glob_weight ) );
+
 //DebugTime("BEG:clcr-nl");
-      int nnlsrc = US_Math2::nnls(
-         nnls_a.data(), narows, narows, nsolutes, nnls_b.data(), nnls_x.data(), nullptr, nullptr, nullptr, nullptr, 0, &abort );
+      int nnlsrc = glob_ws
+         ? nnls_global( drows, dweights, glob_scale, nsolutes, narows, nnls_a, nnls_b, nnls_x, sim_vals.dscales, &abort )
+         : US_Math2::nnls(
+              nnls_a.data(), narows, narows, nsolutes, nnls_b.data(), nnls_x.data(), nullptr, nullptr, nullptr, nullptr, 0, &abort );
       //DebugTime("END:clcr-nl");
+
+      if ( glob_ws && thrnrank < 2 )
+      {
+         DbgLv( 1 ) << "CR: global NNLS weights" << dweights << "fit scales" << glob_scale << "scales" << sim_vals.dscales;
+      }
 
       if ( nnlsrc == 1 )
       { // Iteration limit:  concentrations are feasible, but not optimal
@@ -1423,12 +1448,15 @@ if(soluval>1.0)
  DbgLv(1) << thrnrank << ":  SOLUVAL>1  ee nscans npoints" << ee << nscans << npoints
   << "idatamm" << idata->value(nscans/2,npoints/2);
 
+            // Signal scale of the data set (global fit), else 1.0
+            double dsoluval = soluval * sim_vals.dscales[ ee - offset ];
+
             for ( int ss = 0; ss < nscans; ss++, scnx++ )
             {
                for ( int rr = 0; rr < npoints; rr++ )
                {
                   sdata->scanData[ scnx ].rvalues[ rr ] +=
-                     ( soluval * idata->value( ss, rr ) );
+                     ( dsoluval * idata->value( ss, rr ) );
                }
             }
 DbgLv(2) << "   CR:231  rss now" << US_Memory::rss_now() << "thrn" << thrnrank;
@@ -2182,3 +2210,258 @@ DbgLv(1)<<"angle between two vectors: " << angle  << "sum1="<< sum1 <<"sum2="<< 
    return angle;
 }
 
+
+// Compute concentrations by NNLS over several data sets with a row weight
+//  and, optionally, a fitted signal scale for each data set
+int US_SolveSim::nnls_global( const QVector<int>&      drows,
+                              const QVector<double>&   weights,
+                              const bool               fit_scale,
+                              const int                nsolutes,
+                              const int                narows,
+                              QVector<double>&         nnls_a,
+                              QVector<double>&         nnls_b,
+                              QVector<double>&         nnls_x,
+                              QVector<double>&         dscales,
+                              const std::atomic<bool>* abort_flag )
+{
+   const int ndsets = drows.size();
+   const int ncols  = nsolutes;
+   int       ndrows = 0;
+
+   for ( int ee = 0; ee < ndsets; ee++ )
+   {
+      ndrows += drows[ee];
+   }
+
+   // Blocks:  each data set, then any trailing (Tikhonov) rows
+   QVector<int> brow0; // First row of a block
+   QVector<int> brows; // Rows of a block
+   int          krow = 0;
+
+   for ( int ee = 0; ee < ndsets; ee++ )
+   {
+      brow0 << krow;
+      brows << drows[ee];
+      krow += drows[ee];
+   }
+
+   if ( narows > ndrows )
+   {
+      brow0 << ndrows;
+      brows << ( narows - ndrows );
+   }
+
+   const int nblks = brows.size();
+
+   // Reduce each block by a Householder QR:  R (kr x ncols, column-major)
+   //  and y = Q^T b (kr values), kr = min( rows, ncols )
+   QVector<QVector<double>> rmats( nblks );
+   QVector<QVector<double>> yvecs( nblks );
+   QVector<int>             kbrows( nblks );
+   QVector<double>          hvec;
+
+   for ( int bb = 0; bb < nblks; bb++ )
+   {
+      const int mm  = brows[bb];
+      const int kr  = qMin( mm, ncols );
+      double*   ab  = nnls_a.data() + brow0[bb]; // Block (lda = narows)
+      double*   bv  = nnls_b.data() + brow0[bb];
+      kbrows[bb]    = kr;
+      hvec.resize( mm );
+
+      for ( int jj = 0; jj < kr; jj++ )
+      {
+         if ( abort_flag && abort_flag->load( std::memory_order_relaxed ) )
+         {
+            return 3;
+         }
+         double* acol  = ab + static_cast<size_t>( jj ) * narows;
+         double  anorm = 0.0;
+
+         for ( int ii = jj; ii < mm; ii++ )
+         {
+            anorm += sq( acol[ii] );
+         }
+
+         anorm = sqrt( anorm );
+
+         if ( anorm == 0.0 )
+         {
+            continue;   // Zero column below the diagonal:  no reflection
+         }
+
+         // Householder vector v = a - alpha e1, alpha = -sign(a0) |a|
+         const double alpha = ( acol[jj] > 0.0 ) ? -anorm : anorm;
+         double       vnorm = 0.0;
+
+         for ( int ii = jj; ii < mm; ii++ )
+         {
+            hvec[ii] = acol[ii];
+         }
+
+         hvec[jj] -= alpha;
+
+         for ( int ii = jj; ii < mm; ii++ )
+         {
+            vnorm += sq( hvec[ii] );
+         }
+
+         acol[jj] = alpha;
+
+         for ( int ii = jj + 1; ii < mm; ii++ )
+         {
+            acol[ii] = 0.0;
+         }
+
+         // Apply ( I - 2 v v^T / v^T v ) to the remaining columns and b
+         for ( int cc = jj + 1; cc <= ncols; cc++ )
+         {
+            double* tcol = ( cc < ncols ) ? ( ab + static_cast<size_t>( cc ) * narows ) : bv;
+            double  dot  = 0.0;
+
+            for ( int ii = jj; ii < mm; ii++ )
+            {
+               dot += hvec[ii] * tcol[ii];
+            }
+
+            const double fac = 2.0 * dot / vnorm;
+
+            for ( int ii = jj; ii < mm; ii++ )
+            {
+               tcol[ii] -= fac * hvec[ii];
+            }
+         }
+      }
+
+      QVector<double>& rmat = rmats[bb];
+      QVector<double>& yvec = yvecs[bb];
+      rmat.fill( 0.0, kr * ncols );
+      yvec.fill( 0.0, kr );
+
+      for ( int cc = 0; cc < ncols; cc++ )
+      {
+         const double* acol = ab + static_cast<size_t>( cc ) * narows;
+
+         for ( int ii = 0; ii < qMin( cc + 1, kr ); ii++ )
+         {
+            rmat[cc * kr + ii] = acol[ii];
+         }
+      }
+
+      for ( int ii = 0; ii < kr; ii++ )
+      {
+         yvec[ii] = bv[ii];
+      }
+   }
+
+   // Alternate:  x by NNLS for given scales, then each scale in closed form
+   //  ( a_e = <y_e, R_e x> / |R_e x|^2 ), scales normalized to a geometric
+   //  mean of 1;  stop when the scales change by less than the tolerance
+   const int    maxiter = 200;
+   const double tol     = 1.0e-9;
+   int          mrows   = 0;
+
+   for ( int bb = 0; bb < nblks; bb++ )
+   {
+      mrows += kbrows[bb];
+   }
+
+   QVector<double> scales( nblks, 1.0 );
+   QVector<double> mmat( static_cast<qsizetype>( mrows ) * ncols );
+   QVector<double> mvec( mrows );
+   QVector<double> pvec( ncols );
+   nnls_x.fill( 0.0, ncols );
+   int  rc       = 0;
+   bool lastpass = !fit_scale;
+
+   for ( int iter = 0; iter < maxiter; iter++ )
+   {
+      // Stack the weighted, scaled blocks
+      int moff = 0;
+
+      for ( int bb = 0; bb < nblks; bb++ )
+      {
+         const int    kr   = kbrows[bb];
+         const double wgt  = ( bb < ndsets ) ? weights[bb] : 1.0;
+         const double fac  = wgt * scales[bb];
+         const double* rm  = rmats[bb].constData();
+
+         for ( int cc = 0; cc < ncols; cc++ )
+         {
+            for ( int ii = 0; ii < kr; ii++ )
+            {
+               mmat[static_cast<size_t>( cc ) * mrows + moff + ii] = fac * rm[cc * kr + ii];
+            }
+         }
+
+         for ( int ii = 0; ii < kr; ii++ )
+         {
+            mvec[moff + ii] = wgt * yvecs[bb][ii];
+         }
+
+         moff += kr;
+      }
+
+      rc = US_Math2::nnls(
+         mmat.data(), mrows, mrows, ncols, mvec.data(), nnls_x.data(), nullptr, nullptr, nullptr, nullptr, 0, abort_flag );
+
+      if ( lastpass || rc == 3 )
+      {
+         break;
+      }
+
+      // Update the data set scales for the new x
+      QVector<double> nscales = scales;
+      double          slog    = 0.0;
+
+      for ( int ee = 0; ee < ndsets; ee++ )
+      {
+         const int     kr = kbrows[ee];
+         const double* rm = rmats[ee].constData();
+         double        pp = 0.0;
+         double        py = 0.0;
+
+         for ( int ii = 0; ii < kr; ii++ )
+         {
+            double pval = 0.0;
+
+            for ( int cc = ii; cc < ncols; cc++ )
+            {
+               pval += rm[cc * kr + ii] * nnls_x[cc];
+            }
+
+            pp += sq( pval );
+            py += pval * yvecs[ee][ii];
+         }
+
+         if ( pp > 0.0 && py > 0.0 )
+         {
+            nscales[ee] = py / pp;
+         }
+
+         slog += log( nscales[ee] );
+      }
+
+      const double gmean = exp( slog / (double) ndsets );
+      double       maxch = 0.0;
+
+      for ( int ee = 0; ee < ndsets; ee++ )
+      {
+         nscales[ee] /= gmean;
+         maxch = qMax( maxch, qAbs( nscales[ee] / scales[ee] - 1.0 ) );
+         scales[ee] = nscales[ee];
+      }
+
+      // One more NNLS pass gives x for the final scales
+      lastpass = ( maxch < tol || iter == maxiter - 2 );
+   }
+
+   dscales.resize( ndsets );
+
+   for ( int ee = 0; ee < ndsets; ee++ )
+   {
+      dscales[ee] = scales[ee];
+   }
+
+   return rc;
+}

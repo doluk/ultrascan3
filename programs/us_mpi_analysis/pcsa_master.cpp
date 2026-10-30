@@ -1468,7 +1468,7 @@ DbgLv(1) << "wraux: mdesc" << mdesc;
 
       for ( int ee = 0; ee < data_sets.size(); ee++ )
       {  // Get average total concentration of data sets
-         avg_conc           += concentrations[ ee ];
+         avg_conc           += concentrations[ ee ] * gfit_scales.value( ee, 1.0 );
       }
 
       avg_conc           /= (double)( data_sets.size() );

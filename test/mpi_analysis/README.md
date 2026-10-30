@@ -28,6 +28,8 @@ and compare the fitted models with stored baselines.
 | `2dsa_customgrid` | custom grid (s × vbar) | 2 | exact |
 | `2dsa_global` | global fit, 2 datasets | 2 | exact |
 | `2dsa_global_mc` | global fit with Monte Carlo (3) | 2 | exact |
+| `2dsa_global_wscale` | global fit weighted by 1/σ with fitted signal scales (`gfit_weight`, `gfit_scale`) | 2 | exact |
+| `2dsa_global_wscale_mc` | the same with Monte Carlo (3) | 2 | exact |
 | `2dsa_composite` | composite job, 2 datasets | 2 | exact |
 | `2dsa_composite_mc` | composite job with Monte Carlo (3) | 2 | exact |
 | `2dsa_composite_meniscus` | composite job with meniscus fit | 2 | exact |

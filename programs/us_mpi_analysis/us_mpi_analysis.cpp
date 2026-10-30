@@ -9,6 +9,7 @@
 #include "us_revision.h"
 
 #include <QtCore/QString>
+#include <algorithm>
 #include <cstdio>
 #include <mpi.h>
 #ifdef Q_OS_WIN
@@ -65,6 +66,41 @@ int main( int argc, char* argv[] )
 }
 
 // Constructor
+// Noise standard deviation of edited data, estimated without a model from
+//  the second differences along the radius:  for white noise of standard
+//  deviation sigma, d2 = y[r-1] - 2 y[r] + y[r+1] has variance 6 sigma^2;
+//  the median absolute deviation (x 1.4826) makes the estimate robust to
+//  the few points where a boundary has curvature
+static double estimate_noise_sigma( US_DataIO::EditedData& edata )
+{
+   int               nscans  = edata.scanCount();
+   int               npoints = edata.pointCount();
+   QVector< double > d2s;
+   d2s.reserve( nscans * qMax( npoints - 2, 0 ) );
+
+   for ( int ss = 0; ss < nscans; ss++ )
+   {
+      for ( int rr = 1; rr < npoints - 1; rr++ )
+      {
+         d2s << ( edata.value( ss, rr - 1 ) - 2.0 * edata.value( ss, rr )
+                  + edata.value( ss, rr + 1 ) );
+      }
+   }
+
+   if ( d2s.isEmpty() )
+      return 0.0;
+
+   int nhalf = d2s.size() / 2;
+   std::nth_element( d2s.begin(), d2s.begin() + nhalf, d2s.end() );
+   double dmed = d2s[ nhalf ];
+
+   for ( int ii = 0; ii < d2s.size(); ii++ )
+      d2s[ ii ] = qAbs( d2s[ ii ] - dmed );
+
+   std::nth_element( d2s.begin(), d2s.begin() + nhalf, d2s.end() );
+   return 1.4826 * d2s[ nhalf ] / sqrt( 6.0 );
+}
+
 US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
 {
 //printf( "QT_LOGGING_RULES=\"%s\"\n", (char*)getenv("QT_LOGGING_RULES") );
@@ -663,6 +699,65 @@ if ( my_rank == 0 )
 DbgLv(2) << "ee" << ee << "odlim odmax" << odlim << odmax;
 
       maxods << odmax;
+   }
+
+   // Global fit options:  weight each data set by 1/sigma of its normalized
+   //  data (gfit_weight), fit a signal scale factor per data set that
+   //  corrects its given total concentration (gfit_scale)
+   gfit_weight  = US_Util::bool_flag( parameters[ "gfit_weight" ] );
+   gfit_scale   = US_Util::bool_flag( parameters[ "gfit_scale"  ] );
+
+   if ( ( gfit_weight || gfit_scale ) && ! is_global_fit )
+   {
+      if ( my_rank == 0 )
+         qDebug() << "*WARNING* gfit_weight/gfit_scale apply only to a "
+                     "global fit:  ignored";
+      gfit_weight  = false;
+      gfit_scale   = false;
+   }
+
+   if ( gfit_weight || gfit_scale )
+   {
+      QVector< double > sigmas( count_datasets, 1.0 );
+      double wsum   = 0.0;
+      double npsum  = 0.0;
+
+      for ( int ee = 0; ee < count_datasets; ee++ )
+      {  // Weight 1/sigma (normalized data units)
+         US_SolveSim::DataSet* ds = data_sets[ ee ];
+         double sigma      = estimate_noise_sigma( ds->run_data );
+
+         if ( gfit_weight  &&  sigma <= 0.0 )
+         {
+            abort( QString( "Global fit weighting: no noise estimate for "
+                            "dataset %1" ).arg( ee + 1 ) );
+         }
+
+         sigmas[ ee ]      = sigma;
+         ds->fit_weight    = gfit_weight ? ( 1.0 / sigma ) : 1.0;
+         ds->fit_scale     = gfit_scale;
+         wsum             += sq( ds->fit_weight ) * ds_points[ ee ];
+         npsum            += ds_points[ ee ];
+      }
+
+      // Normalize the weights to a point-weighted RMS of 1, so that the
+      //  weighted objective keeps the scale of the unweighted one
+      double wnorm  = sqrt( wsum / npsum );
+
+      for ( int ee = 0; ee < count_datasets; ee++ )
+      {
+         data_sets[ ee ]->fit_weight /= wnorm;
+
+         if ( my_rank == 0 )
+         {
+            qDebug() << "   Global fit dataset" << ee + 1
+                     << "total_concentration" << concentrations[ ee ]
+                     << "noise sigma" << sigmas[ ee ] * concentrations[ ee ]
+                     << "(normalized" << sigmas[ ee ] << ")"
+                     << "weight" << data_sets[ ee ]->fit_weight
+                     << "fit scale" << gfit_scale;
+         }
+      }
    }
 
    // Determine whether we need to re-do timestate files
@@ -1761,6 +1856,23 @@ DbgLv(1) << "WrO: wr_mrecs";
    }
 }
 
+// Variance of an NNLS fit, from copies of A and b taken before
+//  US_Math2::nnls overwrites them
+static double nnls_variance( const QVector< double >& amat,
+      const QVector< double >& bvec, const QVector< double >& xvec,
+      int narows, int ncols )
+{
+   double vsum = 0.0;
+   for ( int rr = 0; rr < narows; rr++ )
+   {
+      double sval = 0.0;
+      for ( int cc = 0; cc < ncols; cc++ )
+         sval += amat[ cc * narows + rr ] * xvec[ cc ];
+      vsum += sq( bvec[ rr ] - sval );
+   }
+   return vsum / (double)qMax( narows, 1 );
+}
+
 // Write global model outputs at the end of an iteration
 void US_MPI_Analysis::write_global( void )
 {
@@ -1787,6 +1899,20 @@ DbgLv(0) << "WrGlob: mciter mxdepth" << mc_iteration+1 << max_depth
       US_SolveSim solvesim( data_sets, my_rank, false );
       solvesim.calc_residuals( 0, data_sets.size(), wksim_vals, false,
                                &gl_nnls_a, &gl_nnls_b );
+      // Dataset variances of the global fit (normalized data units)
+      QVector< double > gl_vars = wksim_vals.variances;
+      // Signal scales of the data sets (fitted with gfit_scale, else 1.0)
+      gfit_scales          = wksim_vals.dscales;
+      gfit_scales.resize( data_sets.size() );
+      for ( int ee = 0; ee < data_sets.size(); ee++ )
+      {
+         gfit_scales[ ee ]    = ( wksim_vals.dscales.size() > ee )
+                                ? wksim_vals.dscales[ ee ] : 1.0;
+         if ( gfit_scale )
+            qDebug() << "   Global fit dataset" << ee + 1 << "signal scale"
+                     << gfit_scales[ ee ] << "fitted total_concentration"
+                     << concentrations[ ee ] * gfit_scales[ ee ];
+      }
 DbgLv(0) << "WrGlob:  glob recompute nsols" << wksim_vals.solutes.size()
  << "globrec A,b sizes" << gl_nnls_a.size() << gl_nnls_b.size();
       nsolutes             = gsim->solutes.size();
@@ -1796,10 +1922,21 @@ DbgLv(0) << "WrGlob:  glob recompute nsols" << wksim_vals.solutes.size()
       double avg_conc      = 0.0;
       for ( int ee = 0; ee < data_sets.size(); ee++ )
       {
-         avg_conc            += concentrations[ ee ];
+         avg_conc            += concentrations[ ee ] * gfit_scales[ ee ];
          sim.variances[ ee ]  = wksim_vals.variances[ ee ];
       }
       avg_conc            /= (double)( data_sets.size() );
+      {  // Superglobal variance pooled over datasets in data units
+         double vsum = 0.0;
+         int    nsum = 0;
+         for ( int ee = 0; ee < data_sets.size(); ee++ )
+         {
+            vsum += gl_vars[ ee ] * sq( concentrations[ ee ] )
+                    * (double)ds_points[ ee ];
+            nsum += ds_points[ ee ];
+         }
+         sim.variance = vsum / (double)qMax( nsum, 1 );
+      }
 
       for ( int cc = 0; cc < nsolutes; cc++ )
       {
@@ -1818,14 +1955,16 @@ DbgLv(0) << "WrGlob: dssize" << data_sets.size() << "concsize" << concentrations
          US_DataIO::EditedData* edata = &data_sets[ ee ]->run_data;
          current_dataset      = ee;
          meniscus_value       = edata->meniscus;
-         sim.variance         = sim.variances[ ee ];
          double concentration = concentrations[ ee ];
+         // Dataset variance in data units
+         sim.variance         = gl_vars[ ee ] * sq( concentration );
          nsolutes             = gsim->solutes.size();
 DbgLv(0) << "WrGlob:   currds" << ee << "concen" << concentration;
 
          for ( int cc = 0; cc < nsolutes; cc++ )
          {
-            sim.solutes[ cc ].c   = gsim->solutes[ cc ].c * concentration;
+            sim.solutes[ cc ].c   = gsim->solutes[ cc ].c * concentration
+                                  * gfit_scales[ ee ];
 DbgLv(0) << "WrGlob:     cc" << cc << "conc-in" << gsim->solutes[cc].c
  << "conc-out" << sim.solutes[cc].c;
          }
@@ -1852,8 +1991,12 @@ DbgLv(0) << "WrGlob:    ks kp nar nav" << kscans << kpoints << narows << navals;
          dset_matrices( ee, &nsolutes, nnls_a, nnls_b, c_used );
 
 DbgLv(0) << "WrGlob:    mats built; calling NNLS";
+         QVector< double > nnls_a0 = nnls_a;   // Keep A and b
+         QVector< double > nnls_b0 = nnls_b;
          US_Math2::nnls( nnls_a.data(), narows, narows, nsolutes,
                          nnls_b.data(), nnls_x.data() );
+         double refit_var = nnls_variance( nnls_a0, nnls_b0, nnls_x,
+                                           narows, nsolutes );
 
 DbgLv(0) << "WrGlob:     building solutes from nnls_x";
          for ( int cc = 0; cc < nsolutes; cc++ )
@@ -1893,6 +2036,7 @@ if(soluval>1.0) {
 DbgLv(0) << "WrGlob:    currds" << ee << "nsol ksol" << nsolutes << ksolutes;
 
          // Output the model refitted to individual dataset
+         wksim_vals.variance  = refit_var;
          write_model( wksim_vals, mdl_type, false );
       }
    }
@@ -1903,6 +2047,20 @@ DbgLv(0) << "WrGlob:    currds" << ee << "nsol ksol" << nsolutes << ksolutes;
       US_SolveSim solvesim( data_sets, my_rank, false );
       solvesim.calc_residuals( 0, data_sets.size(), wksim_vals, false,
                                &gl_nnls_a, &gl_nnls_b );
+      // Dataset variances of the global fit (normalized data units)
+      QVector< double > gl_vars = wksim_vals.variances;
+      // Signal scales of the data sets (fitted with gfit_scale, else 1.0)
+      gfit_scales          = wksim_vals.dscales;
+      gfit_scales.resize( data_sets.size() );
+      for ( int ee = 0; ee < data_sets.size(); ee++ )
+      {
+         gfit_scales[ ee ]    = ( wksim_vals.dscales.size() > ee )
+                                ? wksim_vals.dscales[ ee ] : 1.0;
+         if ( gfit_scale )
+            qDebug() << "   Global fit dataset" << ee + 1 << "signal scale"
+                     << gfit_scales[ ee ] << "fitted total_concentration"
+                     << concentrations[ ee ] * gfit_scales[ ee ];
+      }
 DbgLv(1) << "WrGlob:  glob recompute nsols" << wksim_vals.solutes.size()
  << "globrec A,b sizes" << gl_nnls_a.size() << gl_nnls_b.size();
 
@@ -1913,9 +2071,20 @@ DbgLv(1) << "WrGlob:  glob recompute nsols" << wksim_vals.solutes.size()
       double avg_conc      = 0.0;
       for ( int ee = 0; ee < data_sets.size(); ee++ )
       {
-         avg_conc            += concentrations[ ee ];
+         avg_conc            += concentrations[ ee ] * gfit_scales[ ee ];
       }
       avg_conc            /= (double)( data_sets.size() );
+      {  // Superglobal variance pooled over datasets in data units
+         double vsum = 0.0;
+         int    nsum = 0;
+         for ( int ee = 0; ee < data_sets.size(); ee++ )
+         {
+            vsum += gl_vars[ ee ] * sq( concentrations[ ee ] )
+                    * (double)ds_points[ ee ];
+            nsum += ds_points[ ee ];
+         }
+         sim.variance = vsum / (double)qMax( nsum, 1 );
+      }
 DbgLv(1) << "WrGlob:   avg_conc" << avg_conc;
 
       for ( int cc = 0; cc < nsolutes; cc++ )
@@ -1935,13 +2104,16 @@ DbgLv(1) << "WrGlob: dssize" << data_sets.size() << "concsize" << concentrations
          US_DataIO::EditedData* edata = &data_sets[ ee ]->run_data;
          current_dataset      = ee;
          meniscus_value       = edata->meniscus;
-         sim.variance         = sim.variances[ ee ];
          double concentration = concentrations[ ee ];
+         // Dataset variance in data units
+         sim.variance         = gl_vars[ ee ] * sq( concentration );
 DbgLv(1) << "WrGlob:   currds" << ee << "concen" << concentration;
+         nsolutes             = gsim->solutes.size();
 
          for ( int cc = 0; cc < nsolutes; cc++ )
          {
-            sim.solutes[ cc ].c   = gsim->solutes[ cc ].c * concentration;
+            sim.solutes[ cc ].c   = gsim->solutes[ cc ].c * concentration
+                                  * gfit_scales[ ee ];
 DbgLv(1) << "WrGlob:     cc" << cc << "conc-in" << gsim->solutes[cc].c
  << "conc-out" << sim.solutes[cc].c;
          }
@@ -1964,8 +2136,12 @@ DbgLv(1) << "WrGlob:     cc" << cc << "conc-in" << gsim->solutes[cc].c
 
          dset_matrices( ee, &nsolutes, nnls_a, nnls_b, c_used );
 
+         QVector< double > nnls_a0 = nnls_a;   // Keep A and b
+         QVector< double > nnls_b0 = nnls_b;
          US_Math2::nnls( nnls_a.data(), narows, narows, nsolutes,
                          nnls_b.data(), nnls_x.data() );
+         double refit_var = nnls_variance( nnls_a0, nnls_b0, nnls_x,
+                                           narows, nsolutes );
 
          for ( int cc = 0; cc < nsolutes; cc++ )
          {
@@ -1981,6 +2157,7 @@ DbgLv(1) << "WrGlob:     cc" << cc << "conc-in" << gsim->solutes[cc].c
          }
 
          // Output the model refitted to the individual dataset
+         wksim_vals.variance  = refit_var;
          write_model( wksim_vals, mdl_type, false );
 DbgLv(1) << "WrGlob:    currds" << ee << "nsol ksol" << nsolutes << ksolutes;
       }
@@ -1991,6 +2168,20 @@ DbgLv(1) << "WrGlob:    currds" << ee << "nsol ksol" << nsolutes << ksolutes;
       US_SolveSim solvesim( data_sets, my_rank, false );
       solvesim.calc_residuals( 0, data_sets.size(), wksim_vals, false,
                                &gl_nnls_a, &gl_nnls_b );
+      // Dataset variances of the global fit (normalized data units)
+      QVector< double > gl_vars = wksim_vals.variances;
+      // Signal scales of the data sets (fitted with gfit_scale, else 1.0)
+      gfit_scales          = wksim_vals.dscales;
+      gfit_scales.resize( data_sets.size() );
+      for ( int ee = 0; ee < data_sets.size(); ee++ )
+      {
+         gfit_scales[ ee ]    = ( wksim_vals.dscales.size() > ee )
+                                ? wksim_vals.dscales[ ee ] : 1.0;
+         if ( gfit_scale )
+            qDebug() << "   Global fit dataset" << ee + 1 << "signal scale"
+                     << gfit_scales[ ee ] << "fitted total_concentration"
+                     << concentrations[ ee ] * gfit_scales[ ee ];
+      }
       nsolutes             = gsim->zsolutes.size();
 DbgLv(1) << "WrGlob:  glob recompute nzsols" << wksim_vals.zsolutes.size() << nsolutes
  << "globrec A,b sizes" << gl_nnls_a.size() << gl_nnls_b.size();
@@ -2003,9 +2194,20 @@ DbgLv(1) << "WrGlob:   ALL dsum_b" << dsum_b;
       for ( int ee = 0; ee < data_sets.size(); ee++ )
       {
 //concentrations[ee] *= 0.5;
-         avg_conc            += concentrations[ ee ];
+         avg_conc            += concentrations[ ee ] * gfit_scales[ ee ];
       }
       avg_conc            /= (double)( data_sets.size() );
+      {  // Superglobal variance pooled over datasets in data units
+         double vsum = 0.0;
+         int    nsum = 0;
+         for ( int ee = 0; ee < data_sets.size(); ee++ )
+         {
+            vsum += gl_vars[ ee ] * sq( concentrations[ ee ] )
+                    * (double)ds_points[ ee ];
+            nsum += ds_points[ ee ];
+         }
+         sim.variance = vsum / (double)qMax( nsum, 1 );
+      }
 
       for ( int cc = 0; cc < nsolutes; cc++ )
       {
@@ -2028,13 +2230,16 @@ int kp=edata->pointCount();
 DbgLv(1) << "WrGlob:  ee" << ee << "AA-dset(m)" << edata->value(ks/2,kp/2);
          current_dataset      = ee;
          meniscus_value       = edata->meniscus;
-         sim.variance         = sim.variances[ ee ];
          double concentration = concentrations[ ee ];
+         // Dataset variance in data units
+         sim.variance         = gl_vars[ ee ] * sq( concentration );
 DbgLv(1) << "WrGlob:   currds" << ee << "concen" << concentration;
+         nsolutes             = gsim->zsolutes.size();
 
          for ( int cc = 0; cc < nsolutes; cc++ )
          {
-            sim.zsolutes[ cc ].c  = gsim->zsolutes[ cc ].c * concentration;
+            sim.zsolutes[ cc ].c  = gsim->zsolutes[ cc ].c * concentration
+                                  * gfit_scales[ ee ];
 DbgLv(1) << "WrGlob:     cc" << cc << "conc-in" << gsim->zsolutes[cc].c
  << "conc-out" << sim.zsolutes[cc].c;
          }
@@ -2065,8 +2270,12 @@ DbgLv(1) << "WrGlob:      ee" << ee << "dsum_b" << dsum_b
 dsum_b_all += dsum_b;
 
 DbgLv(1) << "WrGlob:    mats built; calling NNLS";
+         QVector< double > nnls_a0 = nnls_a;   // Keep A and b
+         QVector< double > nnls_b0 = nnls_b;
          US_Math2::nnls( nnls_a.data(), narows, narows, nsolutes,
                          nnls_b.data(), nnls_x.data() );
+         double refit_var = nnls_variance( nnls_a0, nnls_b0, nnls_x,
+                                           narows, nsolutes );
 
 DbgLv(1) << "WrGlob:     building solutes from nnls_x";
 double sum_sol=0.0;
@@ -2087,6 +2296,7 @@ DbgLv(1) << "WrGlob:    currds" << ee << "nsol ksol" << nsolutes << ksolutes
  << sim.zsolutes.size() << "sum_sol" << sum_sol;
 
          // Output the model refitted to individual dataset
+         wksim_vals.variance  = refit_var;
          write_model( wksim_vals, mdl_type, false );
       }
 DbgLv(1) << "WrGlob:     dsum_b_all" << dsum_b_all;

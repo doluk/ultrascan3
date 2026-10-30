@@ -63,6 +63,8 @@ class US_MPI_Analysis : public QObject
         bool glob_runid;         //!< Global run ID flag
         bool do_astfem;          //!< ASTFEM flag
         bool is_global_fit;      //!< Global fit flag
+        bool gfit_weight = false; //!< Global fit:  weight data sets by 1/sigma
+        bool gfit_scale  = false; //!< Global fit:  fit data set signal scales
         bool is_composite_job;   //!< Composite job flag
 
         MPI_Comm my_communicator; //!< MPI communicator
@@ -112,6 +114,7 @@ class US_MPI_Analysis : public QObject
         QVector< double > bottom_values;   //!< Bottom values
 
         QVector< double > concentrations;  //!< Concentrations
+        QVector< double > gfit_scales;     //!< Global fit signal scales
         QVector< double > maxods;          //!< Maximum OD values
         QVector< double > mc_data;         //!< Monte Carlo data
         QVector< double > sigmas;          //!< Sigma values

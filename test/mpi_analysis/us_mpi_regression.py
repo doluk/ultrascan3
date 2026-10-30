@@ -151,6 +151,18 @@ CASES = {
         "method": "2DSA", "datasets": [DS_A, DS_B], "np": 2,
         "params": dict(GRID_2DSA, mc_iterations="3"), "global_fit": True,
     },
+    "2dsa_global_wscale": {
+        # Global fit weighted by 1/sigma with fitted signal scales
+        "method": "2DSA", "datasets": [DS_A, DS_B], "np": 2,
+        "params": dict(GRID_2DSA, gfit_weight="1", gfit_scale="1"),
+        "global_fit": True,
+    },
+    "2dsa_global_wscale_mc": {
+        "method": "2DSA", "datasets": [DS_A, DS_B], "np": 2,
+        "params": dict(GRID_2DSA, mc_iterations="3", gfit_weight="1",
+                       gfit_scale="1"),
+        "global_fit": True,
+    },
     "2dsa_composite": {
         "method": "2DSA", "datasets": [DS_A, DS_B], "np": 2,
         "params": dict(GRID_2DSA),

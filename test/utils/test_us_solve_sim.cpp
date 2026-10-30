@@ -1015,6 +1015,355 @@ TEST_F( TestUSSolveSimCalcResiduals, TikhonovAfterNormCutKeepsColumnsAligned )
 
 namespace
 {
+TEST_F( TestUSSolveSimCalcResiduals, GlobalFitScaleCorrectsGivenConcentration )
+{
+   // Two data sets of the same geometry; the second holds 1.3 times the
+   //  signal of the first (its given total concentration is 1.3 too low).
+   //  With fitted scales the fit is exact, and scale * concentration
+   //  reproduces each data set (scales have a geometric mean of 1)
+   US_SolveSim::DataSet dset2 = dset;
+   dsets << &dset2;
+
+   US_SolveSim::Simulation input;
+   for ( double sval : { 2.0, 4.0, 6.0 } )
+   {
+      for ( double kval : { 1.2, 2.0 } )
+      {
+         input.solutes << US_Solute( sval * 1.0e-13, kval );
+      }
+   }
+   std::sort( input.solutes.begin(), input.solutes.end() );
+
+   const QVector<double> amatrix = basis( input );
+   const QVector<double> conc    = { 0.3, 0.0, 0.5, 0.0, 0.0, 0.2 };
+   const double          ratio   = 1.3;
+   for ( int kk = 0; kk < NTOTAL; kk++ )
+   {
+      double val = 0.0;
+      for ( int cc = 0; cc < conc.size(); cc++ )
+      {
+         val += conc[cc] * amatrix[cc * NTOTAL + kk];
+      }
+      dset.run_data.scanData[kk / NPOINTS].rvalues[kk % NPOINTS]  = val;
+      dset2.run_data.scanData[kk / NPOINTS].rvalues[kk % NPOINTS] = ratio * val;
+   }
+
+   // Unscaled:  the shared concentrations cannot fit both data sets
+   US_SolveSim::Simulation sim0 = input;
+   sim0.noisflag                = 0;
+   {
+      US_SolveSim solvesim( dsets, 1, false );
+      solvesim.calc_residuals( 0, 2, sim0 );
+   }
+   EXPECT_GT( sim0.variance, 1e-4 );
+   ASSERT_EQ( sim0.dscales.size(), 2 );
+   EXPECT_EQ( sim0.dscales[0], 1.0 );
+   EXPECT_EQ( sim0.dscales[1], 1.0 );
+
+   dset.fit_scale  = true;
+   dset2.fit_scale = true;
+   US_SolveSim::Simulation sim = input;
+   sim.noisflag                = 0;
+   US_SolveSim solvesim( dsets, 1, false );
+   solvesim.calc_residuals( 0, 2, sim );
+
+   EXPECT_LT( sim.variance, 1e-20 );
+   ASSERT_EQ( sim.dscales.size(), 2 );
+   EXPECT_NEAR( sim.dscales[1] / sim.dscales[0], ratio, 1e-9 );
+   EXPECT_NEAR( sim.dscales[0] * sim.dscales[1], 1.0, 1e-12 );
+   QVector<double> fconc = fittedConc( input.solutes, sim.solutes );
+   for ( int cc = 0; cc < conc.size(); cc++ )
+   {
+      EXPECT_NEAR( fconc[cc] * sim.dscales[0], conc[cc], 1e-9 );
+   }
+   // The simulation of each data set carries its scale
+   EXPECT_NEAR( sim.sim_data.value( NSCANS + NSCANS / 2, NPOINTS / 2 ),
+                dset2.run_data.value( NSCANS / 2, NPOINTS / 2 ),
+                1e-9 );
+}
+
+TEST_F( TestUSSolveSimCalcResiduals, GlobalFitEqualWeightsDoNotChangeFit )
+{
+   // Equal weights (not 1.0) take the weighted path; the solution must
+   //  equal the unweighted fit
+   US_SolveSim::DataSet dset2 = dset;
+   dsets << &dset2;
+
+   US_SolveSim::Simulation input;
+   for ( double sval : { 1.5, 3.0, 4.5, 6.0, 7.5 } )
+   {
+      for ( double kval : { 1.2, 1.8, 2.4 } )
+      {
+         input.solutes << US_Solute( sval * 1.0e-13, kval );
+      }
+   }
+   std::sort( input.solutes.begin(), input.solutes.end() );
+
+   const QVector<double> amatrix = basis( input );
+   std::mt19937          rng( 11 );
+   std::normal_distribution<double> noise( 0.0, 0.01 );
+   for ( int kk = 0; kk < NTOTAL; kk++ )
+   {
+      double val = 0.4 * amatrix[2 * NTOTAL + kk] + 0.3 * amatrix[9 * NTOTAL + kk];
+      dset.run_data.scanData[kk / NPOINTS].rvalues[kk % NPOINTS]  = val + noise( rng );
+      dset2.run_data.scanData[kk / NPOINTS].rvalues[kk % NPOINTS] = 0.8 * val + noise( rng );
+   }
+
+   US_SolveSim::Simulation ref = input;
+   ref.noisflag                = 0;
+   {
+      US_SolveSim solvesim( dsets, 1, false );
+      solvesim.calc_residuals( 0, 2, ref );
+   }
+
+   dset.fit_weight  = 3.0;
+   dset2.fit_weight = 3.0;
+   US_SolveSim::Simulation sim = input;
+   sim.noisflag                = 0;
+   US_SolveSim solvesim( dsets, 1, false );
+   solvesim.calc_residuals( 0, 2, sim );
+
+   EXPECT_LT( maxDiff( fittedConc( input.solutes, sim.solutes ), fittedConc( input.solutes, ref.solutes ) ), 1e-9 );
+   EXPECT_NEAR( sim.variance, ref.variance, 1e-12 );
+}
+
+// ============================================================================
+// NNLS OVER SEVERAL DATA SETS WITH WEIGHTS AND FITTED SCALES (nnls_global)
+// ============================================================================
+
+namespace
+{
+// Smooth positive column-major test matrix (rows x cols)
+QVector<double> testMatrix( int nrows, int ncols, unsigned seed )
+{
+   std::mt19937                           rng( seed );
+   std::uniform_real_distribution<double> uni( 0.2, 1.0 );
+   QVector<double>                        amat( nrows * ncols );
+   for ( int cc = 0; cc < ncols; cc++ )
+   {
+      double ctr = uni( rng ) * nrows;
+      double wid = 0.1 * nrows + uni( rng ) * 0.3 * nrows;
+      for ( int rr = 0; rr < nrows; rr++ )
+      {
+         amat[cc * nrows + rr] = 0.5 * erfc( ( ctr - rr ) / wid ) + 0.05 * uni( rng );
+      }
+   }
+   return amat;
+}
+
+// Plain NNLS reference of A (rows x cols) and b
+QVector<double> plainNnls( QVector<double> amat, QVector<double> bvec, int nrows, int ncols )
+{
+   QVector<double> xvec( ncols, 0.0 );
+   US_Math2::nnls( amat.data(), nrows, nrows, ncols, bvec.data(), xvec.data() );
+   return xvec;
+}
+
+double maxAbsDiff( const QVector<double>& aval, const QVector<double>& bval )
+{
+   double diff = 0.0;
+   for ( int ii = 0; ii < aval.size(); ii++ )
+   {
+      diff = qMax( diff, fabs( aval[ii] - bval[ii] ) );
+   }
+   return diff;
+}
+}
+
+TEST( TestUSSolveSimNnlsGlobal, UnitWeightsEqualPlainNnls )
+{
+   const int       ncols = 12;
+   QVector<int>    drows = { 300, 200 };
+   const int       nrows = 500;
+   QVector<double> amat  = testMatrix( nrows, ncols, 1 );
+   std::mt19937    rng( 2 );
+   std::normal_distribution<double> noise( 0.0, 0.02 );
+   QVector<double> bvec( nrows );
+   for ( int rr = 0; rr < nrows; rr++ )
+   {
+      bvec[rr] = 0.7 * amat[3 * nrows + rr] + 0.2 * amat[8 * nrows + rr] + noise( rng );
+   }
+
+   QVector<double> ref = plainNnls( amat, bvec, nrows, ncols );
+   QVector<double> aw = amat, bw = bvec, xvec, scales;
+   int rc = US_SolveSim::nnls_global( drows, { 1.0, 1.0 }, false, ncols, nrows, aw, bw, xvec, scales );
+
+   EXPECT_EQ( rc, 0 );
+   EXPECT_LT( maxAbsDiff( xvec, ref ), 1e-10 );
+   ASSERT_EQ( scales.size(), 2 );
+   EXPECT_EQ( scales[0], 1.0 );
+   EXPECT_EQ( scales[1], 1.0 );
+}
+
+TEST( TestUSSolveSimNnlsGlobal, WeightsEqualRowScaling )
+{
+   const int       ncols = 10;
+   QVector<int>    drows = { 150, 250, 100 };
+   QVector<double> wts   = { 0.5, 2.0, 1.3 };
+   const int       nrows = 500;
+   QVector<double> amat  = testMatrix( nrows, ncols, 3 );
+   std::mt19937    rng( 4 );
+   std::normal_distribution<double> noise( 0.0, 0.05 );
+   QVector<double> bvec( nrows );
+   for ( int rr = 0; rr < nrows; rr++ )
+   {
+      bvec[rr] = 0.4 * amat[1 * nrows + rr] + 0.6 * amat[6 * nrows + rr] + noise( rng );
+   }
+
+   // Reference:  rows multiplied by their data set weight
+   QVector<double> as = amat, bs = bvec;
+   int             r0 = 0;
+   for ( int ee = 0; ee < drows.size(); ee++ )
+   {
+      for ( int rr = r0; rr < r0 + drows[ee]; rr++ )
+      {
+         bs[rr] *= wts[ee];
+         for ( int cc = 0; cc < ncols; cc++ )
+         {
+            as[cc * nrows + rr] *= wts[ee];
+         }
+      }
+      r0 += drows[ee];
+   }
+   QVector<double> ref = plainNnls( as, bs, nrows, ncols );
+
+   QVector<double> aw = amat, bw = bvec, xvec, scales;
+   US_SolveSim::nnls_global( drows, wts, false, ncols, nrows, aw, bw, xvec, scales );
+   EXPECT_LT( maxAbsDiff( xvec, ref ), 1e-10 );
+}
+
+TEST( TestUSSolveSimNnlsGlobal, RecoversScalesOfNoiselessData )
+{
+   // b_e = s_e A_e x:  the fit recovers s / gmean(s) and x * gmean(s)
+   const int       ncols = 15;
+   QVector<int>    drows = { 400, 300, 250 };
+   QVector<double> strue = { 1.0, 1.21, 0.7 };
+   const int       nrows = 950;
+   QVector<double> amat  = testMatrix( nrows, ncols, 5 );
+   QVector<double> xtrue( ncols, 0.0 );
+   xtrue[2]  = 0.3;
+   xtrue[7]  = 0.5;
+   xtrue[12] = 0.2;
+   QVector<double> bvec( nrows, 0.0 );
+   int             r0 = 0;
+   for ( int ee = 0; ee < drows.size(); ee++ )
+   {
+      for ( int rr = r0; rr < r0 + drows[ee]; rr++ )
+      {
+         for ( int cc = 0; cc < ncols; cc++ )
+         {
+            bvec[rr] += strue[ee] * xtrue[cc] * amat[cc * nrows + rr];
+         }
+      }
+      r0 += drows[ee];
+   }
+   const double gmean = cbrt( strue[0] * strue[1] * strue[2] );
+
+   QVector<double> aw = amat, bw = bvec, xvec, scales;
+   US_SolveSim::nnls_global( drows, { 1.0, 2.0, 0.5 }, true, ncols, nrows, aw, bw, xvec, scales );
+
+   ASSERT_EQ( scales.size(), 3 );
+   for ( int ee = 0; ee < 3; ee++ )
+   {
+      EXPECT_NEAR( scales[ee], strue[ee] / gmean, 1e-7 );
+   }
+   for ( int cc = 0; cc < ncols; cc++ )
+   {
+      EXPECT_NEAR( xvec[cc], xtrue[cc] * gmean, 1e-7 );
+   }
+}
+
+TEST( TestUSSolveSimNnlsGlobal, TrailingRowsHaveUnitWeightAndScale )
+{
+   // Tikhonov rows after the data set rows:  weight 1, never scaled
+   const int       ncols = 8;
+   QVector<int>    drows = { 120, 80 };
+   QVector<double> wts   = { 2.0, 0.5 };
+   const int       ndrow = 200;
+   const int       nrows = ndrow + ncols;
+   QVector<double> amat  = testMatrix( ndrow, ncols, 6 );
+   QVector<double> afull( nrows * ncols, 0.0 );
+   for ( int cc = 0; cc < ncols; cc++ )
+   {
+      for ( int rr = 0; rr < ndrow; rr++ )
+      {
+         afull[cc * nrows + rr] = amat[cc * ndrow + rr];
+      }
+      afull[cc * nrows + ndrow + cc] = 0.3;   // Diagonal regularization
+   }
+   QVector<double> bvec( nrows, 0.0 );
+   for ( int rr = 0; rr < ndrow; rr++ )
+   {
+      bvec[rr] = 0.5 * amat[2 * ndrow + rr] + 0.5 * amat[5 * ndrow + rr] + 0.01 * sin( rr );
+   }
+
+   QVector<double> as = afull, bs = bvec;
+   for ( int rr = 0; rr < ndrow; rr++ )
+   {
+      double wt = ( rr < drows[0] ) ? wts[0] : wts[1];
+      bs[rr] *= wt;
+      for ( int cc = 0; cc < ncols; cc++ )
+      {
+         as[cc * nrows + rr] *= wt;
+      }
+   }
+   QVector<double> ref = plainNnls( as, bs, nrows, ncols );
+
+   QVector<double> aw = afull, bw = bvec, xvec, scales;
+   US_SolveSim::nnls_global( drows, wts, false, ncols, nrows, aw, bw, xvec, scales );
+   EXPECT_LT( maxAbsDiff( xvec, ref ), 1e-10 );
+   EXPECT_EQ( scales.size(), 2 );
+}
+
+TEST( TestUSSolveSimNnlsGlobal, BlockShorterThanColumns )
+{
+   // A data set with fewer rows than solutes
+   const int       ncols = 20;
+   QVector<int>    drows = { 300, 12 };
+   const int       nrows = 312;
+   QVector<double> amat  = testMatrix( nrows, ncols, 7 );
+   QVector<double> bvec( nrows );
+   for ( int rr = 0; rr < nrows; rr++ )
+   {
+      bvec[rr] = 0.6 * amat[4 * nrows + rr] + 0.01 * cos( 0.7 * rr );
+   }
+   QVector<double> wts = { 1.0, 4.0 };
+   QVector<double> as = amat, bs = bvec;
+   for ( int rr = 300; rr < nrows; rr++ )
+   {
+      bs[rr] *= 4.0;
+      for ( int cc = 0; cc < ncols; cc++ )
+      {
+         as[cc * nrows + rr] *= 4.0;
+      }
+   }
+   QVector<double> ref = plainNnls( as, bs, nrows, ncols );
+
+   QVector<double> aw = amat, bw = bvec, xvec, scales;
+   US_SolveSim::nnls_global( drows, wts, false, ncols, nrows, aw, bw, xvec, scales );
+   EXPECT_LT( maxAbsDiff( xvec, ref ), 1e-10 );
+
+   // With fitted scales the objective is not above that of fixed scales
+   QVector<double> aw2 = amat, bw2 = bvec, xs, ss;
+   US_SolveSim::nnls_global( drows, wts, true, ncols, nrows, aw2, bw2, xs, ss );
+   auto objective = [&]( const QVector<double>& xv, const QVector<double>& sv )
+   {
+      double obj = 0.0;
+      for ( int rr = 0; rr < nrows; rr++ )
+      {
+         int    ee  = ( rr < 300 ) ? 0 : 1;
+         double val = 0.0;
+         for ( int cc = 0; cc < ncols; cc++ )
+         {
+            val += amat[cc * nrows + rr] * xv[cc];
+         }
+         obj += sq( wts[ee] * ( bvec[rr] - sv[ee] * val ) );
+      }
+      return obj;
+   };
+   EXPECT_LE( objective( xs, ss ), objective( xvec, { 1.0, 1.0 } ) * ( 1.0 + 1e-12 ) );
+}
+
 // All outputs of a calc_residuals, appended to a vector of values
 void appendResult( QVector<double>& out, const US_SolveSim::Simulation& sim )
 {

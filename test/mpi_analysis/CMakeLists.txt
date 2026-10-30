@@ -40,6 +40,8 @@ set(US_MPI_CASES
     2dsa_customgrid
     2dsa_global
     2dsa_global_mc
+    2dsa_global_wscale
+    2dsa_global_wscale_mc
     2dsa_composite
     2dsa_composite_pmasters
     2dsa_composite_pmasters_np4

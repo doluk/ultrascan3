@@ -58,6 +58,12 @@ class US_UTIL_EXTERN US_SolveSim : public QObject
 
             int               solute_type;        //!< Solute type (0,1,2)
             bool              manual;             //!< visc.,dens. manual
+
+            //! Global fit:  NNLS weight of the rows of this data set
+            //!  (1/sigma of its data); 1.0 for an unweighted fit
+            double            fit_weight = 1.0;
+            //! Global fit:  fit a signal scale factor for this data set
+            bool              fit_scale  = false;
     };
 
     //! Class for communicating simulation
@@ -71,6 +77,8 @@ class US_UTIL_EXTERN US_SolveSim : public QObject
          double                xnormsq;    //!< X-norm squared
          double                alpha;      //!< Tikhonov regularization factor
          QVector< double >     variances;  //!< Variances for data sets
+         QVector< double >     dscales;    //!< Signal scale of each data set
+                                           //!<  (fitted, else 1.0)
          QVector< double >     ti_noise;   //!< Time-invariant noise 
          QVector< double >     ri_noise;   //!< Radially-invariant noise
          QVector< US_Solute >  solutes;    //!< Input/Output solutes
@@ -120,6 +128,39 @@ class US_UTIL_EXTERN US_SolveSim : public QObject
     //! \param abort_flag Optional pointer to a flag that stops the NNLS
     //!                  solve (return code 3) when it becomes true
     //! \returns         Return code of US_Math2::nnls
+    //! \brief Non-negative least squares over several data sets with a
+    //!        weight for the rows of each data set and, optionally, a
+    //!        fitted signal scale factor for each data set
+    //!
+    //! Minimizes sum_e w_e^2 || b_e - a_e A_e x ||^2 over x >= 0 and, if
+    //! fit_scale, the scales a_e > 0 (geometric mean 1, which fixes the
+    //! scale shared by x and a).  Each data set block of A is reduced by a
+    //! Householder QR, so that the alternating solution of x (NNLS) and a
+    //! (closed form) works on small matrices.  Trailing rows not belonging
+    //! to a data set (Tikhonov rows) form a block of weight 1 and scale 1.
+    //!
+    //! \param drows     Rows of each data set block, in order
+    //! \param weights   Row weight w_e of each data set
+    //! \param fit_scale Flag to fit the scales a_e
+    //! \param nsolutes  Number of solutes (columns of A)
+    //! \param narows    Rows in each A column (data sets and trailing rows)
+    //! \param nnls_a    A matrix, column-major (overwritten)
+    //! \param nnls_b    B vector with narows values (overwritten)
+    //! \param nnls_x    Output concentrations (nsolutes values)
+    //! \param dscales   Output scale of each data set (1.0 if not fitted)
+    //! \param abort_flag Optional pointer to a flag that stops the solve
+    //! \returns         Return code of the last US_Math2::nnls
+    static int nnls_global( const QVector<int>&      drows,
+                            const QVector<double>&   weights,
+                            bool                     fit_scale,
+                            int                      nsolutes,
+                            int                      narows,
+                            QVector<double>&         nnls_a,
+                            QVector<double>&         nnls_b,
+                            QVector<double>&         nnls_x,
+                            QVector<double>&         dscales,
+                            const std::atomic<bool>* abort_flag = nullptr );
+
     static int nnls_noise( int                      noisflag,
                            const QVector<int>&      nscans,
                            const QVector<int>&      npoints,
