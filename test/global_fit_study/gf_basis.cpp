@@ -12,6 +12,10 @@
 //!       <out.json>
 //!       global calc_residuals over the grid with the given data (float64,
 //!       scan-major) and OD limits; writes the concentrations and variances
+//!   gf_basis sim <dir> <runID> <model.xml> <out-prefix>
+//!       simulates a model file (20,W) for the dataset; writes
+//!       <out-prefix>.data.bin and <out-prefix>.sim.bin (float64, scan-major)
+//!       and <out-prefix>.json (radii, scan times, ODlimit)
 //!
 //! The dataset setup follows us_mpi_analysis (initFromData, rotor stretch,
 //! edited bottom, generated timestate, s/D corrections).
@@ -21,6 +25,8 @@
 #include <cstdio>
 
 #include "us_astfem_math.h"
+#include "us_astfem_rsa.h"
+#include "us_model.h"
 #include "us_dataIO.h"
 #include "us_math2.h"
 #include "us_solute.h"
@@ -234,6 +240,74 @@ int do_fit( const QString& dir, const QStringList& runs, const QStringList& bfil
    qDeleteAll( owned );
    return 0;
 }
+int do_sim( const QString& dir, const QString& runID, const QString& mfile, const QString& prefix )
+{
+   QTemporaryDir        tmpdir;
+   US_SolveSim::DataSet dset;
+   if ( !load_dataset( dir, runID, dset, tmpdir ) )
+   {
+      return 1;
+   }
+   US_Model model;
+   if ( model.load( mfile ) != 0 )
+   {
+      fprintf( stderr, "cannot load model %s\n", qPrintable( mfile ) );
+      return 1;
+   }
+   model.update_coefficients();
+   // 20,W to experimental space, as US_SolveSim does
+   for ( int ii = 0; ii < model.components.size(); ii++ )
+   {
+      model.components[ii].s /= dset.s20w_correction;
+      model.components[ii].D /= dset.D20w_correction;
+   }
+   US_DataIO::EditedData& edata = dset.run_data;
+   US_DataIO::RawData     simdat;
+   US_AstfemMath::initSimData( simdat, edata, 0.0 );
+   US_Astfem_RSA astfem( model, dset.simparams );
+   astfem.calculate( simdat );
+
+   int             nsc = edata.scanCount();
+   int             npt = edata.pointCount();
+   QVector<double> dv, sv;
+   for ( int ss = 0; ss < nsc; ss++ )
+   {
+      for ( int rr = 0; rr < npt; rr++ )
+      {
+         dv << edata.value( ss, rr );
+         sv << simdat.value( ss, rr );
+      }
+   }
+   QFile fd( prefix + ".data.bin" );
+   fd.open( QIODevice::WriteOnly );
+   fd.write( (const char*) dv.data(), dv.size() * sizeof( double ) );
+   fd.close();
+   QFile fs( prefix + ".sim.bin" );
+   fs.open( QIODevice::WriteOnly );
+   fs.write( (const char*) sv.data(), sv.size() * sizeof( double ) );
+   fs.close();
+
+   QJsonObject meta;
+   QJsonArray  jr, jt;
+   for ( int rr = 0; rr < npt; rr++ )
+   {
+      jr << edata.radius( rr );
+   }
+   for ( int ss = 0; ss < nsc; ss++ )
+   {
+      jt << edata.scanData[ss].seconds;
+   }
+   meta["radius"]  = jr;
+   meta["seconds"] = jt;
+   meta["ODlimit"] = edata.ODlimit;
+   meta["nscans"]  = nsc;
+   meta["npoints"] = npt;
+   QFile fj( prefix + ".json" );
+   fj.open( QIODevice::WriteOnly );
+   fj.write( QJsonDocument( meta ).toJson() );
+   fj.close();
+   return 0;
+}
 } // namespace
 
 int main( int argc, char* argv[] )
@@ -249,9 +323,15 @@ int main( int argc, char* argv[] )
    {
       return do_fit( args[2], args[3].split( "," ), args[4].split( "," ), args[5].split( "," ), args[6] );
    }
+   if ( args.size() == 6 && args[1] == "sim" )
+   {
+      return do_sim( args[2], args[3], args[4], args[5] );
+   }
    fprintf( stderr,
             "usage: %s basis <dir> <runID> <out-prefix>\n"
-            "       %s fit <dir> <runIDs> <bfiles> <odlims> <out.json>\n",
+            "       %s fit <dir> <runIDs> <bfiles> <odlims> <out.json>\n"
+            "       %s sim <dir> <runID> <model.xml> <out-prefix>\n",
+            argv[0],
             argv[0],
             argv[0] );
    return 2;

@@ -17,7 +17,8 @@ concentrations, noise and detector behavior are known.
 | `nnls_study.py` | Monte Carlo study (100 replicates per scenario) of method variants on the exported basis. |
 | `validate_replica.py` | Checks that the Python replica in `nnls_study.py` reproduces the real `US_SolveSim` global fit. |
 | `ga_fitness_study.py` | GA multi-dataset fitness formulas vs. true candidate quality. |
-| `results/` | Raw JSON results and `e2e_table.md` (the full E2E table). |
+| `make_plots.py` | Runs each scenario once (seed 1) with both builds, simulates every output model on its dataset (`gf_basis sim`, US_Astfem_RSA) and writes `results/plots/models_<scenario>.png` (pseudo-3D s vs. f/f0, current vs. fixed, truth marked) and `results/plots/fits_<scenario>.png` (data, model, residuals per dataset). |
+| `results/` | Raw JSON results, `e2e_table.md` (the full E2E table) and `plots/`. |
 
 ## Truth and metrics
 
@@ -127,6 +128,14 @@ GA fitness (`ga_fitness_study.py`; 20 populations × 60 candidates per scenario)
    - Weighting alone, without α, should not be shipped.
 7. **GA fitness formula:** the dimensional inconsistency has no measurable effect on selection. It is low priority.
 
+## Plots
+
+`results/plots/` holds one seed per scenario:
+- `models_*`: current (red) vs. fixed (blue) models, with the truth as green circles. Marker area is proportional to signal.
+- `fits_*`: data and model simulation for each dataset (SC and VR models), with residuals of all scans. Orange marks the points each build excludes.
+
+No TI or RI noise was simulated: `us_mpi_analysis` aborts a global fit when noise fitting is requested (`us_mpi_analysis.cpp:464`, "Global fit is not compatible with noise computation"). Pre-computed noise files can only be subtracted on input.
+
 ## Reproducing
 
 Build a headless (HPC profile, Qt5) tree, then compile the tools against it:
@@ -153,6 +162,11 @@ gf_testdata data . r60000b 1 2 1.0 rpm=60000
 python3 ../test/global_fit_study/validate_replica.py . ../../build-gf/bin/gf_basis
 python3 ../test/global_fit_study/nnls_study.py . --reps 100
 python3 ../test/global_fit_study/ga_fitness_study.py .
+
+# Plots
+PYTHONPATH=test/global_fit_study:test/mpi_analysis python3 test/global_fit_study/make_plots.py \
+   --testdata ../build-gf/bin/gf_testdata --basis ../build-gf/bin/gf_basis \
+   --cur ../build-gf/bin/us_mpi_analysis --fix ../build-fix/bin/us_mpi_analysis --outdir plots
 ```
 
 Limitations:
