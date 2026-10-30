@@ -103,6 +103,42 @@ GA fitness (`ga_fitness_study.py`; 20 populations × 60 candidates per scenario)
 - **Ranking:** the formulas var/maxod (current), var/maxod², the NNLS objective and the likelihood rank candidates almost identically. Their pairwise concordance with the true quality differs by ≤ 0.005 (0.66–0.70), and the selected best candidate is the same.
 - **Why:** with normalized data, maxod_e ≈ 1 for every dataset. Even after F1 changes one maxod to 0.72, the ranking does not change, because misfit from wrong solutes dominates every dataset's variance.
 
+## Implemented options: gfit_weight / gfit_scale (us_mpi_analysis)
+
+Job parameters, global fit only, default off (defaults reproduce the previous
+fit exactly; only the reported global RMSD changed, see F2/F3):
+
+* `gfit_weight="1"`: NNLS rows of dataset e weighted by 1/σ̃_e, with σ̃ the
+  noise of the normalized data, estimated model-free as
+  1.4826·MAD(2nd radial differences)/√6; weights normalized to RMS 1.
+* `gfit_scale="1"`: per-dataset signal scale α_e (geometric mean 1) fitted
+  alternately with the NNLS (closed form on QR-reduced blocks,
+  `US_SolveSim::nnls_global`). SC models are c_e·α_e·x; the fitted scale and
+  the corrected total concentration are logged.
+
+E2E campaign (`gfit_e2e.py`, 2DSA 8 seeds, 2DSA-MC 4 seeds, GA 3 seeds;
+`results/gfit_{2dsa,mc,ga}.json`, table `results/gfit_table.md`, figure
+`results/plots/gfit_summary.png`, via `gfit_summary.py`).
+
+Findings:
+
+* No harm with correct concentrations (A1, A2, B2, B3, C5): all variants
+  are equal within noise (total error ≤ 2e-4; RMSD/σ = 1.00).
+* Wrong given concentrations (C1–C4, D4, E1-MC, F1-GA): S and WS recover the
+  scales to ≤ 3e-4, totals to ≤ 3e-4, fractions to ≤ 0.007, RMSD/σ = 1.00;
+  defaults give 5–20 % total errors, 5–14 % fraction errors, RMSD/σ up to 24.
+* A common error of all concentrations (C5) cancels in the SC models.
+* W alone is not recommended: it does not fix wrong concentrations and with
+  GA (F1) 2 of 3 seeds merged the 2.5 S and 4.5 S species (fraction error 0.26).
+  In D3 (3 % dataset with −10 % conc. error) W alone gives −10 % total for it.
+* WS ≥ S everywhere; W helps where datasets differ in normalized noise
+  (B1, D3: fraction error 0.004→0.0025, RMSD/σ of the strong set 1.04→1.00).
+* Caveats: (i) α absorbs composition differences (D1: 10 % extra species
+  only in dataset B → ±2 % total bias with S; the global model cannot
+  represent it anyway, fraction error 0.05 for all variants). (ii) σ̂ is
+  ≈10 % high with TI noise present (D2), harmless for the weights. (iii) σ̂
+  sampling error ≤ 4.4 %.
+
 ## Conclusions
 
 1. **F1 (OD limit not scaled): confirmed and relevant.**
