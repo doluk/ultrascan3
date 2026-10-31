@@ -56,6 +56,7 @@ class US_Astfem_Sim : public US_Widgets
       bool           od_limitFlag;        //!< Flag to cap OD values on save
       double         od_limit_value;      //!< Headless OD cap; <= 0 means 2 x total concentration
       bool           save_doubleFlag;     //!< Flag to save in float64 format (version 6)
+      bool           save_dradFlag;       //!< Flag to save float64 with explicit radii (version 7)
       bool           men_spikeFlag;       //!< Flag to add a spike at the meniscus on save
       double         total_conc;          //!< Sum of all components concentration
       double         meniscus_ar;         //!< Meniscus position at rest in cm
@@ -74,6 +75,7 @@ class US_Astfem_Sim : public US_Widgets
       QCheckBox*     ck_timeCorr;         //!< Pointer to QCheckbox for applying time correction
       QCheckBox*     ck_odLimit;          //!< Pointer to QCheckbox for OD capping on save
       QCheckBox*     ck_saveDouble;       //!< Pointer to QCheckbox for float64 (v6) output
+      QCheckBox*     ck_saveDRad;         //!< Pointer to QCheckbox for float64 + radii (v7) output
       QCheckBox*     ck_menSpike;         //!< Pointer to QCheckbox for the meniscus spike
       QPushButton*   pb_saveSim;          //!< Pointer to "Save Simulation" button
       QPushButton*   pb_buffer;           //!< Pointer to "Define Buffer" button

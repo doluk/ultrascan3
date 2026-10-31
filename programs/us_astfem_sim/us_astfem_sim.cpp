@@ -88,6 +88,11 @@ int main( int argc, char* argv[] )
       "Save lossless float64 data (AUC format version 6) instead of the "
       "16-bit quantized format version 5");
    parser.addOption(double_option);
+   auto double_radius_option = QCommandLineOption("double-radius",
+      "Save lossless float64 data with every radius stored explicitly as "
+      "float64 (AUC format version 7); the simulation's own radius grid is "
+      "kept bit-exactly. Takes precedence over --double");
+   parser.addOption(double_radius_option);
    auto no_spike_option = QCommandLineOption("no-spike",
       "Do not add the artificial spike at the meniscus to the saved data");
    parser.addOption(no_spike_option);
@@ -193,6 +198,11 @@ int main( int argc, char* argv[] )
    {
       args["double"] = "true";
    }
+   // parse float64 output with explicit radii
+   if ( parser.isSet( double_radius_option ) )
+   {
+      args["double-radius"] = "true";
+   }
    // parse meniscus spike suppression
    if ( parser.isSet( no_spike_option ) )
    {
@@ -255,6 +265,7 @@ US_Astfem_Sim::US_Astfem_Sim( QWidget* p, Qt::WindowFlags f )
    od_limitFlag        = true;
    od_limit_value      = -1.0;
    save_doubleFlag     = false;
+   save_dradFlag       = false;
    men_spikeFlag       = true;
    imagedir            = US_Settings::tmpDir() + "/movies";
 
@@ -298,6 +309,12 @@ US_Astfem_Sim::US_Astfem_Sim( QWidget* p, Qt::WindowFlags f )
                                            od_limitFlag );
    QGridLayout* svDouble   = us_checkbox( "Save Float64 (v6)", ck_saveDouble,
                                            save_doubleFlag );
+   QGridLayout* svDRad     = us_checkbox( "Save Float64 + Radii (v7)",
+                                           ck_saveDRad, save_dradFlag );
+   ck_saveDRad  ->setToolTip( tr( "Save lossless float64 data with every"
+                                  " radius stored explicitly (AUC format 7)."
+                                  " Overrides v6. Older UltraScan versions"
+                                  " cannot read it." ) );
    QGridLayout* menSpike   = us_checkbox( "Meniscus Spike", ck_menSpike,
                                            men_spikeFlag );
    ck_odLimit   ->setToolTip( tr( "Cap saved readings at a maximum OD" ) );
@@ -319,6 +336,7 @@ US_Astfem_Sim::US_Astfem_Sim( QWidget* p, Qt::WindowFlags f )
    buttonbox->addLayout( timeCorr );
    buttonbox->addLayout( odLimit );
    buttonbox->addLayout( svDouble );
+   buttonbox->addLayout( svDRad );
    buttonbox->addLayout( menSpike );
    buttonbox->addWidget( pb_start );
    buttonbox->addWidget( pb_stop );
@@ -344,6 +362,8 @@ US_Astfem_Sim::US_Astfem_Sim( QWidget* p, Qt::WindowFlags f )
             this, [this]() { od_limitFlag = ck_odLimit->isChecked(); } );
    connect( ck_saveDouble, &QAbstractButton::clicked,
             this, [this]() { save_doubleFlag = ck_saveDouble->isChecked(); } );
+   connect( ck_saveDRad,   &QAbstractButton::clicked,
+            this, [this]() { save_dradFlag = ck_saveDRad->isChecked(); } );
    connect( ck_menSpike,   &QAbstractButton::clicked,
             this, [this]() { men_spikeFlag = ck_menSpike->isChecked(); } );
    connect( pb_start,      &QAbstractButton::clicked,
@@ -596,6 +616,12 @@ int US_Astfem_Sim::init_from_args( const QMap<QString, QString>& flags ) {
    {
       save_doubleFlag = true;
       ck_saveDouble->setChecked( true );
+   }
+   // float64 output with explicit radii
+   if ( flags.contains("double-radius") )
+   {
+      save_dradFlag = true;
+      ck_saveDRad->setChecked( true );
    }
    // meniscus spike
    if ( flags.contains("no-spike") )
@@ -2201,12 +2227,24 @@ DbgLv(1) << "Sim:SV: OD-Limit nchange nmodscn" << nchange << nmodscn
    QVector< double > tconc_v( points );
    double* temp_conc  = tconc_v.data();
    double  rad        = mrad - 30.0 * grid_res;
+   const QVector< double > sim_radii = sim_data.xvalues;  // simulation grid
    sim_data.xvalues.resize( points );
    lb_progress->setText( "Writing..." );
 
+   // Radius grid for the output:  30 points ahead of the meniscus, then
+   //  the simulated points.  The historical grid is accumulated from the
+   //  first pre-meniscus point, which differs from the simulation's own
+   //  grid (meniscus + k * resolution) by a few ULPs.  With version 7
+   //  output the simulation's radii are kept bit-exactly instead.
+
    for ( int jp = 0; jp < points; jp++ )
    {
-      sim_data.xvalues[ jp ] = rad;
+      if ( save_dradFlag  &&  jp >= 30  &&  ( jp - 30 ) < sim_radii.size() )
+         sim_data.xvalues[ jp ] = sim_radii[ jp - 30 ];
+      else if ( save_dradFlag )
+         sim_data.xvalues[ jp ] = mrad - ( 30 - jp ) * grid_res;
+      else
+         sim_data.xvalues[ jp ] = rad;
       rad  += grid_res;
    }
 
@@ -2260,8 +2298,10 @@ DbgLv(1) << "Sim:SV:  run_id_from_save_xla" << run_id;
       .arg( dirname ).arg( run_id ).arg( stype ).arg( cell )
       .arg( schann  ).arg( wvlen  );
 
-   int wstat        = US_DataIO::writeRawData( ofname, sim_data,
-                                               save_doubleFlag );
+   const uint aucver = save_dradFlag   ? US_DataIO::double_radius_format_version
+                     : save_doubleFlag ? US_DataIO::double_format_version
+                     :                   US_DataIO::format_version;
+   int wstat        = US_DataIO::writeRawData( ofname, sim_data, aucver );
 DbgLv(1) << "Sim:SV: after_write_rawdata" << ofname;
 
    if ( wstat != US_DataIO::OK )

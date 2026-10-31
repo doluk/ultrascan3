@@ -29,11 +29,18 @@ class US_UTIL_EXTERN US_DataIO
       //!  file is known.
       static const uint format_version = 5;
 
-      //!  Format version of the lossless variant written by writeRawData()
-      //!  with doublePrecision=true.  Readings, standard deviations, radius
-      //!  grid and scan metadata are stored as IEEE-754 float64 instead of
-      //!  16-bit quantized integers and float32.  readRawData() reads both.
+      //!  Format version of the lossless variant:  readings, standard
+      //!  deviations, radius origin/step and scan metadata are stored as
+      //!  IEEE-754 float64 instead of 16-bit quantized integers and float32.
+      //!  The radius grid is rebuilt as origin + index * step on read.
       static const uint double_format_version = 6;
+
+      //!  As version 6, plus every radius value stored explicitly as float64,
+      //!  so the radius grid is reproduced bit-exactly on read.
+      static const uint double_radius_format_version = 7;
+
+      //!  Highest format version readRawData() accepts (4 to 7 are read).
+      static const uint latest_format_version = 7;
 
       //! \brief Beckman Raw data scan
       //!
@@ -286,14 +293,18 @@ class US_UTIL_EXTERN US_DataIO
           \param file  The filename to be read
           \param data  A reference to the data structure of
                        the data to be written
-          \param doublePrecision If false (default), write format version 5
-                       (readings quantized to 16 bits over the data range).
-                       If true, write format version 6 (all values float64,
-                       no quantization).  Version 6 files cannot be read by
-                       UltraScan builds that predate this format.
+          \param version Format version to write:
+                       5 (format_version, default):  readings quantized to
+                         16 bits over the data range, metadata float32;
+                       6 (double_format_version):  all values float64,
+                         radius grid stored as origin and step;
+                       7 (double_radius_format_version):  as 6, plus all
+                         radius values stored explicitly as float64.
+                       Versions 6 and 7 cannot be read by UltraScan builds
+                       that predate them.  Other values return BAD_VERSION.
       */
       static int     writeRawData( const QString&, RawData&,
-                                   bool doublePrecision = false );
+                                   uint version = format_version );
       
       /*! Read a set of data in the US3 binary format
           \param file  The filename to be read

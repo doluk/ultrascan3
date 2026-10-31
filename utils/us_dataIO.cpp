@@ -11,6 +11,8 @@
 // Static member definition
 const uint US_DataIO::format_version;
 const uint US_DataIO::double_format_version;
+const uint US_DataIO::double_radius_format_version;
+const uint US_DataIO::latest_format_version;
 
 // Versions 4 and 5 share the supported header layout.
 static const quint32 oldest_version = 4;
@@ -272,8 +274,15 @@ bool US_DataIO::readLegacyFile( const QString&  file,
 }
 
 int US_DataIO::writeRawData( const QString& file, RawData& data,
-                             bool doublePrecision )
+                             uint version )
 {
+   if ( version != format_version  &&  version != double_format_version
+        &&  version != double_radius_format_version )
+      return BAD_VERSION;
+
+   // Versions 6 and 7 store all values as float64
+   const bool doublePrecision = ( version >= double_format_version );
+
    // The stored axis requires an origin and a positive spacing.
    if ( data.xvalues.size() < 2 ) return NODATA;
 
@@ -318,8 +327,7 @@ int US_DataIO::writeRawData( const QString& file, RawData& data,
  
    // Write format version
    char fmt[ 3 ];
-   sprintf( fmt, "%2.2i",
-            doublePrecision ? double_format_version : format_version );
+   sprintf( fmt, "%2.2i", version );
    write( ds, fmt, 2, crc );
 
    // Write data type
@@ -423,6 +431,15 @@ int US_DataIO::writeRawData( const QString& file, RawData& data,
       writeF64( ds, pp.max_data1, crc );
       writeF64( ds, pp.min_data2, crc );
       writeF64( ds, pp.max_data2, crc );
+
+      if ( version == double_radius_format_version )
+      {  // Version 7:  explicit radius array
+         qToLittleEndian( (quint32)data.xvalues.size(), ui.u );
+         write( ds, ui.c, 4, crc );
+
+         for ( int ii = 0; ii < data.xvalues.size(); ii++ )
+            writeF64( ds, data.xvalues[ ii ], crc );
+      }
    }
    else
    {
@@ -688,11 +705,13 @@ int US_DataIO::readRawData( const QString& file, RawData& data )
       unsigned char ver[ 2 ];
       read( ds, (char*) ver, 2, crc );
       quint32 version = ( ( ver[ 0 ] & 0x0f ) << 8 ) | ( ver[ 1 ] & 0x0f );
-      if ( version > double_format_version  ||  version < oldest_version )
+      if ( version > latest_format_version  ||  version < oldest_version )
          throw BAD_VERSION;
 
-      // Version 6 stores all values as float64 (no quantization).
-      const bool f64 = ( version == (quint32)double_format_version );
+      // Versions 6 and 7 store all values as float64 (no quantization);
+      // version 7 also stores every radius value explicitly.
+      const bool f64   = ( version >= (quint32)double_format_version );
+      const bool radxp = ( version == (quint32)double_radius_format_version );
 
       // Version 4 wrote the wavelength on a different scale than version 5.
       bool wvlf_new  = ( version > (quint32)4 );
@@ -754,6 +773,7 @@ int US_DataIO::readRawData( const QString& file, RawData& data )
 
       double min_radius;
       double delta_radius;
+      QVector< double > radii;   // Version 7 explicit radius values
       double min_data1;
       double max_data1;
       double min_data2;
@@ -768,6 +788,22 @@ int US_DataIO::readRawData( const QString& file, RawData& data )
          max_data1    = readF64( ds, crc );
          min_data2    = readF64( ds, crc );
          max_data2    = readF64( ds, crc );
+
+         if ( radxp )
+         {  // Version 7:  explicit radius array
+            read( ds, u1.c, 4, crc );
+            const qint64 nrad = (quint32)qFromLittleEndian( u1.I );
+            if ( nrad < 1  ||  nrad * 8 > ff.size() - ff.pos() )
+               throw NOT_USDATA;
+
+            for ( qint64 jj = 0; jj < nrad; jj++ )
+            {
+               const double rv = readF64( ds, crc );
+               if ( ! qIsFinite( rv ) ) throw NOT_USDATA;
+               if ( jj > 0  &&  ! ( rv > radii.last() ) ) throw NOT_USDATA;
+               radii << rv;
+            }
+         }
       }
       else
       {
@@ -952,9 +988,16 @@ int US_DataIO::readRawData( const QString& file, RawData& data )
       rd.xvalues.clear();
       double  radius  = min_radius;
 
+      // Version 7:  the radius array must match the reading count
+      if ( radxp  &&  radii.size() != valueCount ) throw NOT_USDATA;
+
       for ( int jj = 0; jj < valueCount; jj++ )
       {
-         if ( f64 )
+         if ( radxp )
+         {  // Explicitly stored radius
+            rd.xvalues << radii[ jj ];
+         }
+         else if ( f64 )
          {  // Rebuild from the origin to avoid accumulated rounding
             rd.xvalues << min_radius + jj * delta_radius;
          }

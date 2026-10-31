@@ -145,7 +145,7 @@ TEST(AucVersions, TheDoublePrecisionWriterEmitsVersionSixAndRoundTripsExactly)
     source.scanData[1].omega2t    = 1.23456789012345e10;
 
     const QString path = dir.path() + "/v6.auc";
-    ASSERT_EQ(US_DataIO::writeRawData(path, source, true), US_DataIO::OK);
+    ASSERT_EQ(US_DataIO::writeRawData(path, source, US_DataIO::double_format_version), US_DataIO::OK);
 
     QFile ff(path);
     ASSERT_TRUE(ff.open(QIODevice::ReadOnly));
@@ -174,6 +174,54 @@ TEST(AucVersions, TheDoublePrecisionWriterEmitsVersionSixAndRoundTripsExactly)
         for (int point = 0; point < in.rvalues.size(); point++)
             EXPECT_EQ(out.rvalues[point], in.rvalues[point]);
     }
+}
+
+TEST(AucVersions, TheVersionSevenWriterStoresEveryRadiusBitExactly)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+
+    US_DataIO::RawData source = makeRawData();
+    // An accumulated grid deviates from origin + k * step by a few ULPs;
+    // version 6 rebuilds the latter, version 7 must keep the stored values.
+    double rad = 5.8;
+    for (int point = 0; point < source.pointCount(); point++)
+    {
+        source.xvalues[point] = rad;
+        rad += 0.0123456789;
+    }
+    source.scanData[0].rvalues[3] = 0.123456789012345;
+
+    const QString path = dir.path() + "/v7.auc";
+    ASSERT_EQ(US_DataIO::writeRawData(path, source,
+                                      US_DataIO::double_radius_format_version),
+              US_DataIO::OK);
+
+    QFile ff(path);
+    ASSERT_TRUE(ff.open(QIODevice::ReadOnly));
+    EXPECT_EQ(ff.read(kVersionOffset + 2).mid(kVersionOffset, 2), QByteArray("07"));
+    ff.close();
+
+    US_DataIO::RawData data;
+    ASSERT_EQ(US_DataIO::readRawData(path, data), US_DataIO::OK);
+    ASSERT_EQ(data.pointCount(), source.pointCount());
+    for (int point = 0; point < source.pointCount(); point++)
+        EXPECT_EQ(data.xvalues[point], source.xvalues[point]);
+    EXPECT_EQ(data.scanData[0].rvalues[3], 0.123456789012345);
+    EXPECT_EQ(data.scanData[1].omega2t, source.scanData[1].omega2t);
+}
+
+TEST(AucVersions, TheWriterRejectsUnsupportedVersions)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+
+    US_DataIO::RawData source = makeRawData();
+    EXPECT_EQ(US_DataIO::writeRawData(dir.path() + "/v4.auc", source, 4u),
+              US_DataIO::BAD_VERSION);
+    EXPECT_EQ(US_DataIO::writeRawData(dir.path() + "/v8.auc", source, 8u),
+              US_DataIO::BAD_VERSION);
+    EXPECT_FALSE(QFile::exists(dir.path() + "/v8.auc"));
 }
 
 TEST(AucVersions, TheDefaultWriterQuantizesReadingsToSixteenBits)

@@ -248,7 +248,7 @@ TEST(AucMutation, UnsupportedVersionIsRejected)
     MutableAuc base;
     US_DataIO::RawData data;
 
-    EXPECT_EQ(readWithTimingCheck(base.edit().patch(kVersion, "07").write("m02.auc"), data),
+    EXPECT_EQ(readWithTimingCheck(base.edit().patch(kVersion, "08").write("m02.auc"), data),
               US_DataIO::BAD_VERSION);
     EXPECT_EQ(data.scanCount(), 0);
 }
