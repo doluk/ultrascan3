@@ -64,9 +64,22 @@ QVector<US_Solute> grid_solutes( void )
    return sols;
 }
 
+// Optional overrides for other data:  GF_EDIT (edit file name, %1 = runID),
+//  GF_DENSITY, GF_VISCOSITY, GF_VBAR
+double env_value( const char* name, double dflt )
+{
+   const QByteArray val = qgetenv( name );
+   return val.isEmpty() ? dflt : val.toDouble();
+}
+
 bool load_dataset( const QString& dir, const QString& runID, US_SolveSim::DataSet& dset, QTemporaryDir& tmpdir )
 {
-   QString editname = runID + ".e1.RI.1.A.260.xml";
+   const double density   = env_value( "GF_DENSITY", kDensity );
+   const double viscosity = env_value( "GF_VISCOSITY", kViscosity );
+   const double vbar20    = env_value( "GF_VBAR", kVbar20 );
+   QString editname = qEnvironmentVariableIsSet( "GF_EDIT" )
+                         ? QString( qgetenv( "GF_EDIT" ) ).arg( runID )
+                         : runID + ".e1.RI.1.A.260.xml";
    if ( US_DataIO::loadData( dir, editname, dset.run_data ) != US_DataIO::OK )
    {
       fprintf( stderr, "cannot load %s/%s\n", qPrintable( dir ), qPrintable( editname ) );
@@ -89,19 +102,19 @@ bool load_dataset( const QString& dir, const QString& runID, US_SolveSim::DataSe
    dset.tmst_file = tmst;
 
    US_Math2::SolutionData sd;
-   sd.density   = kDensity;
-   sd.viscosity = kViscosity;
+   sd.density   = density;
+   sd.viscosity = viscosity;
    sd.manual    = false;
-   sd.vbar20    = kVbar20;
-   sd.vbar      = kVbar20;
+   sd.vbar20    = vbar20;
+   sd.vbar      = vbar20;
    US_Math2::data_correction( 20.0, sd );
 
-   dset.viscosity          = kViscosity;
-   dset.density            = kDensity;
+   dset.viscosity          = viscosity;
+   dset.density            = density;
    dset.compress           = 0.0;
    dset.temperature        = 20.0;
-   dset.vbar20             = kVbar20;
-   dset.vbartb             = kVbar20;
+   dset.vbar20             = vbar20;
+   dset.vbartb             = vbar20;
    dset.s20w_correction    = sd.s20w_correction;
    dset.D20w_correction    = sd.D20w_correction;
    dset.rotor_stretch[0]   = 0.0;
