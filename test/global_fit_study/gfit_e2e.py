@@ -197,6 +197,8 @@ def main():
     ap.add_argument("--workdir", default="gfit_work")
     ap.add_argument("--jobs", type=int, default=2)
     ap.add_argument("--out", default="gfit_results.json")
+    ap.add_argument("--resume", action="store_true",
+                    help="keep the results in --out and run only the missing cases")
     args = ap.parse_args()
     program = os.path.abspath(args.program)
     testdata = os.path.abspath(args.testdata)
@@ -205,6 +207,12 @@ def main():
     variants = args.variants.split(",")
     tasks = [(sn, vv, seed) for sn in names for vv in variants
              for seed in range(1, args.reps + 1)]
+    results = []
+    outp = Path(args.out)
+    if args.resume and outp.exists():
+        results = json.loads(outp.read_text())
+        done = {(r["scenario"], r["variant"], r["seed"]) for r in results}
+        tasks = [t for t in tasks if t not in done]
 
     def work(task):
         sn, vv, seed = task
@@ -217,8 +225,6 @@ def main():
                 "true_scales": true_scales(scen),
                 "true_sigmas": [float(dd["opts"].get("sigma", 0.004)) for dd in scen["datasets"]]}
 
-    results = []
-    outp = Path(args.out)
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         for res in pool.map(work, tasks):
             results.append(res)
