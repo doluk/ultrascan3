@@ -2,7 +2,8 @@
 #include "us_gui_settings.h"
 
 US_ClipData::US_ClipData( double& concentration, double& radius, 
-      double meniscus, double loading, QWidget* p, Qt::WindowFlags f ) 
+      double meniscus, double loading, QWidget* p, Qt::WindowFlags f,
+      bool limit_conc ) 
   : US_WidgetsDialog( p, f ), conc( concentration ), rad( radius )
 {
    setPalette    ( US_GuiSettings::frameColor() );
@@ -28,6 +29,9 @@ US_ClipData::US_ClipData( double& concentration, double& radius,
 
    ct_conc = us_counter( 2, loading, conc, loading * 2 );
    ct_conc->setSingleStep( 0.1 );
+   // OD capping switched off in the main window:  only the radius applies
+   ct_conc->setEnabled( limit_conc );
+   lb_conc->setEnabled( limit_conc );
 
    QLabel* lb_rad     = us_label( tr( "Maximum Radius:" ) );
 

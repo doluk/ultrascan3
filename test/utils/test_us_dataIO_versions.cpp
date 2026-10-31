@@ -133,6 +133,68 @@ TEST(AucVersions, AVersionFourFileLoadsAndDecodesWavelengthByTheOlderRule)
     EXPECT_NEAR(data.scanData[0].wavelength, 208.0, 1.0e-6);
 }
 
+TEST(AucVersions, TheDoublePrecisionWriterEmitsVersionSixAndRoundTripsExactly)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+
+    US_DataIO::RawData source = makeRawData();
+    // Values that 16-bit quantization and float32 metadata cannot represent.
+    source.scanData[0].rvalues[3] = 0.123456789012345;
+    source.scanData[1].seconds    = 1234.5678;
+    source.scanData[1].omega2t    = 1.23456789012345e10;
+
+    const QString path = dir.path() + "/v6.auc";
+    ASSERT_EQ(US_DataIO::writeRawData(path, source, true), US_DataIO::OK);
+
+    QFile ff(path);
+    ASSERT_TRUE(ff.open(QIODevice::ReadOnly));
+    EXPECT_EQ(ff.read(kVersionOffset + 2).mid(kVersionOffset, 2), QByteArray("06"));
+    ff.close();
+    EXPECT_EQ(US_DataIO::double_format_version, 6u);
+
+    US_DataIO::RawData data;
+    ASSERT_EQ(US_DataIO::readRawData(path, data), US_DataIO::OK);
+    ASSERT_EQ(data.scanCount(), source.scanCount());
+    ASSERT_EQ(data.pointCount(), source.pointCount());
+    EXPECT_EQ(data.cell, 3);
+    EXPECT_EQ(data.channel, 'A');
+
+    for (int point = 0; point < source.pointCount(); point++)
+        EXPECT_NEAR(data.xvalues[point], source.xvalues[point], 1.0e-12);
+
+    for (int scan = 0; scan < source.scanCount(); scan++)
+    {
+        const US_DataIO::Scan& in  = source.scanData[scan];
+        const US_DataIO::Scan& out = data.scanData[scan];
+        EXPECT_EQ(out.seconds, in.seconds);
+        EXPECT_EQ(out.omega2t, in.omega2t);
+        EXPECT_EQ(out.temperature, in.temperature);
+        EXPECT_NEAR(out.wavelength, kWavelength, 1.0e-6);
+        for (int point = 0; point < in.rvalues.size(); point++)
+            EXPECT_EQ(out.rvalues[point], in.rvalues[point]);
+    }
+}
+
+TEST(AucVersions, TheDefaultWriterQuantizesReadingsToSixteenBits)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+
+    US_DataIO::RawData source = makeRawData();
+    source.scanData[0].rvalues[3] = 0.123456789012345;
+    const QString path = dir.path() + "/v5q.auc";
+    ASSERT_EQ(US_DataIO::writeRawData(path, source), US_DataIO::OK);
+
+    US_DataIO::RawData data;
+    ASSERT_EQ(US_DataIO::readRawData(path, data), US_DataIO::OK);
+
+    // Step is (max - min) / 65535; the error is bounded by about half a step.
+    const double step = (1.8 - 0.1) / 65535.0;
+    const double err  = qAbs(data.scanData[0].rvalues[3] - 0.123456789012345);
+    EXPECT_LE(err, 0.5 * step * 1.001);
+}
+
 // ---------------------------------------------------------------------------
 // Rejected versions
 // ---------------------------------------------------------------------------

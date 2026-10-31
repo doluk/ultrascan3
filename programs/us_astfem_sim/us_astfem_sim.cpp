@@ -22,6 +22,7 @@
 #include "us_astfem_rsa.h"
 #include "us_lamm_astfvm.h"
 #include "us_time_state.h"
+#include <limits>
 
 //! \brief Main program for US_Astfem_Sim.  Loads translators and starts
 //! the class US_Astfem_Sim.
@@ -78,6 +79,18 @@ int main( int argc, char* argv[] )
    auto ignore_db_option = QCommandLineOption("no-db",
       "Ignore any database preferences and only use locally available data");
    parser.addOption(ignore_db_option);
+   auto od_limit_option = QCommandLineOption("od-limit",
+      "OD cap applied to saved data: a value in OD, or 'none' to disable "
+      "capping (default: 2 x total loading concentration)",
+      "od-limit");
+   parser.addOption(od_limit_option);
+   auto double_option = QCommandLineOption("double",
+      "Save lossless float64 data (AUC format version 6) instead of the "
+      "16-bit quantized format version 5");
+   parser.addOption(double_option);
+   auto no_spike_option = QCommandLineOption("no-spike",
+      "Do not add the artificial spike at the meniscus to the saved data");
+   parser.addOption(no_spike_option);
    auto errors_option = QCommandLineOption("errors-cl",
       "Force errors to console and don't open any sort of gui");
    parser.addOption(errors_option);
@@ -170,6 +183,21 @@ int main( int argc, char* argv[] )
    {
       args["start"] = "true";
    }
+   // parse OD limit
+   if ( parser.isSet( od_limit_option ) )
+   {
+      args["od-limit"] = parser.value( od_limit_option ).trimmed();
+   }
+   // parse double precision output
+   if ( parser.isSet( double_option ) )
+   {
+      args["double"] = "true";
+   }
+   // parse meniscus spike suppression
+   if ( parser.isSet( no_spike_option ) )
+   {
+      args["no-spike"] = "true";
+   }
    // parse errors
    if ( parser.isSet( errors_option ) )
    {
@@ -224,6 +252,10 @@ US_Astfem_Sim::US_Astfem_Sim( QWidget* p, Qt::WindowFlags f )
    movieFlag           = false;
    save_movie          = false;
    time_correctionFlag = false;
+   od_limitFlag        = true;
+   od_limit_value      = -1.0;
+   save_doubleFlag     = false;
+   men_spikeFlag       = true;
    imagedir            = US_Settings::tmpDir() + "/movies";
 
    // Initialize buffer density to default water @ 20C:
@@ -262,6 +294,17 @@ US_Astfem_Sim::US_Astfem_Sim( QWidget* p, Qt::WindowFlags f )
    QGridLayout* lo_svmovie = us_checkbox( "Save Movie", ck_savemovie, false );
    QGridLayout* timeCorr   = us_checkbox( "Use Time Correction", ck_timeCorr,
                                            time_correctionFlag );
+   QGridLayout* odLimit    = us_checkbox( "Limit OD on Save", ck_odLimit,
+                                           od_limitFlag );
+   QGridLayout* svDouble   = us_checkbox( "Save Float64 (v6)", ck_saveDouble,
+                                           save_doubleFlag );
+   QGridLayout* menSpike   = us_checkbox( "Meniscus Spike", ck_menSpike,
+                                           men_spikeFlag );
+   ck_odLimit   ->setToolTip( tr( "Cap saved readings at a maximum OD" ) );
+   ck_saveDouble->setToolTip( tr( "Save lossless float64 data (AUC format 6)."
+                                  " Older UltraScan versions cannot read it." ) );
+   ck_menSpike  ->setToolTip( tr( "Add an artificial spike at the meniscus"
+                                  " to the saved data" ) );
    QBoxLayout* buttonbox   = new QVBoxLayout;
    QBoxLayout* timeSpeed   = new QHBoxLayout;
    QBoxLayout* completion  = new QHBoxLayout;
@@ -274,6 +317,9 @@ US_Astfem_Sim::US_Astfem_Sim( QWidget* p, Qt::WindowFlags f )
    buttonbox->addLayout( movie );
    buttonbox->addLayout( lo_svmovie );
    buttonbox->addLayout( timeCorr );
+   buttonbox->addLayout( odLimit );
+   buttonbox->addLayout( svDouble );
+   buttonbox->addLayout( menSpike );
    buttonbox->addWidget( pb_start );
    buttonbox->addWidget( pb_stop );
    buttonbox->addWidget( pb_saveSim );
@@ -294,6 +340,12 @@ US_Astfem_Sim::US_Astfem_Sim( QWidget* p, Qt::WindowFlags f )
             this,          &US_Astfem_Sim::update_save_movie );
    connect( ck_timeCorr,   &QAbstractButton::clicked,
             this,          &US_Astfem_Sim::update_time_corr );
+   connect( ck_odLimit,    &QAbstractButton::clicked,
+            this, [this]() { od_limitFlag = ck_odLimit->isChecked(); } );
+   connect( ck_saveDouble, &QAbstractButton::clicked,
+            this, [this]() { save_doubleFlag = ck_saveDouble->isChecked(); } );
+   connect( ck_menSpike,   &QAbstractButton::clicked,
+            this, [this]() { men_spikeFlag = ck_menSpike->isChecked(); } );
    connect( pb_start,      &QAbstractButton::clicked,
             this,          &US_Astfem_Sim::start_simulation );
    connect( pb_stop,       &QAbstractButton::clicked,
@@ -511,6 +563,45 @@ int US_Astfem_Sim::init_from_args( const QMap<QString, QString>& flags ) {
    {
       ck_timeCorr->setChecked( true );
       time_correctionFlag = true;
+   }
+   // OD limit:  'none'/'off' disables capping, a positive number sets it
+   if ( flags.contains("od-limit") )
+   {
+      QString odl = flags["od-limit"].toLower();
+      bool    ok  = false;
+      double  val = odl.toDouble( &ok );
+      if ( odl == "none"  ||  odl == "off" )
+      {
+         od_limitFlag   = false;
+      }
+      else if ( ok  &&  val > 0.0 )
+      {
+         od_limitFlag   = true;
+         od_limit_value = val;
+      }
+      else
+      {
+         if ( errors_to_cl )
+         {
+            qDebug() << "Error invalid od-limit " << flags["od-limit"];
+            exit( 2 );
+         }
+         error_occured = true;
+         gui_needed    = true;
+      }
+      ck_odLimit->setChecked( od_limitFlag );
+   }
+   // float64 output
+   if ( flags.contains("double") )
+   {
+      save_doubleFlag = true;
+      ck_saveDouble->setChecked( true );
+   }
+   // meniscus spike
+   if ( flags.contains("no-spike") )
+   {
+      men_spikeFlag = false;
+      ck_menSpike->setChecked( false );
    }
    // check save directory
    if ( flags.contains("save") && flags["save"].length() > 0 )
@@ -1906,7 +1997,7 @@ DbgLv(1) << "EDT:WrXml:  waveln" << wl;
    }
    xml.writeStartElement( "od_limit" );
    xml.writeAttribute   ( "value",
-      QString::number( maxc,  'f', 8 ) );
+      QString::number( maxc,  'g', 17 ) );
    xml.writeEndElement  ();
 
 
@@ -2031,7 +2122,9 @@ DbgLv(1) << "Sim:SV: maxc" << maxc << "s1plat" << s1plat
 DbgLv(1) << "Sim:SV: reset s1plat" << s1plat;
    if ( !supress_dialog )
    {
-      US_ClipData* cd = new US_ClipData( dthresh, maxrad, mrad, total_conc );
+      US_ClipData* cd = new US_ClipData( dthresh, maxrad, mrad, total_conc,
+                                         nullptr, Qt::WindowFlags(),
+                                         od_limitFlag );
 
       if ( ! cd->exec() )
       {
@@ -2040,7 +2133,12 @@ DbgLv(1) << "Sim:SV: reset s1plat" << s1plat;
       }
    } else
    {
-      dthresh = total_conc * 2.0;
+      dthresh = ( od_limit_value > 0.0 ) ? od_limit_value : total_conc * 2.0;
+   }
+
+   if ( !od_limitFlag )
+   {  // OD capping disabled:  no reading is ever above the threshold
+      dthresh = std::numeric_limits< double >::infinity();
    }
 
 
@@ -2075,13 +2173,23 @@ DbgLv(1) << "Sim:SV: OD-Limit nchange nmodscn" << nchange << nmodscn
  << "maxc dthresh" << maxc << dthresh;
 
       // Report that some readings were threshold-limited
-      QMessageBox::information( this,
-            tr( "OD Values Threshold Limited" ),
-            tr( "%1 readings in %2 scans were reset\n"
-                "to a threshold value of %3 .\n"
-                "The pre-threshold-limit maximum OD\n"
-                "value was %4 ." )
-            .arg( nchange ).arg( nmodscn ).arg( dthresh ).arg( maxc ) );
+      if ( supress_dialog )
+      {
+         QTextStream( stderr ) << QString( "OD values threshold limited: %1"
+            " readings in %2 scans were reset to %3 (pre-limit maximum %4)" )
+            .arg( nchange ).arg( nmodscn ).arg( dthresh ).arg( maxc )
+            << Qt::endl;
+      }
+      else
+      {
+         QMessageBox::information( this,
+               tr( "OD Values Threshold Limited" ),
+               tr( "%1 readings in %2 scans were reset\n"
+                   "to a threshold value of %3 .\n"
+                   "The pre-threshold-limit maximum OD\n"
+                   "value was %4 ." )
+               .arg( nchange ).arg( nmodscn ).arg( dthresh ).arg( maxc ) );
+      }
    }
 
 
@@ -2116,7 +2224,8 @@ DbgLv(1) << "Sim:SV: OD-Limit nchange nmodscn" << nchange << nmodscn
          temp_conc[ jp ] = 0.0;
       }
 
-      temp_conc[ 30 ] = s1plat * 2.0;   // Put a spike at the meniscus
+      if ( men_spikeFlag )
+         temp_conc[ 30 ] = s1plat * 2.0;   // Put a spike at the meniscus
 
       scan->rvalues.resize( points );
 
@@ -2151,7 +2260,8 @@ DbgLv(1) << "Sim:SV:  run_id_from_save_xla" << run_id;
       .arg( dirname ).arg( run_id ).arg( stype ).arg( cell )
       .arg( schann  ).arg( wvlen  );
 
-   int wstat        = US_DataIO::writeRawData( ofname, sim_data );
+   int wstat        = US_DataIO::writeRawData( ofname, sim_data,
+                                               save_doubleFlag );
 DbgLv(1) << "Sim:SV: after_write_rawdata" << ofname;
 
    if ( wstat != US_DataIO::OK )

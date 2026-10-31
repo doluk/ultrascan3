@@ -209,9 +209,9 @@ TEST(AucReadContract, VersionAboveTheSupportedFormatIsRejected)
     AucFixture fixture;
     US_DataIO::RawData data;
     // The writer emits the version as ASCII "05"; the reader keeps only the low
-    // nibble of each byte, so "06" decodes to 6, one past format_version.
+    // nibble of each byte, so "07" decodes to 7, one past double_format_version.
     EXPECT_EQ(US_DataIO::readRawData(
-                  fixture.mutated("bad_version.auc", kVersionOffset, "06"), data),
+                  fixture.mutated("bad_version.auc", kVersionOffset, "07"), data),
               US_DataIO::BAD_VERSION);
     EXPECT_EQ(data.scanCount(), 0);
 }

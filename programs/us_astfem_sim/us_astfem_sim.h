@@ -53,6 +53,10 @@ class US_Astfem_Sim : public US_Widgets
       bool           movieFlag;           //!< Flag to show a movie during simulation
       bool           save_movie;          //!< Flag to save the generated frames
       bool           time_correctionFlag; //!< Flag to apply time correction - Currently not implemented/connected
+      bool           od_limitFlag;        //!< Flag to cap OD values on save
+      double         od_limit_value;      //!< Headless OD cap; <= 0 means 2 x total concentration
+      bool           save_doubleFlag;     //!< Flag to save in float64 format (version 6)
+      bool           men_spikeFlag;       //!< Flag to add a spike at the meniscus on save
       double         total_conc;          //!< Sum of all components concentration
       double         meniscus_ar;         //!< Meniscus position at rest in cm
       double         times_comp;          //!< Current time of the simulation
@@ -68,6 +72,9 @@ class US_Astfem_Sim : public US_Widgets
       QCheckBox*     ck_movie;            //!< Pointer to QCheckbox for movie display
       QCheckBox*     ck_savemovie;        //!< Pointer to QCheckbox for saving movie frames
       QCheckBox*     ck_timeCorr;         //!< Pointer to QCheckbox for applying time correction
+      QCheckBox*     ck_odLimit;          //!< Pointer to QCheckbox for OD capping on save
+      QCheckBox*     ck_saveDouble;       //!< Pointer to QCheckbox for float64 (v6) output
+      QCheckBox*     ck_menSpike;         //!< Pointer to QCheckbox for the meniscus spike
       QPushButton*   pb_saveSim;          //!< Pointer to "Save Simulation" button
       QPushButton*   pb_buffer;           //!< Pointer to "Define Buffer" button
       QPushButton*   pb_simParms;         //!< Pointer to "Simulation Parameters" button

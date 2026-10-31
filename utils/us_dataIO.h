@@ -29,6 +29,12 @@ class US_UTIL_EXTERN US_DataIO
       //!  file is known.
       static const uint format_version = 5;
 
+      //!  Format version of the lossless variant written by writeRawData()
+      //!  with doublePrecision=true.  Readings, standard deviations, radius
+      //!  grid and scan metadata are stored as IEEE-754 float64 instead of
+      //!  16-bit quantized integers and float32.  readRawData() reads both.
+      static const uint double_format_version = 6;
+
       //! \brief Beckman Raw data scan
       //!
       /*! This is the structure of a Beckman raw data file.  The file
@@ -280,8 +286,14 @@ class US_UTIL_EXTERN US_DataIO
           \param file  The filename to be read
           \param data  A reference to the data structure of
                        the data to be written
+          \param doublePrecision If false (default), write format version 5
+                       (readings quantized to 16 bits over the data range).
+                       If true, write format version 6 (all values float64,
+                       no quantization).  Version 6 files cannot be read by
+                       UltraScan builds that predate this format.
       */
-      static int     writeRawData( const QString&, RawData& );
+      static int     writeRawData( const QString&, RawData&,
+                                   bool doublePrecision = false );
       
       /*! Read a set of data in the US3 binary format
           \param file  The filename to be read
@@ -403,6 +415,10 @@ class US_UTIL_EXTERN US_DataIO
 
       static void writeScan  ( QDataStream&, const Scan&, quint32&, 
                                const Parameters& );
+      static void writeScanF64( QDataStream&, const Scan&, quint32&,
+                               const Parameters& );
+      static void writeF64   ( QDataStream&, double, quint32& );
+      static double readF64  ( QDataStream&, quint32& );
       static void write      ( QDataStream&, const char*, int, quint32& );
       static void read       ( QDataStream&,       char*, int, quint32& );
       

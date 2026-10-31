@@ -10,6 +10,7 @@
 
 // Static member definition
 const uint US_DataIO::format_version;
+const uint US_DataIO::double_format_version;
 
 // Versions 4 and 5 share the supported header layout.
 static const quint32 oldest_version = 4;
@@ -270,7 +271,8 @@ bool US_DataIO::readLegacyFile( const QString&  file,
    return true;
 }
 
-int US_DataIO::writeRawData( const QString& file, RawData& data )
+int US_DataIO::writeRawData( const QString& file, RawData& data,
+                             bool doublePrecision )
 {
    // The stored axis requires an origin and a positive spacing.
    if ( data.xvalues.size() < 2 ) return NODATA;
@@ -316,7 +318,8 @@ int US_DataIO::writeRawData( const QString& file, RawData& data )
  
    // Write format version
    char fmt[ 3 ];
-   sprintf( fmt, "%2.2i", format_version );
+   sprintf( fmt, "%2.2i",
+            doublePrecision ? double_format_version : format_version );
    write( ds, fmt, 2, crc );
 
    // Write data type
@@ -411,33 +414,46 @@ int US_DataIO::writeRawData( const QString& file, RawData& data )
       uchar u[ 4 ];
    } ui;
 
-   uf.f = (float) min_radius;  // min_radius
-   qToLittleEndian( uf.u, ui.u );
-   write( ds, ui.c, 4, crc );
+   if ( doublePrecision )
+   {  // Version 6:  float64 header values
+      writeF64( ds, min_radius,   crc );
+      writeF64( ds, max_radius,   crc );
+      writeF64( ds, r2 - r1,      crc );
+      writeF64( ds, pp.min_data1, crc );
+      writeF64( ds, pp.max_data1, crc );
+      writeF64( ds, pp.min_data2, crc );
+      writeF64( ds, pp.max_data2, crc );
+   }
+   else
+   {
+      uf.f = (float) min_radius;  // min_radius
+      qToLittleEndian( uf.u, ui.u );
+      write( ds, ui.c, 4, crc );
 
-   uf.f = (float) max_radius;  // max_radius
-   qToLittleEndian( uf.u, ui.u );
-   write( ds, ui.c, 4, crc );
+      uf.f = (float) max_radius;  // max_radius
+      qToLittleEndian( uf.u, ui.u );
+      write( ds, ui.c, 4, crc );
 
-   uf.f = (float) ( r2 - r1 );  // delta r
-   qToLittleEndian( uf.u, ui.u );
-   write( ds, ui.c, 4, crc );
+      uf.f = (float) ( r2 - r1 );  // delta r
+      qToLittleEndian( uf.u, ui.u );
+      write( ds, ui.c, 4, crc );
 
-   uf.f = (float) pp.min_data1;  // minimum data value
-   qToLittleEndian( uf.u, ui.u );
-   write( ds, ui.c, 4, crc );
+      uf.f = (float) pp.min_data1;  // minimum data value
+      qToLittleEndian( uf.u, ui.u );
+      write( ds, ui.c, 4, crc );
    
-   uf.f = (float) pp.max_data1;  // maximum data value
-   qToLittleEndian( uf.u, ui.u );
-   write( ds, ui.c, 4, crc );
+      uf.f = (float) pp.max_data1;  // maximum data value
+      qToLittleEndian( uf.u, ui.u );
+      write( ds, ui.c, 4, crc );
 
-   uf.f = (float) pp.min_data2;  // minimum std deviation value
-   qToLittleEndian( uf.u, ui.u );
-   write( ds, ui.c, 4, crc );
+      uf.f = (float) pp.min_data2;  // minimum std deviation value
+      qToLittleEndian( uf.u, ui.u );
+      write( ds, ui.c, 4, crc );
    
-   uf.f = (float) pp.max_data2;  // maximum std deviation value
-   qToLittleEndian( uf.u, ui.u );
-   write( ds, ui.c, 4, crc );
+      uf.f = (float) pp.max_data2;  // maximum std deviation value
+      qToLittleEndian( uf.u, ui.u );
+      write( ds, ui.c, 4, crc );
+   }
 
    // Write out scan count
    qToLittleEndian( (quint16)data.scanData.size(), ui.u );
@@ -445,7 +461,12 @@ int US_DataIO::writeRawData( const QString& file, RawData& data )
 
    // Loop for each scan
    for ( int ii = 0; ii < data.scanData.size(); ii++ )
-      writeScan( ds, data.scanData[ ii ], crc, pp );
+   {
+      if ( doublePrecision )
+         writeScanF64( ds, data.scanData[ ii ], crc, pp );
+      else
+         writeScan   ( ds, data.scanData[ ii ], crc, pp );
+   }
 
    qToLittleEndian( crc, ui.u ); // crc
    ds.writeRawData( ui.c, 4 );
@@ -538,6 +559,94 @@ void US_DataIO::writeScan( QDataStream&    ds, const Scan&       data,
    write( ds, flags.data(), flagSize, crc );
 }
 
+// Write one scan in format version 6:  float64 metadata and readings
+void US_DataIO::writeScanF64( QDataStream&    ds, const Scan&       data,
+                              quint32&       crc, const Parameters& pp )
+{
+   union
+   {
+      char  c[ 4 ];
+      uchar u[ 4 ];
+   } ui;
+
+   char d[ 5 ] = "DATA";
+   write( ds, d, 4, crc );
+
+   writeF64( ds, data.temperature, crc );
+   writeF64( ds, data.rpm,         crc );
+   writeF64( ds, data.seconds,     crc );
+   writeF64( ds, data.omega2t,     crc );
+
+   // Encoded wavelength, same as version 5
+   quint16 si = (quint16)qRound( data.wavelength * 10.0 );
+   qToLittleEndian<quint16>( si, ui.u );
+   write( ds, ui.c, 2, crc );
+
+   writeF64( ds, data.delta_r,     crc );
+
+   quint32 valueCount = data.rvalues.size(); // number of values
+   qToLittleEndian( valueCount, ui.u );
+   write( ds, ui.c, 4, crc );
+
+   // Same std-deviation presence rule as version 5
+   bool    stdDev = ( ( pp.min_data2 != 0.0  ||  pp.max_data2 != 0.0 )
+                  &&  ( data.stddevs.size() == data.rvalues.size()   ) );
+
+   for ( int ii = 0; ii < data.rvalues.size(); ii++ )
+   {
+      writeF64( ds, data.rvalues[ ii ], crc );
+
+      if ( stdDev )
+         writeF64( ds, data.stddevs[ ii ], crc );
+   }
+
+   int flagSize = ( valueCount + 7 ) / 8;
+   QByteArray flags = data.interpolated;
+   if ( flags.size() < flagSize ) flags = QByteArray( flagSize, '\0' );
+
+   write( ds, flags.data(), flagSize, crc );
+}
+
+// Write a double as little-endian IEEE-754 float64
+void US_DataIO::writeF64( QDataStream& ds, double value, quint32& crc )
+{
+   union
+   {
+      quint64 u;
+      double  d;
+   } ud;
+
+   union
+   {
+      char  c[ 8 ];
+      uchar u[ 8 ];
+   } ub;
+
+   ud.d = value;
+   qToLittleEndian( ud.u, ub.u );
+   write( ds, ub.c, 8, crc );
+}
+
+// Read a little-endian IEEE-754 float64
+double US_DataIO::readF64( QDataStream& ds, quint32& crc )
+{
+   union
+   {
+      char  c[ 8 ];
+      uchar u[ 8 ];
+   } ub;
+
+   union
+   {
+      quint64 u;
+      double  d;
+   } ud;
+
+   read( ds, ub.c, 8, crc );
+   ud.u = qFromLittleEndian<quint64>( ub.u );
+   return ud.d;
+}
+
 void US_DataIO::write( QDataStream& ds, const char* c, int len, quint32& crc )
 {
    ds.writeRawData( c, len );
@@ -547,6 +656,8 @@ void US_DataIO::write( QDataStream& ds, const char* c, int len, quint32& crc )
 // Bytes writeScan() always emits before the readings:  the "DATA" marker plus
 // temperature, rpm, seconds, omega2t, wavelength, delta_r and the reading count.
 static const qint64 scan_header_size = 30;
+// Same for writeScanF64() (version 6):  4 + 5 * 8 + 2 + 4
+static const qint64 scan_header_size_f64 = 50;
 
 int US_DataIO::readRawData( const QString& file, RawData& data )
 {
@@ -577,8 +688,11 @@ int US_DataIO::readRawData( const QString& file, RawData& data )
       unsigned char ver[ 2 ];
       read( ds, (char*) ver, 2, crc );
       quint32 version = ( ( ver[ 0 ] & 0x0f ) << 8 ) | ( ver[ 1 ] & 0x0f );
-      if ( version > format_version  ||  version < oldest_version )
+      if ( version > double_format_version  ||  version < oldest_version )
          throw BAD_VERSION;
+
+      // Version 6 stores all values as float64 (no quantization).
+      const bool f64 = ( version == (quint32)double_format_version );
 
       // Version 4 wrote the wavelength on a different scale than version 5.
       bool wvlf_new  = ( version > (quint32)4 );
@@ -639,35 +753,53 @@ int US_DataIO::readRawData( const QString& file, RawData& data )
       } u2;
 
       double min_radius;
+      double delta_radius;
+      double min_data1;
+      double max_data1;
+      double min_data2;
+      double max_data2;
 
-      read( ds, u1.c, 4, crc );
-      u2.I = qFromLittleEndian( u1.I );
-      min_radius = u2.f;
+      if ( f64 )
+      {
+         min_radius   = readF64( ds, crc );
+         readF64( ds, crc );               // max_radius, unused
+         delta_radius = readF64( ds, crc );
+         min_data1    = readF64( ds, crc );
+         max_data1    = readF64( ds, crc );
+         min_data2    = readF64( ds, crc );
+         max_data2    = readF64( ds, crc );
+      }
+      else
+      {
+         read( ds, u1.c, 4, crc );
+         u2.I = qFromLittleEndian( u1.I );
+         min_radius = u2.f;
 
-      read( ds, u1.c, 4, crc );
-      // Unused
-      //u2.I = qFromLittleEndian( u1.I );
-      //min_radius = u2.f;
+         read( ds, u1.c, 4, crc );
+         // Unused
+         //u2.I = qFromLittleEndian( u1.I );
+         //min_radius = u2.f;
 
-      read( ds, u1.c, 4, crc );
-      u2.I = qFromLittleEndian( u1.I );
-      double delta_radius = u2.f;
+         read( ds, u1.c, 4, crc );
+         u2.I = qFromLittleEndian( u1.I );
+         delta_radius = u2.f;
 
-      read( ds, u1.c, 4, crc );
-      u2.I = qFromLittleEndian( u1.I );
-      double min_data1 = u2.f;
+         read( ds, u1.c, 4, crc );
+         u2.I = qFromLittleEndian( u1.I );
+         min_data1 = u2.f;
 
-      read( ds, u1.c, 4, crc );
-      u2.I = qFromLittleEndian( u1.I );
-      double max_data1 = u2.f;
+         read( ds, u1.c, 4, crc );
+         u2.I = qFromLittleEndian( u1.I );
+         max_data1 = u2.f;
 
-      read( ds, u1.c, 4, crc );
-      u2.I = qFromLittleEndian( u1.I );
-      double min_data2 = u2.f;
+         read( ds, u1.c, 4, crc );
+         u2.I = qFromLittleEndian( u1.I );
+         min_data2 = u2.f;
 
-      read( ds, u1.c, 4, crc );
-      u2.I = qFromLittleEndian( u1.I );
-      double max_data2 = u2.f;
+         read( ds, u1.c, 4, crc );
+         u2.I = qFromLittleEndian( u1.I );
+         max_data2 = u2.f;
+      }
 
       // Require finite coordinates and an ascending radius axis.
       if ( qIsNaN( min_radius )  ||  qIsInf( min_radius ) ) throw NOT_USDATA;
@@ -681,7 +813,8 @@ int US_DataIO::readRawData( const QString& file, RawData& data )
 
       // Reject scan counts that exceed the available headers.
       const qint64 remaining = ff.size() - ff.pos();
-      if ( (qint64)scan_count * scan_header_size > remaining ) throw NOT_USDATA;
+      const qint64 hdr_size  = f64 ? scan_header_size_f64 : scan_header_size;
+      if ( (qint64)scan_count * hdr_size > remaining ) throw NOT_USDATA;
 
       // Read each scan
       int valueCount = 0;
@@ -692,41 +825,56 @@ int US_DataIO::readRawData( const QString& file, RawData& data )
 
          Scan sc;
          
-         // Temperature
-         read( ds, u1.c, 4, crc );
-         u2.I = qFromLittleEndian( u1.I );
-         sc.temperature = u2.f;
+         if ( f64 )
+         {
+            sc.temperature = readF64( ds, crc );
+            sc.rpm         = readF64( ds, crc );
+            // Round speed to nearest multiple of 100 (or other resolution)
+            sc.rpm         = qRound( sc.rpm / ss_reso ) * ss_reso;
+            sc.seconds     = readF64( ds, crc );
+            sc.omega2t     = readF64( ds, crc );
+            read( ds, si.c, 2, crc );
+            sc.wavelength  = qFromLittleEndian( si.I ) / 10.0;
+            sc.delta_r     = readF64( ds, crc );
+         }
+         else
+         {
+            // Temperature
+            read( ds, u1.c, 4, crc );
+            u2.I = qFromLittleEndian( u1.I );
+            sc.temperature = u2.f;
 
-         // RPM
-         read( ds, u1.c, 4, crc );
-         u2.I = qFromLittleEndian( u1.I );
-         sc.rpm = u2.f;
+            // RPM
+            read( ds, u1.c, 4, crc );
+            u2.I = qFromLittleEndian( u1.I );
+            sc.rpm = u2.f;
 #if 1
 //sc.rpm = qRound( sc.rpm / 50.0 ) * 50.0;
-         // Round speed to nearest multiple of 100 (or other resolution)
-         sc.rpm = qRound( sc.rpm / ss_reso ) * ss_reso;
+            // Round speed to nearest multiple of 100 (or other resolution)
+            sc.rpm = qRound( sc.rpm / ss_reso ) * ss_reso;
 #endif
 
-         // Seconds
-         read( ds, u1.c, 4, crc );
-         sc.seconds = qFromLittleEndian( u1.I );
+            // Seconds
+            read( ds, u1.c, 4, crc );
+            sc.seconds = qFromLittleEndian( u1.I );
 
-         // Omega2t
-         read( ds, u1.c, 4, crc );
-         u2.I = qFromLittleEndian( u1.I );
-         sc.omega2t = u2.f;
+            // Omega2t
+            read( ds, u1.c, 4, crc );
+            u2.I = qFromLittleEndian( u1.I );
+            sc.omega2t = u2.f;
 
-         // Wavelength
-         read( ds, si.c, 2, crc );
-         if ( wvlf_new )
-            sc.wavelength = qFromLittleEndian( si.I ) / 10.0;
-         else
-            sc.wavelength = qFromLittleEndian( si.I ) / 100.0 + 180.0;
+            // Wavelength
+            read( ds, si.c, 2, crc );
+            if ( wvlf_new )
+               sc.wavelength = qFromLittleEndian( si.I ) / 10.0;
+            else
+               sc.wavelength = qFromLittleEndian( si.I ) / 100.0 + 180.0;
 
-         // Delta_r
-         read( ds, u1.c, 4, crc );
-         u2.I = qFromLittleEndian( u1.I );
-         sc.delta_r = u2.f;
+            // Delta_r
+            read( ds, u1.c, 4, crc );
+            u2.I = qFromLittleEndian( u1.I );
+            sc.delta_r = u2.f;
+         }
 
          // Reading count
          read( ds, u1.c, 4, crc );
@@ -744,7 +892,8 @@ int US_DataIO::readRawData( const QString& file, RawData& data )
          bool    stdDev  = ( min_data2 != 0.0 || max_data2 != 0.0 );
 
          // Check payload size in 64 bits to avoid count overflow.
-         const qint64 need = (qint64)valueCount * ( stdDev ? 4 : 2 )
+         const qint64 vsize = f64 ? 8 : 2;
+         const qint64 need = (qint64)valueCount * ( stdDev ? 2 * vsize : vsize )
                            + ( (qint64)valueCount + 7 ) / 8;
          if ( need > ff.size() - ff.pos() ) throw NOT_USDATA;
 
@@ -753,16 +902,24 @@ int US_DataIO::readRawData( const QString& file, RawData& data )
             double rval;
             double sval;
 
-            read( ds, si.c, 2, crc );
-            rval    = qFromLittleEndian( si.I ) * factor1 + min_data1;
-
-            if ( stdDev )
+            if ( f64 )
             {
-               read( ds, si.c, 2, crc );
-               sval     = qFromLittleEndian( si.I ) * factor2 + min_data2;
+               rval     = readF64( ds, crc );
+               sval     = stdDev ? readF64( ds, crc ) : 0.0;
             }
             else
-               sval     = 0.0;
+            {
+               read( ds, si.c, 2, crc );
+               rval     = qFromLittleEndian( si.I ) * factor1 + min_data1;
+
+               if ( stdDev )
+               {
+                  read( ds, si.c, 2, crc );
+                  sval     = qFromLittleEndian( si.I ) * factor2 + min_data2;
+               }
+               else
+                  sval     = 0.0;
+            }
 
             // Add the reading to the scan
             sc.rvalues << rval;
@@ -797,8 +954,15 @@ int US_DataIO::readRawData( const QString& file, RawData& data )
 
       for ( int jj = 0; jj < valueCount; jj++ )
       {
-         rd.xvalues << radius;
-         radius += delta_radius;
+         if ( f64 )
+         {  // Rebuild from the origin to avoid accumulated rounding
+            rd.xvalues << min_radius + jj * delta_radius;
+         }
+         else
+         {  // Version 4/5:  keep the historical accumulation
+            rd.xvalues << radius;
+            radius += delta_radius;
+         }
       }
 
       // Read the crc

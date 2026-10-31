@@ -17,8 +17,10 @@ class US_ClipData : public US_WidgetsDialog
       //! \param loading       - Loading value to be displayed
       //! \param p      - Parent widget, normally not specified
       //! \param f      - Window flags, normally not specified
+      //! \param limit_conc - If false, the concentration limit is disabled
 		US_ClipData( double& concentration, double& radius, double meniscus, double loading,
-            QWidget* p = nullptr, Qt::WindowFlags f = Qt::WindowFlags() );
+            QWidget* p = nullptr, Qt::WindowFlags f = Qt::WindowFlags(),
+            bool limit_conc = true );
 
    private:
       double&     conc;
