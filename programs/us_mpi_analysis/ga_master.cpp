@@ -321,7 +321,8 @@ DbgLv(1) << "  MAST: work" << worker << "fit besto,round" << best_overall_fitnes
 
 
                if ( fitness_same_count > max_same_count  &&
-                    avg_generation     > min_generation )
+                    avg_generation     > min_generation  &&
+                    parameters.value( "early_stop", "1" ).toInt() != 0 )
                {  // Mark early termination at threshold same-fitness count
                   DbgLv(0) << "Fitness has not improved in the last"
                      << fitness_same_count
