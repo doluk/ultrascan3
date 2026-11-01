@@ -1795,6 +1795,8 @@ void US_MPI_Analysis::setup_ga_simcache( void )
    {  // Data sets live for the whole job:  their keys can be memorized
       ga_simcache = new US_SimCache( cap );
       ga_simcache->set_key_memo( true );
+      // Nearly every GA solute survives some NNLS:  evict by recent use
+      ga_simcache->set_lru( parameters.value( "sim_cache_lru", "1" ).toInt() != 0 );
    }
 
    if ( my_rank == 1 )
