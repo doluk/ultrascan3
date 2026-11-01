@@ -135,9 +135,52 @@ Findings:
   (B1, D3: fraction error 0.004→0.0025, RMSD/σ of the strong set 1.04→1.00).
 * Caveats: (i) α absorbs composition differences (D1: 10 % extra species
   only in dataset B → ±2 % total bias with S; the global model cannot
-  represent it anyway, fraction error 0.05 for all variants). (ii) σ̂ is
+  represent it anyway, fraction error 0.05 for all variants; see G1–G5). (ii) σ̂ is
   ≈10 % high with TI noise present (D2), harmless for the weights. (iii) σ̂
   sampling error ≤ 4.4 %.
+
+### Composition differing between datasets (G1–G5, `results/gfit_g.json`)
+
+S/WS assume that all datasets have the same composition and differ only by
+a signal scale. When they do not, α absorbs part of the difference into a
+total-concentration bias. Total error per dataset with S / WS (none: totals
+within 0.25 %, but SC fractions wrong by 0.04–0.05 in all variants, since
+one global model cannot represent both compositions):
+
+| scenario | S | WS |
+|---|---|---|
+| D1: 10 % 9 S species only in B | +1.9 / −2.0 % | +1.9 / −2.0 % |
+| G1: same, species only in A (mirror) | −2.0 / +1.9 % | −2.0 / +1.9 % |
+| G2: A, B, C equal; species only in C | +1.3 / +1.3 / −2.7 % | +1.3 / +1.3 / −2.7 % |
+| G3: as G2, C loaded at 0.3 | +1.3 / +1.3 / −2.7 % | +0.2 / +0.2 / −3.8 % |
+| G4: as G2, C at 30 krpm | +0.6 / +0.6 / −0.7 % | +0.6 / +0.6 / −0.7 % |
+| G5: species in A (1.0), B 0.3, C 0.3 at 30 krpm | −2.2 / +1.8 / +0.3 % | −0.4 / +3.5 / +0.7 % |
+
+* Without weighting the bias is split by the geometric-mean normalization of
+  α, not by information content (G3 = G2 with S).
+* With weighting the global solutes follow the dataset with the lowest
+  normalized noise: if that is a consistent one (G3), the others are nearly
+  unbiased and the odd dataset takes the bias; if it is the odd one (G5),
+  the bias moves to the others (B +3.5 %, SC fraction error 0.068 vs. 0.048
+  with S). W alone behaves the same for the fractions.
+* VR models (refit per dataset) recover each dataset's own truth in G1–G3
+  (fraction error ≤ 0.006, totals ≤ 0.05 %); less well at low information
+  (G4: 0.035, G5 none/S: 0.05 ± 0.06, G5 W/WS: 0.013).
+
+Diagnostic (`gfit_summary.py`, third table): with equal composition the
+SC–VR fraction difference is ≤ 0.002 per dataset (A1: 0.0006), the SC–VR
+total difference is 0 and the global RMSD/σ is 1.00. With differing
+composition the global RMSD/σ is 1.6–4.8 and the SC–VR fraction difference
+0.03–0.16; with S/WS the SC–VR total difference equals the total bias.
+The diagnostic flags the inconsistency reliably, but not always the odd
+dataset: with WS in G5 the odd dataset A shows the smallest SC–VR
+difference (0.016) and the consistent B, C the largest (0.097).
+
+Recommendation: use S/WS only for samples of identical composition (the
+same sample at different speeds, loadings or optics). If the global RMSD/σ
+is clearly above 1 or the SC–VR differences exceed the noise level, treat
+the fitted scales as unreliable and use the VR models (or fit the datasets
+separately).
 
 ## Conclusions
 
