@@ -73,3 +73,18 @@ Both sides use the same CsCl viscosity model. The solver adds the magnitude of
 CsCl's viscosity increment, where the database polynomial lowers the viscosity
 (design doc §3E, limit 13). So this check is unaffected, but a fit to real CsCl
 data is.
+
+## us_abde on the same data
+
+`simulate --density-csv density.csv` also writes the simulated gradient's
+density at every scan and radius. `us_abde` converts the last scan's band
+positions to densities with an ideal-gradient equation, by default CsCl at
+M 168.36 g/mol and v̄ 0.2661. Applied to `aav_ongrid`'s last scan, that gives:
+
+* **Empty band.** 1.2657 g/mL against 1.3441.
+* **Full band.** 1.3884 g/mL against 1.3994.
+
+The defaults' gradient is 2.5 times steeper than the simulated one. With the
+buoyant molar mass matched to it (49 g/mol instead of 123), the same equation
+gives 1.3428 and 1.3990. See the design doc §3E for the details.
+

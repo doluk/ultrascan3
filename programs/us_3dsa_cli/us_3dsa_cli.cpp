@@ -119,12 +119,13 @@ void US_3dsaCli::usage()
          << "      model / buffer / simulation-parameter XML each data set needs,\n"
          << "      and manifest.json naming the us_astfem_sim runs that produce\n"
          << "      the data.\n\n"
-         << "  us_3dsa_cli simulate --config <case.json> [--seed N]\n\n"
+         << "  us_3dsa_cli simulate --config <case.json> [--seed N] [--density-csv <csv>]\n\n"
          << "      Simulate the case's species into every data set's .auc, with\n"
          << "      the simulator its simulation parameters select.  An ASTFVM data\n"
          << "      set with a gradient-forming buffer (\"buffer\": a US_Buffer XML)\n"
          << "      is simulated in its gradient.  Scans are spread evenly over the\n"
-         << "      speed step's duration.\n\n"
+         << "      speed step's duration.  --density-csv writes the gradient's\n"
+         << "      density at every scan and radius.\n\n"
          << "  us_3dsa_cli gradient-from-interference --ip <interference.auc> --out <molar.auc>\n"
          << "         --meniscus <cm> --bottom <cm> --loading <g/mL> --dndc <mL/g> --molar-mass <g/mol>\n"
          << "         [--path <cm>] [--wavelength <nm>] [--stride N] [--dr <cm>]\n"
@@ -2274,9 +2275,44 @@ int US_3dsaCli::run_gen_cases( const QStringList& args )
 }
 
 // ---------------------------------------------------------------------------
+// The density a data set's gradient gives at each of its scans and radii, as
+// the solver forms it: one row per scan and radius, appended per data set
+static bool write_density_csv( const QString& path, int dataset, US_FvmGradients& grads, const US_DataIO::RawData& sim )
+{
+   QFile f( path );
+
+   if ( !f.open( dataset == 0 ? ( QIODevice::WriteOnly | QIODevice::Text ) : ( QIODevice::Append | QIODevice::Text ) ) )
+   {
+      return false;
+   }
+
+   QTextStream ts( &f );
+
+   if ( dataset == 0 )
+   {
+      ts << "dataset,scan,seconds,radius,density\n";
+   }
+
+   for ( int ss = 0; ss < sim.scanData.size(); ss++ )
+   {
+      const US_DataIO::Scan& sc   = sim.scanData[ss];
+      const QVector<double>& dens = grads.density_at( sc.seconds, sc.temperature, sim.xvalues );
+
+      for ( int rr = 0; rr < sim.xvalues.size(); rr++ )
+      {
+         ts << dataset << "," << ss << "," << sc.seconds << "," << QString::number( sim.xvalues[rr], 'f', 5 ) << ","
+            << QString::number( dens[rr], 'f', 6 ) << "\n";
+      }
+   }
+
+   return true;
+}
+
+// ---------------------------------------------------------------------------
 int US_3dsaCli::run_simulate( const QStringList& args )
 {
    QString  cfg_path;
+   QString  dens_csv; // The gradient's density at every scan, for comparison
    unsigned seed = 1;
 
    for ( int ii = 0; ii < args.size(); ii++ )
@@ -2288,6 +2324,10 @@ int US_3dsaCli::run_simulate( const QStringList& args )
       else if ( args[ii] == "--seed" && ii + 1 < args.size() )
       {
          seed = args[++ii].toUInt();
+      }
+      else if ( args[ii] == "--density-csv" && ii + 1 < args.size() )
+      {
+         dens_csv = args[++ii];
       }
       else
       {
@@ -2435,6 +2475,13 @@ int US_3dsaCli::run_simulate( const QStringList& args )
                         .arg( spec.auc )
                         .arg( grads.density_lo(), 0, 'f', 4 )
                         .arg( grads.density_hi(), 0, 'f', 4 );
+
+            if ( !dens_csv.isEmpty() && !write_density_csv( dens_csv, ii, grads, sim ) )
+            {
+               err() << "cannot write " << dens_csv << "\n";
+               err().flush();
+               return 3;
+            }
          }
 
          US_LammAstfvm astfvm( model, sp );

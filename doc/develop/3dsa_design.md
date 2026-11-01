@@ -786,6 +786,39 @@ two.
 Each fit is 300 solves at about 15 s, about 36 minutes on four cores. Two subgrids keep two threads
 busy.
 
+**`us_abde` on the same data.** `us_abde` (`US_Buoyancy` in AUTO mode) works on the last scan only:
+
+* It places each band by Gaussian decomposition.
+* It converts the position with the equilibrium equation for one ideal solute (`calc_points`). Its
+  CsCl defaults are M 168.36 g/mol and v̄ 0.2661.
+
+Its equation was applied to the on-grid case's last scan:
+
+* Bands at 6.1906 and 6.6609 cm.
+* Loading 1.40 g/mL, buffer 1.00552 g/mL.
+* Meniscus 6.05 cm, bottom 7.2 cm, with no rotor stretch, as simulated.
+
+`simulate --density-csv` writes the simulated gradient for the comparison.
+
+| | Empty (1.3441) | Full (1.3994) |
+|---|---|---|
+| Simulated gradient at the band's peak | 1.3436 | 1.3994 |
+| `us_abde`, CsCl defaults | 1.2657 (−0.078) | 1.3884 (−0.011) |
+| `us_abde`, CsCl defaults with its default loading of 1.42 g/mL | 1.2789 (−0.065) | 1.4078 (+0.008) |
+| `us_abde`'s equation, buoyant molar mass matched to the gradient | 1.3428 (−0.0013) | 1.3990 (−0.0004) |
+| 3DSA, all scans | 1.3441 | 1.3994 |
+
+The defaults give a buoyant molar mass M(1 − v̄ρ) of 123 g/mol. The simulated gradient is matched
+by 49 g/mol: the defaults are 2.5 times too steep, item 9's ideal CsCl. Even the full band comes out
+0.011 g/mL low: it sits 0.035 cm from the defaults' isoconcentration point, where the defaults'
+gradient is 0.25 g/mL per cm. With the buoyant mass matched, the equation recovers both bands to
+0.0013 g/mL. What remains is a last-scan limit: at 9.5 h the empty band is still moving, and the
+gradient at its peak reads 1.3436.
+
+The conversion also depends on the bottom: the density changes by 0.14–0.20 g/mL per cm of bottom
+position. So the rotor stretch `us_abde` adds to the centerpiece's bottom matters at the 10⁻³
+level.
+
 ### Measured gradients
 
 Item 9 below is not particular to CsCl: the solver sediments any gradient former as one dilute,
