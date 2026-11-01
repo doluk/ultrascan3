@@ -76,6 +76,27 @@ class US_UTIL_EXTERN US_SimCache
       //! \returns          Key (a hash of the values)
       static QByteArray   dataset_key( const US_SimulationParameters& simparams, const US_DataIO::EditedData& edata );
 
+      //! \brief Key of a data set, memorized if the memo is on
+      //!
+      //! With the memo on, the key is computed once for each fingerprint of
+      //! the inputs:  all scalar values, but of each vector (radii, scan
+      //! interpolation flags, timestate profiles) only its size and address.
+      //! The memo so relies on vectors not being changed in place, nor freed
+      //! and reallocated at the same address with other values, while it
+      //! holds their keys:  turn it on only where the data sets live as long
+      //! as the fit, and call forget_dataset_keys() when they change.
+      //! \param simparams  Simulation parameters of the data set
+      //! \param edata      Experiment data whose grid is simulated
+      //! \returns          Key, equal to dataset_key()
+      QByteArray          dataset_key_memo( const US_SimulationParameters& simparams,
+                                            const US_DataIO::EditedData& edata );
+
+      //! \brief Turn the memo of data set keys on or off (default off)
+      void                set_key_memo( bool on );
+
+      //! \brief Forget the memorized data set keys (clear() does, too)
+      void                forget_dataset_keys();
+
       //! \brief Key of a simulation
       //! \param dskey  Key of the data set (from dataset_key)
       //! \param comp   Simulated component (experimental space)
@@ -144,5 +165,8 @@ class US_UTIL_EXTERN US_SimCache
       qint64                   nrejected;
       std::atomic<qint64>      nhits;
       std::atomic<qint64>      nmisses;
+      QMutex                   memo_lock;  // Lock of the data set key memo
+      QHash<QByteArray, QByteArray> dskey_memo; // Data set keys by fingerprint
+      bool                     key_memo;   // Flag:  memo of data set keys on
 };
 #endif

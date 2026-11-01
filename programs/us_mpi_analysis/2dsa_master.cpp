@@ -844,6 +844,11 @@ void US_MPI_Analysis::begin_fit_context( void )
    {
       clear_sim_caches();
    }
+
+   if ( sim_changed && sim_cache != nullptr )
+   { // Memorized data set keys hold for one fit context
+      sim_cache->forget_dataset_keys();
+   }
 }
 
 // Clear the simulation cache of every node while all workers are idle:

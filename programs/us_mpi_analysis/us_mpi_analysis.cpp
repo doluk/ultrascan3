@@ -1386,6 +1386,11 @@ void US_MPI_Analysis::create_sim_cache( void )
       delete sim_cache;
       sim_cache = nullptr;
    }
+   else
+   { // The data sets live for the whole job:  memorize their keys (forgotten
+     //  when the fit context changes)
+      sim_cache->set_key_memo( true );
+   }
 
    if ( my_rank == 0 )
    {

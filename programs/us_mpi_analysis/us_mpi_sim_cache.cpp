@@ -428,6 +428,8 @@ void US_MPI_NodeSimCache::clear()
    header->current.store( 0, std::memory_order_relaxed );
    std::atomic_thread_fence( std::memory_order_seq_cst );
    MPI_Win_sync( window );
+
+   forget_dataset_keys();
 }
 
 // Counts of this rank, with the node's entries and bytes

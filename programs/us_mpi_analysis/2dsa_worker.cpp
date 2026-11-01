@@ -256,5 +256,10 @@ bool US_MPI_Analysis::worker_fit_context( int offset, double meniscus, double bo
    fit_context.meniscus = meniscus;
    fit_context.bottom   = bottom;
 
+   if ( sim_changed && sim_cache != nullptr )
+   { // Memorized data set keys hold for one fit context
+      sim_cache->forget_dataset_keys();
+   }
+
    return sim_changed;
 }

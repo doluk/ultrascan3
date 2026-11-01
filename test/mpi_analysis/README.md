@@ -164,6 +164,9 @@ one is full the older one is emptied and becomes current.  The survivor
 flag does not help here, since nearly every solute of a GA gene has a
 nonzero concentration.  The off-grid points of the GA gradient search are
 not stored.  `SimCachePolicy=first` or `recent` overrides the choice.
+Each rank computes the key of a data set (a SHA-256 of its grid and
+simulation parameters) once per fit context, not on every fitness
+evaluation, and fills a simulation's grid only when it is not in the cache.
 GA, 100 genes, 40 generations, 4 ranks (about 185 MB of simulations):
 
 | Cache | first | recent |

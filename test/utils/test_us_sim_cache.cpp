@@ -261,6 +261,40 @@ TEST_F( TestUSSimCache, DatasetKeyCoversGridAndParameters )
    EXPECT_NE( US_SimCache::dataset_key( simparams2, edata ), dskey );
 }
 
+TEST_F( TestUSSimCache, DatasetKeyMemoGivesTheSameKeys )
+{
+   US_SimulationParameters simparams;
+   US_DataIO::EditedData   edata;
+   makeDataSet( simparams, edata );
+   const QByteArray dskey = US_SimCache::dataset_key( simparams, edata );
+
+   US_SimCache cache( 1024 * 1024 );
+   EXPECT_EQ( cache.dataset_key_memo( simparams, edata ), dskey ); // Memo off
+   cache.set_key_memo( true );
+   EXPECT_EQ( cache.dataset_key_memo( simparams, edata ), dskey );
+   EXPECT_EQ( cache.dataset_key_memo( simparams, edata ), dskey ); // Memorized
+
+   // Scalars are compared by value
+   simparams.meniscus += 0.01;
+   const QByteArray menkey = US_SimCache::dataset_key( simparams, edata );
+   EXPECT_NE( menkey, dskey );
+   EXPECT_EQ( cache.dataset_key_memo( simparams, edata ), menkey );
+   edata.scanData[2].seconds += 1.0;
+   EXPECT_EQ( cache.dataset_key_memo( simparams, edata ), US_SimCache::dataset_key( simparams, edata ) );
+
+   // Vectors by address:  a copy (new storage) gets its own key, and a
+   //  vector changed in place needs forget_dataset_keys()
+   US_DataIO::EditedData edata2 = edata;
+   edata2.xvalues[4] += 1.0e-9; // Detaches from edata
+   EXPECT_EQ( cache.dataset_key_memo( simparams, edata2 ), US_SimCache::dataset_key( simparams, edata2 ) );
+   const QByteArray before = cache.dataset_key_memo( simparams, edata2 );
+   edata2.xvalues[5] += 1.0e-9;                                  // In place
+   EXPECT_EQ( cache.dataset_key_memo( simparams, edata2 ), before ); // Stale
+   cache.forget_dataset_keys();
+   EXPECT_EQ( cache.dataset_key_memo( simparams, edata2 ), US_SimCache::dataset_key( simparams, edata2 ) );
+   EXPECT_NE( cache.dataset_key_memo( simparams, edata2 ), before );
+}
+
 TEST_F( TestUSSimCache, SimKeyCoversComponent )
 {
    const QByteArray              dskey( 32, 'd' );

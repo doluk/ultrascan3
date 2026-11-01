@@ -448,9 +448,9 @@ DbgLv(2) << "   CR:BF s20wcorr D20wcorr" << dset->s20w_correction
 // << model.components[0].mw << model.components[0].vbar20
 // << model.components[0].D << model.components[0].signal_concentration;
 
-            // Initialize simulation data with the experiment's grid
+            // (simulate() initializes the simulation with the experiment's
+            //  grid, unless it comes from the cache)
 DbgLv(2) << "   CR:111  rss now" << US_Memory::rss_now() << "cc" << cc;
-            US_AstfemMath::initSimData( simdat, *edata, 0.0 );
 
 DbgLv(2) << "   CR:112  rss now" << US_Memory::rss_now() << "cc" << cc;
 if (dbg_level>1 && thrnrank<2 && cc==0) { model.debug(); dset->simparams.debug(); }
@@ -475,6 +475,7 @@ DbgLv(0) << "solve_sim_calc_residuals_1 : TSOBJ" << dset->simparams.tsobj
 
                if ( ( check_file.exists() )  &&  ( check_file.isFile() ) )
                {  // Timestate file exists
+                  US_AstfemMath::initSimData( simdat, *edata, 0.0 ); // Scan times
                   bool intv_1sec  = US_AstfemMath::timestate_onesec( tmst_fpath, simdat );
 DbgLv(0) << "solve_sim_calc_residuals_1 : intv_1sec" << intv_1sec;
 
@@ -761,8 +762,8 @@ DbgLv(1) << "CR: cc" << cc << " use_zsol" << use_zsol;
 // << model.components[0].mw << model.components[0].vbar20
 // << model.components[0].D << model.components[0].signal_concentration;
 
-            // Initialize simulation data with the experiment's grid
-            US_AstfemMath::initSimData( simdat, *edata, 0.0 );
+            // (simulate() initializes the simulation with the experiment's
+            //  grid, unless it comes from the cache)
 
             if ( dbg_level>1 && thrnrank<2 && cc==0 )
             {
@@ -789,6 +790,7 @@ DbgLv(0) << "solve_sim_calc_residuals_2 : TSOBJ" << dset->simparams.tsobj
 
                if ( ( check_file.exists() )  &&  ( check_file.isFile() ) )
                {  // Timestate file exists
+                  US_AstfemMath::initSimData( simdat, *edata, 0.0 ); // Scan times
                   bool intv_1sec  = US_AstfemMath::timestate_onesec( tmst_fpath, simdat );
 DbgLv(1) << "solve_sim_calc_residuals_2 : intv_1sec" << intv_1sec;
 
@@ -978,8 +980,8 @@ DbgLv(1)<<" Special case of custom grid";
             model.components[ 0 ].s   /= sd.s20w_correction;
             model.components[ 0 ].D   /= sd.D20w_correction;
 
-            // Initialize simulation data with the experiment's grid
-            US_AstfemMath::initSimData( simdat, *edata, 0.0 );
+            // (simulate() initializes the simulation with the experiment's
+            //  grid, unless it comes from the cache)
 
             if ( dbg_level>1 && thrnrank<2 && cc==0 )
             {
@@ -1004,6 +1006,7 @@ DbgLv(0) << "solve_sim_calc_residuals_3 : TSOBJ" << dset->simparams.tsobj
 
                if ( ( check_file.exists() )  &&  ( check_file.isFile() ) )
                {  // Timestate file exists
+                  US_AstfemMath::initSimData( simdat, *edata, 0.0 ); // Scan times
                   bool intv_1sec  = US_AstfemMath::timestate_onesec( tmst_fpath, simdat );
 DbgLv(1) << "solve_sim_calc_residuals_3 : intv_1sec" << intv_1sec;
 
@@ -1927,8 +1930,8 @@ int US_SolveSim::nnls_noise( const int                noisflag,
    return rc;
 }
 
-// Simulate a single-component model for a data set (simulation data
-//  initialized to the experiment grid), or get the simulation from the cache.
+// Simulate a single-component model for a data set on the experiment grid,
+//  or get the simulation from the cache.
 //  A cache hit skips US_Astfem_RSA::calculate and so its side effects on
 //  dset->simparams (timestate load, speed_step expansion, the sim flag);
 //  nothing after the simulation in calc_residuals may depend on them.
@@ -1966,7 +1969,7 @@ QByteArray US_SolveSim::simulate( US_Model& model, DataSet* dset, US_DataIO::Edi
          dskey->nspeeds   = sparms.speed_step.size();
          dskey->nsimprofs = sparms.sim_speed_prof.size();
          dskey->sim       = sparms.sim;
-         dskey->key       = US_SimCache::dataset_key( sparms, *edata );
+         dskey->key       = simcache->dataset_key_memo( sparms, *edata );
       }
 
       simkey = US_SimCache::sim_key( dskey->key, model.components[0] );
@@ -1976,6 +1979,9 @@ QByteArray US_SolveSim::simulate( US_Model& model, DataSet* dset, US_DataIO::Edi
          return simkey;
       }
    }
+
+   // Initialize simulation data with the experiment's grid
+   US_AstfemMath::initSimData( simdat, *edata, 0.0 );
 
    US_Astfem_RSA astfem_rsa( model, dset->simparams );
 
