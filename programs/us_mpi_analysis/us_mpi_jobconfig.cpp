@@ -914,7 +914,9 @@ void US_MPI_JobConfig::validate()
    };
    static const DebugKnob DEBUG_KNOBS[] = { { "g_redo_inc", true, true },
                                             { "base_sig", false, false },
-                                            { "fail_load_rank", true, false } };
+                                            { "fail_load_rank", true, false },
+                                            { "SimCacheMB", true, false },
+                                            { "NodeSplit", true, true } };
 
    for ( const DebugKnob& knob : DEBUG_KNOBS )
    {
@@ -942,6 +944,15 @@ void US_MPI_JobConfig::validate()
                               "debug_text entries by commas, e.g. g_redo_inc=5,base_sig=0.3)" )
                         .arg( knob.key, value, knob.positive ? "positive " : "", knob.integer ? "integer" : "number" );
       }
+   }
+
+   // debug_text SimCache only turns the simulation cache on or off
+   bool          sc_found = false;
+   const QString sc_value = debug_value( "SimCache", &sc_found );
+   if ( sc_found && !QStringList( { "on", "off", "1", "0", "true", "false", "yes", "no" } )
+                        .contains( sc_value, Qt::CaseInsensitive ) )
+   {
+      warnings << QString( "debug_text SimCache \"%1\" is not on or off: the cache stays on" ).arg( sc_value );
    }
 
    // Ranges given by a pair of parameters; allow_equal admits a range of

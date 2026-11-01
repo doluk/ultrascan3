@@ -1301,15 +1301,7 @@ void US_MPI_Analysis::create_node_comm( void )
 {
    // Debug text "NodeSplit=N" (for tests) splits the ranks into N groups
    //  that act as separate nodes, each with its own shared memory
-   int nsplit = 0;
-
-   for ( const QString& dtext : US_Settings::debug_text() )
-   {
-      if ( dtext.section( "=", 0, 0 ).trimmed().compare( "NodeSplit", Qt::CaseInsensitive ) == 0 )
-      {
-         nsplit = dtext.section( "=", 1, 1 ).trimmed().toInt();
-      }
-   }
+   const int nsplit = job_config.debug_value( "NodeSplit" ).toInt();
 
    if ( nsplit > 1 )
    {
@@ -1392,29 +1384,22 @@ void US_MPI_Analysis::create_sim_cache( void )
 //  but at most a quarter of the memory now available.
 qint64 US_MPI_Analysis::sim_cache_bytes( void )
 {
-   const qint64      MB     = 1024 * 1024;
-   const QStringList dbgtxt = US_Settings::debug_text();
+   const qint64 MB = 1024 * 1024;
 
-   for ( const QString& dtext : dbgtxt )
+   if ( QStringList( { "off", "0", "false", "no" } )
+           .contains( job_config.debug_value( "SimCache" ), Qt::CaseInsensitive ) )
    {
-      QString name  = dtext.section( "=", 0, 0 ).trimmed();
-      QString value = dtext.section( "=", 1, 1 ).trimmed();
+      return 0;
+   }
 
-      if ( name.compare( "SimCache", Qt::CaseInsensitive ) == 0 &&
-           QStringList( { "off", "0", "false", "no" } ).contains( value, Qt::CaseInsensitive ) )
-      {
-         return 0;
-      }
+   bool          found  = false;
+   bool          ok     = false;
+   const QString mbtext = job_config.debug_value( "SimCacheMB", &found );
+   const qint64  mbset  = mbtext.toLongLong( &ok );
 
-      if ( name.compare( "SimCacheMB", Qt::CaseInsensitive ) == 0 )
-      {
-         bool   ok    = false;
-         qint64 capmb = value.toLongLong( &ok );
-         if ( ok )
-         {
-            return qMax( (qint64) 0, capmb ) * MB;
-         }
-      }
+   if ( found && ok )
+   {
+      return qMax( (qint64) 0, mbset ) * MB;
    }
 
    int memavail = 0;
