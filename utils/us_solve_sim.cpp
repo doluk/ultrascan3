@@ -298,12 +298,15 @@ DebugTime("BEG:calcres");
       npoints        = edata->pointCount();
       nscans         = edata->scanCount();
       double odlim   = edata->ODlimit;
+      double* pb     = nnls_b.data();
 
       for ( int ss = 0; ss < nscans; ss++ )
       {
+         const double* ev = edata->scanData.at( ss ).rvalues.constData();
+
          for ( int rr = 0; rr < npoints; rr++ )
          {  // Fill the B matrix with experiment data (or zero)
-            double evalue  = edata->value( ss, rr );
+            double evalue  = ev[ rr ];
 //DbgLv(1)<<"subha_OD limit for scan "<< ss << rr << evalue << odlim;
 
             if ( evalue >= odlim )
@@ -320,7 +323,7 @@ DbgLv(1)<<"subha_OD limit exceeded for scan no " << ss << rr << odlim << kodl;
 #endif
 
             // Store the B value in a row for a dataset
-            nnls_b[ kb++ ] = evalue;
+            pb[ kb++ ]     = evalue;
             norm_b        += sq( evalue );
 
          }  //"rr"-based for loop
@@ -540,12 +543,16 @@ DbgLv(1) << "   CR: A fill kodl" << kodl << "bndthr ksol" << banddthr << ksols
             if ( kodl == 0 )
             {  // Normal case of no ODlimit substitutions
 
+               double* pa = nnls_a.data();
+
                for ( int ss = 0; ss < nscans; ss++ )
                {
+                  const double* sv = simdat.scanData.at( ss ).rvalues.constData();
+
                   for ( int rr = 0; rr < npoints; rr++ )
                   {
-                     double sval    = simdat.value( ss, rr );
-                     nnls_a[ ka++ ] = sval;
+                     double sval    = sv[ rr ];
+                     pa[ ka++ ]     = sval;
                      norm_a        += sq( sval );
                      norm_e        += sq( sval );
                   }
@@ -565,22 +572,26 @@ DbgLv(1) << " T0O0:norm_of_the_vector" << norm_a << sim_vals.solutes[cc].s << si
             {  // Special case where ODlimit substitutions are in B matrix
 DbgLv(1)<<"stype==0 but from else part";
 
+               double* pa = nnls_a.data();
+
                for ( int ss = 0; ss < nscans; ss++ )
                {
+                  const double* sv = simdat.scanData.at( ss ).rvalues.constData();
+
                   for ( int rr = 0; rr < npoints; rr++ )
                   {  // Fill A with simulations (or zero where B has zero)
 // x  x  x  x  x  x  x  x
                      if ( nnls_b[ bx++ ] != 0.0 )
                      {
-                        double sval    = simdat.value( ss, rr );
-                        nnls_a[ ka++ ] = sval;
+                        double sval    = sv[ rr ];
+                        pa[ ka++ ]     = sval;
                         norm_a        += sq( sval );
                         norm_e        += sq( sval );
                      }
 
                      else
                      {
-                        nnls_a[ ka++ ] = 0.0;
+                        pa[ ka++ ]     = 0.0;
                      }
                   }
                }
@@ -856,12 +867,16 @@ DbgLv(1) << "   CR: A-fill  bndthr" << banddthr << "kodl ksols" << kodl << ksols
 
             if ( kodl == 0 )
             {  // Normal case of no ODlimit substitutions
+               double* pa = nnls_a.data();
+
                for ( int ss = 0; ss < nscans; ss++ )
                {
+                  const double* sv = simdat.scanData.at( ss ).rvalues.constData();
+
                   for ( int rr = 0; rr < npoints; rr++ )
                   {
-                     double sval    = simdat.value( ss, rr );
-                     nnls_a[ ka++ ] = sval;
+                     double sval    = sv[ rr ];
+                     pa[ ka++ ]     = sval;
                      norm_a        += sq( sval );
                   }
 // x  x  x  x  x  x  x  x
@@ -869,19 +884,23 @@ DbgLv(1) << "   CR: A-fill  bndthr" << banddthr << "kodl ksols" << kodl << ksols
             }
             else
             {  // Special case where ODlimit substitutions are in B matrix
+               double* pa = nnls_a.data();
+
                for ( int ss = 0; ss < nscans; ss++ )
                {
+                  const double* sv = simdat.scanData.at( ss ).rvalues.constData();
+
                   for ( int rr = 0; rr < npoints; rr++ )
                   {  // Fill A with simulations (or zero where B has zero)
                      if ( nnls_b[ bx++ ] != 0.0 )
                      {
-                        double sval    = simdat.value( ss, rr );
-                        nnls_a[ ka++ ] = sval;
+                        double sval    = sv[ rr ];
+                        pa[ ka++ ]     = sval;
                         norm_a        += sq( sval );
                      }
                      else
                      {
-                        nnls_a[ ka++ ] = 0.0;
+                        pa[ ka++ ]     = 0.0;
 // x  x  x  x  x  x  x  x
                      }
                   }
@@ -1057,31 +1076,39 @@ int ks=ka;
             // Populate the A matrix for the NNLS routine with simulation
             if ( kodl == 0 )
             {  // Normal case of no ODlimit substitutions
+               double* pa = nnls_a.data();
+
                for ( int ss = 0; ss < nscans; ss++ )
                {
+                  const double* sv = simdat.scanData.at( ss ).rvalues.constData();
+
                   for ( int rr = 0; rr < npoints; rr++ )
                   {
-                     double sval    = simdat.value( ss, rr );
-                     nnls_a[ ka++ ] = sval;
+                     double sval    = sv[ rr ];
+                     pa[ ka++ ]     = sval;
                      norm_a        += sq( sval );
                   }
                }
             }
             else
             {  // Special case where ODlimit substitutions are in B matrix
+               double* pa = nnls_a.data();
+
                for ( int ss = 0; ss < nscans; ss++ )
                {
+                  const double* sv = simdat.scanData.at( ss ).rvalues.constData();
+
                   for ( int rr = 0; rr < npoints; rr++ )
                   {  // Fill A with simulations (or zero where B has zero)
                      if ( nnls_b[ bx++ ] != 0.0 )
                      {
-                        double sval    = simdat.value( ss, rr );
-                        nnls_a[ ka++ ] = sval;
+                        double sval    = sv[ rr ];
+                        pa[ ka++ ]     = sval;
                         norm_a        += sq( sval );
                      }
                      else
                      {
-                        nnls_a[ ka++ ] = 0.0;
+                        pa[ ka++ ]     = 0.0;
                      }
                   }
                }
@@ -1428,10 +1455,12 @@ if(soluval>1.0)
 
             for ( int ss = 0; ss < nscans; ss++, scnx++ )
             {
+               double*       sv = sdata->scanData[ scnx ].rvalues.data();
+               const double* iv = idata->scanData.at( ss ).rvalues.constData();
+
                for ( int rr = 0; rr < npoints; rr++ )
                {
-                  sdata->scanData[ scnx ].rvalues[ rr ] +=
-                     ( soluval * idata->value( ss, rr ) );
+                  sv[ rr ] += ( soluval * iv[ rr ] );
                }
             }
 DbgLv(2) << "   CR:231  rss now" << US_Memory::rss_now() << "thrn" << thrnrank;
@@ -1503,17 +1532,23 @@ DbgLv(2) << "   CR:301  rss now" << US_Memory::rss_now() << "thrn" << thrnrank;
       int    kntcs     = 0;
       double varidset  = 0.0;
 
+      const double* tiv = tinvec.constData() + tinoffs;
+
       for ( int ss = 0; ss < nscans; ss++, scnx++ )
       {  // Create residuals dset:  exp - sim - noise(s)
+         const double* ev  = edata->scanData.at( ss ).rvalues.constData();
+         const double* sv  = sdata->scanData.at( scnx ).rvalues.constData();
+         double*       rv  = resid->scanData[ scnx ].rvalues.data();
+         const double  riv = rinvec[ ss + rinoffs ];
 
          for ( int rr = 0; rr < npoints; rr++ )
          {
 
-            double resval = edata->value( ss, rr )
-                          - sdata->value( scnx, rr )
-                          - tinvec[ rr + tinoffs ]
-                          - rinvec[ ss + rinoffs ];
-            resid->setValue( scnx, rr, resval );
+            double resval = ev[ rr ]
+                          - sv[ rr ]
+                          - tiv[ rr ]
+                          - riv;
+            rv[ rr ]      = resval;
 
             double r2    = sq( resval );
             variance    += r2;
