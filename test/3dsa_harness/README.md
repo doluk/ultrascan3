@@ -318,3 +318,12 @@ case 18's v̄ error five-fold. A real velocity run collects far more.
 **H/D exchange is not modelled.** In a real D₂O series the analyte's own mass
 and v̄ shift as labile hydrogens exchange, so the truth the harness recovers is
 cleaner than a real experiment's. See §3.5 of the design document.
+
+## Density-gradient cases
+
+`abde_cscl/` holds a separate set: AAV-like capsids in a simulated CsCl
+gradient, under run 2098's conditions. Each case is simulated and fitted with
+`us_3dsa_cli` directly; `run_harness.py` does not drive them. They check that
+3DSA recovers *s*, *f/f₀* and the density from all scans when the gradient is
+right. They also show how the fit fails when the gradient forms on the wrong
+time course. See `abde_cscl/README.md`.

@@ -1,0 +1,63 @@
+{
+ "name": "aav_cscl_ongrid",
+ "description": "AAV empty (65 S, f/f0 1.2, 1.3441 g/mL) and full (95 S, 1.2, 1.3994 g/mL) in a simulated 1.40 g/mL CsCl gradient on PBS, 48 krpm, 14 scans over 9.5 h, 0.003 OD noise, bands near 1 OD; every truth on a grid point",
+ "species": [
+  {
+   "s20w": 6.5e-12,
+   "ff0": 1.2,
+   "vbar20": 0.744,
+   "conc": 0.025
+  },
+  {
+   "s20w": 9.5e-12,
+   "ff0": 1.2,
+   "vbar20": 0.7146,
+   "conc": 0.04
+  }
+ ],
+ "datasets": [
+  {
+   "auc": "data/aav_ongrid.RA.1.A.260.auc",
+   "simparams": "simparams.xml",
+   "buffer": "cscl_buffer.xml",
+   "label": "CsCl 1.40",
+   "loading": 1.0,
+   "vbar20": 0.72,
+   "temperature": 20,
+   "rnoise": 0.003
+  }
+ ],
+ "grid": {
+  "s_min": 5.5e-12,
+  "s_max": 1.05e-11,
+  "s_res": 6,
+  "k_min": 1.0,
+  "k_max": 1.4,
+  "k_res": 5,
+  "v_list": [
+   0.743,
+   0.7435,
+   0.744,
+   0.7445,
+   0.745,
+   0.7136,
+   0.7141,
+   0.7146,
+   0.7151,
+   0.7156
+  ],
+  "grid_reps": 1,
+  "mask": "s_k_v"
+ },
+ "fit": {
+  "threads": 4,
+  "noisflag": 0,
+  "fit_scales": false,
+  "edit_margin": 0.02,
+  "edit_bottom_margin": 0.1
+ },
+ "expect": {
+  "vbar_tol": 0.002,
+  "s_tol": 5e-13
+ }
+}

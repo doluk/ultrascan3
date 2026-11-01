@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE US_Buffer>
+<BufferData version="1.0">
+    <buffer id="0" guid="9b0c7e5e-0001-4c1e-9d1a-3d5a0c5c1002" description="PBS + 1.40 g/mL CsCl, forming twice as fast (synthetic)" ph="7.40000" density="1.005520" viscosity="1.01170" compressibility="0.0000e+00" manual="0">
+        <cosed_component id="1" name="PBS" GUID="9b0c7e5e-0002-4c1e-9d1a-000000000002" concentration="1.00000" sedimentationCoefficient="0.00000" diffusionCoefficient="0.00000" overlaying="0" vbar="1.0000">
+            <densityCoefficients c0="1.00552" c1="0" c2="0" c3="0" c4="0" c5="0"/>
+            <viscosityCoefficients c0="1.0117" c1="0" c2="0" c3="0" c4="0" c5="0"/>
+        </cosed_component>
+        <cosed_component id="13" name="Cesium chloride" GUID="9b0c7e5e-0003-4c1e-9d1a-000000000013" concentration="3.10500" sedimentationCoefficient="0.89400" diffusionCoefficient="40.00000" overlaying="0" vbar="0.2300">
+            <densityCoefficients c0="0" c1="0" c2="0.1268641" c3="0.00127445" c4="-0.0011954" c5="0.000258866"/>
+            <viscosityCoefficients c0="0" c1="-0.0194104" c2="-0.0407863" c3="0.0115489" c4="-0.0021774" c5="0"/>
+        </cosed_component>
+        <spectrum/>
+    </buffer>
+</BufferData>

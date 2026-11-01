@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE US_SimParams>
+<SimParams version="1.0">
+    <params meshType="ASTFVM" gridType="Moving" primaryFit="NOTHING" secondaryFit="NOTHING" simpoints="200" radialres="0.002" meniscus="6.05" bottom="7.2" rnoise="0" lrnoise="0" tinoise="0" rinoise="0" baseline="0" temperature="20" sigma="0" delta="0" rotorCalID="0" bandform="0" sector="0" pathlength="1.2" angle="2.5" width="0">
+        <speedstep rotorspeed="48000" scans="14" timefirst="0" timelast="0" w2tfirst="0" w2tlast="0" duration_hrs="9" duration_mins="30" delay_hrs="0" delay_mins="0" acceleration="400" accelerflag="1" set_speed="48000" avg_speed="48000" speed_stddev="0"/>
+    </params>
+</SimParams>

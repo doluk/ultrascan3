@@ -736,6 +736,56 @@ meniscus spike at 2.7 h, and the last scan's baseline correction applied to all.
 velocity run in PBS measures *s* and *D* directly; from ABDE they need a gradient-former model that
 is right in time, not only at equilibrium.
 
+### Recovery when the gradient is right
+
+This check asks whether the method or the gradient fails. The test is a run in the conditions of
+run 2098, simulated with the gradient the fit uses: `test/3dsa_harness/abde_cscl`.
+
+* **Run.** PBS loaded at 1.40 g/mL CsCl (3.105 M), 48 krpm, meniscus 6.05 cm, 14 scans over 9.5 h,
+  0.003 OD noise.
+* **CsCl.** Simulated by the ASTFVM with its *s* and *D* following the solution it forms
+  (case 5): *s*₂₀,w 0.447 S and *D*₂₀,w 2.0 × 10⁻⁵ cm²/s. At the loading this gives the *s*/*D* of
+  the β = 1.25 × 10⁹ equilibrium. The gradient spans 1.329–1.483 g/mL at 9.5 h.
+* **Capsids.** Empty: 65 S, *f/f₀* 1.2, v̄ 0.7440 (1.3441 g/mL, 3.48 MDa). Full: 95 S, *f/f₀* 1.2,
+  v̄ 0.7146 (1.3994 g/mL, 5.12 MDa). Signals are 0.025 and 0.040 OD at loading, so the bands peak
+  near 0.5 and 1 OD.
+* **Grid.** All scans, ASTFVM. *s* 55–105 S in steps of 10, *f/f₀* 1.0–1.4 in steps of 0.1, and
+  five v̄ values 0.0005 apart around each band: 300 points.
+
+Band values are signal-weighted over the solutes in each band.
+
+| Case | RMSD | Empty: *s*, *f/f₀*, v̄ (truth) | Full: *s*, *f/f₀*, v̄ (truth) |
+|---|---|---|---|
+| Truths on grid points | 2.99 × 10⁻³ | 65.0 S, 1.20, 0.74400; 0.0250 OD | 95.1 S, 1.20, 0.71460; 0.0400 OD |
+| Truths between grid points | 3.33 × 10⁻³ | 69.4 S (69), 1.27 (1.23), 0.74375 (0.74375) | 91.3 S (91), 1.20 (1.16), 0.71485 (0.71485) |
+| Gradient forming twice as fast, same equilibrium | 6.59 × 10⁻² | 55 S, 1.00, 0.7450 (grid edges); 0.0200 OD (0.025) | 67 S, 1.40 (grid edge), 0.71458; 0.0418 OD (0.040) |
+
+**With the gradient right, the scans determine *s*, *f/f₀* and the density.** On the grid, 87 % of
+the empty band's signal and 98 % of the full band's sit on the true point. Off the grid, *s* comes
+within 0.5 % and v̄ exactly. *f/f₀* comes within 3 %, a third of a grid step, which puts *D* 5 %
+low and *M* 5–6 % high. The time course carries the hydrodynamics. With the signal 12.5 times
+higher (bands at 13 OD), the off-grid fit's residual sits in the scans at 1.4–2.7 h, while the
+bands travel: 0.027–0.039 OD there against 0.007–0.009 OD late. The band values are unchanged.
+At realistic signal that discretisation is below the noise.
+
+**With the gradient wrong in time, the fit fails as run 2098's does.** The fast case keeps the
+same CsCl equilibrium, with *s* and *D* both doubled. Its residual is 22 times the noise: 0.009 OD
+at 41 min, 0.10–0.11 OD at 3.4–4.8 h and 0.04 OD at 9.5 h.
+
+* The empty band goes to the grid's corner (55 S, *f/f₀* 1.0, v̄ 0.7450) and loses a fifth of its
+  signal. Its density, near the meniscus where the gradient is still forming, moves by
+  0.0018 g/mL.
+* The full band goes to 67 S at *f/f₀* 1.4. Its density survives, because it ends where the
+  equilibrium puts it.
+
+So run 2098's failure to follow its sequence is not the method's. It is consistent with a CsCl
+gradient that is wrong in time (limits 9 and 13). Run 2098's residual, 0.010–0.022 OD per scan at a
+similar signal, is a third of this case's, so its error in time would be smaller than a factor of
+two.
+
+Each fit is 300 solves at about 15 s, about 36 minutes on four cores. Two subgrids keep two threads
+busy.
+
 ### Measured gradients
 
 Item 9 below is not particular to CsCl: the solver sediments any gradient former as one dilute,
@@ -893,6 +943,15 @@ For the branch's author; none is worked around here except where noted.
     recorded ω²t of run 1322's scans to ±0.6 s (`AstfvmFollowsTheRotorForASlowSolute`). Solutes
     of tens of S and more, with steps of seconds, are unaffected; run 1322's sucrose fit over all
     scans moved by 10⁻⁴.
+13. **A viscosity increment is taken as its magnitude.** `CosedData::InterpolateCCosed` adds
+    `qAbs()` of a former's viscosity increment, and case 5 does the same. The buffer editor adds
+    the increment with its sign. CsCl's database polynomial lowers the viscosity by 7.8 % at
+    1.916 M, the end of its listed range, and by 11.4 % at 3.105 M (extrapolated). The solver
+    raises it by as much: 1.126 cP instead of 0.897 cP on PBS at 1.40 g/mL. A solute's *s* and *D*
+    in the gradient both carry 1/η, so the bands' densities are unaffected. Their approach is
+    about 26 % slower, and in case 5 so is the CsCl's own formation. Sucrose, whose increment is
+    positive, is unaffected. *Not changed here.* The synthetic check in "Recovery when the gradient
+    is right" uses the same model on both sides, so it is unaffected too.
 
 **A former that follows the solution it forms.** `US_LammAstfvm::set_self_gradient()` makes a
 solute's own concentration set the density and viscosity at each point (the buffer's plus the
@@ -927,8 +986,9 @@ unchanged: one ideal solute with constant *s* and *D* (limit 9).
 
 * The desktop and MPI programs: they need the buffer's co-sedimenting components loaded with the
   solution and the ASTFVM selectable, exactly as the cosedimenting 2DSA does.
-* Molar mass from ABDE: fit the approach to equilibrium (all scans, ASTFVM) — the hydrodynamics
-  are in the early scans — or regularise toward the fewest bands.
+* Molar mass from ABDE on real data. Fitting the approach to equilibrium (all scans, ASTFVM)
+  works when the gradient is right ("Recovery when the gradient is right"). Run 2098 needs a CsCl
+  model that is right in time (limits 9 and 13); otherwise, regularise toward the fewest bands.
 * Validity of the closed form judged inside the engine rather than by `verify` in the CLI.
 
 ---

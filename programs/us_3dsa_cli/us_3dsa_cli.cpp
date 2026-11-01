@@ -1098,6 +1098,8 @@ int US_3dsaCli::run_fit( const QStringList& args )
       const double       sc   = ( ii < result.scales.size() ) ? result.scales[ii] : 1.0;
       const double       sct =
          ( !kase.datasets.isEmpty() && kase.datasets[0].loading > 0.0 ) ? ds.loading / kase.datasets[0].loading : 1.0;
+      // The density the fit used: a buffer file's, unless the case overrides it
+      const double density = ( ii < dsets.size() ) ? dsets[ii]->density : ds.density;
 
       rmsd_lo = qMin( rmsd_lo, rmsd );
       rmsd_hi = qMax( rmsd_hi, rmsd );
@@ -1116,7 +1118,7 @@ int US_3dsaCli::run_fit( const QStringList& args )
       out() << QString( "  %1 %2 %3 %4 %5 %6 %7 %8%9\n" )
                   .arg( ds.label.isEmpty() ? QFileInfo( ds.auc ).fileName() : ds.label, -22 )
                   .arg( ds.d2o_percent, 8, 'f', 1 )
-                  .arg( ds.density, 12, 'f', 6 )
+                  .arg( density, 12, 'f', 6 )
                   .arg( QString::number( rmsd, 'e', 4 ), 12 )
                   .arg( sc, 12, 'f', 5 )
                   .arg( sct, 12, 'f', 5 )
@@ -1127,7 +1129,7 @@ int US_3dsaCli::run_fit( const QStringList& args )
       QJsonObject jd;
       jd["label"]                           = ds.label;
       jd["d2o_percent"]                     = ds.d2o_percent;
-      jd["density"]                         = ds.density;
+      jd["density"]                         = density;
       jd["rmsd"]                            = rmsd;
       jd["variance"]                        = var;
       jd["scale_fit"]                       = sc;
