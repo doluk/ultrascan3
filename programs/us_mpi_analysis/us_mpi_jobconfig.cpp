@@ -955,6 +955,14 @@ void US_MPI_JobConfig::validate()
       warnings << QString( "debug_text SimCache \"%1\" is not on or off: the cache stays on" ).arg( sc_value );
    }
 
+   // debug_text SimCachePolicy chooses what the full cache keeps
+   const QString sp_value = debug_value( "SimCachePolicy", &sc_found );
+   if ( sc_found && !QStringList( { "first", "recent" } ).contains( sp_value, Qt::CaseInsensitive ) )
+   {
+      warnings << QString( "debug_text SimCachePolicy \"%1\" is not first or recent: the method's default is used" )
+                     .arg( sp_value );
+   }
+
    // Ranges given by a pair of parameters; allow_equal admits a range of
    //  one value (e.g. a fixed f/f0)
    auto check_range = [this]( const char* kmin, const char* kmax, const bool allow_equal )

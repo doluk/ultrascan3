@@ -128,9 +128,11 @@ foreach(case ${US_MPI_CASES} ${US_MPI_INPUT_CASES})
 endforeach()
 
 # The node-shared simulation cache must not change results:  repeat cases
-# with the cache off, with a cache too small for the fit (keep-first, most
-# simulations not stored), and with the ranks split into two pseudo-nodes
-# (separate caches; the master has the other node clear its cache).
+# with the cache off, with a cache too small for the fit (2DSA and PCSA keep
+# the first simulations and store no more; GA keeps the recent ones and
+# empties a generation of the cache again and again), with the recent policy
+# for every method, and with the ranks split into two pseudo-nodes (separate
+# caches; the master has the other node clear its cache).
 set(US_MPI_CACHE_CASES
     2dsa_refine_np4
     2dsa_mc_pmasters3
@@ -138,9 +140,12 @@ set(US_MPI_CACHE_CASES
     2dsa_composite_menbot
     2dsa_composite_menbot_pmasters
     pcsa_sl
+    ga_np2
+    ga_basic
 )
 
-foreach(variant "off;SimCache=off" "small;SimCacheMB=1" "nodes;NodeSplit=2")
+foreach(variant "off;SimCache=off" "small;SimCacheMB=1" "recent;SimCacheMB=1,SimCachePolicy=recent"
+                "nodes;NodeSplit=2")
     list(GET variant 0 tag)
     list(GET variant 1 dtext)
     add_test(NAME mpi_analysis_simcache_${tag}

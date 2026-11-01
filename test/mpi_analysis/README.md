@@ -153,11 +153,31 @@ python3 test/mpi_analysis/us_mpi_regression.py check all --debug-text SimCache=o
 python3 test/mpi_analysis/us_mpi_regression.py check all --debug-text SimCacheMB=1 ...
 ```
 
+What a full cache keeps depends on the method.  2DSA and PCSA keep the
+first simulations and store no more:  they repeat the same solutes
+(refinement and Monte Carlo iterations, meniscus and bottom points), and of
+a repeated sequence longer than the cache the first part is reused, while
+discarding the oldest simulations would reuse none.  GA keeps the
+simulations used last:  the cache holds two generations of half the size,
+a hit in the older one is copied into the current one, and when the current
+one is full the older one is emptied and becomes current.  The survivor
+flag does not help here, since nearly every solute of a GA gene has a
+nonzero concentration.  The off-grid points of the GA gradient search are
+not stored.  `SimCachePolicy=first` or `recent` overrides the choice.
+GA, 100 genes, 40 generations, 4 ranks (about 185 MB of simulations):
+
+| Cache | first | recent |
+|---|---|---|
+| 3.9 GB | 81 % reused | 81 % reused |
+| 50 MB | 36 % | 81 % |
+| 20 MB | 17 % | 76 % |
+
 CTest repeats a few cases (`ctest -L simcache`):  with the cache off, with a
-1 MB cache, too small for the fit, so most simulations are computed without
-being stored, and with `NodeSplit=2`, which makes two groups of ranks act as
-separate nodes with separate caches (a test switch for multi-node behavior
-on one machine).
+1 MB cache, too small for the fit (2DSA and PCSA store hardly anything, GA
+empties a generation every few simulations), with a 1 MB cache and the
+recent policy for every method, and with `NodeSplit=2`, which makes two
+groups of ranks act as separate nodes with separate caches (a test switch
+for multi-node behavior on one machine).
 
 ### Benchmark
 

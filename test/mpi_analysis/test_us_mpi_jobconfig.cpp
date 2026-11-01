@@ -453,13 +453,13 @@ TEST( US_MPI_JobConfig, DebugTextKnobsAreChecked )
 
 TEST( US_MPI_JobConfig, SimulationCacheKnobsAreChecked )
 {
-   Config ok = validated( GRID_2DSA + "<debug_text value=\"SimCache=off,SimCacheMB=512,NodeSplit=2\"/>" );
+   Config ok = validated( GRID_2DSA + "<debug_text value=\"SimCache=off,SimCacheMB=512,NodeSplit=2,SimCachePolicy=recent\"/>" );
    EXPECT_TRUE( ok.warnings.isEmpty() ) << all_of( ok );
    EXPECT_EQ( ok.debug_value( "SimCache" ), "off" );
    EXPECT_EQ( ok.debug_value( "SimCacheMB" ), "512" );
 
-   Config bad = validated( GRID_2DSA + "<debug_text value=\"SimCache=maybe,SimCacheMB=lots,NodeSplit=0\"/>" );
-   EXPECT_EQ( bad.warnings.size(), 3 ) << all_of( bad );
+   Config bad = validated( GRID_2DSA + "<debug_text value=\"SimCache=maybe,SimCacheMB=lots,NodeSplit=0,SimCachePolicy=lru\"/>" );
+   EXPECT_EQ( bad.warnings.size(), 4 ) << all_of( bad );
    EXPECT_TRUE( bad.errors.isEmpty() );
 }
 

@@ -1363,7 +1363,23 @@ void US_MPI_Analysis::create_sim_cache( void )
       sim_bytes      = ( ee == 0 ) ? nbytes : qMin( sim_bytes, nbytes );
    }
 
-   sim_cache = new US_MPI_NodeSimCache( node_comm, cap, sim_bytes );
+   // The GA keeps the simulations used last; the other methods repeat the
+   //  same solutes and keep the first ones (debug text SimCachePolicy=first
+   //  or recent chooses)
+   const QString policy_text = job_config.debug_value( "SimCachePolicy" ).toLower();
+   US_MPI_NodeSimCache::Policy policy =
+      ( analysis_type.startsWith( "GA" ) || analysis_type.startsWith( "DMGA" ) ) ? US_MPI_NodeSimCache::RECENT : US_MPI_NodeSimCache::KEEP_FIRST;
+
+   if ( policy_text == "first" )
+   {
+      policy = US_MPI_NodeSimCache::KEEP_FIRST;
+   }
+   else if ( policy_text == "recent" )
+   {
+      policy = US_MPI_NodeSimCache::RECENT;
+   }
+
+   sim_cache = new US_MPI_NodeSimCache( node_comm, cap, sim_bytes, policy );
 
    if ( !sim_cache->valid() )
    {
@@ -1374,7 +1390,8 @@ void US_MPI_Analysis::create_sim_cache( void )
    if ( my_rank == 0 )
    {
       DbgLv( 0 ) << "Simulation cache:" << ( sim_cache ? "shared by the ranks of each node," : "could not be allocated;" )
-                 << cap / ( 1024 * 1024 ) << "MB per node";
+                 << cap / ( 1024 * 1024 ) << "MB per node,"
+                 << ( policy == US_MPI_NodeSimCache::RECENT ? "keeps the simulations used last" : "keeps the first simulations" );
    }
 }
 
@@ -1427,7 +1444,7 @@ void US_MPI_Analysis::free_node_comm( void )
          int  hlen = 0;
          MPI_Get_processor_name( hostname, &hlen );
          QString text = QString( "Simulation cache (%1): %2 of %3 simulations reused (%4%);"
-                                 " %5 stored in %6 of %7 MB; %8 not stored for lack of room" )
+                                 " %5 stored in %6 of %7 MB; %8 not stored for lack of room; %9 evicted" )
                            .arg( QString::fromLatin1( hostname, hlen ) )
                            .arg( st.hits )
                            .arg( nfetch )
@@ -1435,7 +1452,8 @@ void US_MPI_Analysis::free_node_comm( void )
                            .arg( st.entries )
                            .arg( st.bytes / 1048576.0, 0, 'f', 1 )
                            .arg( st.max_bytes / 1048576 )
-                           .arg( st.rejected );
+                           .arg( st.rejected )
+                           .arg( st.evicted );
          qDebug().noquote() << text;
       }
 
