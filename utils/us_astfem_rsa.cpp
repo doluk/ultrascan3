@@ -2844,8 +2844,8 @@ void US_Astfem_RSA::initialize_conc( int kk, US_AstfemMath::MfemInitial& CT0, bo
       lamella_width = sqrt( base ) - af_params.current_meniscus;
    }
    if (sc->molar_concentration == 0.0)sc->molar_concentration=sc->signal_concentration;
-   qDebug() << "nval=" << nval << "conc=" << sc->molar_concentration << sc->signal_concentration;
-   qDebug() << "lamella_width=" << lamella_width << "overlaying=" << overlaying;
+   DbgLv( 2 ) << "nval=" << nval << "conc=" << sc->molar_concentration << sc->signal_concentration;
+   DbgLv( 2 ) << "lamella_width=" << lamella_width << "overlaying=" << overlaying;
    // We don't have an existing CT0 concentration vector. Build up the initial
    // concentration vector with constant concentration
    if  ( nval == 0 )
