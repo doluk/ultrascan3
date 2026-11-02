@@ -1082,8 +1082,8 @@ int US_LammAstfvm::solve_component( int compx )
       s_dt = s20w_max / param_s20w_corr;
    }
    double  total_t = ( param_b - param_m ) * 2.0 / ( s_dt * param_w2 * param_m );
-   qDebug() << "fixed_dt" << fixed_dt;
-   qDebug() << "steps_per_transit" << steps_per_transit;
+   DbgLv( 2 ) << "fixed_dt" << fixed_dt;
+   DbgLv( 2 ) << "steps_per_transit" << steps_per_transit;
    if ( fixed_dt > 0.0 )
    {  // user-forced fixed time step (Fig 1 dt sweep)
       dt = fixed_dt;
