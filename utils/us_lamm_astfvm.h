@@ -140,6 +140,10 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
       //! \param parent     Parent object (may be 0)
       US_LammAstfvm( US_Model&, US_SimulationParameters&, QObject* = nullptr );
 
+      //! \brief Frees the gradients the solver made itself; a caller's
+      //!        (set_buffer's bfg and csD) stay the caller's
+      ~US_LammAstfvm() override;
+
 
       //! \brief Main method to calculate FVM solution
       //! \param sim_data Reference to simulated AUC data to produce
@@ -294,6 +298,14 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
 
 
    private:
+      bool                      own_bfg = false; // bandFormingGradient was allocated here
+      bool                      own_csd = false; // saltdata was allocated here
+
+      // Point bandFormingGradient (saltdata) at a gradient, freeing the
+      // previous one if the solver allocated it; owned says whether the
+      // solver allocated the new one
+      void                      set_bfg( US_Math_BF::Band_Forming_Gradient*, bool );
+      void                      set_csd( CosedData*, bool );
 
       US_Model&                 model;       // input model
       US_SimulationParameters&  simparams;   // input simulation parameters
