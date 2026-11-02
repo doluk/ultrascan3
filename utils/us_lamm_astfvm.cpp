@@ -881,6 +881,32 @@ US_LammAstfvm::US_LammAstfvm( US_Model& rmodel, US_SimulationParameters& rsimpar
    dt                  = 0.0;
 }
 
+US_LammAstfvm::~US_LammAstfvm()
+{
+   set_bfg( nullptr, false );
+   set_csd( nullptr, false );
+}
+
+void US_LammAstfvm::set_bfg( US_Math_BF::Band_Forming_Gradient* bfg, bool owned )
+{
+   if ( own_bfg && bandFormingGradient != bfg )
+   {
+      delete bandFormingGradient;
+   }
+   bandFormingGradient = bfg;
+   own_bfg             = owned && bfg != nullptr;
+}
+
+void US_LammAstfvm::set_csd( CosedData* csd, bool owned )
+{
+   if ( own_csd && saltdata != csd )
+   {
+      delete saltdata;
+   }
+   saltdata = csd;
+   own_csd  = owned && csd != nullptr;
+}
+
 // primary method to calculate solutions for all species
 int US_LammAstfvm::calculate( US_DataIO::RawData& sim_data )
 {
@@ -1776,7 +1802,7 @@ void US_LammAstfvm::set_buffer( US_Buffer buffer, US_Math_BF::Band_Forming_Gradi
       else if ( !csD->is_empty && csD->cosed_components != nullptr )
       {
          DbgLv( 1 ) << "reused old csD";
-         saltdata = csD;
+         set_csd( csD, false );
          cosed_comp_data.clear();
          cosed_comp_data = saltdata->cosed_comp_data;
          cosed_comp_data.detach();
@@ -1808,10 +1834,13 @@ void US_LammAstfvm::set_buffer( US_Buffer buffer, US_Math_BF::Band_Forming_Gradi
          else if ( bfg == nullptr )
          {
             DbgLv( 1 ) << "no bfg, calc new";
-            bandFormingGradient = new US_Math_BF::Band_Forming_Gradient( simparams.meniscus, simparams.bottom,
-                                                                         simparams.band_volume,
-                                                                         cosed_components, simparams.cp_pathlen,
-                                                                         simparams.cp_angle );
+            set_bfg( new US_Math_BF::Band_Forming_Gradient( simparams.meniscus,
+                                                            simparams.bottom,
+                                                            simparams.band_volume,
+                                                            cosed_components,
+                                                            simparams.cp_pathlen,
+                                                            simparams.cp_angle ),
+                     true );
             if ( !bandFormingGradient->upper_comps.isEmpty() )
             {
                bandFormingGradient->get_eigenvalues();
@@ -1820,21 +1849,19 @@ void US_LammAstfvm::set_buffer( US_Buffer buffer, US_Math_BF::Band_Forming_Gradi
          else if ( !bfg->is_empty )
          {
             DbgLv( 1 ) << "reused old bfg";
-            bandFormingGradient = bfg;
-            codiff_needed       = true;
+            set_bfg( bfg, false );
+            codiff_needed = true;
          }
          else
          {
             DbgLv( 1 ) << "bfg, but empty";
-            if ( bandFormingGradient != nullptr )
-            {
-               delete bandFormingGradient;
-               bandFormingGradient = nullptr;
-            }
-            bandFormingGradient = new US_Math_BF::Band_Forming_Gradient( simparams.meniscus, simparams.bottom,
-                                                                         simparams.band_volume,
-                                                                         cosed_components, simparams.cp_pathlen,
-                                                                         simparams.cp_angle );
+            set_bfg( new US_Math_BF::Band_Forming_Gradient( simparams.meniscus,
+                                                            simparams.bottom,
+                                                            simparams.band_volume,
+                                                            cosed_components,
+                                                            simparams.cp_pathlen,
+                                                            simparams.cp_angle ),
+                     true );
             if ( !bandFormingGradient->upper_comps.isEmpty() )
             {
                bandFormingGradient->get_eigenvalues();
@@ -1844,12 +1871,7 @@ void US_LammAstfvm::set_buffer( US_Buffer buffer, US_Math_BF::Band_Forming_Gradi
       }
       else
       {
-         if ( bandFormingGradient != nullptr )
-         {
-            delete bandFormingGradient;
-            bandFormingGradient = nullptr;
-         }
-         bandFormingGradient = new US_Math_BF::Band_Forming_Gradient();
+         set_bfg( new US_Math_BF::Band_Forming_Gradient(), true );
       }
       DbgLv( 2 ) << "buff cosed bfg: beta count" << bandFormingGradient->eigenvalues.count();
    }
@@ -2008,7 +2030,7 @@ void US_LammAstfvm::SetNonIdealCase_2()
       cosed_model.components << tmp;
       cosed_model_tmp.components << tmp;
       cosed_model_tmp.update_coefficients();
-      saltdata = new CosedData( cosed_model_tmp, simparams, auc_data, &cosed_components, base_density, base_viscosity );
+      set_csd( new CosedData( cosed_model_tmp, simparams, auc_data, &cosed_components, base_density, base_viscosity ), true );
       cosed_comp_data[tmp.analyteGUID] = saltdata->sa_data;
       cosed_model.update_coefficients();
       saltdata->model           = cosed_model;
@@ -2038,9 +2060,13 @@ void US_LammAstfvm::SetNonIdealCase_4()
    if ( bandFormingGradient == nullptr )
    {
       DbgLv( 2 ) << "NonIdeal4: create band forming gradient";
-      bandFormingGradient = new US_Math_BF::Band_Forming_Gradient( simparams.meniscus, simparams.bottom,
-                                                                   simparams.band_volume, cosed_components,
-                                                                   simparams.cp_pathlen, simparams.cp_angle );
+      set_bfg( new US_Math_BF::Band_Forming_Gradient( simparams.meniscus,
+                                                      simparams.bottom,
+                                                      simparams.band_volume,
+                                                      cosed_components,
+                                                      simparams.cp_pathlen,
+                                                      simparams.cp_angle ),
+               true );
       bandFormingGradient->get_eigenvalues();
    }
 }
@@ -3191,26 +3217,29 @@ void US_LammAstfvm::validate_bfg()
    DbgLv( 1 ) << "validated bfg" << co_diff;
    if ( !co_diff )
    {
-      bandFormingGradient = nullptr;
+      set_bfg( nullptr, false );
       return;
    }
    // check meniscus, bottom, sim_values and components
-   if ( cosed_components != bandFormingGradient->cosed_component ||
-      !qFuzzyCompare(simparams.meniscus, bandFormingGradient->meniscus) ||
-      !qFuzzyCompare( simparams.bottom, bandFormingGradient->bottom) ||
-      !qFuzzyCompare( simparams.band_volume , bandFormingGradient->overlay_volume ) ||
-      !qFuzzyCompare( simparams.cp_pathlen, bandFormingGradient->cp_pathlen )  ||
-      !qFuzzyCompare( simparams.cp_angle, bandFormingGradient->cp_angle ) ||
-      !qFuzzyCompare( simparams.radial_resolution, bandFormingGradient->simparms.radial_resolution) ||
-      !qFuzzyCompare( simparams.temperature, bandFormingGradient->simparms.temperature ) ||
-      bandFormingGradient->is_empty || bandFormingGradient->dens_bfg_data.scanCount(  ) == 0 ||
-      auc_data->scanData.last().seconds > bandFormingGradient->dens_bfg_data.scanData.last().seconds )
+   if ( bandFormingGradient == nullptr || cosed_components != bandFormingGradient->cosed_component ||
+        !qFuzzyCompare( simparams.meniscus, bandFormingGradient->meniscus ) ||
+        !qFuzzyCompare( simparams.bottom, bandFormingGradient->bottom ) ||
+        !qFuzzyCompare( simparams.band_volume, bandFormingGradient->overlay_volume ) ||
+        !qFuzzyCompare( simparams.cp_pathlen, bandFormingGradient->cp_pathlen ) ||
+        !qFuzzyCompare( simparams.cp_angle, bandFormingGradient->cp_angle ) ||
+        !qFuzzyCompare( simparams.radial_resolution, bandFormingGradient->simparms.radial_resolution ) ||
+        !qFuzzyCompare( simparams.temperature, bandFormingGradient->simparms.temperature ) || bandFormingGradient->is_empty ||
+        bandFormingGradient->dens_bfg_data.scanCount() == 0 ||
+        auc_data->scanData.last().seconds > bandFormingGradient->dens_bfg_data.scanData.last().seconds )
    {
       // recalculation needed
-      bandFormingGradient = new US_Math_BF::Band_Forming_Gradient( simparams.meniscus, simparams.bottom,
-                                                                   simparams.band_volume,
-                                                                   cosed_components, simparams.cp_pathlen,
-                                                                   simparams.cp_angle );
+      set_bfg( new US_Math_BF::Band_Forming_Gradient( simparams.meniscus,
+                                                      simparams.bottom,
+                                                      simparams.band_volume,
+                                                      cosed_components,
+                                                      simparams.cp_pathlen,
+                                                      simparams.cp_angle ),
+               true );
       bandFormingGradient->get_eigenvalues();
       bandFormingGradient->calculate_gradient( simparams, auc_data );
       DbgLv( 1 ) << "validated bfg recalculated";
@@ -3409,8 +3438,7 @@ void US_LammAstfvm::validate_csd()
       cosed_model.components << tmp;
       cosed_model_tmp.components << tmp;
       cosed_model_tmp.update_coefficients();
-      saltdata = new US_LammAstfvm::CosedData( cosed_model_tmp, simparams, auc_data, &cosed_components,
-                                               density, viscosity );
+      set_csd( new US_LammAstfvm::CosedData( cosed_model_tmp, simparams, auc_data, &cosed_components, density, viscosity ), true );
       cosed_comp_data[tmp.analyteGUID] = saltdata->sa_data;
       DbgLv( 2 ) << "NonIdeal2: create saltdata";
       cosed_model.update_coefficients();
@@ -3427,7 +3455,7 @@ void US_LammAstfvm::validate_csd()
    // Without a co-sedimenting component there is no salt data to keep
    if ( !co_sed )
    {
-      saltdata = nullptr;
+      set_csd( nullptr, false );
       return;
    }
 }

@@ -449,9 +449,8 @@ bool US_Math_BF::Band_Forming_Gradient::get_eigenvalues( ) {
    const std::function<double(const double &)> func = [&men, &bot](const double &a) {
       return US_Math_BF::transcendental_equation(a, men, bot);
    };
-   US_Math_BF::Secant_Solver secantSolver = *new US_Math_BF::Secant_Solver(0.01, 5000, func,
-                                                                           0.01,
-                                                                           GSL_DBL_EPSILON, 20);
+   // On the stack: a copy of a heap-allocated solver leaked the original
+   US_Math_BF::Secant_Solver secantSolver( 0.01, 5000, func, 0.01, GSL_DBL_EPSILON, 20 );
    const bool return_value = secantSolver.solve_wrapper();
    eigenvalues = secantSolver.solutions;
    for (double beta: eigenvalues){
