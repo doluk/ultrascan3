@@ -627,11 +627,13 @@ bool US_Buffer::writeToDisk(const QString &filename) const {
       QString factor;
       QString value;
 
+      // QString::asprintf() is static: assign its result, or every attribute
+      // is written with an empty name and reads back as zero.  Full
+      // precision, since scaled coefficients are small.
       xml.writeStartElement("densityCoefficients");
       for (int j = 0; j < 6; j++) {
-         factor.asprintf("c%i", j);
-         value = QString::number(bc.dens_coeff[j], 'f', 5);
-         qDebug() << factor << value;
+         factor = QString::asprintf( "c%i", j );
+         value  = QString::number( bc.dens_coeff[j], 'g', 12 );
          xml.writeAttribute(factor, value);
       }
 
@@ -639,9 +641,8 @@ bool US_Buffer::writeToDisk(const QString &filename) const {
 
       xml.writeStartElement("viscosityCoefficients");
       for (int j = 0; j < 6; j++) {
-         factor.asprintf("c%i", j);
-         value = QString::number(bc.visc_coeff[j], 'f', 5);
-         qDebug() << factor << value;
+         factor = QString::asprintf( "c%i", j );
+         value  = QString::number( bc.visc_coeff[j], 'g', 12 );
          xml.writeAttribute(factor, value);
       }
 
