@@ -939,12 +939,15 @@ For the branch's author; none is worked around here except where noted.
    `Band_Forming_Gradient::get_eigenvalues()` also leaked a `Secant_Solver` per call. Three
    band-forming solves over CsCl leaked 234 MB. *Fixed here:* the solver frees what it allocated,
    and only that.
-6. `Band_Forming_Gradient::calculate_gradient` swaps the interpolation weights between scans and
-   extrapolates rpm and ω²t with the temperature slope; it affects the tabulated temperature, and
-   through it *D*, slightly.
-7. Unconditional `qDebug` output (`fixed_dt`, `steps_per_transit`) per solve; `us_3dsa_cli` filters
-   debug messages unless `US3DSA_DEBUG` is set.
-8. The 2DSA's gradient debug dump passes density and viscosity in swapped order.
+6. `Band_Forming_Gradient::calculate_gradient` swapped the interpolation weights between scans and
+   extrapolated rpm and ω²t with the temperature slope. It affected the tabulated temperature, and
+   through it *D*, when the temperature drifted: with scans 0.4 °C apart, by up to 0.399 °C (and ω²t
+   by 2400 s at speed). *Fixed here.*
+7. Unconditional `qDebug` output per solve: `fixed_dt` and `steps_per_transit` in the ASTFVM, and the
+   lamella width and initial concentration in `US_Astfem_RSA::initialize_conc`. *Fixed here:* debug
+   level 2. `us_3dsa_cli` still filters debug messages unless `US3DSA_DEBUG` is set.
+8. The cosedimenting 2DSA's gradient debug dump passes density and viscosity in swapped order. The
+   dump is switched off, and this branch has no such dump; fixed in the port to `cosedimenting`.
 9. **A salt is simulated as one ideal, neutral solute.** `CosedData` sediments CsCl with a constant
    *s* and *D*, so its equilibrium gradient follows *M*(1 − v̄ρ)/*RT* for a single particle. CsCl
    is two ions and far from ideal; its real gradient is ω²*r*/β, β ≈ 1.2 × 10⁹. At 48 krpm,
