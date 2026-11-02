@@ -609,7 +609,8 @@ void US_2dsaProcess::calculate_cosedimenting_component()
                         Visc[ j ] = bfg->base_viscosity;
                         Conc[ j ] = 0.0;
                      }
-                     bfg->interpolateCCodiff(auc_data.pointCount(), auc_data.xvalues.data(), time, temp, Visc, Dens, Conc);
+                     // Density first: interpolateCCodiff( N, x, t, temp, Dens, Visc, Conc )
+                     bfg->interpolateCCodiff(auc_data.pointCount(), auc_data.xvalues.data(), time, temp, Dens, Visc, Conc);
                      dens_data[i] = DensVec;
                      visc_data[i] = ViscVec;
                      conc_data[i] = ConcVec;
