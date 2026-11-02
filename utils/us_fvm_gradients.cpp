@@ -768,7 +768,9 @@ bool US_FvmGradients::fit_former( FormerFit& fit, QString& msg )
                spread = qMax( spread, std::fabs( xx[ii][kk] - xx[best][kk] ) );
             }
          }
-         if ( spread < 1.0e-4 && yy[worst] - yy[best] < 1.0e-7 * yy[best] )
+         // Relative, with a floor far below any noise: on noise-free data the
+         // RMSD goes to zero and a purely relative test is met only by chance
+         if ( spread < 1.0e-4 && yy[worst] - yy[best] < 1.0e-7 * yy[best] + 1.0e-9 )
          {
             break;
          }
