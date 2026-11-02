@@ -557,17 +557,27 @@ radius( Nx - 2 )
             DbgLv( 2 ) << "SaltD:  ii jj" << ii << jj << "salt value salt absolute" << salt_value << salt_absolute;
          }
 
-         if ( salt_value == NAN )
+         if ( std::isnan( salt_value ) )
          {
-            // Nan!!!
+            // NaN compares unequal to everything, NAN included.  Take the
+            // previous radius's value; at the first radius, the scan's first
+            // number, or zero
             nan_entries++;
+            salt_value = 0.0;
             if ( jj > 0 )
             {
                salt_value = sa_data.value( ii, jj - 1 );
             }
             else
             {
-               salt_value = salt_value > 0 ? max_salt : min_salt;
+               for ( int kk = 1; kk < Nx; kk++ )
+               {
+                  if ( !std::isnan( sa_data.value( ii, kk ) ) )
+                  {
+                     salt_value = sa_data.value( ii, kk );
+                     break;
+                  }
+               }
             }
             sa_data.setValue( ii, jj, salt_value );
             DbgLv( 2 ) << "SaltD:  salt *NaN* ii jj adj-salt value" << ii << jj << salt_value;
@@ -712,19 +722,21 @@ void US_LammAstfvm::CosedData::InterpolateCCosed( int     N, const double* x, do
       for ( int jf = 0; jf < N; jf++ ) // loop for all x[jf]
       {
          double xj = x[jf];
-         while ( xj > xs[k] && k < Lx )
+         // The interval xs[k-1] to xs[k] holding xj; past the grid's last
+         // point, the last interval, whose weights below clamp to its end
+         while ( k < Lx - 1 && xj > xs[k] )
          {
             k++; // radial point
          }
 
          // linear interpolation
          int m = k - 1;
-         if ( ( xs[k] < xs[m] || xs[k] < xj || xs[m] > xj ) && k == Lx )
+         if ( ( xs[k] < xs[m] || xs[k] < xj || xs[m] > xj ) && k == Lx - 1 )
          {
             DbgLv( 2 ) << "radius corrupted";
          }
          double xik = ( xj - xs[m] ) / ( xs[k] - xs[m] );
-         if ( ( xik < 0.0 || xik > 1.0 ) && k == Lx )
+         if ( ( xik < 0.0 || xik > 1.0 ) && k == Lx - 1 )
          {
             DbgLv( 2 ) << "radius corrupted again";
          }
@@ -737,7 +749,7 @@ void US_LammAstfvm::CosedData::InterpolateCCosed( int     N, const double* x, do
          double Cm = 0.0;
          Cm        = et0 * ( xim * Cs0[m] + xik * Cs0[k] ) + et1 * ( xim * Cs1[m] + xik * Cs1[k] );
          //*DEBUG
-         if ( Cm == NAN )
+         if ( std::isnan( Cm ) )
          {
             count_NaN++;
             if ( count_NaN < 20 )
@@ -747,6 +759,9 @@ void US_LammAstfvm::CosedData::InterpolateCCosed( int     N, const double* x, do
             }
          }
          //*DEBUG
+         // A simulated concentration can undershoot zero; its square root
+         // would be NaN
+         Cm = qMax( Cm, 0.0 );
          double rho;
          double phi;
          double Cm_root   = sqrt( Cm ); //  and powers of it
