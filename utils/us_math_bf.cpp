@@ -779,14 +779,15 @@ US_Math_BF::Band_Forming_Gradient::calculate_gradient(
       double omega2t;
       if (runtime > editedData->scanData[bfg_idx-1].seconds && runtime < editedData->scanData[bfg_idx].seconds)
       {
+         // a is the fraction of the interval already past, so the later
+         // scan takes it
          double a = (runtime-editedData->scanData[bfg_idx-1].seconds)/
                     (editedData->scanData[bfg_idx].seconds - editedData->scanData[bfg_idx-1].seconds);
          double b = (editedData->scanData[bfg_idx].seconds-runtime)/
                     (editedData->scanData[bfg_idx].seconds - editedData->scanData[bfg_idx-1].seconds);
-         temp = a * editedData->scanData[bfg_idx-1].temperature + b * editedData->scanData[bfg_idx].temperature;
-         rpm = a * editedData->scanData[bfg_idx-1].rpm + b * editedData->scanData[bfg_idx].rpm;
-         omega2t = a * editedData->scanData[bfg_idx-1].omega2t + b * editedData->scanData[bfg_idx].omega2t;
-
+         temp    = b * editedData->scanData[bfg_idx - 1].temperature + a * editedData->scanData[bfg_idx].temperature;
+         rpm     = b * editedData->scanData[bfg_idx - 1].rpm + a * editedData->scanData[bfg_idx].rpm;
+         omega2t = b * editedData->scanData[bfg_idx - 1].omega2t + a * editedData->scanData[bfg_idx].omega2t;
       }
       else
       {
@@ -796,11 +797,11 @@ US_Math_BF::Band_Forming_Gradient::calculate_gradient(
          temp = m * runtime + c;
          double m2 = (editedData->scanData[bfg_idx].rpm-editedData->scanData[bfg_idx-1].rpm)/
                     (editedData->scanData[bfg_idx].seconds-editedData->scanData[bfg_idx-1].seconds);
-         double c2 = editedData->scanData[bfg_idx].rpm - (m * editedData->scanData[bfg_idx].seconds);
+         double c2 = editedData->scanData[bfg_idx].rpm - ( m2 * editedData->scanData[bfg_idx].seconds );
          rpm = m2 * runtime + c2;
          double m3 = (editedData->scanData[bfg_idx].omega2t-editedData->scanData[bfg_idx-1].omega2t)/
                     (editedData->scanData[bfg_idx].seconds-editedData->scanData[bfg_idx-1].seconds);
-         double c3 = editedData->scanData[bfg_idx].omega2t - (m * editedData->scanData[bfg_idx].seconds);
+         double c3 = editedData->scanData[bfg_idx].omega2t - ( m3 * editedData->scanData[bfg_idx].seconds );
          omega2t = m3 * runtime + c3;
       }
       dens_scan.rvalues.clear();
