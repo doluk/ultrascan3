@@ -772,9 +772,11 @@ void US_LammAstfvm::CosedData::InterpolateCCosed( int     N, const double* x, do
          rho = Cm_root * dens_coeff[1] + Cm * dens_coeff[2] + Cm_square * dens_coeff[3] + Cm_cubic * dens_coeff[4] +
             Cm_quad * dens_coeff[5];
 
+         // The increment keeps its sign: a salt such as CsCl lowers the
+         // viscosity, as the buffer editor and the co-diffusing gradient
+         // have it
          phi = Cm_root * visc_coeff[1] + Cm * visc_coeff[2] + Cm_square * visc_coeff[3] + Cm_cubic * visc_coeff[4] +
             Cm_quad * visc_coeff[5];
-         phi = qAbs( phi );
          DensCosed[jf] += rho;
          ViscCosed[jf] += phi;
          DbgLv( 2 ) << "cosed comp" << comp.name << "Cm"
@@ -2689,8 +2691,8 @@ void US_LammAstfvm::AdjustSD(
                const double conc4   = conc3 * conc;
                const double curDens = density + croot * self_dens[1] + conc * self_dens[2] + conc2 * self_dens[3] +
                                       conc3 * self_dens[4] + conc4 * self_dens[5];
-               const double curVisc = viscosity + qAbs( croot * self_visc[1] + conc * self_visc[2] + conc2 * self_visc[3] +
-                                                        conc3 * self_visc[4] + conc4 * self_visc[5] );
+               const double curVisc = viscosity + croot * self_visc[1] + conc * self_visc[2] + conc2 * self_visc[3] +
+                                      conc3 * self_visc[4] + conc4 * self_visc[5];
 
                double       sigma_corr = 1.0;
                double       delta_corr = 1.0;

@@ -69,10 +69,11 @@ reaches the same equilibrium on the wrong time course leaves the residual far
 above the noise. It also sends the solutes to the grid's edges and *s* off by
 tens of S, which is what the all-scans fit of run 2098 shows.
 
-Both sides use the same CsCl viscosity model. The solver adds the magnitude of
+These results were measured while the solver still added the magnitude of
 CsCl's viscosity increment, where the database polynomial lowers the viscosity
-(design doc §3E, limit 13). So this check is unaffected, but a fit to real CsCl
-data is.
+(design doc §3E, limit 13, since fixed). Both sides used that model, so the
+conclusions stand. With the fix, the CsCl gradient at 9.5 h moves by at most
+0.0005 g/mL.
 
 ## us_abde on the same data
 

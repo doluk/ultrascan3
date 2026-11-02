@@ -924,12 +924,21 @@ For the branch's author; none is worked around here except where noted.
    excess components only ("for now iterate only over upper_cosed"). A lamella on a denser
    co-diffusing cell solution (the classic H₂O sample on D₂O) forms no gradient in the model, and
    since the editor's base excludes diffusing components, the D₂O's density is lost altogether.
-3. `validate_csd()` never sets `co_sed`, so the solver's own fallback discards the salt data it
-   computes; `salt_value == NAN` can never be true; `sqrt` of a slightly negative interpolated
-   concentration gives NaN.
-4. `InterpolateCCosed` can index one past the salt grid when the FVM mesh reaches beyond it.
-5. `set_buffer()` allocates an empty `Band_Forming_Gradient` per call when there is no co-diffusing
-   component, and never frees it.
+3. `validate_csd()` never set `co_sed`, so the solver's own fallback discarded the salt data it
+   computed. `salt_value == NAN` could never be true, and its fallback at the first radius was
+   −9 × 10⁹⁹. The square root of a slightly negative interpolated concentration gave NaN. The
+   discarded salt data crashed a band-forming run over CsCl that was set up without precomputed
+   gradients (`set_buffer( buffer, nullptr, nullptr )`): `SetNonIdealCase_2()` dereferenced the
+   null `saltdata`. *Fixed here.*
+4. `InterpolateCCosed` indexed one past the salt grid when the FVM mesh reached beyond it: a
+   heap-buffer-overflow under AddressSanitizer. *Fixed here:* the search stops at the last
+   interval.
+5. The solver freed none of the gradients it allocated, and had no destructor. `set_buffer()`, for
+   example, allocated an empty `Band_Forming_Gradient` per call without a co-diffusing component.
+   Where it did delete, it could delete a gradient the caller had passed in.
+   `Band_Forming_Gradient::get_eigenvalues()` also leaked a `Secant_Solver` per call. Three
+   band-forming solves over CsCl leaked 234 MB. *Fixed here:* the solver frees what it allocated,
+   and only that.
 6. `Band_Forming_Gradient::calculate_gradient` swaps the interpolation weights between scans and
    extrapolates rpm and ω²t with the temperature slope; it affects the tabulated temperature, and
    through it *D*, slightly.
@@ -976,15 +985,18 @@ For the branch's author; none is worked around here except where noted.
     recorded ω²t of run 1322's scans to ±0.6 s (`AstfvmFollowsTheRotorForASlowSolute`). Solutes
     of tens of S and more, with steps of seconds, are unaffected; run 1322's sucrose fit over all
     scans moved by 10⁻⁴.
-13. **A viscosity increment is taken as its magnitude.** `CosedData::InterpolateCCosed` adds
-    `qAbs()` of a former's viscosity increment, and case 5 does the same. The buffer editor adds
+13. **A viscosity increment was taken as its magnitude.** `CosedData::InterpolateCCosed` added
+    `qAbs()` of a former's viscosity increment, and case 5 did the same. The buffer editor adds
     the increment with its sign. CsCl's database polynomial lowers the viscosity by 7.8 % at
     1.916 M, the end of its listed range, and by 11.4 % at 3.105 M (extrapolated). The solver
     raises it by as much: 1.126 cP instead of 0.897 cP on PBS at 1.40 g/mL. A solute's *s* and *D*
     in the gradient both carry 1/η, so the bands' densities are unaffected. Their approach is
     about 26 % slower, and in case 5 so is the CsCl's own formation. Sucrose, whose increment is
-    positive, is unaffected. *Not changed here.* The synthetic check in "Recovery when the gradient
-    is right" uses the same model on both sides, so it is unaffected too.
+    positive, is unaffected. *Fixed here:* the increment keeps its sign, as in the buffer editor
+    and the co-diffusing gradient. On PBS at 1.40 g/mL, `InterpolateCCosed` now gives 0.897 cP. The
+    synthetic check in "Recovery when the gradient is right" was measured before the fix. It used
+    the same model on both sides, so its conclusions stand. With the fix, its CsCl gradient at
+    9.5 h moves by at most 0.0005 g/mL.
 
 **A former that follows the solution it forms.** `US_LammAstfvm::set_self_gradient()` makes a
 solute's own concentration set the density and viscosity at each point (the buffer's plus the
