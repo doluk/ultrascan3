@@ -1990,7 +1990,7 @@ void US_LammAstfvm::SetNonIdealCase_2()
       DbgLv( 2 ) << "NonIdeal2: initSalt  comp_x" << comp_x;
    }
    DbgLv( 2 ) << "NonIdeal2: prep saltdata" << cosed_needed << codiff_needed;
-   if ( !cosed_comp_data.isEmpty() )
+   if ( saltdata != nullptr && !cosed_comp_data.isEmpty() )
    {
       saltdata->sa_data = cosed_comp_data.first();
    }
@@ -3294,6 +3294,7 @@ void US_LammAstfvm::validate_csd()
          continue;
       }
       cosed_needed = true;
+      co_sed       = true;
       cosed_model_tmp.components.clear();
       US_Model::SimulationComponent tmp = US_Model::SimulationComponent();
       tmp.name                          = cosed_comp.name;
@@ -3326,10 +3327,11 @@ void US_LammAstfvm::validate_csd()
       DbgLv( 2 ) << "CosedData: cosed_model comp" << saltdata->model.components.size() << "cosed_comp_data"
                  << cosed_comp_data.size() << "sa_data.scanCount()" << saltdata->sa_data.scanCount();
    }
-   if ( !cosed_comp_data.isEmpty() )
+   if ( saltdata != nullptr && !cosed_comp_data.isEmpty() )
    {
       saltdata->sa_data = cosed_comp_data.first();
    }
+   // Without a co-sedimenting component there is no salt data to keep
    if ( !co_sed )
    {
       saltdata = nullptr;
