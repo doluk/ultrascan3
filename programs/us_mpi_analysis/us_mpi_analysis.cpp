@@ -1805,11 +1805,61 @@ void US_MPI_Analysis::dset_matrices( int dsx, int* nsolutesP,
    }
 }
 
+// Find the band-forming gradient for a dataset's current simulation
+//  parameters, calculating and keeping it if none of those kept fits.
+//  Only the ASTFVM solver uses a gradient; -1 when the dataset needs none.
+int US_MPI_Analysis::bfg_index_for( int ds_index )
+{
+   if ( ds_index < 0 || ds_index >= data_sets.size() )
+   {
+      return -1;
+   }
+   US_SolveSim::DataSet* dset = data_sets[ ds_index ];
+   const SIMPARAMS& sp        = dset->simparams;
+   QList<US_CosedComponent> comps = dset->solution_rec.buffer.cosed_component;
+   if ( comps.isEmpty() || sp.meshType != US_SimulationParameters::ASTFVM
+        || dset->run_data.scanCount() == 0 )
+   {
+      return -1;
+   }
+   const int max_time = static_cast<int>( dset->run_data.scanData.last().seconds );
+
+   for ( int ii = 0; ii < data_sets_bfgs.size(); ii++ )
+   {
+      if ( data_sets_bfgs[ ii ].is_suitable( sp.meniscus, sp.bottom, sp.band_volume,
+                                             sp.cp_pathlen, sp.cp_angle, comps, max_time ) )
+      {
+         return ii;
+      }
+   }
+
+   US_Math_BF::Band_Forming_Gradient bfg( sp.meniscus, sp.bottom, sp.band_volume,
+                                          comps, sp.cp_pathlen, sp.cp_angle );
+   if ( bfg.upper_comps.isEmpty() )
+   {
+      return -1;   // nothing diffuses out of the overlay: no gradient
+   }
+   bfg.get_eigenvalues();
+   US_DataIO::RawData edata = dset->run_data.convert_to_raw_data();
+   bfg.calculate_gradient( sp, &edata );
+
+   // Keep a few: a meniscus/bottom fit visits its grid points in turn, and
+   //  each gradient table holds several MB
+   const int max_kept = 8;
+   while ( data_sets_bfgs.size() >= max_kept )
+   {
+      data_sets_bfgs.removeFirst();
+   }
+   data_sets_bfgs << bfg;
+   DbgLv( 1 ) << "w:" << my_rank << ": bfg calculated for meniscus bottom" << sp.meniscus << sp.bottom
+              << "kept" << data_sets_bfgs.size();
+   return data_sets_bfgs.size() - 1;
+}
+
 // Calculate residuals (FE Modeling and NNLS)
 void US_MPI_Analysis::calc_residuals( int         offset,
                                       int         dataset_count,
-                                      SIMULATION& simu_values,
-                                      int bfg_offset)
+                                      SIMULATION& simu_values )
 {
    count_calc_residuals++;
 
@@ -1831,13 +1881,13 @@ void US_MPI_Analysis::calc_residuals( int         offset,
    }
 
    US_SolveSim solvesim( data_sets, my_rank, false );
-   US_Math_BF::Band_Forming_Gradient* bfg = (bfg_offset!=-1)?&data_sets_bfgs[bfg_offset]: nullptr;
-   DbgLv(1) << "TEST" << bfg_offset << ((bfg_offset!=-1)?&data_sets_bfgs[bfg_offset]: nullptr) << bfg;
-   if (data_sets_bfgs.length() == 1){bfg = bandFormingGradient;}
-   DbgLv(1) << "TEST" << bfg_offset << ((bfg_offset!=-1)?&data_sets_bfgs[bfg_offset]: nullptr) << bfg;
-   if ( bfg != nullptr && my_rank > 2 ){ // copy the gradient for faster lookups
-      bfg = new US_Math_BF::Band_Forming_Gradient(*bfg);
-   }
+   // The gradient is looked up here, on the process that simulates, from the
+   //  dataset's current meniscus and bottom: a worker's fit context changes
+   //  them per job, and list indices do not carry over between processes.
+   const int bfg_index = bfg_index_for( offset );
+   US_Math_BF::Band_Forming_Gradient* bfg = ( bfg_index >= 0 ) ? &data_sets_bfgs[ bfg_index ] : nullptr;
+   DbgLv( 1 ) << "w:" << my_rank << ": CALC_RES : bfg index" << bfg_index << "meniscus bottom"
+              << data_sets[ offset ]->simparams.meniscus << data_sets[ offset ]->simparams.bottom;
    solvesim.calc_residuals( offset, dataset_count, simu_values, false, nullptr, nullptr, nullptr, bfg);
 
    simu_values.dbg_level = dbglvsv;
@@ -3008,8 +3058,9 @@ double US_MPI_Analysis::rmsd_combined_mc_models( US_Model& model )
    if ( dset->simparams.meshType == US_SimulationParameters::ASTFVM)
    {
       US_LammAstfvm* astfvm = new US_LammAstfvm( model, simparms );
+      const int bfg_index = bfg_index_for( 0 );   // dset is data_sets[ 0 ]
       astfvm->set_buffer( dset->solution_rec.buffer,
-         (!bfgs.isEmpty())?bfgs[0]:bandFormingGradient,
+         ( bfg_index >= 0 ) ? &data_sets_bfgs[ bfg_index ] : nullptr,
          (!csDs.isEmpty())?csDs[0]:nullptr);
       astfvm->calculate( sdata );
    }
@@ -3451,7 +3502,10 @@ void US_MPI_Analysis::calculate_cosed() {
    csDs << csD;
    cosedcomponents << cosed_components;
    // populate datasets list
-   data_sets_bfgs << *bfgs[0];
+   if ( bfgs[0] != nullptr )
+   {  // none when nothing diffuses out of the overlay
+      data_sets_bfgs << *bfgs[0];
+   }
    data_sets_csDs << csDs[0];
    data_sets_cosed_components << &cosedcomponents[0];
    DbgLv(0) << "rank: " << my_rank << " finished Calc_cosed";

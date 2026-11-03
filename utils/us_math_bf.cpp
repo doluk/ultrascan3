@@ -1289,49 +1289,36 @@ bool US_Math_BF::Band_Forming_Gradient::is_suitable( const double n_meniscus, co
                                                      const double n_cp_pathlen, const double n_cp_angle,
                                                      const QList<US_CosedComponent>& n_cosed_component,
                                                      const int n_maxTime ) {
-   if ( is_empty ) {
+   if ( is_empty || dens_bfg_data.scanData.isEmpty() ) {
       return false;
    }
-   if ( QString::number(meniscus, 'f', 4) != QString::number(n_meniscus, 'f', 4) ||
-        QString::number(bottom, 'f', 4) != QString::number(n_bottom, 'f', 4) ||
-        QString::number(overlay_volume, 'f', 4) != QString::number(n_overlay_volume, 'f', 4) ||
-        QString::number(cp_pathlen, 'f', 4) != QString::number(n_cp_pathlen, 'f', 4) ||
-        QString::number(cp_angle, 'f', 4) != QString::number(n_cp_angle, 'f', 4) ||
-        cosed_component != n_cosed_component || dens_bfg_data.scanData.last().seconds >= n_maxTime) {
+   // Geometry to 1e-5 (cm, mL), well below a meniscus fit's grid step; the
+   // overlay volume is ~1e-2 mL, so 4 decimals would not tell 10.0 from
+   // 10.04 uL apart
+   const double tol = 1.0e-5;
+   if ( fabs(meniscus - n_meniscus) > tol ||
+        fabs(bottom - n_bottom) > tol ||
+        fabs(overlay_volume - n_overlay_volume) > tol * 1.0e-2 ||
+        fabs(cp_pathlen - n_cp_pathlen) > tol ||
+        fabs(cp_angle - n_cp_angle) > tol ||
+        cosed_component != n_cosed_component ) {
+      return false;
+   }
+   // The table must reach the last time the simulation needs
+   if ( dens_bfg_data.scanData.last().seconds < n_maxTime ) {
       return false;
    }
    return true;
 }
 
 double US_Math_BF::Band_Forming_Gradient::bessel( const QString& bessel_type, const double x ) {
-   double result = 0.0;
-   const int b_key = bessel_types.indexOf(bessel_type);
-   const auto x_key = static_cast<unsigned int>( x * 1024 );
-   if (bessel_cache.contains(b_key) && bessel_cache.value(b_key).contains(x_key)) {
-      result = bessel_cache[b_key][x_key];
-   }
-   else
-   {
-      if (b_key == 0) {          // J0
-         result = bessel_J0(x);
-      } else if (b_key == 1) {   // J1
-         result = bessel_J1(x);
-      } else if (b_key == 2) {   // Y0
-         result = bessel_Y0(x);
-      } else if (b_key == 3) {   // Y1
-         result = bessel_Y1(x);
-      }
-      // create outer hash if not present
-      if (!bessel_cache.contains(b_key)) {
-         bessel_cache.insert(b_key, QHash<const unsigned int, double>());
-      }
-      // insert result into cache
-      if (bessel_cache.contains(b_key))
-      {
-         bessel_cache.find(b_key).value().insert(x_key, result);
-      }
-   }
-   return result;
+   // No cache: one keyed on a rounded argument returned values for the wrong
+   //  argument, and the eigenfunction rows make an exact one unnecessary
+   if ( bessel_type == QLatin1String( "J0" ) ) { return bessel_J0( x ); }
+   if ( bessel_type == QLatin1String( "J1" ) ) { return bessel_J1( x ); }
+   if ( bessel_type == QLatin1String( "Y0" ) ) { return bessel_Y0( x ); }
+   if ( bessel_type == QLatin1String( "Y1" ) ) { return bessel_Y1( x ); }
+   return 0.0;
 }
 
 

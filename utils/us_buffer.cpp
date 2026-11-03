@@ -6,6 +6,9 @@
 #include "us_datafiles.h"
 #include "us_util.h"
 #include "us_eprofile.h"
+#include <algorithm>
+#include <cmath>
+#include <iterator>
 
 void US_BufferComponent::getAllFromDB( const QString& masterPW,
          QMap< QString, US_BufferComponent >& componentList )
@@ -484,12 +487,13 @@ US_CosedComponent US_CosedComponent::clone(void) {
 }
 
 bool US_CosedComponent::operator==(const US_CosedComponent & c) const {
-    if ( dens_coeff != c.dens_coeff ) return false;
-    if ( visc_coeff != c.visc_coeff ) return false;
+    // Compare the coefficients, not the arrays' addresses
+    if ( !std::equal( std::begin( dens_coeff ), std::end( dens_coeff ), std::begin( c.dens_coeff ) ) ) return false;
+    if ( !std::equal( std::begin( visc_coeff ), std::end( visc_coeff ), std::begin( c.visc_coeff ) ) ) return false;
     if ( s_coeff    != c.s_coeff )    return false;
     if ( d_coeff    != c.d_coeff )    return false;
     if ( vbar       != c.vbar )       return false;
-    if ( abs( conc - c.conc ) > GSL_ROOT5_DBL_EPSILON ) return false;
+    if ( std::fabs( conc - c.conc ) > GSL_ROOT5_DBL_EPSILON ) return false;
     if ( overlaying != c.overlaying ) return false;
     if ( concentration_offset != c.concentration_offset ) return false;
     return true;
