@@ -26,6 +26,13 @@ target_compile_definitions(test_us_mpi_jobconfig PRIVATE
 target_link_libraries(test_us_mpi_jobconfig PRIVATE
     ${US_MPI_TEST_UTILS} Qt::Core Qt::Xml gtest gtest_main)
 
+# Unit tests of the job's memory limit and use (no MPI)
+add_executable(test_us_mpi_memlimit
+    test_us_mpi_memlimit.cpp
+    ${US_MPI_SRC_DIR}/us_mpi_memlimit.cpp)
+target_include_directories(test_us_mpi_memlimit PRIVATE ${US_MPI_SRC_DIR})
+target_link_libraries(test_us_mpi_memlimit PRIVATE Qt::Core gtest gtest_main)
+
 # Checks job files without MPI: us_mpi_jobcheck [-q] <hpcrequest.xml>...
 add_executable(us_mpi_jobcheck
     us_mpi_jobcheck.cpp
@@ -35,6 +42,10 @@ target_link_libraries(us_mpi_jobcheck PRIVATE ${US_MPI_TEST_UTILS} Qt::Core Qt::
 
 include(GoogleTest)
 gtest_discover_tests(test_us_mpi_jobconfig
+    PROPERTIES
+    LABELS gtest-unit-mpi_analysis
+    TIMEOUT 60)
+gtest_discover_tests(test_us_mpi_memlimit
     PROPERTIES
     LABELS gtest-unit-mpi_analysis
     TIMEOUT 60)
@@ -131,8 +142,10 @@ endforeach()
 # with the cache off, with a cache too small for the fit (2DSA and PCSA keep
 # the first simulations and store no more; GA keeps the recent ones and
 # empties a generation of the cache again and again), with the recent policy
-# for every method, and with the ranks split into two pseudo-nodes (separate
-# caches; the master has the other node clear its cache).
+# for every method, with the ranks split into two pseudo-nodes (separate
+# caches; the master has the other node clear its cache), with a job limit too
+# small for any cache, and with the cache emptied over and over while the ranks
+# use it (as under memory pressure).
 set(US_MPI_CACHE_CASES
     2dsa_refine_np4
     2dsa_mc_pmasters3
@@ -145,7 +158,7 @@ set(US_MPI_CACHE_CASES
 )
 
 foreach(variant "off;SimCache=off" "small;SimCacheMB=1" "recent;SimCacheMB=1,SimCachePolicy=recent"
-                "nodes;NodeSplit=2")
+                "nodes;NodeSplit=2" "limit;SimCacheLimitMB=1" "stress;SimCacheStress=1")
     list(GET variant 0 tag)
     list(GET variant 1 dtext)
     add_test(NAME mpi_analysis_simcache_${tag}

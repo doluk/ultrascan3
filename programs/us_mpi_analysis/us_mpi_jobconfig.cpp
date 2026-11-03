@@ -912,10 +912,9 @@ void US_MPI_JobConfig::validate()
          bool        integer;
          bool        positive;
    };
-   static const DebugKnob DEBUG_KNOBS[] = { { "g_redo_inc", true, true },
-                                            { "base_sig", false, false },
-                                            { "fail_load_rank", true, false },
-                                            { "SimCacheMB", true, false },
+   static const DebugKnob DEBUG_KNOBS[] = { { "g_redo_inc", true, true },      { "base_sig", false, false },
+                                            { "fail_load_rank", true, false }, { "SimCacheMB", true, false },
+                                            { "SimCacheLimitMB", true, true }, { "SimCacheStress", true, false },
                                             { "NodeSplit", true, true } };
 
    for ( const DebugKnob& knob : DEBUG_KNOBS )

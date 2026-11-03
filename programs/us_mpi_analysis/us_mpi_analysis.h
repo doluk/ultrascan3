@@ -454,7 +454,8 @@ class US_MPI_Analysis : public QObject
         void                   free_node_comm( void );
         void                   create_sim_cache( void );
         void                   clear_sim_caches( void );
-        qint64                 sim_cache_bytes( void );
+        qint64                 job_memory_limit( const US_MPI_MemLimit::Cgroup& );
+        qint64                 sim_cache_bytes( qint64, bool );
         bool                   worker_fit_context( int, double, double );
         double                 dataset_bottom( int );
         void     set_monteCarlo    ( void );

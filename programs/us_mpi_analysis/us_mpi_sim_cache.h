@@ -4,7 +4,14 @@
 
 #include <mpi.h>
 
+#include "us_mpi_memlimit.h"
 #include "us_sim_cache.h"
+
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
+#include <vector>
 
 //! \brief Simulation cache in memory shared by the MPI ranks of a node
 //!
@@ -40,6 +47,14 @@
 //! toward the fit, reuses.  A rank empties a generation only when no rank
 //! reads or writes it:  ranks announce their use of a generation in its
 //! user count, and leave a generation being emptied alone.
+//!
+//! Memory pressure:  the cache gives way to the job's own memory.  A thread on
+//! the node's first rank (start_watch) compares the job's use with its limit,
+//! the node's available memory and the free shared memory.  Under soft
+//! pressure no rank adds to the cache, except that RECENT empties its previous
+//! generation to make room.  Under hard pressure the thread empties the cache.
+//! Emptying returns the pages to the system, so that the use really falls.
+//! The next simulations then have to be computed again, but never differ.
 //!
 //! The constructor and destructor are collective over the node communicator.
 //! clear() may only be called while no other rank of the node uses the cache.
@@ -91,6 +106,24 @@ class US_MPI_NodeSimCache : public US_SimCache
          store_on = enabled;
       }
 
+      //! \brief Settings of the memory watch
+      class Watch
+      {
+         public:
+            qint64                  job_limit = 0;  //!< The job's bytes on this node (0: none)
+            US_MPI_MemLimit::Cgroup cgroup;         //!< Cgroup level of the job
+            bool                    stress = false; //!< Test:  empty the cache at every look
+      };
+
+      //! \brief Watch the memory use from a thread (on the node's first rank)
+      void   start_watch( const Watch& settings );
+
+      //! \brief Number of times the cache was emptied for lack of memory
+      qint64 releases() const;
+
+      //! \brief Bytes returned to the system by emptying under pressure
+      qint64 released_bytes() const;
+
       //! \brief Counts of the whole node:  this rank's fetch and store counts
       //!        summed over the node's ranks (collective over node_comm)
       Stats node_stats() const;
@@ -123,11 +156,26 @@ class US_MPI_NodeSimCache : public US_SimCache
       void     leave( int gg );
 
       // Empty the previous generation and make it current, if generation gg
-      //  is still current and no other rank does so already
-      void     rotate( int gg );
+      //  is still current and no other rank does so already.  With give_back,
+      //  a generation that holds simulations is emptied to free memory:
+      //  returns whether that happened.
+      bool                    rotate( int gg, bool give_back = false );
 
       // Empty generation gg (no rank may use it)
       void     empty( int gg );
+
+      // Return the pages of generation gg's data to the system
+      void                    release_pages( int gg );
+
+      // Wait for the sole right to empty generations
+      void                    lock_maintenance();
+
+      // Empty every generation, while other ranks may use the cache
+      void                    empty_under_pressure( qint64 used );
+
+      // The memory watch
+      void                    watch_loop();
+      qint64                  bytes_held() const;
 
       MPI_Comm comm;      // Node communicator
       MPI_Win  window;    // Shared window
@@ -142,6 +190,14 @@ class US_MPI_NodeSimCache : public US_SimCache
       qint64   gen_slots; // Slots of a generation
       qint64   gen_size;  // Bytes of the data area of a generation
       bool     store_on;  // Flag:  this rank stores simulations
+
+      // Memory watch (only on the node's first rank)
+      Watch                   watch;
+      std::vector<long>       node_pids;
+      std::thread             watcher;
+      std::mutex              watch_lock;
+      std::condition_variable watch_wake;
+      bool                    watch_stop;
 
       // Counts of this rank
       qint64   rank_hits;

@@ -2,9 +2,17 @@
 #include "us_mpi_sim_cache.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <new>
 #include <thread>
+
+#include <QCoreApplication>
+
+#ifdef Q_OS_LINUX
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
 // Shared state of a generation
 class US_MPI_NodeSimCache::Generation
@@ -24,6 +32,9 @@ class US_MPI_NodeSimCache::Header
    public:
       std::atomic<int> current;  // Generation simulations are stored in
       std::atomic<int> rotating; // Flag:  a rank empties a generation
+      std::atomic<int>    pressure; // Memory pressure:  no adding if nonzero
+      std::atomic<qint64> releases; // Times emptied under pressure
+      std::atomic<qint64> released; // Bytes returned to the system
       Generation       gen[2];
 };
 
@@ -72,6 +83,7 @@ US_MPI_NodeSimCache::US_MPI_NodeSimCache( MPI_Comm node_comm, qint64 max_bytes, 
     gen_slots( 0 ),
     gen_size( 0 ),
     store_on( true ),
+    watch_stop( false ),
     rank_hits( 0 ),
     rank_misses( 0 ),
     rank_stored( 0 ),
@@ -129,6 +141,9 @@ US_MPI_NodeSimCache::US_MPI_NodeSimCache( MPI_Comm node_comm, qint64 max_bytes, 
       new ( header ) Header();
       header->current.store( 0 );
       header->rotating.store( 0 );
+      header->pressure.store( 0 );
+      header->releases.store( 0 );
+      header->released.store( 0 );
 
       for ( int gg = 0; gg < 2; gg++ )
       {
@@ -149,11 +164,28 @@ US_MPI_NodeSimCache::US_MPI_NodeSimCache( MPI_Comm node_comm, qint64 max_bytes, 
    MPI_Barrier( comm );
    MPI_Win_sync( window );
    base = ptr;
+
+   // The memory watch of the node's first rank reads the use of all its ranks
+   int  node_size = 1;
+   long my_pid    = (long) QCoreApplication::applicationPid();
+   MPI_Comm_size( comm, &node_size );
+   node_pids.resize( node_size );
+   MPI_Allgather( &my_pid, 1, MPI_LONG, node_pids.data(), 1, MPI_LONG, comm );
 }
 
 // Free the shared window (collective over the node communicator)
 US_MPI_NodeSimCache::~US_MPI_NodeSimCache()
 {
+   if ( watcher.joinable() )
+   {
+      {
+         std::lock_guard<std::mutex> guard( watch_lock );
+         watch_stop = true;
+      }
+      watch_wake.notify_all();
+      watcher.join();
+   }
+
    if ( window != MPI_WIN_NULL )
    {
       if ( base != nullptr )
@@ -332,6 +364,20 @@ bool US_MPI_NodeSimCache::store( const QByteArray& key, const US_DataIO::RawData
       return false;
    }
 
+   if ( header->pressure.load( std::memory_order_relaxed ) != 0 )
+   {  // Memory is short.  RECENT gives up its older simulations for new ones;
+      //  otherwise this one is not stored.
+      if ( keep != RECENT || !rotate( header->current.load( std::memory_order_acquire ), true ) )
+      {
+         if ( !survivor )
+         {
+            rank_rejected++;
+         }
+
+         return false;
+      }
+   }
+
    QByteArray digest = QCryptographicHash::hash( key, QCryptographicHash::Sha256 );
 
    for ( int tries = 0; tries < 2; tries++ )
@@ -369,34 +415,51 @@ bool US_MPI_NodeSimCache::store( const QByteArray& key, const US_DataIO::RawData
 
 // Empty the previous generation and make it current, if generation gg is
 //  still current and no other rank does so already.  Waits only for ranks
-//  within a single fetch or store of the previous generation.
-void US_MPI_NodeSimCache::rotate( int gg )
+//  within a single fetch or store of the previous generation.  With give_back
+//  this frees memory:  a previous generation without simulations has none to
+//  free, and the pages of an emptied one go back to the system.  The pressure
+//  is then reset, for the watch to judge the new use before any more is given up.
+bool US_MPI_NodeSimCache::rotate( int gg, bool give_back )
 {
-   int idle = 0;
+   int  idle    = 0;
+   bool rotated = false;
 
    if ( !header->rotating.compare_exchange_strong( idle, 1, std::memory_order_acq_rel ) )
    {
-      return; // Another rank rotates
+      return false; // Another rank rotates
    }
 
    if ( header->current.load( std::memory_order_acquire ) == gg )
    {
       int         og  = 1 - gg;
       Generation& old = header->gen[og];
-      old.epoch.fetch_add( 1, std::memory_order_seq_cst ); // Odd:  keep out
 
-      while ( old.users.load( std::memory_order_seq_cst ) != 0 )
+      if ( !give_back || old.entries.load( std::memory_order_relaxed ) > 0 )
       {
-         std::this_thread::yield();
-      }
+         old.epoch.fetch_add( 1, std::memory_order_seq_cst ); // Odd:  keep out
 
-      rank_evicted += old.entries.load( std::memory_order_relaxed );
-      empty( og );
-      old.epoch.fetch_add( 1, std::memory_order_seq_cst ); // Even:  usable
-      header->current.store( og, std::memory_order_release );
+         while ( old.users.load( std::memory_order_seq_cst ) != 0 )
+         {
+            std::this_thread::yield();
+         }
+
+         rank_evicted += old.entries.load( std::memory_order_relaxed );
+         empty( og );
+
+         if ( give_back )
+         {
+            release_pages( og );
+            header->pressure.store( 0, std::memory_order_relaxed );
+         }
+
+         old.epoch.fetch_add( 1, std::memory_order_seq_cst ); // Even:  usable
+         header->current.store( og, std::memory_order_release );
+         rotated = true;
+      }
    }
 
    header->rotating.store( 0, std::memory_order_release );
+   return rotated;
 }
 
 // Empty generation gg (no rank may use it)
@@ -416,20 +479,175 @@ void US_MPI_NodeSimCache::empty( int gg )
    std::atomic_thread_fence( std::memory_order_seq_cst );
 }
 
+// Return the pages of generation gg's data to the system.  Resetting the
+//  counts alone leaves them in memory, charged to the job.  Should the system
+//  not support this for the window, the pages just stay until used again.
+void US_MPI_NodeSimCache::release_pages( int gg )
+{
+#ifdef Q_OS_LINUX
+   static const quintptr page  = (quintptr) sysconf( _SC_PAGESIZE );
+   const quintptr        start = (quintptr) ( data + gg * gen_size );
+   const quintptr        first = ( start + page - 1 ) & ~( page - 1 );
+   const quintptr        last  = ( start + gen_size ) & ~( page - 1 );
+
+   if ( last > first )
+   {
+      madvise( reinterpret_cast<void*>( first ), last - first, MADV_REMOVE );
+   }
+#else
+   Q_UNUSED( gg );
+#endif
+}
+
+// Wait for the sole right to empty generations
+void US_MPI_NodeSimCache::lock_maintenance()
+{
+   int idle = 0;
+
+   while ( !header->rotating.compare_exchange_weak( idle, 1, std::memory_order_acq_rel ) )
+   {
+      idle = 0;
+      std::this_thread::yield();
+   }
+}
+
 // Remove all simulations.  Only while no other rank of the node uses the
-//  cache (the counts are kept)
+//  cache (the counts are kept); the memory watch may be at work, though.
 void US_MPI_NodeSimCache::clear()
 {
+   lock_maintenance();
+
    for ( int gg = 0; gg < ngens; gg++ )
    {
       empty( gg );
+      release_pages( gg );
    }
 
    header->current.store( 0, std::memory_order_relaxed );
+   header->rotating.store( 0, std::memory_order_release );
    std::atomic_thread_fence( std::memory_order_seq_cst );
    MPI_Win_sync( window );
 
    forget_dataset_keys();
+}
+
+// Empty every generation, while other ranks may use the cache:  they keep out
+//  of a generation being emptied, and take that as a miss or as no room.
+void US_MPI_NodeSimCache::empty_under_pressure( qint64 used )
+{
+   lock_maintenance();
+   qint64 freed = 0;
+
+   for ( int gg = 0; gg < ngens; gg++ )
+   {
+      Generation& gen = header->gen[gg];
+      gen.epoch.fetch_add( 1, std::memory_order_seq_cst ); // Odd:  keep out
+
+      while ( gen.users.load( std::memory_order_seq_cst ) != 0 )
+      {
+         std::this_thread::yield();
+      }
+
+      freed += qMin( gen.data_used.load( std::memory_order_relaxed ), gen_size );
+      empty( gg );
+      release_pages( gg );
+      gen.epoch.fetch_add( 1, std::memory_order_seq_cst ); // Even:  usable
+   }
+
+   header->rotating.store( 0, std::memory_order_release );
+
+   const qint64 count = header->releases.fetch_add( 1 ) + 1;
+   header->released.fetch_add( freed );
+
+   if ( count <= 5 && !watch.stress )
+   {
+      qDebug().noquote() << QString( "Simulation cache: emptied for lack of memory (use %1 MB, limit %2 MB, %3 MB freed)" )
+                               .arg( used / ( 1024 * 1024 ) )
+                               .arg( watch.job_limit / ( 1024 * 1024 ) )
+                               .arg( freed / ( 1024 * 1024 ) );
+   }
+}
+
+// Bytes the cache holds in memory now
+qint64 US_MPI_NodeSimCache::bytes_held() const
+{
+   qint64 bytes = 0;
+
+   for ( int gg = 0; gg < ngens; gg++ )
+   {
+      bytes += qMin( header->gen[gg].data_used.load( std::memory_order_relaxed ), gen_size );
+   }
+
+   return bytes;
+}
+
+// Look at the memory use until told to stop.  The job's cgroup is read often,
+//  since it is what kills the job, the other sources less often.
+void US_MPI_NodeSimCache::watch_loop()
+{
+   const std::chrono::milliseconds interval( 50 );
+   std::unique_lock<std::mutex>    guard( watch_lock );
+   int                             tick       = 0;
+   qint64                          scanned    = -1;
+   US_MPI_MemLimit::Pressure       slow_press = US_MPI_MemLimit::NONE;
+
+   while ( !watch_wake.wait_for( guard, interval, [this] { return watch_stop; } ) )
+   {
+      guard.unlock();
+
+      if ( tick++ % 4 == 0 )
+      {
+         scanned = US_MPI_MemLimit::private_bytes( node_pids ) + bytes_held();
+
+         qint64 total = 0;
+         qint64 avail = 0;
+         slow_press =
+            US_MPI_MemLimit::node_memory( total, avail ) ? US_MPI_MemLimit::node_pressure( total, avail ) : US_MPI_MemLimit::NONE;
+         slow_press = qMax( slow_press, US_MPI_MemLimit::shm_pressure( US_MPI_MemLimit::shm_free(), data_size ) );
+      }
+
+      const qint64              used  = qMax( scanned, US_MPI_MemLimit::cgroup_usage( watch.cgroup ) );
+      US_MPI_MemLimit::Pressure press = qMax( slow_press, US_MPI_MemLimit::limit_pressure( used, watch.job_limit ) );
+
+      if ( watch.stress )
+      { // Test:  let the ranks add for a while, then stop them, then empty
+         press = ( tick % 4 == 0 ) ? US_MPI_MemLimit::HARD : ( tick % 4 == 3 ) ? US_MPI_MemLimit::SOFT : US_MPI_MemLimit::NONE;
+      }
+
+      header->pressure.store( ( press == US_MPI_MemLimit::NONE ) ? 0 : 1, std::memory_order_relaxed );
+
+      if ( press == US_MPI_MemLimit::HARD && bytes_held() > 0 )
+      {
+         empty_under_pressure( used );
+         scanned = -1;
+
+         if ( !watch.stress )
+         { // Look at everything again soon
+            tick = 0;
+         }
+      }
+
+      guard.lock();
+   }
+}
+
+// Watch the memory use from a thread (on the node's first rank)
+void US_MPI_NodeSimCache::start_watch( const Watch& settings )
+{
+   watch   = settings;
+   watcher = std::thread( &US_MPI_NodeSimCache::watch_loop, this );
+}
+
+// Number of times the cache was emptied for lack of memory
+qint64 US_MPI_NodeSimCache::releases() const
+{
+   return header->releases.load( std::memory_order_relaxed );
+}
+
+// Bytes returned to the system by emptying under pressure
+qint64 US_MPI_NodeSimCache::released_bytes() const
+{
+   return header->released.load( std::memory_order_relaxed );
 }
 
 // Counts of this rank, with the node's entries and bytes

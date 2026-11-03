@@ -10,6 +10,7 @@ and compare the fitted models with stored baselines.
 | `us_mpi_testdata.cpp` | Writes a simulated velocity dataset, a DMGA constraints model and a custom-grid model with the UltraScan writers (`US_DataIO::writeRawData`, `US_DataIO::writeEdits`, `US_Model::write`). Three species, 30 scans, 60 krpm, edited bottom at the stretched centerpiece bottom as `us_edit` writes it, noise σ = 0.004 from the seeded `US_Math2` generator. Options of `data`: `scans=<n>`, `nobottom` (edit without `<bottom>`) and `tmst` (also write the timestate file set). |
 | `us_mpi_regression.py` | Builds the job archive (hpcrequest XML in the LIMS format), runs the case, reduces `analysis-results.tar` to a JSON summary and compares it with `baseline/<case>.json`. |
 | `test_us_mpi_jobconfig.cpp` | Unit tests (GoogleTest, no MPI) of `US_MPI_JobConfig`, the hpcrequest XML reader. |
+| `test_us_mpi_memlimit.cpp` | Unit tests (GoogleTest, no MPI) of `US_MPI_MemLimit`, the job's memory limit and use. |
 | `us_mpi_jobcheck.cpp` | `us_mpi_jobcheck [-q] <hpcrequest.xml>...`: reads and validates job files as `us_mpi_analysis` does, without MPI and data. |
 | `jobs/*.xml` | Anonymized hpcrequest files written by the LIMS (2DSA with noise, GA with buckets, 2DSA custom grid, PCSA) for the unit tests. |
 | `baseline/*.json` | Reference summaries: per model the RMSD, the signal-weighted moments of s, f/f0 and vbar, the solute list, and any TI/RI noise vectors. |
@@ -175,12 +176,26 @@ GA, 100 genes, 40 generations, 4 ranks (about 185 MB of simulations):
 | 50 MB | 36 % | 81 % |
 | 20 MB | 17 % | 76 % |
 
+The cache gives way to the job's own memory.  The limit is the tightest of
+Slurm's `--mem` or `--mem-per-cpu` and the job's cgroup; the capacity is at
+most half of it and must fit the free space in `/dev/shm`.  A GA cache is
+capped at 4 GB per data set by default, as more adds little.  While the job
+runs, a thread on each node's first rank compares the use with the limit, the
+node's available memory and the free shared memory.  Above 75 % of the limit no
+rank adds to the cache, except that a GA empties its older generation to make
+room.  Above 88 % the whole cache is emptied and its pages are returned to the
+system.  The run then only has to compute some simulations again, and the
+result stays the same.  The report at the end says how often this happened.
+`SimCacheLimitMB=N` sets a limit for tests.  `SimCacheStress=1` empties the
+cache over and over while the ranks use it.
+
 CTest repeats a few cases (`ctest -L simcache`):  with the cache off, with a
 1 MB cache, too small for the fit (2DSA and PCSA store hardly anything, GA
 empties a generation every few simulations), with a 1 MB cache and the
 recent policy for every method, and with `NodeSplit=2`, which makes two
 groups of ranks act as separate nodes with separate caches (a test switch
-for multi-node behavior on one machine).
+for multi-node behavior on one machine), with `SimCacheLimitMB=1` and with
+`SimCacheStress=1`.
 
 ### Benchmark
 
