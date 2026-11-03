@@ -548,7 +548,11 @@ class US_MPI_Analysis : public QObject
         // Worker
         void     _2dsa_worker      ( void );
 
-        void     calc_residuals     ( int, int, SIMULATION&, int = -1 );
+        void     calc_residuals     ( int, int, SIMULATION& );
+        //! \brief Index in data_sets_bfgs of the band-forming gradient that fits
+        //!        the current simulation parameters of a dataset, calculating
+        //!        it if none does; -1 if the dataset needs none
+        int      bfg_index_for      ( int );
         void                   seed_deme_random( void );
         void                   calc_fitness_residuals( int, int, SIMULATION& );
         void                   debug_residuals( int, int, SIMULATION&, QVector<US_Solute>& );

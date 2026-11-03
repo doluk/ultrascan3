@@ -911,7 +911,8 @@ int US_LammAstfvm::calculate( US_DataIO::RawData& sim_data )
    #endif
 
    if ( codiff_needed && ( bandFormingGradient == nullptr || bandFormingGradient->is_empty || bandFormingGradient->
-      dens_bfg_data.scanCount() == 0 ) )
+      dens_bfg_data.scanCount() == 0 || ( sim_data.scanCount() > 0 &&
+      bandFormingGradient->dens_bfg_data.scanData.last().seconds < sim_data.scanData.last().seconds ) ) )
    {
       param_s = model.components.first().s != 0.0 ? model.components.first().s : 1e-14;
       param_D = model.components.first().D;
@@ -1819,9 +1820,17 @@ void US_LammAstfvm::set_buffer( US_Buffer buffer, US_Math_BF::Band_Forming_Gradi
                bandFormingGradient->get_eigenvalues();
             }
          }
-         else if ( !bfg->is_empty )
+         else if ( !bfg->is_empty && bfg->is_suitable( simparams.meniscus,
+                                                       simparams.bottom,
+                                                       simparams.band_volume,
+                                                       simparams.cp_pathlen,
+                                                       simparams.cp_angle,
+                                                       cosed_components,
+                                                       0 ) )
          {
-            DbgLv( 1 ) << "reused old bfg";
+            // Geometry checked here; calculate() checks that the table
+            //  reaches the data's last scan
+            DbgLv( 1 ) << "reused given bfg";
             set_bfg( bfg, false );
             codiff_needed = true;
          }
