@@ -3405,7 +3405,7 @@ void US_MPI_Analysis::calculate_cosed() {
    US_Math2::SolutionData sol_data{};
    sol_data.density = base_density;
    sol_data.viscosity = base_viscosity;
-   sol_data.manual = true;
+   sol_data.manual = false;   // the base buffer is given at 20 C: scale it to T
    foreach(US_CosedComponent cosed_comp,  cosed_components) {
       // get the excess concentrations
       if ( cosed_comp.overlaying && upper_cosed.contains(cosed_comp.name)) {

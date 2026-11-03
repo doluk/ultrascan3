@@ -228,6 +228,17 @@ class US_UTIL_EXTERN US_Math_BF final : public QObject {
             quint64 cache_id;
             //! Run get_eigenvalues() once, also when several threads ask at once
             void ensure_eigenvalues();
+            //! Temperature history of calculate_gradient(): times and diffusion times
+            //!  S(t) = integral of diffusion_scale( T(t') ) dt' from 0 to t
+            QVector<double> dtime_t;
+            QVector<double> dtime_S;
+            //! D(T) / D20 of a co-diffusing component: (T / 293.15) * eta_w(20) / eta_w(T),
+            //!  both viscosities from US_Math2::water_properties(); 1 at 20 C
+            static double diffusion_scale( double T );
+            //! Diffusion time at t: the time at 20 C over which a component with D20
+            //!  spreads as far as with D(T(t')) over [0, t].  From the temperature
+            //!  history where there is one, otherwise at the constant T given.
+            double diffusion_time( double t, double T ) const;
             QVector<double> eig_J1b; //!< J1(beta_i * bottom), one per eigenvalue
             QVector<double> eig_Y1b; //!< Y1(beta_i * bottom), one per eigenvalue
             double total_volume;
@@ -236,9 +247,9 @@ class US_UTIL_EXTERN US_Math_BF final : public QObject {
             //! \brief The eigenfunction values of all eigenvalues at radius x, from the row cache
             const double* eigenfunction_row( double x ) const;
 
-            //! \brief norm * overlay integral * exp(-D beta^2 t) for every overlay component
-            //!        (rows of eigenvalues.size()), cached per thread for the last (t, temp)
-            const double* decay_weights( double t, double temp ) const;
+            //! \brief norm * overlay integral * exp(-D20 beta^2 dtime) for every overlay component
+            //!        (rows of eigenvalues.size()), cached per thread for the last dtime
+            const double* decay_weights( double dtime ) const;
 
             //! \brief Concentration of overlay component ci at (x, t)
             double comp_conc( int ci, double x, double t, double temp ) const;

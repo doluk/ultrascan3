@@ -533,7 +533,7 @@ void US_Math2::calc_vbar( Peptide& pep, const QString& sequence,
    }
 }
 
-void US_Math2::data_correction( double t, SolutionData& d )
+void US_Math2::water_properties( double t, double& density, double& viscosity )
 {
 #ifdef OLD_WATER_MODEL
    double xi_max =    1.000028e-3  ;
@@ -573,7 +573,7 @@ void US_Math2::data_correction( double t, SolutionData& d )
      \f$ b   = 16.879850    \times 10^{-3}\f$ <br>
    */
 
-   d.density_wt = 
+   density = 
       xi_max * ( c0  + c1 * t + c2 * t2 + c3 * t3 + c4 * t4 + c5 * t5 ) /
          ( 1.0 + b * t );
 
@@ -625,7 +625,7 @@ void US_Math2::data_correction( double t, SolutionData& d )
 
       exponent = ( c0 / ( c1 + c2 * t20 + c3 * sq( t20 ) ) ) - c4;
 
-      d.viscosity_wt = 100.0 * pow( 10.0, exponent );
+      viscosity = 100.0 * pow( 10.0, exponent );
    }
    else
    {
@@ -637,7 +637,7 @@ void US_Math2::data_correction( double t, SolutionData& d )
 
       exponent = ( c1 * t20 - c2 * sq( t20 ) ) / ( t + c3 );
       
-      d.viscosity_wt = VISC_20W * pow( 10.0, exponent );
+      viscosity = VISC_20W * pow( 10.0, exponent );
    }
 #else
    /*
@@ -678,7 +678,7 @@ void US_Math2::data_correction( double t, SolutionData& d )
       v0_c += param[ii][2] * qPow(beta, param[ii][3]);
    }
    V0 += v0_c * R * 1000.0 * 0.01325;
-   d.density_wt = 1000.0 / V0;
+   density = 1000.0 / V0;
 
    double a1 = 280.68;
    double b1 = -1.9;
@@ -689,8 +689,14 @@ void US_Math2::data_correction( double t, SolutionData& d )
    double a4 = 0.45903;
    double b4 = -40.0;
    double T = (t + K0) / 300.0;
-   d.viscosity_wt = 1e-3 * (a1 * qPow(T, b1) + a2 * qPow(T, b2) + a3 * qPow(T, b3) + a4 * qPow(T, b4));
+   viscosity = 1e-3 * (a1 * qPow(T, b1) + a2 * qPow(T, b2) + a3 * qPow(T, b3) + a4 * qPow(T, b4));
 #endif
+
+}
+
+void US_Math2::data_correction( double t, SolutionData& d )
+{
+   water_properties( t, d.density_wt, d.viscosity_wt );
 
    if ( d.manual )
    {

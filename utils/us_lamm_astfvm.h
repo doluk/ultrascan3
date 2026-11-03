@@ -359,6 +359,8 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
       double  param_D20w_corr = 1.0; // cached D20w_correction (run conditions)
       double  param_dens_tb   = 0.0; // run-temp buffer density (rho_ref, case 3)
       double  param_visc_tb   = 0.0; // run-temp buffer viscosity (eta_ref, case 3)
+      double  param_wdens_ratio = 1.0; // water density, run temp / 20 C (case 2)
+      double  param_wvisc_ratio = 1.0; // water viscosity, run temp / 20 C (case 2)
       double  param_w2;        // rpm-based omega-sq-t, w2=(rpm*pi/30)^2
       double  param_w2_t0;      // rpm-based omega-sq-t at time t0, w2=(rpm(t0)*pi/30)^2
       double  param_w2_t0dt;     // rpm-based omega-sq-t at time t0+dt, w2=(rpm(t0+dt)*pi/30)^2
