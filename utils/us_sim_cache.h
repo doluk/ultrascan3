@@ -10,6 +10,8 @@
 #include "us_model.h"
 #include "us_simparms.h"
 
+class US_Buffer;
+
 //! \brief Cache of single-component simulations, shared by the threads of a
 //!        fit
 //!
@@ -70,8 +72,15 @@ class US_UTIL_EXTERN US_SimCache
       //!        the simulation parameters and the experiment's grid
       //! \param simparams  Simulation parameters of the data set
       //! \param edata      Experiment data whose grid is simulated
+      //! \param buffer     Buffer of the data set.  ASTFVM applies the buffer
+      //!                   and its gradients while it simulates, so the key of
+      //!                   an ASTFVM data set covers them;  a gradient is
+      //!                   determined by the values in the key.  Other mesh
+      //!                   types get the buffer in the corrected component
+      //!                   values (see sim_key) and ignore this.
       //! \returns          Key (a hash of the values)
-      static QByteArray   dataset_key( const US_SimulationParameters& simparams, const US_DataIO::EditedData& edata );
+      static QByteArray   dataset_key( const US_SimulationParameters& simparams, const US_DataIO::EditedData& edata,
+                                       const US_Buffer* buffer = nullptr );
 
       //! \brief Key of a simulation
       //! \param dskey  Key of the data set (from dataset_key)

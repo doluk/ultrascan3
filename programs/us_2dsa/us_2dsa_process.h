@@ -160,6 +160,7 @@ private:
       US_Math_BF::Band_Forming_Gradient* bfg; // band forming Gradient
       US_LammAstfvm::CosedData* csD; // cosedimenting component simulation
       QMap<QString, US_DataIO::RawData> cosed_comp_data; // cosedimentation component simulation data from csD
+      QByteArray cosed_key; // key of the parameters that cosed_comp_data was simulated with
       bool codiff_needed; // switch for band forming gradient simulation
       bool cosed_needed; // switch for cosedimending component simulation
 

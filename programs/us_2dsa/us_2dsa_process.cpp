@@ -394,6 +394,16 @@ void US_2dsaProcess::calculate_cosedimenting_component()
                            tr( "Calculating co-sedimenting components" ), false );
       cosed_components = dsets[0]->solution_rec.buffer.cosed_component;
       cosed_components.detach();
+      // Co-sedimenting simulations are only valid for the parameters they were
+      //  made with.  Called with no worker running, so csD can be replaced.
+      const QByteArray new_cosed_key = US_SimCache::dataset_key( *simparms, *edata, &dsets[0]->solution_rec.buffer );
+      if ( new_cosed_key != cosed_key )
+      {
+         cosed_key = new_cosed_key;
+         cosed_comp_data.clear();
+         delete csD;
+         csD = nullptr;
+      }
       US_DataIO::RawData auc_data = dsets[0]->run_data.convert_to_raw_data();
       US_Model cosed_model = model;
       cosed_model.coSedSolute = -1;
@@ -518,6 +528,7 @@ void US_2dsaProcess::calculate_cosedimenting_component()
          emit message_update( pmessage_head() +
                               tr( "Calculating co-sedimenting component %1 ..." )
                                     .arg( cosed_comp.name ), false );
+         delete csD;
          csD = new US_LammAstfvm::CosedData(cosed_model_tmp, *simparms, &auc_data, &cosed_components,
                                              base_density, base_viscosity);
          cosed_comp_data[ tmp.analyteGUID ] = csD->sa_data;
@@ -1506,10 +1517,6 @@ if(mtiters>50)
 
       if ( mmtype == 1 ){
          set_meniscus();
-          if (dens_grad)
-          {
-              calculate_cosedimenting_component();
-          }
       }
 
       else if ( mmtype == 2 )
@@ -2247,6 +2254,13 @@ void US_2dsaProcess::set_meniscus()
    // Re-queue all the original subgrid tasks
    if ( mm_iter > 0 )
    {
+      // Their gradient must be that of the new values before any of them starts
+      if ( simparms->meshType == US_SimulationParameters::ASTFVM &&
+           !dsets[0]->solution_rec.buffer.cosed_component.isEmpty() )
+      {
+         calculate_cosedimenting_component();
+      }
+
       requeue_tasks();
 DbgLv(1) << "SET_MEN:    RQUE RETURN";
    }

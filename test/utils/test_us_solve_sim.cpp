@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <random>
 #include <thread>
 
@@ -1215,6 +1216,20 @@ class TestUSSolveSimCache : public TestUSSolveSimCalcResiduals
          return US_SimCache::sim_bytes( simdat );
       }
 
+      // Simulate with ASTFVM, which takes the buffer from the solution, in water
+      void useAstfvm()
+      {
+         dset.simparams.meshType            = US_SimulationParameters::ASTFVM;
+         dset.solution_rec.buffer.density   = DENS_20W;
+         dset.solution_rec.buffer.viscosity = VISC_20W;
+      }
+
+      // Whether a task fit any of its solutes to a non-zero concentration
+      static bool hasFit( const US_SolveSim::Simulation& sim )
+      {
+         return std::any_of( sim.solutes.begin(), sim.solutes.end(), []( const US_Solute& sol ) { return sol.c > 0.0; } );
+      }
+
       US_DataIO::EditedData       base;
       QVector<QVector<US_Solute>> subgrids;
       int                         noisflag = 0;
@@ -1337,4 +1352,96 @@ TEST_F( TestUSSolveSimCache, CustomGridFitIsUnchanged )
    EXPECT_EQ( firstDifference( fitCustom( &cache ), expected ), -1 );
    EXPECT_EQ( firstDifference( fitCustom( &cache ), expected ), -1 );
    EXPECT_EQ( cache.stats().hits, input.zsolutes.size() );
+}
+
+TEST_F( TestUSSolveSimCache, AstfvmIterationsOfFitParameterAreUnchanged )
+{
+   // Each value of a fit parameter clears the cache, as us_2dsa does;  tasks
+   // of a value get the simulations of no other value
+   useAstfvm();
+   const QVector<US_Solute> solutes = subgrids[0];
+   US_SimCache              cache( 1024LL * 1024 * 1024 );
+   QVector<double>          previous;
+
+   for ( double meniscus : { 5.9, 5.85 } )
+   {
+      SCOPED_TRACE( meniscus );
+      dset.simparams.meniscus = meniscus;
+      dset.run_data.meniscus  = meniscus;
+      cache.clear();
+
+      const US_SolveSim::Simulation uncached = task( solutes, nullptr );
+      ASSERT_TRUE( hasFit( uncached ) );
+      QVector<double> expected;
+      appendResult( expected, uncached );
+      EXPECT_NE( firstDifference( expected, previous ), -1 );
+      previous = expected;
+
+      const qint64    hits = cache.stats().hits;
+      QVector<double> first;
+      appendResult( first, task( solutes, &cache ) );
+      EXPECT_EQ( firstDifference( first, expected ), -1 );
+      EXPECT_EQ( cache.stats().hits, hits );
+
+      QVector<double> again;
+      appendResult( again, task( solutes, &cache ) );
+      EXPECT_EQ( firstDifference( again, expected ), -1 );
+      EXPECT_EQ( cache.stats().hits, hits + solutes.size() );
+   }
+}
+
+TEST_F( TestUSSolveSimCache, AstfvmInputsOutsideComponentAreNotReused )
+{
+   // ASTFVM applies these while it simulates, so no component value shows them
+   useAstfvm();
+   const QVector<US_Solute>   solutes = subgrids[0];
+   const US_SolveSim::DataSet saved   = dset;
+
+   const QList<std::function<void()>> changes = {
+      [this]() { dset.solution_rec.buffer.density += 0.05; },
+      [this]() { dset.solution_rec.buffer.viscosity += 0.2; },
+      [this]() { dset.simparams.sigma = 0.05; },
+      [this]() { dset.simparams.delta = 0.05; },
+   };
+
+   for ( int ii = 0; ii < changes.size(); ii++ )
+   {
+      SCOPED_TRACE( ii );
+      dset = saved;
+      US_SimCache     cache( 1024LL * 1024 * 1024 );
+      const US_SolveSim::Simulation unchanged = task( solutes, &cache );
+      ASSERT_TRUE( hasFit( unchanged ) );
+      QVector<double> first;
+      appendResult( first, unchanged );
+      const qint64 hits = cache.stats().hits;
+
+      changes[ii]();
+      QVector<double> cached;
+      appendResult( cached, task( solutes, &cache ) );
+      EXPECT_EQ( cache.stats().hits, hits );
+
+      QVector<double> expected;
+      appendResult( expected, task( solutes, nullptr ) );
+      EXPECT_EQ( firstDifference( cached, expected ), -1 );
+      EXPECT_NE( firstDifference( first, expected ), -1 );
+   }
+}
+
+TEST_F( TestUSSolveSimCache, FailedAstfvmSimulationIsNotCached )
+{
+   // ASTFVM refuses concentration dependence together with compressibility
+   useAstfvm();
+   dset.simparams.sigma                     = 0.05;
+   dset.solution_rec.buffer.compressibility = 1.0e-6;
+
+   US_SimCache cache( 1024LL * 1024 * 1024 );
+   task( subgrids[0], &cache );
+
+   EXPECT_EQ( cache.stats().entries, 0 );
+   EXPECT_EQ( cache.stats().hits, 0 );
+
+   // The same simulations are cached if they succeed
+   dset.solution_rec.buffer.compressibility = 0.0;
+   task( subgrids[0], &cache );
+   EXPECT_EQ( cache.stats().entries, subgrids[0].size() );
 }

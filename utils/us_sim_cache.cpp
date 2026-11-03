@@ -1,5 +1,6 @@
 //! \file us_sim_cache.cpp
 #include "us_sim_cache.h"
+#include "us_buffer.h"
 #include "us_memory.h"
 #include "us_settings.h"
 
@@ -88,8 +89,42 @@ qint64 US_SimCache::default_max_bytes()
    return qBound( DEF_MIN_MB, capmb, DEF_MAX_MB ) * MB;
 }
 
-// Key of the simulation parameters and experiment grid of a data set
-QByteArray US_SimCache::dataset_key( const US_SimulationParameters& simparams, const US_DataIO::EditedData& edata )
+// Append the values of a buffer that ASTFVM simulates with to a key
+static void add_buffer( QByteArray& key, const US_Buffer& buffer )
+{
+   add_bytes( key, buffer.density );
+   add_bytes( key, buffer.viscosity );
+   add_bytes( key, buffer.compressibility );
+   add_bytes( key, buffer.manual );
+
+   double    d_coeff[6] = { 0.0 };
+   double    v_coeff[6] = { 0.0 };
+   US_Buffer composite  = buffer;
+   composite.compositeCoeffs( d_coeff, v_coeff );
+   add_bytes( key, d_coeff );
+   add_bytes( key, v_coeff );
+
+   add_bytes( key, (qint64) buffer.cosed_component.size() );
+
+   for ( const US_CosedComponent& comp : buffer.cosed_component )
+   {
+      add_string( key, comp.GUID );
+      add_string( key, comp.name );
+      add_bytes( key, comp.dens_coeff );
+      add_bytes( key, comp.visc_coeff );
+      add_bytes( key, comp.s_coeff );
+      add_bytes( key, comp.d_coeff );
+      add_bytes( key, comp.vbar );
+      add_bytes( key, comp.conc );
+      add_bytes( key, comp.overlaying );
+      add_bytes( key, comp.concentration_offset );
+   }
+}
+
+// Key of the simulation parameters, experiment grid and (for ASTFVM) buffer
+//  of a data set
+QByteArray US_SimCache::dataset_key( const US_SimulationParameters& simparams, const US_DataIO::EditedData& edata,
+                                     const US_Buffer* buffer )
 {
    QByteArray vals;
 
@@ -165,6 +200,13 @@ QByteArray US_SimCache::dataset_key( const US_SimulationParameters& simparams, c
    add_bytes( vals, simparams.cp_pathlen );
    add_bytes( vals, simparams.cp_angle );
    add_bytes( vals, simparams.cp_width );
+   add_bytes( vals, simparams.sigma );
+   add_bytes( vals, simparams.delta );
+
+   if ( simparams.meshType == US_SimulationParameters::ASTFVM && buffer != nullptr )
+   {
+      add_buffer( vals, *buffer );
+   }
 
    // Experiment grid, as copied to a simulation by US_AstfemMath::initSimData
    add_string( vals, edata.cell );

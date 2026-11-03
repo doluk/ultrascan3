@@ -1269,7 +1269,10 @@ DbgLv(1) << "CR: sdat:"
 
             for ( int jx = sim_ix; jx < sim_lx; jx++ )
             {
-               simcache->store( simkeys[jx], rawsims[jx], true );
+               if ( !simkeys[jx].isEmpty() )
+               {
+                  simcache->store( simkeys[jx], rawsims[jx], true );
+               }
             }
          }
          if (soluval > 1.0)
@@ -1787,7 +1790,7 @@ QByteArray US_SolveSim::simulate( US_Model& model, DataSet* dset, US_DataIO::Edi
          dskey->nspeeds   = sparms.speed_step.size();
          dskey->nsimprofs = sparms.sim_speed_prof.size();
          dskey->sim       = sparms.sim;
-         dskey->key       = US_SimCache::dataset_key( sparms, *edata );
+         dskey->key       = US_SimCache::dataset_key( sparms, *edata, &dset->solution_rec.buffer );
       }
 
       simkey = US_SimCache::sim_key( dskey->key, model.components[0] );
@@ -1798,13 +1801,15 @@ QByteArray US_SolveSim::simulate( US_Model& model, DataSet* dset, US_DataIO::Edi
       }
    }
 
+   int rc = 0;
+
    if ( dset->simparams.meshType != US_SimulationParameters::ASTFVM )
    {
       US_Astfem_RSA astfem_rsa( model, dset->simparams );
 
       astfem_rsa.set_debug_flag( dbg_level );
 
-      astfem_rsa.calculate( simdat );
+      rc = astfem_rsa.calculate( simdat );
    }
    else
    {
@@ -1812,7 +1817,12 @@ QByteArray US_SolveSim::simulate( US_Model& model, DataSet* dset, US_DataIO::Edi
 
       astfvm.set_buffer( dset->solution_rec.buffer, bfg, csD );
 
-      astfvm.calculate( simdat );
+      rc = astfvm.calculate( simdat );
+   }
+
+   if ( rc != 0 )
+   { // A failed or stopped simulation is not a result to reuse
+      return QByteArray();
    }
 
    if ( simcache != 0 )

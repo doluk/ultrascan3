@@ -221,7 +221,8 @@ class US_UTIL_EXTERN US_SolveSim : public QObject
     QList<DsetKey> dskeys; // Data set keys of a calc_residuals
 
     // Simulate a single-component model for a data set, or get the
-    //  simulation from the cache; returns the cache key (if any)
+    //  simulation from the cache; returns the cache key (empty if there is
+    //  no cache or the simulation failed, so it is not to be cached)
     QByteArray     simulate( US_Model&, DataSet*, US_DataIO::EditedData*, US_DataIO::RawData&,
                              US_Math_BF::Band_Forming_Gradient* = nullptr, US_LammAstfvm::CosedData* = nullptr );
 

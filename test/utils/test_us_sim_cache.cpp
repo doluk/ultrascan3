@@ -2,6 +2,7 @@
 // test_us_sim_cache.cpp - Unit tests for US_SimCache
 #include "qt_test_base.h"
 #include "us_astfem_math.h"
+#include "us_buffer.h"
 #include "us_settings.h"
 #include "us_sim_cache.h"
 #include <atomic>
@@ -259,6 +260,81 @@ TEST_F( TestUSSimCache, DatasetKeyCoversGridAndParameters )
    EXPECT_EQ( US_SimCache::dataset_key( simparams2, edata ), dskey );
    simparams2.meshType = US_SimulationParameters::USER;
    EXPECT_NE( US_SimCache::dataset_key( simparams2, edata ), dskey );
+}
+
+TEST_F( TestUSSimCache, DatasetKeyCoversSigmaAndDelta )
+{
+   US_SimulationParameters simparams;
+   US_DataIO::EditedData   edata;
+   makeDataSet( simparams, edata );
+   const QByteArray dskey = US_SimCache::dataset_key( simparams, edata );
+
+   // ASTFVM copies these to a component after the component key is made
+   US_SimulationParameters simparams2 = simparams;
+   simparams2.sigma                   = simparams.sigma + 0.01;
+   EXPECT_NE( US_SimCache::dataset_key( simparams2, edata ), dskey );
+   simparams2       = simparams;
+   simparams2.delta = simparams.delta + 0.01;
+   EXPECT_NE( US_SimCache::dataset_key( simparams2, edata ), dskey );
+}
+
+TEST_F( TestUSSimCache, DatasetKeyCoversBufferOfAstfvmOnly )
+{
+   US_SimulationParameters simparams;
+   US_DataIO::EditedData   edata;
+   makeDataSet( simparams, edata );
+
+   US_CosedComponent cosed;
+   cosed.GUID       = "00000000-0000-0000-0000-000000000001";
+   cosed.name       = "Sucrose";
+   cosed.s_coeff    = 1.0e-13;
+   cosed.d_coeff    = 5.0e-6;
+   cosed.vbar       = 0.62;
+   cosed.conc       = 0.5;
+   cosed.overlaying = false;
+
+   US_Buffer buffer;
+   buffer.cosed_component << cosed;
+
+   // Other mesh types have the buffer in the corrected component values
+   simparams.meshType = US_SimulationParameters::ASTFEM;
+   US_Buffer buffer2  = buffer;
+   buffer2.density    = buffer.density + 0.01;
+   EXPECT_EQ( US_SimCache::dataset_key( simparams, edata, &buffer2 ), US_SimCache::dataset_key( simparams, edata, &buffer ) );
+
+   simparams.meshType     = US_SimulationParameters::ASTFVM;
+   const QByteArray dskey = US_SimCache::dataset_key( simparams, edata, &buffer );
+   EXPECT_EQ( US_SimCache::dataset_key( simparams, edata, &buffer ), dskey );
+
+   buffer2         = buffer;
+   buffer2.density = buffer.density + 0.01;
+   EXPECT_NE( US_SimCache::dataset_key( simparams, edata, &buffer2 ), dskey );
+   buffer2           = buffer;
+   buffer2.viscosity = buffer.viscosity + 0.01;
+   EXPECT_NE( US_SimCache::dataset_key( simparams, edata, &buffer2 ), dskey );
+   buffer2                 = buffer;
+   buffer2.compressibility = buffer.compressibility + 1.0e-6;
+   EXPECT_NE( US_SimCache::dataset_key( simparams, edata, &buffer2 ), dskey );
+   buffer2        = buffer;
+   buffer2.manual = !buffer.manual;
+   EXPECT_NE( US_SimCache::dataset_key( simparams, edata, &buffer2 ), dskey );
+
+   // Each value a gradient is calculated from
+   buffer2                         = buffer;
+   buffer2.cosed_component[0].conc = cosed.conc + 0.1;
+   EXPECT_NE( US_SimCache::dataset_key( simparams, edata, &buffer2 ), dskey );
+   buffer2                            = buffer;
+   buffer2.cosed_component[0].s_coeff = cosed.s_coeff * 2.0;
+   EXPECT_NE( US_SimCache::dataset_key( simparams, edata, &buffer2 ), dskey );
+   buffer2                               = buffer;
+   buffer2.cosed_component[0].overlaying = !cosed.overlaying;
+   EXPECT_NE( US_SimCache::dataset_key( simparams, edata, &buffer2 ), dskey );
+   buffer2                                  = buffer;
+   buffer2.cosed_component[0].dens_coeff[1] = cosed.dens_coeff[1] + 0.01;
+   EXPECT_NE( US_SimCache::dataset_key( simparams, edata, &buffer2 ), dskey );
+   buffer2 = buffer;
+   buffer2.cosed_component.clear();
+   EXPECT_NE( US_SimCache::dataset_key( simparams, edata, &buffer2 ), dskey );
 }
 
 TEST_F( TestUSSimCache, SimKeyCoversComponent )
