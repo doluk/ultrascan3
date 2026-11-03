@@ -31,9 +31,10 @@ US_SolveSim::US_SolveSim( QList< DataSet* >& data_sets, int thrnrank,
    bool signal_wanted ) : QObject(), data_sets( data_sets ),
    thrnrank( thrnrank ), signal_wanted( signal_wanted )
 {
-   dbg_level = 0;         // Default: no debug prints
-   dbg_timing = false;     // Default: no debug timing prints
-   banddthr = false;     // Default: no bandform data_threshold
+   dbg_level    = 0;         // Default: no debug prints
+   dbg_timing   = false;     // Default: no debug timing prints
+   simcache     = nullptr;   // Default: no simulation cache
+   banddthr     = false;     // Default: no bandform data_threshold
 
    // If band-forming, possibly read in threshold control values
    if (data_sets[0]->simparams.band_forming) {
@@ -330,6 +331,10 @@ US_Settings::set_us_debug( dbg_level );
 
    QList< US_DataIO::RawData > simulations;       // All simulations, this run
    simulations.reserve( static_cast<qsizetype>( nsolutes ) * dataset_count );
+   QList<QByteArray>         simkeys; // Their cache keys (if any)
+   QList<US_DataIO::RawData> rawsims; // ... as simulated (shared
+                                      //  unless thresholded)
+   dskeys.clear();                    // Renew cache data set keys
 
    // Simulate data using models, each with a single s,f/f0 component
    int increp    = nsolutes / 10;                 // Progress report increment
@@ -473,18 +478,13 @@ US_Settings::set_us_debug( dbg_level );
                 // Convert to experimental space
                 model.components[0].s /= dset->s20w_correction;
                 model.components[0].D /= dset->D20w_correction;
-               US_Astfem_RSA astfem_rsa(model, dset->simparams);
-               DbgLv(2) << "   CR:113  rss now" << US_Memory::rss_now() << "cc" << cc;
-
-               astfem_rsa.set_debug_flag(dbg_level);
-
-               astfem_rsa.calculate(simdat);
             }
-            else{
-               US_LammAstfvm astfvm(model,dset->simparams);
-               US_Buffer tmp = dset->solution_rec.buffer;
-               astfvm.set_buffer(dset->solution_rec.buffer, bfg, csD);
-               astfvm.calculate(simdat);
+            DbgLv(2) << "   CR:113  rss now" << US_Memory::rss_now() << "cc" << cc;
+            QByteArray         simkey = simulate( model, dset, edata, simdat, bfg, csD );
+            US_DataIO::RawData rawsim; // As simulated, for cache
+            if ( simcache != nullptr )
+            {
+               rawsim = simdat; //  (shared unless modified)
             }
 //DebugTime("END: clcr-NA-astfem");
             DbgLv(2) << "   CR:114  rss now" << US_Memory::rss_now() << "cc" << cc;
@@ -499,11 +499,17 @@ US_Settings::set_us_debug( dbg_level );
                   continue;
                }
 
-               ksols++;
-            }
+   ksols++;
+}
 
             simulations << simdat;   // Save simulation (each dataset,solute)
-            DbgLv(2) << "   CR:115  rss now" << US_Memory::rss_now() << "cc" << cc;
+
+            if ( simcache != nullptr )
+            { // Keep key and simulation, to keep any survivor in the cache
+               simkeys << simkey;
+               rawsims << rawsim;
+            }
+DbgLv(2) << "   CR:115  rss now" << US_Memory::rss_now() << "cc" << cc;
 
             // Populate the A matrix for the NNLS routine with simulation
             DbgLv(1) << "   CR: A fill kodl" << kodl << "bndthr ksol" << banddthr << ksols << "  kacol" << kacol;
@@ -743,18 +749,14 @@ DbgLv(0)<< " norm_s norm_a norm_b" << norm_s << norm_a << norm_b
             if (dset->simparams.meshType != US_SimulationParameters::ASTFVM){
                model.components[0].s /= sd.s20w_correction;
                model.components[0].D /= sd.D20w_correction;
-               US_Astfem_RSA astfem_rsa(model, dset->simparams);
-               DbgLv(2) << "   CR:113  rss now" << US_Memory::rss_now() << "cc" << cc;
-
-               astfem_rsa.set_debug_flag(dbg_level);
-
-               astfem_rsa.calculate(simdat);
             }
-            else{
-               US_LammAstfvm astfvm(model,dset->simparams);
-               US_Buffer tmp = dset->solution_rec.buffer;
-               astfvm.set_buffer(dset->solution_rec.buffer, bfg, csD);
-               astfvm.calculate(simdat);
+            DbgLv(2) << "   CR:113  rss now" << US_Memory::rss_now() << "cc" << cc;
+
+            QByteArray         simkey = simulate( model, dset, edata, simdat, bfg, csD );
+            US_DataIO::RawData rawsim; // As simulated, for cache
+            if ( simcache != nullptr )
+            {
+               rawsim = simdat; //  (shared unless modified)
             }
 #if 0
                                                                                                                                     int nsc=simdat.scanCount();
@@ -782,6 +784,12 @@ DbgLv(1) << "CR: sdat:"
             }
 
             simulations << simdat;   // Save simulation (each datset,solute)
+
+            if ( simcache != nullptr )
+            { // Keep key and simulation, to keep any survivor in the cache
+               simkeys << simkey;
+               rawsims << rawsim;
+            }
 
             // Populate the A matrix for the NNLS routine with simulation
             DbgLv(1) << "   CR: A-fill  bndthr" << banddthr << "kodl ksols" << kodl << ksols;
@@ -929,18 +937,12 @@ DbgLv(1) << "CR: sdat:"
             if (dset->simparams.meshType != US_SimulationParameters::ASTFVM){
                model.components[0].s /= sd.s20w_correction;
                model.components[0].D /= sd.D20w_correction;
-               US_Astfem_RSA astfem_rsa(model, dset->simparams);
-               DbgLv(2) << "   CR:113  rss now" << US_Memory::rss_now() << "cc" << cc;
-
-               astfem_rsa.set_debug_flag(dbg_level);
-
-               astfem_rsa.calculate(simdat);
             }
-            else{
-               US_LammAstfvm astfvm(model,dset->simparams);
-               US_Buffer tmp = dset->solution_rec.buffer;
-               astfvm.set_buffer(dset->solution_rec.buffer, bfg, csD);
-               astfvm.calculate(simdat);
+            QByteArray         simkey = simulate( model, dset, edata, simdat, bfg, csD );
+            US_DataIO::RawData rawsim; // As simulated, for cache
+            if ( simcache != nullptr )
+            {
+               rawsim = simdat; //  (shared unless modified)
             }
             if (abort) return;
 
@@ -952,6 +954,12 @@ DbgLv(1) << "CR: sdat:"
             }
 
             simulations << simdat;   // Save simulation (each datset,solute)
+
+            if ( simcache != 0 )
+            { // Keep key and simulation, to keep any survivor in the cache
+               simkeys << simkey;
+               rawsims << rawsim;
+            }
 
 /*DEBUG*/
             int ks = ka;
@@ -1254,6 +1262,16 @@ DbgLv(1) << "CR: sdat:"
             DbgLv(1) << "CR: cc soluval" << cc << soluval << "cc-old" << usesols[cc];
          int scnx = 0;
          int sim_ix = usesols[cc] * dataset_count;
+
+         if ( simcache != nullptr )
+         { // Keep the simulations of a surviving solute in the cache
+            int sim_lx = qMin( sim_ix + dataset_count, (int) simkeys.size() );
+
+            for ( int jx = sim_ix; jx < sim_lx; jx++ )
+            {
+               simcache->store( simkeys[jx], rawsims[jx], true );
+            }
+         }
          if (soluval > 1.0)
             DbgLv(1) << thrnrank << ": SOLUVAL" << soluval << "cc" << cc << "sim_ix" << sim_ix << "ksol nsol"
                      << ksolutes << nsolutes;
@@ -1727,6 +1745,82 @@ int US_SolveSim::nnls_noise( const int                noisflag,
    }
 
    return rc;
+}
+
+// Simulate a single-component model for a data set (simulation data
+//  initialized to the experiment grid), or get the simulation from the cache.
+//  A cache hit skips US_Astfem_RSA::calculate and so its side effects on
+//  dset->simparams (timestate load, speed_step expansion, the sim flag);
+//  nothing after the simulation in calc_residuals may depend on them.
+QByteArray US_SolveSim::simulate( US_Model& model, DataSet* dset, US_DataIO::EditedData* edata, US_DataIO::RawData& simdat,
+                                  US_Math_BF::Band_Forming_Gradient* bfg, US_LammAstfvm::CosedData* csD )
+{
+   QByteArray simkey;
+
+   if ( simcache != 0 )
+   {
+      // Data set key, renewed if the simulator changed the parameters
+      const SIMPARAMS& sparms = dset->simparams;
+      DsetKey*         dskey  = 0;
+
+      for ( int kk = 0; kk < dskeys.size(); kk++ )
+      {
+         if ( dskeys[kk].dset == dset && dskeys[kk].edata == edata )
+         {
+            dskey = &dskeys[kk];
+            break;
+         }
+      }
+
+      if ( dskey == 0 )
+      {
+         dskeys << DsetKey();
+         dskey        = &dskeys.last();
+         dskey->dset  = dset;
+         dskey->edata = edata;
+      }
+
+      if ( dskey->key.isEmpty() || dskey->tsobj != sparms.tsobj || dskey->nspeeds != sparms.speed_step.size() ||
+           dskey->nsimprofs != sparms.sim_speed_prof.size() || dskey->sim != sparms.sim )
+      {
+         dskey->tsobj     = sparms.tsobj;
+         dskey->nspeeds   = sparms.speed_step.size();
+         dskey->nsimprofs = sparms.sim_speed_prof.size();
+         dskey->sim       = sparms.sim;
+         dskey->key       = US_SimCache::dataset_key( sparms, *edata );
+      }
+
+      simkey = US_SimCache::sim_key( dskey->key, model.components[0] );
+
+      if ( simcache->fetch( simkey, simdat ) )
+      {
+         return simkey;
+      }
+   }
+
+   if ( dset->simparams.meshType != US_SimulationParameters::ASTFVM )
+   {
+      US_Astfem_RSA astfem_rsa( model, dset->simparams );
+
+      astfem_rsa.set_debug_flag( dbg_level );
+
+      astfem_rsa.calculate( simdat );
+   }
+   else
+   {
+      US_LammAstfvm astfvm( model, dset->simparams );
+
+      astfvm.set_buffer( dset->solution_rec.buffer, bfg, csD );
+
+      astfvm.calculate( simdat );
+   }
+
+   if ( simcache != 0 )
+   {
+      simcache->store( simkey, simdat, false );
+   }
+
+   return simkey;
 }
 
 // Debug message with thread/processor number and elapsed time value

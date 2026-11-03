@@ -815,8 +815,7 @@ void US_SimulationParameters::computeSpeedSteps(
 }
 
 // Set parameters from hardware files, related to rotor and centerpiece
-void US_SimulationParameters::setHardware( IUS_DB2* db, QString rCalID,
-      int cp, int ch )
+bool US_SimulationParameters::setHardware( IUS_DB2* db, QString rCalID, int cp, int ch )
 {
    int dbg_level    = US_Settings::us_debug();
    rotorCalID       = rCalID;
@@ -826,6 +825,7 @@ void US_SimulationParameters::setHardware( IUS_DB2* db, QString rCalID,
    QList< US_AbstractCenterpiece > cp_list;
    QMap < QString, QString       > rotor_map;
    rotor_map.clear();
+   bool hardware_ok = true;
 
    if ( US_AbstractCenterpiece::read_centerpieces( db, cp_list ) )
    {
@@ -845,47 +845,66 @@ void US_SimulationParameters::setHardware( IUS_DB2* db, QString rCalID,
 DbgLv(1) << "sH: cp ch cp_id" << cp << ch << cp_id;
       }
 
-      // Pick up centerpiece info by Centerpiece and Channel indecies
-      QStringList shapes;
-      shapes << "sector" << "standard" << "rectangular" << "band forming"
-             << "meniscus matching" << "circular" << "synthetic";
-      const US_AbstractCenterpiece& centerpiece = cp_list[ cp ];
-      bool found = false;
-      if (!centerpiece.channels.isEmpty() && ch < centerpiece.channels.count()){
-            US_AbstractChannel channel = centerpiece.channels[ch];
-            bottom_position = channel.bottom_position;
-            cp_pathlen = channel.path_length;
-            cp_angle = channel.angle;
-            cp_width = channel.width;
-            cp_sector = qMax( 0, shapes.indexOf( channel.shape ) );
-            band_forming = ( channel.shape == "band forming");
-            found = true;
-         }
-      if (!found){
-         QString shape   = cp_list[ cp ].shape;
-         bottom_position = cp_list[ cp ].bottom_position[ qMin(ch, cp_list[ cp ].bottom_position.count()-1) ];
-         cp_pathlen      = cp_list[ cp ].path_length    [ qMin( ch, cp_list[ cp ].path_length.count()-1) ];
-         cp_angle        = cp_list[ cp ].angle;
-         cp_width        = cp_list[ cp ].width;
-         cp_sector       = qMax( 0, shapes.indexOf( shape ) );
-         band_forming    = ( shape == "band forming" );
+      if ( cp < 0 || cp >= cp_list.size() || ch < 0 )
+      {
+         qDebug() << "setHardware: centerpiece or channel index out of range" << cp << ch;
+         hardware_ok = false;
       }
+      else
+      {
+         // Pick up centerpiece info by centerpiece and channel (or row) indexes.
+         const QStringList shapes = { "sector",   "standard", "rectangular", "band forming", "meniscus matching",
+                                      "circular", "synthetic" };
+         const US_AbstractCenterpiece& centerpiece = cp_list[cp];
 
+         if ( !centerpiece.channels.isEmpty() && ch < centerpiece.channels.count() )
+         {
+            const US_AbstractChannel& channel = centerpiece.channels[ch];
+            bottom_position                   = channel.bottom_position;
+            cp_pathlen                        = channel.path_length;
+            cp_angle                          = channel.angle;
+            cp_width                          = channel.width;
+            cp_sector                         = qMax( 0, shapes.indexOf( channel.shape ) );
+            band_forming                      = ( channel.shape == "band forming" );
+         }
+         else if ( ch >= centerpiece.bottom_position.size() || ch >= centerpiece.path_length.size() )
+         {
+            qDebug() << "setHardware: centerpiece or channel index out of range" << cp << ch;
+            hardware_ok = false;
+         }
+         else
+         {
+            QString shape   = centerpiece.shape;
+            bottom_position = centerpiece.bottom_position[ch];
+            cp_pathlen      = centerpiece.path_length[ch];
+            cp_angle        = centerpiece.angle;
+            cp_width        = centerpiece.width;
+            cp_sector       = qMax( 0, shapes.indexOf( shape ) );
+            band_forming    = ( shape == "band forming" );
+         }
+      }
+   }
+   else
+   {
+      hardware_ok = false;
    }
 
    if ( US_Hardware::readRotorMap( db, rotor_map ) )
    {  // Get rotor coefficients by matching calibration ID
-      US_Hardware::rotorValues( rotorCalID, rotor_map, rotorcoeffs );
+      hardware_ok = US_Hardware::rotorValues( rotorCalID, rotor_map, rotorcoeffs ) && hardware_ok;
    }
 
-   else
+   else if ( rotorCalID != "0" )
+   {
       qDebug() << "setHardware:readRotorMap *ERROR*";
+      hardware_ok = false;
+   }
 
-   return;
+   return hardware_ok;
 }
 
 // Set parameters from hardware files, related to rotor and centerpiece (Local)
-void US_SimulationParameters::setHardware( QString rCalID, int cp, int ch )
+bool US_SimulationParameters::setHardware( QString rCalID, int cp, int ch )
 {
    return setHardware( NULL, rCalID, cp, ch );
 }
@@ -1363,6 +1382,28 @@ int US_SimulationParameters::simSpeedsFromTimeState( const QString tmst_fpath )
    DbgLv(1) << "SP: ssFts: ispeed" << sim_speed_prof[0].rotorspeed
                << "ssp count" << sim_speed_prof.count();
    return sim_speed_prof.count();                // Return number steps
+}
+
+// Set the edit radii implied by a simulated cell geometry.
+// The only optical artifact in simulated data is the spike the simulators put
+// at the meniscus, so the fit range spans the rest of the column.
+void US_SimulationParameters::editRadiiFromCell( US_DataIO::EditValues& edits, double meniscus, double bottom, double resolution )
+{
+   // Start one grid step past the spike: a point between two readings would
+   // leave US_DataIO::index() to break the tie, and it picks the spike.
+   const double past_meniscus   = resolution;
+   const double baseline_offset = 0.0055; // cm past the meniscus
+   const double plateau_inset   = 0.3;    // cm before the bottom
+   const double standard_column = 1.4;    // cm; shorter columns scale the inset
+
+   double       fract = qMin( 1.0, ( bottom - meniscus ) / standard_column );
+
+   edits.meniscus   = meniscus;
+   edits.bottom     = bottom;
+   edits.rangeLeft  = meniscus + past_meniscus;
+   edits.rangeRight = bottom;
+   edits.baseline   = meniscus + baseline_offset;
+   edits.plateau    = bottom - plateau_inset * fract;
 }
 
 // Create a referenced simulation speed step profile from an opened

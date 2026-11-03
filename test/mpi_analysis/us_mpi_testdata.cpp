@@ -9,11 +9,18 @@
 //! US_Math2 generator that us_mpi_analysis uses for Monte Carlo data.
 //!
 //! Usage:
-//!   us_mpi_testdata data   <outdir> <runID> <cell> <seed> <scale>
+//!   us_mpi_testdata data   <outdir> <runID> <cell> <seed> <scale> [options]
 //!   us_mpi_testdata cgrid  <outdir> <filename>
+//!   us_mpi_testdata dmga   <outdir> <filename>
 //!
 //! "data" writes <runID>.RI.<cell>.A.260.auc and the edit file
 //! <runID>.e1.RI.<cell>.A.260.xml.  "cgrid" writes a custom-grid model file.
+//! "dmga" writes a DMGA constraints model for the three simulated species.
+//! Options of "data":  scans=<n> (default 30), nobottom (an edit file
+//! without <bottom>, as older edit files lack the element; us_edit always
+//! writes it, with radius 0 when it has none) and tmst (also the 1-second
+//! timestate file set <runID>.time_state.tmst/.xml the data were simulated
+//! with).
 
 #include <QtCore>
 #include <cmath>
@@ -23,6 +30,7 @@
 #include "us_astfem_math.h"
 #include "us_astfem_rsa.h"
 #include "us_dataIO.h"
+#include "us_dmga_constr.h"
 #include "us_math2.h"
 #include "us_model.h"
 #include "us_simparms.h"
@@ -42,7 +50,7 @@ const double kDensity    = 0.998234;
 const double kViscosity  = 1.001940;
 const double kVbar20     = 0.72;
 const double kNoiseSigma = 0.004;
-const int    kScans      = 30;
+const int    kScans      = 30; // Default scan count
 const double kRadiusLo   = 5.95;
 const double kRadiusHi   = 7.15;
 const double kRadiusStep = 0.006;
@@ -52,7 +60,7 @@ QString      raw_guid( int cell, uint64_t seed )
    return QString( "00000000-0000-4000-8000-%1" ).arg( seed * 100 + cell, 12, 10, QChar( '0' ) );
 }
 
-US_DataIO::RawData skeleton( const QString& runID, int cell, uint64_t seed )
+US_DataIO::RawData skeleton( const QString& runID, int cell, uint64_t seed, int scans )
 {
    US_DataIO::RawData raw;
    memcpy( raw.type, "RI", 2 );
@@ -72,7 +80,7 @@ US_DataIO::RawData skeleton( const QString& runID, int cell, uint64_t seed )
    // Linear acceleration to kRpm: omega^2 t integrates to w^2 (t - 2/3 t_acc)
    double omega = kRpm * M_PI / 30.0;
    double t_acc = kRpm / kAccelRate;
-   for ( int ss = 0; ss < kScans; ss++ )
+   for ( int ss = 0; ss < scans; ss++ )
    {
       US_DataIO::Scan scan;
       scan.temperature = 20.0;
@@ -99,9 +107,9 @@ double stretched_bottom( void )
    return US_AstfemMath::calc_bottom( kRpm, kCpBottom, stretch );
 }
 
-// Velocity edit: meniscus, stretched bottom, data range 6.0-7.1 cm, plateau
-//  and baseline
-bool write_edit( const QString& path, const QString& runID, const US_DataIO::RawData& raw, int cell )
+// Velocity edit: meniscus, stretched bottom (0: no <bottom>), data
+//  range 6.0-7.1 cm, plateau and baseline
+bool write_edit( const QString& path, const QString& runID, const US_DataIO::RawData& raw, int cell, double bottom )
 {
    US_DataIO::EditValues ev;
    ev.expType    = "Velocity";
@@ -112,14 +120,42 @@ bool write_edit( const QString& path, const QString& runID, const US_DataIO::Raw
    ev.editGUID   = QString( "00000000-0000-4000-8000-0000000000%1" ).arg( 10 + cell );
    ev.dataGUID   = US_Util::uuid_unparse( (uchar*) raw.rawGUID );
    ev.meniscus   = kMeniscus;
-   ev.bottom     = stretched_bottom();
+   ev.bottom     = bottom;
    ev.rangeLeft  = 6.0;
    ev.rangeRight = 7.1;
    ev.plateau    = 7.0;
    ev.baseline   = 7.12;
    ev.ODlimit    = 1.5;
 
-   return US_DataIO::writeEdits( path, ev ) == US_DataIO::OK;
+   if ( US_DataIO::writeEdits( path, ev ) != US_DataIO::OK )
+   {
+      return false;
+   }
+
+   if ( bottom > 0.0 )
+   {
+      return true;
+   }
+
+   // writeEdits always writes <bottom>; drop it
+   QFile ff( path );
+   if ( !ff.open( QIODevice::ReadOnly | QIODevice::Text ) )
+   {
+      return false;
+   }
+   QString xml = QString::fromUtf8( ff.readAll() );
+   ff.close();
+
+   int nbot = xml.count( "<bottom " );
+   xml.remove( QRegularExpression( "\\s*<bottom [^>]*/>" ) );
+
+   if ( nbot != 1 || !ff.open( QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text ) )
+   {
+      return false;
+   }
+   ff.write( xml.toUtf8() );
+   ff.close();
+   return ff.error() == QFileDevice::NoError;
 }
 
 US_Model sample_model( double scale )
@@ -143,15 +179,22 @@ US_Model sample_model( double scale )
    return model;
 }
 
-int write_data( const QString& outdir, const QString& runID, int cell, uint64_t seed, double scale )
+int write_data( const QString& outdir,
+                const QString& runID,
+                int            cell,
+                uint64_t       seed,
+                double         scale,
+                int            scans,
+                bool           nobottom,
+                bool           with_tmst )
 {
    QString            triple   = QString( "RI.%1.A.260" ).arg( cell );
    QString            aucname  = runID + "." + triple + ".auc";
    QString            editname = runID + ".e1." + triple + ".xml";
 
-   US_DataIO::RawData raw = skeleton( runID, cell, seed );
+   US_DataIO::RawData raw = skeleton( runID, cell, seed, scans );
    if ( US_DataIO::writeRawData( outdir + "/" + aucname, raw ) != US_DataIO::OK ||
-        !write_edit( outdir + "/" + editname, runID, raw, cell ) )
+        !write_edit( outdir + "/" + editname, runID, raw, cell, nobottom ? 0.0 : stretched_bottom() ) )
    {
       fprintf( stderr, "cannot write %s\n", qPrintable( aucname ) );
       return 1;
@@ -171,7 +214,9 @@ int write_data( const QString& outdir, const QString& runID, int cell, uint64_t 
    simparams.rotorcoeffs[0]  = stretch[0];
    simparams.rotorcoeffs[1]  = stretch[1];
    simparams.bottom_position = kCpBottom;
-   simparams.bottom          = edata.bottom; // As us_mpi_analysis
+   // As us_mpi_analysis dataset_bottom():  the edited bottom, else the
+   //  stretched centerpiece bottom
+   simparams.bottom          = ( edata.bottom > 0.0 ) ? edata.bottom : stretched_bottom();
    simparams.band_forming    = false;
 
    QTemporaryDir      tmpdir;
@@ -180,6 +225,20 @@ int write_data( const QString& outdir, const QString& runID, int cell, uint64_t 
    US_AstfemMath::initSimData( tsdat, edata, 0.0 );
    US_AstfemMath::writetimestate( tmst, simparams, tsdat );
    simparams.simSpeedsFromTimeState( tmst );
+
+   if ( with_tmst )
+   { // Also write the timestate file set as the LIMS includes it in a job
+      QString tmst_out = outdir + "/" + runID + ".time_state.tmst";
+      QString xml_in   = QString( tmst ).replace( ".tmst", ".xml" );
+      QString xml_out  = QString( tmst_out ).replace( ".tmst", ".xml" );
+      QFile::remove( tmst_out );
+      QFile::remove( xml_out );
+      if ( !QFile::copy( tmst, tmst_out ) || ( QFile::exists( xml_in ) && !QFile::copy( xml_in, xml_out ) ) )
+      {
+         fprintf( stderr, "cannot write %s\n", qPrintable( tmst_out ) );
+         return 1;
+      }
+   }
 
    // Convert the 20,W model to experimental space as US_SolveSim does
    US_Math2::SolutionData sd;
@@ -265,6 +324,55 @@ int write_custom_grid( const QString& outdir, const QString& filename )
    printf( "%s\n", qPrintable( filename ) );
    return 0;
 }
+int write_dmga_constraints( const QString& outdir, const QString& filename )
+{
+   // s and f/f0 float in a range around each simulated species, vbar is
+   //  fixed, the concentration floats
+   typedef US_dmGA_Constraints C;
+   US_Model                    bmodel = sample_model( 1.0 );
+   C                           constraints;
+   constraints.load_base_model( &bmodel );
+
+   QVector<C::Constraint> cnsv;
+   auto                   add = [&cnsv]( C::AttribType atype, int mcompx, double low, double high, bool floats )
+   {
+      C::Constraint cns;
+      cns.atype  = atype;
+      cns.mcompx = mcompx;
+      cns.low    = low;
+      cns.high   = floats ? high : low;
+      cns.floats = floats;
+      cns.logscl = false;
+      cnsv << cns;
+   };
+
+   for ( int ii = 0; ii < bmodel.components.size(); ii++ )
+   {
+      const US_Model::SimulationComponent& sc = bmodel.components[ii];
+      add( C::ATYPE_S, ii, sc.s * 0.85, sc.s * 1.15, true );
+      add( C::ATYPE_FF0, ii, sc.f_f0 * 0.85, sc.f_f0 * 1.15, true );
+      add( C::ATYPE_VBAR, ii, sc.vbar20, sc.vbar20, false );
+      add( C::ATYPE_CONC, ii, 0.05, 0.8, true );
+   }
+   constraints.load_constraints( cnsv );
+
+   US_Model cmodel;
+   if ( !constraints.get_constr_model( &cmodel ) )
+   {
+      fprintf( stderr, "cannot build constraints model\n" );
+      return 1;
+   }
+   cmodel.description = "regression dmga constraints";
+   cmodel.modelGUID   = "00000000-0000-4000-8000-00000000d6a0";
+
+   if ( cmodel.write( outdir + "/" + filename ) != 0 )
+   {
+      fprintf( stderr, "cannot write %s\n", qPrintable( filename ) );
+      return 1;
+   }
+   printf( "%s\n", qPrintable( filename ) );
+   return 0;
+}
 } // namespace
 
 int main( int argc, char* argv[] )
@@ -272,9 +380,41 @@ int main( int argc, char* argv[] )
    QCoreApplication app( argc, argv );
    QStringList      args = app.arguments();
 
-   if ( args.size() == 7 && args[1] == "data" )
+   if ( args.size() >= 7 && args[1] == "data" )
    {
-      return write_data( args[2], args[3], args[4].toInt(), args[5].toULongLong(), args[6].toDouble() );
+      int  scans     = kScans;
+      bool nobottom  = false;
+      bool with_tmst = false;
+      bool argsok    = true;
+
+      for ( int ii = 7; ii < args.size(); ii++ )
+      {
+         if ( args[ii].startsWith( "scans=" ) )
+         {
+            scans  = args[ii].mid( 6 ).toInt( &argsok );
+            argsok = argsok && scans > 0;
+         }
+         else if ( args[ii] == "nobottom" )
+         {
+            nobottom = true;
+         }
+         else if ( args[ii] == "tmst" )
+         {
+            with_tmst = true;
+         }
+         else
+         {
+            argsok = false;
+         }
+
+         if ( !argsok )
+         {
+            fprintf( stderr, "invalid option %s\n", qPrintable( args[ii] ) );
+            return 2;
+         }
+      }
+
+      return write_data( args[2], args[3], args[4].toInt(), args[5].toULongLong(), args[6].toDouble(), scans, nobottom, with_tmst );
    }
 
    if ( args.size() == 4 && args[1] == "cgrid" )
@@ -282,9 +422,16 @@ int main( int argc, char* argv[] )
       return write_custom_grid( args[2], args[3] );
    }
 
+   if ( args.size() == 4 && args[1] == "dmga" )
+   {
+      return write_dmga_constraints( args[2], args[3] );
+   }
+
    fprintf( stderr,
-            "usage: %s data <outdir> <runID> <cell> <seed> <scale>\n"
-            "       %s cgrid <outdir> <filename>\n",
+            "usage: %s data <outdir> <runID> <cell> <seed> <scale> [scans=<n>] [nobottom] [tmst]\n"
+            "       %s cgrid <outdir> <filename>\n"
+            "       %s dmga  <outdir> <filename>\n",
+            argv[0],
             argv[0],
             argv[0] );
    return 2;

@@ -129,9 +129,12 @@ DbgLv(1) << "2P(2dsaProc): start_fit()";
    itvaris  .clear();
    ical_sols.clear();
 
-DbgLv(1) << "2P:SF: sll sul nss" << slolim << suplim << nssteps
- << " kll kul nks" << klolim << kuplim << nksteps
- << " ngref nthr noif" << ngrefine << nthreads << noisflag;
+   // Cache of solute simulations, shared by the tasks of this fit
+   //  (debug text "SimCache=off" disables it, "SimCacheMB=N" sets its cap)
+   simcache.reset( US_SimCache::create_default() );
+
+   DbgLv( 1 ) << "2P:SF: sll sul nss" << slolim << suplim << nssteps << " kll kul nks" << klolim << kuplim << nksteps
+              << " ngref nthr noif" << ngrefine << nthreads << noisflag;
 
    timer.start();              // start a timer to measure run time
 
@@ -790,6 +793,7 @@ DbgLv(1) << "  STOPTHR:  thread deleted";
    maxdepth  = 0;
    ntisols   = 0;
    ntcsols   = 0;
+   simcache.reset();
 
    if ( mmtype == 1 )
       restore_fit_parameters();
@@ -1269,6 +1273,11 @@ DbgLv(1) << "done: vari bvol" << vari << bvol
    pmsg += tr( "Maximum memory used:  " )
            + QString::number( qRound( memmb ) ) + " MB";
 
+   if ( simcache )
+   {
+      pmsg += "\n" + simcache->stats_text();
+   }
+
    emit message_update( pmsg, false );          // signal final message
 
    int thrx   = wresult.thrn - 1;
@@ -1578,6 +1587,7 @@ if(mtiters>50)
 
    if ( mmtype == 1 )
       restore_fit_parameters();
+   simcache.reset(); // free the simulation cache
 
    emit process_complete( 9 );     // signal that all processing is complete
 }
@@ -1649,6 +1659,7 @@ DbgLv(0) << " GET_VAL: rfit mcit vari meni bott"
 void US_2dsaProcess::submit_job( WorkPacket2D& wtask, int thrx )
 {
    wtask.thrn         = thrx + 1;
+   wtask.simcache     = simcache;
 
    wtask.cosedData = csD;
 
@@ -2226,6 +2237,12 @@ void US_2dsaProcess::set_meniscus()
    US_Math2::data_correction( avTemp, sd );
    dsets[0]->s20w_correction = sd.s20w_correction;
    dsets[0]->D20w_correction = sd.D20w_correction;
+
+   // Simulations of other fit parameter values are of no further use
+   if ( simcache )
+   {
+      simcache->clear();
+   }
 
    // Re-queue all the original subgrid tasks
    if ( mm_iter > 0 )

@@ -82,7 +82,7 @@ US_Model::US_Model()
    meniscus        = 0.0;
    bottom          = 0.0;
    alphaRP         = 0.0;
-   subGrids        = 0;
+   subGrids        = 1;
    description     = "New Model";
    optics          = ABSORBANCE;
    analysis        = MANUAL;
@@ -626,7 +626,10 @@ int US_Model::load( const QString& filename )
    if ( result == IUS_DB2::NO_MODEL  &&  monteCarlo )
    {  // Handle a multi-model stream
       file.close();
-      file.open( QIODevice::ReadOnly | QIODevice::Text );
+      if ( !file.open( QIODevice::ReadOnly | QIODevice::Text ) )
+      {
+         return IUS_DB2::DBERROR;
+      }
 
       QTextStream tsi( &file );
 
@@ -701,9 +704,8 @@ int US_Model::load_stream( QXmlStreamReader& xml )
             dataDescrip     = a.value( "dataDescrip"    ).toString();
             coSedStr        = a.value( "coSedSolute"    ).toString();
             coSedSolute     = ( coSedStr.isEmpty() ) ? -1 : coSedStr.toInt();
-            QString subgs   = a.value( "subGrids"       ).toString();
-            subGrids        = subgs.isEmpty() ? subGrids
-                                              : subgs.toInt();
+            int subgs       = a.value( "subGrids" ).toString().toInt();
+            subGrids        = subgs > 0 ? subgs : subGrids;
             QString anal1   = a.value( "type"           ).toString();
             QString anal2   = a.value( "analysisType"   ).toString();
             analysis        = anal1.isEmpty() ? analysis
@@ -1225,24 +1227,21 @@ int US_Model::write( bool db_access, const QString& filename, IUS_DB2* db )
 // Write a model DB record
 int US_Model::write( IUS_DB2* db )
 {
-   // Create the model xml file in a stream
-   QByteArray temporary;
+   // Create the model xml file in a stream.  It is passed raw: the query
+   // layer escapes every argument.
    QByteArray contents;
 
    if ( ! monteCarlo  ||  nmcixs < 1 )
    {
-      QXmlStreamWriter xml( &temporary );
+      QXmlStreamWriter xml( &contents );
       write_stream( xml );
    }
 
    else
    {
-      QTextStream tso( &temporary );
+      QTextStream tso( &contents );
       write_mm_stream( tso );
    }
-
-   db->mysqlEscapeString( contents, temporary, temporary.size() );
-qDebug() << "model writedb contsize tempsize" << contents.size() << temporary.size();
 
    QStringList q;
 
@@ -1338,8 +1337,10 @@ void US_Model::write_stream( QXmlStreamWriter& xml )
    if ( alphaRP  != 0.0 )
       xml.writeAttribute( "alphaRP",     QString::number( alphaRP      ) );
    xml.writeAttribute   ( "coSedSolute", QString::number( coSedSolute  ) );
-   if ( subGrids != 0.0 )
+   if ( subGrids > 1 )
+   {
       xml.writeAttribute( "subGrids",    QString::number( subGrids     ) );
+   }
    xml.writeAttribute   ( "opticsType",  QString::number( optics       ) );
    xml.writeAttribute   ( "analysisType",QString::number( analysis     ) );
    xml.writeAttribute   ( "globalType",  QString::number( global       ) );
@@ -1952,4 +1953,3 @@ void US_Model::debug( void )
       }
    }
 }
-

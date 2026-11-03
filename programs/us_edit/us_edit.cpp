@@ -2,33 +2,34 @@
 
 #include <QApplication>
 //#include <QDomDocument>
-#include <QToolTip>
-#include <QMessageBox>
+#include "us_constants.h"
+#include "us_convertio.h"
+#include "us_edit.h"
+#include "us_edit_scan.h"
+#include "us_editor.h"
+#include "us_exclude_profile.h"
+#include "us_get_edit.h"
+#include "us_gui_settings.h"
+#include "us_images.h"
+#include "us_investigator.h"
+#include "us_license.h"
+#include "us_license_t.h"
+#include "us_load_auc.h"
+#include "us_math2.h"
+#include "us_passwd.h"
+#include "us_protocol_util.h"
+#include "us_report.h"
+#include "us_ri_noise.h"
+#include "us_run_details2.h"
+#include "us_select_lambdas.h"
+#include "us_settings.h"
+#include "us_util.h"
 #include <QLineF>
+#include <QMessageBox>
+#include <QToolTip>
+#include <qwt_picker_machine.h>
 #include <qwt_scale_div.h>
 #include <qwt_scale_map.h>
-#include <qwt_picker_machine.h>
-#include "us_edit.h"
-#include "us_exclude_profile.h"
-#include "us_select_lambdas.h"
-#include "us_ri_noise.h"
-#include "us_edit_scan.h"
-#include "us_license_t.h"
-#include "us_license.h"
-#include "us_settings.h"
-#include "us_gui_settings.h"
-#include "us_investigator.h"
-#include "us_run_details2.h"
-#include "us_math2.h"
-#include "us_util.h"
-#include "us_load_auc.h"
-#include "us_passwd.h"
-#include "us_get_edit.h"
-#include "us_constants.h"
-#include "us_images.h"
-#include "us_editor.h"
-#include "us_report.h"
-#include "us_protocol_util.h"
 
 #ifndef DbgLv
 #define DbgLv(a) if(dbg_level>=a)qDebug()
@@ -3091,6 +3092,13 @@ void US_Edit::gap_check( void )
    }
 }
 
+// For VEL-MWL:GMP
+void US_Edit::load_auto_velmwl( QMap<QString, QString>& details_at_editing )
+{
+   velmwl_edit_ok = false; // set true only after every triple's save succeeded
+   load_auto( details_at_editing );
+}
+
 // Load an AUC data set
 void US_Edit::load_auto( QMap < QString, QString > & details_at_editing )
 {
@@ -3134,6 +3142,8 @@ void US_Edit::load_auto( QMap < QString, QString > & details_at_editing )
   qDebug() << "autoflowID_passed, dataSource, ProtocolName_auto, autoflow_expType : "
 	   << autoflowID_passed << dataSource << ProtocolName_auto << autoflow_expType;
 
+  auto_flag_ = details_at_editing["auto_flag_edit"];
+
   // Deal with different filenames if any.... //////////////////////////
   filename_runID_passed = details_at_editing[ "filename" ];
   runType_combined_IP_RI = false;
@@ -3166,6 +3176,14 @@ void US_Edit::load_auto( QMap < QString, QString > & details_at_editing )
 
       qDebug() << "IN EDIT - filename_base for combined runs: " << filename_runID_auto_base;
 
+    }
+
+    if ( !auto_flag_.isEmpty() && auto_flag_ == "VELMWL_EDIT_SIM_ANALYSIS" )
+    {
+       qDebug() << "[US_Edit: VEL-MWL:GMP], auto_flag_, filename : " << auto_flag_ << filename_runID_passed;
+       qDebug() << "[US_Edit: VEL-MWL:GMP], " << details_at_editing["meniscus"] << details_at_editing["data_left"]
+                << details_at_editing["data_right"] << details_at_editing["bottom"] << details_at_editing["baseline"]
+                << details_at_editing["plateau"] << details_at_editing["od_limit"];
     }
 
   ///////////////////////////////////////////////////////////////////////
@@ -3821,8 +3839,79 @@ DbgLv(1) << "IS-MWL: celchns size" << celchns.size();
    //all_loaded = true;
    le_status->setText( tr( "Data loaded..." ) );
 
-   emit data_loaded(); 
-   
+   emit data_loaded();
+
+   /******* FOR VEL-MWL ext *********************************************/
+   if ( !auto_flag_.isEmpty() && auto_flag_ == "VELMWL_EDIT_SIM_ANALYSIS" )
+   {
+      /** DEBUG **********************************************/
+      iwavl_edit_ref.resize( cb_triple->count() );
+      iwavl_edit_ref_index.resize( cb_triple->count() );
+      triple_plot_first_time.resize( cb_triple->count() );
+      for ( int trx = 0; trx < cb_triple->count(); trx++ )
+      {
+         iwavl_edit_ref[trx]         = 0;
+         iwavl_edit_ref_index[trx]   = 0;
+         triple_plot_first_time[trx] = 0;
+      }
+      /** DEBUG ********************************************/
+
+      for ( int trx = 0; trx < cb_triple->count(); trx++ )
+      {
+         QString triple_name = cb_triple->itemText( trx );
+
+         meniscus    = details_at_editing_local["meniscus"].toDouble();
+         range_left  = details_at_editing_local["data_left"].toDouble();
+         range_right = details_at_editing_local["data_right"].toDouble();
+         bottom      = details_at_editing_local["bottom"].toDouble();
+         baseline    = details_at_editing_local["baseline"].toDouble();
+         plateau     = details_at_editing_local["plateau"].toDouble();
+         baseline_od = details_at_editing_local["od_limit"].toDouble();
+
+         triple_info.clear();
+         triple_info << QString::number( meniscus ) << QString::number( range_left ) << QString::number( range_right )
+                     << QString::number( plateau ) << QString::number( baseline ) << QString::number( baseline_od )
+                     << QString( "spike_false" );
+
+         editProfile[triple_name] = triple_info;
+         qDebug() << "[FOR VEL-MWL]: triple_info -- " << triple_info;
+
+         /** DEBUG ********************************************/
+         plotndx                   = cb_lplot->currentIndex();
+         iwavl_edit_ref[trx]       = expi_wvlns[plotndx];
+         iwavl_edit_ref_index[trx] = plotndx;
+
+         QStringList scan_excl               = { "0", "0", "1" };
+         editProfile_scans_excl[triple_name] = scan_excl;
+
+         le_meniscus->setText( QString::number( meniscus, 'f', 3 ) );
+         le_dataStart->setText( QString::number( range_left, 'f', 3 ) );
+         le_dataEnd->setText( QString::number( range_right, 'f', 3 ) );
+         step = PLATEAU;
+         next_step();
+         /** DEBUG ********************************************/
+      }
+      if ( editProfile.count() == cb_triple->count() )
+      {
+         all_loaded = true;
+      }
+      /** DEBUG *********************************************/
+      new_triple_auto( 0 );
+      // new_triple(0);
+      /** DEBUG *********************************************/
+
+      // and save edit profiles
+      bool all_saved = ( cb_triple->count() > 0 );
+      for ( int trx = 0; trx < cb_triple->count(); trx++ )
+      {
+         write_mwl_auto( trx );
+         all_saved = all_saved && mwl_auto_write_ok;
+      }
+      velmwl_edit_ok = all_saved;
+
+      return;
+   }
+
    // editProfile.clear();
    // centerpieceParameters.clear();
    // aprofileParameters.clear();
@@ -12216,13 +12305,11 @@ DbgLv(1) << "AppPri: IN  dkdb" << disk_controls->db();
          return;
       }
 
-      QStringList q( "get_rawDataID_from_GUID" );
+      int     rawDataIDnum = -1;
+      QString opError;
 
-      q << US_Util::uuid_unparse( (uchar*)data.rawGUID );
-      dbP->query( q );
-
-      // Error check
-      if ( dbP->lastErrno() != US_DB2::OK )
+      if ( US_ConvertIO::findRawDataId( dbP, US_Util::uuid_unparse( (uchar*) data.rawGUID ), rawDataIDnum, opError ) !=
+           IUS_DB2::OK )
       {
          QMessageBox::warning( this,
            tr( "AUC Data is not in DB" ),
@@ -12231,10 +12318,8 @@ DbgLv(1) << "AppPri: IN  dkdb" << disk_controls->db();
          return;
       }
 
-      dbP->next();
-      QString rawDataID = dbP->value( 0 ).toString();
-
-      q.clear();
+      QString     rawDataID = QString::number( rawDataIDnum );
+      QStringList q;
       q << "get_editedDataIDs" << rawDataID;
 
       dbP->query( q );
@@ -12429,14 +12514,11 @@ void US_Edit::prior_equil( void )
          return;
       }
 
-      QStringList q( "get_rawDataID_from_GUID" );
+      int     rawDataIDnum = -1;
+      QString opError;
 
-      q << US_Util::uuid_unparse( (uchar*)data.rawGUID );
-
-      db.query( q );
-
-      // Error check
-      if ( db.lastErrno() != US_DB2::OK )
+      if ( US_ConvertIO::findRawDataId( &db, US_Util::uuid_unparse( (uchar*) data.rawGUID ), rawDataIDnum, opError ) !=
+           IUS_DB2::OK )
       {
          QMessageBox::warning( this,
            tr( "AUC Data is not in DB" ),
@@ -12445,10 +12527,8 @@ void US_Edit::prior_equil( void )
          return;
       }
 
-      db.next();
-      QString rawDataID = db.value( 0 ).toString();
-
-      q.clear();
+      QString     rawDataID = QString::number( rawDataIDnum );
+      QStringList q;
       q << "get_editedDataIDs" << rawDataID;
 
       db.query( q );
@@ -12492,12 +12572,14 @@ void US_Edit::prior_equil( void )
       for ( int ii = 1; ii < outData.size(); ii++ )
       {
          data    = *outData[ ii ];
-         q.clear();
-         q << "get_rawDataID_from_GUID"
-           << US_Util::uuid_unparse( (uchar*)data.rawGUID );
-         db.query( q );
-         db.next();
-         rawDataID = db.value( 0 ).toString();
+
+         if ( US_ConvertIO::findRawDataId( &db, US_Util::uuid_unparse( (uchar*) data.rawGUID ), rawDataIDnum, opError ) !=
+              IUS_DB2::OK )
+         { // Without its raw record, this triple has no matching edit
+            cefnames << "";
+            continue;
+         }
+         rawDataID = QString::number( rawDataIDnum );
 
          q.clear();
          q << "get_editedDataIDs" << rawDataID;
@@ -13504,16 +13586,17 @@ DbgLv(1) << "od_radius_limit  value" << value;
 // Write edit to all wavelengths of the current cell/channel
 void US_Edit::write_mwl_auto( int trx )
 {
+   mwl_auto_write_ok = false; // every early 'return' below is a failure
 
-  US_Passwd pw;
-  US_DB2* dbP            = new US_DB2( pw.getPasswd() );
+   US_Passwd pw;
+   US_DB2*   dbP = new US_DB2( pw.getPasswd() );
 
-  if ( dbP->lastErrno() != US_DB2::OK )
-    {
+   if ( dbP->lastErrno() != US_DB2::OK )
+   {
       QMessageBox::warning( this, tr( "Connection Problem" ),
 			    tr( "Could not connect to database: \n" ) + dbP->lastError() );
       return;
-    }
+   }
 
   // triple_index = trx;
 
@@ -13573,14 +13656,19 @@ void US_Edit::write_mwl_auto( int trx )
      }
 
    //old way: just read form centerpiece
-   double bottom_cent = centerpieceParameters[ trx ][1].toDouble();  //Should be from centerpiece info from protocol
-   
-   US_SimulationParameters simparams;
-   simparams.initFromData( dbP, data, idInv_auto.toInt(), false, runID, dataType );
-   bottom         = simparams.bottom;
+     if ( !auto_flag_.isEmpty() && auto_flag_ == "VELMWL_EDIT_SIM_ANALYSIS" )
+     {
+        bottom = details_at_editing_local["bottom"].toDouble();
+     }
+     else
+     {
+        double bottom_cent = centerpieceParameters[trx][1].toDouble(); // Should be from centerpiece info from protocol
+        US_SimulationParameters simparams;
+        simparams.initFromData( dbP, data, idInv_auto.toInt(), false, runID, dataType );
+        bottom = simparams.bottom;
+        qDebug() << "[in write_mwl_auto()]: bottom_cent, bottom -- " << bottom_cent << ", " << bottom;
+     }
 
-   qDebug() << "[in write_mwl_auto()]: bottom_cent, bottom -- "
-	    << bottom_cent << ", " << bottom; 
    // End of base parameters
 
    //Is this needed ?
@@ -13773,6 +13861,8 @@ DbgLv(1) << "EDT:WrMwl:  dax fname" << idax << filename << "wrstat" << wrstat;
    // ck_writemwl ->setEnabled( false );
    le_info->setText( saved_info );
    qApp->processEvents();
+
+   mwl_auto_write_ok = true; // reached the end: XML and DB writes all succeeded
 
    if ( runType_combined_IP_RI )
      cb_triple->disconnect();
@@ -14327,20 +14417,22 @@ DbgLv(1) << "EDT:WrXml:  waveln" << waveln;
 int US_Edit::write_edit_db( IUS_DB2* dbP, QString& fname, QString& editGUID,
       QString& editID, QString& rawGUID )
 {
-   int idEdit;
+   // The database mechanics live in US_ConvertIO; what stays here is this
+   // program's own policy: which failures deserve which dialog, whether the
+   // record is created or updated, and the editIDs bookkeeping that only the
+   // editor keeps.  The numbered return codes are unchanged, because four call
+   // sites in this file branch on them.
+   int     idEdit;
+   int     rawDataID = -1;
+   QString error;
 
    if ( dbP == NULL )
    {
-      QMessageBox::warning( this, tr( "Connection Problem" ),
-         tr( "Could not connect to database \n" ) + dbP->lastError() );
+      QMessageBox::warning( this, tr( "Connection Problem" ), tr( "Could not connect to database \n" ) );
       return 1;
    }
 
-   QStringList query( "get_rawDataID_from_GUID" );
-   query << rawGUID;
-   dbP->query( query );
-
-   if ( dbP->lastErrno() != US_DB2::OK )
+   if ( US_ConvertIO::findRawDataId( dbP, rawGUID, rawDataID, error ) != IUS_DB2::OK )
    {
       QMessageBox::warning( this,
          tr( "AUC Data is not in DB" ),
@@ -14349,30 +14441,21 @@ int US_Edit::write_edit_db( IUS_DB2* dbP, QString& fname, QString& editGUID,
       return 2;
    }
 
-   dbP->next();
-   QString rawDataID = dbP->value( 0 ).toString();
-
-
-   // Save edit file to DB
-   query.clear();
+   US_ConvertIO::EditedDataRecord record;
+   record.rawDataID = rawDataID;
+   record.editGUID  = editGUID;
+   record.label     = runID;
+   record.filename  = fname;
 
    if ( editID.isEmpty() )
    {
-      query << "new_editedData" << rawDataID << editGUID << runID
-            << fname << "";
-
-      dbP->query( query );
-
-      if ( dbP->lastErrno() != US_DB2::OK )
+      if ( US_ConvertIO::createEditedData( dbP, record, idEdit, error ) != IUS_DB2::OK )
       {
-         QMessageBox::warning( this, tr( "Database Problem" ),
-            tr( "Could not insert metadata into the database\n" ) +
-                dbP->lastError() );
+         QMessageBox::warning( this, tr( "Database Problem" ), tr( "Could not insert metadata into the database\n" ) + error );
 
          return 3;
       }
 
-      idEdit   = dbP->lastInsertID();
       editID   = QString::number( idEdit );
       int dax  = editGUIDs.indexOf( editGUID );
       editIDs.replace( dax, editID );
@@ -14380,29 +14463,19 @@ int US_Edit::write_edit_db( IUS_DB2* dbP, QString& fname, QString& editGUID,
 
    else
    {
-      query << "update_editedData" << editID << rawDataID << editGUID
-            << runID << fname << "";
-      dbP->query( query );
+      idEdit = editID.toInt();
 
-      if ( dbP->lastErrno() != US_DB2::OK )
+      if ( US_ConvertIO::updateEditedData( dbP, idEdit, record, error ) != IUS_DB2::OK )
       {
-         QMessageBox::warning( this, tr( "Database Problem" ),
-            tr( "Could not update metadata in the database \n" ) +
-            dbP->lastError() );
+         QMessageBox::warning( this, tr( "Database Problem" ), tr( "Could not update metadata in the database \n" ) + error );
 
          return 4;
       }
-
-      idEdit   = editID.toInt();
    }
 
-   dbP->writeBlobToDB( workingDir + fname, "upload_editData", idEdit );
-
-   if ( dbP->lastErrno() != US_DB2::OK )
+   if ( US_ConvertIO::uploadEditedDataBlob( dbP, idEdit, workingDir + fname, error ) != IUS_DB2::OK )
    {
-      QMessageBox::warning( this, tr( "Database Problem" ),
-         tr( "Could not insert edit xml data into database \n" ) +
-         dbP->lastError() );
+      QMessageBox::warning( this, tr( "Database Problem" ), tr( "Could not insert edit xml data into database \n" ) + error );
       return 5;
    }
 
