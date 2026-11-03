@@ -26,7 +26,6 @@ US_Math_BF::Band_Forming_Gradient::Band_Forming_Gradient(const double m, const d
    dbg_level = US_Settings::us_debug();
    base_density = 0.0;
    base_viscosity = 0.0;
-   bessel_types << "J0" << "J1" << "Y0" << "Y1";
    double base = sq(meniscus) + overlay_volume * 360.0 / (cp_angle * cp_pathlen * M_PI);
    overlay_thickness = sqrt(base) - meniscus;
    total_volume = M_PI * cp_pathlen * cp_angle / 360 * (sq(bottom) - sq(meniscus));
@@ -36,9 +35,8 @@ US_Math_BF::Band_Forming_Gradient::Band_Forming_Gradient(const double m, const d
    visc_bfg_data = US_DataIO::RawData();
    dens_bfg_data = US_DataIO::RawData();
    conc_bfg_data = US_DataIO::RawData();
-   bessel_cache_used = 0;
    eigenfunction_cache_used = 0;
-   eigenfunction_cache.clear();
+   eigenfunction_rows.clear();
    QMap<QString, US_CosedComponent> upper_cosed;
    QMap<QString, US_CosedComponent> lower_cosed;
       foreach (US_CosedComponent i, comps) {
@@ -175,13 +173,13 @@ US_Math_BF::Band_Forming_Gradient::Band_Forming_Gradient( const US_Math_BF::Band
    Nx = bfg.Nx;
    dt = bfg.dt;
    dbg_level = bfg.dbg_level;
-   eigenfunction_cache = bfg.eigenfunction_cache;
-   bessel_cache = bfg.bessel_cache;
+   eigenfunction_rows = bfg.eigenfunction_rows;
+   eig_J1b = bfg.eig_J1b;
+   eig_Y1b = bfg.eig_Y1b;
    value_cache = bfg.value_cache;
    total_volume = bfg.total_volume;
    lower_volume = bfg.lower_volume;
    eigenfunction_cache_used = 0;
-   bessel_cache_used = 0;
 }
 
 US_Math_BF::Band_Forming_Gradient::Band_Forming_Gradient(const US_SimulationParameters& sim_params,
@@ -198,9 +196,7 @@ US_Math_BF::Band_Forming_Gradient::Band_Forming_Gradient(const US_SimulationPara
    dbg_level = US_Settings::us_debug();
    base_density = 0.0;
    base_viscosity = 0.0;
-   bessel_cache_used = 0;
    eigenfunction_cache_used = 0;
-   bessel_types << "J0" << "J1" << "Y0" << "Y1";
    double base = sq(meniscus) + overlay_volume * 360.0 / (cp_angle * cp_pathlen * M_PI);
    overlay_thickness = sqrt(base) - meniscus;
    total_volume = M_PI * cp_pathlen * cp_angle / 360 * (sq(bottom) - sq(meniscus));
@@ -453,50 +449,65 @@ bool US_Math_BF::Band_Forming_Gradient::get_eigenvalues( ) {
    US_Math_BF::Secant_Solver secantSolver( 0.01, 5000, func, 0.01, GSL_DBL_EPSILON, 20 );
    const bool return_value = secantSolver.solve_wrapper();
    eigenvalues = secantSolver.solutions;
-   for (double beta: eigenvalues){
-      pre_calc_betas.append(1 / beta * ((-meniscus * bessel("J1", (meniscus * beta)) +
-                                           (meniscus + overlay_thickness) *
-                                           bessel("J1",(beta * (meniscus + overlay_thickness)))) *
-                                          bessel("Y1",(bottom * beta)) +
-                                          bessel("J1",(bottom * beta)) *
-                                          (meniscus * bessel("Y1",(meniscus * beta)) -
-                                          (meniscus + overlay_thickness) *
-                                          bessel("Y1",(beta * (meniscus + overlay_thickness)))))
-                                          * norm(beta));
-      //pre_calc_betas.append((sq(bottom)-sq(meniscus))/2 * eigenfunction(beta, meniscus)* norm(beta));
+   const int n_eig = eigenvalues.size();
+   pre_calc_betas.clear();
+   pre_calc_betas.reserve( n_eig );
+   eig_J1b.resize( n_eig );
+   eig_Y1b.resize( n_eig );
+   eigenfunction_rows.clear();
+   value_cache.clear();
+   const double rd = meniscus + overlay_thickness;
+   for ( int i = 0; i < n_eig; i++ ) {
+      const double beta = eigenvalues[ i ];
+      // Bessel functions at the exact arguments: no cache
+      const double J1b  = bessel_J1( beta * bottom );
+      const double Y1b  = bessel_Y1( beta * bottom );
+      const double J1m  = bessel_J1( beta * meniscus );
+      const double Y1m  = bessel_Y1( beta * meniscus );
+      const double J1rd = bessel_J1( beta * rd );
+      const double Y1rd = bessel_Y1( beta * rd );
+      eig_J1b[ i ] = J1b;
+      eig_Y1b[ i ] = Y1b;
+      // norm * integral of the eigenfunction over the overlay layer, Eqs. (9)-(10)
+      pre_calc_betas.append( 1.0 / beta * ( ( rd * J1rd - meniscus * J1m ) * Y1b
+                                          + J1b * ( meniscus * Y1m - rd * Y1rd ) ) * norm( beta ) );
    }
    return return_value;
 }
 
 double US_Math_BF::Band_Forming_Gradient::norm(const double &beta) {
-   return (sq(M_PI) / 2 * sq(beta) * sq(bessel("J1",(beta * meniscus))) /
-           (sq(bessel("J1",(beta * meniscus))) - sq(bessel("J1",(beta * bottom)))));
+   const double J1m = bessel_J1( beta * meniscus );
+   const double J1b = bessel_J1( beta * bottom );
+   return ( sq(M_PI) / 2 * sq(beta) * sq(J1m) / ( sq(J1m) - sq(J1b) ) );
 }
 
 double US_Math_BF::Band_Forming_Gradient::eigenfunction(const int &beta, const double &x) {
-   // Optimize cache key generation: use bit shifting instead of expensive multiplication
-   // This combines beta in lower bits and x-derived value in upper bits
-   const unsigned int x_component = static_cast<unsigned int>(x * 16384.0);
-   const unsigned int cache_key = static_cast<unsigned int>(beta) + (x_component << 14);
+   return eigenfunction_row( x )[ beta ];
+}
 
-   if (eigenfunction_cache.contains(cache_key)) {
+const double* US_Math_BF::Band_Forming_Gradient::eigenfunction_row( const double x ) {
+   // Rows are keyed by the exact radius: the gradient table asks for the same
+   //  radii at every time, so each row is computed once there
+   quint64 x_key;
+   memcpy( &x_key, &x, sizeof( x_key ) );
+   auto it = eigenfunction_rows.constFind( x_key );
+   if ( it != eigenfunction_rows.constEnd() ) {
       eigenfunction_cache_used++;
-      return eigenfunction_cache.value(cache_key, 0.0);
+      return it.value().constData();
    }
-   else {
-      const double ev = eigenvalues[beta];
-      const double ev_x = ev * x;
-      const double ev_bottom = ev * bottom;
-      // Cache Bessel function results to avoid redundant calls
-      const double bessel_J0_ev_x = bessel("J0", ev_x);
-      const double bessel_Y0_ev_x = bessel("Y0", ev_x);
-      const double bessel_Y1_ev_bottom = bessel("Y1", ev_bottom);
-      const double bessel_J1_ev_bottom = bessel("J1", ev_bottom);
-
-      const double result = (bessel_J0_ev_x * bessel_Y1_ev_bottom - bessel_Y0_ev_x * bessel_J1_ev_bottom);
-      eigenfunction_cache.insert(cache_key, result);
-      return result;
+   // Bound the memory for callers with ever-new radii (one row is 8 bytes
+   //  per eigenvalue, ~14 kB)
+   if ( eigenfunction_rows.size() >= 8192 ) {
+      eigenfunction_rows.clear();
    }
+   const int n_eig = eigenvalues.size();
+   QVector<double> row( n_eig );
+   double* rv = row.data();
+   for ( int i = 0; i < n_eig; i++ ) {
+      const double ev_x = eigenvalues[ i ] * x;
+      rv[ i ] = bessel_J0( ev_x ) * eig_Y1b[ i ] - bessel_Y0( ev_x ) * eig_J1b[ i ];
+   }
+   return eigenfunction_rows.insert( x_key, row ).value().constData();
 }
 
 double US_Math_BF::Band_Forming_Gradient::calc_eq_comp_conc( const US_CosedComponent &cosed_comp) const {
@@ -513,35 +524,64 @@ double US_Math_BF::Band_Forming_Gradient::calc_eq_comp_conc( const US_CosedCompo
 double US_Math_BF::Band_Forming_Gradient::calc_comp_conc(const double &x, const double &t, const double &temp,
                                                          const US_CosedComponent &cosed_comp) {
    const double eq_conc = calc_eq_comp_conc(cosed_comp);
-   // Cache frequently accessed member variables
    const double cosed_conc = cosed_comp.conc;
 
-   double decay = 0.0;
    if (t < 1){
       if (x > meniscus+overlay_thickness){
          return cosed_comp.concentration_offset;
       }
-      else{
-         return cosed_conc + cosed_comp.concentration_offset;
-      }
+      return cosed_conc + cosed_comp.concentration_offset;
    }
-   else {
-      // Pre-calculate the common exponential factor outside the loop
-      const double exp_factor = -cosed_comp.d_coeff * ((temp>260)?temp:temp+K0)/K20 * t;
-      // Use constData() for QVector access to avoid detachment
-      const double* eigenvalues_data = eigenvalues.constData();
-      const double* pre_calc_betas_data = pre_calc_betas.constData();
-      const int size = eigenvalues.size();
-
-      for (int i = 0; i < size; i++) {
-         const double pre_calc = pre_calc_betas_data[i];
-         const double beta = eigenvalues_data[i];
-         // Calculate beta_sq once per iteration instead of calling sq(beta) in exp()
-         const double beta_sq = beta * beta;
-         decay += pre_calc * eigenfunction(i, x) * exp(exp_factor * beta_sq);
-      }
+   const double exp_factor = -cosed_comp.d_coeff * ((temp>260)?temp:temp+K0)/K20 * t;
+   const double* eigenvalues_data = eigenvalues.constData();
+   const double* pre_calc_betas_data = pre_calc_betas.constData();
+   const double* row = eigenfunction_row( x );
+   const int size = eigenvalues.size();
+   double decay = 0.0;
+   for (int i = 0; i < size; i++) {
+      const double beta = eigenvalues_data[i];
+      decay += pre_calc_betas_data[i] * row[i] * exp(exp_factor * beta * beta);
    }
    return eq_conc + decay * cosed_conc;
+}
+
+std::array<double,3> US_Math_BF::Band_Forming_Gradient::component_sums(
+   const double x, const double t, const double T, const bool use_cache ) {
+   ValueKey key{};
+   if ( use_cache ) {
+      memcpy( &key.x, &x, sizeof( key.x ) );
+      memcpy( &key.t, &t, sizeof( key.t ) );
+      memcpy( &key.T, &T, sizeof( key.T ) );
+      const auto it = value_cache.find( key );
+      if ( it != value_cache.end() ) {
+         return it->second;
+      }
+   }
+   const double temp = (T>260)?T:T+K0;
+   double dens_inc = 0.0;
+   double visc_inc = 0.0;
+   double conc     = 0.0;
+   // Only the overlay components form a gradient (see the constructor)
+   for ( const US_CosedComponent &cosed_comp: upper_comps ) {
+      const double c1 = calc_comp_conc(x, t, temp, cosed_comp);
+      const double sqrt_c1 = sqrt(fabs(c1));
+      const double* dens_coeff = cosed_comp.dens_coeff;
+      const double* visc_coeff = cosed_comp.visc_coeff;
+      dens_inc += (dens_coeff[1] * sqrt_c1 + c1 * (dens_coeff[2] + c1 * (
+                   dens_coeff[3] + c1 * ( dens_coeff[4] + c1 * dens_coeff[5]))));
+      visc_inc += (visc_coeff[1] * sqrt_c1 + c1 * (visc_coeff[2] + c1 * (
+                   visc_coeff[3] + c1 * ( visc_coeff[4] + c1 * visc_coeff[5]))));
+      conc += c1;
+   }
+   const std::array<double,3> sums{ dens_inc, visc_inc, conc };
+   if ( use_cache ) {
+      // Bound the memory: callers on a moving time axis rarely hit old entries
+      if ( value_cache.size() >= 1000000 ) {
+         value_cache.clear();
+      }
+      value_cache.emplace( key, sums );
+   }
+   return sums;
 }
 
 bool US_Math_BF::Band_Forming_Gradient::calc_dens_visc(
@@ -550,53 +590,11 @@ bool US_Math_BF::Band_Forming_Gradient::calc_dens_visc(
    if ( eigenvalues.isEmpty()) {
       return false;
    }
-   const int t_key = static_cast<int>(t * 16);
-   // Cache temperature calculation outside the loop
-   const double temp = (T>260)?T:T+K0;
-
+   // Dens and Visc hold the base buffer: add the gradient's increments
    for ( int i = 0; i < N; i++ ) {
-      const double x_c = x[i];
-      const int x_key = static_cast<int>(x[i] * 1024);
-      if (value_cache.contains(x_key) && value_cache.value(x_key).contains(t_key))
-      {
-         const std::array<double,3> tmp = value_cache.value(x_key).value(t_key);
-         Dens[i] += tmp[ 0 ];
-         Visc[i] += tmp[ 1 ];
-      }
-      else {
-         // loop over all cosedimenting stuff and determine the current concentration
-         // -> for now iterate only over upper_cosed
-         double tmp_d = 0.0;
-         double tmp_v = 0.0;
-         double tmp_c = 0.0;
-         // Use const reference to avoid copies
-         for ( const US_CosedComponent &cosed_comp: upper_comps ) {
-            const double c1 = calc_comp_conc(x_c, t, temp, cosed_comp);
-            const double sqrt_c1 = sqrt(fabs(c1));
-            // Cache coefficient array pointers for better performance
-            const double* dens_coeff = cosed_comp.dens_coeff;
-            const double* visc_coeff = cosed_comp.visc_coeff;
-            tmp_d += (dens_coeff[1] * sqrt_c1 + c1 * (dens_coeff[2] + c1 * (
-                      dens_coeff[3] + c1 * ( dens_coeff[4] + c1 * dens_coeff[5]))));
-
-            tmp_v += (visc_coeff[1] * sqrt_c1 + c1 * (visc_coeff[2] + c1 * (
-                      visc_coeff[3] + c1 * ( visc_coeff[4] + c1 * visc_coeff[5]))));
-            tmp_c += c1;
-
-         }
-         // cache the value
-         const std::array<double,3> tmp{tmp_d, tmp_v, tmp_c};
-         if (value_cache.contains(x_key))
-         {
-            value_cache.find(x_key).value().insert(t_key, tmp);
-         }
-         else
-         {
-            QHash<const int,std::array<double,3>> tmp_map;
-            tmp_map.insert(t_key,tmp);
-            value_cache.insert(x_key, tmp_map);
-         }
-      }
+      const std::array<double,3> sums = component_sums( x[i], t, T, true );
+      Dens[i] += sums[ 0 ];
+      Visc[i] += sums[ 1 ];
    }
    return true;
 }
@@ -607,57 +605,10 @@ bool US_Math_BF::Band_Forming_Gradient::adjust_sd(
    if (eigenvalues.isEmpty()) {
       return false;
    }
-   double    density       = base_density;
-   double    viscosity     = base_viscosity;
-   double    concentration = 0.0;
-   const int t_key = static_cast<int>(t*16);
-   const int x_key = static_cast<int>(x*1024);
-   // Cache temperature calculation outside the loop
    const double temp = (T>260)?T:T+K0;
-
-   if (value_cache.contains(x_key) && value_cache.value(x_key).contains(t_key))
-   {
-      const std::array<double,3> tmp = value_cache.value(x_key).value(t_key);
-      density = tmp[0];
-      viscosity = tmp[1];
-      concentration = tmp[2];
-   }
-   else
-   {
-      // loop over all cosedimenting stuff and determine the current concentration
-      // -> for now iterate only over upper_cosed
-      for (const US_CosedComponent &cosed_comp: upper_comps) {
-         const double c1 = calc_comp_conc(x, t, temp, cosed_comp);
-         // Calculate powers incrementally
-         const double c2 = c1 * c1;      // c1^2
-         const double c3 = c2 * c1;      // c1^3
-         const double c4 = c3 * c1;      // c1^4
-         const double sqrt_c1 = sqrt(fabs(c1));
-         // Cache coefficient array pointers for better performance
-         const double* dens_coeff = cosed_comp.dens_coeff;
-         const double* visc_coeff = cosed_comp.visc_coeff;
-
-         density += (dens_coeff[1] * sqrt_c1 + dens_coeff[2] * c1 +
-                     dens_coeff[3] * c2 + dens_coeff[4] * c3 +
-                     dens_coeff[5] * c4);
-         viscosity += (visc_coeff[1] * sqrt_c1 + visc_coeff[2] * c1 +
-                       visc_coeff[3] * c2 + visc_coeff[4] * c3 +
-                       visc_coeff[5] * c4);
-         concentration += c1;
-      }
-      // cache the value
-      const std::array<double,3> tmp{density,viscosity,concentration};
-      if (value_cache.contains(x_key))
-      {
-         value_cache.find(x_key).value().insert(t_key, tmp);
-      }
-      else
-      {
-         QHash<const int,std::array<double,3>> tmp_map;
-         tmp_map.insert(t_key,tmp);
-         value_cache.insert(x_key, tmp_map);
-      }
-   }
+   const std::array<double,3> sums = component_sums( x, t, T, true );
+   const double density   = base_density + sums[ 0 ];
+   const double viscosity = base_viscosity + sums[ 1 ];
    s = s * VISC_20W * (1 - vbar * density) / (1.0 - vbar * DENS_20W) / viscosity;
    d = d * VISC_20W / viscosity * temp / K20;
    return true;
@@ -671,56 +622,10 @@ bool US_Math_BF::Band_Forming_Gradient::calc_dens_visc(
    if (eigenvalues.isEmpty()) {
       return false;
    }
-   double    density       = base_density;
-   double    viscosity     = base_viscosity;
-   double    concentration = 0.0;
-   const int t_key         = static_cast<int>(t * 16);
-   const int x_key         = static_cast<int>(x * 1024);
-   // Cache temperature calculation outside the loop
-   const double temp = (T>260)?T:T+K0;
-
-   if (value_cache.contains(x_key) && value_cache.value(x_key).contains(t_key))
-   {
-      const std::array<double,3> tmp = value_cache.value(x_key).value(t_key);
-      density = tmp[0];
-      viscosity = tmp[1];
-      concentration = tmp[2];
-   }
-   else
-   {
-      // loop over all cosedimenting stuff and determine the current concentration
-      // -> for now iterate only over upper_cosed
-      for (const US_CosedComponent &cosed_comp: upper_comps) {
-         const double c1 = calc_comp_conc(x, t, temp, cosed_comp);
-         concentration += c1;
-         // Calculate powers incrementally
-         const double sqrt_c1 = sqrt(fabs(c1));
-         // Cache coefficient array pointers for better performance
-         const double* dens_coeff = cosed_comp.dens_coeff;
-         const double* visc_coeff = cosed_comp.visc_coeff;
-
-         density += (dens_coeff[1] * sqrt_c1 + c1 * (dens_coeff[2] + c1 * (
-                     dens_coeff[3] + c1 * ( dens_coeff[4] + c1 * dens_coeff[5]))));
-
-         viscosity += (visc_coeff[1] * sqrt_c1 + c1 * (visc_coeff[2] + c1 * (
-                       visc_coeff[3] + c1 * ( visc_coeff[4] + c1 * visc_coeff[5]))));
-      }
-      // cache the value
-      const std::array<double,3> tmp{density,viscosity,concentration};
-      if (value_cache.contains(x_key))
-      {
-         value_cache.find(x_key).value().insert(t_key, tmp);
-      }
-      else
-      {
-         QHash<const int,std::array<double,3>> tmp_map;
-         tmp_map.insert(t_key,tmp);
-         value_cache.insert(x_key, tmp_map);
-      }
-   }
-   dens = density;
-   visc = viscosity;
-   conc = concentration;
+   const std::array<double,3> sums = component_sums( x, t, T, true );
+   dens = base_density + sums[ 0 ];
+   visc = base_viscosity + sums[ 1 ];
+   conc = sums[ 2 ];
    return true;
 }
 
@@ -755,8 +660,7 @@ US_Math_BF::Band_Forming_Gradient::calculate_gradient(
 
    // Declares the scan structure and set the lower limit for dt to keep workload reasonable
    dt = qMax(simparms.radial_resolution*simparms.radial_resolution / 6 / max_D, 5.0);
-   DbgLv(2) << "max D " << max_D << "; dt " << dt << "; bessel_cache " << bessel_cache.size()
-            << "eigenfunction cache " << eigenfunction_cache.size();
+   DbgLv(2) << "max D " << max_D << "; dt " << dt << "; eigenfunction rows " << eigenfunction_rows.size();
    dens_bfg_data.scanData.clear();
    visc_bfg_data.scanData.clear();
    conc_bfg_data.scanData.clear();
@@ -827,7 +731,11 @@ US_Math_BF::Band_Forming_Gradient::calculate_gradient(
       for ( int jj = 0; jj < Nx; jj++ )// iterate over all radial points for each scan
       {
          if ( zero_counter < 6) {
-            calc_dens_visc(visc_bfg_data.radius(jj),runtime,temp,dens,visc, conc);
+            // Each (x, t) of the table is visited once: no value cache
+            const std::array<double,3> sums = component_sums( visc_bfg_data.radius(jj), runtime, temp, false );
+            dens = base_density + sums[ 0 ];
+            visc = base_viscosity + sums[ 1 ];
+            conc = sums[ 2 ];
          }
          else {
             conc = 0.0;
@@ -863,15 +771,14 @@ US_Math_BF::Band_Forming_Gradient::calculate_gradient(
          dt_scaling += dt*0.05;
       }
       DbgLv(3) << "BFG:CG: scan dt dt_scaling runtime" << scan_count << dt << dt_scaling << runtime
-                  << bessel_cache.size() << "eigenfunction cache " << eigenfunction_cache.size();
+                  << "eigenfunction rows " << eigenfunction_rows.size();
       runtime += (dt + dt_scaling);
       scan_count++;
    }
 
    DbgLv(1) << "Calculated BFG for" << Nx << "radial points and" <<scan_count<<"scans";
    DbgLv(1) << "Eigenvalues" << eigenvalues.size();
-   DbgLv(1) << "Bessel cache used: " << bessel_cache_used << " cache size " << bessel_cache.size();
-   DbgLv(1) << "Eigenfunction cache used: " << eigenfunction_cache_used << " cache size " << eigenfunction_cache.size();
+   DbgLv(1) << "Eigenfunction rows reused: " << eigenfunction_cache_used << " rows " << eigenfunction_rows.size();
    if ( dbg_level > 2 ) {
       DbgLv(3) << "#####################################";
       // calculate and print the integral of scan curves
@@ -1009,14 +916,14 @@ US_Math_BF::Band_Forming_Gradient::interpolateCCodiff(
    // from ASTFVM
    if ( simparms.meshType == US_SimulationParameters::ASTFEM )
    {
-      // no precalculated data is available, calculate it manually
-      double density, viscosity, concentration;
+      // no precalculated data is available, calculate it manually; as in the
+      //  table path below, the arrays hold the base buffer and get the increments
       for ( int ii = 0; ii < N; ii++ )
       {
-         calc_dens_visc( x[ii], t, temp, density, viscosity, concentration );
-         DensCosed[ii] = density;
-         ViscCosed[ii] = viscosity ;
-         ConcCosed[ii] = concentration;
+         const std::array<double,3> sums = component_sums( x[ii], t, temp, true );
+         DensCosed[ii] += sums[ 0 ];
+         ViscCosed[ii] += sums[ 1 ];
+         ConcCosed[ii] += sums[ 2 ];
       }
       return;
    }
@@ -1108,7 +1015,6 @@ US_Math_BF::Band_Forming_Gradient::Band_Forming_Gradient() {
    Nx = 0;
    dt = 0;
    dbg_level = 1;
-   bessel_cache_used = 0;
    eigenfunction_cache_used = 0;
    total_volume = 0.0;
    lower_volume = 0.0;
