@@ -19,6 +19,7 @@
 #include "us_extern.h"
 #include "us_simparms.h"
 #include <array>
+#include <unordered_map>
 
 
 #ifndef DbgLv
@@ -99,7 +100,6 @@ class US_UTIL_EXTERN US_Math_BF final : public QObject {
             US_DataIO::RawData visc_bfg_data; //!< Scan like data of the gradient viscosity
             US_DataIO::RawData conc_bfg_data; //!< Scan like data of the gradient viscosity
             US_SimulationParameters simparms; //!< Simulation parameters
-            QList<QString> bessel_types; //!< Bessel function types
             //! \brief Create a band forming gradient
             //! \param m The double value representing the meniscus
             //! \param b The double value representing the bottom
@@ -216,18 +216,46 @@ class US_UTIL_EXTERN US_Math_BF final : public QObject {
 
             double dt;
          private:
-            QHash<const int, QHash<const int,std::array<double,3>>> value_cache;
-            QHash<const int, QHash<const unsigned int, double>> bessel_cache;
-            QHash<const unsigned int, double> eigenfunction_cache;
-            unsigned long bessel_cache_used;
+            //! Key of the value cache: the exact bit patterns of radius, time and temperature
+            struct ValueKey {
+               quint64 x;
+               quint64 t;
+               quint64 T;
+               bool operator==( const ValueKey& o ) const { return x == o.x && t == o.t && T == o.T; }
+            };
+            struct ValueKeyHash {
+               size_t operator()( const ValueKey& k ) const noexcept
+               {
+                  size_t h = std::hash<quint64>()( k.x );
+                  h ^= std::hash<quint64>()( k.t ) + 0x9e3779b97f4a7c15ULL + ( h << 6 ) + ( h >> 2 );
+                  h ^= std::hash<quint64>()( k.T ) + 0x9e3779b97f4a7c15ULL + ( h << 6 ) + ( h >> 2 );
+                  return h;
+               }
+            };
+            //! Summed contributions of the overlay components at (x, t, T): density increment,
+            //! viscosity increment (both without the base buffer) and concentration
+            std::unordered_map<ValueKey, std::array<double,3>, ValueKeyHash> value_cache;
+            //! Eigenfunction values R(beta_i, x) for all eigenvalues, one row per exact radius
+            QHash<quint64, QVector<double>> eigenfunction_rows;
+            QVector<double> eig_J1b; //!< J1(beta_i * bottom), one per eigenvalue
+            QVector<double> eig_Y1b; //!< Y1(beta_i * bottom), one per eigenvalue
             unsigned long eigenfunction_cache_used;
             double total_volume;
             double lower_volume;
+
+            //! \brief The eigenfunction values of all eigenvalues at radius x, from the row cache
+            const double* eigenfunction_row( double x );
+
+            //! \brief The summed overlay-component contributions at (x, t, T), see value_cache
+            //! \param use_cache Look up and store in value_cache; the gradient table visits each
+            //!        (x, t) once and does not use it
+            std::array<double,3> component_sums( double x, double t, double T, bool use_cache );
+
             //! \brief calculate a bessel function of a given type for the input x
             //! \param bessel_type The string representing the type of the bessel function J0, J1, Y0, Y1
             //! \param x The double value representing the input value for the bessel function
             //! \return The double value representing the result of the bessel function
-            double bessel(const QString& bessel_type, double x);
+            static double bessel(const QString& bessel_type, double x);
 
 
             int     Nx;       // number of points in radial direction
