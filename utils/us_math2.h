@@ -181,6 +181,13 @@ class US_UTIL_EXTERN US_Math2
 
       static void data_correction( double, SolutionData& );
 
+      //! \brief Density and viscosity of water at a temperature, the water
+      //!        model data_correction() uses
+      //! \param t         Temperature in degrees C
+      //! \param density   Density of water in g/mL - output
+      //! \param viscosity Viscosity of water in cP - output
+      static void water_properties( double t, double& density, double& viscosity );
+
       //! \brief A routine to calculate the value of a normally distributed
       //!        value.
       //! \param sigma Standard deviation of the distribution

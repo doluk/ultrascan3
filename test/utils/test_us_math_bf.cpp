@@ -4,6 +4,7 @@
 #include "us_buffer.h"
 #include "us_constants.h"
 #include "us_dataIO.h"
+#include "us_math2.h"
 #include "us_math_bf.h"
 #include "us_simparms.h"
 #include <cmath>
@@ -351,4 +352,90 @@ TEST_F( TestUSMathBF, EigenvaluesAreSetUpOnceForConcurrentInterpolation )
       EXPECT_TRUE( results[ tt ] == results[ 0 ] ) << "thread " << tt;
    }
    EXPECT_LT( results[ 0 ][ 0 ], BASE_DENS - 1.0e-3 );
+}
+
+// D of the co-diffusing component scales with T / eta_water(T): the profile at
+//  T over t is the one at 20 C over t * (T / 293.15) * eta_w(20) / eta_w(T)
+TEST_F( TestUSMathBF, CodiffusionScalesWithWaterViscosity )
+{
+   US_Math_BF::Band_Forming_Gradient bfg = makeGradient();
+   double dens_w20, visc_w20;
+   US_Math2::water_properties( 20.0, dens_w20, visc_w20 );
+   for ( double tc : { 4.0, 25.0, 37.0 } )
+   {
+      double dens_w, visc_w;
+      US_Math2::water_properties( tc, dens_w, visc_w );
+      const double scale = ( tc + K0 ) / K20 * visc_w20 / visc_w;
+      for ( double xx : { 6.13, 6.25 } )
+      {
+         double dT, vT, cT, d20, v20, c20;
+         bfg.calc_dens_visc( xx, 400.0, tc + K0, dT, vT, cT );
+         bfg.calc_dens_visc( xx, 400.0 * scale, 20.0 + K0, d20, v20, c20 );
+         EXPECT_NEAR( cT, c20, 1.0e-9 ) << "T " << tc << " x " << xx;
+      }
+   }
+   // At 4 C water is 1.56 times as viscous as at 20 C: the H2O spreads slower
+   double c4, c20, dd, vv;
+   bfg.calc_dens_visc( 6.25, 400.0, 4.0 + K0, dd, vv, c4 );
+   bfg.calc_dens_visc( 6.25, 400.0, 20.0 + K0, dd, vv, c20 );
+   EXPECT_LT( c4, 0.9 * c20 );
+}
+
+// The table follows the run's recorded temperature
+TEST_F( TestUSMathBF, TableFollowsTheRunTemperature )
+{
+   US_Math_BF::Band_Forming_Gradient bfg = makeGradient();
+   US_SimulationParameters sp;
+   US_DataIO::RawData raw;
+   makeRun( MENISCUS, 1500.0, sp, raw );
+   for ( US_DataIO::Scan& scan : raw.scanData )
+   {
+      scan.temperature = 25.0;
+   }
+   bfg.calculate_gradient( sp, &raw );
+
+   US_Math_BF::Band_Forming_Gradient direct = makeGradient();
+   double max_dc = 0.0;
+   for ( int ss = 1; ss < bfg.conc_bfg_data.scanCount(); ss += 5 )
+   {
+      const US_DataIO::Scan& cscan = bfg.conc_bfg_data.scanData[ ss ];
+      for ( int ii = 0; ii < bfg.conc_bfg_data.pointCount(); ii += 7 )
+      {
+         double dens, visc, conc;
+         direct.calc_dens_visc( bfg.conc_bfg_data.xvalues[ ii ], cscan.seconds, 25.0 + K0, dens, visc, conc );
+         max_dc = qMax( max_dc, fabs( cscan.rvalues[ ii ] - conc ) );
+      }
+   }
+   EXPECT_LT( max_dc, 1.0e-9 );
+}
+
+// s and D in the gradient at T: the standard correction of a buffer with the
+//  local 20 C density and viscosity (US_Math2::data_correction, not manual)
+TEST_F( TestUSMathBF, AdjustSdIsTheStandardCorrectionOfTheLocalBuffer )
+{
+   US_Math_BF::Band_Forming_Gradient bfg = makeGradient();
+   const double vbar = 0.7468;
+   const double s20w = 2.0e-13;
+   const double D20w = 1.1e-6;
+   for ( double tc : { 4.0, 20.0, 25.0 } )
+   {
+      const double xx = 6.16;
+      const double tt = 900.0;
+      double dens, visc, conc;
+      bfg.calc_dens_visc( xx, tt, tc + K0, dens, visc, conc );
+
+      US_Math2::SolutionData sd{};
+      sd.density   = dens;
+      sd.viscosity = visc;
+      sd.vbar20    = vbar;
+      sd.vbar      = vbar;
+      sd.manual    = false;
+      US_Math2::data_correction( tc, sd );
+
+      double ss = s20w;
+      double dd = D20w;
+      ASSERT_TRUE( bfg.adjust_sd( xx, tt, ss, dd, tc + K0, vbar ) );
+      EXPECT_NEAR( ss / ( s20w / sd.s20w_correction ), 1.0, 1.0e-12 ) << "T " << tc;
+      EXPECT_NEAR( dd / ( D20w / sd.D20w_correction ), 1.0, 1.0e-12 ) << "T " << tc;
+   }
 }

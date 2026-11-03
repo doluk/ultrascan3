@@ -9,6 +9,7 @@
 #include "us_constants.h"
 #include "us_math2.h"
 #include <array>
+#include <algorithm>
 #include <atomic>
 #include <unordered_map>
 #include <QMutex>
@@ -96,6 +97,47 @@ US_Math_BF::Band_Forming_Gradient::ThreadCache& US_Math_BF::Band_Forming_Gradien
    caches[ oldest ].reset( cache_id );
    caches[ oldest ].last_used = use_count;
    return caches[ oldest ];
+}
+
+double US_Math_BF::Band_Forming_Gradient::diffusion_scale( const double T ) {
+   // D(T) / D(20 C) by Stokes-Einstein with the water model of
+   //  US_Math2::data_correction():  (T / 293.15) * eta_w(20) / eta_w(T).
+   //  eta_w(20) from the same model, so that D(20 C) is D20 exactly (the
+   //  model gives 1.00157 cP, VISC_20W is 1.0016 cP)
+   static const double visc_w20 = []() {
+      double dens_w, visc_w;
+      US_Math2::water_properties( 20.0, dens_w, visc_w );
+      return visc_w;
+   }();
+   static thread_local double last_T     = -1.0;
+   static thread_local double last_scale = 1.0;
+   const double tc = ( T > 260.0 ) ? T - K0 : T;   // degrees C
+   if ( tc != last_T ) {
+      double dens_w, visc_w;
+      US_Math2::water_properties( tc, dens_w, visc_w );
+      last_scale = ( tc + K0 ) / K20 * visc_w20 / visc_w;
+      last_T     = tc;
+   }
+   return last_scale;
+}
+
+double US_Math_BF::Band_Forming_Gradient::diffusion_time( const double t, const double T ) const {
+   // The recorded temperature history, where calculate_gradient() made one
+   const int nh = dtime_t.size();
+   if ( nh > 0 && t <= dtime_t[ nh - 1 ] ) {
+      if ( t <= dtime_t[ 0 ] ) {
+         return dtime_S[ 0 ] * t / dtime_t[ 0 ];
+      }
+      const int jj = static_cast<int>( std::upper_bound( dtime_t.constBegin(), dtime_t.constEnd(), t )
+                                       - dtime_t.constBegin() );
+      const double ff = ( t - dtime_t[ jj - 1 ] ) / ( dtime_t[ jj ] - dtime_t[ jj - 1 ] );
+      return dtime_S[ jj - 1 ] + ff * ( dtime_S[ jj ] - dtime_S[ jj - 1 ] );
+   }
+   // Otherwise (or beyond it) at the temperature given
+   if ( nh > 0 ) {
+      return dtime_S[ nh - 1 ] + diffusion_scale( T ) * ( t - dtime_t[ nh - 1 ] );
+   }
+   return diffusion_scale( T ) * t;
 }
 
 void US_Math_BF::Band_Forming_Gradient::ensure_eigenvalues() {
@@ -269,6 +311,8 @@ US_Math_BF::Band_Forming_Gradient::Band_Forming_Gradient( const US_Math_BF::Band
    dbg_level = bfg.dbg_level;
    eig_J1b = bfg.eig_J1b;
    eig_Y1b = bfg.eig_Y1b;
+   dtime_t = bfg.dtime_t;
+   dtime_S = bfg.dtime_S;
    cache_id = next_cache_id();   // the caches are per thread and per id
    total_volume = bfg.total_volume;
    lower_volume = bfg.lower_volume;
@@ -624,7 +668,7 @@ double US_Math_BF::Band_Forming_Gradient::calc_comp_conc(const double &x, const 
       return ( x > meniscus + overlay_thickness ) ? cosed_comp.concentration_offset
                                                   : cosed_comp.conc + cosed_comp.concentration_offset;
    }
-   const double exp_factor = -cosed_comp.d_coeff * ((temp>260)?temp:temp+K0)/K20 * t;
+   const double exp_factor = -cosed_comp.d_coeff * diffusion_time( t, temp );
    const double* row = eigenfunction_row( x );
    double decay = 0.0;
    for (int i = 0; i < eigenvalues.size(); i++) {
@@ -633,29 +677,26 @@ double US_Math_BF::Band_Forming_Gradient::calc_comp_conc(const double &x, const 
    return eq_conc + decay * cosed_comp.conc;
 }
 
-const double* US_Math_BF::Band_Forming_Gradient::decay_weights( const double t, const double temp ) const {
-   // norm * overlay integral * exp(-D beta^2 t) depends on t and T only: one
-   //  vector per overlay component, made once per (t, T) and used at every x
+const double* US_Math_BF::Band_Forming_Gradient::decay_weights( const double dtime ) const {
+   // norm * overlay integral * exp(-D20 beta^2 dtime) depends on the diffusion
+   //  time only: one vector per overlay component, made once per dtime and
+   //  used at every x
    ThreadCache& tc = thread_cache();
-   const quint64 t_key = bits( t );
-   const quint64 T_key = bits( temp );
+   const quint64 s_key = bits( dtime );
    const int n_eig  = eigenvalues.size();
    const int n_comp = upper_comps.size();
-   if ( tc.decay_valid && t_key == tc.decay_t && T_key == tc.decay_T
-        && tc.decay_w.size() == n_comp * n_eig ) {
+   if ( tc.decay_valid && s_key == tc.decay_t && tc.decay_w.size() == n_comp * n_eig ) {
       return tc.decay_w.constData();
    }
    tc.decay_w.resize( n_comp * n_eig );
-   const double tk = (temp>260)?temp:temp+K0;
    for ( int ci = 0; ci < n_comp; ci++ ) {
-      const double exp_factor = -upper_comps[ ci ].d_coeff * tk / K20 * t;
+      const double exp_factor = -upper_comps[ ci ].d_coeff * dtime;
       double* w = tc.decay_w.data() + ci * n_eig;
       for ( int i = 0; i < n_eig; i++ ) {
          w[ i ] = pre_calc_betas[ i ] * exp( exp_factor * sq( eigenvalues[ i ] ) );
       }
    }
-   tc.decay_t     = t_key;
-   tc.decay_T     = T_key;
+   tc.decay_t     = s_key;
    tc.decay_valid = true;
    return tc.decay_w.constData();
 }
@@ -670,7 +711,7 @@ double US_Math_BF::Band_Forming_Gradient::comp_conc( const int ci, const double 
    const int     n_eig = eigenvalues.size();
    // The row lookup can only clear the rows, not the weights: both pointers hold
    const double* row   = eigenfunction_row( x );
-   const double* w     = decay_weights( t, temp ) + ci * n_eig;
+   const double* w     = decay_weights( diffusion_time( t, temp ) ) + ci * n_eig;
    double decay = 0.0;
    for ( int i = 0; i < n_eig; i++ ) {
       decay += w[ i ] * row[ i ];
@@ -738,12 +779,16 @@ bool US_Math_BF::Band_Forming_Gradient::adjust_sd(
    if (eigenvalues.isEmpty()) {
       return false;
    }
-   const double temp = (T>260)?T:T+K0;
    const std::array<double,3> sums = component_sums( x, t, T, true );
-   const double density   = base_density + sums[ 0 ];
-   const double viscosity = base_viscosity + sums[ 1 ];
+   // The gradient's values are at 20 C: scale them to T as US_Math2::
+   //  data_correction() does a buffer's, and correct s and D from 20,w to T
+   double dens_w, visc_w;
+   const double tc = ( T > 260.0 ) ? T - K0 : T;
+   US_Math2::water_properties( tc, dens_w, visc_w );
+   const double density   = ( base_density + sums[ 0 ] ) * dens_w / DENS_20W;
+   const double viscosity = ( base_viscosity + sums[ 1 ] ) * visc_w / VISC_20W;
    s = s * VISC_20W * (1 - vbar * density) / (1.0 - vbar * DENS_20W) / viscosity;
-   d = d * VISC_20W / viscosity * temp / K20;
+   d = d * VISC_20W / viscosity * ( tc + K0 ) / K20;
    return true;
 }
 
@@ -799,6 +844,12 @@ US_Math_BF::Band_Forming_Gradient::calculate_gradient(
    conc_bfg_data.scanData.clear();
    int n_step = qCeil(duration/dt)+1;
    double runtime = 0.00001;
+   // The diffusion time follows the recorded temperature; values cached for
+   //  an earlier history are stale
+   dtime_t.clear();
+   dtime_S.clear();
+   cache_id = next_cache_id();
+   double prev_scale = 0.0;
    int scan_count = 1;
    double dt_scaling = 0.0;
    // CALCULATE VALUES
@@ -840,6 +891,15 @@ US_Math_BF::Band_Forming_Gradient::calculate_gradient(
                     (editedData->scanData[bfg_idx].seconds-editedData->scanData[bfg_idx-1].seconds);
          double c3 = editedData->scanData[bfg_idx].omega2t - ( m3 * editedData->scanData[bfg_idx].seconds );
          omega2t = m3 * runtime + c3;
+      }
+      {  // Diffusion time to this runtime (trapezoid over the temperature)
+         const double scale = diffusion_scale( temp );
+         const double sval  = dtime_t.isEmpty()
+                              ? scale * runtime
+                              : dtime_S.last() + 0.5 * ( prev_scale + scale ) * ( runtime - dtime_t.last() );
+         dtime_t << runtime;
+         dtime_S << sval;
+         prev_scale = scale;
       }
       dens_scan.rvalues.clear();
       dens_scan.rvalues.resize(Nx);

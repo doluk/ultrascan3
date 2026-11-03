@@ -1006,6 +1006,11 @@ int US_LammAstfvm::solve_component( int compx )
    param_D20w_corr = sol_data.D20w_correction;
    param_dens_tb   = sol_data.density_tb;
    param_visc_tb   = sol_data.viscosity_tb;
+   // Co-sedimenting and band-forming densities and viscosities are at 20 C:
+   //  case 2 scales them to the run temperature with these, as
+   //  data_correction() scales a buffer's (sol_data.manual or not)
+   param_wdens_ratio = sol_data.density_wt / DENS_20W;
+   param_wvisc_ratio = sol_data.viscosity_wt / VISC_20W;
    double  t0 = 0.;
    double  t1 = 100.;
    // Use QVector instead of raw pointers to avoid repeated heap allocations
@@ -1940,7 +1945,7 @@ void US_LammAstfvm::SetNonIdealCase_2()
    US_Math2::SolutionData sol_data{};
    sol_data.density   = base_density;
    sol_data.viscosity = base_viscosity;
-   sol_data.manual    = true;
+   sol_data.manual    = false;   // the base buffer is given at 20 C: scale it to T
    Q_FOREACH( US_CosedComponent cosed_comp, cosed_components )
    {
       // get the excess concentrations
@@ -2538,12 +2543,15 @@ void US_LammAstfvm::AdjustSD(
          const bool delta_pos = deltas > 0.0;
          const bool delta_neg = deltas < 0.0;
 
+         // Dens and Visc are at 20 C (base buffer, band-forming gradient and
+         //  co-sedimenting salt alike): at the run temperature with the water
+         //  ratios, as data_correction() scales a buffer not marked manual.
          for ( int jj = 0; jj < Nv; jj++ )
          {
-            const double curVisc = Visc[jj];
+            const double curVisc = Visc[jj] * param_wvisc_ratio;
             const double inv_curVisc = 1.0 / curVisc;
             const double curConc = u[jj] / x[jj];
-            const double curDens = Dens[jj];
+            const double curDens = Dens[jj] * param_wdens_ratio;
 
             double sigma_corr = 1.0;
             double delta_corr = 1.0;
@@ -3301,7 +3309,7 @@ void US_LammAstfvm::validate_csd()
    US_Math2::SolutionData sol_data{};
    sol_data.density   = density;
    sol_data.viscosity = viscosity;
-   sol_data.manual    = true;
+   sol_data.manual    = false;   // the base buffer is given at 20 C: scale it to T
 
    Q_FOREACH( US_CosedComponent cosed_comp, cosed_components )
    {
