@@ -1,5 +1,6 @@
 //! \file us_mpi_jobconfig.cpp
 #include "us_mpi_jobconfig.h"
+#include "us_vector.h"
 #include "us_math2.h"
 #include "us_util.h"
 
