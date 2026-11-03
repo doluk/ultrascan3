@@ -240,11 +240,22 @@ class US_UTIL_EXTERN US_Math_BF final : public QObject {
             QVector<double> eig_J1b; //!< J1(beta_i * bottom), one per eigenvalue
             QVector<double> eig_Y1b; //!< Y1(beta_i * bottom), one per eigenvalue
             unsigned long eigenfunction_cache_used;
+            QVector<double> decay_w;     //!< Time weights, per overlay component and eigenvalue
+            quint64 decay_t_key = 0;     //!< Bits of the time decay_w is for
+            quint64 decay_T_key = 0;     //!< Bits of the temperature decay_w is for
+            bool    decay_valid = false; //!< decay_w is current
             double total_volume;
             double lower_volume;
 
             //! \brief The eigenfunction values of all eigenvalues at radius x, from the row cache
             const double* eigenfunction_row( double x );
+
+            //! \brief norm * overlay integral * exp(-D beta^2 t) for every overlay component
+            //!        (rows of eigenvalues.size()), cached for the last (t, temp)
+            const double* decay_weights( double t, double temp );
+
+            //! \brief Concentration of overlay component ci at (x, t)
+            double comp_conc( int ci, double x, double t, double temp );
 
             //! \brief The summed overlay-component contributions at (x, t, T), see value_cache
             //! \param use_cache Look up and store in value_cache; the gradient table visits each

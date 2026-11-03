@@ -213,3 +213,32 @@ TEST_F( TestUSMathBF, OverlayMassIsConserved )
       EXPECT_NEAR( mass / ( 55.51 * VOLUME ), 1.0, 2.0e-4 ) << "t " << tt;
    }
 }
+
+// Every point of the gradient table equals the direct evaluation, also ahead
+//  of the H2O front (an early stop there froze density and viscosity)
+TEST_F( TestUSMathBF, TableEqualsDirectEvaluationEverywhere )
+{
+   US_Math_BF::Band_Forming_Gradient bfg = makeGradient();
+   US_SimulationParameters sp;
+   US_DataIO::RawData raw;
+   makeRun( MENISCUS, 1500.0, sp, raw );
+   bfg.calculate_gradient( sp, &raw );
+   ASSERT_GT( bfg.dens_bfg_data.scanCount(), 10 );
+
+   US_Math_BF::Band_Forming_Gradient direct = makeGradient();
+   double max_ddens = 0.0;
+   double max_dvisc = 0.0;
+   for ( int ss = 1; ss < bfg.dens_bfg_data.scanCount(); ss += 7 )
+   {
+      const US_DataIO::Scan& dscan = bfg.dens_bfg_data.scanData[ ss ];
+      for ( int ii = 0; ii < bfg.dens_bfg_data.pointCount(); ii += 3 )
+      {
+         double dens, visc, conc;
+         direct.calc_dens_visc( bfg.dens_bfg_data.xvalues[ ii ], dscan.seconds, dscan.temperature, dens, visc, conc );
+         max_ddens = qMax( max_ddens, fabs( dscan.rvalues[ ii ] - dens ) );
+         max_dvisc = qMax( max_dvisc, fabs( bfg.visc_bfg_data.scanData[ ss ].rvalues[ ii ] - visc ) );
+      }
+   }
+   EXPECT_LT( max_ddens, 1.0e-12 );
+   EXPECT_LT( max_dvisc, 1.0e-12 );
+}
