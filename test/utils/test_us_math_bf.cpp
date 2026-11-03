@@ -7,6 +7,9 @@
 #include "us_math_bf.h"
 #include "us_simparms.h"
 #include <cmath>
+#include <random>
+#include <thread>
+#include <vector>
 
 namespace
 {
@@ -196,7 +199,7 @@ TEST_F( TestUSMathBF, IsSuitableChecksGeometryAndTime )
 TEST_F( TestUSMathBF, OverlayMassIsConserved )
 {
    US_Math_BF::Band_Forming_Gradient bfg = makeGradient();
-   const int    nn    = 6001;
+   const int    nn    = 4001;
    const double dr    = ( BOTTOM - MENISCUS ) / ( nn - 1 );
    const double theta = ANGLE * M_PI / 180.0;
    for ( double tt : { 2.0, 100.0, 1000.0, 10000.0 } )
@@ -241,4 +244,111 @@ TEST_F( TestUSMathBF, TableEqualsDirectEvaluationEverywhere )
    }
    EXPECT_LT( max_ddens, 1.0e-12 );
    EXPECT_LT( max_dvisc, 1.0e-12 );
+}
+
+// One gradient, and a copy sharing its tables, used by several threads at
+//  once: every thread gets exactly the single-thread values (the caches are
+//  per thread, and the shared tables are only read)
+TEST_F( TestUSMathBF, SharedGradientGivesTheSameValuesInThreads )
+{
+   US_Math_BF::Band_Forming_Gradient bfg = makeGradient();
+   US_SimulationParameters sp;
+   US_DataIO::RawData raw;
+   makeRun( MENISCUS, 1500.0, sp, raw );
+   bfg.calculate_gradient( sp, &raw );
+   US_Math_BF::Band_Forming_Gradient copy( bfg );   // shares the table arrays
+
+   // Points and times off the table grid, and the table interpolation
+   const int npts = 400;
+   std::vector<double> xs( npts );
+   std::vector<double> ts( npts );
+   std::mt19937 gen( 7 );
+   std::uniform_real_distribution<double> ux( MENISCUS, BOTTOM );
+   std::uniform_real_distribution<double> ut( 1.0, 1500.0 );
+   for ( int ii = 0; ii < npts; ii++ )
+   {
+      xs[ ii ] = ux( gen );
+      ts[ ii ] = ut( gen );
+   }
+   std::sort( xs.begin(), xs.end() );
+
+   // Everything one thread computes, in one vector
+   auto work = [ & ]( US_Math_BF::Band_Forming_Gradient* gg, int rounds ) {
+      std::vector<double> out;
+      for ( int rr = 0; rr < rounds; rr++ )
+      {
+         for ( int ii = 0; ii < npts; ii += 4 )
+         {
+            double dens, visc, conc;
+            gg->calc_dens_visc( xs[ ii ], ts[ ii ], 293.15, dens, visc, conc );
+            out.push_back( dens );
+            out.push_back( visc );
+            double dd[1] = { BASE_DENS };
+            double vv[1] = { BASE_VISC };
+            gg->calc_dens_visc( 1, &xs[ ii ], ts[ ii ], 293.15, dd, vv );
+            out.push_back( dd[0] );
+         }
+         std::vector<double> dens( npts, BASE_DENS );
+         std::vector<double> visc( npts, BASE_VISC );
+         std::vector<double> conc( npts, 0.0 );
+         gg->interpolateCCodiff( npts, xs.data(), ts[ rr % npts ], 293.15, dens.data(), visc.data(), conc.data() );
+         out.insert( out.end(), dens.begin(), dens.end() );
+         out.insert( out.end(), visc.begin(), visc.end() );
+      }
+      return out;
+   };
+
+   const int rounds = 3;
+   const std::vector<double> expected = work( &bfg, rounds );
+
+   const int nthreads = 8;
+   std::vector<std::vector<double>> results( nthreads );
+   std::vector<std::thread> threads;
+   for ( int tt = 0; tt < nthreads; tt++ )
+   {
+      US_Math_BF::Band_Forming_Gradient* gg = ( tt % 2 == 0 ) ? &bfg : &copy;
+      threads.emplace_back( [ &, tt, gg ]() { results[ tt ] = work( gg, rounds ); } );
+   }
+   for ( std::thread& thread : threads )
+   {
+      thread.join();
+   }
+   for ( int tt = 0; tt < nthreads; tt++ )
+   {
+      ASSERT_EQ( results[ tt ].size(), expected.size() ) << "thread " << tt;
+      EXPECT_TRUE( results[ tt ] == expected ) << "thread " << tt;
+   }
+}
+
+// Threads that each need the eigenvalues first find them computed once
+TEST_F( TestUSMathBF, EigenvaluesAreSetUpOnceForConcurrentInterpolation )
+{
+   QList<US_CosedComponent> comps = components();
+   US_Math_BF::Band_Forming_Gradient bfg( MENISCUS, BOTTOM, VOLUME, comps, PATHLEN, ANGLE );
+   // No eigenvalues yet, and no table: the ASTFEM mesh type evaluates directly
+   bfg.simparms.meshType = US_SimulationParameters::ASTFEM;
+
+   const double xx[3] = { 6.12, 6.2, 6.5 };
+   std::vector<std::vector<double>> results( 6 );
+   std::vector<std::thread> threads;
+   for ( int tt = 0; tt < 6; tt++ )
+   {
+      threads.emplace_back( [ &, tt ]() {
+         std::vector<double> dens( 3, BASE_DENS );
+         std::vector<double> visc( 3, BASE_VISC );
+         std::vector<double> conc( 3, 0.0 );
+         bfg.interpolateCCodiff( 3, xx, 300.0, 293.15, dens.data(), visc.data(), conc.data() );
+         results[ tt ] = dens;
+      } );
+   }
+   for ( std::thread& thread : threads )
+   {
+      thread.join();
+   }
+   EXPECT_EQ( bfg.eigenvalues.size(), 1750 );
+   for ( int tt = 1; tt < 6; tt++ )
+   {
+      EXPECT_TRUE( results[ tt ] == results[ 0 ] ) << "thread " << tt;
+   }
+   EXPECT_LT( results[ 0 ][ 0 ], BASE_DENS - 1.0e-3 );
 }

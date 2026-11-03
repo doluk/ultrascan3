@@ -19,7 +19,6 @@
 #include "us_extern.h"
 #include "us_simparms.h"
 #include <array>
-#include <unordered_map>
 
 
 #ifndef DbgLv
@@ -216,51 +215,39 @@ class US_UTIL_EXTERN US_Math_BF final : public QObject {
 
             double dt;
          private:
-            //! Key of the value cache: the exact bit patterns of radius, time and temperature
-            struct ValueKey {
-               quint64 x;
-               quint64 t;
-               quint64 T;
-               bool operator==( const ValueKey& o ) const { return x == o.x && t == o.t && T == o.T; }
-            };
-            struct ValueKeyHash {
-               size_t operator()( const ValueKey& k ) const noexcept
-               {
-                  size_t h = std::hash<quint64>()( k.x );
-                  h ^= std::hash<quint64>()( k.t ) + 0x9e3779b97f4a7c15ULL + ( h << 6 ) + ( h >> 2 );
-                  h ^= std::hash<quint64>()( k.T ) + 0x9e3779b97f4a7c15ULL + ( h << 6 ) + ( h >> 2 );
-                  return h;
-               }
-            };
-            //! Summed contributions of the overlay components at (x, t, T): density increment,
-            //! viscosity increment (both without the base buffer) and concentration
-            std::unordered_map<ValueKey, std::array<double,3>, ValueKeyHash> value_cache;
-            //! Eigenfunction values R(beta_i, x) for all eigenvalues, one row per exact radius
-            QHash<quint64, QVector<double>> eigenfunction_rows;
+            // Thread safety: one gradient may be shared by several threads (an
+            //  ASTFVM solver per thread).  The object itself is only written by
+            //  the constructors, get_eigenvalues() and calculate_gradient(),
+            //  which run before it is shared (get_eigenvalues() also lazily,
+            //  under a lock).  The caches below are per thread, keyed by
+            //  cache_id, so concurrent lookups never write shared state.
+            struct ThreadCache;
+            //! This thread's cache for this gradient (one of a few per thread)
+            ThreadCache& thread_cache() const;
+            //! Unique per object and per set of eigenvalues: identifies the caches
+            quint64 cache_id;
+            //! Run get_eigenvalues() once, also when several threads ask at once
+            void ensure_eigenvalues();
             QVector<double> eig_J1b; //!< J1(beta_i * bottom), one per eigenvalue
             QVector<double> eig_Y1b; //!< Y1(beta_i * bottom), one per eigenvalue
-            unsigned long eigenfunction_cache_used;
-            QVector<double> decay_w;     //!< Time weights, per overlay component and eigenvalue
-            quint64 decay_t_key = 0;     //!< Bits of the time decay_w is for
-            quint64 decay_T_key = 0;     //!< Bits of the temperature decay_w is for
-            bool    decay_valid = false; //!< decay_w is current
             double total_volume;
             double lower_volume;
 
             //! \brief The eigenfunction values of all eigenvalues at radius x, from the row cache
-            const double* eigenfunction_row( double x );
+            const double* eigenfunction_row( double x ) const;
 
             //! \brief norm * overlay integral * exp(-D beta^2 t) for every overlay component
-            //!        (rows of eigenvalues.size()), cached for the last (t, temp)
-            const double* decay_weights( double t, double temp );
+            //!        (rows of eigenvalues.size()), cached per thread for the last (t, temp)
+            const double* decay_weights( double t, double temp ) const;
 
             //! \brief Concentration of overlay component ci at (x, t)
-            double comp_conc( int ci, double x, double t, double temp );
+            double comp_conc( int ci, double x, double t, double temp ) const;
 
-            //! \brief The summed overlay-component contributions at (x, t, T), see value_cache
-            //! \param use_cache Look up and store in value_cache; the gradient table visits each
-            //!        (x, t) once and does not use it
-            std::array<double,3> component_sums( double x, double t, double T, bool use_cache );
+            //! \brief The summed overlay-component contributions at (x, t, T): density and
+            //!        viscosity increments (without the base buffer) and concentration
+            //! \param use_cache Look up and store in this thread's value cache; the gradient
+            //!        table visits each (x, t) once and does not use it
+            std::array<double,3> component_sums( double x, double t, double T, bool use_cache ) const;
 
             //! \brief calculate a bessel function of a given type for the input x
             //! \param bessel_type The string representing the type of the bessel function J0, J1, Y0, Y1

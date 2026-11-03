@@ -9,8 +9,104 @@
 #include "us_constants.h"
 #include "us_math2.h"
 #include <array>
+#include <atomic>
+#include <unordered_map>
+#include <QMutex>
+#include <QMutexLocker>
 
 #define ROOT_EIGHT (2.0*M_SQRT2)
+
+namespace {
+// A new cache id for each gradient object and each set of eigenvalues; ids are
+//  never reused, so a thread's cache cannot be taken for another gradient
+quint64 next_cache_id() {
+   static std::atomic<quint64> last_id{ 0 };
+   return ++last_id;
+}
+
+// Key of the value cache: the exact bit patterns of radius, time and temperature
+struct ValueKey {
+   quint64 x;
+   quint64 t;
+   quint64 T;
+   bool operator==( const ValueKey& o ) const { return x == o.x && t == o.t && T == o.T; }
+};
+struct ValueKeyHash {
+   size_t operator()( const ValueKey& k ) const noexcept {
+      size_t h = std::hash<quint64>()( k.x );
+      h ^= std::hash<quint64>()( k.t ) + 0x9e3779b97f4a7c15ULL + ( h << 6 ) + ( h >> 2 );
+      h ^= std::hash<quint64>()( k.T ) + 0x9e3779b97f4a7c15ULL + ( h << 6 ) + ( h >> 2 );
+      return h;
+   }
+};
+
+quint64 bits( const double value ) {
+   quint64 b;
+   memcpy( &b, &value, sizeof( b ) );
+   return b;
+}
+
+// Size bounds of one thread's cache for one gradient
+const int max_rows   = 4096;     // ~14 kB each with 1750 eigenvalues
+const int max_values = 200000;   // ~0.1 kB each
+const int n_slots    = 2;        // gradients cached per thread
+} // namespace
+
+//! One thread's caches for one gradient
+struct US_Math_BF::Band_Forming_Gradient::ThreadCache {
+   quint64 owner     = 0;   //!< cache_id of the gradient these belong to
+   quint64 last_used = 0;   //!< for replacing the least recently used slot
+   //! Eigenfunction values R(beta_i, x) for all eigenvalues, one row per exact radius
+   QHash<quint64, QVector<double>> rows;
+   //! Summed overlay-component contributions at (x, t, T), see component_sums()
+   std::unordered_map<ValueKey, std::array<double,3>, ValueKeyHash> values;
+   //! Time weights per overlay component and eigenvalue, for (decay_t, decay_T)
+   QVector<double> decay_w;
+   quint64 decay_t     = 0;
+   quint64 decay_T     = 0;
+   bool    decay_valid = false;
+   unsigned long rows_reused = 0;
+
+   void reset( const quint64 id ) {
+      owner = id;
+      rows.clear();
+      values.clear();
+      values.rehash( 0 );
+      decay_w.clear();
+      decay_valid = false;
+      rows_reused = 0;
+   }
+};
+
+US_Math_BF::Band_Forming_Gradient::ThreadCache& US_Math_BF::Band_Forming_Gradient::thread_cache() const {
+   // Per thread: no locking, and no thread ever writes another one's cache
+   static thread_local ThreadCache caches[ n_slots ];
+   static thread_local quint64 use_count = 0;
+   use_count++;
+   int oldest = 0;
+   for ( int ii = 0; ii < n_slots; ii++ ) {
+      if ( caches[ ii ].owner == cache_id ) {
+         caches[ ii ].last_used = use_count;
+         return caches[ ii ];
+      }
+      if ( caches[ ii ].last_used < caches[ oldest ].last_used ) {
+         oldest = ii;
+      }
+   }
+   caches[ oldest ].reset( cache_id );
+   caches[ oldest ].last_used = use_count;
+   return caches[ oldest ];
+}
+
+void US_Math_BF::Band_Forming_Gradient::ensure_eigenvalues() {
+   // One lock for all gradients: this is taken once per interpolation call
+   //  and is not contended once the eigenvalues exist
+   static QMutex eigen_mutex;
+   QMutexLocker locker( &eigen_mutex );
+   if ( eigenvalues.isEmpty() ) {
+      get_eigenvalues();
+   }
+}
 
 US_Math_BF::Band_Forming_Gradient::Band_Forming_Gradient(const double m, const double b, const double band_loading,
                                                          QList<US_CosedComponent> &comps, const double pathlen,
@@ -22,7 +118,7 @@ US_Math_BF::Band_Forming_Gradient::Band_Forming_Gradient(const double m, const d
    base_comps.clear();
    upper_comps.clear();
    lower_comps.clear();
-   value_cache.clear();
+   cache_id = next_cache_id();
    dbg_level = US_Settings::us_debug();
    base_density = 0.0;
    base_viscosity = 0.0;
@@ -35,8 +131,6 @@ US_Math_BF::Band_Forming_Gradient::Band_Forming_Gradient(const double m, const d
    visc_bfg_data = US_DataIO::RawData();
    dens_bfg_data = US_DataIO::RawData();
    conc_bfg_data = US_DataIO::RawData();
-   eigenfunction_cache_used = 0;
-   eigenfunction_rows.clear();
    QMap<QString, US_CosedComponent> upper_cosed;
    QMap<QString, US_CosedComponent> lower_cosed;
       foreach (US_CosedComponent i, comps) {
@@ -173,14 +267,11 @@ US_Math_BF::Band_Forming_Gradient::Band_Forming_Gradient( const US_Math_BF::Band
    Nx = bfg.Nx;
    dt = bfg.dt;
    dbg_level = bfg.dbg_level;
-   eigenfunction_rows = bfg.eigenfunction_rows;
    eig_J1b = bfg.eig_J1b;
    eig_Y1b = bfg.eig_Y1b;
-   value_cache = bfg.value_cache;
-   decay_valid = false;
+   cache_id = next_cache_id();   // the caches are per thread and per id
    total_volume = bfg.total_volume;
    lower_volume = bfg.lower_volume;
-   eigenfunction_cache_used = 0;
 }
 
 US_Math_BF::Band_Forming_Gradient::Band_Forming_Gradient(const US_SimulationParameters& sim_params,
@@ -193,11 +284,10 @@ US_Math_BF::Band_Forming_Gradient::Band_Forming_Gradient(const US_SimulationPara
    base_comps.clear();
    upper_comps.clear();
    lower_comps.clear();
-   value_cache.clear();
+   cache_id = next_cache_id();
    dbg_level = US_Settings::us_debug();
    base_density = 0.0;
    base_viscosity = 0.0;
-   eigenfunction_cache_used = 0;
    double base = sq(meniscus) + overlay_volume * 360.0 / (cp_angle * cp_pathlen * M_PI);
    overlay_thickness = sqrt(base) - meniscus;
    total_volume = M_PI * cp_pathlen * cp_angle / 360 * (sq(bottom) - sq(meniscus));
@@ -455,9 +545,6 @@ bool US_Math_BF::Band_Forming_Gradient::get_eigenvalues( ) {
    pre_calc_betas.reserve( n_eig );
    eig_J1b.resize( n_eig );
    eig_Y1b.resize( n_eig );
-   eigenfunction_rows.clear();
-   value_cache.clear();
-   decay_valid = false;
    const double rd = meniscus + overlay_thickness;
    for ( int i = 0; i < n_eig; i++ ) {
       const double beta = eigenvalues[ i ];
@@ -474,6 +561,7 @@ bool US_Math_BF::Band_Forming_Gradient::get_eigenvalues( ) {
       pre_calc_betas.append( 1.0 / beta * ( ( rd * J1rd - meniscus * J1m ) * Y1b
                                           + J1b * ( meniscus * Y1m - rd * Y1rd ) ) * norm( beta ) );
    }
+   cache_id = next_cache_id();   // values cached for the old eigenvalues are stale
    return return_value;
 }
 
@@ -487,20 +575,20 @@ double US_Math_BF::Band_Forming_Gradient::eigenfunction(const int &beta, const d
    return eigenfunction_row( x )[ beta ];
 }
 
-const double* US_Math_BF::Band_Forming_Gradient::eigenfunction_row( const double x ) {
+const double* US_Math_BF::Band_Forming_Gradient::eigenfunction_row( const double x ) const {
    // Rows are keyed by the exact radius: the gradient table asks for the same
-   //  radii at every time, so each row is computed once there
-   quint64 x_key;
-   memcpy( &x_key, &x, sizeof( x_key ) );
-   auto it = eigenfunction_rows.constFind( x_key );
-   if ( it != eigenfunction_rows.constEnd() ) {
-      eigenfunction_cache_used++;
+   //  radii at every time, so each row is computed once there.  The pointer
+   //  stays valid until this thread's next lookup in this cache.
+   ThreadCache& tc = thread_cache();
+   const quint64 x_key = bits( x );
+   const auto it = tc.rows.constFind( x_key );
+   if ( it != tc.rows.constEnd() ) {
+      tc.rows_reused++;
       return it.value().constData();
    }
-   // Bound the memory for callers with ever-new radii (one row is 8 bytes
-   //  per eigenvalue, ~14 kB)
-   if ( eigenfunction_rows.size() >= 8192 ) {
-      eigenfunction_rows.clear();
+   // Bound the memory for callers with ever-new radii
+   if ( tc.rows.size() >= max_rows ) {
+      tc.rows.clear();
    }
    const int n_eig = eigenvalues.size();
    QVector<double> row( n_eig );
@@ -509,7 +597,7 @@ const double* US_Math_BF::Band_Forming_Gradient::eigenfunction_row( const double
       const double ev_x = eigenvalues[ i ] * x;
       rv[ i ] = bessel_J0( ev_x ) * eig_Y1b[ i ] - bessel_Y0( ev_x ) * eig_J1b[ i ];
    }
-   return eigenfunction_rows.insert( x_key, row ).value().constData();
+   return tc.rows.insert( x_key, row ).value().constData();
 }
 
 double US_Math_BF::Band_Forming_Gradient::calc_eq_comp_conc( const US_CosedComponent &cosed_comp) const {
@@ -545,43 +633,44 @@ double US_Math_BF::Band_Forming_Gradient::calc_comp_conc(const double &x, const 
    return eq_conc + decay * cosed_comp.conc;
 }
 
-const double* US_Math_BF::Band_Forming_Gradient::decay_weights( const double t, const double temp ) {
+const double* US_Math_BF::Band_Forming_Gradient::decay_weights( const double t, const double temp ) const {
    // norm * overlay integral * exp(-D beta^2 t) depends on t and T only: one
    //  vector per overlay component, made once per (t, T) and used at every x
-   quint64 t_key, T_key;
-   memcpy( &t_key, &t, sizeof( t_key ) );
-   memcpy( &T_key, &temp, sizeof( T_key ) );
+   ThreadCache& tc = thread_cache();
+   const quint64 t_key = bits( t );
+   const quint64 T_key = bits( temp );
    const int n_eig  = eigenvalues.size();
    const int n_comp = upper_comps.size();
-   if ( decay_valid && t_key == decay_t_key && T_key == decay_T_key
-        && decay_w.size() == n_comp * n_eig ) {
-      return decay_w.constData();
+   if ( tc.decay_valid && t_key == tc.decay_t && T_key == tc.decay_T
+        && tc.decay_w.size() == n_comp * n_eig ) {
+      return tc.decay_w.constData();
    }
-   decay_w.resize( n_comp * n_eig );
+   tc.decay_w.resize( n_comp * n_eig );
    const double tk = (temp>260)?temp:temp+K0;
    for ( int ci = 0; ci < n_comp; ci++ ) {
       const double exp_factor = -upper_comps[ ci ].d_coeff * tk / K20 * t;
-      double* w = decay_w.data() + ci * n_eig;
+      double* w = tc.decay_w.data() + ci * n_eig;
       for ( int i = 0; i < n_eig; i++ ) {
          w[ i ] = pre_calc_betas[ i ] * exp( exp_factor * sq( eigenvalues[ i ] ) );
       }
    }
-   decay_t_key = t_key;
-   decay_T_key = T_key;
-   decay_valid = true;
-   return decay_w.constData();
+   tc.decay_t     = t_key;
+   tc.decay_T     = T_key;
+   tc.decay_valid = true;
+   return tc.decay_w.constData();
 }
 
 double US_Math_BF::Band_Forming_Gradient::comp_conc( const int ci, const double x, const double t,
-                                                     const double temp ) {
+                                                     const double temp ) const {
    const US_CosedComponent& cosed_comp = upper_comps[ ci ];
    if (t < 1){
       return ( x > meniscus + overlay_thickness ) ? cosed_comp.concentration_offset
                                                   : cosed_comp.conc + cosed_comp.concentration_offset;
    }
    const int     n_eig = eigenvalues.size();
-   const double* w     = decay_weights( t, temp ) + ci * n_eig;
+   // The row lookup can only clear the rows, not the weights: both pointers hold
    const double* row   = eigenfunction_row( x );
+   const double* w     = decay_weights( t, temp ) + ci * n_eig;
    double decay = 0.0;
    for ( int i = 0; i < n_eig; i++ ) {
       decay += w[ i ] * row[ i ];
@@ -590,14 +679,12 @@ double US_Math_BF::Band_Forming_Gradient::comp_conc( const int ci, const double 
 }
 
 std::array<double,3> US_Math_BF::Band_Forming_Gradient::component_sums(
-   const double x, const double t, const double T, const bool use_cache ) {
-   ValueKey key{};
+   const double x, const double t, const double T, const bool use_cache ) const {
+   const ValueKey key{ bits( x ), bits( t ), bits( T ) };
    if ( use_cache ) {
-      memcpy( &key.x, &x, sizeof( key.x ) );
-      memcpy( &key.t, &t, sizeof( key.t ) );
-      memcpy( &key.T, &T, sizeof( key.T ) );
-      const auto it = value_cache.find( key );
-      if ( it != value_cache.end() ) {
+      ThreadCache& tc = thread_cache();
+      const auto it = tc.values.find( key );
+      if ( it != tc.values.end() ) {
          return it->second;
       }
    }
@@ -620,11 +707,12 @@ std::array<double,3> US_Math_BF::Band_Forming_Gradient::component_sums(
    }
    const std::array<double,3> sums{ dens_inc, visc_inc, conc };
    if ( use_cache ) {
+      ThreadCache& tc = thread_cache();
       // Bound the memory: callers on a moving time axis rarely hit old entries
-      if ( value_cache.size() >= 1000000 ) {
-         value_cache.clear();
+      if ( static_cast<int>( tc.values.size() ) >= max_values ) {
+         tc.values.clear();
       }
-      value_cache.emplace( key, sums );
+      tc.values.emplace( key, sums );
    }
    return sums;
 }
@@ -705,7 +793,7 @@ US_Math_BF::Band_Forming_Gradient::calculate_gradient(
 
    // Declares the scan structure and set the lower limit for dt to keep workload reasonable
    dt = qMax(simparms.radial_resolution*simparms.radial_resolution / 6 / max_D, 5.0);
-   DbgLv(2) << "max D " << max_D << "; dt " << dt << "; eigenfunction rows " << eigenfunction_rows.size();
+   DbgLv(2) << "max D " << max_D << "; dt " << dt;
    dens_bfg_data.scanData.clear();
    visc_bfg_data.scanData.clear();
    conc_bfg_data.scanData.clear();
@@ -807,14 +895,14 @@ US_Math_BF::Band_Forming_Gradient::calculate_gradient(
          dt_scaling += dt*0.05;
       }
       DbgLv(3) << "BFG:CG: scan dt dt_scaling runtime" << scan_count << dt << dt_scaling << runtime
-                  << "eigenfunction rows " << eigenfunction_rows.size();
+                  << "eigenfunction rows " << thread_cache().rows.size();
       runtime += (dt + dt_scaling);
       scan_count++;
    }
 
    DbgLv(1) << "Calculated BFG for" << Nx << "radial points and" <<scan_count<<"scans";
    DbgLv(1) << "Eigenvalues" << eigenvalues.size();
-   DbgLv(1) << "Eigenfunction rows reused: " << eigenfunction_cache_used << " rows " << eigenfunction_rows.size();
+   DbgLv(1) << "Eigenfunction rows reused: " << thread_cache().rows_reused << " rows " << thread_cache().rows.size();
    if ( dbg_level > 2 ) {
       DbgLv(3) << "#####################################";
       // calculate and print the integral of scan curves
@@ -859,10 +947,7 @@ US_Math_BF::Band_Forming_Gradient::interpolateCCodiff(
       return;
    }
    // ensure the eigenvalues were calculated
-   if ( eigenvalues.isEmpty() )
-   {
-      get_eigenvalues();
-   }
+   ensure_eigenvalues();
    // check if there is already precalculated values are available, for this simparams has to be different
    // this can be checked by comparing the meshType as the default is ASTFEM and this could can only be invoked
    // from ASTFVM
@@ -898,10 +983,10 @@ US_Math_BF::Band_Forming_Gradient::interpolateCCodiff(
    const double* radius = dens_bfg_data.xvalues.constData();
    double xs_k = radius[k];
    double xs_m = radius[m];
-   const double* scn2dens = dens_bfg_data.scanData[scn - 2].rvalues.constData();
-   const double* scn1dens = dens_bfg_data.scanData[scn - 1].rvalues.constData();
-   const double* scn2visc = visc_bfg_data.scanData[scn - 2].rvalues.constData();
-   const double* scn1visc = visc_bfg_data.scanData[scn - 1].rvalues.constData();
+   const double* scn2dens = dens_bfg_data.scanData.at( scn - 2 ).rvalues.constData();
+   const double* scn1dens = dens_bfg_data.scanData.at( scn - 1 ).rvalues.constData();
+   const double* scn2visc = visc_bfg_data.scanData.at( scn - 2 ).rvalues.constData();
+   const double* scn1visc = visc_bfg_data.scanData.at( scn - 1 ).rvalues.constData();
    const int Nx_limit = Nx - 2;
 
    for ( int jf = 0; jf < N; jf++ )      // loop for all x[jf]
@@ -919,7 +1004,7 @@ US_Math_BF::Band_Forming_Gradient::interpolateCCodiff(
       const double xs_diff = xs_k - xs_m;
       const double xik = qMin(qMax((xj - xs_m) / xs_diff, 0.0), 1.0);
       const double xim = 1.0 - xik;
-      DbgLv(3) << "jf=" << jf << " k=" << k << " m=" << m << " xj=" << xj << " xs[k]" << dens_bfg_data.radius(k)
+      DbgLv(3) << "jf=" << jf << " k=" << k << " m=" << m << " xj=" << xj << " xs[k]" << radius[k]
                << " Nx=" << Nx << " xik=" << xik << " xim=" << xim;
       // interpolate linearly in both time and radius - optimize by caching intermediate values
       const double dens_interp_t0 = xim * scn2dens[m] + xik * scn2dens[k];
@@ -943,10 +1028,7 @@ US_Math_BF::Band_Forming_Gradient::interpolateCCodiff(
       return;
    }
    // ensure the eigenvalues were calculated
-   if ( eigenvalues.isEmpty() )
-   {
-      get_eigenvalues();
-   }
+   ensure_eigenvalues();
    // check if there is already precalculated values are available, for this simparams has to be different
    // this can be checked by comparing the meshType as the default is ASTFEM and this could can only be invoked
    // from ASTFVM
@@ -989,12 +1071,12 @@ US_Math_BF::Band_Forming_Gradient::interpolateCCodiff(
    const double* radius = dens_bfg_data.xvalues.constData();
    double xs_k = radius[k];
    double xs_m = radius[m];
-   const double* scn2dens = dens_bfg_data.scanData[scn - 2].rvalues.constData();
-   const double* scn1dens = dens_bfg_data.scanData[scn - 1].rvalues.constData();
-   const double* scn2visc = visc_bfg_data.scanData[scn - 2].rvalues.constData();
-   const double* scn1visc = visc_bfg_data.scanData[scn - 1].rvalues.constData();
-   const double* scn2conc = conc_bfg_data.scanData[scn - 2].rvalues.constData();
-   const double* scn1conc = conc_bfg_data.scanData[scn - 1].rvalues.constData();
+   const double* scn2dens = dens_bfg_data.scanData.at( scn - 2 ).rvalues.constData();
+   const double* scn1dens = dens_bfg_data.scanData.at( scn - 1 ).rvalues.constData();
+   const double* scn2visc = visc_bfg_data.scanData.at( scn - 2 ).rvalues.constData();
+   const double* scn1visc = visc_bfg_data.scanData.at( scn - 1 ).rvalues.constData();
+   const double* scn2conc = conc_bfg_data.scanData.at( scn - 2 ).rvalues.constData();
+   const double* scn1conc = conc_bfg_data.scanData.at( scn - 1 ).rvalues.constData();
    const int Nx_limit = Nx - 2;
 
    for ( int jf = 0; jf < N; jf++ )      // loop for all x[jf]
@@ -1012,7 +1094,7 @@ US_Math_BF::Band_Forming_Gradient::interpolateCCodiff(
       const double xs_diff = xs_k - xs_m;
       const double xik = qMin(qMax((xj - xs_m) / xs_diff, 0.0), 1.0);
       const double xim = 1.0 - xik;
-      DbgLv(3) << "jf=" << jf << " k=" << k << " m=" << m << " xj=" << xj << " xs[k]" << dens_bfg_data.radius(k)
+      DbgLv(3) << "jf=" << jf << " k=" << k << " m=" << m << " xj=" << xj << " xs[k]" << radius[k]
                << " Nx=" << Nx << " xik=" << xik << " xim=" << xim;
       // interpolate linearly in both time and radius - optimize by caching intermediate values
       const double dens_interp_t0 = xim * scn2dens[m] + xik * scn2dens[k];
@@ -1051,7 +1133,7 @@ US_Math_BF::Band_Forming_Gradient::Band_Forming_Gradient() {
    Nx = 0;
    dt = 0;
    dbg_level = 1;
-   eigenfunction_cache_used = 0;
+   cache_id = next_cache_id();
    total_volume = 0.0;
    lower_volume = 0.0;
 }
@@ -1065,7 +1147,7 @@ bool US_Math_BF::Band_Forming_Gradient::operator==(const US_Math_BF::Band_Formin
        abs( cp_angle - bfg.cp_angle) > GSL_ROOT5_DBL_EPSILON ||
        simparms.radial_resolution != bfg.simparms.radial_resolution ||
        simparms.temperature != bfg.simparms.temperature ||
-       dens_bfg_data.scanData.last().seconds > bfg.dens_bfg_data.scanData.last().seconds)
+       dens_bfg_data.scanData.constLast().seconds > bfg.dens_bfg_data.scanData.constLast().seconds)
    {
       return false;
    }
@@ -1247,7 +1329,7 @@ bool US_Math_BF::Band_Forming_Gradient::is_suitable( const double n_meniscus, co
       return false;
    }
    // The table must reach the last time the simulation needs
-   if ( dens_bfg_data.scanData.last().seconds < n_maxTime ) {
+   if ( dens_bfg_data.scanData.constLast().seconds < n_maxTime ) {
       return false;
    }
    return true;

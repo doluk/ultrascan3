@@ -647,62 +647,41 @@ void US_LammAstfvm::CosedData::initCosed( double* Cs0, double* Cs1, double* xs )
 }
 
 void US_LammAstfvm::CosedData::InterpolateCCosed( int     N, const double* x, double t, double* DensCosed,
-                                                  double* ViscCosed )
+                                                  double* ViscCosed ) const
 {
-   count                    = ( count + 1 ) % 20;
-   double          t0       = sa_data.scanData[0].seconds; // times of 1st 2 salt scans
-   double          t1       = sa_data.scanData[1].seconds;
-   int             scn      = 2;                       // index to the next scan to use
-   int             Nt_cosed = sa_data.scanCount() - 3; // scan count less two used here
-   double*         Cs0;                                // density for the 1st time interval
-   double*         Cs1;                                // density for the 2nd time interval
-   double*         xs;
-   QVector<double> tmpCs0;
-   QVector<double> tmpCs1;
-   QVector<double> tmpXs;
-   tmpCs0.fill( 0.0, sa_data.pointCount() );
-   tmpCs1.fill( 0.0, sa_data.pointCount() );
-   tmpXs.fill( 0.0, sa_data.pointCount() );
-   Cs0 = tmpCs0.data();
-   Cs1 = tmpCs1.data();
-
-   xs = tmpXs.data();
-   Q_FOREACH( US_Model::SimulationComponent comp, model.components )
+   // Only reads this object: one CosedData is shared by the solvers of
+   //  several threads (us_2dsa's workers), so nothing here may be written to it
+   for ( const US_Model::SimulationComponent& comp : model.components )
    {
-      sa_data = cosed_comp_data[comp.analyteGUID];
-      initCosed( Cs0, Cs1, xs );
-      DbgLv( 2 ) << "SaltD:ntrp:  N t t1 Nt Nx" << N << t << t1 << Nt_cosed << Nx << "Cs0N Cs1N" << Cs0[Nx - 1]
-               << Cs1[Nx - 1];
-
-      while ( ( t1 < t ) && ( scn < sa_data.scanCount() ) )
+      const auto cit = cosed_comp_data.constFind( comp.analyteGUID );
+      if ( cit == cosed_comp_data.constEnd() || cit.value().scanData.size() < 2 )
       {
-         // walk down salt scans until we are straddling the desired time value
+         continue;
+      }
+      const US_DataIO::RawData& sdata = cit.value();
+      // The two scans straddling t, from this component's own data
+      double t0  = sdata.scanData.at( 0 ).seconds;
+      double t1  = sdata.scanData.at( 1 ).seconds;
+      int    scn = 2;
+      while ( ( t1 < t ) && ( scn < sdata.scanData.size() ) )
+      {
          t0 = t1;
-         t1 = sa_data.scanData[scn].seconds; // Nt = time level left
-         Nt_cosed--;
+         t1 = sdata.scanData.at( scn ).seconds;
          scn++;
-         DbgLv( 3 ) << "SaltD:ntrp:      0 t 1" << t0 << t << t1 << "  N s" << Nt_cosed << scn;
       }
-      DbgLv( 2 ) << "SaltD:ntrp:   t0 t t1" << t0 << t << t1 << "  Nt scn" << Nt_cosed << scn;
-      for ( int j = 0; j < Nx; j++ )
-      {
-         // get 1st two salt arrays from 1st two salt scans
-         Cs0[j] = sa_data.value( scn - 2, j );
-         Cs1[j] = sa_data.value( scn - 1, j );
-      }
+      DbgLv( 2 ) << "SaltD:ntrp:   t0 t t1" << t0 << t << t1 << "  scn" << scn;
+      const double* Cs0 = sdata.scanData.at( scn - 2 ).rvalues.constData();
+      const double* Cs1 = sdata.scanData.at( scn - 1 ).rvalues.constData();
+      const double* xs  = sdata.xvalues.constData();
       // interpolate between t0 and t1
       double et1 = ( t - t0 ) / ( t1 - t0 );
-      if ( et1 < 0.0 || et1 > 1.0 )
-      {
-         DbgLv( 2 ) << "test";
-      }
       et1        = ( et1 > 1.0 ) ? 1.0 : et1;
       et1        = ( et1 < 0.0 ) ? 0.0 : et1;
       double et0 = 1.0 - et1;
 
       // interpolate between xs[k-1] and xs[k]
       int    k             = 1;
-      int    Lx            = sa_data.pointCount(  );
+      int    Lx            = sdata.xvalues.size();
       int    count_NaN     = 0;
       double dens_coeff[6] = {0.0}; //!< The density coefficients.
       double visc_coeff[6] = {0.0};
@@ -912,7 +891,7 @@ int US_LammAstfvm::calculate( US_DataIO::RawData& sim_data )
 
    if ( codiff_needed && ( bandFormingGradient == nullptr || bandFormingGradient->is_empty || bandFormingGradient->
       dens_bfg_data.scanCount() == 0 || ( sim_data.scanCount() > 0 &&
-      bandFormingGradient->dens_bfg_data.scanData.last().seconds < sim_data.scanData.last().seconds ) ) )
+      bandFormingGradient->dens_bfg_data.scanData.constLast().seconds < sim_data.scanData.last().seconds ) ) )
    {
       param_s = model.components.first().s != 0.0 ? model.components.first().s : 1e-14;
       param_D = model.components.first().D;
@@ -2023,8 +2002,8 @@ void US_LammAstfvm::SetNonIdealCase_2()
       DbgLv( 2 ) << "NonIdeal2: initSalt  comp_x" << comp_x;
    }
    DbgLv( 2 ) << "NonIdeal2: prep saltdata" << cosed_needed << codiff_needed;
-   if ( saltdata != nullptr && !cosed_comp_data.isEmpty() )
-   {
+   if ( saltdata != nullptr && own_csd && !cosed_comp_data.isEmpty() )
+   {  // Only into salt data of our own: a given one may be shared by other threads
       saltdata->sa_data = cosed_comp_data.first();
    }
    DbgLv( 2 ) << "NonIdeal2: finished";
@@ -3148,7 +3127,7 @@ void US_LammAstfvm::validate_bfg()
         !qFuzzyCompare( simparams.radial_resolution, bandFormingGradient->simparms.radial_resolution ) ||
         !qFuzzyCompare( simparams.temperature, bandFormingGradient->simparms.temperature ) || bandFormingGradient->is_empty ||
         bandFormingGradient->dens_bfg_data.scanCount() == 0 ||
-        auc_data->scanData.last().seconds > bandFormingGradient->dens_bfg_data.scanData.last().seconds )
+        auc_data->scanData.last().seconds > bandFormingGradient->dens_bfg_data.scanData.constLast().seconds )
    {
       // recalculation needed
       set_bfg( new US_Math_BF::Band_Forming_Gradient( simparams.meniscus,
@@ -3366,8 +3345,8 @@ void US_LammAstfvm::validate_csd()
       DbgLv( 2 ) << "CosedData: cosed_model comp" << saltdata->model.components.size() << "cosed_comp_data"
                  << cosed_comp_data.size() << "sa_data.scanCount()" << saltdata->sa_data.scanCount();
    }
-   if ( saltdata != nullptr && !cosed_comp_data.isEmpty() )
-   {
+   if ( saltdata != nullptr && own_csd && !cosed_comp_data.isEmpty() )
+   {  // Only into salt data of our own: a given one may be shared by other threads
       saltdata->sa_data = cosed_comp_data.first();
    }
    // Without a co-sedimenting component there is no salt data to keep

@@ -110,7 +110,7 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
             //! \param t     Current time value
             //! \param Denscosed Density of cosed buffer for current time
             //! \param Visccosed Viscosity of cosed buffer for current time
-            void InterpolateCCosed( int, const double*, double, double*, double*);
+            void InterpolateCCosed( int, const double*, double, double*, double*) const;
 
             US_DataIO::RawData      sa_data;   //!< cosed data 1-component
                                                //!<  simulation for co-sed
