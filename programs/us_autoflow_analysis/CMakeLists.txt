@@ -166,10 +166,4 @@ if(WIN32)
   target_link_libraries(us_autoflow_analysis PRIVATE psapi)
 endif()
 
-# Install
-install(TARGETS us_autoflow_analysis
-        RUNTIME DESTINATION bin
-        COMPONENT Programs
-        )
-
 message(STATUS "Created: us_autoflow_analysis")

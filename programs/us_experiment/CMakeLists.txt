@@ -64,10 +64,4 @@ target_link_libraries(us_experiment PRIVATE
         us_program_common
         )
 
-# Install
-install(TARGETS us_experiment
-        RUNTIME DESTINATION bin
-        COMPONENT Programs
-        )
-
 message(STATUS "Created program: us_experiment")

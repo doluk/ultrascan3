@@ -170,10 +170,4 @@ target_link_libraries(us_query_rmsd PRIVATE
         Qt::DataVisualization
         )
 
-# Install
-install(TARGETS us_query_rmsd
-        RUNTIME DESTINATION bin
-        COMPONENT Programs
-        )
-
 message(STATUS "Created: us_query_rmsd")

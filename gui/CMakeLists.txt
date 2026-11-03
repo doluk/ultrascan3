@@ -81,8 +81,9 @@ function(configure_us_gui_target target_name is_static)
     # Include directories
     target_include_directories(${target_name}
             PUBLIC
-            ${CMAKE_CURRENT_SOURCE_DIR}
-            ${CMAKE_CURRENT_BINARY_DIR}
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
+            $<INSTALL_INTERFACE:${US3_INSTALL_INCLUDEDIR}/gui>
             )
 
     # UltraScan3 utils link
@@ -116,14 +117,24 @@ function(configure_us_gui_target target_name is_static)
             )
 
     # Headers are in subdirectories: qwtplot3d/ and qwt/
+    # Build tree only: the installed UltraScan3Config.cmake adds the
+    # subdirectories of the consumer's qwtplot3d include directories.
     if(TARGET qwtplot3d::qwtplot3d)
         get_target_property(QWTPLOT3D_INCLUDES qwtplot3d::qwtplot3d INTERFACE_INCLUDE_DIRECTORIES)
         if(QWTPLOT3D_INCLUDES)
-            target_include_directories(${target_name} PUBLIC
-                    ${QWTPLOT3D_INCLUDES}
-                    ${QWTPLOT3D_INCLUDES}/qwtplot3d
-                    ${QWTPLOT3D_INCLUDES}/qwt
-                    )
+            set(_qwtplot3d_build_inc "")
+            foreach(_inc IN LISTS QWTPLOT3D_INCLUDES)
+                # In-tree qwtplot3d: generator expressions, propagated by the
+                # target itself
+                if(_inc MATCHES "^\\$<")
+                    continue()
+                endif()
+                list(APPEND _qwtplot3d_build_inc
+                        "$<BUILD_INTERFACE:${_inc}>"
+                        "$<BUILD_INTERFACE:${_inc}/qwtplot3d>"
+                        "$<BUILD_INTERFACE:${_inc}/qwt>")
+            endforeach()
+            target_include_directories(${target_name} PUBLIC ${_qwtplot3d_build_inc})
             message(STATUS "Added qwtplot3d includes to ${target_name}: ${QWTPLOT3D_INCLUDES}")
         else()
             message(WARNING "qwtplot3d::qwtplot3d exists but has no include directories")
@@ -136,9 +147,9 @@ function(configure_us_gui_target target_name is_static)
                 set(vcpkg_arch "x64-linux")
             endif()
             target_include_directories(${target_name} PUBLIC
-                    "${CMAKE_BINARY_DIR}/vcpkg_installed/${vcpkg_arch}/include"
-                    "${CMAKE_BINARY_DIR}/vcpkg_installed/${vcpkg_arch}/include/qwtplot3d"
-                    "${CMAKE_BINARY_DIR}/vcpkg_installed/${vcpkg_arch}/include/qwt"
+                    "$<BUILD_INTERFACE:${CMAKE_BINARY_DIR}/vcpkg_installed/${vcpkg_arch}/include>"
+                    "$<BUILD_INTERFACE:${CMAKE_BINARY_DIR}/vcpkg_installed/${vcpkg_arch}/include/qwtplot3d>"
+                    "$<BUILD_INTERFACE:${CMAKE_BINARY_DIR}/vcpkg_installed/${vcpkg_arch}/include/qwt>"
                     )
         endif()
     else()
@@ -227,11 +238,9 @@ configure_us_gui_target(us_gui_static TRUE)
 add_library(UltraScan3::Gui_Static ALIAS us_gui_static)
 
 # ============================================================================
-# INSTALLATION - Only install shared library
+# INSTALLATION (admin/cmake/Us3Install.cmake): shared library -> Runtime;
+# static library and headers -> Development (US3_INSTALL_DEVEL)
 # ============================================================================
-install(TARGETS us_gui
-        EXPORT UltraScan3Targets
-        LIBRARY DESTINATION lib
-        ARCHIVE DESTINATION lib
-        RUNTIME DESTINATION bin
-        )
+us3_install_library(us_gui EXPORT_NAME Gui)
+us3_install_library(us_gui_static EXPORT_NAME Gui_Static)
+us3_install_headers(gui ${GUI_HEADERS})

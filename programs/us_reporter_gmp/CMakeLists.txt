@@ -164,10 +164,4 @@ target_link_libraries(us_reporter_gmp PRIVATE
         Qt::DataVisualization
         )
 
-# Install
-install(TARGETS us_reporter_gmp
-        RUNTIME DESTINATION bin
-        COMPONENT Programs
-        )
-
 message(STATUS "Created: us_reporter_gmp")

@@ -208,9 +208,10 @@ if(QHELPGENERATOR_EXECUTABLE)
             DEPENDS ${DOC_QCH} ${DOC_QHC}
     )
 
+    # Qt Assistant is started with the collection next to the programs
     install(FILES ${DOC_QCH} ${DOC_QHC}
             DESTINATION bin
-            COMPONENT documentation
+            COMPONENT Documentation
     )
 
 else()

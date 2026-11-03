@@ -538,6 +538,7 @@ message(STATUS "Qt dynamic linking configured for all platforms")
 # Resources
 # ============================================================================
 include(GNUInstallDirs)
+include(${CMAKE_SOURCE_DIR}/admin/cmake/Us3Install.cmake)
 include(${CMAKE_SOURCE_DIR}/admin/cmake/Us3Resources.cmake)
 
 set(US3_ETC_DIR "${CMAKE_SOURCE_DIR}/etc")
@@ -610,19 +611,24 @@ if (NOT EXISTS "${US3_BUILD_ETC_DIR}")
     message(STATUS "Created symbolic link: ${US3_BUILD_ETC_DIR} -> ${US3_ETC_DIR}")
 endif ()
 
-# Install editable trees/files we excluded from the QRC
-foreach(d IN LISTS US3_ETC_EXCLUDE_DIRS)
-    if(EXISTS "${US3_ETC_DIR}/${d}")
-        install(DIRECTORY "${US3_ETC_DIR}/${d}/"
-                DESTINATION "${CMAKE_INSTALL_DATADIR}/ultrascan/${d}")
-    endif()
-endforeach()
-foreach(f IN LISTS US3_ETC_EXCLUDE_FILES)
-    if(EXISTS "${US3_ETC_DIR}/${f}")
-        install(FILES "${US3_ETC_DIR}/${f}"
-                DESTINATION "${CMAKE_INSTALL_DATADIR}/ultrascan")
-    endif()
-endforeach()
+# Runtime data. The programs read <prefix>/etc and <prefix>/somo
+# (US_Settings::appBaseDir()), the same trees the deploy_* targets stage.
+install(DIRECTORY "${US3_ETC_DIR}/"
+        DESTINATION "${US3_INSTALL_ETCDIR}"
+        COMPONENT Data)
+if(EXISTS "${CMAKE_SOURCE_DIR}/somo" AND NOT US3_PROFILE STREQUAL "HPC")
+    install(DIRECTORY "${CMAKE_SOURCE_DIR}/somo/"
+            DESTINATION "${US3_INSTALL_SOMODIR}"
+            USE_SOURCE_PERMISSIONS
+            COMPONENT Data)
+endif()
+install(FILES "${CMAKE_SOURCE_DIR}/LICENSE.txt"
+        DESTINATION .
+        RENAME license.txt
+        COMPONENT Data)
+install(FILES "${CMAKE_SOURCE_DIR}/VERSION"
+        DESTINATION .
+        COMPONENT Data)
 
 # ============================================================================
 # Find Dependencies
@@ -993,25 +999,11 @@ endif()
 # =============================================================================
 # INSTALLATION
 # =============================================================================
-# Install binaries
-install(TARGETS
-        RUNTIME DESTINATION bin
-        LIBRARY DESTINATION lib
-        ARCHIVE DESTINATION lib
-        )
-
-# Install headers for development
-if(NOT US3_NO_DB)
-    install(DIRECTORY utils/
-            DESTINATION include/ultrascan3/utils
-            FILES_MATCHING PATTERN "*.h"
-            )
-
-    install(DIRECTORY gui/
-            DESTINATION include/ultrascan3/gui
-            FILES_MATCHING PATTERN "*.h"
-            )
-endif()
+# Programs, libraries and headers are installed by their own directories
+# (admin/cmake/Us3Install.cmake); runtime dependencies by the platform deploy
+# sections below. Here: the static XML resource library and the CMake package.
+us3_install_library(us3_resources EXPORT_NAME Resources)
+us3_install_package()
 
 # =============================================================================
 # SoMo BUILD (CMake native)
@@ -1298,10 +1290,8 @@ if(APPLE AND US3_BUILD_PROGRAMS AND NOT US3_PROFILE STREQUAL "HPC")
             list(APPEND _deploy_macos_deps documentation)
         endif()
 
-        add_custom_target(deploy_macos
-            COMMAND ${CMAKE_COMMAND} -E remove_directory "${US3_STAGE_DIR}"
-            COMMAND ${CMAKE_COMMAND}
-                -DSTAGE_DIR=${US3_STAGE_DIR}
+        # Shared by deploy_macos and cmake --install (Us3Install.cmake)
+        set(_deploy_macos_args
                 -DMACDEPLOYQT=${MACDEPLOYQT_EXECUTABLE}
                 -DASSISTANT_APP=${ASSISTANT_APP_PATH}
                 -DQCH_DIR=${CMAKE_BINARY_DIR}/bin
@@ -1317,11 +1307,21 @@ if(APPLE AND US3_BUILD_PROGRAMS AND NOT US3_PROFILE STREQUAL "HPC")
                 -DVCPKG_PLUGIN_DIR=${_VCPKG_PLUGIN_DIR}
                 -DVCPKG_PLUGIN_DIR_STA=${_VCPKG_PLUGIN_DIR_STA}
                 -DVCPKG_QT6_PLUGIN_DIR=${_VCPKG_QT6_PLUGIN_DIR}
+        )
+        add_custom_target(deploy_macos
+            COMMAND ${CMAKE_COMMAND} -E remove_directory "${US3_STAGE_DIR}"
+            COMMAND ${CMAKE_COMMAND}
+                -DSTAGE_DIR=${US3_STAGE_DIR}
+                ${_deploy_macos_args}
                 -P ${CMAKE_SOURCE_DIR}/admin/cmake/packaging/macos/MacDeploy.cmake
             DEPENDS ${_deploy_macos_deps}
             COMMENT "Staging macOS folder-based deployment into ${US3_STAGE_DIR}"
             VERBATIM
         )
+        us3_install_deploy_step(NAME MacDeploy
+            SCRIPT ${CMAKE_SOURCE_DIR}/admin/cmake/packaging/macos/MacDeploy.cmake
+            STAGE_VAR STAGE_DIR
+            ARGS ${_deploy_macos_args})
     else()
         # Stub so --target deploy_macos gives a clear error instead of
         # "No rule to make target deploy_macos".
@@ -1339,6 +1339,7 @@ if(APPLE AND US3_BUILD_PROGRAMS AND NOT US3_PROFILE STREQUAL "HPC")
             COMMENT "deploy_macos unavailable: ${_deploy_macos_reason}"
         )
         message(STATUS "deploy_macos stub created (unavailable: ${_deploy_macos_reason})")
+        message(STATUS "Install: runtime dependencies NOT bundled (${_deploy_macos_reason})")
     endif()
 endif()
 
@@ -1561,10 +1562,8 @@ if(WIN32 AND US3_BUILD_PROGRAMS)
             list(APPEND _deploy_windows_deps documentation)
         endif()
 
-        add_custom_target(deploy_windows
-            COMMAND ${CMAKE_COMMAND} -E remove_directory "${US3_WIN_STAGE_DIR}"
-            COMMAND ${CMAKE_COMMAND}
-                -DSTAGE_DIR=${US3_WIN_STAGE_DIR}
+        # Shared by deploy_windows and cmake --install (Us3Install.cmake)
+        set(_deploy_windows_args
                 -DWINDEPLOYQT=${WINDEPLOYQT_EXECUTABLE}
                 -DASSISTANT_EXE=${ASSISTANT_EXECUTABLE}
                 -DQCH_DIR=${CMAKE_BINARY_DIR}/bin
@@ -1577,11 +1576,21 @@ if(WIN32 AND US3_BUILD_PROGRAMS)
                 -DLICENSE_FILE=${CMAKE_SOURCE_DIR}/LICENSE.txt
                 -DVERSION_FILE=${CMAKE_SOURCE_DIR}/VERSION
                 -DVCPKG_PLUGIN_DIR=${_WIN_VCPKG_PLUGIN_DIR}
+        )
+        add_custom_target(deploy_windows
+            COMMAND ${CMAKE_COMMAND} -E remove_directory "${US3_WIN_STAGE_DIR}"
+            COMMAND ${CMAKE_COMMAND}
+                -DSTAGE_DIR=${US3_WIN_STAGE_DIR}
+                ${_deploy_windows_args}
                 -P ${CMAKE_SOURCE_DIR}/admin/cmake/packaging/windows/WinDeploy.cmake
             DEPENDS ${_deploy_windows_deps}
             COMMENT "Staging Windows deployment into ${US3_WIN_STAGE_DIR}"
             VERBATIM
         )
+        us3_install_deploy_step(NAME WinDeploy
+            SCRIPT ${CMAKE_SOURCE_DIR}/admin/cmake/packaging/windows/WinDeploy.cmake
+            STAGE_VAR STAGE_DIR
+            ARGS ${_deploy_windows_args})
     else()
         # Stub target so --target deploy_windows gives a clear error
         if(NOT WINDEPLOYQT_EXECUTABLE)
@@ -1602,6 +1611,7 @@ if(WIN32 AND US3_BUILD_PROGRAMS)
             COMMENT "deploy_windows unavailable: ${_deploy_windows_reason}"
         )
         message(STATUS "deploy_windows stub created (unavailable: ${_deploy_windows_reason})")
+        message(STATUS "Install: runtime dependencies NOT bundled (deploy_windows unavailable)")
     endif()
 
     # -------------------------------------------------------------------------
@@ -1835,10 +1845,8 @@ if(UNIX AND NOT APPLE AND US3_BUILD_PROGRAMS AND NOT US3_PROFILE STREQUAL "HPC")
             list(APPEND _deploy_linux_deps documentation)
         endif()
 
-        add_custom_target(deploy_linux
-            COMMAND ${CMAKE_COMMAND} -E remove_directory "${US3_LNX_STAGE_DIR}"
-            COMMAND ${CMAKE_COMMAND}
-                -DSTAGE_DIR=${US3_LNX_STAGE_DIR}
+        # Shared by deploy_linux and cmake --install (Us3Install.cmake)
+        set(_deploy_linux_args
                 -DBIN_DIR=${CMAKE_RUNTIME_OUTPUT_DIRECTORY}
                 -DLIB_DIR=${CMAKE_LIBRARY_OUTPUT_DIRECTORY}
                 -DETC_SOURCE_DIR=${CMAKE_SOURCE_DIR}/etc
@@ -1853,11 +1861,22 @@ if(UNIX AND NOT APPLE AND US3_BUILD_PROGRAMS AND NOT US3_PROFILE STREQUAL "HPC")
                 -DVCPKG_PLUGIN_DIR=${_LNX_VCPKG_PLUGIN_DIR}
                 -DVCPKG_QT6_PLUGIN_DIR=${_LNX_VCPKG_QT6_PLUGIN_DIR}
                 -DUS3_VERSION_STRING=${US3_VERSION_STRING}
+                -DTOOLS_DIR=${CMAKE_BINARY_DIR}/_tools
+        )
+        add_custom_target(deploy_linux
+            COMMAND ${CMAKE_COMMAND} -E remove_directory "${US3_LNX_STAGE_DIR}"
+            COMMAND ${CMAKE_COMMAND}
+                -DSTAGE_DIR=${US3_LNX_STAGE_DIR}
+                ${_deploy_linux_args}
                 -P ${CMAKE_SOURCE_DIR}/admin/cmake/packaging/linux/LinuxDeploy.cmake
             DEPENDS ${_deploy_linux_deps}
             COMMENT "Staging Linux deployment into ${US3_LNX_STAGE_DIR}"
             VERBATIM
         )
+        us3_install_deploy_step(NAME LinuxDeploy
+            SCRIPT ${CMAKE_SOURCE_DIR}/admin/cmake/packaging/linux/LinuxDeploy.cmake
+            STAGE_VAR STAGE_DIR
+            ARGS ${_deploy_linux_args})
     else()
         add_custom_target(deploy_linux
             COMMAND ${CMAKE_COMMAND} -E echo
@@ -1961,21 +1980,29 @@ if(UNIX AND NOT APPLE AND US3_PROFILE STREQUAL "HPC")
         list(APPEND _deploy_hpc_deps us_mpi_analysis)
     endif()
 
-    add_custom_target(deploy_linux_hpc
-        COMMAND ${CMAKE_COMMAND} -E remove_directory "${US3_HPC_STAGE_DIR}"
-        COMMAND ${CMAKE_COMMAND}
-            -DHPC_STAGE_DIR=${US3_HPC_STAGE_DIR}
+    # Shared by deploy_linux_hpc and cmake --install (Us3Install.cmake)
+    set(_deploy_hpc_args
             -DBIN_DIR=${CMAKE_RUNTIME_OUTPUT_DIRECTORY}
             -DLIB_DIR=${CMAKE_LIBRARY_OUTPUT_DIRECTORY}
             -DLICENSE_FILE=${CMAKE_SOURCE_DIR}/LICENSE.txt
             -DVERSION_FILE=${CMAKE_SOURCE_DIR}/VERSION
             -DVCPKG_LIB_DIR=${_HPC_VCPKG_LIB_DIR}
             -DUS3_VERSION_STRING=${US3_VERSION_STRING}
+    )
+    add_custom_target(deploy_linux_hpc
+        COMMAND ${CMAKE_COMMAND} -E remove_directory "${US3_HPC_STAGE_DIR}"
+        COMMAND ${CMAKE_COMMAND}
+            -DHPC_STAGE_DIR=${US3_HPC_STAGE_DIR}
+            ${_deploy_hpc_args}
             -P ${CMAKE_SOURCE_DIR}/admin/cmake/packaging/linux/LinuxHpcDeploy.cmake
         DEPENDS ${_deploy_hpc_deps}
         COMMENT "Staging Linux HPC deployment into ${US3_HPC_STAGE_DIR}"
         VERBATIM
     )
+    us3_install_deploy_step(NAME LinuxHpcDeploy
+        SCRIPT ${CMAKE_SOURCE_DIR}/admin/cmake/packaging/linux/LinuxHpcDeploy.cmake
+        STAGE_VAR HPC_STAGE_DIR
+        ARGS ${_deploy_hpc_args})
 
     # -------------------------------------------------------------------------
     # LinuxHpcPkg.cmake: defines package_linux_hpc_tarball target
@@ -2036,21 +2063,29 @@ if(APPLE AND US3_PROFILE STREQUAL "HPC")
         list(APPEND _deploy_mac_hpc_deps us_mpi_analysis)
     endif()
 
-    add_custom_target(deploy_macos_hpc
-        COMMAND ${CMAKE_COMMAND} -E remove_directory "${US3_MAC_HPC_STAGE_DIR}"
-        COMMAND ${CMAKE_COMMAND}
-            -DHPC_STAGE_DIR=${US3_MAC_HPC_STAGE_DIR}
+    # Shared by deploy_macos_hpc and cmake --install (Us3Install.cmake)
+    set(_deploy_mac_hpc_args
             -DBIN_DIR=${CMAKE_RUNTIME_OUTPUT_DIRECTORY}
             -DLIB_DIR=${CMAKE_LIBRARY_OUTPUT_DIRECTORY}
             -DLICENSE_FILE=${CMAKE_SOURCE_DIR}/LICENSE.txt
             -DVERSION_FILE=${CMAKE_SOURCE_DIR}/VERSION
             -DVCPKG_LIB_DIR=${_MAC_HPC_VCPKG_LIB_DIR}
             -DUS3_VERSION_STRING=${US3_VERSION_STRING}
+    )
+    add_custom_target(deploy_macos_hpc
+        COMMAND ${CMAKE_COMMAND} -E remove_directory "${US3_MAC_HPC_STAGE_DIR}"
+        COMMAND ${CMAKE_COMMAND}
+            -DHPC_STAGE_DIR=${US3_MAC_HPC_STAGE_DIR}
+            ${_deploy_mac_hpc_args}
             -P ${CMAKE_SOURCE_DIR}/admin/cmake/packaging/macos/MacHpcDeploy.cmake
         DEPENDS ${_deploy_mac_hpc_deps}
         COMMENT "Staging macOS HPC deployment into ${US3_MAC_HPC_STAGE_DIR}"
         VERBATIM
     )
+    us3_install_deploy_step(NAME MacHpcDeploy
+        SCRIPT ${CMAKE_SOURCE_DIR}/admin/cmake/packaging/macos/MacHpcDeploy.cmake
+        STAGE_VAR HPC_STAGE_DIR
+        ARGS ${_deploy_mac_hpc_args})
 
     # -------------------------------------------------------------------------
     # MacHpcPkg.cmake: defines package_macos_hpc_tarball target

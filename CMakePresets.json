@@ -9,6 +9,7 @@
       "name": "base",
       "hidden": true,
       "binaryDir": "${sourceDir}/build/${presetName}",
+      "installDir": "${sourceDir}/install/${presetName}",
       "generator": "Ninja",
       "cacheVariables": {
         "CMAKE_CXX_STANDARD": "17",

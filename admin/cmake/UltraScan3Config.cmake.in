@@ -1,0 +1,59 @@
+# UltraScan3 CMake package
+#
+#   find_package(UltraScan3 CONFIG REQUIRED)
+#   target_link_libraries(app PRIVATE UltraScan3::Utils)      # shared
+#   target_link_libraries(app PRIVATE UltraScan3::Gui)        # shared, GUI builds
+#
+# Static variants (when the build produced them): UltraScan3::Utils_Static,
+# UltraScan3::Gui_Static, UltraScan3::Resources (XML resources; link it as a
+# whole archive, e.g. $<LINK_LIBRARY:WHOLE_ARCHIVE,UltraScan3::Resources>).
+#
+# Variables:
+#   UltraScan3_QT_VERSION_MAJOR  Qt major version the libraries were built with
+#   UltraScan3_NO_DB             ON for HPC (no database) builds
+
+@PACKAGE_INIT@
+
+set(UltraScan3_QT_VERSION_MAJOR @QT_VERSION_MAJOR@)
+set(UltraScan3_NO_DB @US3_PKG_NO_DB@)
+
+include(CMakeFindDependencyMacro)
+find_dependency(@US3_PKG_QT_PACKAGE@ COMPONENTS @US3_PKG_QT_COMPONENTS@)
+# The exported targets link the versionless Qt::<Module> targets (Qt >= 5.15).
+foreach(_us3_qt_mod IN ITEMS @US3_PKG_QT_COMPONENTS@)
+    if(NOT TARGET Qt::${_us3_qt_mod} AND TARGET @US3_PKG_QT_PACKAGE@::${_us3_qt_mod})
+        add_library(Qt::${_us3_qt_mod} ALIAS @US3_PKG_QT_PACKAGE@::${_us3_qt_mod})
+    endif()
+endforeach()
+unset(_us3_qt_mod)
+find_dependency(OpenSSL)
+find_dependency(LibArchive)
+@US3_PKG_DEPENDENCIES@
+include("${CMAKE_CURRENT_LIST_DIR}/UltraScan3Targets.cmake")
+
+# us_gui headers include qwtplot3d and qwt headers without a directory prefix.
+if(TARGET UltraScan3::Gui OR TARGET UltraScan3::Gui_Static)
+    set(_us3_extra_inc "")
+    if(TARGET qwtplot3d::qwtplot3d)
+        get_target_property(_us3_p3d_inc qwtplot3d::qwtplot3d INTERFACE_INCLUDE_DIRECTORIES)
+        foreach(_us3_dir IN LISTS _us3_p3d_inc)
+            foreach(_us3_sub qwtplot3d qwt)
+                if(IS_DIRECTORY "${_us3_dir}/${_us3_sub}")
+                    list(APPEND _us3_extra_inc "${_us3_dir}/${_us3_sub}")
+                endif()
+            endforeach()
+        endforeach()
+    endif()
+    if(_us3_extra_inc)
+        foreach(_us3_tgt UltraScan3::Gui UltraScan3::Gui_Static)
+            if(TARGET ${_us3_tgt})
+                set_property(TARGET ${_us3_tgt} APPEND PROPERTY
+                             INTERFACE_INCLUDE_DIRECTORIES ${_us3_extra_inc})
+            endif()
+        endforeach()
+    endif()
+    unset(_us3_extra_inc)
+    unset(_us3_p3d_inc)
+endif()
+
+check_required_components(UltraScan3)

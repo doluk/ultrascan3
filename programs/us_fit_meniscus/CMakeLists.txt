@@ -27,10 +27,4 @@ target_link_libraries(us_fit_meniscus PRIVATE
         us_program_common
         )
 
-# Install executable
-install(TARGETS us_fit_meniscus
-        RUNTIME DESTINATION bin
-        COMPONENT Programs
-        )
-
 message(STATUS "Created program: us_fit_meniscus")

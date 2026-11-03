@@ -24,6 +24,9 @@
 #   VCPKG_PLUGIN_DIR    - vcpkg installed plugins/ dir
 #   VCPKG_LIB_DIR       - currently unused
 # Optional:
+#   US3_DEPLOY_INTO_INSTALL_TREE - ON when run by cmake --install; STAGE_DIR is
+#                         then the install prefix and is not removed first, and
+#                         missing help files are a warning instead of an error
 #   ASSISTANT_EXE       - Path to assistant.exe from the Qt/vcpkg build tree
 #   SOMO_BIN_DIR        - Build-tree SoMo bin/ (us3_hydrodyn.exe, …)
 #   SOMO_LIB_DIR        - Build-tree SoMo lib/ (SoMo DLLs)
@@ -66,7 +69,9 @@ set(S_PLUG "${STAGE_DIR}/plugins")
 set(S_ETC  "${STAGE_DIR}/etc")
 set(S_SOMO "${STAGE_DIR}/somo")
 
-if(EXISTS "${STAGE_DIR}")
+# Never wipe the target when it is an install prefix (cmake --install,
+# admin/cmake/Us3Install.cmake): it holds the files installed before this step.
+if(EXISTS "${STAGE_DIR}" AND NOT US3_DEPLOY_INTO_INSTALL_TREE)
     message(STATUS "[WinDeploy] Removing existing stage dir: ${STAGE_DIR}")
     file(REMOVE_RECURSE "${STAGE_DIR}")
 endif()
@@ -382,6 +387,11 @@ if(NOT QCH_DIR)
 endif()
 foreach(_qch_file manual.qch manual.qhc)
     set(_qch_path "${QCH_DIR}/${_qch_file}")
+    if(NOT EXISTS "${_qch_path}" AND US3_DEPLOY_INTO_INSTALL_TREE)
+        # cmake --install of a build without documentation: install anyway
+        message(WARNING "[WinDeploy] Help file not built, help unavailable: ${_qch_file}")
+        continue()
+    endif()
     if(NOT EXISTS "${_qch_path}")
         message(FATAL_ERROR
             "[WinDeploy] Required help file is missing: ${_qch_path}. "
@@ -522,6 +532,10 @@ foreach(_help_runtime_file IN ITEMS
         "${S_BIN}/manual.qch"
         "${S_BIN}/manual.qhc"
         "${S_PLUG}/sqldrivers/qsqlite.dll")
+    if(NOT EXISTS "${_help_runtime_file}" AND US3_DEPLOY_INTO_INSTALL_TREE)
+        message(WARNING "[WinDeploy] Help component missing, help unavailable: ${_help_runtime_file}")
+        continue()
+    endif()
     if(NOT EXISTS "${_help_runtime_file}")
         message(FATAL_ERROR
             "[WinDeploy] Required staged help component is missing: ${_help_runtime_file}")

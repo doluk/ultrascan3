@@ -38,6 +38,8 @@ if(APPLE)
                 MACOSX_BUNDLE_BUNDLE_NAME "UltraScan3"
                 MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
                 MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+                # installed as <prefix>/bin/us.app/Contents/MacOS/us
+                INSTALL_RPATH "@executable_path/../../../../lib"
         )
 endif()
 

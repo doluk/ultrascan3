@@ -48,10 +48,4 @@ target_link_libraries(us_mwl_species_fit PRIVATE
         Qt::DataVisualization
         )
 
-# Install
-install(TARGETS us_mwl_species_fit
-        RUNTIME DESTINATION bin
-        COMPONENT Programs
-        )
-
 message(STATUS "Created program: us_mwl_species_fit")

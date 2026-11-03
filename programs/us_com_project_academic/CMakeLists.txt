@@ -193,10 +193,4 @@ target_link_libraries(us_comproject_academic PRIVATE
         Qt::DataVisualization
         )
 
-# Install
-install(TARGETS us_comproject_academic
-        RUNTIME DESTINATION bin
-        COMPONENT Programs
-        )
-
 message(STATUS "Created academic version: us_comproject_academic")

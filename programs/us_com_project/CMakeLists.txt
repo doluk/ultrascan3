@@ -193,10 +193,4 @@ set_target_properties(us_com_project PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
         )
 
-# Install
-install(TARGETS us_com_project
-        RUNTIME DESTINATION bin
-        COMPONENT Programs
-        )
-
 message(STATUS "Created: us_com_project")

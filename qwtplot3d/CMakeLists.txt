@@ -115,47 +115,61 @@ else()
     target_include_directories(qwtplot3d PRIVATE "3rdparty/gl2ps")
 endif()
 
-# Install targets
-install(TARGETS qwtplot3d
-        EXPORT qwtplot3d-targets
-        LIBRARY DESTINATION lib
-        ARCHIVE DESTINATION lib
-        RUNTIME DESTINATION bin
-        )
+# Install: qwtplot3d is a static library, needed only to link against the
+# installed UltraScan3::Gui (US3_INSTALL_DEVEL, admin/cmake/Us3Install.cmake).
+if(US3_INSTALL_DEVEL)
+    install(TARGETS qwtplot3d
+            EXPORT qwtplot3d-targets
+            ARCHIVE DESTINATION lib COMPONENT Development
+            LIBRARY DESTINATION lib COMPONENT Development
+            RUNTIME DESTINATION bin COMPONENT Development
+            )
 
-# Install headers
-install(DIRECTORY include/ DESTINATION include/qwtplot3d
-        FILES_MATCHING PATTERN "*.h")
+    install(DIRECTORY include/ DESTINATION include/qwtplot3d
+            COMPONENT Development
+            FILES_MATCHING PATTERN "*.h")
 
-# Export targets
-install(EXPORT qwtplot3d-targets
-        FILE qwtplot3dTargets.cmake
-        NAMESPACE qwtplot3d::
-        DESTINATION lib/cmake/qwtplot3d
-        )
+    install(EXPORT qwtplot3d-targets
+            FILE qwtplot3dTargets.cmake
+            NAMESPACE qwtplot3d::
+            DESTINATION lib/cmake/qwtplot3d
+            COMPONENT Development
+            )
 
-# Create and install config file
-include(CMakePackageConfigHelpers)
-write_basic_package_version_file(
-        "${CMAKE_CURRENT_BINARY_DIR}/qwtplot3dConfigVersion.cmake"
-        VERSION ${PROJECT_VERSION}
-        COMPATIBILITY AnyNewerVersion
-)
+    include(CMakePackageConfigHelpers)
+    write_basic_package_version_file(
+            "${CMAKE_CURRENT_BINARY_DIR}/qwtplot3dConfigVersion.cmake"
+            VERSION ${PROJECT_VERSION}
+            COMPATIBILITY AnyNewerVersion
+    )
 
-# Simple config file
-file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/qwtplot3dConfig.cmake"
-        "include(CMakeFindDependencyMacro)
-if(USE_QT6)
-    find_dependency(Qt6 COMPONENTS Core Widgets OpenGL Gui OpenGLWidgets)
-else()
-    find_dependency(Qt5 COMPONENTS Core Widgets OpenGL Gui)
-endif()
+    # Dependencies as found in this build (Qt major version, Qwt target)
+    if(USE_QT6)
+        set(_qwtplot3d_qt_dep "find_dependency(Qt6 COMPONENTS Core Widgets OpenGL Gui OpenGLWidgets)")
+    else()
+        set(_qwtplot3d_qt_dep "find_dependency(Qt5 COMPONENTS Core Widgets OpenGL Gui)")
+    endif()
+    set(_qwtplot3d_extra_deps "")
+    if(COMMAND us3_qwt_dependency_code)
+        us3_qwt_dependency_code(_qwtplot3d_extra_deps)
+        if(TARGET GL2PS::GL2PS)
+            us3_imported_target_code(_qwtplot3d_gl2ps GL2PS::GL2PS)
+            string(APPEND _qwtplot3d_extra_deps "${_qwtplot3d_gl2ps}")
+        endif()
+    endif()
+
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/qwtplot3dConfig.cmake"
+"include(CMakeFindDependencyMacro)
+${_qwtplot3d_qt_dep}
 find_dependency(OpenGL)
+${_qwtplot3d_extra_deps}
 include(\"\${CMAKE_CURRENT_LIST_DIR}/qwtplot3dTargets.cmake\")
 ")
 
-install(FILES
-        "${CMAKE_CURRENT_BINARY_DIR}/qwtplot3dConfig.cmake"
-        "${CMAKE_CURRENT_BINARY_DIR}/qwtplot3dConfigVersion.cmake"
-        DESTINATION lib/cmake/qwtplot3d
-        )
+    install(FILES
+            "${CMAKE_CURRENT_BINARY_DIR}/qwtplot3dConfig.cmake"
+            "${CMAKE_CURRENT_BINARY_DIR}/qwtplot3dConfigVersion.cmake"
+            DESTINATION lib/cmake/qwtplot3d
+            COMPONENT Development
+            )
+endif()

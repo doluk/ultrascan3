@@ -161,10 +161,4 @@ target_link_libraries(us_fematch PRIVATE
         Qt::DataVisualization
         )
 
-# Install
-install(TARGETS us_fematch
-        RUNTIME DESTINATION bin
-        COMPONENT Programs
-        )
-
 message(STATUS "Created: us_fematch")

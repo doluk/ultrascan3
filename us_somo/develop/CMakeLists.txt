@@ -565,10 +565,27 @@ if(UNIX AND NOT APPLE AND NOT EXISTS "${_somo_out}/bin64"
 endif()
 
 # --- install -----------------------------------------------------------------
+# Same relocatable layout as UltraScan3 (admin/cmake/Us3Install.cmake); the
+# SOMO data tree (somo/) is installed by the UltraScan3 build (component Data).
 install(TARGETS ${SOMO_INSTALL_TARGETS}
-        RUNTIME DESTINATION bin
-        BUNDLE  DESTINATION bin
-        LIBRARY DESTINATION lib)
+        RUNTIME DESTINATION bin COMPONENT SOMO
+        BUNDLE  DESTINATION bin COMPONENT SOMO
+        LIBRARY DESTINATION lib COMPONENT SOMO
+        ARCHIVE DESTINATION lib COMPONENT SOMO)
+if(_somo_helpers)
+    install(PROGRAMS ${_somo_helpers}
+            DESTINATION bin
+            COMPONENT SOMO)
+endif()
+# SOMO looks for its helpers in bin64/ on Linux (see above)
+if(UNIX AND NOT APPLE)
+    install(CODE "
+set(_somo_bin64 \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/bin64\")
+if(NOT EXISTS \"\${_somo_bin64}\" AND NOT IS_SYMLINK \"\${_somo_bin64}\")
+    file(CREATE_LINK bin \"\${_somo_bin64}\" SYMBOLIC)
+endif()
+" COMPONENT SOMO)
+endif()
 
 if(SOMO_STANDALONE)
     set(_somo_how "SOMO only")

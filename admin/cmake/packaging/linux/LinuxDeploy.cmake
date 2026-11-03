@@ -33,6 +33,10 @@
 #   ASSISTANT_EXE       - Path to assistant binary
 #   SOMO_BIN_DIR        - SoMo bin/ directory
 #   SOMO_LIB_DIR        - SoMo lib/ directory
+#   TOOLS_DIR           - Cache directory for downloaded tools (linuxdeploy)
+#   US3_DEPLOY_INTO_INSTALL_TREE - ON when run by cmake --install
+#                         (admin/cmake/Us3Install.cmake): missing help files
+#                         are a warning instead of an error
 #
 # Mirrors: admin/cmake/packaging/windows/WinDeploy.cmake
 # =============================================================================
@@ -423,6 +427,11 @@ endif()
 
 foreach(_required_help manual.qch manual.qhc)
     set(_required_help_path "${S_BIN}/${_required_help}")
+    if(NOT EXISTS "${_required_help_path}" AND US3_DEPLOY_INTO_INSTALL_TREE)
+        # cmake --install of a build without documentation: install anyway
+        message(WARNING "[LinuxDeploy] Help file not built, help unavailable: ${_required_help}")
+        continue()
+    endif()
     if(NOT EXISTS "${_required_help_path}")
         message(FATAL_ERROR
             "[LinuxDeploy] Required help file was not staged: ${_required_help_path}")
@@ -521,11 +530,18 @@ else()
     set(_LD_ARCH "")
 endif()
 
-# Cache the downloaded/extracted tool next to the stage dir (build/<preset>/_tools/)
+# Cache the downloaded/extracted tool in the build tree (build/<preset>/_tools/)
 # so repeated packaging runs on the same machine don't re-download it every time.
-get_filename_component(_LNX_PRESET_DIR "${STAGE_DIR}" DIRECTORY)  # .../_stage
-get_filename_component(_LNX_PRESET_DIR "${_LNX_PRESET_DIR}" DIRECTORY)  # .../<preset>
-set(_LD_TOOL_DIR "${_LNX_PRESET_DIR}/_tools/linuxdeploy")
+# TOOLS_DIR is passed by CMakeLists.txt; the fallback derives it from the
+# _stage/ layout and must not be used for an install prefix.
+if(TOOLS_DIR)
+    set(_LNX_TOOLS_DIR "${TOOLS_DIR}")
+else()
+    get_filename_component(_LNX_PRESET_DIR "${STAGE_DIR}" DIRECTORY)  # .../_stage
+    get_filename_component(_LNX_PRESET_DIR "${_LNX_PRESET_DIR}" DIRECTORY)  # .../<preset>
+    set(_LNX_TOOLS_DIR "${_LNX_PRESET_DIR}/_tools")
+endif()
+set(_LD_TOOL_DIR "${_LNX_TOOLS_DIR}/linuxdeploy")
 set(_LD_APPIMAGE "${_LD_TOOL_DIR}/linuxdeploy-${_LD_ARCH}.AppImage")
 set(_LD_APPRUN   "${_LD_TOOL_DIR}/squashfs-root/AppRun")
 
@@ -567,7 +583,7 @@ if(EXISTS "${_LD_APPRUN}")
     # linuxdeploy requires at least one --desktop-file to run at all, even
     # though we have no use for desktop integration in a portable tarball.
     # Generate throwaway placeholder inputs purely to satisfy that requirement.
-    set(_LD_SCRATCH "${STAGE_DIR}-linuxdeploy-scratch")
+    set(_LD_SCRATCH "${_LNX_TOOLS_DIR}/linuxdeploy-scratch")  # outside STAGE_DIR, in the build tree
     file(REMOVE_RECURSE "${_LD_SCRATCH}")
     file(MAKE_DIRECTORY "${_LD_SCRATCH}")
     set(_LD_DESKTOP "${_LD_SCRATCH}/us.desktop")

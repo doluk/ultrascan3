@@ -67,10 +67,4 @@ if(WIN32)
   target_link_libraries(us_2dsa PRIVATE psapi)
 endif()
 
-# Install
-install(TARGETS us_2dsa
-        RUNTIME DESTINATION bin
-        COMPONENT Programs
-        )
-
 message(STATUS "Created: us_2dsa")

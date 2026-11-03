@@ -95,8 +95,9 @@ target_compile_definitions(us_utils
 # Include directories
 target_include_directories(us_utils
         PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}
-        ${CMAKE_CURRENT_BINARY_DIR}  # For generated headers
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>  # For generated headers
+        $<INSTALL_INTERFACE:${US3_INSTALL_INCLUDEDIR}/utils>
         )
 
 # Core Qt libraries + OpenSSL (always needed — us_crypto.cpp uses EVP directly)
@@ -169,8 +170,9 @@ if(BUILD_TESTING OR US3_PREFER_STATIC)
     # Apply same include directories
     target_include_directories(us_utils_static
             PUBLIC
-            ${CMAKE_CURRENT_SOURCE_DIR}
-            ${CMAKE_CURRENT_BINARY_DIR}
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
+            $<INSTALL_INTERFACE:${US3_INSTALL_INCLUDEDIR}/utils>
             )
 
     # Core Qt libraries + OpenSSL (always needed)
@@ -226,10 +228,12 @@ else()
 endif()
 # END: Build static library for unit testing
 
-# Installation - only install the shared library
-install(TARGETS us_utils
-        EXPORT UltraScan3Targets
-        LIBRARY DESTINATION lib
-        ARCHIVE DESTINATION lib
-        RUNTIME DESTINATION bin
-        )
+# Installation (admin/cmake/Us3Install.cmake): shared library -> Runtime;
+# static library and headers -> Development (US3_INSTALL_DEVEL)
+us3_consumer_definitions(us_utils)
+us3_install_library(us_utils EXPORT_NAME Utils)
+if(TARGET us_utils_static)
+    us3_consumer_definitions(us_utils_static)
+    us3_install_library(us_utils_static EXPORT_NAME Utils_Static)
+endif()
+us3_install_headers(utils ${UTILS_HEADERS})

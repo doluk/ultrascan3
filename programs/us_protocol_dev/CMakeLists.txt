@@ -187,10 +187,4 @@ target_link_libraries(us_protocoldev PRIVATE
         Qt::DataVisualization
         )
 
-# Install
-install(TARGETS us_protocoldev
-        RUNTIME DESTINATION bin
-        COMPONENT Programs
-        )
-
 message(STATUS "Created: us_protocoldev")
