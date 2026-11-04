@@ -480,6 +480,14 @@ void US_2dsaProcess::calculate_cosedimenting_component()
             base_viscosity += cosed_comp.visc_coeff[ 0 ];
          }
       }
+      // Every cosedimenting component carries the base buffer's density and
+      //  viscosity as coefficient 0 (us_buffer_gui writes base_dens into each):
+      //  the base is their mean, not their sum
+      if ( !base_comps.isEmpty() )
+      {
+         base_density   /= base_comps.count();
+         base_viscosity /= base_comps.count();
+      }
       // make sure the selected model is adjusted for the selected temperature
       // and buffer conditions:
       US_Math2::SolutionData sol_data{};

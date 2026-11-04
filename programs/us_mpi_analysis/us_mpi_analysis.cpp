@@ -1835,7 +1835,12 @@ int US_MPI_Analysis::bfg_index_for( int ds_index )
 
    US_Math_BF::Band_Forming_Gradient bfg( sp.meniscus, sp.bottom, sp.band_volume,
                                           comps, sp.cp_pathlen, sp.cp_angle );
-   if ( bfg.upper_comps.isEmpty() )
+   bool diffusing = false;   // as SetNonIdealCase_2's codiff_needed
+   for ( const US_CosedComponent& cc : bfg.upper_comps )
+   {
+      diffusing = diffusing || cc.d_coeff != 0.0;
+   }
+   if ( !diffusing )
    {
       return -1;   // nothing diffuses out of the overlay: no gradient
    }
@@ -3399,6 +3404,14 @@ void US_MPI_Analysis::calculate_cosed() {
                            cosed_comp.visc_coeff[4] * pow(cosed_comp.conc, 3) +
                            cosed_comp.visc_coeff[5] * pow(cosed_comp.conc, 4);
       }
+   }
+   // Every cosedimenting component carries the base buffer's density and
+   //  viscosity as coefficient 0 (us_buffer_gui writes base_dens into each):
+   //  the base is their mean, not their sum
+   if ( !base_comps.isEmpty() )
+   {
+      base_density   /= base_comps.count();
+      base_viscosity /= base_comps.count();
    }
    // make sure the selected model is adjusted for the selected temperature
    // and buffer conditions:

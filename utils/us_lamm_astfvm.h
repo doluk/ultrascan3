@@ -115,7 +115,9 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
             US_DataIO::RawData      sa_data;   //!< cosed data 1-component
                                                //!<  simulation for co-sed
             QMap<QString, US_DataIO::RawData> cosed_comp_data;
-            QList<US_CosedComponent>* cosed_components;
+            //! A copy: the list given to the constructor may not outlive this
+            //!  (us_mpi_analysis passed a local one)
+            QList<US_CosedComponent> cosed_components;
             US_Model                model;     // cosed data co-sed model
             US_SimulationParameters simparms;  // cosed simulation parameters
             bool is_empty;

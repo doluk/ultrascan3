@@ -460,7 +460,7 @@ US_LammAstfvm::CosedData::CosedData( const US_Model&           amodel, US_Simula
    model            = amodel;
    simparms         = std::move( sim_params );
    sa_data          = *asim_data;
-   cosed_components = cosed_comps;
+   cosed_components = *cosed_comps;
    count            = 0;
    DbgLv( 2 ) << "SaltD: sa_data avg.temp." << sa_data.average_temperature();
    DbgLv( 2 ) << "SaltD: asim_data avg.temp." << asim_data->average_temperature();
@@ -531,7 +531,7 @@ US_LammAstfvm::CosedData::CosedData( const US_Model&           amodel, US_Simula
 radius( Nx - 2 )
             << sa_data.radius( Nx - 1 );
 
-   astfem->calculate( sa_data, *cosed_components ); // solve equations to create data
+   astfem->calculate( sa_data, cosed_components ); // solve equations to create data
    DbgLv( 1 ) << "SaltD: sa_data:" << sa_data.scanCount() << sa_data.pointCount();
    Nt = sa_data.scanCount();
    Nx = sa_data.pointCount();
@@ -685,7 +685,7 @@ void US_LammAstfvm::CosedData::InterpolateCCosed( int     N, const double* x, do
       int    count_NaN     = 0;
       double dens_coeff[6] = {0.0}; //!< The density coefficients.
       double visc_coeff[6] = {0.0};
-      Q_FOREACH( US_CosedComponent i, *cosed_components )
+      Q_FOREACH( US_CosedComponent i, cosed_components )
       {
          if ( i.GUID == comp.analyteGUID || i.name == comp.name )
          {
@@ -770,7 +770,7 @@ US_LammAstfvm::CosedData::CosedData()
    is_empty = true;
    sa_data  = US_DataIO::RawData();
    cosed_comp_data.clear();
-   cosed_components = nullptr;
+   cosed_components.clear();
    model            = US_Model();
    simparms         = US_SimulationParameters();
    count            = 0;
@@ -1757,7 +1757,7 @@ void US_LammAstfvm::set_buffer( US_Buffer buffer, US_Math_BF::Band_Forming_Gradi
          DbgLv( 1 ) << "csD: nothing to do";
          cosed_comp_data.clear();
       }
-      else if ( !csD->is_empty && csD->cosed_components != nullptr )
+      else if ( !csD->is_empty )
       {
          DbgLv( 1 ) << "reused old csD";
          set_csd( csD, false );
@@ -1939,6 +1939,14 @@ void US_LammAstfvm::SetNonIdealCase_2()
          base_density += cosed_comp.dens_coeff[0];
          base_viscosity += cosed_comp.visc_coeff[0];
       }
+   }
+   // Every cosedimenting component carries the base buffer's density and
+   //  viscosity as coefficient 0 (us_buffer_gui writes base_dens into each):
+   //  the base is their mean, not their sum
+   if ( !base_comps.isEmpty() )
+   {
+      base_density   /= base_comps.count();
+      base_viscosity /= base_comps.count();
    }
    // make sure the selected model is adjusted for the selected temperature
    // and buffer conditions:
@@ -2496,7 +2504,9 @@ void US_LammAstfvm::AdjustSD(
          {
             saltdata->InterpolateCCosed( Nv, x, t, Dens, Visc );
          }
-         if ( codiff_needed )
+         // (validate_bfg() leaves no gradient when no overlay component diffuses,
+         //  although a lower one may set codiff_needed)
+         if ( codiff_needed && bandFormingGradient != nullptr )
          {
             bandFormingGradient->interpolateCCodiff( Nv, x, t, simparams.temperature + K0,  Dens, Visc );
          }
