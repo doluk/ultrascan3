@@ -208,18 +208,24 @@ void US_MPI_Analysis::_2dsa_master( void )
                   QString mc_noise_file = base_file_name + "_mc_noise.csv";
                   QFile mc_noise_out(mc_noise_file);
                   if (mc_noise_out.open(QIODevice::WriteOnly | QIODevice::Text)) {
+                     // The noise added to the base simulation (mc_base_data,
+                     //  indexed like mc_data) for this iteration, over the
+                     //  datasets set_monteCarlo() varied
                      QVector<QVector<double>> mc_noise;
                      int    index      = 0;
-                     int    scnx       = 0;
-                     for ( int ee = 0; ee < count_datasets; ee++ ) {
+                     const int ds_start = is_composite_job ? current_dataset : 0;
+                     const int ds_end   = is_composite_job ? ( current_dataset + datasets_to_process )
+                                                           : count_datasets;
+                     const int npts     = qMin( mc_data.size(), mc_base_data.size() );
+                     for ( int ee = ds_start; ee < ds_end && index < npts; ee++ ) {
                         US_DataIO::EditedData* edata = &data_sets[ ee ]->run_data;
                         int scan_count    = edata->scanCount();
                         int radius_points = edata->pointCount();
 
-                        for ( int scan_index = 0; scan_index < scan_count; scan_index++, scnx++ ) {
+                        for ( int scan_index = 0; scan_index < scan_count && index < npts; scan_index++ ) {
                            QVector<double> scan;
-                           for ( int radius_index = 0; radius_index < radius_points; radius_index++ ) {
-                              scan << mc_data[ index++ ] - sim_data1.value( scnx, radius_index );
+                           for ( int radius_index = 0; radius_index < radius_points && index < npts; radius_index++, index++ ) {
+                              scan << mc_data[ index ] - mc_base_data[ index ];
                            }
                            mc_noise << scan;
                         }
