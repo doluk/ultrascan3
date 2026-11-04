@@ -16,6 +16,7 @@
 #include "us_simparms.h"
 #include "us_solve_sim.h"
 #include "us_vector.h"
+#include "us_mpi_sim_cache.h"
 
 #define SIMULATION       US_SolveSim::Simulation
 #define DATASET          US_SolveSim::DataSet
@@ -70,6 +71,8 @@ class US_MPI_Analysis : public QObject
         MPI_Comm         node_comm = MPI_COMM_NULL; //!< Ranks sharing this node's memory
         int              node_rank = 0;             //!< Rank within node_comm
         int              node_size = 1;             //!< Number of ranks on this node
+        US_MPI_NodeSimCache* sim_cache = nullptr;   //!< Simulations shared by the node's ranks (or none)
+        QVector< int >   node_leaders;              //!< World ranks of the first rank of each node
 
         int current_dataset;      //!< Current dataset for global fit or composite
         int datasets_to_process;  //!< Datasets to process for global fit or composite
@@ -220,7 +223,7 @@ class US_MPI_Analysis : public QObject
 
                 //! \enum Command
                 //! \brief Enumeration for MPI job commands
-                enum Command { IDLE, PROCESS, WAIT, SHUTDOWN, NEWDATA, PROCESS_MC };
+                enum Command { IDLE, PROCESS, WAIT, SHUTDOWN, NEWDATA, PROCESS_MC, CLEARCACHE };
 
                 //! \enum Status
                 //! \brief Enumeration for MPI job statuses
@@ -476,6 +479,10 @@ class US_MPI_Analysis : public QObject
         void                   begin_fit_context( void );
         void                   create_node_comm( void );
         void                   free_node_comm( void );
+        void                   create_sim_cache( void );
+        void                   clear_sim_caches( void );
+        qint64                 job_memory_limit( const US_MPI_MemLimit::Cgroup& );
+        qint64                 sim_cache_bytes( qint64, bool );
         bool                   worker_fit_context( int, double, double );
         double                 dataset_bottom( int );
         void     set_monteCarlo    ( void );

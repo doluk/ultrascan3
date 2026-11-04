@@ -144,6 +144,13 @@ void US_MPI_Analysis::_2dsa_worker( void )
 
             break;
 
+         case MPI_Job::CLEARCACHE: // Clear this node's simulation cache
+            if ( sim_cache != nullptr )
+            {
+               sim_cache->clear();
+            }
+            break;
+
          case MPI_Job::NEWDATA:  // Reset data for Monte Carlo or global fit
          {
             const int mc_iter = job.solution;
@@ -291,6 +298,11 @@ bool US_MPI_Analysis::worker_fit_context( int offset, double meniscus, double bo
    fit_context.dataset  = offset;
    fit_context.meniscus = meniscus;
    fit_context.bottom   = bottom;
+
+   if ( sim_changed && sim_cache != nullptr )
+   { // Memorized data set keys hold for one fit context
+      sim_cache->forget_dataset_keys();
+   }
 
    return sim_changed;
 }

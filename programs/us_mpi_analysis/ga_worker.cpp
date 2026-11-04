@@ -212,8 +212,20 @@ void US_MPI_Analysis::ga_worker_loop( void )
          DbgLv( DL ) << "Deme" << grp_nbr << deme_nbr << ": At last generation minimize.";
          DbTimMsg( "Worker before gsm rank/generation/elapsed" );
 
+         // Off-grid points of the search are hardly repeated:  keep them
+         //  out of the simulation cache (the grid solutes still come from it)
+         if ( sim_cache != nullptr )
+         {
+            sim_cache->set_store_enabled( false );
+         }
+
          fitness[ 0 ].fitness = minimize( genes[ fitness[ 0 ].index ], 
                                           fitness[ 0 ].fitness );
+
+         if ( sim_cache != nullptr )
+         {
+            sim_cache->set_store_enabled( true );
+         }
          DbgLv( DL ) << "Deme" << grp_nbr << deme_nbr << ":   last generation minimize fitness=" << fitness[0].fitness;
          DbTimMsg( "Worker after gsm rank/generation/elapsed" );
       }

@@ -4,6 +4,8 @@
 #include "us_memory.h"
 #include "us_settings.h"
 
+#include <cstring>
+
 // Default memory cap:  this share of available memory, within limits (MB)
 static const double            DEF_SHARE  = 0.25;
 static const qint64            DEF_MAX_MB = 4096;
@@ -23,6 +25,37 @@ static void add_vector( QByteArray& key, const QVector<double>& values )
    key.append( reinterpret_cast<const char*>( values.constData() ), values.size() * (qsizetype) sizeof( double ) );
 }
 
+// Append a vector to a key:  its values, or (for a fingerprint) only its
+//  size and address
+static void add_vector( QByteArray& key, const QVector<double>& values, bool fprint )
+{
+   if ( fprint )
+   {
+      add_bytes( key, (qint64) values.size() );
+      add_bytes( key, (quintptr) values.constData() );
+   }
+   else
+   {
+      add_vector( key, values );
+   }
+}
+
+// Append a byte array, preceded by its size, to a key:  its bytes, or (for
+//  a fingerprint) only its address
+static void add_array( QByteArray& key, const QByteArray& values, bool fprint )
+{
+   add_bytes( key, (qint64) values.size() );
+
+   if ( fprint )
+   {
+      add_bytes( key, (quintptr) values.constData() );
+   }
+   else
+   {
+      key.append( values );
+   }
+}
+
 // Append a string, preceded by its size, to a key
 static void add_string( QByteArray& key, const QString& text )
 {
@@ -40,7 +73,8 @@ US_SimCache::US_SimCache( qint64 max_bytes ) :
     nevicted( 0 ),
     nrejected( 0 ),
     nhits( 0 ),
-    nmisses( 0 )
+    nmisses( 0 ),
+    key_memo( false )
 {
 }
 
@@ -121,18 +155,18 @@ static void add_buffer( QByteArray& key, const US_Buffer& buffer )
    }
 }
 
-// Key of the simulation parameters, experiment grid and (for ASTFVM) buffer
-//  of a data set
-QByteArray US_SimCache::dataset_key( const US_SimulationParameters& simparams, const US_DataIO::EditedData& edata,
-                                     const US_Buffer* buffer )
+// Values of the simulation parameters, experiment grid and (for ASTFVM)
+//  buffer of a data set, or a fingerprint of them:  all scalar values, but
+//  of each vector of the parameters and grid only its size and address
+static void dataset_values( QByteArray& vals, const US_SimulationParameters& simparams,
+                            const US_DataIO::EditedData& edata, const US_Buffer* buffer, bool fprint )
 {
-   QByteArray vals;
 
    // Simulation parameters (a user mesh only matters for the USER mesh
    //  type;  programs keep other values in mesh_radius)
    if ( simparams.meshType == US_SimulationParameters::USER )
    {
-      add_vector( vals, simparams.mesh_radius );
+      add_vector( vals, simparams.mesh_radius, fprint );
    }
    add_bytes( vals, (qint64) simparams.speed_step.size() );
 
@@ -171,8 +205,8 @@ QByteArray US_SimCache::dataset_key( const US_SimulationParameters& simparams, c
       add_bytes( vals, sp.time_f_scan );
       add_bytes( vals, sp.time_l_scan );
       add_bytes( vals, sp.time_e_step );
-      add_vector( vals, sp.rpm_timestate );
-      add_vector( vals, sp.w2t_timestate );
+      add_vector( vals, sp.rpm_timestate, fprint );
+      add_vector( vals, sp.w2t_timestate, fprint );
    }
 
    add_bytes( vals, ( simparams.tsobj != nullptr ) );
@@ -212,7 +246,7 @@ QByteArray US_SimCache::dataset_key( const US_SimulationParameters& simparams, c
    add_string( vals, edata.cell );
    add_string( vals, edata.channel );
    add_string( vals, edata.description );
-   add_vector( vals, edata.xvalues );
+   add_vector( vals, edata.xvalues, fprint );
    add_bytes( vals, (qint64) edata.scanData.size() );
 
    for ( const US_DataIO::Scan& scan : edata.scanData )
@@ -224,11 +258,69 @@ QByteArray US_SimCache::dataset_key( const US_SimulationParameters& simparams, c
       add_bytes( vals, scan.wavelength );
       add_bytes( vals, scan.plateau );
       add_bytes( vals, scan.delta_r );
-      add_bytes( vals, (qint64) scan.interpolated.size() );
-      vals.append( scan.interpolated );
+      add_array( vals, scan.interpolated, fprint );
    }
+}
+
+// Key of the simulation parameters, experiment grid and (for ASTFVM) buffer
+//  of a data set
+QByteArray US_SimCache::dataset_key( const US_SimulationParameters& simparams, const US_DataIO::EditedData& edata,
+                                     const US_Buffer* buffer )
+{
+   QByteArray vals;
+   dataset_values( vals, simparams, edata, buffer, false );
 
    return QCryptographicHash::hash( vals, QCryptographicHash::Sha256 );
+}
+
+// Key of a data set:  with the memo on, computed once for each fingerprint
+//  (scalar values, vector sizes and addresses) until forget_dataset_keys()
+QByteArray US_SimCache::dataset_key_memo( const US_SimulationParameters& simparams,
+                                          const US_DataIO::EditedData& edata, const US_Buffer* buffer )
+{
+   if ( !key_memo )
+   {
+      return dataset_key( simparams, edata, buffer );
+   }
+
+   QByteArray fprint;
+   dataset_values( fprint, simparams, edata, buffer, true );
+
+   {
+      QMutexLocker mlock( &memo_lock );
+      auto         it = dskey_memo.constFind( fprint );
+
+      if ( it != dskey_memo.constEnd() )
+      {
+         return it.value();
+      }
+   }
+
+   QByteArray   key = dataset_key( simparams, edata, buffer );
+   QMutexLocker mlock( &memo_lock );
+
+   if ( dskey_memo.size() >= 256 )
+   { // Bound the memo (e.g. many meniscus and bottom points)
+      dskey_memo.clear();
+   }
+
+   dskey_memo.insert( fprint, key );
+   return key;
+}
+
+// Turn the memo of data set keys on or off
+void US_SimCache::set_key_memo( bool on )
+{
+   QMutexLocker mlock( &memo_lock );
+   key_memo = on;
+   dskey_memo.clear();
+}
+
+// Forget the memorized data set keys
+void US_SimCache::forget_dataset_keys()
+{
+   QMutexLocker mlock( &memo_lock );
+   dskey_memo.clear();
 }
 
 // Key of a simulation:  data set key and component values
@@ -268,6 +360,136 @@ qint64 US_SimCache::sim_bytes( const US_DataIO::RawData& simdat )
    }
 
    return bytes;
+}
+
+// Serialize a simulation:  every field of the data and its scans
+QByteArray US_SimCache::pack( const US_DataIO::RawData& simdat )
+{
+   QByteArray data;
+   data.reserve( sim_bytes( simdat ) + simdat.description.size() * 4 );
+
+   data.append( simdat.type, 2 );
+   data.append( simdat.rawGUID, 16 );
+   add_bytes( data, simdat.cell );
+   add_bytes( data, simdat.channel );
+   add_string( data, simdat.description );
+   add_vector( data, simdat.xvalues );
+   add_bytes( data, (qint64) simdat.scanData.size() );
+
+   for ( const US_DataIO::Scan& scan : simdat.scanData )
+   {
+      add_bytes( data, scan.temperature );
+      add_bytes( data, scan.rpm );
+      add_bytes( data, scan.seconds );
+      add_bytes( data, scan.omega2t );
+      add_bytes( data, scan.wavelength );
+      add_bytes( data, scan.plateau );
+      add_bytes( data, scan.delta_r );
+      add_bytes( data, scan.nz_stddev );
+      add_vector( data, scan.rvalues );
+      add_vector( data, scan.stddevs );
+      add_bytes( data, (qint64) scan.interpolated.size() );
+      data.append( scan.interpolated );
+   }
+
+   return data;
+}
+
+namespace
+{
+// Sequential reader of pack() bytes; any overrun makes it invalid
+class Unpacker
+{
+public:
+   Unpacker( const char* data, qint64 size ) : ptr( data ), end( data + size ), ok( true ) {}
+
+   template <class T> void get( T& value )
+   {
+      raw( &value, sizeof( T ) );
+   }
+
+   void raw( void* dest, qint64 nbytes )
+   {
+      if ( !ok || nbytes < 0 || end - ptr < nbytes )
+      {
+         ok = false;
+         return;
+      }
+      memcpy( dest, ptr, nbytes );
+      ptr += nbytes;
+   }
+
+   void vector( QVector<double>& values )
+   {
+      qint64 count = 0;
+      get( count );
+      if ( !ok || count < 0 || ( end - ptr ) / (qint64) sizeof( double ) < count )
+      {
+         ok = false;
+         return;
+      }
+      values.resize( count );
+      raw( values.data(), count * (qint64) sizeof( double ) );
+   }
+
+   void bytes( QByteArray& array )
+   {
+      qint64 count = 0;
+      get( count );
+      if ( !ok || count < 0 || end - ptr < count )
+      {
+         ok = false;
+         return;
+      }
+      array = QByteArray( ptr, count );
+      ptr += count;
+   }
+
+   const char* ptr;
+   const char* end;
+   bool        ok;
+};
+} // namespace
+
+// Restore a simulation serialized by pack()
+bool US_SimCache::unpack( const char* data, qint64 size, US_DataIO::RawData& simdat )
+{
+   Unpacker   in( data, size );
+   QByteArray text;
+   qint64     nscans = 0;
+
+   in.raw( simdat.type, 2 );
+   in.raw( simdat.rawGUID, 16 );
+   in.get( simdat.cell );
+   in.get( simdat.channel );
+   in.bytes( text );
+   simdat.description = QString::fromUtf8( text );
+   in.vector( simdat.xvalues );
+   in.get( nscans );
+
+   if ( !in.ok || nscans < 0 || nscans > size )
+   {
+      return false;
+   }
+
+   simdat.scanData.resize( nscans );
+
+   for ( US_DataIO::Scan& scan : simdat.scanData )
+   {
+      in.get( scan.temperature );
+      in.get( scan.rpm );
+      in.get( scan.seconds );
+      in.get( scan.omega2t );
+      in.get( scan.wavelength );
+      in.get( scan.plateau );
+      in.get( scan.delta_r );
+      in.get( scan.nz_stddev );
+      in.vector( scan.rvalues );
+      in.vector( scan.stddevs );
+      in.bytes( scan.interpolated );
+   }
+
+   return in.ok && in.ptr == in.end;
 }
 
 // Get a simulation
@@ -367,6 +589,8 @@ void US_SimCache::clear()
    evictable.clear();
    nbytes     = 0;
    nsurvivors = 0;
+   wlock.unlock();
+   forget_dataset_keys();
 }
 
 // Counts of cache use

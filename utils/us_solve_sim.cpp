@@ -288,10 +288,13 @@ US_Settings::set_us_debug( dbg_level );
       npoints = edata->pointCount();
       nscans = edata->scanCount();
       double odlim = edata->ODlimit;
+      double *pb = nnls_b.data();
 
       for (int ss = 0; ss < nscans; ss++) {
+         const double *ev = edata->scanData.at(ss).rvalues.constData();
+
          for (int rr = 0; rr < npoints; rr++) {  // Fill the B matrix with experiment data (or zero)
-            double evalue = edata->value(ss, rr);
+            double evalue = ev[rr];
 //DbgLv(1)<<"subha_OD limit for scan "<< ss << rr << evalue << odlim;
 
             if (evalue >= odlim) {  // Where ODlimit is exceeded, substitute 0.0 and bump count
@@ -307,7 +310,7 @@ US_Settings::set_us_debug( dbg_level );
 #endif
 
             // Store the B value in a row for a dataset
-            nnls_b[kb++] = evalue;
+            pb[kb++] = evalue;
             norm_b += sq(evalue);
 
          }  //"rr"-based for loop
@@ -424,9 +427,9 @@ US_Settings::set_us_debug( dbg_level );
 // << model.components[0].mw << model.components[0].vbar20
 // << model.components[0].D << model.components[0].signal_concentration;
 
-            // Initialize simulation data with the experiment's grid
+            // (simulate() initializes the simulation with the experiment's
+            //  grid, unless it comes from the cache)
             DbgLv(2) << "   CR:111  rss now" << US_Memory::rss_now() << "cc" << cc;
-            US_AstfemMath::initSimData(simdat, *edata, 0.0);
 
             DbgLv(2) << "   CR:112  rss now" << US_Memory::rss_now() << "cc" << cc;
             if (dbg_level > 1 && thrnrank < 2 && cc == 0) {
@@ -452,6 +455,7 @@ US_Settings::set_us_debug( dbg_level );
                QFileInfo check_file(tmst_fpath);
 
                if ((check_file.exists()) && (check_file.isFile())) {  // Timestate file exists
+                  US_AstfemMath::initSimData(simdat, *edata, 0.0); // Scan times
                   bool intv_1sec = US_AstfemMath::timestate_onesec(tmst_fpath, simdat);
                   DbgLv(0) << "solve_sim_calc_residuals_1 : intv_1sec" << intv_1sec;
 
@@ -516,10 +520,14 @@ DbgLv(2) << "   CR:115  rss now" << US_Memory::rss_now() << "cc" << cc;
 
             if (kodl == 0) {  // Normal case of no ODlimit substitutions
 
+               double *pa = nnls_a.data();
+
                for (int ss = 0; ss < nscans; ss++) {
+                  const double *sv = simdat.scanData.at(ss).rvalues.constData();
+
                   for (int rr = 0; rr < npoints; rr++) {
-                     double sval = simdat.value(ss, rr);
-                     nnls_a[ka++] = sval;
+                     double sval = sv[rr];
+                     pa[ka++] = sval;
                      norm_a += sq(sval);
                      norm_e += sq(sval);
                   }
@@ -536,16 +544,20 @@ DbgLv(2) << "   CR:115  rss now" << US_Memory::rss_now() << "cc" << cc;
             } else {  // Special case where ODlimit substitutions are in B matrix
                DbgLv(1) << "stype==0 but from else part";
 
+               double *pa = nnls_a.data();
+
                for (int ss = 0; ss < nscans; ss++) {
+                  const double *sv = simdat.scanData.at(ss).rvalues.constData();
+
                   for (int rr = 0; rr < npoints; rr++) {  // Fill A with simulations (or zero where B has zero)
 // x  x  x  x  x  x  x  x
                      if (nnls_b[bx++] != 0.0) {
-                        double sval = simdat.value(ss, rr);
-                        nnls_a[ka++] = sval;
+                        double sval = sv[rr];
+                        pa[ka++] = sval;
                         norm_a += sq(sval);
                         norm_e += sq(sval);
                      } else {
-                        nnls_a[ka++] = 0.0;
+                        pa[ka++] = 0.0;
                      }
                   }
                }
@@ -705,8 +717,8 @@ DbgLv(0)<< " norm_s norm_a norm_b" << norm_s << norm_a << norm_b
 // << model.components[0].mw << model.components[0].vbar20
 // << model.components[0].D << model.components[0].signal_concentration;
 
-            // Initialize simulation data with the experiment's grid
-            US_AstfemMath::initSimData(simdat, *edata, 0.0);
+            // (simulate() initializes the simulation with the experiment's
+            //  grid, unless it comes from the cache)
 
             if (dbg_level > 1 && thrnrank < 2 && cc == 0) {
                model.debug();
@@ -731,6 +743,7 @@ DbgLv(0)<< " norm_s norm_a norm_b" << norm_s << norm_a << norm_b
                QFileInfo check_file(tmst_fpath);
 
                if ((check_file.exists()) && (check_file.isFile())) {  // Timestate file exists
+                  US_AstfemMath::initSimData(simdat, *edata, 0.0); // Scan times
                   bool intv_1sec = US_AstfemMath::timestate_onesec(tmst_fpath, simdat);
                   DbgLv(1) << "solve_sim_calc_residuals_2 : intv_1sec" << intv_1sec;
 
@@ -796,23 +809,31 @@ DbgLv(1) << "CR: sdat:"
             int ks = ka;
 
             if (kodl == 0) {  // Normal case of no ODlimit substitutions
+               double *pa = nnls_a.data();
+
                for (int ss = 0; ss < nscans; ss++) {
+                  const double *sv = simdat.scanData.at(ss).rvalues.constData();
+
                   for (int rr = 0; rr < npoints; rr++) {
-                     double sval = simdat.value(ss, rr);
-                     nnls_a[ka++] = sval;
+                     double sval = sv[rr];
+                     pa[ka++] = sval;
                      norm_a += sq(sval);
                   }
 // x  x  x  x  x  x  x  x
                }
             } else {  // Special case where ODlimit substitutions are in B matrix
+               double *pa = nnls_a.data();
+
                for (int ss = 0; ss < nscans; ss++) {
+                  const double *sv = simdat.scanData.at(ss).rvalues.constData();
+
                   for (int rr = 0; rr < npoints; rr++) {  // Fill A with simulations (or zero where B has zero)
                      if (nnls_b[bx++] != 0.0) {
-                        double sval = simdat.value(ss, rr);
-                        nnls_a[ka++] = sval;
+                        double sval = sv[rr];
+                        pa[ka++] = sval;
                         norm_a += sq(sval);
                      } else {
-                        nnls_a[ka++] = 0.0;
+                        pa[ka++] = 0.0;
 // x  x  x  x  x  x  x  x
                      }
                   }
@@ -894,8 +915,8 @@ DbgLv(1) << "CR: sdat:"
 
             US_Math2::data_correction(avtemp, sd);
 
-            // Initialize simulation data with the experiment's grid
-            US_AstfemMath::initSimData(simdat, *edata, 0.0);
+            // (simulate() initializes the simulation with the experiment's
+            //  grid, unless it comes from the cache)
 
             if (dbg_level > 1 && thrnrank < 2 && cc == 0) {
                model.debug();
@@ -918,6 +939,7 @@ DbgLv(1) << "CR: sdat:"
                QFileInfo check_file(tmst_fpath);
 
                if ((check_file.exists()) && (check_file.isFile())) {  // Timestate file exists
+                  US_AstfemMath::initSimData(simdat, *edata, 0.0); // Scan times
                   bool intv_1sec = US_AstfemMath::timestate_onesec(tmst_fpath, simdat);
                   DbgLv(1) << "solve_sim_calc_residuals_3 : intv_1sec" << intv_1sec;
 
@@ -967,22 +989,30 @@ DbgLv(1) << "CR: sdat:"
 
             // Populate the A matrix for the NNLS routine with simulation
             if (kodl == 0) {  // Normal case of no ODlimit substitutions
+               double *pa = nnls_a.data();
+
                for (int ss = 0; ss < nscans; ss++) {
+                  const double *sv = simdat.scanData.at(ss).rvalues.constData();
+
                   for (int rr = 0; rr < npoints; rr++) {
-                     double sval = simdat.value(ss, rr);
-                     nnls_a[ka++] = sval;
+                     double sval = sv[rr];
+                     pa[ka++] = sval;
                      norm_a += sq(sval);
                   }
                }
             } else {  // Special case where ODlimit substitutions are in B matrix
+               double *pa = nnls_a.data();
+
                for (int ss = 0; ss < nscans; ss++) {
+                  const double *sv = simdat.scanData.at(ss).rvalues.constData();
+
                   for (int rr = 0; rr < npoints; rr++) {  // Fill A with simulations (or zero where B has zero)
                      if (nnls_b[bx++] != 0.0) {
-                        double sval = simdat.value(ss, rr);
-                        nnls_a[ka++] = sval;
+                        double sval = sv[rr];
+                        pa[ka++] = sval;
                         norm_a += sq(sval);
                      } else {
-                        nnls_a[ka++] = 0.0;
+                        pa[ka++] = 0.0;
                      }
                   }
                }
@@ -1293,8 +1323,11 @@ DbgLv(1) << "CR: sdat:"
                         << idata->value(nscans / 2, npoints / 2);
 
             for (int ss = 0; ss < nscans; ss++, scnx++) {
+               double *sv = sdata->scanData[scnx].rvalues.data();
+               const double *iv = idata->scanData.at(ss).rvalues.constData();
+
                for (int rr = 0; rr < npoints; rr++) {
-                  sdata->scanData[scnx].rvalues[rr] += (soluval * idata->value(ss, rr));
+                  sv[rr] += (soluval * iv[rr]);
                }
             }
             DbgLv(2) << "   CR:231  rss now" << US_Memory::rss_now() << "thrn" << thrnrank;
@@ -1367,12 +1400,18 @@ DbgLv(2) << "   CR:301  rss now" << US_Memory::rss_now() << "thrn" << thrnrank;
       int kntcs = 0;
       double varidset = 0.0;
       QVector<double> flat_residuals (nscans * npoints);
+      const double *tiv = tinvec.constData() + tinoffs;
+
       for (int ss = 0; ss < nscans; ss++, scnx++) {  // Create residuals dset:  exp - sim - noise(s)
+         const double *ev = edata->scanData.at(ss).rvalues.constData();
+         const double *sv = sdata->scanData.at(scnx).rvalues.constData();
+         double *rv = resid->scanData[scnx].rvalues.data();
+         const double riv = rinvec[ss + rinoffs];
 
          for (int rr = 0; rr < npoints; rr++) {
 
-            double resval = edata->value(ss, rr) - sdata->value(scnx, rr) - tinvec[rr + tinoffs] - rinvec[ss + rinoffs];
-            resid->setValue(scnx, rr, resval);
+            double resval = ev[rr] - sv[rr] - tiv[rr] - riv;
+            rv[rr] = resval;
             flat_residuals[kntcs] = resval;
             double r2 = sq(resval);
             variance += r2;
@@ -1790,7 +1829,7 @@ QByteArray US_SolveSim::simulate( US_Model& model, DataSet* dset, US_DataIO::Edi
          dskey->nspeeds   = sparms.speed_step.size();
          dskey->nsimprofs = sparms.sim_speed_prof.size();
          dskey->sim       = sparms.sim;
-         dskey->key       = US_SimCache::dataset_key( sparms, *edata, &dset->solution_rec.buffer );
+         dskey->key       = simcache->dataset_key_memo( sparms, *edata, &dset->solution_rec.buffer );
       }
 
       simkey = US_SimCache::sim_key( dskey->key, model.components[0] );
@@ -1800,6 +1839,9 @@ QByteArray US_SolveSim::simulate( US_Model& model, DataSet* dset, US_DataIO::Edi
          return simkey;
       }
    }
+
+   // Initialize simulation data with the experiment's grid
+   US_AstfemMath::initSimData( simdat, *edata, 0.0 );
 
    int rc = 0;
 

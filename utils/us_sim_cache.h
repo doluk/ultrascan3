@@ -55,6 +55,9 @@ class US_UTIL_EXTERN US_SimCache
       //! \param max_bytes  Memory cap in bytes
       explicit US_SimCache( qint64 max_bytes );
 
+      //! \brief Destroy the cache (subclasses may hold other storage)
+      virtual ~US_SimCache() = default;
+
       //! \brief Create a cache with the default memory cap, unless debug
       //!        text turns caching off
       //!
@@ -82,6 +85,29 @@ class US_UTIL_EXTERN US_SimCache
       static QByteArray   dataset_key( const US_SimulationParameters& simparams, const US_DataIO::EditedData& edata,
                                        const US_Buffer* buffer = nullptr );
 
+      //! \brief Key of a data set, memorized if the memo is on
+      //!
+      //! With the memo on, the key is computed once for each fingerprint of
+      //! the inputs:  all scalar values, but of each vector (radii, scan
+      //! interpolation flags, timestate profiles) only its size and address.
+      //! The memo so relies on vectors not being changed in place, nor freed
+      //! and reallocated at the same address with other values, while it
+      //! holds their keys:  turn it on only where the data sets live as long
+      //! as the fit, and call forget_dataset_keys() when they change.
+      //! \param simparams  Simulation parameters of the data set
+      //! \param edata      Experiment data whose grid is simulated
+      //! \param buffer     Buffer of the data set (see dataset_key);  its
+      //!                   values are always in the fingerprint
+      //! \returns          Key, equal to dataset_key()
+      QByteArray          dataset_key_memo( const US_SimulationParameters& simparams,
+                                            const US_DataIO::EditedData& edata, const US_Buffer* buffer = nullptr );
+
+      //! \brief Turn the memo of data set keys on or off (default off)
+      void                set_key_memo( bool on );
+
+      //! \brief Forget the memorized data set keys (clear() does, too)
+      void                forget_dataset_keys();
+
       //! \brief Key of a simulation
       //! \param dskey  Key of the data set (from dataset_key)
       //! \param comp   Simulated component (experimental space)
@@ -92,7 +118,7 @@ class US_UTIL_EXTERN US_SimCache
       //! \param key     Simulation key
       //! \param simdat  Returned simulation, if found
       //! \returns       Flag whether found
-      bool                fetch( const QByteArray& key, US_DataIO::RawData& simdat );
+      virtual bool        fetch( const QByteArray& key, US_DataIO::RawData& simdat );
 
       //! \brief Store a simulation, or mark a stored one as a survivor
       //! \param key       Simulation key
@@ -100,19 +126,32 @@ class US_UTIL_EXTERN US_SimCache
       //! \param survivor  Flag the solute survived a NNLS:  keep it, evicting
       //!                  other simulations if need be
       //! \returns         Flag whether the simulation is now in the cache
-      bool                store( const QByteArray& key, const US_DataIO::RawData& simdat, bool survivor );
+      virtual bool        store( const QByteArray& key, const US_DataIO::RawData& simdat, bool survivor );
 
       //! \brief Remove all simulations (the counts are kept)
-      void                clear();
+      virtual void        clear();
 
       //! \brief Counts of cache use
-      Stats               stats() const;
+      virtual Stats       stats() const;
 
       //! \brief One-line text of the counts
       QString             stats_text() const;
 
       //! \brief Approximate bytes a simulation takes in the cache
       static qint64       sim_bytes( const US_DataIO::RawData& );
+
+      //! \brief Serialize a simulation (all values, bit-exact), e.g. for a
+      //!        cache in memory shared between processes
+      //! \param simdat  Simulation
+      //! \returns       Bytes from which unpack() restores the simulation
+      static QByteArray   pack( const US_DataIO::RawData& simdat );
+
+      //! \brief Restore a simulation serialized by pack()
+      //! \param data    Serialized bytes
+      //! \param size    Number of bytes
+      //! \param simdat  Restored simulation
+      //! \returns       Flag whether the bytes were a complete simulation
+      static bool         unpack( const char* data, qint64 size, US_DataIO::RawData& simdat );
 
    private:
       class Entry
@@ -137,5 +176,8 @@ class US_UTIL_EXTERN US_SimCache
       qint64                   nrejected;
       std::atomic<qint64>      nhits;
       std::atomic<qint64>      nmisses;
+      QMutex                   memo_lock;  // Lock of the data set key memo
+      QHash<QByteArray, QByteArray> dskey_memo; // Data set keys by fingerprint
+      bool                     key_memo;   // Flag:  memo of data set keys on
 };
 #endif
