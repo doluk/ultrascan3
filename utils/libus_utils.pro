@@ -148,6 +148,27 @@ SOURCES      = us_ana_profile.cpp   \
 !contains( DEFINES, NO_DB ) {
    HEADERS      += us_crypto.h
    SOURCES      += us_crypto.cpp
+
+   # Master password logic shared by GUI and command-line tools, with
+   # optional OS keychain storage and OS-account audit-trail checks.
+   HEADERS      += us_master_password.h us_os_keychain.h us_os_auth.h
+   SOURCES      += us_master_password.cpp us_os_keychain.cpp us_os_auth.cpp
+
+   # OS keychain: set QTKEYCHAIN_INC / QTKEYCHAIN_LIB in local.pri,
+   # e.g. QTKEYCHAIN_LIB = -lqt5keychain
+   !isEmpty( QTKEYCHAIN_LIB ) {
+      DEFINES     += US3_HAVE_QTKEYCHAIN
+      INCLUDEPATH += $$QTKEYCHAIN_INC
+      LIBS        += $$QTKEYCHAIN_LIB
+   }
+
+   # OS authentication
+   unix:!macx:exists( /usr/include/security/pam_appl.h ) {
+      DEFINES     += US3_HAVE_PAM
+      LIBS        += -lpam
+   }
+   macx:  LIBS    += -framework OpenDirectory -framework CoreFoundation
+   win32: LIBS    += -ladvapi32 -lsecur32
 }
 contains( DEFINES, NO_DB ) {
    LIBS         += -L$${MPIPATH}/lib

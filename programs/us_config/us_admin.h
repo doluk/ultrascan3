@@ -25,6 +25,9 @@ class US_Admin : public US_Widgets
     QLineEdit*   le_passwd1;
     QLineEdit*   le_passwd2;
 
+    QCheckBox*   ck_keychain;  //!< keep master password in OS keychain
+    QCheckBox*   ck_osAudit;   //!< OS account password for audit trail
+
     QPushButton* pb_help;
     QPushButton* pb_save;
     QPushButton* pb_cancel;
@@ -32,6 +35,10 @@ class US_Admin : public US_Widgets
     QString      password1;    
     QString      password2;    
     
+    //! Apply the keychain / audit-trail options for master password \p pw.
+    //! \retval false if the keychain could not be updated
+    bool applySecurityOptions( const QString& pw );
+
   private slots:
     void help();
     void save();

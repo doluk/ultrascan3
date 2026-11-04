@@ -88,6 +88,20 @@ class US_UTIL_EXTERN US_Settings
     //! \brief Set the cryptographic hash of the master password
     static void        set_UltraScanPW( const QByteArray& );
 
+    //! \brief True if the master password is kept in the OS keychain so
+    //!        that it is unlocked by the OS login (see \ref US_OsKeychain).
+    //!        The master password itself remains the fallback.
+    static bool        masterPwInKeychain( void );
+    //! \brief Set whether the master password is kept in the OS keychain
+    static void        set_masterPwInKeychain( bool );
+
+    //! \brief True if audit-trail / e-signature forms are confirmed with
+    //!        the OS account password (see \ref US_OsAuth) instead of the
+    //!        master password.
+    static bool        auditUsesOsAuth( void );
+    //! \brief Set whether audit-trail forms use the OS account password
+    static void        set_auditUsesOsAuth( bool );
+
     // Misc
     
     //! \brief Get the temperature tolerance for runs

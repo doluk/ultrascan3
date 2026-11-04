@@ -20,10 +20,82 @@ if(US3_NO_DB)
         "${CMAKE_CURRENT_SOURCE_DIR}/us_xpn_data.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/us_link_ssl.h"
     )
+    # OS keychain / OS authentication only serve the interactive DB login
+    list(REMOVE_ITEM UTILS_SOURCES
+        "${CMAKE_CURRENT_SOURCE_DIR}/us_os_keychain.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/us_os_auth.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/us_master_password.cpp"
+    )
+    list(REMOVE_ITEM UTILS_HEADERS
+        "${CMAKE_CURRENT_SOURCE_DIR}/us_os_keychain.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/us_os_auth.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/us_master_password.h"
+    )
 endif()
+
+# -----------------------------------------------------------------------------
+# Optional OS integration for the master password (see us_os_keychain.h and
+# us_os_auth.h). Missing dependencies only disable the feature; the classic
+# master password always works.
+# -----------------------------------------------------------------------------
+set(US3_OS_INTEGRATION_LIBS "")
+set(US3_OS_INTEGRATION_DEFS "")
+set(US3_OS_INTEGRATION_INCS "")
+if(NOT US3_NO_DB)
+    if(US3_WITH_OS_KEYCHAIN)
+        if(QT_VERSION_MAJOR EQUAL 6)
+            find_package(Qt6Keychain CONFIG QUIET)
+            set(_us3_keychain_target qt6keychain)
+        else()
+            find_package(Qt5Keychain CONFIG QUIET)
+            set(_us3_keychain_target qt5keychain)
+        endif()
+        if(TARGET ${_us3_keychain_target})
+            message(STATUS "OS keychain support: ON (${_us3_keychain_target})")
+            list(APPEND US3_OS_INTEGRATION_LIBS ${_us3_keychain_target})
+            list(APPEND US3_OS_INTEGRATION_DEFS US3_HAVE_QTKEYCHAIN)
+        else()
+            message(STATUS "OS keychain support: OFF (QtKeychain for Qt${QT_VERSION_MAJOR} not found)")
+        endif()
+    endif()
+
+    if(US3_WITH_OS_AUTH)
+        if(APPLE)
+            list(APPEND US3_OS_INTEGRATION_LIBS "-framework OpenDirectory" "-framework CoreFoundation")
+            message(STATUS "OS authentication support: ON (Open Directory)")
+        elseif(WIN32)
+            list(APPEND US3_OS_INTEGRATION_LIBS advapi32 secur32)
+            message(STATUS "OS authentication support: ON (LogonUser)")
+        else()
+            find_path(PAM_INCLUDE_DIR security/pam_appl.h)
+            find_library(PAM_LIBRARY NAMES pam)
+            if(PAM_INCLUDE_DIR AND PAM_LIBRARY)
+                message(STATUS "OS authentication support: ON (PAM: ${PAM_LIBRARY})")
+                list(APPEND US3_OS_INTEGRATION_LIBS ${PAM_LIBRARY})
+                list(APPEND US3_OS_INTEGRATION_DEFS US3_HAVE_PAM)
+                list(APPEND US3_OS_INTEGRATION_INCS ${PAM_INCLUDE_DIR})
+            else()
+                message(STATUS "OS authentication support: OFF (PAM headers/library not found)")
+            endif()
+        endif()
+    endif()
+endif()
+
+function(us3_configure_os_integration target)
+    if(US3_OS_INTEGRATION_LIBS)
+        target_link_libraries(${target} PRIVATE ${US3_OS_INTEGRATION_LIBS})
+    endif()
+    if(US3_OS_INTEGRATION_DEFS)
+        target_compile_definitions(${target} PRIVATE ${US3_OS_INTEGRATION_DEFS})
+    endif()
+    if(US3_OS_INTEGRATION_INCS)
+        target_include_directories(${target} PRIVATE ${US3_OS_INTEGRATION_INCS})
+    endif()
+endfunction()
 
 # Create the utils library
 add_library(us_utils ${UTILS_SOURCES} ${UTILS_HEADERS})
+us3_configure_os_integration(us_utils)
 
 if(APPLE)
     # Force all symbols to be exported at link time
@@ -152,6 +224,7 @@ if(BUILD_TESTING OR US3_PREFER_STATIC)
 
     # Create STATIC library specifically for testing
     add_library(us_utils_static STATIC ${UTILS_SOURCES} ${UTILS_HEADERS})
+    us3_configure_os_integration(us_utils_static)
 
     # Set properties for STATIC library
     set_target_properties(us_utils_static PROPERTIES

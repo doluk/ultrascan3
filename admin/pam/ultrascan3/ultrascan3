@@ -1,0 +1,18 @@
+# /etc/pam.d/ultrascan3 -- optional PAM service for UltraScan audit-trail
+# signatures ("Confirm audit-trail / e-signature forms with the OS account
+# password" in us_config -> Change Master Password).
+#
+# Without this file UltraScan uses the distribution's shared stack:
+#   system-auth  (RHEL, Rocky, Fedora, Arch)
+#   common-auth  (Debian, Ubuntu)
+# Install this file to restrict the check to the password (no fingerprint
+# or smart-card modules, which cannot be answered from the form) and to add
+# account checks (expiry, lock):
+#
+#   sudo install -m 0644 ultrascan3 /etc/pam.d/ultrascan3
+#
+# pam_unix verifies the caller's own password through the setuid helper
+# unix_chkpwd, so UltraScan needs no privileges.
+
+auth     required   pam_unix.so
+account  required   pam_unix.so

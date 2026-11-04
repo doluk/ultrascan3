@@ -2,6 +2,8 @@
 #include "us_passwd.h"
 #include "us_global.h"
 #include "us_settings.h"
+#include "us_master_password.h"
+#include "us_os_auth.h"
 #include <QApplication>
 
 // Window to anchor (and center) the password dialogs against: the owner's
@@ -21,23 +23,43 @@ static QWidget* anchor_window( QWidget* self )
 
 QString US_Passwd::getPasswd( void  )
 {
-  // If the pw is in global memory, return it
-  QString pw = g.passwd();
+  // Cached in shared memory, or read from the OS keychain if enabled.
+  // All checks live in US_MasterPassword (utils); this class only prompts.
+  QString err;
+  QString pw = US_MasterPassword::obtainNonInteractive( &err );
   if ( ! pw.isEmpty() ) return pw;
 
-  // A headless run has no one to answer the password dialog.
+  if ( ! err.isEmpty() && US_Settings::masterPwInKeychain() )
+     qWarning() << "OS keychain:" << err;
+
+  // A headless run has no one to answer the password dialog: use the
+  // environment variable or a no-echo terminal prompt instead.
   if ( qApp != nullptr && qApp->property( "us3_headless" ).toBool() )
   {
-     qWarning() << "Error: the master password is not available to this "
-                   "headless run; start UltraScan to unlock the database, "
-                   "or use --no-db";
+     if ( ! US_MasterPassword::isSet() )
+     {
+        qWarning() << "Error: the master password has not been set.";
+        return QString();
+     }
+
+     QString err_env;
+     pw = US_MasterPassword::fromEnvironment( &err_env );
+     if ( ! pw.isEmpty() ) return pw;
+
+     QString err_tty;
+     pw = US_MasterPassword::fromTerminal( &err_tty );
+     if ( ! pw.isEmpty() ) return pw;
+
+     qWarning().noquote()
+        << "Error: the master password is not available to this headless run ("
+        << err_env << "; " << err_tty << "). Run from a terminal, set"
+        << US_MasterPassword::envVarName()
+        << ", enable the OS keychain, start UltraScan to unlock the database,"
+           " or use --no-db";
      return QString();
   }
 
-  // See if the master pasword has been set
-  QByteArray currentHash = US_Settings::UltraScanPW();
-
-  if ( currentHash.isEmpty() )
+  if ( ! US_MasterPassword::isSet() )
   {
      QMessageBox::information( anchor_window( this ), tr( "Password Error" ), tr( "The Master Password has not been set." ) );
 
@@ -57,18 +79,13 @@ QString US_Passwd::getPasswd( void  )
 
     // If the user cancelled, return a null string
     if ( ! ok ) return QString();
-    
-    // Check the hash
-    QByteArray hash =
-          QCryptographicHash::hash( pw.toLatin1(), QCryptographicHash::Sha1 );
 
-    if ( hash == currentHash ) break;
+    // Verify, cache in shared memory and refresh the keychain copy
+    if ( US_MasterPassword::accept( pw ) ) break;
 
     QMessageBox::information( anchor_window( this ), tr( "Password Error" ), tr( "The password is incorrect." ) );
   }
 
-  // Save the password in global memory and return
-  g.setPasswd( pw );
   return pw;
 }
 
@@ -82,10 +99,21 @@ QMap < QString, QString >  US_Passwd::getPasswd_auditTrail( QString title, QStri
   QMap < QString, QString > form_map;
   QString pw;
 
-  // See if the master pasword has been set
-  QByteArray currentHash = US_Settings::UltraScanPW();
+  // Challenge: OS account password (opt-in) or UltraScan master password.
+  // If OS authentication was requested but is not available in this build
+  // or on this system, fall back to the master password.
+  bool useOsAuth = US_Settings::auditUsesOsAuth();
+  if ( useOsAuth && ! US_OsAuth::isAvailable() )
+  {
+     qWarning() << "OS authentication is not available; using the master password.";
+     useOsAuth = false;
+  }
+  const QString pwField = useOsAuth ? QString( "Account Password:" )
+                                    : QString( "Master Password:" );
+  const QString osUser  = useOsAuth ? US_OsAuth::currentUser() : QString();
 
-  if ( currentHash.isEmpty() )
+  // See if the master pasword has been set
+  if ( ! useOsAuth && ! US_MasterPassword::isSet() )
   {
      QMessageBox::information( anchor_window( this ), tr( "Password Error" ), tr( "The Master Password has not been set." ) );
 
@@ -109,9 +137,17 @@ QMap < QString, QString >  US_Passwd::getPasswd_auditTrail( QString title, QStri
      // Add some text above the fields
      form.addRow( new QLabel( i_text ) );
 
+     if ( useOsAuth )
+     {
+        QLabel* lb_os  = us_label( "OS Account:" );
+        QLabel* lb_osv = us_label( osUser + "  (" + US_OsAuth::backendName() + ")" );
+        lb_osv->setAccessibleName( "OS Account" );
+        form.addRow( lb_os, lb_osv );
+     }
+
      // Add the lineEdits with their respective labels
      QList<QLineEdit*> fields;
-     QStringList       form_labels = { "User:", "Comment:", "Master Password:" };
+     QStringList       form_labels = { "User:", "Comment:", pwField };
      for ( int i = 0; i < form_labels.size(); ++i )
      {
         //QLineEdit *lineEdit = new QLineEdit(&dialog);
@@ -124,7 +160,7 @@ QMap < QString, QString >  US_Passwd::getPasswd_auditTrail( QString title, QStri
         lineEdit->setAccessibleName( form_labels[i].left( form_labels[i].length() - 1 ) );
         label->setBuddy( lineEdit );
 
-        if ( form_labels[i] == "Master Password:" )
+        if ( form_labels[i] == pwField )
         {
            lineEdit->setEchoMode( QLineEdit::Password );
         }
@@ -172,11 +208,15 @@ QMap < QString, QString >  US_Passwd::getPasswd_auditTrail( QString title, QStri
 	// If the user didn't dismiss the dialog, do something with the fields
 	foreach(QLineEdit * lineEdit, fields)
 	  {
-	    if ( lineEdit->objectName() == "Master Password:" )
+	    if ( lineEdit->objectName() == pwField )
 	      {
 		pw = lineEdit->text();
+		// Never hand the OS account password to the caller
+		if ( useOsAuth )
+		  continue;
 	      }
-	    qDebug() << lineEdit->text();
+	    else
+	      qDebug() << lineEdit->text();
 
 	    form_map[ lineEdit->objectName() ] = lineEdit->text();
 	  }
@@ -200,11 +240,35 @@ QMap < QString, QString >  US_Passwd::getPasswd_auditTrail( QString title, QStri
     if ( reject_chosen )
       break;
     
-    // Check the hash
-    QByteArray hash =
-          QCryptographicHash::hash( pw.toLatin1(), QCryptographicHash::Sha1 );
+    if ( useOsAuth )
+    {
+       // Check the comment first: every failed OS check may count towards
+       // an account lockout (e.g. pam_faillock).
+       if ( form_map[ "Comment:" ].isEmpty() )
+       {
+          QMessageBox::critical( anchor_window( this ),
+                                 tr( "No Comment" ),
+                                 tr( "<font color='red'><b>ERROR:</b></font> The Comment field is empty." ) );
+          continue;
+       }
 
-    if ( hash == currentHash && !form_map["Comment:"].isEmpty()  )
+       QString err;
+       const bool ok = US_OsAuth::verifyCurrentUser( pw, &err );
+       pw.fill( QChar( 0 ) );
+       pw.clear();
+       if ( ok )
+         break;
+
+       QMessageBox::critical( anchor_window( this ),
+                              tr( "Password Error" ),
+                              tr( "<font color='red'><b>ERROR:</b></font> The password for "
+                                  "OS account %1 could not be verified:<br>%2" )
+                              .arg( osUser.toHtmlEscaped(), err.toHtmlEscaped() ) );
+       continue;
+    }
+
+    // Check against the stored master-password hash
+    if ( US_MasterPassword::verify( pw ) && !form_map["Comment:"].isEmpty()  )
       break;
 
     QMessageBox::critical( anchor_window( this ),

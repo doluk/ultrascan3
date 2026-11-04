@@ -169,7 +169,15 @@ const QVector<Option>& options()
         "",
         "",
         flag( &US_SimCliArgs::no_db ) },
-      { All, { "errors-cl" }, "Write errors to the console without opening the GUI", "", "", flag( &US_SimCliArgs::errors_cl ) },
+      { All,
+        { "errors-cl" },
+        "Write errors to the console without opening the GUI. Database "
+        "access then unlocks the master password from the OS keychain (if "
+        "enabled), the US3_MASTER_PASSWORD environment variable, or a "
+        "no-echo terminal prompt",
+        "",
+        "",
+        flag( &US_SimCliArgs::errors_cl ) },
       { All,
         { "runtype" },
         "Two-character optical data type to tag the output with (" + US_SimCli::runTypes().join( ", " ) +

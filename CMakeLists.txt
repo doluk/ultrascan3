@@ -194,6 +194,8 @@ option(US3_BUILD_PROGRAMS "Build application programs" ON)
 option(USE_QT6 "Use Qt6 instead of Qt5" OFF)
 option(BUILD_DOCUMENTATION "Build Sphinx documentation" ON)
 option(US3_BUILD_SOMO "Build the SOMO/US-SOMO hydrodynamics suite (us_somo)" OFF)
+option(US3_WITH_OS_KEYCHAIN "Optionally keep the master password in the OS keychain (needs QtKeychain; skipped if not found)" ON)
+option(US3_WITH_OS_AUTH "Optionally confirm audit-trail forms with the OS account password (Linux: needs PAM; skipped if not found)" ON)
 
 # High-level profile to make builds scriptable:
 #   APP  = desktop/user build (GUI + programs + DB)

@@ -5,6 +5,9 @@
 #include "us_settings.h"
 #include "us_gui_settings.h"
 #include "us_crypto.h"
+#include "us_os_keychain.h"
+#include "us_master_password.h"
+#include "us_os_auth.h"
 
 US_Admin::US_Admin( QWidget* w, Qt::WindowFlags flags ) 
    : US_Widgets( true, w, flags )
@@ -49,6 +52,32 @@ US_Admin::US_Admin( QWidget* w, Qt::WindowFlags flags )
   le_passwd2->setMinimumHeight( buttonh );
   le_passwd2->setEchoMode( QLineEdit::Password );
   
+  // Optional OS integration. The master password remains the fallback.
+  QGridLayout* lo_keychain = us_checkbox(
+     tr( "Unlock with OS login: keep the master password in the %1" )
+     .arg( US_OsKeychain::backendName() ), ck_keychain,
+     US_Settings::masterPwInKeychain() && US_OsKeychain::isAvailable() );
+  ck_keychain->setEnabled( US_OsKeychain::isAvailable() );
+  ck_keychain->setToolTip( US_OsKeychain::isAvailable()
+     ? tr( "The master password is read from the OS keychain, which is unlocked by "
+           "your OS login and survives OS password changes. If the keychain is "
+           "unavailable you are asked for the master password." )
+     : tr( "This build of UltraScan has no OS keychain support." ) );
+
+  QGridLayout* lo_osAudit = us_checkbox(
+     tr( "Confirm audit-trail / e-signature forms with the OS account password" ),
+     ck_osAudit, US_Settings::auditUsesOsAuth() && US_OsAuth::isAvailable() );
+  ck_osAudit->setEnabled( US_OsAuth::isAvailable() );
+  ck_osAudit->setToolTip( US_OsAuth::isAvailable()
+     ? tr( "Backend: %1, account: %2" )
+       .arg( US_OsAuth::backendName(), US_OsAuth::currentUser() )
+     : tr( "No OS authentication backend is available on this system." ) );
+
+  QLabel* lb_hint = us_label(
+     tr( "To change only the options above, enter the current password "
+         "and leave the new password fields empty." ) );
+  lb_hint->setWordWrap( true );
+
   pb_help = us_pushbutton( "Help" );
   pb_help->setMinimumHeight( buttonh );
   connect( pb_help, &QAbstractButton::clicked, this, &US_Admin::help );
@@ -76,6 +105,10 @@ US_Admin::US_Admin( QWidget* w, Qt::WindowFlags flags )
   passwords->addWidget( le_passwd1, row++, 1 );
   passwords->addWidget( passwd2   , row,   0 );
   passwords->addWidget( le_passwd2, row++, 1 );
+  passwords->addLayout( lo_keychain, row++, 0, 1, 2 );
+  passwords->addLayout( lo_osAudit , row++, 0, 1, 2 );
+  if ( ! oldPass.isEmpty() )
+    passwords->addWidget( lb_hint  , row++, 0, 1, 2 );
   
   QHBoxLayout* buttonLine = new QHBoxLayout;
   buttonLine->addWidget( pb_help   );
@@ -96,17 +129,26 @@ void US_Admin::save( void )
 
   if ( ! oldPW.isEmpty() ) 
   {
-    QByteArray calcsha1 = 
-      QCryptographicHash::hash( le_oldPasswd->text().toLatin1(), 
-          QCryptographicHash::Sha1 );
-
-    if ( calcsha1 != oldPW )
+    if ( ! US_MasterPassword::verify( le_oldPasswd->text() ) )
     {
       QMessageBox::information( this, 
         tr( "Attention:" ), 
         tr( "The old password is incorrect. Please re-input.\n" ) );
       return;
     }
+  }
+
+  // Options only: current password verified above, no new password given
+  if ( ! oldPW.isEmpty()
+       && le_passwd1->text().isEmpty() && le_passwd2->text().isEmpty() )
+  {
+    const QString curPW = le_oldPasswd->text();
+    if ( applySecurityOptions( curPW ) )
+    {
+      US_MasterPassword::accept( curPW );
+      close();
+    }
+    return;
   }
 
   if ( le_passwd1->text() != le_passwd2->text() )
@@ -220,10 +262,7 @@ void US_Admin::save( void )
 
   /// commit updated settings
 
-  QByteArray sha1string =
-    QCryptographicHash::hash( newPW.toLatin1(), QCryptographicHash::Sha1 );
-
-  US_Settings::set_UltraScanPW( sha1string );
+  US_Settings::set_UltraScanPW( US_MasterPassword::hash( newPW ) );
 
   if ( !defaultDB.empty() ) {
     US_Settings::set_defaultDB( defaultDB );
@@ -233,8 +272,44 @@ void US_Admin::save( void )
     US_Settings::set_databases( databases );
   }
   
-  g.setPasswd( newPW );
+  US_MasterPassword::accept( newPW );   // cache in shared memory
+  applySecurityOptions( newPW );
   close();
+}
+
+bool US_Admin::applySecurityOptions( const QString& pw )
+{
+  const bool useKeychain = ck_keychain->isEnabled() && ck_keychain->isChecked();
+  const bool useOsAudit  = ck_osAudit ->isEnabled() && ck_osAudit ->isChecked();
+  bool ok = true;
+  QString err;
+
+  if ( useKeychain )
+  {
+    if ( US_OsKeychain::writeSecret( US_OsKeychain::masterPasswordKey(), pw, &err ) )
+      US_Settings::set_masterPwInKeychain( true );
+    else
+    {
+      ok = false;
+      US_Settings::set_masterPwInKeychain( false );
+      QMessageBox::warning( this, tr( "OS Keychain" ),
+        tr( "The master password could not be stored in the %1:\n%2\n\n"
+            "You will be asked for the master password as before." )
+        .arg( US_OsKeychain::backendName(), err ) );
+    }
+  }
+  else
+  {
+    if ( US_Settings::masterPwInKeychain() )
+    {
+      if ( ! US_OsKeychain::deleteSecret( US_OsKeychain::masterPasswordKey(), &err ) )
+        qWarning() << "Could not remove the master password from the OS keychain:" << err;
+    }
+    US_Settings::set_masterPwInKeychain( false );
+  }
+
+  US_Settings::set_auditUsesOsAuth( useOsAudit );
+  return ok;
 }
 
 void US_Admin::help()

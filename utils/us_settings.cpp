@@ -174,6 +174,36 @@ void US_Settings::set_UltraScanPW( const QByteArray& hash )
   settings.setValue( "UltraScanPW", hash );
 }
 
+bool US_Settings::masterPwInKeychain( void )
+{
+  US_SettingsStore settings;
+  return settings.value( "masterPwInKeychain", false ).toBool();
+}
+
+void US_Settings::set_masterPwInKeychain( bool enable )
+{
+  US_SettingsStore settings;
+  if ( enable )
+    settings.setValue( "masterPwInKeychain", true );
+  else
+    settings.remove( "masterPwInKeychain" );
+}
+
+bool US_Settings::auditUsesOsAuth( void )
+{
+  US_SettingsStore settings;
+  return settings.value( "auditUsesOsAuth", false ).toBool();
+}
+
+void US_Settings::set_auditUsesOsAuth( bool enable )
+{
+  US_SettingsStore settings;
+  if ( enable )
+    settings.setValue( "auditUsesOsAuth", true );
+  else
+    settings.remove( "auditUsesOsAuth" );
+}
+
 // Temperature Tolerance
 double US_Settings::tempTolerance( void )
 {
