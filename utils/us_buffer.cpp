@@ -442,8 +442,8 @@ int US_CosedComponent::saveToDB(IUS_DB2 *db, const int buffer_ID) {
 
       q.clear();
       q << "update_cosed_component" << QString::number(buffer_ID) << componentID << name
-        << QString::number(conc, 'f', 5) << QString::number(s_coeff, 'f', 5)
-        << QString::number(d_coeff, 'f', 5) << US_Util::bool_string(overlaying)
+        << QString::number(conc, 'f', 5) << QString::number(s_coeff*1e13, 'f', 5)   // in S and 1e-6 cm^2/s,
+        << QString::number(d_coeff*1e6, 'f', 5) << US_Util::bool_string(overlaying)   //  as add and the readers have them
         << density << viscosity << QString::number(vbar, 'f', 4);
 
       db->statusQuery(q);

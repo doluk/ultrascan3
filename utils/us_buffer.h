@@ -49,17 +49,17 @@ class US_UTIL_EXTERN US_BufferComponent
 class US_UTIL_EXTERN US_CosedComponent
 {
 public:
-    int id;
+    int id = 0;
     QString GUID;
     QString componentID;                   //!< The Cosedimenting ComponentID field in the DB.
     QString name;                          //!< The cosed component's name.
     double  dens_coeff[ 6 ] = {0.0};               //!< The density coefficients.
     double  visc_coeff[ 6 ] = {0.0};               //!< The viscosity coefficients.
-    double s_coeff; //!< The cosed component's s coefficient in 1/s
-    double d_coeff; //!< The cosed component's D coefficient in cm^2/s
-    double vbar; //!< The cosed component's vbar
-    double conc;                           //!< The cosed component's concentration in M
-    bool overlaying;
+    double s_coeff = 0.0; //!< The cosed component's s coefficient in 1/s
+    double d_coeff = 0.0; //!< The cosed component's D coefficient in cm^2/s
+    double vbar = 0.0; //!< The cosed component's vbar
+    double conc = 0.0;                     //!< The cosed component's concentration in M
+    bool overlaying = false;
     double concentration_offset = 0.0;      //!< The cosed component's concentration offset in M
 
     bool operator== ( const US_CosedComponent& ) const;

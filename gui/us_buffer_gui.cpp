@@ -1943,7 +1943,7 @@ void US_BufferGuiNew::edit_cosedcomp() {
    else if (!lw_lower_cosedcomps->selectedItems().isEmpty())
    {
       listwidget = lw_lower_cosedcomps;
-      overlaying = true;
+      overlaying = false;   // a lower-list entry: it was marked overlaying
    }
    else { return;}
    // reset gui
@@ -1971,8 +1971,15 @@ void US_BufferGuiNew::edit_cosedcomp() {
    QString entext = cosed_name + " (" + QString::number(concen * 1000, 'f', 3) + " mM)";
    if (exists_already)
    {
-      US_CosedComponent cc = cosed_component_list[ QString::number(idCosedComponent) ];
-      cc.conc = concen;
+      // Change the buffer's own entry: this changed a local copy only
+      for ( US_CosedComponent& cc : buffer->cosed_component )
+      {
+         if ( cc.name == cosed_name && cc.overlaying == overlaying )
+         {
+            cc.conc = concen;
+            break;
+         }
+      }
       for (int ii = 0; ii < listwidget->count(); ii++)
       {
          QListWidgetItem* listwidgetitem = listwidget->item(ii);
@@ -2110,9 +2117,11 @@ void US_BufferGuiNew::remove_cosedcomp(QListWidgetItem *item) {
       }
 
       int index = 0;
+      // The same name can be in both lists: remove the one of this list
+      const bool item_overlaying = ( item->listWidget() == lw_upper_cosedcomps );
       for (int ii = 0; ii < buffer->cosed_component.size(); ++ii) {
          US_CosedComponent cc = buffer->cosed_component[ii];
-         if (item_name == cc.name) {
+         if (item_name == cc.name && cc.overlaying == item_overlaying) {
             index = ii;
             qDebug() << "TO DELETE::: NAME: " << buffer->cosed_component[ii].name << ", concentration:"
                      << buffer->cosed_component[ii].conc << ", compID: " << buffer->cosed_componentIDs[ii];
@@ -2435,7 +2444,7 @@ void US_BufferGuiNew::newAccepted()
                      << ", D: " << QString::number(cosed_comp.d_coeff, 'f', 5);
           }
       }
-      else {
+      else if ( !lower_cosed.isEmpty() ) {   // (last() of an empty map is undefined)
           auto cosed_comp = lower_cosed.last();
           cosed_comp.s_coeff = 0.0;
           cosed_comp.d_coeff = 0.0;
@@ -2527,6 +2536,7 @@ void US_BufferGuiNew::newAccepted()
             // assign s & D
             i.s_coeff = cosed_comp.s_coeff;
             i.d_coeff = cosed_comp.d_coeff;
+            i.vbar    = cosed_comp.vbar;      // entered with s and D; was never saved
             // assign dens_coeff & visc_coeff
             i.dens_coeff[0] = base_dens;
             i.visc_coeff[0] = base_visc;
@@ -2542,6 +2552,7 @@ void US_BufferGuiNew::newAccepted()
             // assign s & D
             i.s_coeff = cosed_comp.s_coeff;
             i.d_coeff = cosed_comp.d_coeff;
+            i.vbar    = cosed_comp.vbar;      // entered with s and D; was never saved
             // assign dens_coeff & visc_coeff
             i.dens_coeff[0] = base_dens;
             i.visc_coeff[0] = base_visc;
