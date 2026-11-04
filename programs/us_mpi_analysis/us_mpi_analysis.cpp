@@ -638,8 +638,20 @@ void US_MPI_Analysis::set_fit_controls( void )
    }
 
    if ( is_global_fit  &&  noise )
-   {
-      abort_all( "Global fit is not compatible with noise computation" );
+   {  // 2DSA and PCSA fit TI/RI noise of each data set jointly with the
+      //  global solutes (see write_global);  GA and DMGA do not
+      const US_Model::AnalysisType mdl_type = model_type( analysis_type );
+
+      if ( mdl_type != US_Model::TWODSA  &&  mdl_type != US_Model::PCSA )
+      {
+         abort_all( "Global fit with noise computation is only supported for 2DSA and PCSA" );
+      }
+
+      else if ( mdl_type == US_Model::PCSA  &&
+                ( job_config.params.pcsa.tikreg_option != 0  ||  mc_iterations > 1 ) )
+      {  // The PCSA regularization and Monte Carlo stages fit without noise
+         abort_all( "PCSA global fit with noise computation is not compatible with regularization or Monte Carlo" );
+      }
    }
    for ( int ee = 0; ee < data_sets.size(); ee++ )
    {
@@ -1932,9 +1944,12 @@ void US_MPI_Analysis::limitBucket( Bucket& buk ) const
 }
 
 // Get the A,b matrices for a data set
+//  (with TI and/or RI noise given, already at the data set's concentration,
+//  b is the data with that noise removed)
 void US_MPI_Analysis::dset_matrices( int dsx, int* nsolutesP,
       QVector< double >& nnls_a, QVector< double >& nnls_b,
-      QVector< int >& c_used )
+      QVector< int >& c_used, const QVector< double >* ti_noise,
+      const QVector< double >* ri_noise )
 {
    double norm_cut = 1.0;
 
@@ -2003,6 +2018,85 @@ void US_MPI_Analysis::dset_matrices( int dsx, int* nsolutesP,
    for ( int kk = 0; kk < ndspts; kk++, jj++ )
    {
       nnls_b[ kk ]    = gl_nnls_b[ jj ] * concen;
+   }
+
+   const bool sub_ti = ( ti_noise != nullptr  &&  ! ti_noise->isEmpty() );
+   const bool sub_ri = ( ri_noise != nullptr  &&  ! ri_noise->isEmpty() );
+
+   if ( sub_ti  ||  sub_ri )
+   {  // Remove the noise from the data (not where calc_residuals put zero
+      //  for a value at or above the ODlimit)
+      US_DataIO::EditedData* edata = &data_sets[ dsx ]->run_data;
+      const int    nscans  = edata->scanCount();
+      const int    npoints = edata->pointCount();
+      const double odlim   = edata->ODlimit;
+      int          kk      = 0;
+
+      for ( int ss = 0; ss < nscans; ss++ )
+      {
+         const double rinoi = sub_ri ? ri_noise->at( ss ) : 0.0;
+
+         for ( int rr = 0; rr < npoints; rr++, kk++ )
+         {
+            if ( edata->value( ss, rr ) < odlim )
+            {
+               nnls_b[ kk ]   -= ( rinoi + ( sub_ti ? ti_noise->at( rr ) : 0.0 ) );
+            }
+         }
+      }
+   }
+}
+
+// TI and RI noise of one data set, out of those fitted jointly for all data
+//  sets of a global fit, at the data set's (unscaled) concentration
+void US_MPI_Analysis::dset_noise( int dsx, const QVector< double >& gl_ti_noise,
+      const QVector< double >& gl_ri_noise,
+      QVector< double >& ti_noise, QVector< double >& ri_noise )
+{
+   int tioffs   = 0;
+   int rioffs   = 0;
+
+   for ( int ee = 0; ee < dsx; ee++ )
+   {
+      tioffs      += data_sets[ ee ]->run_data.pointCount();
+      rioffs      += data_sets[ ee ]->run_data.scanCount();
+   }
+
+   const int    npoints = data_sets[ dsx ]->run_data.pointCount();
+   const int    nscans  = data_sets[ dsx ]->run_data.scanCount();
+   const double concen  = concentrations[ dsx ];
+   ti_noise.clear();
+   ri_noise.clear();
+
+   if ( gl_ti_noise.size() >= ( tioffs + npoints ) )
+   {
+      for ( int rr = 0; rr < npoints; rr++ )
+         ti_noise << gl_ti_noise[ tioffs + rr ] * concen;
+   }
+
+   if ( gl_ri_noise.size() >= ( rioffs + nscans ) )
+   {
+      for ( int ss = 0; ss < nscans; ss++ )
+         ri_noise << gl_ri_noise[ rioffs + ss ] * concen;
+   }
+
+   DbgLv( 1 ) << "DsNoise: dsx" << dsx << "offs ti ri" << tioffs << rioffs << "sizes ti ri" << ti_noise.size()
+              << ri_noise.size() << "of" << gl_ti_noise.size() << gl_ri_noise.size() << "concen" << concen;
+}
+
+// Write the requested noise(s) of the current data set for the model just
+//  written (write_noise links them to its GUID)
+void US_MPI_Analysis::write_dset_noise( const QVector< double >& ti_noise,
+                                        const QVector< double >& ri_noise )
+{
+   if ( job_config.params.tinoise_option > 0  &&  ! ti_noise.isEmpty() )
+   {
+      write_noise( US_Noise::TI, ti_noise );
+   }
+
+   if ( job_config.params.rinoise_option > 0  &&  ! ri_noise.isEmpty() )
+   {
+      write_noise( US_Noise::RI, ri_noise );
    }
 }
 
@@ -2348,6 +2442,9 @@ void US_MPI_Analysis::write_global( void )
                                &gl_nnls_a, &gl_nnls_b );
       DbgLv( 0 ) << "WrGlob:  glob recompute nsols" << wksim_vals.solutes.size() << "globrec A,b sizes" << gl_nnls_a.size()
                  << gl_nnls_b.size();
+      // TI/RI noise fitted jointly for all data sets (scaled data)
+      const QVector< double > gl_ti_noise = wksim_vals.ti_noise;
+      const QVector< double > gl_ri_noise = wksim_vals.ri_noise;
       nsolutes             = gsim->solutes.size();
       sim.variance         = wksim_vals.variance;
 
@@ -2388,9 +2485,15 @@ void US_MPI_Analysis::write_global( void )
          }
 
 
+         // This data set's part of the noise
+         QVector< double > ds_ti_noise;
+         QVector< double > ds_ri_noise;
+         dset_noise( ee, gl_ti_noise, gl_ri_noise, ds_ti_noise, ds_ri_noise );
+
          DbgLv( 0 ) << "WrGlob:    call write_model(1)";
-         // Output the model from global solute points
+         // Output the model from global solute points, and its noise
          write_model( sim, mdl_type, true );
+         write_dset_noise( ds_ti_noise, ds_ri_noise );
 
          // Grab dataset portion of A and b, then re-fit
          wksim_vals           = sim;
@@ -2406,7 +2509,8 @@ void US_MPI_Analysis::write_global( void )
          QVector< int >    c_used( nsolutes, 0   );
          DbgLv( 0 ) << "WrGlob:    ks kp nar nav" << kscans << kpoints << narows << navals;
 
-         dset_matrices( ee, &nsolutes, nnls_a, nnls_b, c_used );
+         // (data with the global fit's noise removed:  the noise is kept)
+         dset_matrices( ee, &nsolutes, nnls_a, nnls_b, c_used, &ds_ti_noise, &ds_ri_noise );
 
          DbgLv( 0 ) << "WrGlob:    mats built; calling NNLS";
          US_Math2::nnls( nnls_a.data(), narows, narows, nsolutes,
@@ -2450,8 +2554,9 @@ void US_MPI_Analysis::write_global( void )
          }
          DbgLv( 0 ) << "WrGlob:    currds" << ee << "nsol ksol" << nsolutes << ksolutes;
 
-         // Output the model refitted to individual dataset
+         // Output the model refitted to individual dataset, with the same noise
          write_model( wksim_vals, mdl_type, false );
+         write_dset_noise( ds_ti_noise, ds_ri_noise );
       }
    }
 
@@ -2549,6 +2654,9 @@ void US_MPI_Analysis::write_global( void )
       solvesim.set_sim_cache( sim_cache );
       solvesim.calc_residuals( 0, data_sets.size(), wksim_vals, false,
                                &gl_nnls_a, &gl_nnls_b );
+      // TI/RI noise fitted jointly for all data sets (scaled data)
+      const QVector< double > gl_ti_noise = wksim_vals.ti_noise;
+      const QVector< double > gl_ri_noise = wksim_vals.ri_noise;
       nsolutes             = gsim->zsolutes.size();
       DbgLv( 1 ) << "WrGlob:  glob recompute nzsols" << wksim_vals.zsolutes.size() << nsolutes << "globrec A,b sizes"
                  << gl_nnls_a.size() << gl_nnls_b.size();
@@ -2598,9 +2706,15 @@ void US_MPI_Analysis::write_global( void )
             DbgLv( 1 ) << "WrGlob:     cc" << cc << "conc-in" << gsim->zsolutes[cc].c << "conc-out" << sim.zsolutes[cc].c;
          }
 
+         // This data set's part of the noise
+         QVector< double > ds_ti_noise;
+         QVector< double > ds_ri_noise;
+         dset_noise( ee, gl_ti_noise, gl_ri_noise, ds_ti_noise, ds_ri_noise );
+
          DbgLv( 1 ) << "WrGlob:    call write_model(1)";
-         // Output the model from global solute points
+         // Output the model from global solute points, and its noise
          write_model( sim, mdl_type, true );
+         write_dset_noise( ds_ti_noise, ds_ri_noise );
 
          // Grab dataset portion of A and b, then re-fit
          wksim_vals           = sim;
@@ -2616,7 +2730,8 @@ void US_MPI_Analysis::write_global( void )
          QVector< int >    c_used( nsolutes, 0   );
          DbgLv( 1 ) << "WrGlob:    ks kp nar nav" << kscans << kpoints << narows << navals;
 
-         dset_matrices( ee, &nsolutes, nnls_a, nnls_b, c_used );
+         // (data with the global fit's noise removed:  the noise is kept)
+         dset_matrices( ee, &nsolutes, nnls_a, nnls_b, c_used, &ds_ti_noise, &ds_ri_noise );
          double ds_sum_b = 0.0;
          for ( int ii = 0; ii < narows; ii++ )
          {
@@ -2648,8 +2763,9 @@ void US_MPI_Analysis::write_global( void )
          DbgLv( 1 ) << "WrGlob:    currds" << ee << "nsol ksol" << nsolutes << ksolutes << sim.zsolutes.size() << "sum_sol"
                     << sum_sol;
 
-         // Output the model refitted to individual dataset
+         // Output the model refitted to individual dataset, with the same noise
          write_model( wksim_vals, mdl_type, false );
+         write_dset_noise( ds_ti_noise, ds_ri_noise );
       }
       DbgLv( 1 ) << "WrGlob:     dsum_b_all" << dsum_b_all;
    }

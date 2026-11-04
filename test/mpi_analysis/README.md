@@ -33,6 +33,7 @@ and compare the fitted models with stored baselines.
 | `2dsa_customgrid` | custom grid (s × vbar) | 2 | exact |
 | `2dsa_global` | global fit, 2 datasets | 2 | exact |
 | `2dsa_global_mc` | global fit with Monte Carlo (3) | 2 | exact |
+| `2dsa_global_noise` | global fit, 2 datasets, TI + RI noise of each dataset | 2 | exact |
 | `2dsa_composite` | composite job, 2 datasets | 2 | exact |
 | `2dsa_composite_mc` | composite job with Monte Carlo (3) | 2 | exact |
 | `2dsa_composite_meniscus` | composite job with meniscus fit | 2 | exact |
@@ -48,6 +49,7 @@ and compare the fitted models with stored baselines.
 | `2dsa_composite_mc_pmasters` | parallel composite with Monte Carlo | 6 | = `2dsa_composite_mc` |
 | `2dsa_composite_meniscus_pmasters` | parallel composite with meniscus fit | 6 | exact |
 | `pcsa_sl` | PCSA straight lines | 2 | exact |
+| `pcsa_global_noise` | PCSA straight lines, global fit, 2 datasets, TI + RI noise | 2 | exact |
 | `ga_basic` | GA, 3 buckets | 4 | loose |
 | `ga_np2` | GA, 3 buckets, one worker | 2 | exact |
 | `dmga_basic` | DMGA, 3 components, s, f/f0 and concentration float | 2 | loose |
@@ -98,6 +100,8 @@ leave the job's input files in the work directory.
 | `input_bucket_inverted` | GA bucket with s_min > s_max | abort naming the bucket |
 | `input_centerpiece_bottom_default` | `centerpiece_bottom="7.3"` (the invalid default) | abort naming 7.3 |
 | `input_unknown_key` | additional parameter `s_mx` | warning, result as `2dsa_basic` |
+| `input_ga_global_noise` | GA global fit with TI noise | abort "only supported for 2DSA and PCSA" |
+| `input_pcsa_global_noise_mc` | PCSA global fit with noise and Monte Carlo | abort naming regularization or Monte Carlo |
 
 A case can carry a *pending* marker while the fix of the defect it
 documents is still to come: it is reported as XFAIL while it fails and as

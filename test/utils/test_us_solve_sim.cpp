@@ -842,6 +842,123 @@ TEST_F( TestUSSolveSimCalcResiduals, GlobalFitRemovesNoiseOfEachDataSet )
    EXPECT_LT( ndiff, 1e-9 );
 }
 
+TEST_F( TestUSSolveSimCalcResiduals, GlobalFitWithNoiseSavesDataMatrices )
+{
+   // With TI/RI noise fitted, the saved A and b are those before the noise
+   // is removed:  us_mpi_analysis (write_global) refits each data set of a
+   // global fit from its rows, with that data set's fitted noise held fixed
+   const int            ns2 = 9;
+   const int            np2 = ( NPOINTS + 1 ) / 2;
+   US_SolveSim::DataSet dset2;
+   dset2                         = dset;
+   US_DataIO::EditedData& edata2 = dset2.run_data;
+   edata2.xvalues.clear();
+   edata2.scanData.clear();
+   for ( int rr = 0; rr < NPOINTS; rr += 2 )
+   {
+      edata2.xvalues << dset.run_data.xvalues[rr];
+   }
+   for ( int ss = 2; ss < 2 + ns2; ss++ )
+   {
+      US_DataIO::Scan scan = dset.run_data.scanData[ss];
+      scan.delta_r         = 0.04;
+      scan.rvalues.fill( 0.0, np2 );
+      edata2.scanData << scan;
+   }
+   dsets << &dset2;
+
+   US_SolveSim::Simulation input;
+   for ( double sval : { 2.0, 4.0, 6.0 } )
+   {
+      for ( double kval : { 1.2, 2.0 } )
+      {
+         input.solutes << US_Solute( sval * 1.0e-13, kval );
+      }
+   }
+   std::sort( input.solutes.begin(), input.solutes.end() );
+   const int nsols = input.solutes.size();
+
+   const int       narows = NTOTAL + ns2 * np2;
+   QVector<double> amatrix;
+   QVector<double> bvector;
+   {
+      US_SolveSim::Simulation sim = input;
+      sim.noisflag                = 0;
+      US_SolveSim solvesim( dsets, 1, false );
+      solvesim.calc_residuals( 0, 2, sim, false, &amatrix, &bvector );
+   }
+   ASSERT_EQ( amatrix.size(), nsols * narows );
+
+   QVector<double> conc = { 0.3, 0.0, 0.5, 0.0, 0.0, 0.2 };
+   QVector<double> tinoi, rinoi;
+   makeNoise( tinoi, rinoi );
+   QVector<double> ti2( np2 ), ri2( ns2 );
+   for ( int rr = 0; rr < np2; rr++ )
+   {
+      ti2[rr] = 0.03 - 0.001 * rr;
+   }
+   for ( int ss = 0; ss < ns2; ss++ )
+   {
+      ri2[ss] = 0.04 * cos( 1.3 * ss );
+   }
+
+   QVector<double> data( narows );
+   for ( int kk = 0; kk < narows; kk++ )
+   {
+      double val = 0.0;
+      for ( int cc = 0; cc < nsols; cc++ )
+      {
+         val += conc[cc] * amatrix[cc * narows + kk];
+      }
+      if ( kk < NTOTAL )
+      {
+         val += tinoi[kk % NPOINTS] + rinoi[kk / NPOINTS];
+         dset.run_data.scanData[kk / NPOINTS].rvalues[kk % NPOINTS] = val;
+      }
+      else
+      {
+         int ks = kk - NTOTAL;
+         val += ti2[ks % np2] + ri2[ks / np2];
+         edata2.scanData[ks / np2].rvalues[ks % np2] = val;
+      }
+      data[kk] = val;
+   }
+
+   US_SolveSim::Simulation sim = input;
+   sim.noisflag                = 3;
+   QVector<double> asave;
+   QVector<double> bsave;
+   {
+      US_SolveSim solvesim( dsets, 1, false );
+      solvesim.calc_residuals( 0, 2, sim, false, &asave, &bsave );
+   }
+   ASSERT_EQ( asave.size(), amatrix.size() );
+   ASSERT_EQ( bsave.size(), narows );
+   EXPECT_LT( maxDiff( asave, amatrix ), 1e-12 );
+   EXPECT_LT( maxDiff( bsave, data ), 1e-12 );
+   ASSERT_EQ( sim.ti_noise.size(), NPOINTS + np2 );
+   ASSERT_EQ( sim.ri_noise.size(), NSCANS + ns2 );
+
+   // Refit data set 2 alone from its rows, its fitted noise removed
+   const int       nrows2 = ns2 * np2;
+   QVector<double> a2( nsols * nrows2 );
+   QVector<double> b2( nrows2 );
+   QVector<double> x2( nsols, 0.0 );
+   for ( int cc = 0; cc < nsols; cc++ )
+   {
+      for ( int kk = 0; kk < nrows2; kk++ )
+      {
+         a2[cc * nrows2 + kk] = asave[cc * narows + NTOTAL + kk];
+      }
+   }
+   for ( int kk = 0; kk < nrows2; kk++ )
+   {
+      b2[kk] = bsave[NTOTAL + kk] - sim.ti_noise[NPOINTS + kk % np2] - sim.ri_noise[NSCANS + kk / np2];
+   }
+   US_Math2::nnls( a2.data(), nrows2, nrows2, nsols, b2.data(), x2.data() );
+   EXPECT_LT( maxDiff( x2, conc ), 1e-8 );
+}
+
 TEST_F( TestUSSolveSimCalcResiduals, ConstantOffsetIsAbsorbedByFittedNoise )
 {
    // A constant baseline offset is TI noise and RI noise at once:  with TI,

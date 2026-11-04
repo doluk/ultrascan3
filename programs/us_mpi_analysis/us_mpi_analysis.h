@@ -503,7 +503,14 @@ class US_MPI_Analysis : public QObject
         void     process_solutes   ( int&, int&, QVector< US_Solute >& );
         void     dset_matrices     ( int, int*,
                                      QVector< double >&, QVector< double >&,
-                                     QVector< int >& );
+                                     QVector< int >&,
+                                     const QVector< double >* = nullptr,
+                                     const QVector< double >* = nullptr );
+        void     dset_noise        ( int, const QVector< double >&,
+                                     const QVector< double >&,
+                                     QVector< double >&, QVector< double >& );
+        void     write_dset_noise  ( const QVector< double >&,
+                                     const QVector< double >& );
         void     update_outputs    ( bool = false );
         US_Model::AnalysisType model_type( const QString );
         double   rmsd_combined_mc_models ( US_Model& );

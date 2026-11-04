@@ -179,7 +179,9 @@ void US_MPI_Analysis::pcsa_master( void )
             mrec              = mrecs[ 0 ];
             simulation_values.zsolutes  = mrec.isolutes;
             simulation_values.alpha     = 0.0;
-            simulation_values.noisflag  = 0;
+            // TI/RI noise of each data set is fitted jointly, as in the passes
+            simulation_values.noisflag  = ( job_config.params.tinoise_option > 0 ? 1 : 0 )
+                                        + ( job_config.params.rinoise_option > 0 ? 2 : 0 );
             simulation_values.solutes .clear();
             simulation_values.ti_noise.clear();
             simulation_values.ri_noise.clear();

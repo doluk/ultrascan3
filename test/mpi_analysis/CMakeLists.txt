@@ -77,6 +77,7 @@ set(US_MPI_CASES
     2dsa_customgrid
     2dsa_global
     2dsa_global_mc
+    2dsa_global_noise
     2dsa_composite
     2dsa_composite_pmasters
     2dsa_composite_pmasters_np4
@@ -87,6 +88,7 @@ set(US_MPI_CASES
     2dsa_refine_np4
     2dsa_mc_np4
     pcsa_sl
+    pcsa_global_noise
     ga_basic
     ga_np2
     dmga_basic
@@ -117,6 +119,8 @@ set(US_MPI_INPUT_CASES
     input_bucket_inverted
     input_unknown_key
     input_centerpiece_bottom_default
+    input_ga_global_noise
+    input_pcsa_global_noise_mc
 )
 
 foreach(case ${US_MPI_CASES} ${US_MPI_INPUT_CASES})

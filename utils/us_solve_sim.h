@@ -161,7 +161,8 @@ class US_UTIL_EXTERN US_SolveSim : public QObject
     //! \param sim_vals       Simulation parameters object
     //! \param padAB          Optional flag to pad saved A and B
     //! \param ASave          Optional pointer for saving A matrix
-    //! \param BSave          Optional pointer for saving B matrix
+    //! \param BSave          Optional pointer for saving B matrix (unpadded:
+    //!                       the data, before any TI/RI noise is removed)
     //! \param NSave          Optional pointer for saving norm vector
     void calc_residuals( int, int, Simulation&, bool = false,
                          QVector< double >* = 0, QVector< double >*  = 0,

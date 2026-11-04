@@ -87,6 +87,17 @@ def without(params, keys):
     return {k: v for k, v in params.items() if k not in keys}
 
 
+PCSA_SL = {
+    "curve_type": "SL", "solute_type": "013.skv",
+    "x_min": "1.0", "x_max": "10.0", "y_min": "1.0", "y_max": "3.0",
+    "z_value": "0.0", "vars_count": "6", "curves_points": "10",
+    "gfit_iterations": "1", "thr_deltr_ratio": "0.0001",
+    "max_iterations": "1", "mc_iterations": "1",
+    "tikreg_option": "0", "tikreg_alpha": "0.0",
+    "tinoise_option": "0", "rinoise_option": "0",
+    "debug_level": "0", "seed": "4711",
+}
+
 CASES = {
     "2dsa_basic": {
         "method": "2DSA", "datasets": [DS_A], "np": 2,
@@ -189,6 +200,12 @@ CASES = {
         "method": "2DSA", "datasets": [DS_A, DS_B], "np": 2,
         "params": dict(GRID_2DSA, mc_iterations="3"), "global_fit": True,
     },
+    "2dsa_global_noise": {
+        # TI + RI noise of each dataset fitted jointly with the global solutes
+        "method": "2DSA", "datasets": [DS_A, DS_B], "np": 2,
+        "params": dict(GRID_2DSA, tinoise_option="1", rinoise_option="1"),
+        "global_fit": True,
+    },
     "2dsa_composite": {
         "method": "2DSA", "datasets": [DS_A, DS_B], "np": 2,
         "params": dict(GRID_2DSA),
@@ -231,16 +248,12 @@ CASES = {
     },
     "pcsa_sl": {
         "method": "PCSA", "datasets": [DS_A], "np": 2,
-        "params": {
-            "curve_type": "SL", "solute_type": "013.skv",
-            "x_min": "1.0", "x_max": "10.0", "y_min": "1.0", "y_max": "3.0",
-            "z_value": "0.0", "vars_count": "6", "curves_points": "10",
-            "gfit_iterations": "1", "thr_deltr_ratio": "0.0001",
-            "max_iterations": "1", "mc_iterations": "1",
-            "tikreg_option": "0", "tikreg_alpha": "0.0",
-            "tinoise_option": "0", "rinoise_option": "0",
-            "debug_level": "0", "seed": "4711",
-        },
+        "params": dict(PCSA_SL),
+    },
+    "pcsa_global_noise": {
+        "method": "PCSA", "datasets": [DS_A, DS_B], "np": 2,
+        "params": dict(PCSA_SL, tinoise_option="1", rinoise_option="1"),
+        "global_fit": True,
     },
     "ga_basic": {
         "method": "GA", "datasets": [DS_A], "np": 4,
@@ -440,6 +453,15 @@ INPUT_CASES = {
     "input_centerpiece_bottom_default": input_case(
         "2dsa_basic", centerpiece_bottom="7.3",
         expect={"abort": r"invalid default value of 7\.3"}),
+    # Global fit with TI/RI noise:  only 2DSA and PCSA fit it, and PCSA
+    #  not with regularization or Monte Carlo
+    "input_ga_global_noise": input_case(
+        "ga_np2", datasets=[DS_A, DS_B], global_fit=True,
+        params=lambda p: dict(p, tinoise_option="1"), timeout=90,
+        expect={"abort": r"only supported for 2DSA and PCSA"}),
+    "input_pcsa_global_noise_mc": input_case(
+        "pcsa_global_noise", params=lambda p: dict(p, mc_iterations="3"),
+        timeout=90, expect={"abort": r"not compatible with regularization or Monte Carlo"}),
     # An unknown parameter is reported, the run goes on
     "input_unknown_key": input_case(
         "2dsa_basic", params=lambda p: dict(p, s_mx="10.0"),

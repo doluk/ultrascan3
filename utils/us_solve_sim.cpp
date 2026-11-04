@@ -1178,6 +1178,16 @@ DbgLv(1) << "CR: sdat:"
    DbgLv( 1 ) << "  noise NNLS: noisflag" << noisflag << "nscans npoints" << dscans << dpoints << "nsolutes narows" << nsolutes
               << narows;
 
+   if ( ASave != NULL && BSave != NULL )
+   {  // Save A and B before nnls_noise() projects them in place
+      narows = tikreg ? ( ntotal + nsolutes ) : ntotal;
+      navals = narows * nsolutes;
+      nnls_a.resize( navals );
+      sv_nnls_a = nnls_a;
+      sv_nnls_b = nnls_b;
+      DbgLv( 1 ) << "ti_or_ri: CR: sv_nnls_a size" << sv_nnls_a.size() << nnls_a.size();
+   }
+
    int nnlsrc = nnls_noise( noisflag, dscans, dpoints, nsolutes, narows, nnls_a, nnls_b, nnls_x, tinvec, rinvec, &abort );
 
    if ( nnlsrc == 1 )
