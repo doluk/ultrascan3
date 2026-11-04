@@ -439,3 +439,73 @@ TEST_F( TestUSMathBF, AdjustSdIsTheStandardCorrectionOfTheLocalBuffer )
       EXPECT_NEAR( dd / ( D20w / sd.D20w_correction ), 1.0, 1.0e-12 ) << "T " << tc;
    }
 }
+
+// A component in both layers: the order of the list does not matter, and
+//  the overlay excess starts at the overlay's and lower solution's values
+TEST_F( TestUSMathBF, ComponentOrderDoesNotMatter )
+{
+   US_CosedComponent base = components()[ 1 ];
+   US_CosedComponent lo   = components()[ 0 ];
+   lo.name = "NaCl"; lo.conc = 0.1; lo.overlaying = false; lo.d_coeff = 1.5e-5;
+   lo.dens_coeff[2] = 0.04; lo.visc_coeff[2] = 0.0;
+   US_CosedComponent up = lo;
+   up.conc = 0.5; up.overlaying = true;
+
+   const double h  = sqrt( MENISCUS * MENISCUS + VOLUME * 360.0 / ( ANGLE * PATHLEN * M_PI ) ) - MENISCUS;
+   const double vt = M_PI * PATHLEN * ANGLE / 360.0 * ( BOTTOM * BOTTOM - MENISCUS * MENISCUS );
+   for ( int order = 0; order < 2; order++ )
+   {
+      QList<US_CosedComponent> comps;
+      comps << base;
+      if ( order == 0 ) comps << up << lo; else comps << lo << up;
+      US_Math_BF::Band_Forming_Gradient bfg( MENISCUS, BOTTOM, VOLUME, comps, PATHLEN, ANGLE );
+      bfg.get_eigenvalues();
+      double dens, visc, cin, cbelow, ceq;
+      bfg.calc_dens_visc( MENISCUS + 0.5 * h, 0.5, 293.15, dens, visc, cin );
+      bfg.calc_dens_visc( MENISCUS + 3.0 * h, 0.5, 293.15, dens, visc, cbelow );
+      bfg.calc_dens_visc( 6.8, 1.0e7, 293.15, dens, visc, ceq );
+      EXPECT_NEAR( cin, 0.5, 1.0e-12 ) << "order " << order;
+      EXPECT_NEAR( cbelow, 0.1, 1.0e-12 ) << "order " << order;
+      EXPECT_NEAR( ceq, 0.1 + 0.4 * VOLUME / vt, 1.0e-6 ) << "order " << order;
+   }
+}
+
+// The table's last interval interpolates up to the last scan
+TEST_F( TestUSMathBF, TableInterpolatesTheLastInterval )
+{
+   US_Math_BF::Band_Forming_Gradient bfg = makeGradient();
+   US_SimulationParameters sp;
+   US_DataIO::RawData raw;
+   makeRun( MENISCUS, 6000.0, sp, raw );
+   bfg.calculate_gradient( sp, &raw );
+   const int ns = bfg.conc_bfg_data.scanCount();
+   ASSERT_GT( ns, 2 );
+   const double tlast = bfg.conc_bfg_data.scanData[ ns - 1 ].seconds;
+   const double xx    = 6.6;
+   double dens[1] = { BASE_DENS }, visc[1] = { BASE_VISC }, conc[1] = { 0.0 };
+   bfg.interpolateCCodiff( 1, &xx, tlast, 293.15, dens, visc, conc );
+   double dd, vv, cc;
+   bfg.calc_dens_visc( xx, tlast, 293.15, dd, vv, cc );
+   EXPECT_NEAR( conc[0], cc, 1.0e-6 );
+}
+
+// An overlay component that does not diffuse still gives a table to use
+TEST_F( TestUSMathBF, NonDiffusingOverlayComponentGivesAUsableTable )
+{
+   QList<US_CosedComponent> comps = components();
+   comps[ 0 ].d_coeff = 0.0;
+   US_Math_BF::Band_Forming_Gradient bfg( MENISCUS, BOTTOM, VOLUME, comps, PATHLEN, ANGLE );
+   bfg.get_eigenvalues();
+   US_SimulationParameters sp;
+   US_DataIO::RawData raw;
+   makeRun( MENISCUS, 600.0, sp, raw );
+   bfg.calculate_gradient( sp, &raw );
+   EXPECT_TRUE( std::isfinite( bfg.dt ) );
+   EXPECT_GT( bfg.dens_bfg_data.scanCount(), 1 );
+   const double xx = 6.3;
+   double dens[1] = { BASE_DENS }, visc[1] = { BASE_VISC }, conc[1] = { 0.0 };
+   bfg.interpolateCCodiff( 1, &xx, 300.0, 293.15, dens, visc, conc );
+   // The H2O stays in the overlay; without diffusion nothing damps the
+   //  series, so its 1750 terms show Gibbs ripple of ~0.05 % of the step
+   EXPECT_NEAR( conc[0], 0.0, 0.002 * 55.51 );
+}

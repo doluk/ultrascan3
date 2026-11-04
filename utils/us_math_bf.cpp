@@ -47,6 +47,52 @@ quint64 bits( const double value ) {
    return b;
 }
 
+// Split the cosedimenting components into the overlay's excess and the
+//  lower solution's excess over what both have in common, by name.  A
+//  component in both layers is an excess of the difference in the layer that
+//  has more, on an offset of the concentration both have; at equal
+//  concentrations it is in neither map.  The result does not depend on the
+//  order of the list (it did: listing the lower entry first gave the excess
+//  plus the excess as offset, and the overlay excess the lower volume).
+//  Sedimenting components (s != 0) are not part of the gradient.
+void split_overlay( const QList<US_CosedComponent>& comps,
+                    QMap<QString, US_CosedComponent>& upper_cosed,
+                    QMap<QString, US_CosedComponent>& lower_cosed ) {
+   QMap<QString, US_CosedComponent> upper_in;
+   QMap<QString, US_CosedComponent> lower_in;
+   for ( const US_CosedComponent& cc : comps ) {
+      if ( cc.s_coeff != 0.0 ) {
+         continue;
+      }
+      ( cc.overlaying ? upper_in : lower_in )[ cc.name ] = cc;
+   }
+   for ( auto it = upper_in.constBegin(); it != upper_in.constEnd(); ++it ) {
+      if ( !lower_in.contains( it.key() ) ) {
+         upper_cosed[ it.key() ] = it.value();
+      }
+   }
+   for ( auto it = lower_in.constBegin(); it != lower_in.constEnd(); ++it ) {
+      if ( !upper_in.contains( it.key() ) ) {
+         lower_cosed[ it.key() ] = it.value();
+         continue;
+      }
+      US_CosedComponent up = upper_in.value( it.key() );
+      US_CosedComponent lo = it.value();
+      if ( fabs( up.conc - lo.conc ) < GSL_ROOT5_DBL_EPSILON ) {
+         continue;   // the same in both layers: part of the base
+      }
+      if ( up.conc > lo.conc ) {
+         up.concentration_offset = lo.conc;
+         up.conc                 = up.conc - lo.conc;
+         upper_cosed[ it.key() ] = up;
+      } else {
+         lo.concentration_offset = up.conc;
+         lo.conc                 = lo.conc - up.conc;
+         lower_cosed[ it.key() ] = lo;
+      }
+   }
+}
+
 // Size bounds of one thread's cache for one gradient
 const int max_rows   = 4096;     // ~14 kB each with 1750 eigenvalues
 const int max_values = 200000;   // ~0.1 kB each
@@ -128,7 +174,9 @@ double US_Math_BF::Band_Forming_Gradient::diffusion_time( const double t, const 
       if ( t <= dtime_t[ 0 ] ) {
          return dtime_S[ 0 ] * t / dtime_t[ 0 ];
       }
-      const int jj = static_cast<int>( std::upper_bound( dtime_t.constBegin(), dtime_t.constEnd(), t )
+      // First recorded time >= t: dtime_t[0] < t <= dtime_t[nh-1] puts it in
+      //  [1, nh-1] (upper_bound would give nh for t == the last time)
+      const int jj = static_cast<int>( std::lower_bound( dtime_t.constBegin(), dtime_t.constEnd(), t )
                                        - dtime_t.constBegin() );
       const double ff = ( t - dtime_t[ jj - 1 ] ) / ( dtime_t[ jj ] - dtime_t[ jj - 1 ] );
       return dtime_S[ jj - 1 ] + ff * ( dtime_S[ jj ] - dtime_S[ jj - 1 ] );
@@ -175,74 +223,7 @@ US_Math_BF::Band_Forming_Gradient::Band_Forming_Gradient(const double m, const d
    conc_bfg_data = US_DataIO::RawData();
    QMap<QString, US_CosedComponent> upper_cosed;
    QMap<QString, US_CosedComponent> lower_cosed;
-      foreach (US_CosedComponent i, comps) {
-         if (i.s_coeff != 0.0 )
-         {
-            continue;
-         }
-         if (!i.overlaying && upper_cosed.contains(i.name)) {
-            // the current component is in the lower part, but there is another component with the same name in the
-            // overlaying section of the band forming gradient
-            US_CosedComponent j = upper_cosed[i.name];
-            if (j.conc > i.conc) {
-               // the concentration is higher in upper part, move it completely to the upper part and set the
-               // concentration to the excess concentration
-               j.conc = j.conc - i.conc;
-               j.concentration_offset = i.conc;
-               i.concentration_offset = i.conc;
-               upper_cosed[j.name] = j;
-               continue;
-            } else if (fabs(j.conc - i.conc) < GSL_ROOT5_DBL_EPSILON) {
-               // the concentration of both components is roughly equal,
-               // remove the component from the upper and lower part
-               upper_cosed.remove(j.name);
-               i.concentration_offset = i.conc;
-               continue;
-            } else {
-               j.conc = i.conc - j.conc;
-               j.concentration_offset = j.conc;
-               lower_cosed[j.name] = j;
-               i.concentration_offset = j.conc;
-               upper_cosed.remove(j.name);
-               continue;
-            }
-         }
-         if (i.overlaying && lower_cosed.contains(i.name)) {
-            // the current component is in the lower part, but there is another component with the same name in the
-            // overlaying section of the band forming gradient
-            US_CosedComponent j = lower_cosed[i.name];
-            if (j.conc > i.conc) {
-               // the concentration is higher in lower part, move it completely to the lower part and set the
-               // concentration to the excess concentration
-               j.conc = j.conc - i.conc;
-               j.concentration_offset = i.conc;
-               i.concentration_offset = i.conc;
-               lower_cosed[j.name] = j;
-               continue;
-            } else if (fabs(j.conc - i.conc) < GSL_ROOT5_DBL_EPSILON) {
-               // the concentration of both components is roughly equal,
-               // remove the component from the upper and lower part
-               lower_cosed.remove(j.name);
-               i.concentration_offset = i.conc;
-               continue;
-            } else {
-               j.conc = i.conc - j.conc;
-               j.concentration_offset = j.conc;
-               i.concentration_offset = i.conc;
-               upper_cosed[j.name] = j;
-               lower_cosed.remove(j.name);
-               continue;
-            }
-         }
-         if (i.overlaying )
-         {
-            upper_cosed[i.name] = i;
-         }
-         else
-         {
-            lower_cosed[i.name] = i;
-         }
-      }
+   split_overlay( comps, upper_cosed, lower_cosed );
    // Determine the base of the buffer
       foreach (US_CosedComponent cosed_comp, comps) {
          if (cosed_comp.s_coeff != 0.0 )
@@ -341,74 +322,7 @@ US_Math_BF::Band_Forming_Gradient::Band_Forming_Gradient(const US_SimulationPara
    QList<US_CosedComponent> comps = buffer->cosed_component;
    QMap<QString, US_CosedComponent> upper_cosed;
    QMap<QString, US_CosedComponent> lower_cosed;
-      foreach (US_CosedComponent i, comps) {
-         if (i.s_coeff != 0.0 )
-         {
-            continue;
-         }
-         if (!i.overlaying && upper_cosed.contains(i.name)) {
-            // the current component is in the lower part, but there is another component with the same name in the
-            // overlaying section of the band forming gradient
-            US_CosedComponent j = upper_cosed[i.name];
-            if (j.conc > i.conc) {
-               // the concentration is higher in the upper part, move it completely to the upper part and set the
-               // concentration to the excess concentration
-               j.conc = j.conc - i.conc;
-               j.concentration_offset = i.conc;
-               i.concentration_offset = i.conc;
-               upper_cosed[j.name] = j;
-               continue;
-            } else if (fabs(j.conc - i.conc) < GSL_ROOT5_DBL_EPSILON) {
-               // the concentration of both components is roughly equal,
-               // remove the component from the upper and lower part
-               upper_cosed.remove(j.name);
-               i.concentration_offset = i.conc;
-               continue;
-            } else {
-               j.conc = i.conc - j.conc;
-               j.concentration_offset = j.conc;
-               lower_cosed[j.name] = j;
-               i.concentration_offset = j.conc;
-               upper_cosed.remove(j.name);
-               continue;
-            }
-         }
-         if (i.overlaying && lower_cosed.contains(i.name)) {
-            // the current component is in the lower part, but there is another component with the same name in the
-            // overlaying section of the band forming gradient
-            US_CosedComponent j = lower_cosed[i.name];
-            if (j.conc > i.conc) {
-               // the concentration is higher in the lower part, move it completely to the lower part and set the
-               // concentration to the excess concentration
-               j.conc = j.conc - i.conc;
-               j.concentration_offset = i.conc;
-               i.concentration_offset = i.conc;
-               lower_cosed[j.name] = j;
-               continue;
-            } else if (fabs(j.conc - i.conc) < GSL_ROOT5_DBL_EPSILON) {
-               // the concentration of both components is roughly equal,
-               // remove the component from the upper and lower part
-               lower_cosed.remove(j.name);
-               i.concentration_offset = i.conc;
-               continue;
-            } else {
-               j.conc = i.conc - j.conc;
-               j.concentration_offset = j.conc;
-               i.concentration_offset = i.conc;
-               upper_cosed[j.name] = j;
-               lower_cosed.remove(j.name);
-               continue;
-            }
-         }
-         if (i.overlaying)
-         {
-            upper_cosed[i.name] = i;
-         }
-         else
-         {
-            lower_cosed[i.name] = i;
-         }
-   }
+   split_overlay( comps, upper_cosed, lower_cosed );
    // Determine the base of the buffer
       foreach (US_CosedComponent cosed_comp, comps) {
          if (cosed_comp.s_coeff != 0.0 )
@@ -837,7 +751,9 @@ US_Math_BF::Band_Forming_Gradient::calculate_gradient(
    }
 
    // Declares the scan structure and set the lower limit for dt to keep workload reasonable
-   dt = qMax(simparms.radial_resolution*simparms.radial_resolution / 6 / max_D, 5.0);
+   // (no diffusing overlay component: the profile stays the initial step,
+   //  and the steps need a finite size all the same)
+   dt = ( max_D > 0.0 ) ? qMax(simparms.radial_resolution*simparms.radial_resolution / 6 / max_D, 5.0) : 5.0;
    DbgLv(2) << "max D " << max_D << "; dt " << dt;
    dens_bfg_data.scanData.clear();
    visc_bfg_data.scanData.clear();
@@ -883,6 +799,12 @@ US_Math_BF::Band_Forming_Gradient::calculate_gradient(
                     (editedData->scanData[bfg_idx].seconds-editedData->scanData[bfg_idx-1].seconds);
          double c = editedData->scanData[bfg_idx].temperature - (m * editedData->scanData[bfg_idx].seconds);
          temp = m * runtime + c;
+         // Outside the scans the nearest scan's temperature: a line through
+         //  two noisy readings (0.1 C steps) extrapolated over the minutes
+         //  before the first scan could be off by a degree, D by ~3 %
+         temp = ( runtime <= editedData->scanData.first().seconds )
+                ? editedData->scanData.first().temperature
+                : ( runtime >= editedData->scanData.last().seconds ? editedData->scanData.last().temperature : temp );
          double m2 = (editedData->scanData[bfg_idx].rpm-editedData->scanData[bfg_idx-1].rpm)/
                     (editedData->scanData[bfg_idx].seconds-editedData->scanData[bfg_idx-1].seconds);
          double c2 = editedData->scanData[bfg_idx].rpm - ( m2 * editedData->scanData[bfg_idx].seconds );
@@ -1011,7 +933,8 @@ US_Math_BF::Band_Forming_Gradient::interpolateCCodiff(
    // check if there is already precalculated values are available, for this simparams has to be different
    // this can be checked by comparing the meshType as the default is ASTFEM and this could can only be invoked
    // from ASTFVM
-   if ( simparms.meshType == US_SimulationParameters::ASTFEM )
+   // (a table needs two scans to interpolate between)
+   if ( simparms.meshType == US_SimulationParameters::ASTFEM || dens_bfg_data.scanData.size() < 2 )
    {
       // no precalculated data is available, calculate it manually
       calc_dens_visc(N, x, t, temp, DensCosed, ViscCosed );
@@ -1025,7 +948,8 @@ US_Math_BF::Band_Forming_Gradient::interpolateCCodiff(
 
    // Hoist scan count calculation outside the loop
    const int scanCount = dens_bfg_data.scanCount();
-   while ((t1 < t) && scn < scanCount - 1) {  // walk down salt scans until we are straddling desired time value
+   // scanData[scn] exists while scn < scanCount; "- 1" here never reached the last scan
+   while ((t1 < t) && scn < scanCount) {  // walk down salt scans until we are straddling desired time value
       t0 = t1;
       t1 = scanData[ scn ].seconds;
       scn++;
@@ -1047,7 +971,7 @@ US_Math_BF::Band_Forming_Gradient::interpolateCCodiff(
    const double* scn1dens = dens_bfg_data.scanData.at( scn - 1 ).rvalues.constData();
    const double* scn2visc = visc_bfg_data.scanData.at( scn - 2 ).rvalues.constData();
    const double* scn1visc = visc_bfg_data.scanData.at( scn - 1 ).rvalues.constData();
-   const int Nx_limit = Nx - 2;
+   const int Nx_limit = Nx - 1;   // the last grid point too
 
    for ( int jf = 0; jf < N; jf++ )      // loop for all x[jf]
    {
@@ -1092,7 +1016,8 @@ US_Math_BF::Band_Forming_Gradient::interpolateCCodiff(
    // check if there is already precalculated values are available, for this simparams has to be different
    // this can be checked by comparing the meshType as the default is ASTFEM and this could can only be invoked
    // from ASTFVM
-   if ( simparms.meshType == US_SimulationParameters::ASTFEM )
+   // (a table needs two scans to interpolate between)
+   if ( simparms.meshType == US_SimulationParameters::ASTFEM || dens_bfg_data.scanData.size() < 2 )
    {
       // no precalculated data is available, calculate it manually; as in the
       //  table path below, the arrays hold the base buffer and get the increments
@@ -1113,7 +1038,8 @@ US_Math_BF::Band_Forming_Gradient::interpolateCCodiff(
 
    // Hoist scan count calculation outside the loop
    const int scanCount = dens_bfg_data.scanCount();
-   while ((t1 < t) && scn < scanCount - 1) {  // walk down salt scans until we are straddling desired time value
+   // scanData[scn] exists while scn < scanCount; "- 1" here never reached the last scan
+   while ((t1 < t) && scn < scanCount) {  // walk down salt scans until we are straddling desired time value
       t0 = t1;
       t1 = scanData[ scn ].seconds;
       scn++;
@@ -1137,7 +1063,7 @@ US_Math_BF::Band_Forming_Gradient::interpolateCCodiff(
    const double* scn1visc = visc_bfg_data.scanData.at( scn - 1 ).rvalues.constData();
    const double* scn2conc = conc_bfg_data.scanData.at( scn - 2 ).rvalues.constData();
    const double* scn1conc = conc_bfg_data.scanData.at( scn - 1 ).rvalues.constData();
-   const int Nx_limit = Nx - 2;
+   const int Nx_limit = Nx - 1;   // the last grid point too
 
    for ( int jf = 0; jf < N; jf++ )      // loop for all x[jf]
    {
