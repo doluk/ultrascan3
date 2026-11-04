@@ -146,7 +146,7 @@ US_CosedComponentRequester::US_CosedComponentRequester(QMap<QString, US_CosedCom
    }
    else le_vbar = us_lineedit("");
    if (!std::isnan(comp->d_coeff)&&comp->d_coeff != 0.0){
-      le_diffusion = us_lineedit(QString::number(comp->d_coeff*1E13, 'f', 6));
+      le_diffusion = us_lineedit(QString::number(comp->d_coeff, 'g', 6));   // in cm^2/s, as read back
    }
    else le_diffusion = us_lineedit("");
    le_density1 = us_lineedit("");
@@ -230,7 +230,7 @@ void US_CosedComponentRequester::cancelled(void) {
 }
 
 void US_CosedComponentRequester::accept(void) {
-   comp->s_coeff = le_sedimentation->text().toDouble() / 10E+13;
+   comp->s_coeff = le_sedimentation->text().toDouble() * 1.0E-13;   // entered in S
    comp->d_coeff = le_diffusion->text().toDouble();
    comp->vbar = le_vbar->text().toDouble();
    qDebug() << "Set cosed component properties: s" << QString::number(comp->s_coeff, 'f', 5)
@@ -331,7 +331,7 @@ void US_LowerCosedComponentRequester::cancelled(void) {
 }
 
 void US_LowerCosedComponentRequester::accept(void) {
-   comp->s_coeff = le_sedimentation->text().toDouble() / 10E+13;
+   comp->s_coeff = le_sedimentation->text().toDouble() * 1.0E-13;   // entered in S
    comp->d_coeff = le_diffusion->text().toDouble();
    comp->vbar = le_vbar->text().toDouble();
    qDebug() << "Set cosed component properties: s" << QString::number(comp->s_coeff, 'f', 5)

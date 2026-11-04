@@ -110,12 +110,14 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
             //! \param t     Current time value
             //! \param Denscosed Density of cosed buffer for current time
             //! \param Visccosed Viscosity of cosed buffer for current time
-            void InterpolateCCosed( int, const double*, double, double*, double*);
+            void InterpolateCCosed( int, const double*, double, double*, double*) const;
 
             US_DataIO::RawData      sa_data;   //!< cosed data 1-component
                                                //!<  simulation for co-sed
             QMap<QString, US_DataIO::RawData> cosed_comp_data;
-            QList<US_CosedComponent>* cosed_components;
+            //! A copy: the list given to the constructor may not outlive this
+            //!  (us_mpi_analysis passed a local one)
+            QList<US_CosedComponent> cosed_components;
             US_Model                model;     // cosed data co-sed model
             US_SimulationParameters simparms;  // cosed simulation parameters
             bool is_empty;
@@ -201,6 +203,12 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
       //! \param dt_fixed  Time step in seconds (>0). When <=0 (default) the
       //!                  dt formula is used, i.e. unchanged behavior.
       void setFixedDt( double dt_fixed );
+
+      //! \brief Set the implicit weight of the corrector time step.
+      //! \param theta  0.5 = Crank-Nicolson (marginally stable for stiff
+      //!               diffusive modes on fine meshes), 1 = backward Euler.
+      //!               Clamped to [0.5,1]; default 0.55.
+      void setImplicitWeight( double theta );
 
       //! \brief Keep the initial mesh uniform (skip the setup adaptive refine).
       //! \param on  When true, combined with SetMeshRefineOpt(0), Nv stays
@@ -359,6 +367,8 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
       double  param_D20w_corr = 1.0; // cached D20w_correction (run conditions)
       double  param_dens_tb   = 0.0; // run-temp buffer density (rho_ref, case 3)
       double  param_visc_tb   = 0.0; // run-temp buffer viscosity (eta_ref, case 3)
+      double  param_wdens_ratio = 1.0; // water density, run temp / 20 C (case 2)
+      double  param_wvisc_ratio = 1.0; // water viscosity, run temp / 20 C (case 2)
       double  param_w2;        // rpm-based omega-sq-t, w2=(rpm*pi/30)^2
       double  param_w2_t0;      // rpm-based omega-sq-t at time t0, w2=(rpm(t0)*pi/30)^2
       double  param_w2_t0dt;     // rpm-based omega-sq-t at time t0+dt, w2=(rpm(t0+dt)*pi/30)^2
@@ -376,6 +386,7 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
       int     init_Nelem   = 0;      // >0 => initial element count override
       int     steps_per_transit = 0; // >0 => steps-per-transit dt control
       double  fixed_dt     = 0.0;    // >0 => use this dt directly
+      double  theta_impl   = 0.55;   // implicit weight of the corrector step
       bool    uniformMesh  = false;  // true => skip setup adaptive refine
       bool    refineOptSet = false;  // true => external SetMeshRefineOpt honored
       bool    meshSpeedSet = false;  // true => external SetMeshSpeedFactor honored

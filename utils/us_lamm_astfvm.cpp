@@ -460,7 +460,7 @@ US_LammAstfvm::CosedData::CosedData( const US_Model&           amodel, US_Simula
    model            = amodel;
    simparms         = std::move( sim_params );
    sa_data          = *asim_data;
-   cosed_components = cosed_comps;
+   cosed_components = *cosed_comps;
    count            = 0;
    DbgLv( 2 ) << "SaltD: sa_data avg.temp." << sa_data.average_temperature();
    DbgLv( 2 ) << "SaltD: asim_data avg.temp." << asim_data->average_temperature();
@@ -531,7 +531,7 @@ US_LammAstfvm::CosedData::CosedData( const US_Model&           amodel, US_Simula
 radius( Nx - 2 )
             << sa_data.radius( Nx - 1 );
 
-   astfem->calculate( sa_data, *cosed_components ); // solve equations to create data
+   astfem->calculate( sa_data, cosed_components ); // solve equations to create data
    DbgLv( 1 ) << "SaltD: sa_data:" << sa_data.scanCount() << sa_data.pointCount();
    Nt = sa_data.scanCount();
    Nx = sa_data.pointCount();
@@ -647,66 +647,45 @@ void US_LammAstfvm::CosedData::initCosed( double* Cs0, double* Cs1, double* xs )
 }
 
 void US_LammAstfvm::CosedData::InterpolateCCosed( int     N, const double* x, double t, double* DensCosed,
-                                                  double* ViscCosed )
+                                                  double* ViscCosed ) const
 {
-   count                    = ( count + 1 ) % 20;
-   double          t0       = sa_data.scanData[0].seconds; // times of 1st 2 salt scans
-   double          t1       = sa_data.scanData[1].seconds;
-   int             scn      = 2;                       // index to the next scan to use
-   int             Nt_cosed = sa_data.scanCount() - 3; // scan count less two used here
-   double*         Cs0;                                // density for the 1st time interval
-   double*         Cs1;                                // density for the 2nd time interval
-   double*         xs;
-   QVector<double> tmpCs0;
-   QVector<double> tmpCs1;
-   QVector<double> tmpXs;
-   tmpCs0.fill( 0.0, sa_data.pointCount() );
-   tmpCs1.fill( 0.0, sa_data.pointCount() );
-   tmpXs.fill( 0.0, sa_data.pointCount() );
-   Cs0 = tmpCs0.data();
-   Cs1 = tmpCs1.data();
-
-   xs = tmpXs.data();
-   Q_FOREACH( US_Model::SimulationComponent comp, model.components )
+   // Only reads this object: one CosedData is shared by the solvers of
+   //  several threads (us_2dsa's workers), so nothing here may be written to it
+   for ( const US_Model::SimulationComponent& comp : model.components )
    {
-      sa_data = cosed_comp_data[comp.analyteGUID];
-      initCosed( Cs0, Cs1, xs );
-      DbgLv( 2 ) << "SaltD:ntrp:  N t t1 Nt Nx" << N << t << t1 << Nt_cosed << Nx << "Cs0N Cs1N" << Cs0[Nx - 1]
-               << Cs1[Nx - 1];
-
-      while ( ( t1 < t ) && ( scn < sa_data.scanCount() ) )
+      const auto cit = cosed_comp_data.constFind( comp.analyteGUID );
+      if ( cit == cosed_comp_data.constEnd() || cit.value().scanData.size() < 2 )
       {
-         // walk down salt scans until we are straddling the desired time value
+         continue;
+      }
+      const US_DataIO::RawData& sdata = cit.value();
+      // The two scans straddling t, from this component's own data
+      double t0  = sdata.scanData.at( 0 ).seconds;
+      double t1  = sdata.scanData.at( 1 ).seconds;
+      int    scn = 2;
+      while ( ( t1 < t ) && ( scn < sdata.scanData.size() ) )
+      {
          t0 = t1;
-         t1 = sa_data.scanData[scn].seconds; // Nt = time level left
-         Nt_cosed--;
+         t1 = sdata.scanData.at( scn ).seconds;
          scn++;
-         DbgLv( 3 ) << "SaltD:ntrp:      0 t 1" << t0 << t << t1 << "  N s" << Nt_cosed << scn;
       }
-      DbgLv( 2 ) << "SaltD:ntrp:   t0 t t1" << t0 << t << t1 << "  Nt scn" << Nt_cosed << scn;
-      for ( int j = 0; j < Nx; j++ )
-      {
-         // get 1st two salt arrays from 1st two salt scans
-         Cs0[j] = sa_data.value( scn - 2, j );
-         Cs1[j] = sa_data.value( scn - 1, j );
-      }
+      DbgLv( 2 ) << "SaltD:ntrp:   t0 t t1" << t0 << t << t1 << "  scn" << scn;
+      const double* Cs0 = sdata.scanData.at( scn - 2 ).rvalues.constData();
+      const double* Cs1 = sdata.scanData.at( scn - 1 ).rvalues.constData();
+      const double* xs  = sdata.xvalues.constData();
       // interpolate between t0 and t1
       double et1 = ( t - t0 ) / ( t1 - t0 );
-      if ( et1 < 0.0 || et1 > 1.0 )
-      {
-         DbgLv( 2 ) << "test";
-      }
       et1        = ( et1 > 1.0 ) ? 1.0 : et1;
       et1        = ( et1 < 0.0 ) ? 0.0 : et1;
       double et0 = 1.0 - et1;
 
       // interpolate between xs[k-1] and xs[k]
       int    k             = 1;
-      int    Lx            = sa_data.pointCount(  );
+      int    Lx            = sdata.xvalues.size();
       int    count_NaN     = 0;
       double dens_coeff[6] = {0.0}; //!< The density coefficients.
       double visc_coeff[6] = {0.0};
-      Q_FOREACH( US_CosedComponent i, *cosed_components )
+      Q_FOREACH( US_CosedComponent i, cosed_components )
       {
          if ( i.GUID == comp.analyteGUID || i.name == comp.name )
          {
@@ -791,7 +770,7 @@ US_LammAstfvm::CosedData::CosedData()
    is_empty = true;
    sa_data  = US_DataIO::RawData();
    cosed_comp_data.clear();
-   cosed_components = nullptr;
+   cosed_components.clear();
    model            = US_Model();
    simparms         = US_SimulationParameters();
    count            = 0;
@@ -911,7 +890,8 @@ int US_LammAstfvm::calculate( US_DataIO::RawData& sim_data )
    #endif
 
    if ( codiff_needed && ( bandFormingGradient == nullptr || bandFormingGradient->is_empty || bandFormingGradient->
-      dens_bfg_data.scanCount() == 0 ) )
+      dens_bfg_data.scanCount() == 0 || ( sim_data.scanCount() > 0 &&
+      bandFormingGradient->dens_bfg_data.scanData.constLast().seconds < sim_data.scanData.last().seconds ) ) )
    {
       param_s = model.components.first().s != 0.0 ? model.components.first().s : 1e-14;
       param_D = model.components.first().D;
@@ -1026,6 +1006,11 @@ int US_LammAstfvm::solve_component( int compx )
    param_D20w_corr = sol_data.D20w_correction;
    param_dens_tb   = sol_data.density_tb;
    param_visc_tb   = sol_data.viscosity_tb;
+   // Co-sedimenting and band-forming densities and viscosities are at 20 C:
+   //  case 2 scales them to the run temperature with these, as
+   //  data_correction() scales a buffer's (sol_data.manual or not)
+   param_wdens_ratio = sol_data.density_wt / DENS_20W;
+   param_wvisc_ratio = sol_data.viscosity_wt / VISC_20W;
    double  t0 = 0.;
    double  t1 = 100.;
    // Use QVector instead of raw pointers to avoid repeated heap allocations
@@ -1772,7 +1757,7 @@ void US_LammAstfvm::set_buffer( US_Buffer buffer, US_Math_BF::Band_Forming_Gradi
          DbgLv( 1 ) << "csD: nothing to do";
          cosed_comp_data.clear();
       }
-      else if ( !csD->is_empty && csD->cosed_components != nullptr )
+      else if ( !csD->is_empty )
       {
          DbgLv( 1 ) << "reused old csD";
          set_csd( csD, false );
@@ -1819,9 +1804,17 @@ void US_LammAstfvm::set_buffer( US_Buffer buffer, US_Math_BF::Band_Forming_Gradi
                bandFormingGradient->get_eigenvalues();
             }
          }
-         else if ( !bfg->is_empty )
+         else if ( !bfg->is_empty && bfg->is_suitable( simparams.meniscus,
+                                                       simparams.bottom,
+                                                       simparams.band_volume,
+                                                       simparams.cp_pathlen,
+                                                       simparams.cp_angle,
+                                                       cosed_components,
+                                                       0 ) )
          {
-            DbgLv( 1 ) << "reused old bfg";
+            // Geometry checked here; calculate() checks that the table
+            //  reaches the data's last scan
+            DbgLv( 1 ) << "reused given bfg";
             set_bfg( bfg, false );
             codiff_needed = true;
          }
@@ -1947,12 +1940,20 @@ void US_LammAstfvm::SetNonIdealCase_2()
          base_viscosity += cosed_comp.visc_coeff[0];
       }
    }
+   // Every cosedimenting component carries the base buffer's density and
+   //  viscosity as coefficient 0 (us_buffer_gui writes base_dens into each):
+   //  the base is their mean, not their sum
+   if ( !base_comps.isEmpty() )
+   {
+      base_density   /= base_comps.count();
+      base_viscosity /= base_comps.count();
+   }
    // make sure the selected model is adjusted for the selected temperature
    // and buffer conditions:
    US_Math2::SolutionData sol_data{};
    sol_data.density   = base_density;
    sol_data.viscosity = base_viscosity;
-   sol_data.manual    = true;
+   sol_data.manual    = false;   // the base buffer is given at 20 C: scale it to T
    Q_FOREACH( US_CosedComponent cosed_comp, cosed_components )
    {
       // get the excess concentrations
@@ -2014,8 +2015,8 @@ void US_LammAstfvm::SetNonIdealCase_2()
       DbgLv( 2 ) << "NonIdeal2: initSalt  comp_x" << comp_x;
    }
    DbgLv( 2 ) << "NonIdeal2: prep saltdata" << cosed_needed << codiff_needed;
-   if ( saltdata != nullptr && !cosed_comp_data.isEmpty() )
-   {
+   if ( saltdata != nullptr && own_csd && !cosed_comp_data.isEmpty() )
+   {  // Only into salt data of our own: a given one may be shared by other threads
       saltdata->sa_data = cosed_comp_data.first();
    }
    DbgLv( 2 ) << "NonIdeal2: finished";
@@ -2104,7 +2105,13 @@ void
    double*   MemDouble = _MemDouble.data();
    double*   flux_p[3];
 
-   const double dt2    = dt_ * 0.5;
+   // Time weighting of the corrector step: dtI on the fluxes at t+dt (matrix),
+   // dtE on the fluxes at t (rhs). theta_impl = 0.5 is Crank-Nicolson, which
+   // leaves the stiff diffusive grid modes (D*dt/h^2 >> 1) undamped; the
+   // traced-foot flux at t does not cancel them exactly, so they can grow on
+   // fine meshes. theta_impl slightly above 0.5 damps them.
+   const double dtI    = dt_ * theta_impl;
+   const double dtE    = dt_ - dtI;
    double*      xt     = MemDouble;
    double*      xi     = xt + Ng;
    double*      xg0    = xi + Ng;
@@ -2293,9 +2300,9 @@ void
    {
       const double h = 0.5 * ( x1[( i - 1 ) / 2 + 1] - x1[( i - 1 ) / 2] );
       Mtx[i][0]      = 0.0;
-      Mtx[i][1]      = h / 24.0 + dt2 * ( flux_p[0][i - 1] - flux_p[0][i] );
-      Mtx[i][2]      = h * 22.0 / 24.0 + dt2 * ( flux_p[1][i - 1] - flux_p[1][i] );
-      Mtx[i][3]      = h / 24.0 + dt2 * ( flux_p[2][i - 1] - flux_p[2][i] );
+      Mtx[i][1]      = h / 24.0 + dtI * ( flux_p[0][i - 1] - flux_p[0][i] );
+      Mtx[i][2]      = h * 22.0 / 24.0 + dtI * ( flux_p[1][i - 1] - flux_p[1][i] );
+      Mtx[i][3]      = h / 24.0 + dtI * ( flux_p[2][i - 1] - flux_p[2][i] );
       Mtx[i][4]      = 0.0;
    }
 
@@ -2304,39 +2311,39 @@ void
       const int    k  = i / 2;
       const double hL = 0.5 * ( x1[k] - x1[k - 1] );
       const double hR = 0.5 * ( x1[k + 1] - x1[k] );
-      Mtx[i][0]       = -hL / 24.0 + dt2 * flux_p[0][i - 1];
-      Mtx[i][1]       = hL * 5.0 / 24.0 + dt2 * flux_p[1][i - 1];
-      Mtx[i][2]       = hL * 8.0 / 24.0 + dt2 * flux_p[2][i - 1] + hR * 8.0 / 24.0 - dt2 * flux_p[0][i];
-      Mtx[i][3]       = hR * 5.0 / 24.0 - dt2 * flux_p[1][i];
-      Mtx[i][4]       = -hR / 24.0 - dt2 * flux_p[2][i];
+      Mtx[i][0]       = -hL / 24.0 + dtI * flux_p[0][i - 1];
+      Mtx[i][1]       = hL * 5.0 / 24.0 + dtI * flux_p[1][i - 1];
+      Mtx[i][2]       = hL * 8.0 / 24.0 + dtI * flux_p[2][i - 1] + hR * 8.0 / 24.0 - dtI * flux_p[0][i];
+      Mtx[i][3]       = hR * 5.0 / 24.0 - dtI * flux_p[1][i];
+      Mtx[i][4]       = -hR / 24.0 - dtI * flux_p[2][i];
    }
 
    {
       // Boundary at i = 0
       constexpr int i = 0;
       const double  h = 0.5 * ( x1[1] - x1[0] );
-      Mtx[i][2]       = h * 8.0 / 24.0 - dt2 * flux_p[0][0];
-      Mtx[i][3]       = h * 5.0 / 24.0 - dt2 * flux_p[1][0];
-      Mtx[i][4]       = -h / 24.0 - dt2 * flux_p[2][0];
+      Mtx[i][2]       = h * 8.0 / 24.0 - dtI * flux_p[0][0];
+      Mtx[i][3]       = h * 5.0 / 24.0 - dtI * flux_p[1][0];
+      Mtx[i][4]       = -h / 24.0 - dtI * flux_p[2][0];
    }
    {
       // Boundary at i = Ng
       const int    i = Ng;
       const double h = 0.5 * ( x1[M1] - x1[M1 - 1] );
-      Mtx[i][0]      = -h / 24.0 + dt2 * flux_p[0][i - 1];
-      Mtx[i][1]      = h * 5.0 / 24.0 + dt2 * flux_p[1][i - 1];
-      Mtx[i][2]      = h * 8.0 / 24.0 + dt2 * flux_p[2][i - 1];
+      Mtx[i][0]      = -h / 24.0 + dtI * flux_p[0][i - 1];
+      Mtx[i][1]      = h * 5.0 / 24.0 + dtI * flux_p[1][i - 1];
+      Mtx[i][2]      = h * 8.0 / 24.0 + dtI * flux_p[2][i - 1];
    }
 
    // Assemble the right-hand side
    {
       // Using IntQs as provided
-      rhs[0] = IntQs( x0, u0, 0, -1.0, ke[0], xi[0] ) + dt2 * flux_u[0];
+      rhs[0] = IntQs( x0, u0, 0, -1.0, ke[0], xi[0] ) + dtE * flux_u[0];
       for ( int i = 1; i < Ng; i++ )
       {
-         rhs[i] = IntQs( x0, u0, ke[i - 1], xi[i - 1], ke[i], xi[i] ) + dt2 * ( flux_u[i] - flux_u[i - 1] );
+         rhs[i] = IntQs( x0, u0, ke[i - 1], xi[i - 1], ke[i], xi[i] ) + dtE * ( flux_u[i] - flux_u[i - 1] );
       }
-      rhs[Ng] = IntQs( x0, u0, ke[Ng - 1], xi[Ng - 1], M0 - 1, 1.0 ) + dt2 * ( -flux_u[Ng - 1] );
+      rhs[Ng] = IntQs( x0, u0, ke[Ng - 1], xi[Ng - 1], M0 - 1, 1.0 ) + dtE * ( -flux_u[Ng - 1] );
    }
 
    // Solve the 5-diagonal linear system (solver routine remains unchanged)
@@ -2497,7 +2504,9 @@ void US_LammAstfvm::AdjustSD(
          {
             saltdata->InterpolateCCosed( Nv, x, t, Dens, Visc );
          }
-         if ( codiff_needed )
+         // (validate_bfg() leaves no gradient when no overlay component diffuses,
+         //  although a lower one may set codiff_needed)
+         if ( codiff_needed && bandFormingGradient != nullptr )
          {
             bandFormingGradient->interpolateCCodiff( Nv, x, t, simparams.temperature + K0,  Dens, Visc );
          }
@@ -2550,12 +2559,15 @@ void US_LammAstfvm::AdjustSD(
          const bool delta_pos = deltas > 0.0;
          const bool delta_neg = deltas < 0.0;
 
+         // Dens and Visc are at 20 C (base buffer, band-forming gradient and
+         //  co-sedimenting salt alike): at the run temperature with the water
+         //  ratios, as data_correction() scales a buffer not marked manual.
          for ( int jj = 0; jj < Nv; jj++ )
          {
-            const double curVisc = Visc[jj];
+            const double curVisc = Visc[jj] * param_wvisc_ratio;
             const double inv_curVisc = 1.0 / curVisc;
             const double curConc = u[jj] / x[jj];
-            const double curDens = Dens[jj];
+            const double curDens = Dens[jj] * param_wdens_ratio;
 
             double sigma_corr = 1.0;
             double delta_corr = 1.0;
@@ -3139,7 +3151,7 @@ void US_LammAstfvm::validate_bfg()
         !qFuzzyCompare( simparams.radial_resolution, bandFormingGradient->simparms.radial_resolution ) ||
         !qFuzzyCompare( simparams.temperature, bandFormingGradient->simparms.temperature ) || bandFormingGradient->is_empty ||
         bandFormingGradient->dens_bfg_data.scanCount() == 0 ||
-        auc_data->scanData.last().seconds > bandFormingGradient->dens_bfg_data.scanData.last().seconds )
+        auc_data->scanData.last().seconds > bandFormingGradient->dens_bfg_data.scanData.constLast().seconds )
    {
       // recalculation needed
       set_bfg( new US_Math_BF::Band_Forming_Gradient( simparams.meniscus,
@@ -3313,7 +3325,7 @@ void US_LammAstfvm::validate_csd()
    US_Math2::SolutionData sol_data{};
    sol_data.density   = density;
    sol_data.viscosity = viscosity;
-   sol_data.manual    = true;
+   sol_data.manual    = false;   // the base buffer is given at 20 C: scale it to T
 
    Q_FOREACH( US_CosedComponent cosed_comp, cosed_components )
    {
@@ -3357,8 +3369,8 @@ void US_LammAstfvm::validate_csd()
       DbgLv( 2 ) << "CosedData: cosed_model comp" << saltdata->model.components.size() << "cosed_comp_data"
                  << cosed_comp_data.size() << "sa_data.scanCount()" << saltdata->sa_data.scanCount();
    }
-   if ( saltdata != nullptr && !cosed_comp_data.isEmpty() )
-   {
+   if ( saltdata != nullptr && own_csd && !cosed_comp_data.isEmpty() )
+   {  // Only into salt data of our own: a given one may be shared by other threads
       saltdata->sa_data = cosed_comp_data.first();
    }
    // Without a co-sedimenting component there is no salt data to keep
@@ -3382,6 +3394,11 @@ void US_LammAstfvm::setStepsPerTransit( const int k )
 void US_LammAstfvm::setFixedDt( const double dt_fixed )
 {
    fixed_dt = dt_fixed;
+}
+
+void US_LammAstfvm::setImplicitWeight( const double theta )
+{
+   theta_impl = qBound( 0.5, theta, 1.0 );
 }
 
 void US_LammAstfvm::setUniformMesh( const bool on )

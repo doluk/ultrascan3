@@ -38,7 +38,6 @@ void US_MPI_Analysis::_2dsa_worker( void )
       primaryFit = (US_SimulationParameters::FitType)job.primary_fit;
       secondaryFit = (US_SimulationParameters::FitType)job.secondary_fit;
       const int offset         = job.dataset_offset;
-      const int bfg_offset     = job.bfg_offset;
       const int dataset_count  = job.dataset_count;
       int job_length     = job.length;
       const int noisflag = ( job_config.params.tinoise_option > 0 ? 1 : 0 ) + ( job_config.params.rinoise_option > 0 ? 2 : 0 );
@@ -79,7 +78,7 @@ void US_MPI_Analysis::_2dsa_worker( void )
                              << wsim_values.solutes[nn].k;
                }
 
-               calc_residuals( offset, dataset_count, wsim_values, bfg_offset );
+               calc_residuals( offset, dataset_count, wsim_values );
 
                // Tell master we are sending back results
                int size[4] = { (int) wsim_values.solutes.size(),

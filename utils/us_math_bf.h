@@ -99,7 +99,6 @@ class US_UTIL_EXTERN US_Math_BF final : public QObject {
             US_DataIO::RawData visc_bfg_data; //!< Scan like data of the gradient viscosity
             US_DataIO::RawData conc_bfg_data; //!< Scan like data of the gradient viscosity
             US_SimulationParameters simparms; //!< Simulation parameters
-            QList<QString> bessel_types; //!< Bessel function types
             //! \brief Create a band forming gradient
             //! \param m The double value representing the meniscus
             //! \param b The double value representing the bottom
@@ -216,18 +215,56 @@ class US_UTIL_EXTERN US_Math_BF final : public QObject {
 
             double dt;
          private:
-            QHash<const int, QHash<const int,std::array<double,3>>> value_cache;
-            QHash<const int, QHash<const unsigned int, double>> bessel_cache;
-            QHash<const unsigned int, double> eigenfunction_cache;
-            unsigned long bessel_cache_used;
-            unsigned long eigenfunction_cache_used;
+            // Thread safety: one gradient may be shared by several threads (an
+            //  ASTFVM solver per thread).  The object itself is only written by
+            //  the constructors, get_eigenvalues() and calculate_gradient(),
+            //  which run before it is shared (get_eigenvalues() also lazily,
+            //  under a lock).  The caches below are per thread, keyed by
+            //  cache_id, so concurrent lookups never write shared state.
+            struct ThreadCache;
+            //! This thread's cache for this gradient (one of a few per thread)
+            ThreadCache& thread_cache() const;
+            //! Unique per object and per set of eigenvalues: identifies the caches
+            quint64 cache_id;
+            //! Run get_eigenvalues() once, also when several threads ask at once
+            void ensure_eigenvalues();
+            //! Temperature history of calculate_gradient(): times and diffusion times
+            //!  S(t) = integral of diffusion_scale( T(t') ) dt' from 0 to t
+            QVector<double> dtime_t;
+            QVector<double> dtime_S;
+            //! D(T) / D20 of a co-diffusing component: (T / 293.15) * eta_w(20) / eta_w(T),
+            //!  both viscosities from US_Math2::water_properties(); 1 at 20 C
+            static double diffusion_scale( double T );
+            //! Diffusion time at t: the time at 20 C over which a component with D20
+            //!  spreads as far as with D(T(t')) over [0, t].  From the temperature
+            //!  history where there is one, otherwise at the constant T given.
+            double diffusion_time( double t, double T ) const;
+            QVector<double> eig_J1b; //!< J1(beta_i * bottom), one per eigenvalue
+            QVector<double> eig_Y1b; //!< Y1(beta_i * bottom), one per eigenvalue
             double total_volume;
             double lower_volume;
+
+            //! \brief The eigenfunction values of all eigenvalues at radius x, from the row cache
+            const double* eigenfunction_row( double x ) const;
+
+            //! \brief norm * overlay integral * exp(-D20 beta^2 dtime) for every overlay component
+            //!        (rows of eigenvalues.size()), cached per thread for the last dtime
+            const double* decay_weights( double dtime ) const;
+
+            //! \brief Concentration of overlay component ci at (x, t)
+            double comp_conc( int ci, double x, double t, double temp ) const;
+
+            //! \brief The summed overlay-component contributions at (x, t, T): density and
+            //!        viscosity increments (without the base buffer) and concentration
+            //! \param use_cache Look up and store in this thread's value cache; the gradient
+            //!        table visits each (x, t) once and does not use it
+            std::array<double,3> component_sums( double x, double t, double T, bool use_cache ) const;
+
             //! \brief calculate a bessel function of a given type for the input x
             //! \param bessel_type The string representing the type of the bessel function J0, J1, Y0, Y1
             //! \param x The double value representing the input value for the bessel function
             //! \return The double value representing the result of the bessel function
-            double bessel(const QString& bessel_type, double x);
+            static double bessel(const QString& bessel_type, double x);
 
 
             int     Nx;       // number of points in radial direction
