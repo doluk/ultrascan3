@@ -5,7 +5,7 @@ default; the classic master password keeps working unchanged.
 
 | Option | Effect | Backend |
 |---|---|---|
-| Unlock with OS login | The master password is stored in the OS secret store and read from there, so it is not typed again. If the store is unavailable (admin password reset, no Secret Service daemon, new machine) UltraScan asks for the master password and re-stores it. | macOS Keychain, Windows Credential Manager, Linux Secret Service / KWallet (QtKeychain) |
+| Unlock with OS login | The master password is stored in the OS secret store and read from there, so it is not typed again. If the store is unavailable (admin password reset, no Secret Service daemon, new machine) UltraScan asks for the master password and re-stores it. | macOS Keychain, Windows Credential Manager, Linux Secret Service / KWallet (native APIs; Qt D-Bus on Linux) |
 | Confirm audit-trail forms with the OS account password | GMP audit-trail and e-signature forms ask for the password of the logged-in OS account instead of the master password. The password is not returned to the caller. | Linux PAM, macOS Open Directory, Windows `LogonUserW` |
 
 ## Command-line tools
@@ -22,10 +22,14 @@ The password is never accepted as a command-line argument.
 
 ## Build
 
-* CMake: `US3_WITH_OS_KEYCHAIN` and `US3_WITH_OS_AUTH` (both `ON`). A missing
-  QtKeychain (`Qt5Keychain`/`Qt6Keychain`) or PAM (`libpam0g-dev`,
-  `pam-devel`) only disables the respective option.
-* qmake: set `QTKEYCHAIN_INC` / `QTKEYCHAIN_LIB` in `local.pri`; PAM is used if
+No third-party libraries are needed: the keychain uses Security.framework
+(macOS), Credential Manager (Windows) and the Secret Service D-Bus API through
+the Qt D-Bus module (Linux).
+
+* CMake: `US3_WITH_OS_KEYCHAIN` and `US3_WITH_OS_AUTH` (both `ON`). On Linux a
+  missing Qt D-Bus module or PAM (`libpam0g-dev`, `pam-devel`) only disables
+  the respective option.
+* qmake: Qt D-Bus is used if `qtHaveModule(dbus)`; PAM is used if
   `/usr/include/security/pam_appl.h` exists.
 
 ## Linux PAM service

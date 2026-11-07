@@ -8,11 +8,11 @@
 
 /*! \brief Thin, blocking wrapper around the operating-system secret store.
 
-    Backends (via QtKeychain):
-    - macOS:   Keychain (login keychain)
-    - Windows: Credential Manager / DPAPI
-    - Linux:   Secret Service over D-Bus (gnome-keyring, KWallet >= 5.97,
-               KeePassXC) or KWallet
+    Native backends, no third-party library:
+    - macOS:   Keychain via Security.framework (generic-password item)
+    - Windows: Credential Manager (CredWriteW / CredReadW; DPAPI-protected)
+    - Linux:   freedesktop.org Secret Service over Qt D-Bus (GNOME Keyring,
+               KWallet >= 5.97, KeePassXC)
 
     The OS store is unlocked by the user's login and is re-protected by the
     OS when the user changes the login password, so secrets stored here
@@ -20,9 +20,9 @@
     password reset (macOS, Windows) or a locked/missing Secret Service
     daemon (headless Linux). Callers must therefore always keep a fallback.
 
-    Support is compiled in only when UltraScan is built with QtKeychain
-    (macro US3_HAVE_QTKEYCHAIN). Otherwise isAvailable() returns false and
-    every operation fails with an explanatory error.
+    On Linux, support is compiled in only when the Qt D-Bus module is
+    available (macro US3_HAVE_QTDBUS). Otherwise isAvailable() returns
+    false and every operation fails with an explanatory error.
 */
 class US_UTIL_EXTERN US_OsKeychain
 {

@@ -154,13 +154,13 @@ SOURCES      = us_ana_profile.cpp   \
    HEADERS      += us_master_password.h us_os_keychain.h us_os_auth.h
    SOURCES      += us_master_password.cpp us_os_keychain.cpp us_os_auth.cpp
 
-   # OS keychain: set QTKEYCHAIN_INC / QTKEYCHAIN_LIB in local.pri,
-   # e.g. QTKEYCHAIN_LIB = -lqt5keychain
-   !isEmpty( QTKEYCHAIN_LIB ) {
-      DEFINES     += US3_HAVE_QTKEYCHAIN
-      INCLUDEPATH += $$QTKEYCHAIN_INC
-      LIBS        += $$QTKEYCHAIN_LIB
+   # OS keychain: native on macOS / Windows, Secret Service via Qt D-Bus
+   # on Linux
+   unix:!macx:qtHaveModule( dbus ) {
+      QT          += dbus
+      DEFINES     += US3_HAVE_QTDBUS
    }
+   macx:  LIBS    += -framework Security
 
    # OS authentication
    unix:!macx:exists( /usr/include/security/pam_appl.h ) {
