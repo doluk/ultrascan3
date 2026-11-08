@@ -67,12 +67,28 @@ def fit(x, data, times, psi_deg, free_kappa, guess=(4.4, 6.0, 0.0, 0.0), xmax=No
     return sol.x, np.sqrt(np.mean(sol.fun ** 2))
 
 
+def iso_radius_mean(C, x, y, psi_deg, W=0.28):
+    """Average c over y along lines of constant radius
+    rho = r_m + x cos psi + (y - W/2) sin psi  (what the optics sample),
+    returned on the centre-line coordinate x_c = (rho - r_m) / cos psi."""
+    ps = np.deg2rad(psi_deg)
+    out = np.empty(C.shape[:2])
+    for k in range(C.shape[0]):
+        cols = []
+        for j, yy in enumerate(y):
+            # position x at which column j has the radius of centre-line x
+            xs = x - (yy - W / 2) * np.tan(ps)
+            cols.append(np.interp(xs, x, C[k, :, j]))
+        out[k] = np.mean(cols, axis=0)
+    return out
+
+
 def analyse(fn):
     d = np.load(fn)
     a = json.loads(str(d["args"]))
     C = d["C"] / a["c0"]
-    cbar = C.mean(axis=2)
     t, x = d["t"], d["x"]
+    cbar = iso_radius_mean(C, x, d["y"], a["psi"])
     sel = slice(1, None)              # skip the first scan
     p0, r0 = fit(x, cbar[sel], t[sel], a["psi"], False)
     if a["psi"] != 0:
@@ -80,7 +96,8 @@ def analyse(fn):
     else:
         p1, r1 = np.r_[p0, 0.0, 0.0], r0
     # lateral inhomogeneity: rms deviation of c from its lateral mean (plateau rows)
-    lat = np.sqrt(((C[-1] - cbar[-1][:, None]) ** 2).mean())
+    pl = (x > 0.5) & (x < 0.8)
+    lat = np.sqrt(((C[-1][pl] - C[-1][pl].mean(axis=1)[:, None]) ** 2).mean())
     out = dict(file=fn, psi=a["psi"], c0=a["c0"], Nx=a["Nx"], Ny=a["Ny"], dt=a["dt"],
                s_k0=p0[0], D_k0=p0[1], rmsd_k0=r0,
                s_k=p1[0], D_k=p1[1], kappa_a=p1[2], kappa_d=p1[3], rmsd_k=r1,
@@ -95,4 +112,10 @@ if __name__ == "__main__":
               f"kappa=0: s={r['s_k0']:.4f} D={r['D_k0']:.3f} rmsd={r['rmsd_k0']:.1e} | "
               f"closure: s={r['s_k']:.4f} D={r['D_k']:.3f} ka={r['kappa_a']:.3f} kd={r['kappa_d']:.3f} rmsd={r['rmsd_k']:.1e} | "
               f"lat.rms={r['lateral_rms']:.1e}")
-    json.dump(rows, open("results2d.json", "w"), indent=1)
+    out = sys.argv[0].replace("analysis2d.py", "") + "results2d.json"
+    try:
+        old = {r["file"]: r for r in json.load(open(out))}
+    except (OSError, ValueError):
+        old = {}
+    old.update({r["file"]: r for r in rows})
+    json.dump(list(old.values()), open(out, "w"), indent=1)
