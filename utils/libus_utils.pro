@@ -26,6 +26,7 @@ HEADERS      = us_ana_profile.h   \
                us_astfem_math.h   \
                us_astfem_rsa.h    \
                us_buffer.h        \
+               us_cell_misalign.h \
                us_cfa_data.h      \
                us_constants.h     \
                us_convert.h       \
@@ -88,6 +89,7 @@ SOURCES      = us_ana_profile.cpp   \
                us_astfem_math.cpp   \
                us_astfem_rsa.cpp    \
                us_buffer.cpp        \
+               us_cell_misalign.cpp \
                us_cfa_data.cpp      \
                us_constants.cpp     \
                us_convert.cpp       \

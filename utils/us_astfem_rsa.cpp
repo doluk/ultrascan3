@@ -93,6 +93,12 @@ int US_Astfem_RSA::calculate( US_DataIO::RawData& exp_data )
    QList< double > w2t_end;       // w2t  at end of the step
    US_SimulationParameters::SpeedProfile* sp;  // Pointer used to current speed SpeedProfile
 
+   if ( simparams.misalign_angle != 0.0 )
+   {  // The misalignment closure is implemented in the ASTFVM solver only
+      qDebug() << "US_Astfem_RSA: cell misalignment" << simparams.misalign_angle
+               << "deg is ignored by ASTFEM; select the ASTFVM mesh type";
+   }
+
 #ifdef TIMING_RA
 QDateTime calcStart = QDateTime::currentDateTime();
 static int ncalls=0;

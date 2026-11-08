@@ -42,6 +42,9 @@ US_SimulationParameters::US_SimulationParameters()
    cp_pathlen        = 1.2;
    cp_angle          = 2.5;
    cp_width          = 0.0;
+   misalign_angle    = 0.0;
+   misalign_pivot    = 6.5;
+   misalign_kappa    = 1.0;
    sim               = false ;
    tsobj             = NULL ;
    firstScanIsConcentration = false;
@@ -963,6 +966,15 @@ int US_SimulationParameters::load_simparms( QString fname )
             astr  = a.value( "width"       ).toString();
             if ( !astr.isEmpty() )
                cp_width     = astr.toDouble();
+            astr  = a.value( "misalign_angle" ).toString();
+            if ( !astr.isEmpty() )
+               misalign_angle = astr.toDouble();
+            astr  = a.value( "misalign_pivot" ).toString();
+            if ( !astr.isEmpty() )
+               misalign_pivot = astr.toDouble();
+            astr  = a.value( "misalign_kappa" ).toString();
+            if ( !astr.isEmpty() )
+               misalign_kappa = astr.toDouble();
          }
 
          else if ( xml.isStartElement()  &&  xml.name() == "speedstep" )
@@ -1052,6 +1064,13 @@ int US_SimulationParameters::save_simparms( QString fname )
       xml.writeAttribute   ( "pathlength",  QString::number( cp_pathlen ) );
       xml.writeAttribute   ( "angle",       QString::number( cp_angle   ) );
       xml.writeAttribute   ( "width",       QString::number( cp_width   ) );
+
+      if ( misalign_angle != 0.0 )
+      {  // Written only for a misaligned cell, so files stay unchanged
+         xml.writeAttribute( "misalign_angle", QString::number( misalign_angle ) );
+         xml.writeAttribute( "misalign_pivot", QString::number( misalign_pivot ) );
+         xml.writeAttribute( "misalign_kappa", QString::number( misalign_kappa ) );
+      }
 
       if ( meshType == US_SimulationParameters::USER )
       {
@@ -1734,6 +1753,8 @@ void US_SimulationParameters::debug( void )
    qDebug() << "CP Pathlength   :" << cp_pathlen;
    qDebug() << "CP Angle        :" << cp_angle;
    qDebug() << "CP Width        :" << cp_width;
+   qDebug() << "Misalign angle  :" << misalign_angle
+            << " pivot" << misalign_pivot << " kappa" << misalign_kappa;
 
    for ( int i = 0; i < speed_step.size(); i++ )
    {

@@ -206,6 +206,12 @@ class US_UTIL_EXTERN US_SimulationParameters
    double    cp_angle;          //!< Angle of centerpiece sector
    double    cp_width;          //!< Width of centerpiece channel if rectangular
 
+   //! Rotational misalignment of the cell in the rotor hole (degrees);
+   //! 0 = aligned.  Applied by the ASTFVM solver (see US_CellMisalignment).
+   double    misalign_angle;
+   double    misalign_pivot;    //!< Pivot radius of the misalignment (cm)
+   double    misalign_kappa;    //!< Wall-layer transport efficiency (0..1)
+
    //! Each distinct RPM value in a series of speeds 
    class US_UTIL_EXTERN  SpeedProfile
    {

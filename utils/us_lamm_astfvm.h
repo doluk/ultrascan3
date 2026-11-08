@@ -9,6 +9,7 @@
 #include "us_dataIO.h"
 #include "us_astfem_math.h"
 #include "us_astfem_rsa.h"
+#include "us_cell_misalign.h"
 
 #ifndef DbgLv
 #define DbgLv(a) if(dbg_level>=a)qDebug() //!< debug-level-conditioned qDebug()
@@ -229,6 +230,8 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
 
       double  err_tol;         // error tolerance for mesh refinement
 
+      US_CellMisalignment misalign; // rotational cell misalignment closure
+
       double  d_coeff[ 6 ];    // SD Adjust buffer density coefficients
       double  v_coeff[ 6 ];    // SD Adjust buffer viscosity coefficients
 
@@ -237,6 +240,8 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
       //! \brief Get the non-ideal case number from model parameters
       //! \returns Non-zero if multiple non-ideal conditions
       int  nonIdealCaseNo( void );
+
+      void ApplyMisalignSink( double, int, double*, double* ); // misalignment sink
 
       //! \brief Set up non-ideal case type 1 (concentration-dependent)
       //! \param sigma_k Sigma constant to modify sedimentation coefficient

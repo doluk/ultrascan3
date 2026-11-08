@@ -210,6 +210,9 @@ static void dataset_values( QByteArray&                    vals,
    add_bytes( vals, simparams.cp_pathlen );
    add_bytes( vals, simparams.cp_angle );
    add_bytes( vals, simparams.cp_width );
+   add_bytes( vals, simparams.misalign_angle );
+   add_bytes( vals, simparams.misalign_pivot );
+   add_bytes( vals, simparams.misalign_kappa );
 
    // Experiment grid, as copied to a simulation by US_AstfemMath::initSimData
    add_string( vals, edata.cell );
