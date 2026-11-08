@@ -1938,7 +1938,16 @@ ttT3+=(clcSt3.msecsTo(clcSt4));
 
       if ( ( jt == ltsteps )  &&  ( accel == false ) )
       {
-         af_params.dt =  simparams.speed_step[step].time_last -  last_time;
+         double t_end  = simparams.speed_step[ step ].time_last;
+
+         // With sequential radial scanning the last scan of the run is
+         //  recorded until t_last + (N-1)*tau: let the last step cover it
+         if ( simparams.radial_scan_time > 0.0  &&
+              step == simparams.speed_step.size() - 1 )
+            t_end     += simparams.radial_scan_time
+                         * (double)qMax( 0, (int)af_data.radius.size() - 1 );
+
+         af_params.dt  = t_end - last_time;
       }
 
       if  ( accel )
