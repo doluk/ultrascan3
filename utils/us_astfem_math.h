@@ -176,6 +176,23 @@ class US_UTIL_EXTERN US_AstfemMath
       //! \returns Success flag: 0 -> success
       static int    interpolate  ( MfemData&, MfemData&, bool, int, int );  
 
+      //! \brief Interpolate a simulation onto experimental scans whose
+      //!        radial points are recorded sequentially in time.
+      //!
+      //! Radial point k of a scan (counted in scan direction) is taken at
+      //! time  t_scan + k * pt_time, where t_scan is the stored scan time,
+      //! i.e. the time of the first recorded point. Concentrations are
+      //! interpolated linearly in time and radius from the simulation grid
+      //! and added to expdata (as in interpolate()). Only scans whose start
+      //! time lies within the simulated time range are updated; point times
+      //! beyond the simulated range are clamped to its end.
+      //! \param expdata  Experimental data to create, sized on input
+      //! \param simdata  Simulation from which to create modeled experiment
+      //! \param pt_time  Seconds needed to record one radial point (>0)
+      //! \param outward  True: scan proceeds from meniscus to bottom
+      //! \returns Success flag: 0 -> success
+      static int    interpolate_scantime( MfemData&, MfemData&, double, bool );
+
       //! \brief Solve Quad-diagonal system
       //! \param ai   The initial a vector
       //! \param bi   The initial b vector

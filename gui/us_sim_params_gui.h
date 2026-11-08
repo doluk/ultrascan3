@@ -38,6 +38,7 @@ class US_GUI_EXTERN US_SimParamsGui : public US_WidgetsDialog
       QComboBox*    cmb_speeds;
       QComboBox*    cmb_moving;
       QComboBox*    cmb_mesh;  
+      QComboBox*    cmb_scandir;      //!< Radial scan direction
                    
       QwtCounter*   cnt_speeds;
       QwtCounter*   cnt_duration_hours;
@@ -59,6 +60,7 @@ class US_GUI_EXTERN US_SimParamsGui : public US_WidgetsDialog
       QwtCounter*   cnt_rinoise;
       QwtCounter*   cnt_baseline;
       QwtCounter*   cnt_temperature;
+      QwtCounter*   cnt_scantime;     //!< Seconds per recorded radial point
                    
       QCheckBox*    cb_acceleration_flag;
       
@@ -105,6 +107,8 @@ class US_GUI_EXTERN US_SimParamsGui : public US_WidgetsDialog
       void update_moving        ( int grid );
       void select_centerpiece   ( bool );
       void update_temp          ( double temp );
+      void update_scantime      ( double scantime );
+      void update_scandir       ( int dir );
 
       void help                 ( void )
          { showhelp.show_help( "manual/simparams.html" ); };

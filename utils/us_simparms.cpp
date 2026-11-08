@@ -31,6 +31,8 @@ US_SimulationParameters::US_SimulationParameters()
    tinoise           = 0.0;
    rinoise           = 0.0;
    baseline          = 0.0;
+   radial_scan_time  = 0.0;
+   scan_outward      = true;
    temperature       = NORMAL_TEMP;
    rotorCalID        = "0";
    band_forming      = false;
@@ -933,6 +935,10 @@ int US_SimulationParameters::load_simparms( QString fname )
             astr  = a.value( "temperature" ).toString();
             if ( !astr.isEmpty() )
                temperature  = astr.toDouble();
+            astr  = a.value( "radialscantime" ).toString();
+            radial_scan_time = astr.isEmpty() ? 0.0 : qMax( 0.0, astr.toDouble() );
+            astr  = a.value( "scandirection" ).toString();
+            scan_outward = ( astr != "inward" );
             astr  = a.value( "bandform"    ).toString();
             if ( !astr.isEmpty() )
                band_forming = ( astr == "yes" || astr == "1" );
@@ -1033,6 +1039,12 @@ int US_SimulationParameters::save_simparms( QString fname )
       xml.writeAttribute   ( "rinoise",     QString::number( rinoise ) );
       xml.writeAttribute   ( "baseline",     QString::number( baseline ) );
       xml.writeAttribute   ( "temperature", QString::number( temperature ) );
+
+      if ( radial_scan_time > 0.0 )
+      {  // Only written when used, so files of instantaneous scans are unchanged
+         xml.writeAttribute   ( "radialscantime", QString::number( radial_scan_time ) );
+         xml.writeAttribute   ( "scandirection",  scan_outward ? "outward" : "inward" );
+      }
 
       if ( ! rotorCalID.isEmpty() )
          xml.writeAttribute   ( "rotorCalID", rotorCalID );
@@ -1726,6 +1738,8 @@ void US_SimulationParameters::debug( void )
    qDebug() << "Time Inv Noise  :" << tinoise;
    qDebug() << "Radial Inv Noise:" << rinoise;
    qDebug() << "Baseline offset :" << baseline;
+   qDebug() << "Radial scan time:" << radial_scan_time
+            << ( scan_outward ? "(outward)" : "(inward)" );
    qDebug() << "Band Forming    :" << band_forming;
    qDebug() << "Band Volume     :" << band_volume;
    qDebug() << "Rotor Calibr.ID :" << rotorCalID;

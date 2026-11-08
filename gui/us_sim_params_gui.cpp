@@ -378,6 +378,34 @@ US_SimParamsGui::US_SimParamsGui(
    connect( cnt_temperature, &QwtCounter::valueChanged,
                              this, &US_SimParamsGui::update_temp );
 
+   // Time needed to record one radial point of a scan
+   QLabel* lb_scantime  = us_label( tr( "Radial Scan Time (s/point):" ) );
+   lb_scantime->setToolTip( tr( "Time needed to record one radial point. "
+         "The stored scan time is that of the first recorded point; "
+         "0 records all points of a scan at the same time. "
+         "Supported by the ASTFEM solver only." ) );
+   main->addWidget( lb_scantime, row, 4, 1, 3 );
+
+   cnt_scantime       = us_counter( 3, 0.0, 10.0, simparams.radial_scan_time );
+   cnt_scantime->setSingleStep    ( 0.001 );
+   cnt_scantime->setIncSteps( QwtCounter::Button1,   1 );
+   cnt_scantime->setIncSteps( QwtCounter::Button2,  10 );
+   cnt_scantime->setIncSteps( QwtCounter::Button3, 100 );
+   cnt_scantime->setValue   ( simparams.radial_scan_time );
+   main->addWidget( cnt_scantime, row++, 7, 1, 1 );
+   connect( cnt_scantime, &QwtCounter::valueChanged,
+                          this, &US_SimParamsGui::update_scantime );
+
+   // Radial scan direction
+   cmb_scandir = us_comboBox();
+   cmb_scandir->addItem( tr( "Scan Direction: Meniscus to Bottom" ) );
+   cmb_scandir->addItem( tr( "Scan Direction: Bottom to Meniscus" ) );
+   cmb_scandir->setCurrentIndex( simparams.scan_outward ? 0 : 1 );
+   cmb_scandir->setEnabled( simparams.radial_scan_time > 0.0 );
+   connect( cmb_scandir, qOverload< int >( &QComboBox::activated ),
+                         this, &US_SimParamsGui::update_scandir );
+   main->addWidget( cmb_scandir, row++, 4, 1, 4 );
+
    // Moving Grid Combo Box
    cmb_moving = us_comboBox();
    cmb_moving->setMaxVisibleItems( 5 );
@@ -506,6 +534,8 @@ void US_SimParamsGui::backup_parms( void )
    simparams_backup.tinoise           = simparams.tinoise;
    simparams_backup.rinoise           = simparams.rinoise;
    simparams_backup.baseline          = simparams.baseline;
+   simparams_backup.radial_scan_time  = simparams.radial_scan_time;
+   simparams_backup.scan_outward      = simparams.scan_outward;
 }
 
 void US_SimParamsGui::revert( void )
@@ -542,6 +572,8 @@ void US_SimParamsGui::revert( void )
    simparams.tinoise           = simparams_backup.tinoise;
    simparams.rinoise           = simparams_backup.rinoise;
    simparams.baseline          = simparams_backup.baseline;
+   simparams.radial_scan_time  = simparams_backup.radial_scan_time;
+   simparams.scan_outward      = simparams_backup.scan_outward;
    simparams.bottom_position   = simparams_backup.bottom_position;
 DbgLv(1) << "SPG: revert==";
 if(dbg_level>0)
@@ -940,6 +972,9 @@ void US_SimParamsGui::load( void )
       cnt_rinoise         ->setValue( simparams.rinoise           );
       cnt_baseline        ->setValue( simparams.baseline          );
       cnt_temperature     ->setValue( simparams.temperature       );
+      cnt_scantime        ->setValue( simparams.radial_scan_time  );
+      cmb_scandir         ->setCurrentIndex( simparams.scan_outward ? 0 : 1 );
+      cmb_scandir         ->setEnabled( simparams.radial_scan_time > 0.0 );
 
       cmb_mesh            ->setCurrentIndex( (int)simparams.meshType );
       cmb_moving          ->setCurrentIndex( (int)simparams.gridType );
@@ -1146,6 +1181,19 @@ void US_SimParamsGui::update_temp          ( double temp )
    report_mods();
 }
 
+void US_SimParamsGui::update_scantime      ( double scantime )
+{
+   simparams.radial_scan_time = qMax( 0.0, scantime );
+   cmb_scandir->setEnabled( simparams.radial_scan_time > 0.0 );
+   report_mods();
+}
+
+void US_SimParamsGui::update_scandir       ( int dir )
+{
+   simparams.scan_outward = ( dir == 0 );
+   report_mods();
+}
+
 void US_SimParamsGui::disconnect_all( )
 {
    cnt_speeds          ->disconnect();
@@ -1169,6 +1217,8 @@ void US_SimParamsGui::disconnect_all( )
    cnt_tinoise         ->disconnect();
    cnt_rinoise         ->disconnect();
    cnt_baseline        ->disconnect();
+   cnt_scantime        ->disconnect();
+   cmb_scandir         ->disconnect();
    cmb_mesh            ->disconnect();
    cmb_moving          ->disconnect();
 }
@@ -1217,6 +1267,10 @@ void US_SimParamsGui::reconnect_all( )
                                   this, &US_SimParamsGui::update_rinoise );
    connect( cnt_baseline,         &QwtCounter::valueChanged, 
                                   this, &US_SimParamsGui::update_baseline );
+   connect( cnt_scantime,         &QwtCounter::valueChanged,
+                                  this, &US_SimParamsGui::update_scantime );
+   connect( cmb_scandir,          qOverload< int >( &QComboBox::activated ),
+                                  this, &US_SimParamsGui::update_scandir );
    connect( cmb_mesh,             qOverload< int >( &QComboBox::activated ), 
                                   this, &US_SimParamsGui::update_mesh );
    connect( cmb_moving,           qOverload< int >( &QComboBox::activated ), 

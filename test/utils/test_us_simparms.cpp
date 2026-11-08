@@ -144,6 +144,8 @@ TEST_F(US_SimulationParametersTest, Constructor_InitializesCorrectly) {
     EXPECT_FALSE(simparms->sim);
     EXPECT_EQ(simparms->tsobj, nullptr);
     EXPECT_FALSE(simparms->firstScanIsConcentration);
+    EXPECT_EQ(simparms->radial_scan_time, 0.0);
+    EXPECT_TRUE(simparms->scan_outward);
 }
 
 // SpeedProfile Constructor Tests
@@ -282,6 +284,38 @@ TEST_F(US_SimulationParametersTest, SaveSimparms_ValidParameters_SavesCorrectly)
     EXPECT_EQ(loadedParams.temperature, 25.0);
     EXPECT_TRUE(loadedParams.band_forming);
     EXPECT_EQ(loadedParams.band_volume, 0.02);
+}
+
+// Radial scan time round trip
+TEST_F(US_SimulationParametersTest, SaveSimparms_RadialScanTime_RoundTrips) {
+    simparms->radial_scan_time = 0.045;
+    simparms->scan_outward     = false;
+    QString filename = tempDir->path() + "/test_scantime.xml";
+    ASSERT_EQ(simparms->save_simparms(filename), 0);
+
+    US_SimulationParameters loadedParams;
+    ASSERT_EQ(loadedParams.load_simparms(filename), 0);
+    EXPECT_DOUBLE_EQ(loadedParams.radial_scan_time, 0.045);
+    EXPECT_FALSE(loadedParams.scan_outward);
+}
+
+// Files without the attributes keep instantaneous, outward scans
+TEST_F(US_SimulationParametersTest, SaveSimparms_NoRadialScanTime_OmitsAttributes) {
+    QString filename = tempDir->path() + "/test_noscantime.xml";
+    ASSERT_EQ(simparms->save_simparms(filename), 0);
+
+    QFile file(filename);
+    ASSERT_TRUE(file.open(QIODevice::ReadOnly | QIODevice::Text));
+    QString content = QString::fromUtf8(file.readAll());
+    EXPECT_FALSE(content.contains("radialscantime"));
+    EXPECT_FALSE(content.contains("scandirection"));
+
+    US_SimulationParameters loadedParams;
+    loadedParams.radial_scan_time = 1.0;
+    loadedParams.scan_outward     = false;
+    ASSERT_EQ(loadedParams.load_simparms(filename), 0);
+    EXPECT_EQ(loadedParams.radial_scan_time, 0.0);
+    EXPECT_TRUE(loadedParams.scan_outward);
 }
 
 // Compute Speed Steps Tests

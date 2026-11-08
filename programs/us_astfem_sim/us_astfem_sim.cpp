@@ -692,6 +692,41 @@ DbgLv(1) << "ASIM: chg_stat:  times_comp" << times_comp << "maxts" << maxts;
       .arg( buffer.compressibility ).arg( simtype )
       .arg( dhrs ).arg( dmns ).arg( scns )
       .arg( nspd ).arg( spdls ) );
+
+   if ( simparams.radial_scan_time > 0.0 )
+   {  // Report sequential radial scanning and check its plausibility
+      int npts     = qRound( ( simparams.bottom - simparams.meniscus ) /
+                             simparams.radial_resolution ) + 1;
+      double tscan = simparams.radial_scan_time * (double)qMax( 0, npts - 1 );
+      double tbmin = -1.0;   // Smallest interval between consecutive scans
+
+      for ( int ii = 0; ii < nspd; ii++ )
+      {
+         const US_SimulationParameters::SpeedProfile* sp = &simparams.speed_step[ ii ];
+         if ( sp->scans < 2 )
+            continue;
+         double dur   = sp->duration_hours * 3600.0 + sp->duration_minutes * 60.0;
+         double dly   = sp->delay_hours    * 3600.0 + sp->delay_minutes    * 60.0;
+         double tbs   = ( dur - dly ) / (double)( sp->scans - 1 );
+         tbmin        = ( tbmin < 0.0 ) ? tbs : qMin( tbmin, tbs );
+      }
+
+      te_status->append( tr( "Radial scan time:  %1 s/point, %2"
+                             "  (scan duration ~ %3 s)" )
+         .arg( simparams.radial_scan_time )
+         .arg( simparams.scan_outward ? tr( "meniscus to bottom" )
+                                      : tr( "bottom to meniscus" ) )
+         .arg( tscan, 0, 'f', 1 ) );
+
+      if ( simparams.meshType == US_SimulationParameters::ASTFVM )
+         te_status->append( tr( "WARNING: the radial scan time is not supported "
+                                "by ASTFVM and is ignored." ) );
+
+      if ( tbmin > 0.0  &&  tscan > tbmin )
+         te_status->append( tr( "WARNING: the scan duration exceeds the "
+                                "time between scans (%1 s)." )
+            .arg( tbmin, 0, 'f', 1 ) );
+   }
 }
 
 void US_Astfem_Sim::select_rotor(void)

@@ -135,6 +135,74 @@ EXPECT_THAT(C1.concentration[0], DoubleNear(0.5, 1e-10));
 }
 
 // Test low acceleration with realistic values
+// Sequentially recorded radial points: C(r,t) = r + 10 t is bilinear, so
+//  the interpolation must be exact at t_scan + k * tau
+namespace {
+void fill_scantime_data( US_AstfemMath::MfemData& sim, US_AstfemMath::MfemData& exp,
+                         const QVector< double >& etimes )
+{
+    sim.radius.clear(); sim.scan.clear();
+    exp.radius.clear(); exp.scan.clear();
+    for ( int ii = 0; ii <= 100; ii++ )
+        sim.radius << 6.0 + 0.01 * ii;
+    for ( int kk = 0; kk <= 200; kk++ )
+    {
+        US_AstfemMath::MfemScan scan;
+        scan.time      = kk * 0.5;
+        scan.omega_s_t = 0.0;
+        for ( double rad : sim.radius )
+            scan.conc << rad + 10.0 * scan.time;
+        sim.scan << scan;
+    }
+    for ( int ii = 0; ii <= 40; ii++ )
+        exp.radius << 6.0 + 0.025 * ii;
+    for ( double et : etimes )
+    {
+        US_AstfemMath::MfemScan scan;
+        scan.time      = et;
+        scan.omega_s_t = 0.0;
+        scan.conc.fill( 0.0, exp.radius.size() );
+        exp.scan << scan;
+    }
+}
+}
+
+TEST_F(US_AstfemMathTest, InterpolateScantimeOutwardAndInward) {
+    const double tau = 0.1;
+    for ( bool outward : { true, false } )
+    {
+        US_AstfemMath::MfemData sim, exp;
+        fill_scantime_data( sim, exp, { 10.0, 50.0, 99.9, 120.0 } );
+        ASSERT_EQ( US_AstfemMath::interpolate_scantime( exp, sim, tau, outward ), 0 );
+        const int npts = exp.radius.size();
+        for ( int es = 0; es < 3; es++ )
+        {
+            for ( int ii = 0; ii < npts; ii++ )
+            {
+                int    kpt = outward ? ii : ( npts - 1 - ii );
+                // Times beyond the simulated range (100 s) are clamped
+                double tt  = qMin( exp.scan[ es ].time + tau * kpt, 100.0 );
+                EXPECT_NEAR( exp.scan[ es ].conc[ ii ], exp.radius[ ii ] + 10.0 * tt, 1e-9 )
+                    << "outward=" << outward << " scan=" << es << " point=" << ii;
+            }
+        }
+        // A scan starting after the simulated range is left untouched
+        for ( double cc : exp.scan[ 3 ].conc )
+            EXPECT_EQ( cc, 0.0 );
+    }
+}
+
+TEST_F(US_AstfemMathTest, InterpolateScantimeZeroMatchesInterpolate) {
+    US_AstfemMath::MfemData sim, exp1, exp2;
+    fill_scantime_data( sim, exp1, { 10.0, 50.25, 80.0 } );
+    exp2 = exp1;
+    ASSERT_EQ( US_AstfemMath::interpolate( exp1, sim, true ), 0 );
+    ASSERT_EQ( US_AstfemMath::interpolate_scantime( exp2, sim, 0.0, true ), 0 );
+    for ( int es = 0; es < exp1.scan.size(); es++ )
+        for ( int ii = 0; ii < exp1.radius.size(); ii++ )
+            EXPECT_NEAR( exp2.scan[ es ].conc[ ii ], exp1.scan[ es ].conc[ ii ], 1e-9 );
+}
+
 TEST_F(US_AstfemMathTest, LowAccelerationRealistic) {
 QVector<US_SimulationParameters::SpeedProfile> speedsteps(1);
 

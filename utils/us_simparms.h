@@ -190,6 +190,12 @@ class US_UTIL_EXTERN US_SimulationParameters
    double    tinoise;           //!< Time invariant noise
    double    rinoise;           //!< Radially invariant noise
    double    baseline;          //!< constant baseline offset, can be negative
+   double    radial_scan_time;  //!< Seconds needed to record one radial point;
+                                //!< 0 = all points of a scan at the scan time.
+                                //!< The scan time is that of the first point.
+   bool      scan_outward;      //!< Scan direction: true = meniscus to bottom
+                                //!< (first point at smallest radius),
+                                //!< false = bottom to meniscus
    bool      band_forming;      //!< True for band-forming centerpieces
    double    band_volume;       //!< Loading volume (of lamella) in a 
                                 //!< Band-forming centerpiece

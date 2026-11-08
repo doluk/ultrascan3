@@ -599,7 +599,12 @@ totT2+=(clcSt2.msecsTo(clcSt3));
             // Insure that the last speed step's simulation extends
             //  well beyond the last experiment scan time
             if ( speed_step == ( nstep - 1 ) )
+            {
                duration += (double)( (int)( duration * 0.05 ) );  // +5%
+               // Cover the recording time of the last scan's radial points
+               duration += simparams.radial_scan_time
+                           * (double)qMax( 0, (int)af_data.radius.size() - 1 );
+            }
 
             if ( accel_time > duration )
             {
@@ -671,7 +676,11 @@ totT4+=(clcSt4.msecsTo(clcSt5));
 
             if  ( in_step )
             {
-               US_AstfemMath::interpolate( af_data, simdata, use_time );
+               if ( simparams.radial_scan_time > 0.0 )
+                  US_AstfemMath::interpolate_scantime( af_data, simdata,
+                        simparams.radial_scan_time, simparams.scan_outward );
+               else
+                  US_AstfemMath::interpolate( af_data, simdata, use_time );
             }
 
             if ( !simout_flag )
@@ -994,7 +1003,12 @@ DbgLv(1) << "RSA:emit ctime: accel:current_time" << current_time << "step" << st
          // Insure that the last speed step's simulation extends
          //  well beyond the last experiment scan time
          if ( step == simparams.speed_step.size() - 1 )
+         {
             duration += (double)( (int)( duration * 0.05 ) );  // +5%
+            // Cover the recording time of the last scan's radial points
+            duration += simparams.radial_scan_time
+                        * (double)qMax( 0, (int)af_data.radius.size() - 1 );
+         }
 
          if ( accel_time > duration )
          {
@@ -1069,7 +1083,11 @@ DbgLv(2) << "RSA:    current_time" << current_time << "fscan lscan"
          if ( ed->scan[ fscan ].time <= sp->time_last  &&
               ed->scan[ lscan ].time >= sp->time_first )
          {
-            US_AstfemMath::interpolate( *ed, simdata, use_time );
+            if ( simparams.radial_scan_time > 0.0 )
+               US_AstfemMath::interpolate_scantime( *ed, simdata,
+                     simparams.radial_scan_time, simparams.scan_outward );
+            else
+               US_AstfemMath::interpolate( *ed, simdata, use_time );
          }
 
          if ( !simout_flag )
