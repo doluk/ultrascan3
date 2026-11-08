@@ -83,12 +83,16 @@ def iso_radius_mean(C, x, y, psi_deg, W=0.28):
     return out
 
 
-def analyse(fn):
+def analyse(fn, center=False):
     d = np.load(fn)
     a = json.loads(str(d["args"]))
     C = d["C"] / a["c0"]
     t, x = d["t"], d["x"]
-    cbar = iso_radius_mean(C, x, d["y"], a["psi"])
+    if center:     # signal at the channel centre line (absorbance optics)
+        ny = C.shape[2]
+        cbar = 0.5 * (C[:, :, (ny - 1) // 2] + C[:, :, ny // 2])
+    else:          # iso-radius lateral mean
+        cbar = iso_radius_mean(C, x, d["y"], a["psi"])
     sel = slice(1, None)              # skip the first scan
     p0, r0 = fit(x, cbar[sel], t[sel], a["psi"], False)
     if a["psi"] != 0:
@@ -98,7 +102,7 @@ def analyse(fn):
     # lateral inhomogeneity: rms deviation of c from its lateral mean (plateau rows)
     pl = (x > 0.5) & (x < 0.8)
     lat = np.sqrt(((C[-1][pl] - C[-1][pl].mean(axis=1)[:, None]) ** 2).mean())
-    out = dict(file=fn, psi=a["psi"], c0=a["c0"], Nx=a["Nx"], Ny=a["Ny"], dt=a["dt"],
+    out = dict(file=fn + (":center" if center else ""), psi=a["psi"], c0=a["c0"], Nx=a["Nx"], Ny=a["Ny"], dt=a["dt"],
                s_k0=p0[0], D_k0=p0[1], rmsd_k0=r0,
                s_k=p1[0], D_k=p1[1], kappa_a=p1[2], kappa_d=p1[3], rmsd_k=r1,
                lateral_rms=lat)
@@ -106,7 +110,8 @@ def analyse(fn):
 
 
 if __name__ == "__main__":
-    rows = [analyse(f) for f in sys.argv[1:]]
+    center = "--center" in sys.argv
+    rows = [analyse(f, center) for f in sys.argv[1:] if f != "--center"]
     for r in rows:
         print(f"{r['file']:28s} psi={r['psi']:.2f} c0={r['c0']:.0e} {r['Nx']}x{r['Ny']} dt={r['dt']:g} | "
               f"kappa=0: s={r['s_k0']:.4f} D={r['D_k0']:.3f} rmsd={r['rmsd_k0']:.1e} | "

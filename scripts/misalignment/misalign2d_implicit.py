@@ -257,9 +257,11 @@ if __name__ == "__main__":
     ap.add_argument("--tend", type=float, default=4000.)
     ap.add_argument("--nscan", type=int, default=10)
     ap.add_argument("--hr", action="store_true")
+    ap.add_argument("--noflow", action="store_true", help="no buoyancy-driven flow")
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
-    sim = Implicit2D(psi_deg=a.psi, c0=a.c0, Nx=a.Nx, Ny=a.Ny, hr=a.hr)
+    sim = Implicit2D(psi_deg=a.psi, c0=a.c0, Nx=a.Nx, Ny=a.Ny, hr=a.hr,
+                     flow=not a.noflow)
     t_out = np.linspace(a.tend / a.nscan, a.tend, a.nscan)
     C = sim.run(t_out, a.dt)
     if a.out:
