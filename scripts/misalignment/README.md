@@ -249,3 +249,45 @@ Figures:
    (`US_CellMisalignment`), which is exact.
 4. **Out of scope:** tilt of the cell axis, band-forming cells, ASTFEM, GUI
    controls (us_astfem_sim), and us_mpi_analysis.
+
+## 7. Comparison with published c(s) data
+
+Conditions of Channell et al. 2018 (doi:10.1007/s00249-018-1328-9): BSA
+0.7 mg/mL, monomer/dimer 82/18 % (4.4 S / 6.6 S), 45 krpm, 12 mm column
+(r_m = 6.0, L = 1.2 cm), 4 h, 48 scans.  2D runs `misalign2d_multi.py`
+(two species, common v̄, BDF2 with adaptive step), iso-radius mean,
+noise 0.3 %, c(s) by `cs_analysis.py` (NNLS + Tikhonov, P = 0.68).
+The 0° run carries the bias of the 2D grid (f/f0 1.18 instead of 1.35);
+all statements are relative to it.
+
+f/f0 fixed at 1.25 (as in Channell):
+
+| ψ  | s mono | σ mono | h mono | s dimer | σ dimer | dimer + >8.8 S |
+|----|--------|--------|--------|---------|---------|----------------|
+| 0° | 4.425  | 0.187  | 2.74   | 6.675   | 0.085   | 16.2 %         |
+| 1° | 4.425  | 0.248  | 2.07   | 6.647   | 0.129   | 17.2 %         |
+| 2° | 4.433  | 0.304  | 1.57   | 6.538   | 0.222   | 18.3 %         |
+| 4° | 4.457  | 0.373  | 1.17   | 6.511   | 0.522   | 20.4 %         |
+
+f/f0 fitted: 1.18 / 1.15 / 1.12 / 1.10; dimer s 6.746 → 6.597 S, aggregate
+14.8 → 17.4 % (0 → 4°).  Time-step check at 4° (dt ≤ 1 s vs adaptive ≤ 2 s):
+dimer s 6.506 vs 6.511, all fractions identical to 0.1 %.
+
+![c(s) overlay](fig_cs_overlay.png)
+
+Agreement with the literature:
+
+* monomer s practically unchanged (+0.7 % at 4°), dimer s decreases
+  (−2.5 %), both peaks broaden, peak heights fall — as reported by
+  Arthur et al. 2009 (doi:10.1002/jps.21654) and Channell et al. 2018;
+* apparent aggregate 16 → 20 % at 4°, matching the BSA value quoted by
+  Khasa et al. 2021 (doi:10.1016/j.omtm.2021.04.008); part of it is a
+  spurious >8.8 S peak;
+* with f/f0 floated, the convective broadening is absorbed as an apparent
+  lower f/f0 (higher D) — the fixed-f/f0 analysis is what makes the
+  misalignment visible.
+
+Not reproduced: the model is symmetric in ±ψ, so the off-centre minimum
+of aggregate content (Doyle et al. 2017, doi:10.1016/j.ab.2017.05.018;
+Channell 2018) needs an additional cause, e.g. an offset of the
+angular reference.
