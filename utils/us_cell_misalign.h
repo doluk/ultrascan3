@@ -30,8 +30,9 @@
 //!   D_eff = D ( 1 + eps_D ),   eps_D = gamma_D (psi/1 deg) (c/1 mg/mL)^-0.12
 //!   s_eff = s ( 1 + eps_s ),   eps_s = gamma_s (psi/1 deg) (c/1 mg/mL)^-0.12
 //! \endcode
-//! Default calibration (BSA, 50 krpm, 0.9 cm column, 0.01-1 mg/mL):
-//! gamma_D = 0.043, gamma_s = gamma_D / 12.5.  The convection is driven by
+//! Default calibration (2D runs in true sector geometry, 2.5 deg sector,
+//! pivot 6.5 cm; BSA, 50 krpm, 0.9 cm column, 0.01-0.1 mg/mL):
+//! gamma_D = 0.033, gamma_s = gamma_D / 13.5.  The convection is driven by
 //! the total concentration, so c is the total loading concentration; in a
 //! mixture the species are coupled (the dimer of BSA drifts backwards),
 //! which this per-species closure does not describe.

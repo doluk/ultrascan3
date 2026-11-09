@@ -12,7 +12,7 @@ namespace
 US_CellMisalignment::US_CellMisalignment( double delta, double sector,
       double pivot_r, double beta )
    : delta_deg( delta ), sector_deg( sector ), pivot( pivot_r ),
-     beta_deg( beta ), gamma_D( 0.043 ), gamma_s( 0.043 / 12.5 ),
+     beta_deg( beta ), gamma_D( 0.033 ), gamma_s( 0.033 / 13.5 ),
      conc( 1.0 ), conc_exp( -0.12 )
 {
 }

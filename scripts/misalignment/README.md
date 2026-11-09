@@ -97,7 +97,7 @@ sink  = −k(r) c,             k(r) = κ s ω² p / (Φ r)
 | `analysis2d.py`, `plot2d.py`, `plot2d_summary.py` | Fits of the 2D runs with the 1D model; figures. `results2d.json` holds the fit results. |
 | `utils/us_cell_misalign.*` | C++ geometry and the dispersive closure (section 8). |
 | `utils/us_lamm_astfvm.*` | s(1+ε_s) and D(1+ε_D) applied in `AdjustSD` (all non-ideal cases). |
-| `utils/us_simparms.*` | Fields `misalign_angle` (deg, default 0), `misalign_pivot` (cm, 6.5), `misalign_gamma_D` (0.043), `misalign_gamma_s` (0.043/12.5) and `misalign_conc` (total loading concentration, mg/mL, 1.0). Written to and read from simparams XML only when the angle ≠ 0; part of the `US_SimCache` key. |
+| `utils/us_simparms.*` | Fields `misalign_angle` (deg, default 0), `misalign_pivot` (cm, 6.5), `misalign_gamma_D` (0.033), `misalign_gamma_s` (0.033/13.5) and `misalign_conc` (total loading concentration, mg/mL, 1.0). Written to and read from simparams XML only when the angle ≠ 0; part of the `US_SimCache` key. |
 | `test/utils/test_us_cell_misalign.cpp` | Unit tests: geometry against the Python reference, closure calibration, XML round trip, γ = 0 identical to the aligned cell, ASTFVM run equivalent to an aligned run with scaled s and D. |
 
 How to use it: set `simparams.misalign_angle` (and optionally the pivot, the
@@ -240,8 +240,7 @@ Figures:
 1. **Speed, geometry and size dependence.** Run the 2D model at other rotor
    speeds and solution column lengths to obtain γ(ω, L). The present
    calibration holds only at 50 krpm, L = 0.9 cm and 4000 s.
-2. **Sector geometry.** Run the 2D model in true (r, φ) sector geometry, with
-   salt stratification (which stabilizes the wall layers and may reduce the
+2. **Sector geometry** — done (section 9).  Still open: salt stratification (which stabilizes the wall layers and may reduce the
    effect), temperature and multiple species. Then reconstruct c(s) to compare
    with the published aggregate bias.
 3. ~~**Replace the C++ closure.**~~ Done (section 8).
@@ -317,7 +316,8 @@ coupled through the common flow.
 ```
 s_eff = s (1 + ε_s),  D_eff = D (1 + ε_D)
 ε_D = γ_D · ψ/1° · (c/1 mg/mL)^-0.12,  ε_s = γ_s · ψ/1° · (c/1 mg/mL)^-0.12
-γ_D = 0.043, γ_s = γ_D/12.5   (calibration of section 5)
+γ_D = 0.033, γ_s = γ_D/13.5   (sector calibration, section 9;
+                                planar model, section 5: 0.043, γ_D/12.5)
 ```
 with ψ the tilt of the mean wall line at the pivot (ψ ≈ δ) and c the total
 loading concentration (`misalign_conc`).  The PNK sink/deposit and the
@@ -340,3 +340,44 @@ plateau is unchanged; γ = 0 is identical to the aligned cell.
 * The species coupling (backward drift and strong broadening of a minor
   faster species) is not represented; a mixture is simulated with the
   single-species coefficients for every component.
+
+## 9. True sector geometry
+
+`misalign2d_sector.py` solves the two-dimensional problem in the polar
+coordinates (ρ, θ) of the sector itself: the walls are the radial lines
+θ = ±α/2 of the sector vertex O.  Rotating the cell by δ about the pivot
+r_p is equivalent to moving the rotor axis to
+O' = (r_p(1 − cos δ), r_p sin δ) in the cell frame; the field is
+g = ω²(X − O').  This includes what the planar model omits: the sector
+divergence of the channel, the curvature of the field lines across it and
+the radial variation of the wall tilt, ψ(ρ) = asin(r_p sin δ / ρ)
+(1.048 / 1.000 / 0.915° at 6.2 / 6.5 / 7.1 cm for δ = 1°).  Operators
+carry the polar metric; the discrete flow is exactly divergence-free.
+Time stepping, coupling iteration and grid as in sections 5 and 7
+(120 × 40, β = 3, dt = 5 s).
+
+*Check:* δ = 0 gives no flow (lateral deviation 2e-13) and the 1D sector
+Lamm solution (plateau 0.93002 vs 0.93009); mass is conserved to 1e-10.
+
+*Analysis* (`analysis_sector.py`): area-weighted mean on circles about the
+true rotor axis O', fitted with the ideal 1D sector model (s, D, c0 free),
+relative to the aligned run on the same grid (s = 4.402 S,
+D = 6.237e-7, rmsd 1.4e-3).  BSA, 50 krpm, r_m = 6.2 cm, L = 0.9 cm,
+α = 2.5°, r_p = 6.5 cm, 4000 s:
+
+| δ | c0 (mg/mL) | Δs/s | ΔD/D | ratio | Δc0 | rmsd | planar (sec. 5) Δs/s, ΔD/D |
+|---|---|---|---|---|---|---|---|
+| 1° | 0.01 | +0.41 % | +5.9 % | 14.3 | −0.28 % | 5.9e-3 | +0.58 %, +7.3 % |
+| 1° | 0.1  | +0.31 % | +4.4 % | 14.0 | −0.23 % | 5.0e-3 | +0.45 %, +5.5 % |
+| 2° | 0.1  | +0.71 % | +9.2 % | 12.9 | −0.41 % | 8.7e-3 | +0.97 %, +11.5 % |
+
+* The sector geometry lowers the effect by ~20 % in D and ~30 % in s;
+  the scaling is unchanged: linear in δ (×2.09 for 1° → 2°), exponent of
+  the concentration dependence −0.127 (planar −0.12), ΔD/D : Δs/s ≈ 13.5.
+* The apparent loading concentration is 0.2–0.4 % low (plateau depletion,
+  material carried to the bottom).
+* Sector calibration adopted in C++:
+  ε_D = 3.3 % · δ/1° · (c/1 mg/mL)^-0.12, ε_s = ε_D/13.5.
+* Part of the planar/sector difference may come from the fit (here c0
+  free, planar fit with c0 fixed); both are consistent with the C++
+  closure, which leaves c0 unchanged.

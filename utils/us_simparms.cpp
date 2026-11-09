@@ -44,8 +44,8 @@ US_SimulationParameters::US_SimulationParameters()
    cp_width          = 0.0;
    misalign_angle    = 0.0;
    misalign_pivot    = 6.5;
-   misalign_gamma_D  = 0.043;
-   misalign_gamma_s  = 0.043 / 12.5;
+   misalign_gamma_D  = 0.033;
+   misalign_gamma_s  = 0.033 / 13.5;
    misalign_conc     = 1.0;
    sim               = false ;
    tsobj             = NULL ;

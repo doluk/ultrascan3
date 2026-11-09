@@ -49,8 +49,8 @@ namespace
       return rd;
    }
 
-   US_SimulationParameters makeParams( double angle, double gD = 0.043,
-                                       double gs = 0.043 / 12.5 )
+   US_SimulationParameters makeParams( double angle, double gD = 0.033,
+                                       double gs = 0.033 / 13.5 )
    {
       US_SimulationParameters sp;
       sp.speed_step[ 0 ].rotorspeed = RPM;
@@ -131,20 +131,22 @@ TEST_F( TestUSCellMisalign, GeometryMatchesReference )
    EXPECT_NEAR( US_CellMisalignment( 1.0, 2.5, 6.5, 1.5 ).radial_shift() * 1e4, -29.70, 0.01 );
 }
 
-// Calibrated closure (scripts/misalignment/README.md, section 5):
-// eps_D = 4.3 % (psi / 1 deg) (c / 1 mg/mL)^-0.12, eps_s = eps_D / 12.5
+// Calibrated closure (scripts/misalignment/README.md, section 9, sector 2D):
+// eps_D = 3.3 % (psi / 1 deg) (c / 1 mg/mL)^-0.12, eps_s = eps_D / 13.5
 TEST_F( TestUSCellMisalign, ClosureCalibration )
 {
    US_CellMisalignment ma( 1.0, 2.5, 6.5 );
-   EXPECT_NEAR( ma.diffusion_eps(), 0.043, 1e-4 );
-   EXPECT_NEAR( ma.diffusion_eps() / ma.sedimentation_eps(), 12.5, 1e-9 );
+   EXPECT_NEAR( ma.diffusion_eps(), 0.033, 1e-4 );
+   EXPECT_NEAR( ma.diffusion_eps() / ma.sedimentation_eps(), 13.5, 1e-9 );
    ma.conc = 0.01;
-   EXPECT_NEAR( ma.diffusion_eps(), 0.073, 2e-3 );       // 2D: 7.3 %
+   EXPECT_NEAR( ma.diffusion_eps(), 0.0588, 2e-3 );      // 2D: 5.9 %
+   ma.conc = 0.1;
+   EXPECT_NEAR( ma.diffusion_eps(), 0.0439, 2e-3 );      // 2D: 4.4 %
    ma.conc = 1.0;
    ma.delta_deg = 2.0;
-   EXPECT_NEAR( ma.diffusion_eps(), 0.086, 2e-4 );       // linear in psi
+   EXPECT_NEAR( ma.diffusion_eps(), 0.066, 2e-4 );       // linear in psi
    ma.delta_deg = -2.0;
-   EXPECT_NEAR( ma.diffusion_eps(), 0.086, 2e-4 );       // symmetric in +-psi
+   EXPECT_NEAR( ma.diffusion_eps(), 0.066, 2e-4 );       // symmetric in +-psi
 }
 
 TEST_F( TestUSCellMisalign, SimparmsXmlRoundTrip )
