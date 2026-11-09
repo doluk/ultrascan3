@@ -740,8 +740,7 @@ DbgLv(2) << "LFvm:  m b" << param_m << param_b;
    misalign.conc    = simparams.misalign_conc;
 DbgLv(1) << "LFvm: misalign angle sector pivot active eps_s eps_D"
  << misalign.delta_deg << misalign.sector_deg << misalign.pivot
- << misalign.active() << misalign.sedimentation_eps()
- << misalign.diffusion_eps();
+ << misalign.active();
 }
 
 // destroy
@@ -1735,8 +1734,10 @@ DbgLv(3) << "AdjSD:   Dadj 0 m n" << D_adj[0] << D_adj[Nv/2] << D_adj[Nv-1];
 
    if ( misalign.active() )
    {  // misaligned cell: convective drift and dispersion of the boundary
-      const double fs = 1.0 + misalign.sedimentation_eps();
-      const double fd = 1.0 + misalign.diffusion_eps();
+      const double rpm = sqrt( param_w2 ) * 30.0 / M_PI;
+      const double len = param_b - param_m;
+      const double fs  = 1.0 + misalign.sedimentation_eps( rpm, len );
+      const double fd  = 1.0 + misalign.diffusion_eps( rpm, len );
       for ( jj = 0; jj < Nv; jj++ )
       {
          s_adj[ jj ] *= fs;

@@ -237,8 +237,9 @@ Figures:
 
 ## 6. Open points
 
-1. **Speed, geometry and size dependence.** Run the 2D model at other rotor
-   speeds and solution column lengths to obtain γ(ω, L). The present
+1. ~~**Speed, geometry and size dependence.**~~ Done for speed and column
+   length (section 10); dependence on run time (ω²t), sector angle and pivot
+   still open. The present
    calibration holds only at 50 krpm, L = 0.9 cm and 4000 s.
 2. **Sector geometry** — done (section 9).  Still open: salt stratification (which stabilizes the wall layers and may reduce the
    effect), temperature and multiple species. Then reconstruct c(s) to compare
@@ -381,3 +382,44 @@ D = 6.237e-7, rmsd 1.4e-3).  BSA, 50 krpm, r_m = 6.2 cm, L = 0.9 cm,
 * Part of the planar/sector difference may come from the fit (here c0
   free, planar fit with c0 fixed); both are consistent with the C++
   closure, which leaves c0 unchanged.
+
+## 10. Speed and column-length dependence
+
+Sector geometry (section 9), BSA 0.1 mg/mL, δ = 1°, each misaligned run
+against an aligned run on the same grid.  Runs at other speeds are compared
+at equal ω²t (t = 4000 s · (50 krpm/rpm)², ω²t = 1.1e11 s⁻¹); the
+column-length runs at 50 krpm, 4000 s.  Runs `runs/v_*`
+(`runs/queue_speed.sh`), results in `results_sector.json`.
+
+| rpm | L (cm) | Δs/s | ΔD/D | max\|u\| at end (cm/s) |
+|---|---|---|---|---|
+| 20 000 | 0.9  | +0.30 % | +1.04 % | 8.4e-5 |
+| 35 000 | 0.9  | +0.32 % | +2.65 % | 1.9e-3 |
+| 50 000 | 0.9  | +0.31 % | +4.39 % | 5.3e-3 |
+| 60 000 | 0.9  | +0.31 % | +5.02 % | 8.4e-3 |
+| 50 000 | 0.45 | +0.15 % | +1.61 % | 1.7e-4 |
+| 50 000 | 1.2  | +0.37 % | +5.62 % | 7.5e-3 |
+
+* **Speed.** Δs/s does not depend on speed (drift and sedimentation both
+  scale with ω²).  ΔD/D grows with speed but is not a power law: the local
+  exponent falls from 1.7 (20–35 krpm) to 0.7 (50–60 krpm).
+* **Column length.** Both grow with L: ΔD/D ~ L^1.3, Δs/s ~ L^0.9 over
+  0.45–1.2 cm.
+* **C++.** `US_CellMisalignment::speed_factor_D`, `length_factor_D` and
+  `length_factor_s` interpolate this table log–log (end slopes outside);
+  `US_LammAstfvm` passes the current speed and b − m.  The factors reproduce
+  the table exactly; tests check them and that ASTFVM uses them.
+
+Closure:
+```
+ε_D = 3.3 % · δ/1° · (c/1 mg/mL)^-0.12 · f_D(rpm) · g_D(L)
+ε_s = 0.24 % · δ/1° · (c/1 mg/mL)^-0.12 · g_s(L)
+```
+
+**Limitation — run time.** The flux decomposition of section 8 shows that
+the convective dispersion grows during a run (monomer K/D 0.08 → 0.13 from
+1.2 to 12 ks at 1°).  The closure is calibrated at ω²t = 1.1e11 s⁻¹.  For the
+conditions of section 7 (45 krpm, L = 1.2 cm, 0.7 mg/mL, 4 h,
+ω²t = 3.2e11 s⁻¹) it predicts ε_D = 3.8 %, while the planar mixture
+runs gave 7.5 % for the monomer (≈ 6 % after the sector correction of
+section 9).  A time-dependent (ω²t) factor is the next refinement.

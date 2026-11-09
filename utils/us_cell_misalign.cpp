@@ -77,6 +77,27 @@ double US_CellMisalignment::bottom_smear( double bottom ) const
 
 namespace
 {
+   // log-log interpolation in (x, y), extrapolation with the end slopes
+   double loglog( const double* x, const double* y, int n, double xx )
+   {
+      if ( xx <= 0.0 )
+         return 1.0;
+      int k = 0;
+      while ( k < n - 2  &&  xx > x[ k + 1 ] )
+         k++;
+      const double sl = std::log( y[ k + 1 ] / y[ k ] )
+                        / std::log( x[ k + 1 ] / x[ k ] );
+      return y[ k ] * std::pow( xx / x[ k ], sl );
+   }
+
+   // 2D sector results, BSA 0.1 mg/mL, 1 deg, equal omega^2 t
+   // (scripts/misalignment/README.md, section 10)
+   const double RPM_X[]  = { 20000.0, 35000.0, 50000.0, 60000.0 };
+   const double RPM_D[]  = { 0.237,   0.604,   1.0,     1.144   };
+   const double LEN_X[]  = { 0.45,    0.9,     1.2   };
+   const double LEN_D[]  = { 0.367,   1.0,     1.280 };
+   const double LEN_S[]  = { 0.481,   1.0,     1.169 };
+
    // common factor (psi / 1 deg) (c / 1 mg/mL)^conc_exp
    double closure_scale( const US_CellMisalignment& m )
    {
@@ -85,12 +106,31 @@ namespace
    }
 }
 
-double US_CellMisalignment::diffusion_eps() const
+double US_CellMisalignment::speed_factor_D( double rpm )
 {
-   return active() ? gamma_D * closure_scale( *this ) : 0.0;
+   return loglog( RPM_X, RPM_D, 4, rpm );
 }
 
-double US_CellMisalignment::sedimentation_eps() const
+double US_CellMisalignment::length_factor_D( double length )
 {
-   return active() ? gamma_s * closure_scale( *this ) : 0.0;
+   return loglog( LEN_X, LEN_D, 3, length );
+}
+
+double US_CellMisalignment::length_factor_s( double length )
+{
+   return loglog( LEN_X, LEN_S, 3, length );
+}
+
+double US_CellMisalignment::diffusion_eps( double rpm, double length ) const
+{
+   return active() ? gamma_D * closure_scale( *this )
+                     * speed_factor_D( rpm ) * length_factor_D( length )
+                   : 0.0;
+}
+
+double US_CellMisalignment::sedimentation_eps( double rpm, double length ) const
+{
+   return active() ? gamma_s * closure_scale( *this )
+                     * length_factor_s( length )
+                   : 0.0;
 }

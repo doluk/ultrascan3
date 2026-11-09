@@ -147,6 +147,24 @@ TEST_F( TestUSCellMisalign, ClosureCalibration )
    EXPECT_NEAR( ma.diffusion_eps(), 0.066, 2e-4 );       // linear in psi
    ma.delta_deg = -2.0;
    EXPECT_NEAR( ma.diffusion_eps(), 0.066, 2e-4 );       // symmetric in +-psi
+
+   // speed and column length (sector 2D, 0.1 mg/mL, 1 deg; README sec. 10)
+   ma.delta_deg = 1.0;
+   ma.conc      = 0.1;
+   const double e0 = ma.diffusion_eps();
+   EXPECT_NEAR( ma.diffusion_eps( 20000.0 ) / e0, 1.04 / 4.39, 0.005 );
+   EXPECT_NEAR( ma.diffusion_eps( 35000.0 ) / e0, 2.65 / 4.39, 0.005 );
+   EXPECT_NEAR( ma.diffusion_eps( 60000.0 ) / e0, 5.02 / 4.39, 0.005 );
+   EXPECT_NEAR( ma.diffusion_eps( 50000.0, 0.45 ) / e0, 1.61 / 4.39, 0.005 );
+   EXPECT_NEAR( ma.diffusion_eps( 50000.0, 1.2  ) / e0, 5.62 / 4.39, 0.005 );
+   // monotone between and beyond the calibration points
+   EXPECT_GT( ma.diffusion_eps( 42000.0 ), ma.diffusion_eps( 35000.0 ) );
+   EXPECT_LT( ma.diffusion_eps( 42000.0 ), e0 );
+   EXPECT_GT( ma.diffusion_eps( 65000.0 ), ma.diffusion_eps( 60000.0 ) );
+   EXPECT_GT( ma.diffusion_eps( 10000.0 ), 0.0 );
+   EXPECT_DOUBLE_EQ( ma.sedimentation_eps( 20000.0 ), ma.sedimentation_eps() );
+   EXPECT_NEAR( ma.sedimentation_eps( 50000.0, 0.45 ) / ma.sedimentation_eps(),
+                0.151 / 0.314, 0.005 );
 }
 
 TEST_F( TestUSCellMisalign, SimparmsXmlRoundTrip )
@@ -196,8 +214,8 @@ TEST_F( TestUSCellMisalign, EquivalentToScaledSD )
    US_DataIO::RawData al = simulate( makeParams( 0.0 ) );
    US_DataIO::RawData ma = simulate( spm );
    US_DataIO::RawData eq = simulate( makeParams( 0.0 ),
-                                     S_VAL * ( 1.0 + geo.sedimentation_eps() ),
-                                     D_VAL * ( 1.0 + geo.diffusion_eps() ) );
+                                     S_VAL * ( 1.0 + geo.sedimentation_eps( RPM, R_B - R_M ) ),
+                                     D_VAL * ( 1.0 + geo.diffusion_eps( RPM, R_B - R_M ) ) );
    const int jp = (int)qRound( ( 7.0 - R_M ) / 0.001 );
 
    for ( int ss = 2; ss < al.scanData.size(); ss++ )
@@ -207,7 +225,7 @@ TEST_F( TestUSCellMisalign, EquivalentToScaledSD )
       boundary_moments( al, ss, ra, va );
       boundary_moments( ma, ss, rm, vm );
       boundary_moments( eq, ss, re, ve );
-      EXPECT_GT( vm / va - 1.0, 0.5 * geo.diffusion_eps() );   // dispersion
+      EXPECT_GT( vm / va - 1.0, 0.5 * geo.diffusion_eps( RPM, R_B - R_M ) );   // dispersion
       EXPECT_GT( rm, ra );                                      // drift
       EXPECT_LT( qAbs( vm - ve ), 0.1 * ( vm - va ) );
       EXPECT_LT( qAbs( rm - re ), 0.1 * ( rm - ra ) );

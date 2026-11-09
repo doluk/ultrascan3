@@ -25,14 +25,19 @@
 //! Stokes-Boussinesq-Lamm simulations (scripts/misalignment, README sec. 5)
 //! show that in the lateral (iso-radius) mean this flow acts as a
 //! dispersion of the boundary with a weak forward drift, both linear in the
-//! wall tilt psi and only weakly dependent on the loading concentration c:
+//! wall tilt psi and only weakly dependent on the loading concentration c;
+//! the dispersion grows with rotor speed and column length L:
 //! \code
-//!   D_eff = D ( 1 + eps_D ),   eps_D = gamma_D (psi/1 deg) (c/1 mg/mL)^-0.12
-//!   s_eff = s ( 1 + eps_s ),   eps_s = gamma_s (psi/1 deg) (c/1 mg/mL)^-0.12
+//!   D_eff = D ( 1 + eps_D ),   s_eff = s ( 1 + eps_s )
+//!   eps_D = gamma_D (psi/1 deg) (c/1 mg/mL)^-0.12 f_D(rpm) g_D(L)
+//!   eps_s = gamma_s (psi/1 deg) (c/1 mg/mL)^-0.12           g_s(L)
 //! \endcode
+//! f_D, g_D, g_s (1 at 50 krpm, L = 0.9 cm) are log-log interpolated in the
+//! table of 2D results (speed_factor_D, length_factor_*), extrapolated with
+//! the end slopes; f_D ~ rpm^1.7 at low and ~rpm^0.7 at high speed.
 //! Default calibration (2D runs in true sector geometry, 2.5 deg sector,
-//! pivot 6.5 cm; BSA, 50 krpm, 0.9 cm column, 0.01-0.1 mg/mL):
-//! gamma_D = 0.033, gamma_s = gamma_D / 13.5.  The convection is driven by
+//! pivot 6.5 cm; BSA, 20-60 krpm, L = 0.45-1.2 cm, 0.01-0.1 mg/mL, equal
+//! omega^2 t): gamma_D = 0.033, gamma_s = gamma_D / 13.5.  The convection is driven by
 //! the total concentration, so c is the total loading concentration; in a
 //! mixture the species are coupled (the dimer of BSA drifts backwards),
 //! which this per-species closure does not describe.
@@ -89,10 +94,21 @@ class US_UTIL_EXTERN US_CellMisalignment
       double bottom_smear  ( double bottom ) const;
 
       //! \brief Relative change eps_D of the diffusion coefficient
-      double diffusion_eps    () const;
+      //! \param rpm     Rotor speed
+      //! \param length  Column length, bottom - meniscus (cm)
+      double diffusion_eps    ( double rpm = 50000.0,
+                                double length = 0.9 ) const;
 
       //! \brief Relative change eps_s of the sedimentation coefficient
-      double sedimentation_eps() const;
+      double sedimentation_eps( double rpm = 50000.0,
+                                double length = 0.9 ) const;
+
+      //! \brief Speed factor f_D of eps_D (1 at 50000 rpm)
+      static double speed_factor_D ( double rpm );
+      //! \brief Column-length factor g_D of eps_D (1 at 0.9 cm)
+      static double length_factor_D( double length );
+      //! \brief Column-length factor g_s of eps_s (1 at 0.9 cm)
+      static double length_factor_s( double length );
 
       double delta_deg;   //!< Rotation of the cell (degrees)
       double sector_deg;  //!< Full sector angle (degrees)
