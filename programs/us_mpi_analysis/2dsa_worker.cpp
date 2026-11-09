@@ -34,6 +34,7 @@ void US_MPI_Analysis::_2dsa_worker( void )
 
       meniscus_value     = job.meniscus_value;
       bottom_value       = job.bottom_value;
+      tau_value                = job.tau_value;
       const int offset         = job.dataset_offset;
       const int dataset_count  = job.dataset_count;
       int job_length     = job.length;
@@ -45,7 +46,7 @@ void US_MPI_Analysis::_2dsa_worker( void )
 
          case MPI_Job::PROCESS:  // Process solutes
             {
-               worker_fit_context( offset, meniscus_value, bottom_value );
+               worker_fit_context( offset, meniscus_value, bottom_value, tau_value );
 
                US_SolveSim::Simulation wsim_values;
                wsim_values.noisflag   = noisflag;
@@ -233,21 +234,24 @@ void US_MPI_Analysis::_2dsa_worker( void )
    }  // repeat_loop
 }
 
-// Apply a job's meniscus and bottom to its dataset.  This is the workers'
-//  fit-context entry point; returns true if the simulation parameters
-//  differ from those of the previous job.
-bool US_MPI_Analysis::worker_fit_context( int offset, double meniscus, double bottom )
+// Apply a job's meniscus, bottom and radial scan time to its dataset.  This
+//  is the workers' fit-context entry point; returns true if the simulation
+//  parameters differ from those of the previous job.
+bool US_MPI_Analysis::worker_fit_context( int offset, double meniscus, double bottom, double tau )
 {
-   data_sets[offset]->run_data.meniscus  = meniscus;
-   data_sets[offset]->run_data.bottom    = bottom;
-   data_sets[offset]->simparams.meniscus = meniscus;
-   data_sets[offset]->simparams.bottom   = bottom;
+   data_sets[offset]->run_data.meniscus          = meniscus;
+   data_sets[offset]->run_data.bottom            = bottom;
+   data_sets[offset]->simparams.meniscus         = meniscus;
+   data_sets[offset]->simparams.bottom           = bottom;
+   data_sets[offset]->simparams.radial_scan_time = tau;
 
-   const bool sim_changed = ( fit_context.dataset != offset || fit_context.meniscus != meniscus || fit_context.bottom != bottom );
+   const bool sim_changed = ( fit_context.dataset != offset || fit_context.meniscus != meniscus || fit_context.bottom != bottom ||
+                              fit_context.tau != tau );
 
    fit_context.dataset  = offset;
    fit_context.meniscus = meniscus;
    fit_context.bottom   = bottom;
+   fit_context.tau      = tau;
 
    return sim_changed;
 }

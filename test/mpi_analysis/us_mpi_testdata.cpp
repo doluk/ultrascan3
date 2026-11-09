@@ -20,7 +20,10 @@
 //! without <bottom>, as older edit files lack the element; us_edit always
 //! writes it, with radius 0 when it has none), tmst (also the 1-second
 //! timestate file set <runID>.time_state.tmst/.xml the data were simulated
-//! with), noise=<sigma> (default 0.004) and species=<s>:<f/f0>:<c>[,...]
+//! with), noise=<sigma> (default 0.004), tau=<s/point> (sequential radial
+//! scanning:  each point recorded tau seconds after the previous one, the
+//! scan starting outward at the first raw radius) and
+//! species=<s>:<f/f0>:<c>[,...]
 //! (s in Svedberg at 20,W; replaces the default three-species sample, before
 //! <scale> is applied).
 
@@ -217,7 +220,8 @@ int write_data( const QString&          outdir,
                 bool                    nobottom,
                 bool                    with_tmst,
                 const QVector<Species>& species,
-                double                  sigma )
+                double                  sigma,
+                double                  tau )
 {
    QString            triple   = QString( "RI.%1.A.260" ).arg( cell );
    QString            aucname  = runID + "." + triple + ".auc";
@@ -249,6 +253,10 @@ int write_data( const QString&          outdir,
    //  stretched centerpiece bottom
    simparams.bottom          = ( edata.bottom > 0.0 ) ? edata.bottom : stretched_bottom();
    simparams.band_forming    = false;
+   // Sequential radial scanning from the first raw radius outward
+   simparams.radial_scan_time = tau;
+   simparams.scan_outward     = true;
+   simparams.scan_start       = raw.radius( 0 );
 
    QTemporaryDir      tmpdir;
    QString            tmst = tmpdir.path() + "/sim.time_state.tmst";
@@ -418,6 +426,7 @@ int main( int argc, char* argv[] )
       bool             with_tmst = false;
       bool             argsok    = true;
       double           sigma     = kNoiseSigma;
+      double           tau       = 0.0;
       QVector<Species> species   = kSample;
 
       for ( int ii = 7; ii < args.size(); ii++ )
@@ -440,6 +449,11 @@ int main( int argc, char* argv[] )
             sigma  = args[ii].mid( 6 ).toDouble( &argsok );
             argsok = argsok && sigma >= 0.0;
          }
+         else if ( args[ii].startsWith( "tau=" ) )
+         {
+            tau    = args[ii].mid( 4 ).toDouble( &argsok );
+            argsok = argsok && tau >= 0.0;
+         }
          else if ( args[ii].startsWith( "species=" ) )
          {
             argsok = parse_species( args[ii].mid( 8 ), species );
@@ -456,8 +470,17 @@ int main( int argc, char* argv[] )
          }
       }
 
-      return write_data(
-         args[2], args[3], args[4].toInt(), args[5].toULongLong(), args[6].toDouble(), scans, nobottom, with_tmst, species, sigma );
+      return write_data( args[2],
+                         args[3],
+                         args[4].toInt(),
+                         args[5].toULongLong(),
+                         args[6].toDouble(),
+                         scans,
+                         nobottom,
+                         with_tmst,
+                         species,
+                         sigma,
+                         tau );
    }
 
    if ( args.size() == 4 && args[1] == "cgrid" )
@@ -472,7 +495,7 @@ int main( int argc, char* argv[] )
 
    fprintf( stderr,
             "usage: %s data <outdir> <runID> <cell> <seed> <scale> [scans=<n>] [nobottom] [tmst]\n"
-            "                [noise=<sigma>] [species=<s>:<f/f0>:<c>[,...]]\n"
+            "                [noise=<sigma>] [tau=<s/point>] [species=<s>:<f/f0>:<c>[,...]]\n"
             "       %s cgrid <outdir> <filename>\n"
             "       %s dmga  <outdir> <filename>\n",
             argv[0],

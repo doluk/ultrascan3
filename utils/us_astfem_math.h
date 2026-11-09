@@ -174,7 +174,7 @@ class US_UTIL_EXTERN US_AstfemMath
       //! \param fscan    First update expdata scan index
       //! \param lscan    Last update expdata scan index plus one
       //! \returns Success flag: 0 -> success
-      static int    interpolate  ( MfemData&, MfemData&, bool, int, int );  
+      static int         interpolate( MfemData&, MfemData&, bool, int, int );
 
       //! \brief Interpolate a simulation onto experimental scans whose
       //!        radial points are recorded sequentially in time.
@@ -194,8 +194,7 @@ class US_UTIL_EXTERN US_AstfemMath
       //! \param r_start  Radius (cm) at which the scan starts; a value <= 0
       //!                 selects the first data point in scan direction
       //! \returns Success flag: 0 -> success
-      static int    interpolate_scantime( MfemData&, MfemData&, double, bool,
-                                          double = 0.0 );
+      static int         interpolate_scantime( MfemData&, MfemData&, double, bool, double = 0.0 );
 
       //! \brief Longest delay of a data point after the scan time
       //! \param radius   Radii of the data points (equally spaced)
@@ -203,8 +202,7 @@ class US_UTIL_EXTERN US_AstfemMath
       //! \param outward  True: scan proceeds towards larger radii
       //! \param r_start  Scan start radius; <= 0 selects the first data point
       //! \returns Seconds from the scan time to the last recorded data point
-      static double scantime_span( const QVector< double >&, double, bool,
-                                   double = 0.0 );
+      static double      scantime_span( const QVector<double>&, double, bool, double = 0.0 );
 
       //! \brief Solve Quad-diagonal system
       //! \param ai   The initial a vector

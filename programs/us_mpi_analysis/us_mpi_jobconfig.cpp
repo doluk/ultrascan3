@@ -106,6 +106,16 @@ void US_MPI_JobConfig::read_parameters( void )
    pp.fit_mb_select    = integer( "fit_mb_select" );
    pp.meniscus_range   = number( "meniscus_range" );
    pp.meniscus_points  = integer( "meniscus_points" );
+   pp.radial_scan_time = number( "radial_scan_time" );
+   pp.scan_start       = number( "scan_start" );
+   pp.scan_direction   = p.value( "scan_direction", "outward" );
+   if ( pp.scan_direction.isEmpty() )
+   {
+      pp.scan_direction = "outward";
+   }
+   pp.tau_points       = integer( "tau_points" );
+   pp.tau_min          = number( "tau_min" );
+   pp.tau_max          = number( "tau_max" );
    pp.tinoise_option   = integer( "tinoise_option" );
    pp.rinoise_option   = integer( "rinoise_option" );
    pp.global_fit       = p.value( "global_fit" ) == "1" || p.value( "global_fit" ) == "T";
@@ -732,6 +742,14 @@ const ParamSpec PARAMS[] = {
    { "fit_mb_select", Kind::Int, M_ANY, 0, 0, 3, nullptr },
    { "meniscus_range", Kind::Double, M_ANY, 0, 0, NOLIM, nullptr },
    { "meniscus_points", Kind::Int, M_ANY, 0, 0, NOLIM, nullptr },
+   // Sequential radial scanning: seconds per radial point, scan start radius
+   //  and direction, and the radial-scan-time fit of the 2DSA
+   { "radial_scan_time", Kind::Double, M_ANY, 0, 0, NOLIM, nullptr },
+   { "scan_start", Kind::Double, M_ANY, 0, 0, NOLIM, nullptr },
+   { "scan_direction", Kind::Choice, M_ANY, 0, 0, 0, "outward inward" },
+   { "tau_points", Kind::Int, M_2DSA, 0, 0, NOLIM, nullptr },
+   { "tau_min", Kind::Double, M_2DSA, 0, 0, NOLIM, nullptr },
+   { "tau_max", Kind::Double, M_2DSA, 0, 0, NOLIM, nullptr },
    { "global_fit", Kind::Flag, M_ANY, 0, 0, 0, nullptr },
    { "seed", Kind::Int, M_ANY, 0, 0, 4294967295.0, nullptr },
    { "debug_level", Kind::Int, M_ANY, 0, 0, NOLIM, nullptr },
@@ -994,6 +1012,23 @@ void US_MPI_JobConfig::validate()
       // Equal limits: main never finishes such a grid
       check_range( "s_min", "s_max", false );
       check_range( "ff0_min", "ff0_max", false );
+   }
+
+   // Radial-scan-time fit: 2DSA only, with a range of tau values
+   if ( parameters.value( "tau_points" ).toInt() > 1 )
+   {
+      if ( mbit != M_2DSA )
+      {
+         errors << QString( "tau_points: the radial scan time fit needs a 2DSA analysis, not %1" ).arg( method );
+      }
+      else if ( parameters.value( "tau_max" ).trimmed().isEmpty() )
+      {
+         errors << QString( "tau_max: required with tau_points > 1" );
+      }
+      else
+      {
+         check_range( "tau_min", "tau_max", false );
+      }
    }
 
    if ( mbit == M_PCSA )

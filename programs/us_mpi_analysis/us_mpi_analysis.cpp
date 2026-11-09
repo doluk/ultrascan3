@@ -149,6 +149,7 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
    prepare_datasets( redo_ss, ntmsf_ne, ntmsf_ex, ntmsf_1s );
    prepare_timestates( ntmsf_ne, ntmsf_ex, ntmsf_1s );
    prepare_speed_steps( redo_ss );
+   apply_scan_timing();
    check_grid_size();
 
 
@@ -156,6 +157,7 @@ US_MPI_Analysis::US_MPI_Analysis( int nargs, QStringList& cmdargs ) : QObject()
    menibott_ndx         = 0;
    meniscus_run         = 0;
    bottom_run           = 0;
+   tau_run              = 0;
    mc_iteration         = 0;
 
    choose_groups();
@@ -489,6 +491,26 @@ void US_MPI_Analysis::load_data( void )
 
       dset->temperature = dset->run_data.average_temperature();
       dset->vbartb      = US_Math2::calcCommonVbar( dset->solution_rec, dset->temperature );
+
+      // The raw radial range: the default scan start of sequential scanning
+      const bool scan_timing = job_config.params.radial_scan_time > 0.0 || job_config.params.tau_points > 1;
+      double     rad_first   = dset->run_data.radius( 0 );
+      double     rad_last    = dset->run_data.radius( dset->run_data.pointCount() - 1 );
+      if ( scan_timing && job_config.params.scan_start <= 0.0 && error.isEmpty() )
+      {
+         US_DataIO::RawData raw;
+         if ( US_DataIO::readRawData( dset->auc_file, raw ) == US_DataIO::OK && raw.pointCount() > 0 )
+         {
+            rad_first = raw.radius( 0 );
+            rad_last  = raw.radius( raw.pointCount() - 1 );
+         }
+         else if ( my_rank == 0 )
+         {
+            DbgLv( 0 ) << "*WARNING* Raw radii of" << dset->auc_file << "not readable: the scan start is the first edited radius";
+         }
+      }
+      raw_radius_first << rad_first;
+      raw_radius_last << rad_last;
    }
 
    if ( dbg_timing )
@@ -692,6 +714,89 @@ void US_MPI_Analysis::set_fit_controls( void )
    {
       DbgLv( 0 ) << "FMB: bottom:  start delta" << bottom_start << dbot;
    }
+
+   // Radial scan time: a fixed value, or a grid of values fitted together
+   //  with the meniscus/bottom points (2DSA only)
+   tau_points     = qMax( 1, job_config.params.tau_points );
+   fit_tau        = ( tau_points > 1 );
+   menibott_inner = menibott_count;
+   menibott_count = menibott_inner * tau_points;
+   tau_values.resize( tau_points );
+
+   if ( fit_tau )
+   {
+      const double tmin = job_config.params.tau_min;
+      const double tmax = job_config.params.tau_max;
+      for ( int ii = 0; ii < tau_points; ii++ )
+      {
+         tau_values[ii] = tmin + ( tmax - tmin ) * ii / (double) ( tau_points - 1 );
+      }
+
+      if ( !analysis_type.startsWith( "2DSA" ) )
+      {
+         abort_all( "The radial scan time fit (tau_points > 1) needs a 2DSA analysis" );
+      }
+      if ( mc_iterations > 1 )
+      {
+         abort_all( "The radial scan time fit is not compatible with Monte Carlo analysis" );
+      }
+      if ( is_global_fit )
+      {
+         abort_all( "The radial scan time fit is not compatible with global fit" );
+      }
+   }
+   else
+   {
+      tau_values[0] = job_config.params.radial_scan_time;
+   }
+
+   if ( my_rank == 0 )
+   {
+      DbgLv( 0 ) << "TAU: fit_tau" << fit_tau << "points" << tau_points << "values" << tau_values.first() << tau_values.last()
+                 << "menibott inner count" << menibott_inner << menibott_count;
+   }
+}
+
+// Sequential radial scanning:  the radial scan time, scan direction and
+//  scan start radius of every dataset.  The scan start defaults to the
+//  first raw radius in scan direction (the outermost for inward scans).
+void US_MPI_Analysis::apply_scan_timing( void )
+{
+   const bool   outward = ( job_config.params.scan_direction != "inward" );
+   const double tau     = tau_values.isEmpty() ? 0.0 : tau_values[0];
+
+   for ( int ee = 0; ee < data_sets.size(); ee++ )
+   {
+      US_SolveSim::DataSet* ds    = data_sets[ee];
+      double                start = job_config.params.scan_start;
+      if ( start <= 0.0 && ee < raw_radius_first.size() )
+      {
+         start = outward ? raw_radius_first[ee] : raw_radius_last[ee];
+      }
+
+      ds->simparams.radial_scan_time = tau;
+      ds->simparams.scan_outward     = outward;
+      ds->simparams.scan_start       = start;
+
+      if ( my_rank == 0 && ( tau > 0.0 || fit_tau ) )
+      {
+         DbgLv( 0 ) << "TAU: dataset" << ee << "scan" << ( outward ? "outward" : "inward" ) << "from" << start << "cm; tau"
+                    << ( fit_tau ? QString( "fitted" ) : QString::number( tau ) ) << "s/pt";
+      }
+   }
+}
+
+// The iteration ID of a model or noise with the radial scan time appended
+//  ("t" and tau in 1e-4 s/point) when tau is fitted
+QString US_MPI_Analysis::tau_iter_id( const QString& iterID ) const
+{
+   if ( !fit_tau || mc_iterations > 1 )
+   {
+      return iterID;
+   }
+
+   const QString base = ( iterID == "i01" ) ? QString::asprintf( "i%02d", menibott_ndx + 1 ) : iterID;
+   return base + QString::asprintf( "%st%05d", base.contains( '-' ) ? "" : "-", (int) qRound( tau_value * 10000.0 ) );
 }
 
 // GA and DMGA controls
@@ -2080,6 +2185,8 @@ void US_MPI_Analysis::write_output( void )
                      ? meniscus_values[ meniscus_run ] : save_meniscus;
    bottom_value    = bottom_run < bottom_values.size() 
                      ? bottom_values[ bottom_run ] : save_bottom;
+   const double save_tau = tau_value;
+   tau_value             = tau_run < tau_values.size() ? tau_values[tau_run] : save_tau;
 
    if ( mdl_type == US_Model::PCSA )
    {
@@ -2097,6 +2204,7 @@ void US_MPI_Analysis::write_output( void )
    write_model( sim, mdl_type );
    meniscus_value  = save_meniscus;
    bottom_value    = save_bottom;
+   tau_value       = save_tau;
 
    DbgLv( 1 ) << "WrO: wr_noise";
    if ( job_config.params.tinoise_option > 0 )
@@ -2575,6 +2683,7 @@ void US_MPI_Analysis::write_model( const SIMULATION&      sim,
                                   (int)( bottom_value * 10000 ) );
    else
       iterID = "i01";
+   iterID = tau_iter_id( iterID );
 
    const QString mdlid     = tripleID + "." + iterID;
    QString id        = model.typeText( subtype );
@@ -2673,12 +2782,13 @@ void US_MPI_Analysis::write_model( const SIMULATION&      sim,
 
    const QString runstring = "Run: " + QString::number( run ) + " " + tripleID;
 
-   tsout << fn << ";meniscus_value=" << meniscus_value
-               << ";MC_iteration="   << mc_iter
-               << ";variance="       << sim.variance
-               << ";run="            << runstring
-               << ";bottom_value="   << bottom_value
-               << "\n";
+   tsout << fn << ";meniscus_value=" << meniscus_value << ";MC_iteration=" << mc_iter << ";variance=" << sim.variance
+         << ";run=" << runstring << ";bottom_value=" << bottom_value;
+   if ( fit_tau || tau_value > 0.0 )
+   {
+      tsout << ";tau_value=" << tau_value;
+   }
+   tsout << "\n";
    fileo.close();
 }
 
@@ -2747,6 +2857,7 @@ void US_MPI_Analysis::write_noise( US_Noise::NoiseType      type,
 
    else                               // Non-iterative single
       iterID = "i01";
+   iterID = tau_iter_id( iterID );
 
    const QString analysID = dates + anType + requestID + "_" + iterID;
 
@@ -3107,6 +3218,7 @@ void US_MPI_Analysis::write_superg( const SIMULATION&      sim,
                                   (int)( bottom_value * 10000 ) );
    else
       iterID = "i01";
+   iterID = tau_iter_id( iterID );
 
    const QString mdlid     = tripleID + "." + iterID;
    QString id        = model.typeText( subtype );
@@ -3197,12 +3309,13 @@ void US_MPI_Analysis::write_superg( const SIMULATION&      sim,
 
    const QString runstring = "Run: " + QString::number( run ) + " " + tripleID;
 
-   tsout << fn << ";meniscus_value=" << meniscus_value
-               << ";MC_iteration="   << mc_iter
-               << ";variance="       << sim.variance
-               << ";run="            << runstring
-               << ";bottom_value="   << bottom_value
-               << "\n";
+   tsout << fn << ";meniscus_value=" << meniscus_value << ";MC_iteration=" << mc_iter << ";variance=" << sim.variance
+         << ";run=" << runstring << ";bottom_value=" << bottom_value;
+   if ( fit_tau || tau_value > 0.0 )
+   {
+      tsout << ";tau_value=" << tau_value;
+   }
+   tsout << "\n";
    fileo.close();
 }
 

@@ -7,7 +7,7 @@ and compare the fitted models with stored baselines.
 
 | File | Purpose |
 |---|---|
-| `us_mpi_testdata.cpp` | Writes a simulated velocity dataset, a DMGA constraints model and a custom-grid model with the UltraScan writers (`US_DataIO::writeRawData`, `US_DataIO::writeEdits`, `US_Model::write`). Three species, 30 scans, 60 krpm, edited bottom at the stretched centerpiece bottom as `us_edit` writes it, noise σ = 0.004 from the seeded `US_Math2` generator. Options of `data`: `scans=<n>`, `nobottom` (edit without `<bottom>`), `tmst` (also write the timestate file set), `noise=<sigma>` and `species=<s>:<f/f0>:<c>[,...]` (another sample). |
+| `us_mpi_testdata.cpp` | Writes a simulated velocity dataset, a DMGA constraints model and a custom-grid model with the UltraScan writers (`US_DataIO::writeRawData`, `US_DataIO::writeEdits`, `US_Model::write`). Three species, 30 scans, 60 krpm, edited bottom at the stretched centerpiece bottom as `us_edit` writes it, noise σ = 0.004 from the seeded `US_Math2` generator. Options of `data`: `scans=<n>`, `nobottom` (edit without `<bottom>`), `tmst` (also write the timestate file set), `noise=<sigma>`, `tau=<s/point>` (sequential radial scanning from the first raw radius outward) and `species=<s>:<f/f0>:<c>[,...]` (another sample). |
 | `ga_truth_eval.py` | Scores GA fits of samples with known composition against the truth, for several seeds and builds (see below). |
 | `us_mpi_regression.py` | Builds the job archive (hpcrequest XML in the LIMS format), runs the case, reduces `analysis-results.tar` to a JSON summary and compares it with `baseline/<case>.json`. |
 | `test_us_mpi_jobconfig.cpp` | Unit tests (GoogleTest, no MPI) of `US_MPI_JobConfig`, the hpcrequest XML reader. |
@@ -28,6 +28,9 @@ and compare the fitted models with stored baselines.
 | `2dsa_menbot` | meniscus and bottom fit (3 × 3) | 2 | exact |
 | `2dsa_composite_menbot` | composite job, meniscus and bottom fit (2 × 2) | 2 | exact |
 | `2dsa_composite_menbot_pmasters` | the same with parallel masters | 6 | exact |
+| `2dsa_tau_fixed` | sequentially scanned data (0.3 s/point), fixed `radial_scan_time` | 2 | exact |
+| `2dsa_tau` | radial scan time fit (3 points) | 2 | exact |
+| `2dsa_meniscus_tau` | meniscus and radial scan time fit (3 × 3) | 2 | exact |
 | `2dsa_timestate`, `2dsa_composite_timestate` | timestate file given (as in LIMS jobs), 1-second intervals | 2 | exact |
 | `2dsa_noise` | TI + RI noise | 2 | exact |
 | `2dsa_customgrid` | custom grid (s × vbar) | 2 | exact |
@@ -97,6 +100,9 @@ leave the job's input files in the work directory.
 | `input_meniscus_points_negative` | `meniscus_points="-3"` | abort naming `meniscus_points` |
 | `input_bucket_inverted` | GA bucket with s_min > s_max | abort naming the bucket |
 | `input_centerpiece_bottom_default` | `centerpiece_bottom="7.3"` (the invalid default) | abort naming 7.3 |
+| `input_tau_not_2dsa` | GA with `tau_points` | abort naming the radial scan time fit |
+| `input_tau_max_missing` | `tau_points` without `tau_max` | abort naming `tau_max` |
+| `input_tau_mc` | radial scan time fit with Monte Carlo | abort |
 | `input_unknown_key` | additional parameter `s_mx` | warning, result as `2dsa_basic` |
 
 A case can carry a *pending* marker while the fix of the defect it

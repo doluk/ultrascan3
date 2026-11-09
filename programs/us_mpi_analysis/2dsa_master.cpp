@@ -72,6 +72,10 @@ void US_MPI_Analysis::_2dsa_master( void )
       meniscus_points     = 1;
    }
 
+   // Each meniscus/bottom point is run for every radial scan time value
+   menibott_inner = menibott_count;
+   menibott_count *= tau_points;
+
    int first_dataset = 0;
 
    if ( pm_mc )
@@ -269,6 +273,7 @@ void US_MPI_Analysis::start_2dsa_dataset( int dataset, bool workers_ready )
    menibott_ndx    = 0;
    meniscus_run    = 0;
    bottom_run      = 0;
+   tau_run         = 0;
    mc_iteration    = 0;
    sigmas.clear(); // Monte Carlo sigmas come from this dataset's base fit
 
@@ -339,9 +344,15 @@ QString US_MPI_Analysis::progress_2dsa( void )
       progress +=
          "; Bottom: " + QString::number( bottom_value, 'f', 4 ) + tr( " (%1 of %2)" ).arg( bottom_run + 1 ).arg( bottom_points );
    }
-   else
+   else if ( !fit_tau )
    {
       progress += "; RMSD: " + QString::number( sqrt( simulation_values.variance ) );
+   }
+
+   if ( fit_tau && mc_iterations <= 1 )
+   {
+      progress +=
+         "; Scan time: " + QString::number( tau_value, 'f', 4 ) + tr( " s/pt (%1 of %2)" ).arg( tau_run + 1 ).arg( tau_points );
    }
 
    return progress;
@@ -824,17 +835,25 @@ void US_MPI_Analysis::begin_fit_context( void )
 {
    meniscus_value = ( meniscus_points == 1 ) ? data_sets[current_dataset]->run_data.meniscus : meniscus_values[meniscus_run];
    bottom_value   = ( bottom_points == 1 ) ? dataset_bottom( current_dataset ) : bottom_values[bottom_run];
+   tau_value      = tau_values.isEmpty() ? 0.0 : tau_values[qMin( tau_run, tau_values.size() - 1 )];
 
-   const bool sim_changed =
-      ( fit_context.dataset != current_dataset || fit_context.meniscus != meniscus_value || fit_context.bottom != bottom_value );
+   const bool sim_changed = ( fit_context.dataset != current_dataset || fit_context.meniscus != meniscus_value ||
+                              fit_context.bottom != bottom_value || fit_context.tau != tau_value );
 
    fit_context.dataset      = current_dataset;
    fit_context.meniscus     = meniscus_value;
    fit_context.bottom       = bottom_value;
+   fit_context.tau          = tau_value;
    fit_context.mc_iteration = mc_iteration;
 
-   DbgLv( 1 ) << "FitContext: ds" << current_dataset << "men" << meniscus_value << "bot" << bottom_value << "mc" << mc_iteration
-              << "sim_changed" << sim_changed;
+   // The master's own simulations (e.g. final residuals) use the same tau
+   for ( int ee = current_dataset; ee < current_dataset + datasets_to_process && ee < data_sets.size(); ee++ )
+   {
+      data_sets[ee]->simparams.radial_scan_time = tau_value;
+   }
+
+   DbgLv( 1 ) << "FitContext: ds" << current_dataset << "men" << meniscus_value << "bot" << bottom_value << "tau" << tau_value
+              << "mc" << mc_iteration << "sim_changed" << sim_changed;
 }
 
 // Bottom of a dataset: the edited bottom if given, else the centerpiece
@@ -882,30 +901,40 @@ void US_MPI_Analysis::set_menibott_values( int dataset )
    }
 }
 
+// Meniscus, bottom and radial-scan-time runs of a fit point index:  the
+//  meniscus/bottom points vary fastest, the radial scan time slowest
+void US_MPI_Analysis::set_menibott_runs( int ndx )
+{
+   const int inner = qMax( 1, menibott_inner );
+   const int mbndx = ndx % inner;
+   tau_run         = fit_tau ? ( ndx / inner ) : 0;
+
+   if ( fit_menbot )
+   {
+      meniscus_run = mbndx / meniscus_points;
+      bottom_run   = mbndx % meniscus_points;
+   }
+   else if ( fit_meni )
+   {
+      meniscus_run = mbndx;
+   }
+   else if ( fit_bott )
+   {
+      bottom_run = mbndx;
+   }
+   else if ( !fit_tau )
+   {
+      DbgLv( 0 ) << "FMB:set_meniscus: HUH????: mb m b:" << fit_menbot << fit_meni << fit_bott;
+   }
+}
+
 // Reset for a fit-meniscus iteration
 void US_MPI_Analysis::set_meniscus( void )
 {
    menibott_ndx++;
-
-   if ( fit_menbot )
-   {
-      meniscus_run   = menibott_ndx / meniscus_points;
-      bottom_run     = menibott_ndx % meniscus_points;
-   }
-   else if ( fit_meni )
-   {
-      meniscus_run   = menibott_ndx;
-   }
-   else if ( fit_bott )
-   {
-      bottom_run     = menibott_ndx;
-   }
-   else
-   {
-      DbgLv( 0 ) << "FMB:set_meniscus: HUH????: mb m b:" << fit_menbot << fit_meni << fit_bott;
-   }
-   DbgLv( 0 ) << "FMB:set_meniscus:  mb_ndx men_run bot_run" << menibott_ndx << meniscus_run << bottom_run << "mb m b mbc"
-              << fit_menbot << fit_meni << fit_bott << menibott_count;
+   set_menibott_runs( menibott_ndx );
+   DbgLv( 0 ) << "FMB:set_meniscus:  mb_ndx men_run bot_run tau_run" << menibott_ndx << meniscus_run << bottom_run << tau_run
+              << "mb m b t mbc" << fit_menbot << fit_meni << fit_bott << fit_tau << menibott_count;
 
    // We incremented meniscus_run above.  Just rerun from the beginning.
    for ( int i = 0; i < orig_solutes.size(); i++ )
@@ -1210,6 +1239,7 @@ void US_MPI_Analysis::iterate( void )
    job.mpi_job.dataset_count  = datasets_to_process;
    job.mpi_job.meniscus_value = meniscus_value;
    job.mpi_job.bottom_value   = bottom_value;
+   job.mpi_job.tau_value      = tau_value;
    max_experiment_size        = min_experiment_size;
 
    QVector< US_Solute > prev_solutes = simulation_values.solutes;
@@ -1251,6 +1281,7 @@ void US_MPI_Analysis::submit( Sa_Job& job, int worker ) const
    job.mpi_job.length         = job.solutes.size();
    job.mpi_job.meniscus_value = meniscus_value;
    job.mpi_job.bottom_value   = bottom_value;
+   job.mpi_job.tau_value      = tau_value;
    job.mpi_job.solution       = mc_iteration;
    job.mpi_job.dataset_offset = current_dataset;
    job.mpi_job.dataset_count  = datasets_to_process;

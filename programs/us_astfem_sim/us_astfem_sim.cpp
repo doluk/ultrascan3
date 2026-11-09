@@ -694,45 +694,50 @@ DbgLv(1) << "ASIM: chg_stat:  times_comp" << times_comp << "maxts" << maxts;
       .arg( nspd ).arg( spdls ) );
 
    if ( simparams.radial_scan_time > 0.0 )
-   {  // Report sequential radial scanning and check its plausibility
+   { // Report sequential radial scanning and check its plausibility
       // Two-point grid spanning the data: per-point time scaled to its spacing
-      QVector< double > rads;
+      QVector<double> rads;
       rads << simparams.meniscus << simparams.bottom;
-      double tscan = US_AstfemMath::scantime_span( rads, simparams.radial_scan_time
-                     / simparams.radial_resolution
-                     * ( simparams.bottom - simparams.meniscus ),
-                     simparams.scan_outward, simparams.scan_start );
-      double tbmin = -1.0;   // Smallest interval between consecutive scans
+      double tscan = US_AstfemMath::scantime_span( rads,
+                                                   simparams.radial_scan_time / simparams.radial_resolution *
+                                                      ( simparams.bottom - simparams.meniscus ),
+                                                   simparams.scan_outward,
+                                                   simparams.scan_start );
+      double tbmin = -1.0; // Smallest interval between consecutive scans
 
       for ( int ii = 0; ii < nspd; ii++ )
       {
-         const US_SimulationParameters::SpeedProfile* sp = &simparams.speed_step[ ii ];
+         const US_SimulationParameters::SpeedProfile* sp = &simparams.speed_step[ii];
          if ( sp->scans < 2 )
+         {
             continue;
-         double dur   = sp->duration_hours * 3600.0 + sp->duration_minutes * 60.0;
-         double dly   = sp->delay_hours    * 3600.0 + sp->delay_minutes    * 60.0;
-         double tbs   = ( dur - dly ) / (double)( sp->scans - 1 );
-         tbmin        = ( tbmin < 0.0 ) ? tbs : qMin( tbmin, tbs );
+         }
+         double dur = sp->duration_hours * 3600.0 + sp->duration_minutes * 60.0;
+         double dly = sp->delay_hours * 3600.0 + sp->delay_minutes * 60.0;
+         double tbs = ( dur - dly ) / (double) ( sp->scans - 1 );
+         tbmin      = ( tbmin < 0.0 ) ? tbs : qMin( tbmin, tbs );
       }
 
-      te_status->append( tr( "Radial scan time:  %1 s/point, %2, start %4"
-                             "  (last data point ~ %3 s after scan time)" )
-         .arg( simparams.radial_scan_time )
-         .arg( simparams.scan_outward ? tr( "meniscus to bottom" )
-                                      : tr( "bottom to meniscus" ) )
-         .arg( tscan, 0, 'f', 1 )
-         .arg( simparams.scan_start > 0.0
-               ? QString::number( simparams.scan_start ) + " cm"
-               : tr( "at first data point" ) ) );
+      te_status->append(
+         tr( "Radial scan time:  %1 s/point, %2, start %4"
+             "  (last data point ~ %3 s after scan time)" )
+            .arg( simparams.radial_scan_time )
+            .arg( simparams.scan_outward ? tr( "meniscus to bottom" ) : tr( "bottom to meniscus" ) )
+            .arg( tscan, 0, 'f', 1 )
+            .arg( simparams.scan_start > 0.0 ? QString::number( simparams.scan_start ) + " cm" : tr( "at first data point" ) ) );
 
       if ( simparams.meshType == US_SimulationParameters::ASTFVM )
+      {
          te_status->append( tr( "WARNING: the radial scan time is not supported "
                                 "by ASTFVM and is ignored." ) );
+      }
 
-      if ( tbmin > 0.0  &&  tscan > tbmin )
+      if ( tbmin > 0.0 && tscan > tbmin )
+      {
          te_status->append( tr( "WARNING: the scan duration exceeds the "
                                 "time between scans (%1 s)." )
-            .arg( tbmin, 0, 'f', 1 ) );
+                               .arg( tbmin, 0, 'f', 1 ) );
+      }
    }
 }
 

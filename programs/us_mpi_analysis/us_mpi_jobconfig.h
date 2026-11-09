@@ -158,6 +158,12 @@ class US_MPI_JobConfig
             int               fit_mb_select    = 0;
             double            meniscus_range   = 0.0;
             int               meniscus_points  = 0;
+            double            radial_scan_time = 0.0;       //!< Fixed seconds per radial point (0: instantaneous scans)
+            double            scan_start       = 0.0;       //!< Radius where each scan starts; 0: first raw radius
+            QString           scan_direction   = "outward"; //!< "outward" (towards bottom) or "inward"
+            int               tau_points       = 0;         //!< Fit radial scan time on this many points (2DSA, > 1)
+            double            tau_min          = 0.0;       //!< Lowest fitted radial scan time (s/point)
+            double            tau_max          = 0.0;       //!< Highest fitted radial scan time (s/point)
             int               tinoise_option   = 0;
             int               rinoise_option   = 0;
             bool              global_fit       = false; //!< "1" or "T"

@@ -1,7 +1,7 @@
 //! \file us_astfem_math.cpp
 #include "us_astfem_math.h"
-#include "us_math2.h"
 #include "us_hardware.h"
+#include "us_math2.h"
 #include "us_settings.h"
 #include <algorithm>
 
@@ -1376,117 +1376,124 @@ static double scan_delay( double rad, double rs, double dr, double pt_time, bool
 }
 
 // Scan start radius and radial increment for a set of data radii
-static void scan_geometry( const QVector< double >& radius, bool outward, double r_start,
-                           double& rs, double& dr )
+static void scan_geometry( const QVector<double>& radius, bool outward, double r_start, double& rs, double& dr )
 {
    const int nr = radius.size();
-   rs  = ( r_start > 0.0 ) ? r_start : ( outward ? radius[ 0 ] : radius[ nr - 1 ] );
-   dr  = ( nr > 1 ) ? qAbs( radius[ nr - 1 ] - radius[ 0 ] ) / (double)( nr - 1 ) : 1.0;
+   rs           = ( r_start > 0.0 ) ? r_start : ( outward ? radius[0] : radius[nr - 1] );
+   dr           = ( nr > 1 ) ? qAbs( radius[nr - 1] - radius[0] ) / (double) ( nr - 1 ) : 1.0;
    if ( dr <= 0.0 )
-      dr  = 1.0;
+   {
+      dr = 1.0;
+   }
 }
 
-double US_AstfemMath::scantime_span( const QVector< double >& radius, double pt_time,
-                                     bool outward, double r_start )
+double US_AstfemMath::scantime_span( const QVector<double>& radius, double pt_time, bool outward, double r_start )
 {
-   if ( pt_time <= 0.0  ||  radius.isEmpty() )
+   if ( pt_time <= 0.0 || radius.isEmpty() )
+   {
       return 0.0;
+   }
    double rs, dr;
    scan_geometry( radius, outward, r_start, rs, dr );
-   return qMax( scan_delay( radius.first(), rs, dr, pt_time, outward ),
-                scan_delay( radius.last(),  rs, dr, pt_time, outward ) );
+   return qMax( scan_delay( radius.first(), rs, dr, pt_time, outward ), scan_delay( radius.last(), rs, dr, pt_time, outward ) );
 }
 
-int US_AstfemMath::interpolate_scantime( MfemData& expdata, MfemData& simdata,
-                                         double pt_time, bool outward, double r_start )
+int US_AstfemMath::interpolate_scantime( MfemData& expdata, MfemData& simdata, double pt_time, bool outward, double r_start )
 {
    if ( pt_time <= 0.0 )
+   {
       return interpolate( expdata, simdata, true );
+   }
 
-   const int nsscan  = simdata.scan.size();
-   const int nsconc  = simdata.radius.size();
-   const int nescan  = expdata.scan.size();
-   const int neconc  = expdata.radius.size();
+   const int nsscan = simdata.scan.size();
+   const int nsconc = simdata.radius.size();
+   const int nescan = expdata.scan.size();
+   const int neconc = expdata.radius.size();
 
-   if ( nescan == 0  ||  neconc == 0  ||  nsscan == 0  ||  nsconc == 0 )
+   if ( nescan == 0 || neconc == 0 || nsscan == 0 || nsconc == 0 )
+   {
       return -1;
+   }
 
    // Simulation time grid
-   QVector< double > stimes( nsscan );
+   QVector<double> stimes( nsscan );
    for ( int ks = 0; ks < nsscan; ks++ )
    {
-      if ( simdata.scan[ ks ].conc.size() < nsconc )
+      if ( simdata.scan[ks].conc.size() < nsconc )
+      {
          return -1;
-      stimes[ ks ] = simdata.scan[ ks ].time;
+      }
+      stimes[ks] = simdata.scan[ks].time;
    }
-   const double  s_first = stimes[ 0 ];
-   const double  s_last  = stimes[ nsscan - 1 ];
+   const double  s_first = stimes[0];
+   const double  s_last  = stimes[nsscan - 1];
    const double* stbeg   = stimes.constData();
    const double* stend   = stbeg + nsscan;
 
    // Scan start radius and radial increment of the data
-   double rs, dr_e;
+   double        rs, dr_e;
    scan_geometry( expdata.radius, outward, r_start, rs, dr_e );
 
    // Radial bracket (lower sim index, weight) for each experimental radius;
    //  radii outside the simulated range are clamped to its limits
-   const double* srad    = simdata.radius.constData();
-   QVector< int >    rlo( neconc, 0 );
-   QVector< double > rwt( neconc, 0.0 );
+   const double*   srad = simdata.radius.constData();
+   QVector<int>    rlo( neconc, 0 );
+   QVector<double> rwt( neconc, 0.0 );
    if ( nsconc > 1 )
    {
       for ( int ii = 0; ii < neconc; ii++ )
       {
-         const double erad = expdata.radius[ ii ];
-         int kr  = (int)( std::upper_bound( srad, srad + nsconc, erad ) - srad ) - 1;
-         kr      = qBound( 0, kr, nsconc - 2 );
-         double dr   = srad[ kr + 1 ] - srad[ kr ];
-         rlo[ ii ]   = kr;
-         rwt[ ii ]   = ( dr > 0.0 )
-                       ? qBound( 0.0, ( erad - srad[ kr ] ) / dr, 1.0 ) : 0.0;
+         const double erad = expdata.radius[ii];
+         int          kr   = (int) ( std::upper_bound( srad, srad + nsconc, erad ) - srad ) - 1;
+         kr                = qBound( 0, kr, nsconc - 2 );
+         double dr         = srad[kr + 1] - srad[kr];
+         rlo[ii]           = kr;
+         rwt[ii]           = ( dr > 0.0 ) ? qBound( 0.0, ( erad - srad[kr] ) / dr, 1.0 ) : 0.0;
       }
    }
 
    // Concentration of sim scan ks at the radius of experimental point ii
    auto rad_conc = [&]( int ks, int ii ) -> double
    {
-      const double* sc = simdata.scan[ ks ].conc.constData();
+      const double* sc = simdata.scan[ks].conc.constData();
       if ( nsconc < 2 )
-         return sc[ 0 ];
-      const int kr = rlo[ ii ];
-      return sc[ kr ] + rwt[ ii ] * ( sc[ kr + 1 ] - sc[ kr ] );
+      {
+         return sc[0];
+      }
+      const int kr = rlo[ii];
+      return sc[kr] + rwt[ii] * ( sc[kr + 1] - sc[kr] );
    };
 
    for ( int es = 0; es < nescan; es++ )
    {
-      MfemScan* escan  = &expdata.scan[ es ];
-      const double t0  = escan->time;
+      MfemScan*    escan = &expdata.scan[es];
+      const double t0    = escan->time;
 
       // The scan belongs to the simulated segment containing its start time
-      if ( t0 < s_first  ||  t0 > s_last  ||  escan->conc.size() < neconc )
+      if ( t0 < s_first || t0 > s_last || escan->conc.size() < neconc )
+      {
          continue;
+      }
 
-      double* econc    = escan->conc.data();
+      double* econc = escan->conc.data();
 
       for ( int ii = 0; ii < neconc; ii++ )
       {
-         const double tt  = qMin( t0 + scan_delay( expdata.radius[ ii ], rs, dr_e,
-                                                   pt_time, outward ), s_last );
+         const double tt = qMin( t0 + scan_delay( expdata.radius[ii], rs, dr_e, pt_time, outward ), s_last );
 
          if ( nsscan < 2 )
          {
-            econc[ ii ]  += rad_conc( 0, ii );
+            econc[ii] += rad_conc( 0, ii );
             continue;
          }
 
-         int ks  = (int)( std::upper_bound( stbeg, stend, tt ) - stbeg ) - 1;
-         ks      = qBound( 0, ks, nsscan - 2 );
-         const double dt  = stimes[ ks + 1 ] - stimes[ ks ];
-         const double uu  = ( dt > 0.0 )
-                            ? qBound( 0.0, ( tt - stimes[ ks ] ) / dt, 1.0 ) : 0.0;
-         const double c1  = rad_conc( ks,     ii );
-         const double c2  = rad_conc( ks + 1, ii );
-         econc[ ii ]     += c1 + uu * ( c2 - c1 );
+         int ks          = (int) ( std::upper_bound( stbeg, stend, tt ) - stbeg ) - 1;
+         ks              = qBound( 0, ks, nsscan - 2 );
+         const double dt = stimes[ks + 1] - stimes[ks];
+         const double uu = ( dt > 0.0 ) ? qBound( 0.0, ( tt - stimes[ks] ) / dt, 1.0 ) : 0.0;
+         const double c1 = rad_conc( ks, ii );
+         const double c2 = rad_conc( ks + 1, ii );
+         econc[ii] += c1 + uu * ( c2 - c1 );
       }
    }
 

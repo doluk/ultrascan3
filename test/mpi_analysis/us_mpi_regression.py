@@ -51,6 +51,9 @@ DS_B = ("regA", 2, 23, 0.6)
 # 31 x 185 points:  an odd number of Monte Carlo deviates per iteration
 DS_ODD = ("regA", 1, 11, 1.0, {"scans": 31})
 DS_NOBOTTOM = ("regA", 1, 11, 1.0, {"nobottom": True})
+# Sequential radial scanning:  0.3 s per point of 0.006 cm (50 s/cm), the
+#  scan starting outward at the first raw radius
+DS_TAU = ("regA", 1, 11, 1.0, {"tau": 0.3})
 
 GRID_2DSA = {
     "s_min": "1.0", "s_max": "10.0",
@@ -162,6 +165,23 @@ CASES = {
         "method": "2DSA", "datasets": [DS_A, DS_B], "np": 6, "mgroupcount": 2,
         "params": dict(GRID_2DSA, meniscus_points="2", meniscus_range="0.04",
                        fit_mb_select="3"),
+    },
+    "2dsa_tau_fixed": {
+        # Data scanned sequentially, fitted with the known radial scan time
+        "method": "2DSA", "datasets": [DS_TAU], "np": 2,
+        "params": dict(GRID_2DSA, radial_scan_time="0.3"),
+    },
+    "2dsa_tau": {
+        # Radial scan time fit alone: 0, 0.3 and 0.6 s/point
+        "method": "2DSA", "datasets": [DS_TAU], "np": 2,
+        "params": dict(GRID_2DSA, tau_points="3", tau_min="0.0", tau_max="0.6"),
+    },
+    "2dsa_meniscus_tau": {
+        # Meniscus (3 points) and radial scan time (3 points) fitted together
+        "method": "2DSA", "datasets": [DS_TAU], "np": 2,
+        "params": dict(GRID_2DSA, meniscus_points="3", meniscus_range="0.04",
+                       fit_mb_select="1", tau_points="3", tau_min="0.0",
+                       tau_max="0.6"),
     },
     "2dsa_timestate": {
         # Timestate file given (as in every LIMS job), at 1-second intervals
@@ -452,6 +472,16 @@ INPUT_CASES = {
     "input_centerpiece_bottom_default": input_case(
         "2dsa_basic", centerpiece_bottom="7.3",
         expect={"abort": r"invalid default value of 7\.3"}),
+    # The radial scan time fit is a 2DSA fit with a range of values
+    "input_tau_not_2dsa": input_case(
+        "ga_np2", params=lambda p: dict(p, tau_points="3", tau_max="0.6"),
+        expect={"abort": r"radial scan time fit"}),
+    "input_tau_max_missing": input_case(
+        "2dsa_tau", params=lambda p: without(p, ("tau_max",)),
+        expect={"abort": r"tau_max"}),
+    "input_tau_mc": input_case(
+        "2dsa_tau", params=lambda p: dict(p, mc_iterations="3"),
+        expect={"abort": r"radial scan time fit is not compatible with Monte Carlo"}),
     # An unknown parameter is reported, the run goes on
     "input_unknown_key": input_case(
         "2dsa_basic", params=lambda p: dict(p, s_mx="10.0"),
@@ -667,6 +697,7 @@ def build_archive(name, case, testdata, casedir):
         extra += ["nobottom"] if opts.get("nobottom") else []
         extra += ["tmst"] if case.get("timestate") == "given" else []
         extra += ["noise=%g" % opts["noise"]] if "noise" in opts else []
+        extra += ["tau=%g" % opts["tau"]] if "tau" in opts else []
         if "species" in opts:
             extra += ["species=" + ",".join("%g:%g:%g" % sp
                                             for sp in opts["species"])]

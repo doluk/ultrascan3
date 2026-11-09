@@ -72,6 +72,9 @@ set(US_MPI_CASES
     2dsa_composite_menbot
     2dsa_composite_menbot_pmasters
     2dsa_noise
+    2dsa_tau_fixed
+    2dsa_tau
+    2dsa_meniscus_tau
     2dsa_timestate
     2dsa_composite_timestate
     2dsa_customgrid
@@ -116,6 +119,9 @@ set(US_MPI_INPUT_CASES
     input_meniscus_points_negative
     input_bucket_inverted
     input_unknown_key
+    input_tau_not_2dsa
+    input_tau_max_missing
+    input_tau_mc
     input_centerpiece_bottom_default
     feature_cache_off
     feature_cache_default_policy

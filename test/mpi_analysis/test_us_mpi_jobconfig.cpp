@@ -687,3 +687,57 @@ TEST( US_MPI_JobConfig, GaFeatureValuesAreRangeChecked )
       EXPECT_EQ( config.errors.size(), 1 ) << bad << ": " << all_of( config );
    }
 }
+
+// --- Sequential radial scanning ---------------------------------------------
+
+TEST( US_MPI_JobConfig, RadialScanTimeDefaults )
+{
+   Config config = validated( GRID_2DSA );
+   EXPECT_EQ( config.params.radial_scan_time, 0.0 );
+   EXPECT_EQ( config.params.scan_start, 0.0 );
+   EXPECT_EQ( config.params.scan_direction, QString( "outward" ) );
+   EXPECT_EQ( config.params.tau_points, 0 );
+}
+
+TEST( US_MPI_JobConfig, RadialScanTimeParameters )
+{
+   Config config = validated( GRID_2DSA + "<radial_scan_time value=\"0.05\"/><scan_start value=\"5.8\"/>"
+                                          "<scan_direction value=\"inward\"/><tau_points value=\"11\"/>"
+                                          "<tau_min value=\"0.0\"/><tau_max value=\"0.1\"/>" );
+   EXPECT_TRUE( config.errors.isEmpty() ) << all_of( config );
+   EXPECT_TRUE( config.warnings.isEmpty() ) << all_of( config );
+   EXPECT_DOUBLE_EQ( config.params.radial_scan_time, 0.05 );
+   EXPECT_DOUBLE_EQ( config.params.scan_start, 5.8 );
+   EXPECT_EQ( config.params.scan_direction, QString( "inward" ) );
+   EXPECT_EQ( config.params.tau_points, 11 );
+   EXPECT_DOUBLE_EQ( config.params.tau_min, 0.0 );
+   EXPECT_DOUBLE_EQ( config.params.tau_max, 0.1 );
+
+   // A fixed radial scan time applies to every method
+   Config ga = validated( "<population value=\"30\"/><generations value=\"15\"/>"
+                          "<bucket x_min=\"1\" x_max=\"2\" y_min=\"1\" y_max=\"2\"/>"
+                          "<radial_scan_time value=\"0.05\"/>",
+                          "GA" );
+   EXPECT_TRUE( ga.errors.isEmpty() ) << all_of( ga );
+}
+
+TEST( US_MPI_JobConfig, RadialScanTimeValidation )
+{
+   auto errors_of = []( const QString& params, const QString& method = "2DSA" )
+   { return validated( method == "2DSA" ? GRID_2DSA + params : params, method ).errors; };
+
+   EXPECT_EQ( errors_of( "<radial_scan_time value=\"-0.1\"/>" ), QStringList( "radial_scan_time \"-0.1\": must be at least 0" ) );
+   EXPECT_EQ( errors_of( "<scan_direction value=\"up\"/>" ), QStringList( "scan_direction \"up\": not one of outward, inward" ) );
+   EXPECT_EQ( errors_of( "<tau_points value=\"5\"/>" ), QStringList( "tau_max: required with tau_points > 1" ) );
+   EXPECT_EQ( errors_of( "<tau_points value=\"5\"/><tau_min value=\"0.1\"/><tau_max value=\"0.05\"/>" ),
+              QStringList( "tau_min (0.1) must be less than tau_max (0.05)" ) );
+   // One point is no fit:  no range needed
+   EXPECT_TRUE( errors_of( "<tau_points value=\"1\"/>" ).isEmpty() );
+
+   const QStringList ga = errors_of( "<population value=\"30\"/><generations value=\"15\"/>"
+                                     "<bucket x_min=\"1\" x_max=\"2\" y_min=\"1\" y_max=\"2\"/>"
+                                     "<tau_points value=\"5\"/><tau_max value=\"0.1\"/>",
+                                     "GA" );
+   ASSERT_EQ( ga.size(), 1 );
+   EXPECT_TRUE( ga[0].contains( "needs a 2DSA analysis" ) );
+}

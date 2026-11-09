@@ -114,6 +114,9 @@ class US_MPI_Analysis : public QObject
         QVector< double > gl_nnls_b;       //!< Global NNLS B
         QVector< double > meniscus_values; //!< Meniscus values
         QVector< double > bottom_values;   //!< Bottom values
+        QVector<double>   tau_values;      //!< Radial scan time values (tau fit)
+        QVector<double>   raw_radius_first; //!< First raw (.auc) radius of each dataset
+        QVector<double>   raw_radius_last;  //!< Last raw (.auc) radius of each dataset
 
         QVector< double > concentrations;  //!< Concentrations
         QVector< double > maxods;          //!< Maximum OD values
@@ -126,6 +129,7 @@ class US_MPI_Analysis : public QObject
         double meniscus_value;   //!< Meniscus value (Worker only)
         double bottom_range;     //!< Bottom range (Master only)
         double bottom_value;     //!< Bottom value (Worker only)
+        double            tau_value;        //!< Radial scan time (s/point) of the current fit point
 
         int max_depth;           //!< Maximum depth
         int worknext;            //!< Next work index
@@ -136,6 +140,9 @@ class US_MPI_Analysis : public QObject
         int menibott_count;      //!< Meniscus/bottom count
         int meniscus_points;     //!< Meniscus points
         int bottom_points;       //!< Bottom points
+        int               tau_points;          //!< Radial scan time points (1: no tau fit)
+        int               tau_run;             //!< Radial scan time run
+        int               menibott_inner;      //!< Meniscus/bottom points per tau value
         int set_count;           //!< Set count
         int               max_iters_all;       //!< Refinement iterations requested
 
@@ -162,6 +169,7 @@ class US_MPI_Analysis : public QObject
         bool fit_meni;           //!< Fit meniscus flag
         bool fit_bott;           //!< Fit bottom flag
         bool fit_menbot;         //!< Fit meniscus+bottom flag
+        bool                      fit_tau;            //!< Fit radial scan time flag
 
         US_DataIO::RawData* res_data;      //!< Residual data (populated in calc_residuals)
         US_DataIO::RawData* sim_data;      //!< Simulation data (populated in calc_residuals)
@@ -217,6 +225,7 @@ class US_MPI_Analysis : public QObject
                 int depth;          //!< Depth of the job
                 double meniscus_value; //!< Meniscus value
                 double bottom_value; //!< Bottom value
+                double  tau_value;    //!< Radial scan time (s/point)
                 int dataset_offset; //!< Dataset offset
                 int dataset_count;  //!< Dataset count
 
@@ -229,6 +238,7 @@ class US_MPI_Analysis : public QObject
                     depth = 0;
                     meniscus_value = 0.0;
                     bottom_value = 0.0;
+                    tau_value      = 0.0;
                     dataset_offset = 0;
                     dataset_count = 1;
                 }
@@ -293,6 +303,7 @@ class US_MPI_Analysis : public QObject
               int    dataset      = -1;  //!< Dataset index
               double meniscus     = 0.0; //!< Meniscus sent with jobs
               double bottom       = 0.0; //!< Bottom sent with jobs
+              double tau          = 0.0; //!< Radial scan time sent with jobs
               int    mc_iteration = 0;   //!< Monte Carlo iteration
         };
         FitContext    fit_context; //!< Current fit context
@@ -427,6 +438,8 @@ class US_MPI_Analysis : public QObject
         void                   prepare_timestates( int, int, int );
         static QString         timestate_path( const QString&, const QString& );
         void                   prepare_speed_steps( bool );
+        void                   apply_scan_timing( void );
+        QString                tau_iter_id( const QString& ) const;
         void                   check_grid_size( void );
         void                   choose_groups( void );
         void                   read_job_config( const QString& );
@@ -467,10 +480,11 @@ class US_MPI_Analysis : public QObject
         void     iterate           ( void );
         void     set_meniscus      ( void );
         void                   set_menibott_values( int );
+        void                   set_menibott_runs( int );
         void                   begin_fit_context( void );
         void                   create_node_comm( void );
         void                   free_node_comm( void );
-        bool                   worker_fit_context( int, double, double );
+        bool                   worker_fit_context( int, double, double, double );
         double                 dataset_bottom( int );
         void     set_monteCarlo    ( void );
         void     write_output      ( void );
