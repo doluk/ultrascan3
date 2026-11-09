@@ -734,11 +734,14 @@ DbgLv(2) << "LFvm:  m b" << param_m << param_b;
    // Rotational misalignment of the cell (inactive when angle is zero)
    misalign        = US_CellMisalignment( simparams.misalign_angle,
                                           simparams.cp_angle,
-                                          simparams.misalign_pivot,
-                                          simparams.misalign_kappa );
-DbgLv(1) << "LFvm: misalign angle sector pivot kappa active"
+                                          simparams.misalign_pivot );
+   misalign.gamma_D = simparams.misalign_gamma_D;
+   misalign.gamma_s = simparams.misalign_gamma_s;
+   misalign.conc    = simparams.misalign_conc;
+DbgLv(1) << "LFvm: misalign angle sector pivot active eps_s eps_D"
  << misalign.delta_deg << misalign.sector_deg << misalign.pivot
- << misalign.kappa << misalign.active();
+ << misalign.active() << misalign.sedimentation_eps()
+ << misalign.diffusion_eps();
 }
 
 // destroy
@@ -1053,11 +1056,6 @@ ktime4+=timer.restart();
       {
 ktime4+=timer.restart();
          LammStepSedDiff_C( t0, dt, N0-1, x0, u0, N1-1, x1, u1p0, u1 );
-      }
-
-      if ( misalign.active() )
-      {  // wall-layer transport of a misaligned cell: sink + bottom deposit
-         ApplyMisalignSink( dt, N1, x1, u1 );
       }
 
 ktime5+=timer.restart();
@@ -1736,50 +1734,18 @@ DbgLv(3) << "AdjSD:   Dadj 0 m n" << D_adj[0] << D_adj[Nv/2] << D_adj[Nv-1];
    } // switch
 
    if ( misalign.active() )
-   {  // misaligned cell: wall-layer enhancement of the sedimentation velocity
+   {  // misaligned cell: convective drift and dispersion of the boundary
+      const double fs = 1.0 + misalign.sedimentation_eps();
+      const double fd = 1.0 + misalign.diffusion_eps();
       for ( jj = 0; jj < Nv; jj++ )
-         s_adj[ jj ] *= ( 1.0 + misalign.velocity_eps( x[ jj ], param_b ) );
+      {
+         s_adj[ jj ] *= fs;
+         D_adj[ jj ] *= fd;
+      }
    }
 
    return;
 }
-
-///////////////////////////////////////////////////////////////////
-//
-// ApplyMisalignSink:  first-order sink of the misalignment closure,
-//   d(rc)/dt = -k(r) (rc),  k = kappa s w^2 p / ( Phi r )
-// (see US_CellMisalignment), integrated exactly over dt; the removed solute
-// (carried to the bottom by the enriched wall layer) is deposited in the
-// last element so that the total mass is conserved.
-//
-// N = number of nodes in x;  u has 2N-1 values (nodes and mid-points)
-//
-///////////////////////////////////////////////////////////////////
-void US_LammAstfvm::ApplyMisalignSink( double dt, int N, double* x, double* u )
-{
-   const double s_w2  = param_s * param_w2;
-   const int    Nu    = N + N - 1;
-   double       mass0 = IntQs( x, u, 0, -1., N - 2, 1. );
-
-   for ( int kk = 0; kk < Nu; kk++ )
-   {
-      int    jj   = kk / 2;
-      double rr   = ( kk % 2 == 0 ) ? x[ jj ]
-                                    : 0.5 * ( x[ jj ] + x[ jj + 1 ] );
-      u[ kk ]    *= exp( -misalign.sink_rate( rr, s_w2 ) * dt );
-   }
-
-   double lost  = mass0 - IntQs( x, u, 0, -1., N - 2, 1. );
-   double hlast = x[ N - 1 ] - x[ N - 2 ];
-
-   if ( lost > 0.0  &&  hlast > 0.0 )
-   {  // add constant d to mid-point and bottom node: integral += 5 h d / 6
-      double dd    = lost * 6.0 / ( 5.0 * hlast );
-      u[ Nu - 2 ] += dd;
-      u[ Nu - 1 ] += dd;
-   }
-}
-
 
 ///////////////////////////////////////////////////////////////////
 //

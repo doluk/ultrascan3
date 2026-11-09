@@ -10,16 +10,22 @@ namespace
 }
 
 US_CellMisalignment::US_CellMisalignment( double delta, double sector,
-      double pivot_r, double kap, double beta )
+      double pivot_r, double beta )
    : delta_deg( delta ), sector_deg( sector ), pivot( pivot_r ),
-     kappa( kap ), beta_deg( beta )
+     beta_deg( beta ), gamma_D( 0.043 ), gamma_s( 0.043 / 12.5 ),
+     conc( 1.0 ), conc_exp( -0.12 )
 {
 }
 
 bool US_CellMisalignment::active() const
 {
-   return ( delta_deg != 0.0  &&  kappa > 0.0  &&  sector_deg > 0.0
-            &&  pivot > 0.0 );
+   return ( delta_deg != 0.0  &&  sector_deg > 0.0  &&  pivot > 0.0
+            &&  ( gamma_D != 0.0  ||  gamma_s != 0.0 ) );
+}
+
+double US_CellMisalignment::tilt() const
+{
+   return std::asin( std::min( 1.0, mean_offset() / pivot ) ) / DEG2RAD;
 }
 
 double US_CellMisalignment::wall_offset( int side ) const
@@ -69,19 +75,22 @@ double US_CellMisalignment::bottom_smear( double bottom ) const
           * std::fabs( std::sin( delta_deg * DEG2RAD ) );
 }
 
-double US_CellMisalignment::velocity_eps( double r, double bottom ) const
+namespace
 {
-   if ( ! active()  ||  r >= bottom )
-      return 0.0;
-
-   return kappa * mean_offset() * ( bottom - r )
-          / ( angular_width( r ) * r * r );
+   // common factor (psi / 1 deg) (c / 1 mg/mL)^conc_exp
+   double closure_scale( const US_CellMisalignment& m )
+   {
+      const double cc = ( m.conc > 0.0 ) ? m.conc : 1.0;
+      return m.tilt() * std::pow( cc, m.conc_exp );
+   }
 }
 
-double US_CellMisalignment::sink_rate( double r, double s_w2 ) const
+double US_CellMisalignment::diffusion_eps() const
 {
-   if ( ! active() )
-      return 0.0;
+   return active() ? gamma_D * closure_scale( *this ) : 0.0;
+}
 
-   return kappa * s_w2 * mean_offset() / ( angular_width( r ) * r );
+double US_CellMisalignment::sedimentation_eps() const
+{
+   return active() ? gamma_s * closure_scale( *this ) : 0.0;
 }

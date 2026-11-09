@@ -241,8 +241,6 @@ class US_UTIL_EXTERN US_LammAstfvm : public QObject
       //! \returns Non-zero if multiple non-ideal conditions
       int  nonIdealCaseNo( void );
 
-      void ApplyMisalignSink( double, int, double*, double* ); // misalignment sink
-
       //! \brief Set up non-ideal case type 1 (concentration-dependent)
       //! \param sigma_k Sigma constant to modify sedimentation coefficient
       //! \param delta_k Delta constant to modify diffusion coefficient

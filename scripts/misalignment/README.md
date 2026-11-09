@@ -95,16 +95,16 @@ sink  = −k(r) c,             k(r) = κ s ω² p / (Φ r)
 | `misalign2d.py` | Exploratory 2D Stokes–Boussinesq–Lamm model in a tilted channel. It is stiff (see its header) and is kept only to document the time scales. |
 | `misalign2d_implicit.py` | Implicit 2D Stokes–transport solver (section 5). |
 | `analysis2d.py`, `plot2d.py`, `plot2d_summary.py` | Fits of the 2D runs with the 1D model; figures. `results2d.json` holds the fit results. |
-| `utils/us_cell_misalign.*` | C++ geometry and closure. |
-| `utils/us_lamm_astfvm.*` | ε(r) applied in `AdjustSD` (all non-ideal cases). The sink plus bottom deposit is applied by operator splitting in `ApplyMisalignSink`. |
-| `utils/us_simparms.*` | New fields `misalign_angle` (deg, default 0), `misalign_pivot` (cm, default 6.5) and `misalign_kappa` (default 1). They are written to and read from simparams XML only when the angle ≠ 0, and are included in the `US_SimCache` key. |
-| `test/utils/test_us_cell_misalign.cpp` | Unit tests: geometry against the Python reference, XML round trip, κ = 0 identical to the aligned cell, ASTFVM boundary shift against the PNK law (3 %), plateau unchanged. |
+| `utils/us_cell_misalign.*` | C++ geometry and the dispersive closure (section 8). |
+| `utils/us_lamm_astfvm.*` | s(1+ε_s) and D(1+ε_D) applied in `AdjustSD` (all non-ideal cases). |
+| `utils/us_simparms.*` | Fields `misalign_angle` (deg, default 0), `misalign_pivot` (cm, 6.5), `misalign_gamma_D` (0.043), `misalign_gamma_s` (0.043/12.5) and `misalign_conc` (total loading concentration, mg/mL, 1.0). Written to and read from simparams XML only when the angle ≠ 0; part of the `US_SimCache` key. |
+| `test/utils/test_us_cell_misalign.cpp` | Unit tests: geometry against the Python reference, closure calibration, XML round trip, γ = 0 identical to the aligned cell, ASTFVM run equivalent to an aligned run with scaled s and D. |
 
-How to use it: set `simparams.misalign_angle` (and optionally `misalign_pivot`
-and `misalign_kappa`) and select the ASTFVM mesh type. ASTFEM ignores the
-misalignment and prints a warning.
+How to use it: set `simparams.misalign_angle` (and optionally the pivot, the
+γ coefficients and the loading concentration) and select the ASTFVM mesh
+type. ASTFEM ignores the misalignment and prints a warning.
 
-### Verification
+### Verification (PNK closure, superseded — see section 8)
 - **Python solver.** Mass is conserved to 1e-15. The boundary midpoint
   matches the analytic PNK trajectory to within one grid cell (3 µm).
 - **C++ against Python.** The C++ ASTFVM and the Python solver agree on the
@@ -112,7 +112,7 @@ misalignment and prints a warning.
 - **C++ against PNK.** The excess shift in C++ matches the PNK prediction to
   within 1 %.
 
-## 4. Results (BSA, 50 krpm, r_m = 6.0, b = 7.2 cm, 2.5° sector, 3 h)
+## 4. Results of the PNK closure (superseded; BSA, 50 krpm, r_m = 6.0, b = 7.2 cm, 2.5° sector, 3 h)
 
 See `results.json`, `fig_bias.png` and `fig_profiles.png`.
 
@@ -244,9 +244,7 @@ Figures:
    salt stratification (which stabilizes the wall layers and may reduce the
    effect), temperature and multiple species. Then reconstruct c(s) to compare
    with the published aggregate bias.
-3. **Replace the C++ closure.** Replace the PNK closure in the C++ prototype
-   with the calibrated dispersive closure, keeping the geometry part
-   (`US_CellMisalignment`), which is exact.
+3. ~~**Replace the C++ closure.**~~ Done (section 8).
 4. **Out of scope:** tilt of the cell axis, band-forming cells, ASTFEM, GUI
    controls (us_astfem_sim), and us_mpi_analysis.
 
@@ -291,3 +289,54 @@ Not reproduced: the model is symmetric in ±ψ, so the off-centre minimum
 of aggregate content (Doyle et al. 2017, doi:10.1016/j.ab.2017.05.018;
 Channell 2018) needs an additional cause, e.g. an offset of the
 angular reference.
+
+## 8. Dispersive closure (C++)
+
+**Flux decomposition.** `flux_decomposition.py` recomputes the flow from the
+saved 2D fields and splits the lateral-mean convective flux of each species,
+F_k = ⟨U c_k⟩, into a drift and a dispersion,
+F_k = v_k c̄_k − K_k ∂c̄_k/∂x, by least squares over the column (bottom
+region excluded).  Two-species runs of section 7 (45 krpm, 0.7 mg/mL):
+
+| ψ | monomer v/v_sed | monomer K/D | dimer v/v_sed (t = 1.2 → 12 ks) | dimer K/D |
+|---|---|---|---|---|
+| 1° | +0.7 % | 0.08–0.13 | +0.9 → −7 % | 0.06–1.1 |
+| 2° | +1.5 % | 0.15–0.27 | +1.8 → −19 % | 0.18–0.6 |
+| 4° | +3.0–3.7 % | 0.28–0.47 | +3.7 → −19 % | 0.4–1.1 |
+
+The monomer (the species carrying most of the density gradient) follows a
+drift–dispersion law (R² = 0.86–0.96) with both coefficients
+proportional to ψ.  Fitting each species of these runs separately with the
+ideal model gives the same picture (monomer Δs/s = +0.6 / +1.4 / +3.1 %,
+ΔD/D = +7.5 / +13 / +21 %; dimer Δs/s = −0.9 / −1.8 / −3.1 %,
+ΔD/D = +18 / +50 / +81 %).  The minor, faster species is carried backward
+by the overturning flow that the main boundary drives: the species are
+coupled through the common flow.
+
+**Closure.** `US_CellMisalignment` now implements, per species,
+```
+s_eff = s (1 + ε_s),  D_eff = D (1 + ε_D)
+ε_D = γ_D · ψ/1° · (c/1 mg/mL)^-0.12,  ε_s = γ_s · ψ/1° · (c/1 mg/mL)^-0.12
+γ_D = 0.043, γ_s = γ_D/12.5   (calibration of section 5)
+```
+with ψ the tilt of the mean wall line at the pivot (ψ ≈ δ) and c the total
+loading concentration (`misalign_conc`).  The PNK sink/deposit and the
+radius-dependent velocity enhancement are removed; the geometry functions
+are unchanged.
+
+**Tests** (`test_us_cell_misalign.cpp`, all 875 `test_us_utils` tests
+pass): a misaligned ASTFVM run reproduces an aligned run with scaled s and D
+in boundary position and variance to < 10 % of the misalignment effect
+(the pointwise residual, ≤ 4e-3 of the plateau, is the mesh error of the two
+differently-meshed runs); the boundary drifts forward and broadens; the
+plateau is unchanged; γ = 0 is identical to the aligned cell.
+
+**Limitations.**
+* Calibration only for 50 krpm, L = 0.9 cm, t = 4000 s; the γ(ω, L)
+  dependence is open (section 6.1).  At 45 krpm, L = 1.2 cm, 4 h the
+  monomer shows ε_D ≈ 7.5 % at 1°, 1.7× the default.
+* Linear in ψ up to 2°; at 4° ε_D is sublinear (×2.7 instead of ×4) and
+  ε_s superlinear.
+* The species coupling (backward drift and strong broadening of a minor
+  faster species) is not represented; a mixture is simulated with the
+  single-species coefficients for every component.

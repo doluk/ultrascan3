@@ -44,7 +44,9 @@ US_SimulationParameters::US_SimulationParameters()
    cp_width          = 0.0;
    misalign_angle    = 0.0;
    misalign_pivot    = 6.5;
-   misalign_kappa    = 1.0;
+   misalign_gamma_D  = 0.043;
+   misalign_gamma_s  = 0.043 / 12.5;
+   misalign_conc     = 1.0;
    sim               = false ;
    tsobj             = NULL ;
    firstScanIsConcentration = false;
@@ -972,9 +974,15 @@ int US_SimulationParameters::load_simparms( QString fname )
             astr  = a.value( "misalign_pivot" ).toString();
             if ( !astr.isEmpty() )
                misalign_pivot = astr.toDouble();
-            astr  = a.value( "misalign_kappa" ).toString();
+            astr  = a.value( "misalign_gamma_D" ).toString();
             if ( !astr.isEmpty() )
-               misalign_kappa = astr.toDouble();
+               misalign_gamma_D = astr.toDouble();
+            astr  = a.value( "misalign_gamma_s" ).toString();
+            if ( !astr.isEmpty() )
+               misalign_gamma_s = astr.toDouble();
+            astr  = a.value( "misalign_conc" ).toString();
+            if ( !astr.isEmpty() )
+               misalign_conc  = astr.toDouble();
          }
 
          else if ( xml.isStartElement()  &&  xml.name() == "speedstep" )
@@ -1069,7 +1077,9 @@ int US_SimulationParameters::save_simparms( QString fname )
       {  // Written only for a misaligned cell, so files stay unchanged
          xml.writeAttribute( "misalign_angle", QString::number( misalign_angle ) );
          xml.writeAttribute( "misalign_pivot", QString::number( misalign_pivot ) );
-         xml.writeAttribute( "misalign_kappa", QString::number( misalign_kappa ) );
+         xml.writeAttribute( "misalign_gamma_D", QString::number( misalign_gamma_D ) );
+         xml.writeAttribute( "misalign_gamma_s", QString::number( misalign_gamma_s ) );
+         xml.writeAttribute( "misalign_conc",    QString::number( misalign_conc ) );
       }
 
       if ( meshType == US_SimulationParameters::USER )
@@ -1754,7 +1764,8 @@ void US_SimulationParameters::debug( void )
    qDebug() << "CP Angle        :" << cp_angle;
    qDebug() << "CP Width        :" << cp_width;
    qDebug() << "Misalign angle  :" << misalign_angle
-            << " pivot" << misalign_pivot << " kappa" << misalign_kappa;
+            << " pivot" << misalign_pivot << " gamma_D" << misalign_gamma_D
+            << " gamma_s" << misalign_gamma_s << " conc" << misalign_conc;
 
    for ( int i = 0; i < speed_step.size(); i++ )
    {

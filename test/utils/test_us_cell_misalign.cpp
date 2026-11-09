@@ -49,53 +49,54 @@ namespace
       return rd;
    }
 
-   US_SimulationParameters makeParams( double angle, double kappa )
+   US_SimulationParameters makeParams( double angle, double gD = 0.043,
+                                       double gs = 0.043 / 12.5 )
    {
       US_SimulationParameters sp;
       sp.speed_step[ 0 ].rotorspeed = RPM;
       sp.speed_step[ 0 ].avg_speed  = RPM;
-      sp.meniscus       = R_M;
-      sp.bottom         = R_B;
-      sp.cp_angle       = 2.5;
-      sp.meshType       = US_SimulationParameters::ASTFVM;
-      sp.misalign_angle = angle;
-      sp.misalign_pivot = 6.5;
-      sp.misalign_kappa = kappa;
+      sp.meniscus         = R_M;
+      sp.bottom           = R_B;
+      sp.cp_angle         = 2.5;
+      sp.meshType         = US_SimulationParameters::ASTFVM;
+      sp.misalign_angle   = angle;
+      sp.misalign_pivot   = 6.5;
+      sp.misalign_gamma_D = gD;
+      sp.misalign_gamma_s = gs;
+      sp.misalign_conc    = 1.0;
       return sp;
    }
 
-   US_DataIO::RawData simulate( double angle, double kappa )
+   US_DataIO::RawData simulate( const US_SimulationParameters& sp,
+                                double s = S_VAL, double D = D_VAL )
    {
       US_Model model;
       US_Model::SimulationComponent sc;
-      sc.s                    = S_VAL;
-      sc.D                    = D_VAL;
+      sc.s                    = s;
+      sc.D                    = D;
       sc.vbar20               = 0.73;
       sc.signal_concentration = 1.0;
       model.components << sc;
 
-      US_SimulationParameters sp = makeParams( angle, kappa );
       US_DataIO::RawData      rd = makeGrid();
-      US_LammAstfvm           fvm( model, sp );
+      US_LammAstfvm           fvm( model, const_cast< US_SimulationParameters& >( sp ) );
       EXPECT_EQ( fvm.calculate( rd ), 0 );
       return rd;
    }
 
-   // Radius at which the scan first reaches half of its value at r = 6.9
-   double midpoint( const US_DataIO::RawData& rd, int ss )
+   // Mean position and variance of the boundary gradient (r < 7.0 cm)
+   void boundary_moments( const US_DataIO::RawData& rd, int ss,
+                          double& mean, double& var )
    {
-      const int    jp   = (int)qRound( ( 6.9 - R_M ) / 0.001 );
-      const double half = 0.5 * rd.value( ss, jp );
-      for ( int jj = 1; jj < rd.xvalues.size(); jj++ )
+      double m0 = 0.0, m1 = 0.0, m2 = 0.0;
+      for ( int jj = 1; jj < rd.xvalues.size() && rd.xvalues[ jj ] < 7.0; jj++ )
       {
-         if ( rd.value( ss, jj ) >= half )
-         {
-            double c0 = rd.value( ss, jj - 1 );
-            double c1 = rd.value( ss, jj );
-            return rd.xvalues[ jj - 1 ] + 0.001 * ( half - c0 ) / ( c1 - c0 );
-         }
+         double g = rd.value( ss, jj ) - rd.value( ss, jj - 1 );
+         double r = 0.5 * ( rd.xvalues[ jj ] + rd.xvalues[ jj - 1 ] );
+         m0 += g;  m1 += g * r;  m2 += g * r * r;
       }
-      return -1.0;
+      mean = m1 / m0;
+      var  = m2 / m0 - mean * mean;
    }
 }
 
@@ -106,36 +107,44 @@ TEST_F( TestUSCellMisalign, AlignedCellIsInactive )
    US_CellMisalignment ma( 0.0 );
    EXPECT_FALSE( ma.active() );
    EXPECT_DOUBLE_EQ( ma.wall_offset( 1 ), 0.0 );
-   EXPECT_DOUBLE_EQ( ma.velocity_eps( 6.2, R_B ), 0.0 );
-   EXPECT_DOUBLE_EQ( ma.sink_rate( 6.2, 1.0 ), 0.0 );
+   EXPECT_DOUBLE_EQ( ma.diffusion_eps(), 0.0 );
+   EXPECT_DOUBLE_EQ( ma.sedimentation_eps(), 0.0 );
    EXPECT_NEAR( ma.angular_width( 6.5 ) * 180.0 / M_PI, 2.5, 1e-12 );
-   EXPECT_FALSE( US_CellMisalignment( 1.0, 2.5, 6.5, 0.0 ).active() );
+   US_CellMisalignment g0( 1.0, 2.5, 6.5 );
+   g0.gamma_D = g0.gamma_s = 0.0;
+   EXPECT_FALSE( g0.active() );
 }
 
 // Reference values from scripts/misalignment/misalign1d.py
 TEST_F( TestUSCellMisalign, GeometryMatchesReference )
 {
-   US_CellMisalignment ma( 1.0, 2.5, 6.5, 1.0 );
+   US_CellMisalignment ma( 1.0, 2.5, 6.5 );
    EXPECT_TRUE( ma.active() );
    EXPECT_NEAR( ma.wall_tilt( 6.0 ), 1.0829, 1e-4 );
    EXPECT_NEAR( ma.wall_tilt( 6.5 ), 0.9996, 1e-4 );
    EXPECT_NEAR( ma.wall_tilt( 7.2 ), 0.9024, 1e-4 );
+   EXPECT_NEAR( ma.tilt(), 0.9998, 1e-4 );
    // the angular width changes only at O(alpha delta^2)
    EXPECT_NEAR( ma.angular_width( 6.5 ) * 180.0 / M_PI, 2.5, 1e-3 );
-   EXPECT_NEAR( ma.velocity_eps( 6.0, R_B ), 0.0866, 1e-4 );
-   EXPECT_NEAR( ma.velocity_eps( 6.5, R_B ), 0.0431, 1e-4 );
-   EXPECT_DOUBLE_EQ( ma.velocity_eps( R_B, R_B ), 0.0 );
    EXPECT_NEAR( ma.bottom_smear( R_B ) * 1e4, 54.83, 0.01 );
    EXPECT_NEAR( ma.beam_margin( 6.0 ) * 1e4, 1222.0, 1.0 );
-   EXPECT_NEAR( US_CellMisalignment( 1.0, 2.5, 6.5, 1.0, 1.5 ).radial_shift() * 1e4, -29.70, 0.01 );
+   EXPECT_NEAR( US_CellMisalignment( 1.0, 2.5, 6.5, 1.5 ).radial_shift() * 1e4, -29.70, 0.01 );
+}
 
-   // sink rate is -(1/r) d(r u)/dr for u = s w2 r eps:  check numerically
-   const double sw2 = 1.0e-5;
-   const double r   = 6.4;
-   const double h   = 1.0e-5;
-   auto ru = [&]( double x ) { return x * sw2 * x * ma.velocity_eps( x, R_B ); };
-   double kfd = -( ru( r + h ) - ru( r - h ) ) / ( 2.0 * h ) / r;
-   EXPECT_NEAR( ma.sink_rate( r, sw2 ) / kfd, 1.0, 1e-3 );
+// Calibrated closure (scripts/misalignment/README.md, section 5):
+// eps_D = 4.3 % (psi / 1 deg) (c / 1 mg/mL)^-0.12, eps_s = eps_D / 12.5
+TEST_F( TestUSCellMisalign, ClosureCalibration )
+{
+   US_CellMisalignment ma( 1.0, 2.5, 6.5 );
+   EXPECT_NEAR( ma.diffusion_eps(), 0.043, 1e-4 );
+   EXPECT_NEAR( ma.diffusion_eps() / ma.sedimentation_eps(), 12.5, 1e-9 );
+   ma.conc = 0.01;
+   EXPECT_NEAR( ma.diffusion_eps(), 0.073, 2e-3 );       // 2D: 7.3 %
+   ma.conc = 1.0;
+   ma.delta_deg = 2.0;
+   EXPECT_NEAR( ma.diffusion_eps(), 0.086, 2e-4 );       // linear in psi
+   ma.delta_deg = -2.0;
+   EXPECT_NEAR( ma.diffusion_eps(), 0.086, 2e-4 );       // symmetric in +-psi
 }
 
 TEST_F( TestUSCellMisalign, SimparmsXmlRoundTrip )
@@ -144,70 +153,62 @@ TEST_F( TestUSCellMisalign, SimparmsXmlRoundTrip )
    ASSERT_TRUE( tmp.isValid() );
    QString fn = tmp.filePath( "sp.xml" );
 
-   US_SimulationParameters sp = makeParams( 0.75, 0.3 );
+   US_SimulationParameters sp = makeParams( 0.75, 0.05, 0.004 );
    sp.misalign_pivot          = 6.45;
+   sp.misalign_conc           = 0.7;
    ASSERT_EQ( sp.save_simparms( fn ), 0 );
 
    US_SimulationParameters rd;
    ASSERT_EQ( rd.load_simparms( fn ), 0 );
-   EXPECT_DOUBLE_EQ( rd.misalign_angle, 0.75 );
-   EXPECT_DOUBLE_EQ( rd.misalign_pivot, 6.45 );
-   EXPECT_DOUBLE_EQ( rd.misalign_kappa, 0.3 );
+   EXPECT_DOUBLE_EQ( rd.misalign_angle,   0.75 );
+   EXPECT_DOUBLE_EQ( rd.misalign_pivot,   6.45 );
+   EXPECT_DOUBLE_EQ( rd.misalign_gamma_D, 0.05 );
+   EXPECT_DOUBLE_EQ( rd.misalign_gamma_s, 0.004 );
+   EXPECT_DOUBLE_EQ( rd.misalign_conc,    0.7 );
 
    // aligned:  attributes are not written, defaults are kept on reading
-   US_SimulationParameters al = makeParams( 0.0, 1.0 );
+   US_SimulationParameters al = makeParams( 0.0 );
    ASSERT_EQ( al.save_simparms( fn ), 0 );
    QFile xf( fn );
    ASSERT_TRUE( xf.open( QIODevice::ReadOnly ) );
    EXPECT_FALSE( QString( xf.readAll() ).contains( "misalign" ) );
 }
 
-TEST_F( TestUSCellMisalign, ZeroKappaEqualsAlignedCell )
+TEST_F( TestUSCellMisalign, ZeroGammaEqualsAlignedCell )
 {
-   US_DataIO::RawData al = simulate( 0.0, 1.0 );
-   US_DataIO::RawData k0 = simulate( 2.0, 0.0 );
+   US_DataIO::RawData al = simulate( makeParams( 0.0 ) );
+   US_DataIO::RawData g0 = simulate( makeParams( 2.0, 0.0, 0.0 ) );
    for ( int ss = 0; ss < al.scanData.size(); ss++ )
       for ( int jj = 0; jj < al.xvalues.size(); jj += 50 )
-         ASSERT_DOUBLE_EQ( al.value( ss, jj ), k0.value( ss, jj ) );
+         ASSERT_DOUBLE_EQ( al.value( ss, jj ), g0.value( ss, jj ) );
 }
 
-// Misalignment moves the boundary faster as predicted by the sharp-boundary
-// limit of the closure, leaves the plateau unchanged and conserves mass
-TEST_F( TestUSCellMisalign, BoundaryAcceleratesPlateauUnchanged )
+// The misaligned cell is equivalent to an aligned cell with s and D scaled
+// by (1 + eps_s) and (1 + eps_D): boundary position and spreading agree to
+// a small fraction of the misalignment effect; the plateau is unchanged
+TEST_F( TestUSCellMisalign, EquivalentToScaledSD )
 {
-   US_DataIO::RawData al = simulate( 0.0, 1.0 );
-   US_DataIO::RawData ma = simulate( 1.0, 1.0 );
-   US_CellMisalignment geo( 1.0, 2.5, 6.5, 1.0 );
-   const double        w2 = std::pow( RPM * M_PI / 30.0, 2 );
-   const int           jp = (int)qRound( ( 6.95 - R_M ) / 0.001 );
+   const double psi = 2.0;
+   US_SimulationParameters spm = makeParams( psi );
+   US_CellMisalignment geo( psi, 2.5, 6.5 );
+   US_DataIO::RawData al = simulate( makeParams( 0.0 ) );
+   US_DataIO::RawData ma = simulate( spm );
+   US_DataIO::RawData eq = simulate( makeParams( 0.0 ),
+                                     S_VAL * ( 1.0 + geo.sedimentation_eps() ),
+                                     D_VAL * ( 1.0 + geo.diffusion_eps() ) );
+   const int jp = (int)qRound( ( 7.0 - R_M ) / 0.001 );
 
    for ( int ss = 2; ss < al.scanData.size(); ss++ )
    {
       SCOPED_TRACE( ss );
-      double rb_al = midpoint( al, ss );
-      double rb_ma = midpoint( ma, ss );
-      EXPECT_GT( rb_ma, rb_al );
-
-      // integrate the sharp-boundary ODE  dr/dt = s w2 r (1 + eps(r))
-      double rb = R_M;
-      double t  = 0.0;
-      const double tt = al.scanData[ ss ].seconds;
-      const double dt = 1.0;
-      while ( t < tt - 1e-9 )
-      {
-         auto f = [&]( double x ) { return S_VAL * w2 * x * ( 1.0 + geo.velocity_eps( x, R_B ) ); };
-         double k1 = f( rb );
-         double k2 = f( rb + 0.5 * dt * k1 );
-         double k3 = f( rb + 0.5 * dt * k2 );
-         double k4 = f( rb + dt * k3 );
-         rb += dt * ( k1 + 2 * k2 + 2 * k3 + k4 ) / 6.0;
-         t  += dt;
-      }
-      double rb_ideal = R_M * std::exp( S_VAL * w2 * tt );
-      // shift of the boundary relative to the aligned cell:  within 3 %
-      EXPECT_NEAR( ( rb_ma - rb_al ) / ( rb - rb_ideal ), 1.0, 0.03 );
-
-      // plateau concentration unchanged (radial dilution only)
+      double ra, va, rm, vm, re, ve;
+      boundary_moments( al, ss, ra, va );
+      boundary_moments( ma, ss, rm, vm );
+      boundary_moments( eq, ss, re, ve );
+      EXPECT_GT( vm / va - 1.0, 0.5 * geo.diffusion_eps() );   // dispersion
+      EXPECT_GT( rm, ra );                                      // drift
+      EXPECT_LT( qAbs( vm - ve ), 0.1 * ( vm - va ) );
+      EXPECT_LT( qAbs( rm - re ), 0.1 * ( rm - ra ) );
       EXPECT_NEAR( ma.value( ss, jp ) / al.value( ss, jp ), 1.0, 2e-3 );
    }
 }

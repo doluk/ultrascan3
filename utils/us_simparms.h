@@ -210,7 +210,9 @@ class US_UTIL_EXTERN US_SimulationParameters
    //! 0 = aligned.  Applied by the ASTFVM solver (see US_CellMisalignment).
    double    misalign_angle;
    double    misalign_pivot;    //!< Pivot radius of the misalignment (cm)
-   double    misalign_kappa;    //!< Wall-layer transport efficiency (0..1)
+   double    misalign_gamma_D;  //!< Closure: rel. D change per degree at 1 mg/mL
+   double    misalign_gamma_s;  //!< Closure: rel. s change per degree at 1 mg/mL
+   double    misalign_conc;     //!< Total loading concentration (mg/mL)
 
    //! Each distinct RPM value in a series of speeds 
    class US_UTIL_EXTERN  SpeedProfile
