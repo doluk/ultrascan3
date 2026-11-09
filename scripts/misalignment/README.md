@@ -128,86 +128,122 @@ The full table for δ up to 4° and κ ∈ {1, 0.1} is produced by `study.py`.
 
 ## 5. Implicit 2D Stokes–transport solver
 
-`misalign2d_implicit.py` solves the 2D model (planar, curl-free tilted
-field; see `misalign2d.py` for the equations). It omits sector divergence,
-which is the same for the aligned and the misaligned cell to O(α).
+The 2D model is planar, with a curl-free tilted field (equations in
+`misalign2d.py`). It omits sector divergence, which is identical for the
+aligned and the misaligned cell to O(α). There are two implementations:
 
-- **Time stepping.** Linearly implicit backward Euler of the coupled
-  (c, Ψ) system. Newton–Picard iterations act on the bilinear flux c·u(Ψ) and
-  on a minmod second-order correction, converging in 4–6 iterations to a
-  residual below 1e-6.
-- **Linear algebra.** One sparse solve per iteration, using PARDISO when
-  available.
-- **Analysis (`analysis2d.py`).** Profiles are averaged along lines of
-  constant radius (`--center`: the channel centre line, i.e. the absorbance
-  beam). They are fitted with the ideal planar 1D model (s, D free), and
-  alternatively with the closure (s, D, κ_a, κ_d free). Effects are quoted
-  relative to the aligned run on the same grid, which removes the solver's
-  numerical diffusion.
+- **`misalign2d_bdf2.py` (production).**
+  - Time stepping: BDF2, started with one backward-Euler step.
+  - Unknowns: c (cell centres), Ψ and ω (nodes), solved in one coupled sparse
+    system per iteration with PARDISO. The no-slip wall vorticity uses Woods'
+    condition.
+  - Lateral grid: tanh-stretched, clustered at the walls (`--ybeta`).
+  - Iteration: Newton–Picard on the bilinear flux c·u(Ψ) and on the minmod
+    second-order correction, 3–7 iterations per step to a residual below 1e-7.
+  - Mass is conserved to 1e-10.
+- **`misalign2d_implicit.py` (superseded).** First-order backward Euler on a
+  uniform grid.
+
+**Analysis (`analysis2d.py`).**
+- Profiles are averaged along lines of constant radius, weighted by cell
+  width. With `--center`, the channel centre line (the absorbance beam) is
+  used instead.
+- Profiles are fitted with the ideal planar 1D model (s, D free), and
+  alternatively with the closure (s, D, κ_a, κ_d free).
+- Effects are quoted relative to the aligned run on the same x-grid. This
+  removes the solver's numerical diffusion. The aligned run has no lateral
+  structure, so it does not depend on the y-grid.
 
 Setup: BSA (4.4 S, 6.0e-7 cm²/s), 50 krpm, r_m = 6.2 cm, L = 0.9 cm,
-W = 2.8 mm, t = 4000 s, grid 120×40, dt = 5 s.
+W = 2.8 mm, t = 4000 s. Unless stated otherwise: grid 120×40, β = 3,
+dt = 5 s.
 
-| ψ | c0 (mg/mL) | Δs/s | ΔD/D | rmsd (aligned: 1.3e-3) |
-|---|---|---|---|---|
-| 1° | 0 (no flow) | +0.02 % | +0.4 % | 1.4e-3 |
-| 1° | 0.001 | +0.68 % | +9.2 % | 8.1e-3 |
-| 1° | 0.01 | +0.45 % | +5.7 % | 6.2e-3 |
-| 1° | 0.1 | +0.25 % | +3.1 % | 4.1e-3 |
-| 2° | 0.01 | +0.91 % | +10.9 % | 1.0e-2 |
+**Convergence (BDF2, ψ = 1°, c0 = 0.01 mg/mL)**
 
-Numerical checks at ψ = 1°, c0 = 0.01:
-
-| check | Δs/s | ΔD/D |
+| run | Δs/s | ΔD/D |
 |---|---|---|
-| grid 180×60 | +0.55 % | +6.7 % |
-| dt = 10 s | +0.40 % | +8.1 % |
-| dt = 2.5 s | +0.48 % | +4.5 % |
-| dt → 0 (Richardson extrapolation, first order) | ≈ +0.51 % | ≈ +3.3 % |
-| centre-line signal instead of lateral mean | +0.45 % | +5.4 % |
+| uniform y, dt = 10 / 5 / 2.5 s | +0.50 / +0.50 / +0.50 % | +6.32 / +6.34 / +6.34 % |
+| β = 2 | +0.58 % | +7.35 % |
+| β = 3 | +0.58 % | +7.33 % |
+| β = 3, Ny = 60 | +0.58 % | +7.37 % |
+| β = 3, Nx = 180 (aligned reference on 180) | +0.60 % | +7.21 % |
 
-Figures: `fig2d_field.png` (field and profiles at 0.01 mg/mL) and
-`fig2d_summary.png` (effect versus c0).
+- **Time step.** The error is negligible (< 0.02 % in s and D for
+  dt = 2.5–10 s). The strong dt dependence of the old solver (ΔD/D = 8.1 /
+  5.7 / 4.5 % at dt = 10 / 5 / 2.5 s) came from first-order splitting of the
+  flow–transport coupling. Its Richardson estimate (≈ 3.3 %) was wrong.
+- **Lateral grid.** A uniform 40-cell grid under-resolves the wall layers and
+  underestimates ΔD/D by about 15 %. The clustered grid converges to 1 %.
+- **Radial grid.** Nx = 120 versus 180 agree to 2 %.
+- **Estimated accuracy:** about 3 % of the effect.
+- **High c0.** For c0 ≥ 0.3 mg/mL, the coupling iteration diverges at
+  dt = 5 s. Converged runs use dt = 2 s (0.3 mg/mL) and dt = 1 s (1 mg/mL).
+
+**Results (BDF2, clustered grid)**
+
+| ψ | c0 (mg/mL) | Δs/s | ΔD/D | ΔD/D ÷ Δs/s | rmsd (aligned 1.4e-3) | max\|u\| (cm/s) | lateral rms |
+|---|---|---|---|---|---|---|---|
+| 1° | 0.01 | +0.58 % | +7.3 % | 12.6 | 6.7e-3 | 2.7e-3 | 4.9e-3 |
+| 1° | 0.1 | +0.45 % | +5.5 % | 12.3 | 5.6e-3 | 5.4e-3 | 2.5e-3 |
+| 1° | 0.3 | +0.39 % | +4.8 % | 12.3 | 5.1e-3 | 7.7e-3 | 1.8e-3 |
+| 1° | 1.0 | +0.33 % | +4.3 % | 12.9 | 4.6e-3 | 1.1e-2 | 1.3e-3 |
+| 2° | 0.1 | +0.97 % | +11.5 % | 11.8 | 9.8e-3 | 7.0e-3 | 4.3e-3 |
+
+max|u| and the lateral rms are taken at t = 4000 s. The table excludes two
+runs: without flow, ψ = 1° gives +0.02 % / +0.4 %. With the old solver,
+c0 = 0.001 mg/mL gives ΔD/D = 9.2 %.
+
+Figures:
+- `fig2d_field.png`: field and profiles at 0.01 mg/mL (old solver).
+- `fig2d_summary.png`: effect versus c0, comparing the BDF2 and old series.
 
 **Findings**
 
 1. **The flow causes the artifact.** Sedimentation–diffusion alone in a
-   tilted channel leaves wall layers (5 % lateral rms) but no measurable bias.
-   The artifact comes from the buoyancy-driven flow these layers set up, which
-   reaches 10–100× the sedimentation velocity even at 0.001 mg/mL.
-2. **The signature is broadening, not an s shift.** At dt = 5 s, ΔD/D is
-   about 13× Δs/s; extrapolated to dt → 0 it is about 7×. Both are roughly
-   linear in ψ. Misfit with a single ideal species is 3–6× the
-   aligned baseline. Qualitatively this matches the experiments: broadened
-   c(s) peaks and an essentially unchanged monomer s (Channell 2018).
-   Spurious species and aggregate bias in c(s) are a plausible consequence of
-   the non-ideal boundary shape, but were not computed here.
-3. **The effect weakens as concentration rises,** falling as c0^-0.24 between
-   0.001 and 0.1 mg/mL. That is non-monotonic overall, since it is zero without
-   flow. Stronger convection homogenizes the cross-section (lateral rms 1.9e-3
-   → 1.5e-4). A naive extrapolation to 1 mg/mL gives ΔD/D ≈ 1.8 % and
-   Δs/s ≈ 0.15 % per degree at dt = 5 s. With the dt → 0 correction this
-   becomes ΔD/D ≈ 1 % per degree. This is unverified: c0 ≥ 0.1 is under-resolved on
-   these grids, and the wall-layer Péclet number grows with c0.
+   tilted channel produces wall layers but no measurable bias. The artifact
+   comes from the buoyancy-driven flow these layers set up, which reaches
+   10–100× the sedimentation velocity even at 0.001 mg/mL.
+2. **The signature is broadening, not an s shift.** ΔD/D ≈ 12.5 × Δs/s,
+   independent of c0 (0.01–1 mg/mL) and of ψ. The effect is linear in ψ:
+   ψ = 2° gives 2.1× the value at 1°. Misfit with a single ideal species is
+   3–7× the aligned baseline. Qualitatively this matches the experiments:
+   broadened c(s) peaks and an essentially unchanged monomer s (Channell 2018).
+   Spurious species and aggregate bias in c(s) are a plausible consequence,
+   but were not computed here.
+3. **The effect decreases only weakly with concentration.** Both ΔD/D and
+   Δs/s scale as c0^-0.12 over 0.01–1 mg/mL. That is half the exponent
+   estimated with the old solver (−0.24), so its extrapolation (≈ 1.8 % at
+   1 mg/mL) underestimated the effect by a factor of 2.4. Stronger convection
+   homogenizes the cross-section (lateral rms 4.9e-3 → 1.3e-3), but the flow
+   speed grows (2.7e-3 → 1.1e-2 cm/s) and keeps dispersing the boundary.
+   **Quantitative rule at 50 krpm and 0.01–1 mg/mL:**
+   ```
+   ΔD/D ≈ 4.3 % · (ψ/1°) · (c0 / 1 mg/mL)^-0.12
+   Δs/s ≈ ΔD/D / 12.5
+   ```
+   ψ ≈ δ for the pivot at the cell centre. A 1° misalignment is therefore
+   relevant for D and for the MW from s/D (about −4 %) at any practical
+   concentration. For s it is marginal (0.3–0.6 %).
 4. **The PNK closure is rejected.** The plateau is depleted by about 1 %:
    solute goes to the bottom in the enriched layer, while the depleted layer
    mixes laterally instead of rising to the boundary. The advective closure
-   (κ_a, κ_d) barely reduces the misfit (6.2 → 5.8e-3), and its fitted
-   parameters trade off against s. The 1D closure in
+   (κ_a, κ_d) barely reduces the misfit (by about 6 %), and its parameters are
+   not identifiable: κ_a varies from 0.3 to 1.6 across grids of equal
+   accuracy and trades off against s. The 1D closure in
    `US_CellMisalignment`/`US_LammAstfvm` (PNK, κ) is therefore not supported
-   as a description of the hydrodynamics. A dispersive closure is needed, e.g.
-   D_eff = D (1 + γ(ψ, c0, ω)) plus a weak plateau sink, calibrated on 2D runs.
+   as a description of the hydrodynamics. A dispersive closure fits the data
+   better, e.g. D_eff = D (1 + γ ψ c0^-0.12), with a weak velocity term
+   Δs/s ≈ γ/12.5 · ψ c0^-0.12. Its speed dependence is still open.
 
 ## 6. Open points
 
-1. **Accuracy of the 2D results.** The grid sensitivity of the effect is
-   about 15 %. The time-step error is first order: ΔD at dt = 5 s is about
-   1.7× its dt → 0 value. The numbers are semi-quantitative. Production
-   runs need a second-order time integrator (BDF2), wall-clustered grids and
-   higher c0 (0.5–1 mg/mL).
+1. **Speed, geometry and size dependence.** Run the 2D model at other rotor
+   speeds and solution column lengths to obtain γ(ω, L). The present
+   calibration holds only at 50 krpm, L = 0.9 cm and 4000 s.
 2. **Sector geometry.** Run the 2D model in true (r, φ) sector geometry, with
-   salt stratification, temperature and multiple species. Then reconstruct
-   c(s) to compare with the published aggregate bias.
+   salt stratification (which stabilizes the wall layers and may reduce the
+   effect), temperature and multiple species. Then reconstruct c(s) to compare
+   with the published aggregate bias.
 3. **Replace the C++ closure.** Replace the PNK closure in the C++ prototype
    with the calibrated dispersive closure, keeping the geometry part
    (`US_CellMisalignment`), which is exact.
