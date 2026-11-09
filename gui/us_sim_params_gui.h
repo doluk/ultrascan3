@@ -61,6 +61,7 @@ class US_GUI_EXTERN US_SimParamsGui : public US_WidgetsDialog
       QwtCounter*   cnt_baseline;
       QwtCounter*   cnt_temperature;
       QwtCounter*   cnt_scantime;     //!< Seconds per recorded radial point
+      QwtCounter*   cnt_scanstart;    //!< Radius where a scan starts (0 = first point)
                    
       QCheckBox*    cb_acceleration_flag;
       
@@ -109,6 +110,7 @@ class US_GUI_EXTERN US_SimParamsGui : public US_WidgetsDialog
       void update_temp          ( double temp );
       void update_scantime      ( double scantime );
       void update_scandir       ( int dir );
+      void update_scanstart     ( double radius );
 
       void help                 ( void )
          { showhelp.show_help( "manual/simparams.html" ); };

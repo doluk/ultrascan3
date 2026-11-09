@@ -1368,8 +1368,37 @@ DbgLv(1) << "jj ii sztrad szerad" << jj << ii << tdradsz << expdata.radius.size(
 }
 
 // Interpolation onto scans with sequentially recorded radial points
+// Delay of a point at radius rad after the scan time
+static double scan_delay( double rad, double rs, double dr, double pt_time, bool outward )
+{
+   const double dist = outward ? ( rad - rs ) : ( rs - rad );
+   return ( dist > 0.0 ) ? dist / dr * pt_time : 0.0;
+}
+
+// Scan start radius and radial increment for a set of data radii
+static void scan_geometry( const QVector< double >& radius, bool outward, double r_start,
+                           double& rs, double& dr )
+{
+   const int nr = radius.size();
+   rs  = ( r_start > 0.0 ) ? r_start : ( outward ? radius[ 0 ] : radius[ nr - 1 ] );
+   dr  = ( nr > 1 ) ? qAbs( radius[ nr - 1 ] - radius[ 0 ] ) / (double)( nr - 1 ) : 1.0;
+   if ( dr <= 0.0 )
+      dr  = 1.0;
+}
+
+double US_AstfemMath::scantime_span( const QVector< double >& radius, double pt_time,
+                                     bool outward, double r_start )
+{
+   if ( pt_time <= 0.0  ||  radius.isEmpty() )
+      return 0.0;
+   double rs, dr;
+   scan_geometry( radius, outward, r_start, rs, dr );
+   return qMax( scan_delay( radius.first(), rs, dr, pt_time, outward ),
+                scan_delay( radius.last(),  rs, dr, pt_time, outward ) );
+}
+
 int US_AstfemMath::interpolate_scantime( MfemData& expdata, MfemData& simdata,
-                                         double pt_time, bool outward )
+                                         double pt_time, bool outward, double r_start )
 {
    if ( pt_time <= 0.0 )
       return interpolate( expdata, simdata, true );
@@ -1394,6 +1423,10 @@ int US_AstfemMath::interpolate_scantime( MfemData& expdata, MfemData& simdata,
    const double  s_last  = stimes[ nsscan - 1 ];
    const double* stbeg   = stimes.constData();
    const double* stend   = stbeg + nsscan;
+
+   // Scan start radius and radial increment of the data
+   double rs, dr_e;
+   scan_geometry( expdata.radius, outward, r_start, rs, dr_e );
 
    // Radial bracket (lower sim index, weight) for each experimental radius;
    //  radii outside the simulated range are clamped to its limits
@@ -1437,8 +1470,8 @@ int US_AstfemMath::interpolate_scantime( MfemData& expdata, MfemData& simdata,
 
       for ( int ii = 0; ii < neconc; ii++ )
       {
-         const int kpt    = outward ? ii : ( neconc - 1 - ii );
-         const double tt  = qMin( t0 + pt_time * (double)kpt, s_last );
+         const double tt  = qMin( t0 + scan_delay( expdata.radius[ ii ], rs, dr_e,
+                                                   pt_time, outward ), s_last );
 
          if ( nsscan < 2 )
          {

@@ -695,9 +695,13 @@ DbgLv(1) << "ASIM: chg_stat:  times_comp" << times_comp << "maxts" << maxts;
 
    if ( simparams.radial_scan_time > 0.0 )
    {  // Report sequential radial scanning and check its plausibility
-      int npts     = qRound( ( simparams.bottom - simparams.meniscus ) /
-                             simparams.radial_resolution ) + 1;
-      double tscan = simparams.radial_scan_time * (double)qMax( 0, npts - 1 );
+      // Two-point grid spanning the data: per-point time scaled to its spacing
+      QVector< double > rads;
+      rads << simparams.meniscus << simparams.bottom;
+      double tscan = US_AstfemMath::scantime_span( rads, simparams.radial_scan_time
+                     / simparams.radial_resolution
+                     * ( simparams.bottom - simparams.meniscus ),
+                     simparams.scan_outward, simparams.scan_start );
       double tbmin = -1.0;   // Smallest interval between consecutive scans
 
       for ( int ii = 0; ii < nspd; ii++ )
@@ -711,12 +715,15 @@ DbgLv(1) << "ASIM: chg_stat:  times_comp" << times_comp << "maxts" << maxts;
          tbmin        = ( tbmin < 0.0 ) ? tbs : qMin( tbmin, tbs );
       }
 
-      te_status->append( tr( "Radial scan time:  %1 s/point, %2"
-                             "  (scan duration ~ %3 s)" )
+      te_status->append( tr( "Radial scan time:  %1 s/point, %2, start %4"
+                             "  (last data point ~ %3 s after scan time)" )
          .arg( simparams.radial_scan_time )
          .arg( simparams.scan_outward ? tr( "meniscus to bottom" )
                                       : tr( "bottom to meniscus" ) )
-         .arg( tscan, 0, 'f', 1 ) );
+         .arg( tscan, 0, 'f', 1 )
+         .arg( simparams.scan_start > 0.0
+               ? QString::number( simparams.scan_start ) + " cm"
+               : tr( "at first data point" ) ) );
 
       if ( simparams.meshType == US_SimulationParameters::ASTFVM )
          te_status->append( tr( "WARNING: the radial scan time is not supported "

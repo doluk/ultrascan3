@@ -602,8 +602,9 @@ totT2+=(clcSt2.msecsTo(clcSt3));
             {
                duration += (double)( (int)( duration * 0.05 ) );  // +5%
                // Cover the recording time of the last scan's radial points
-               duration += simparams.radial_scan_time
-                           * (double)qMax( 0, (int)af_data.radius.size() - 1 );
+               duration += US_AstfemMath::scantime_span( af_data.radius,
+                              simparams.radial_scan_time, simparams.scan_outward,
+                              simparams.scan_start );
             }
 
             if ( accel_time > duration )
@@ -678,7 +679,8 @@ totT4+=(clcSt4.msecsTo(clcSt5));
             {
                if ( simparams.radial_scan_time > 0.0 )
                   US_AstfemMath::interpolate_scantime( af_data, simdata,
-                        simparams.radial_scan_time, simparams.scan_outward );
+                        simparams.radial_scan_time, simparams.scan_outward,
+                        simparams.scan_start );
                else
                   US_AstfemMath::interpolate( af_data, simdata, use_time );
             }
@@ -1006,8 +1008,9 @@ DbgLv(1) << "RSA:emit ctime: accel:current_time" << current_time << "step" << st
          {
             duration += (double)( (int)( duration * 0.05 ) );  // +5%
             // Cover the recording time of the last scan's radial points
-            duration += simparams.radial_scan_time
-                        * (double)qMax( 0, (int)af_data.radius.size() - 1 );
+            duration += US_AstfemMath::scantime_span( af_data.radius,
+                              simparams.radial_scan_time, simparams.scan_outward,
+                              simparams.scan_start );
          }
 
          if ( accel_time > duration )
@@ -1085,7 +1088,8 @@ DbgLv(2) << "RSA:    current_time" << current_time << "fscan lscan"
          {
             if ( simparams.radial_scan_time > 0.0 )
                US_AstfemMath::interpolate_scantime( *ed, simdata,
-                     simparams.radial_scan_time, simparams.scan_outward );
+                     simparams.radial_scan_time, simparams.scan_outward,
+                        simparams.scan_start );
             else
                US_AstfemMath::interpolate( *ed, simdata, use_time );
          }
@@ -1944,8 +1948,9 @@ ttT3+=(clcSt3.msecsTo(clcSt4));
          //  recorded until t_last + (N-1)*tau: let the last step cover it
          if ( simparams.radial_scan_time > 0.0  &&
               step == simparams.speed_step.size() - 1 )
-            t_end     += simparams.radial_scan_time
-                         * (double)qMax( 0, (int)af_data.radius.size() - 1 );
+            t_end     += US_AstfemMath::scantime_span( af_data.radius,
+                            simparams.radial_scan_time, simparams.scan_outward,
+                            simparams.scan_start );
 
          af_params.dt  = t_end - last_time;
       }

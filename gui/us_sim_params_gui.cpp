@@ -406,6 +406,24 @@ US_SimParamsGui::US_SimParamsGui(
                          this, &US_SimParamsGui::update_scandir );
    main->addWidget( cmb_scandir, row++, 4, 1, 4 );
 
+   // Radius at which each scan starts
+   QLabel* lb_scanstart = us_label( tr( "Scan Start Radius (cm, 0 = data start):" ) );
+   lb_scanstart->setToolTip( tr( "Radius where the scanner starts each scan, e.g. 5.8 "
+         "for an outward scan of the whole column. Points are delayed by "
+         "|r - start| / resolution * scan time. 0 starts at the first data point." ) );
+   main->addWidget( lb_scanstart, row, 4, 1, 3 );
+
+   cnt_scanstart      = us_counter( 3, 0.0, 10.0, simparams.scan_start );
+   cnt_scanstart->setSingleStep    ( 0.01 );
+   cnt_scanstart->setIncSteps( QwtCounter::Button1,   1 );
+   cnt_scanstart->setIncSteps( QwtCounter::Button2,  10 );
+   cnt_scanstart->setIncSteps( QwtCounter::Button3, 100 );
+   cnt_scanstart->setValue   ( simparams.scan_start );
+   cnt_scanstart->setEnabled ( simparams.radial_scan_time > 0.0 );
+   main->addWidget( cnt_scanstart, row++, 7, 1, 1 );
+   connect( cnt_scanstart, &QwtCounter::valueChanged,
+                           this, &US_SimParamsGui::update_scanstart );
+
    // Moving Grid Combo Box
    cmb_moving = us_comboBox();
    cmb_moving->setMaxVisibleItems( 5 );
@@ -536,6 +554,7 @@ void US_SimParamsGui::backup_parms( void )
    simparams_backup.baseline          = simparams.baseline;
    simparams_backup.radial_scan_time  = simparams.radial_scan_time;
    simparams_backup.scan_outward      = simparams.scan_outward;
+   simparams_backup.scan_start        = simparams.scan_start;
 }
 
 void US_SimParamsGui::revert( void )
@@ -574,6 +593,7 @@ void US_SimParamsGui::revert( void )
    simparams.baseline          = simparams_backup.baseline;
    simparams.radial_scan_time  = simparams_backup.radial_scan_time;
    simparams.scan_outward      = simparams_backup.scan_outward;
+   simparams.scan_start        = simparams_backup.scan_start;
    simparams.bottom_position   = simparams_backup.bottom_position;
 DbgLv(1) << "SPG: revert==";
 if(dbg_level>0)
@@ -975,6 +995,8 @@ void US_SimParamsGui::load( void )
       cnt_scantime        ->setValue( simparams.radial_scan_time  );
       cmb_scandir         ->setCurrentIndex( simparams.scan_outward ? 0 : 1 );
       cmb_scandir         ->setEnabled( simparams.radial_scan_time > 0.0 );
+      cnt_scanstart       ->setValue( simparams.scan_start );
+      cnt_scanstart       ->setEnabled( simparams.radial_scan_time > 0.0 );
 
       cmb_mesh            ->setCurrentIndex( (int)simparams.meshType );
       cmb_moving          ->setCurrentIndex( (int)simparams.gridType );
@@ -1185,6 +1207,13 @@ void US_SimParamsGui::update_scantime      ( double scantime )
 {
    simparams.radial_scan_time = qMax( 0.0, scantime );
    cmb_scandir->setEnabled( simparams.radial_scan_time > 0.0 );
+   cnt_scanstart->setEnabled( simparams.radial_scan_time > 0.0 );
+   report_mods();
+}
+
+void US_SimParamsGui::update_scanstart     ( double radius )
+{
+   simparams.scan_start = qMax( 0.0, radius );
    report_mods();
 }
 
@@ -1219,6 +1248,7 @@ void US_SimParamsGui::disconnect_all( )
    cnt_baseline        ->disconnect();
    cnt_scantime        ->disconnect();
    cmb_scandir         ->disconnect();
+   cnt_scanstart       ->disconnect();
    cmb_mesh            ->disconnect();
    cmb_moving          ->disconnect();
 }
@@ -1271,6 +1301,8 @@ void US_SimParamsGui::reconnect_all( )
                                   this, &US_SimParamsGui::update_scantime );
    connect( cmb_scandir,          qOverload< int >( &QComboBox::activated ),
                                   this, &US_SimParamsGui::update_scandir );
+   connect( cnt_scanstart,        &QwtCounter::valueChanged,
+                                  this, &US_SimParamsGui::update_scanstart );
    connect( cmb_mesh,             qOverload< int >( &QComboBox::activated ), 
                                   this, &US_SimParamsGui::update_mesh );
    connect( cmb_moving,           qOverload< int >( &QComboBox::activated ), 

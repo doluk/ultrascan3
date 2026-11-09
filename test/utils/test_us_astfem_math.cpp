@@ -192,6 +192,37 @@ TEST_F(US_AstfemMathTest, InterpolateScantimeOutwardAndInward) {
     }
 }
 
+TEST_F(US_AstfemMathTest, InterpolateScantimeScanStartRadius) {
+    // Scan starting at 5.9 cm (inside the data, outward) and at 7.2 cm (inward):
+    //  the point at r is taken at t + |r - r_start| / dr * tau, never earlier than t
+    const double tau = 0.1, dr = 0.025;
+    for ( bool outward : { true, false } )
+    {
+        const double rs = outward ? 5.9 : 7.2;
+        US_AstfemMath::MfemData sim, exp;
+        fill_scantime_data( sim, exp, { 10.0, 40.0 } );
+        ASSERT_EQ( US_AstfemMath::interpolate_scantime( exp, sim, tau, outward, rs ), 0 );
+        for ( int es = 0; es < exp.scan.size(); es++ )
+            for ( int ii = 0; ii < exp.radius.size(); ii++ )
+            {
+                double dist = outward ? exp.radius[ ii ] - rs : rs - exp.radius[ ii ];
+                double tt   = exp.scan[ es ].time + qMax( 0.0, dist ) / dr * tau;
+                EXPECT_NEAR( exp.scan[ es ].conc[ ii ], exp.radius[ ii ] + 10.0 * tt, 1e-9 )
+                    << "outward=" << outward << " scan=" << es << " point=" << ii;
+            }
+    }
+}
+
+TEST_F(US_AstfemMathTest, ScantimeSpan) {
+    QVector< double > rad;
+    for ( int ii = 0; ii <= 100; ii++ )
+        rad << 6.1 + 0.01 * ii;   // 6.1 .. 7.1 cm
+    EXPECT_NEAR( US_AstfemMath::scantime_span( rad, 0.5, true ),        50.0, 1e-9 );
+    EXPECT_NEAR( US_AstfemMath::scantime_span( rad, 0.5, true, 5.8 ),   65.0, 1e-9 );
+    EXPECT_NEAR( US_AstfemMath::scantime_span( rad, 0.5, false, 7.25 ), 57.5, 1e-9 );
+    EXPECT_EQ  ( US_AstfemMath::scantime_span( rad, 0.0, true, 5.8 ),    0.0 );
+}
+
 TEST_F(US_AstfemMathTest, InterpolateScantimeZeroMatchesInterpolate) {
     US_AstfemMath::MfemData sim, exp1, exp2;
     fill_scantime_data( sim, exp1, { 10.0, 50.25, 80.0 } );

@@ -196,6 +196,9 @@ class US_UTIL_EXTERN US_SimulationParameters
    bool      scan_outward;      //!< Scan direction: true = meniscus to bottom
                                 //!< (first point at smallest radius),
                                 //!< false = bottom to meniscus
+   double    scan_start;        //!< Radius (cm) where each scan starts, e.g.
+                                //!< 5.8 for an outward scan of the whole
+                                //!< column; <= 0 = first data point
    bool      band_forming;      //!< True for band-forming centerpieces
    double    band_volume;       //!< Loading volume (of lamella) in a 
                                 //!< Band-forming centerpiece

@@ -146,6 +146,7 @@ TEST_F(US_SimulationParametersTest, Constructor_InitializesCorrectly) {
     EXPECT_FALSE(simparms->firstScanIsConcentration);
     EXPECT_EQ(simparms->radial_scan_time, 0.0);
     EXPECT_TRUE(simparms->scan_outward);
+    EXPECT_EQ(simparms->scan_start, 0.0);
 }
 
 // SpeedProfile Constructor Tests
@@ -290,6 +291,7 @@ TEST_F(US_SimulationParametersTest, SaveSimparms_ValidParameters_SavesCorrectly)
 TEST_F(US_SimulationParametersTest, SaveSimparms_RadialScanTime_RoundTrips) {
     simparms->radial_scan_time = 0.045;
     simparms->scan_outward     = false;
+    simparms->scan_start       = 7.25;
     QString filename = tempDir->path() + "/test_scantime.xml";
     ASSERT_EQ(simparms->save_simparms(filename), 0);
 
@@ -297,6 +299,7 @@ TEST_F(US_SimulationParametersTest, SaveSimparms_RadialScanTime_RoundTrips) {
     ASSERT_EQ(loadedParams.load_simparms(filename), 0);
     EXPECT_DOUBLE_EQ(loadedParams.radial_scan_time, 0.045);
     EXPECT_FALSE(loadedParams.scan_outward);
+    EXPECT_DOUBLE_EQ(loadedParams.scan_start, 7.25);
 }
 
 // Files without the attributes keep instantaneous, outward scans

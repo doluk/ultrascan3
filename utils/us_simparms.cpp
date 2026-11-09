@@ -33,6 +33,7 @@ US_SimulationParameters::US_SimulationParameters()
    baseline          = 0.0;
    radial_scan_time  = 0.0;
    scan_outward      = true;
+   scan_start        = 0.0;
    temperature       = NORMAL_TEMP;
    rotorCalID        = "0";
    band_forming      = false;
@@ -939,6 +940,8 @@ int US_SimulationParameters::load_simparms( QString fname )
             radial_scan_time = astr.isEmpty() ? 0.0 : qMax( 0.0, astr.toDouble() );
             astr  = a.value( "scandirection" ).toString();
             scan_outward = ( astr != "inward" );
+            astr  = a.value( "scanstart" ).toString();
+            scan_start   = astr.isEmpty() ? 0.0 : qMax( 0.0, astr.toDouble() );
             astr  = a.value( "bandform"    ).toString();
             if ( !astr.isEmpty() )
                band_forming = ( astr == "yes" || astr == "1" );
@@ -1044,6 +1047,8 @@ int US_SimulationParameters::save_simparms( QString fname )
       {  // Only written when used, so files of instantaneous scans are unchanged
          xml.writeAttribute   ( "radialscantime", QString::number( radial_scan_time ) );
          xml.writeAttribute   ( "scandirection",  scan_outward ? "outward" : "inward" );
+         if ( scan_start > 0.0 )
+            xml.writeAttribute( "scanstart", QString::number( scan_start ) );
       }
 
       if ( ! rotorCalID.isEmpty() )
@@ -1739,7 +1744,8 @@ void US_SimulationParameters::debug( void )
    qDebug() << "Radial Inv Noise:" << rinoise;
    qDebug() << "Baseline offset :" << baseline;
    qDebug() << "Radial scan time:" << radial_scan_time
-            << ( scan_outward ? "(outward)" : "(inward)" );
+            << ( scan_outward ? "(outward)" : "(inward)" )
+            << "start" << scan_start;
    qDebug() << "Band Forming    :" << band_forming;
    qDebug() << "Band Volume     :" << band_volume;
    qDebug() << "Rotor Calibr.ID :" << rotorCalID;
