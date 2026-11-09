@@ -67,7 +67,7 @@ def fit(x, data, times, psi_deg, free_kappa, guess=(4.4, 6.0, 0.0, 0.0), xmax=No
     return sol.x, np.sqrt(np.mean(sol.fun ** 2))
 
 
-def iso_radius_mean(C, x, y, psi_deg, W=0.28):
+def iso_radius_mean(C, x, y, psi_deg, W=0.28, wts=None):
     """Average c over y along lines of constant radius
     rho = r_m + x cos psi + (y - W/2) sin psi  (what the optics sample),
     returned on the centre-line coordinate x_c = (rho - r_m) / cos psi."""
@@ -79,7 +79,7 @@ def iso_radius_mean(C, x, y, psi_deg, W=0.28):
             # position x at which column j has the radius of centre-line x
             xs = x - (yy - W / 2) * np.tan(ps)
             cols.append(np.interp(xs, x, C[k, :, j]))
-        out[k] = np.mean(cols, axis=0)
+        out[k] = np.average(cols, axis=0, weights=wts)
     return out
 
 
@@ -92,7 +92,8 @@ def analyse(fn, center=False):
         ny = C.shape[2]
         cbar = 0.5 * (C[:, :, (ny - 1) // 2] + C[:, :, ny // 2])
     else:          # iso-radius lateral mean
-        cbar = iso_radius_mean(C, x, d["y"], a["psi"])
+        wts = np.diff(d["yn"]) if "yn" in d.files else None   # cell widths
+        cbar = iso_radius_mean(C, x, d["y"], a["psi"], wts=wts)
     sel = slice(1, None)              # skip the first scan
     p0, r0 = fit(x, cbar[sel], t[sel], a["psi"], False)
     if a["psi"] != 0:
@@ -103,6 +104,7 @@ def analyse(fn, center=False):
     pl = (x > 0.5) & (x < 0.8)
     lat = np.sqrt(((C[-1][pl] - C[-1][pl].mean(axis=1)[:, None]) ** 2).mean())
     out = dict(file=fn + (":center" if center else ""), psi=a["psi"], c0=a["c0"], Nx=a["Nx"], Ny=a["Ny"], dt=a["dt"],
+               ybeta=a.get("ybeta", 0.0), order=a.get("order", 1),
                s_k0=p0[0], D_k0=p0[1], rmsd_k0=r0,
                s_k=p1[0], D_k=p1[1], kappa_a=p1[2], kappa_d=p1[3], rmsd_k=r1,
                lateral_rms=lat)
