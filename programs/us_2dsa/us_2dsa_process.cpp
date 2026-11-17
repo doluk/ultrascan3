@@ -553,7 +553,10 @@ void US_2dsaProcess::calculate_cosedimenting_component()
             if (bfg->is_suitable(simparms->meniscus, simparms->bottom, simparms->band_volume,
                                  simparms->cp_pathlen, simparms->cp_angle,
                                  dsets[0]->solution_rec.buffer.cosed_component,
-                                 (int)edata->scanData.last().seconds)){
+                                 (int)edata->scanData.last().seconds,
+                                 simparms->band_loading_mode,
+                                 simparms->band_loading_start,
+                                 simparms->band_loading_duration)){
                recalc = false;
             }
             if ( recalc ){

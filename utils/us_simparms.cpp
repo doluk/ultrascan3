@@ -44,6 +44,9 @@ US_SimulationParameters::US_SimulationParameters()
    rotorCalID                  = "0";
    band_forming                = false;
    band_volume                 = 0.015;
+   band_loading_mode           = 0;
+   band_loading_start          = 0.0;
+   band_loading_duration       = 0.0;
    bottom_position             = 7.2;
    rotorcoeffs[ 0 ]            = 0.0;
    rotorcoeffs[ 1 ]            = 0.0;
@@ -1004,6 +1007,21 @@ int US_SimulationParameters::load_simparms( QString fname )
                band_volume  = a.value( "bandvolume" ).toString().toDouble();
             else
                band_volume  = 0.0;
+            band_loading_mode     = 0;
+            band_loading_start    = 0.0;
+            band_loading_duration = 0.0;
+            if ( band_forming )
+            {
+               astr  = a.value( "bandloadmode" ).toString();
+               if ( !astr.isEmpty() )
+                  band_loading_mode     = astr.toInt();
+               astr  = a.value( "bandloadstart" ).toString();
+               if ( !astr.isEmpty() )
+                  band_loading_start    = astr.toDouble();
+               astr  = a.value( "bandloadtime" ).toString();
+               if ( !astr.isEmpty() )
+                  band_loading_duration = astr.toDouble();
+            }
             astr  = a.value( "rotorCalID" ).toString();
             if ( !astr.isEmpty() )
                rotorCalID   = astr;
@@ -1129,7 +1147,15 @@ int US_SimulationParameters::save_simparms( QString fname )
       xml.writeAttribute   ( "bandform",  band_forming ? "1" : "0" );
 
       if ( band_forming )
+      {
          xml.writeAttribute   ( "bandvolume",  QString::number( band_volume ) );
+         if ( band_loading_mode != 0 )
+         {
+            xml.writeAttribute( "bandloadmode",  QString::number( band_loading_mode ) );
+            xml.writeAttribute( "bandloadstart", QString::number( band_loading_start ) );
+            xml.writeAttribute( "bandloadtime",  QString::number( band_loading_duration ) );
+         }
+      }
 
       xml.writeAttribute   ( "sector",      QString::number( cp_sector  ) );
       xml.writeAttribute   ( "pathlength",  QString::number( cp_pathlen ) );
@@ -1823,6 +1849,8 @@ void US_SimulationParameters::debug( void )
    qDebug() << "Baseline offset :" << baseline;
    qDebug() << "Band Forming    :" << band_forming;
    qDebug() << "Band Volume     :" << band_volume;
+   qDebug() << "Band Load Mode  :" << band_loading_mode
+            << band_loading_start << band_loading_duration;
    qDebug() << "Rotor Calibr.ID :" << rotorCalID;
    qDebug() << "Rotor Coeffs    :" << rotorcoeffs[ 0 ] << rotorcoeffs[ 1 ];
    qDebug() << "CP Sector       :" << cp_sector;

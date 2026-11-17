@@ -3424,7 +3424,10 @@ void US_MPI_Analysis::calculate_cosed() {
                                                 data_sets[0]->simparams.cp_pathlen,
                                                 data_sets[0]->simparams.cp_angle,
                                                 data_sets[0]->solution_rec.buffer.cosed_component,
-                                                (int)data_sets[0]->run_data.scanData.last().seconds) ){
+                                                (int)data_sets[0]->run_data.scanData.last().seconds,
+                                                data_sets[0]->simparams.band_loading_mode,
+                                                data_sets[0]->simparams.band_loading_start,
+                                                data_sets[0]->simparams.band_loading_duration) ){
             recalc = false;
          }
          if ( recalc ){

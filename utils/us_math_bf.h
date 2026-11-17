@@ -82,6 +82,9 @@ class US_UTIL_EXTERN US_Math_BF final : public QObject {
             double bottom; //!< Bottom position in cm
             double overlay_volume; //!< Overlay volume in mL
             double overlay_thickness; //!< Overlay layer thickness in cm
+            int    loading_mode;      //!< Lamella loading model, see US_SimulationParameters::band_loading_mode
+            double loading_start;     //!< Time (s) at which the lamella starts to enter the sector
+            double loading_duration;  //!< Time (s) needed until the complete lamella entered the sector
             double cp_pathlen;        //!< Pathlength of centerpiece in cm
             double cp_angle;          //!< Angle of centerpiece sector
             QList<US_CosedComponent> cosed_component; //!< Cosedimenting components
@@ -119,6 +122,29 @@ class US_UTIL_EXTERN US_Math_BF final : public QObject {
             //! \brief Calculate the eigenvalues
             bool get_eigenvalues( );
 
+            //! \brief Set the lamella loading model.
+            //! Mode 0 reproduces the instantaneous overlay layer at t=0. For mode 1 and 2 the lamella enters the
+            //! sector between start and start + duration. Each loaded increment is treated as a layer of thickness
+            //! overlay_thickness at the meniscus (Duhamel superposition of the instantaneous solution).
+            //! Mode 1: loaded fraction F = sqrt((t-start)/duration), equivalent to a source of constant
+            //! concentration at the meniscus. Mode 2: F = (t-start)/duration, constant flux.
+            //! \param mode     The loading mode (0, 1, 2)
+            //! \param start    The time in seconds at which loading starts
+            //! \param duration The loading duration in seconds
+            void set_loading( int mode, double start, double duration );
+
+            //! \brief Fraction of the lamella that has entered the sector at time t
+            //! \param t The double value representing the point of time
+            double loaded_fraction( const double &t ) const;
+
+            //! \brief Duhamel integral of the loading rate with the decay of a single eigenmode
+            //! \param k The decay rate D*beta^2 of the eigenmode in 1/s
+            //! \param t The double value representing the point of time
+            double loading_kernel( const double &k, const double &t ) const;
+
+            //! \brief Dawson's integral F(x) = exp(-x^2) * int_0^x exp(y^2) dy
+            static double dawson( double x );
+
             void load_data( const US_DataIO::RawData* dens, const US_DataIO::RawData* visc, const US_DataIO::RawData* conc);
 
             bool save_data(const QString& folder, const QString& file_key, IUS_DB2* db);
@@ -131,6 +157,9 @@ class US_UTIL_EXTERN US_Math_BF final : public QObject {
             //! \param n_cp_angle The double value representing the new angle of the cell
             //! \param n_cosed_component The new cosedimenting components
             //! \param n_maxTime The maximum time for the simulation
+            //! \param n_loading_mode The lamella loading mode
+            //! \param n_loading_start The start of lamella loading in seconds
+            //! \param n_loading_duration The duration of lamella loading in seconds
             //! \return A boolean if the band forming gradient is suitable
             bool is_suitable(double n_meniscus,
                              double n_bottom,
@@ -138,7 +167,10 @@ class US_UTIL_EXTERN US_Math_BF final : public QObject {
                              double n_cp_pathlen,
                              double n_cp_angle,
                              const QList<US_CosedComponent>& n_cosed_component,
-                             int n_maxTime);
+                             int n_maxTime,
+                             int n_loading_mode = 0,
+                             double n_loading_start = 0.0,
+                             double n_loading_duration = 0.0);
 
             QString readGradientDataFromDB(const QString& load_key, QString &dir, IUS_DB2 *db) const;
 

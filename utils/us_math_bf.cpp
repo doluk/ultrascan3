@@ -29,6 +29,9 @@ US_Math_BF::Band_Forming_Gradient::Band_Forming_Gradient(const double m, const d
    bessel_types << "J0" << "J1" << "Y0" << "Y1";
    double base = sq(meniscus) + overlay_volume * 360.0 / (cp_angle * cp_pathlen * M_PI);
    overlay_thickness = sqrt(base) - meniscus;
+   loading_mode = 0;
+   loading_start = 0.0;
+   loading_duration = 0.0;
    total_volume = M_PI * cp_pathlen * cp_angle / 360 * (sq(bottom) - sq(meniscus));
    lower_volume = M_PI * cp_pathlen * cp_angle / 360 * (sq(bottom) - sq(meniscus + overlay_thickness));
    Nx = 0;
@@ -158,6 +161,9 @@ US_Math_BF::Band_Forming_Gradient::Band_Forming_Gradient( const US_Math_BF::Band
    bottom = bfg.bottom;
    overlay_volume = bfg.overlay_volume;
    overlay_thickness = bfg.overlay_thickness;
+   loading_mode = bfg.loading_mode;
+   loading_start = bfg.loading_start;
+   loading_duration = bfg.loading_duration;
    cp_pathlen = bfg.cp_pathlen;
    cp_angle = bfg.cp_angle;
    cosed_component = bfg.cosed_component;
@@ -203,6 +209,10 @@ US_Math_BF::Band_Forming_Gradient::Band_Forming_Gradient(const US_SimulationPara
    bessel_types << "J0" << "J1" << "Y0" << "Y1";
    double base = sq(meniscus) + overlay_volume * 360.0 / (cp_angle * cp_pathlen * M_PI);
    overlay_thickness = sqrt(base) - meniscus;
+   loading_mode = 0;
+   loading_start = 0.0;
+   loading_duration = 0.0;
+   set_loading(sim_params.band_loading_mode, sim_params.band_loading_start, sim_params.band_loading_duration);
    total_volume = M_PI * cp_pathlen * cp_angle / 360 * (sq(bottom) - sq(meniscus));
    lower_volume = M_PI * cp_pathlen * cp_angle / 360 * (sq(bottom) - sq(meniscus + overlay_thickness));
    Nx = 0;
@@ -335,7 +345,9 @@ US_Math_BF::Band_Forming_Gradient::Band_Forming_Gradient(const US_SimulationPara
    QString conc_file = resultDir.filePath( key + ".conc.auc" );
    US_DataIO::RawData conc;
    US_DataIO::readRawData(dens_file, conc );
-   if (dens.pointCount() == 0 || visc.pointCount() == 0 || conc.pointCount() == 0){
+   // The file key does not encode the lamella loading model; stored gradients are
+   // only valid for the instantaneous overlay
+   if (dens.pointCount() == 0 || visc.pointCount() == 0 || conc.pointCount() == 0 || loading_mode != 0){
       is_empty = true;
    }
    else{
@@ -517,6 +529,23 @@ double US_Math_BF::Band_Forming_Gradient::calc_comp_conc(const double &x, const 
    const double cosed_conc = cosed_comp.conc;
 
    double decay = 0.0;
+   if (loading_mode != 0) {
+      // Lamella enters the sector over time: Duhamel superposition of the
+      // instantaneous overlay solution weighted with the loading rate
+      if (t <= loading_start) {
+         return cosed_comp.concentration_offset;
+      }
+      const double d_t = cosed_comp.d_coeff * ((temp>260)?temp:temp+K0)/K20;
+      const double* eigenvalues_data = eigenvalues.constData();
+      const double* pre_calc_betas_data = pre_calc_betas.constData();
+      const int size = eigenvalues.size();
+      for (int i = 0; i < size; i++) {
+         const double beta = eigenvalues_data[i];
+         decay += pre_calc_betas_data[i] * eigenfunction(i, x) * loading_kernel(d_t * beta * beta, t);
+      }
+      return cosed_comp.concentration_offset +
+             loaded_fraction(t) * (eq_conc - cosed_comp.concentration_offset) + decay * cosed_conc;
+   }
    if (t < 1){
       if (x > meniscus+overlay_thickness){
          return cosed_comp.concentration_offset;
@@ -542,6 +571,94 @@ double US_Math_BF::Band_Forming_Gradient::calc_comp_conc(const double &x, const 
       }
    }
    return eq_conc + decay * cosed_conc;
+}
+
+void US_Math_BF::Band_Forming_Gradient::set_loading( const int mode, const double start, const double duration ) {
+   const int    n_mode     = ( mode == 1 || mode == 2 ) ? mode : 0;
+   const double n_start    = ( n_mode == 0 ) ? 0.0 : qMax( start, 0.0 );
+   const double n_duration = ( n_mode == 0 ) ? 0.0 : qMax( duration, 0.0 );
+   if ( n_mode != loading_mode || n_start != loading_start || n_duration != loading_duration ) {
+      // cached gradient values belong to the previous loading model
+      value_cache.clear();
+   }
+   loading_mode     = n_mode;
+   loading_start    = n_start;
+   loading_duration = n_duration;
+   DbgLv(1) << "BFG: loading mode start duration" << loading_mode << loading_start << loading_duration;
+}
+
+double US_Math_BF::Band_Forming_Gradient::loaded_fraction( const double &t ) const {
+   if ( loading_mode == 0 ) {
+      return 1.0;
+   }
+   const double tl = t - loading_start;
+   if ( tl <= 0.0 ) {
+      return 0.0;
+   }
+   if ( loading_duration <= 0.0 || tl >= loading_duration ) {
+      return 1.0;
+   }
+   const double f = tl / loading_duration;
+   return ( loading_mode == 1 ) ? sqrt( f ) : f;
+}
+
+double US_Math_BF::Band_Forming_Gradient::loading_kernel( const double &k, const double &t ) const {
+   // Returns int_{t0}^{t} F'(t') exp(-k (t - t')) dt' for the loaded fraction F of the current mode
+   if ( loading_mode == 0 ) {
+      return exp( -k * t );
+   }
+   const double tl = t - loading_start;
+   if ( tl <= 0.0 ) {
+      return 0.0;
+   }
+   if ( loading_duration <= 0.0 ) {
+      // everything enters at loading_start
+      return exp( -k * tl );
+   }
+   const double a = qMin( tl, loading_duration );   // time span of loading up to t
+   const double b = tl - a;                          // time since loading finished
+   if ( k <= 0.0 ) {
+      return loaded_fraction( t );
+   }
+   if ( loading_mode == 1 ) {
+      // F = sqrt(u/tau): e^{-k b} * Dawson( sqrt(k a) ) / sqrt(k tau)
+      return exp( -k * b ) * dawson( sqrt( k * a ) ) / sqrt( k * loading_duration );
+   }
+   // F = u/tau: e^{-k b} * (1 - e^{-k a}) / (k tau)
+   return exp( -k * b ) * ( -expm1( -k * a ) ) / ( k * loading_duration );
+}
+
+double US_Math_BF::Band_Forming_Gradient::dawson( const double x ) {
+   // Rybicki's method (sampling theorem), relative accuracy ~2e-7
+   static const double H  = 0.4;
+   static const int    NMAX = 6;
+   static double c[ NMAX ];
+   static bool init = false;
+   if ( !init ) {
+      for ( int i = 0; i < NMAX; i++ ) {
+         c[ i ] = exp( -sq( ( 2.0 * i + 1.0 ) * H ) );
+      }
+      init = true;
+   }
+   const double xx = fabs( x );
+   if ( xx < 0.2 ) {
+      const double x2 = x * x;
+      return x * ( 1.0 - 2.0 / 3.0 * x2 * ( 1.0 - 0.4 * x2 * ( 1.0 - 2.0 / 7.0 * x2 ) ) );
+   }
+   const int    n0 = 2 * static_cast<int>( 0.5 * xx / H + 0.5 );
+   const double xp = xx - n0 * H;
+   double e1 = exp( 2.0 * xp * H );
+   const double e2 = e1 * e1;
+   double d1 = n0 + 1;
+   double d2 = d1 - 2.0;
+   double sum = 0.0;
+   for ( int i = 0; i < NMAX; i++ ) {
+      sum += c[ i ] * ( e1 / d1 + 1.0 / ( d2 * e1 ) );
+      d1 += 2.0;
+      d2 -= 2.0;
+      e1 *= e2;
+   }
+   return 0.5641895835477563 * ( ( x >= 0.0 ) ? 1.0 : -1.0 ) * exp( -xp * xp ) * sum;
 }
 
 bool US_Math_BF::Band_Forming_Gradient::calc_dens_visc(
@@ -729,6 +846,7 @@ US_Math_BF::Band_Forming_Gradient::calculate_gradient(
    US_SimulationParameters sim_params,US_DataIO::RawData* editedData) {
 
    simparms = std::move(sim_params);
+   set_loading(simparms.band_loading_mode, simparms.band_loading_start, simparms.band_loading_duration);
    int bfg_idx = 1;
    QVector<double> x_values;
    // Limit the radial_resolution to 0.001
@@ -1091,6 +1209,9 @@ US_Math_BF::Band_Forming_Gradient::Band_Forming_Gradient() {
    bottom = 0.0;
    overlay_volume = 0.0;
    overlay_thickness = 0.0;
+   loading_mode = 0;
+   loading_start = 0.0;
+   loading_duration = 0.0;
    cp_pathlen = 0.0;
    cp_angle = 0.0;
    cosed_component.clear();
@@ -1119,6 +1240,9 @@ bool US_Math_BF::Band_Forming_Gradient::operator==(const US_Math_BF::Band_Formin
        meniscus != bfg.meniscus ||
        bottom != bfg.bottom ||
        abs(overlay_volume - bfg.overlay_volume) > GSL_ROOT5_DBL_EPSILON ||
+       loading_mode != bfg.loading_mode ||
+       abs(loading_start - bfg.loading_start) > GSL_ROOT5_DBL_EPSILON ||
+       abs(loading_duration - bfg.loading_duration) > GSL_ROOT5_DBL_EPSILON ||
        abs( cp_pathlen - bfg.cp_pathlen) > GSL_ROOT5_DBL_EPSILON ||
        abs( cp_angle - bfg.cp_angle) > GSL_ROOT5_DBL_EPSILON ||
        simparms.radial_resolution != bfg.simparms.radial_resolution ||
@@ -1288,7 +1412,10 @@ bool US_Math_BF::Band_Forming_Gradient::is_suitable( const double n_meniscus, co
                                                      const double n_overlay_volume,
                                                      const double n_cp_pathlen, const double n_cp_angle,
                                                      const QList<US_CosedComponent>& n_cosed_component,
-                                                     const int n_maxTime ) {
+                                                     const int n_maxTime,
+                                                     const int n_loading_mode,
+                                                     const double n_loading_start,
+                                                     const double n_loading_duration ) {
    if ( is_empty ) {
       return false;
    }
@@ -1297,7 +1424,11 @@ bool US_Math_BF::Band_Forming_Gradient::is_suitable( const double n_meniscus, co
         QString::number(overlay_volume, 'f', 4) != QString::number(n_overlay_volume, 'f', 4) ||
         QString::number(cp_pathlen, 'f', 4) != QString::number(n_cp_pathlen, 'f', 4) ||
         QString::number(cp_angle, 'f', 4) != QString::number(n_cp_angle, 'f', 4) ||
-        cosed_component != n_cosed_component || dens_bfg_data.scanData.last().seconds >= n_maxTime) {
+        cosed_component != n_cosed_component || dens_bfg_data.scanData.last().seconds >= n_maxTime ||
+        loading_mode != n_loading_mode ||
+        ( loading_mode != 0 &&
+          ( QString::number(loading_start, 'f', 2) != QString::number(n_loading_start, 'f', 2) ||
+            QString::number(loading_duration, 'f', 2) != QString::number(n_loading_duration, 'f', 2) ) ) ) {
       return false;
    }
    return true;
