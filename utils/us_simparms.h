@@ -215,11 +215,15 @@ class US_UTIL_EXTERN US_SimulationParameters
                                    //!< layer at t=0, 1 = source at the meniscus
                                    //!< with constant concentration (loaded
                                    //!< fraction ~ sqrt(t-t0)), 2 = constant flux
-                                   //!< (loaded fraction ~ (t-t0))
+                                   //!< (loaded fraction ~ (t-t0)), 3 = first-order
+                                   //!< draining (loaded fraction ~ 1-exp(-(t-t0)/tau))
    double    band_loading_start;   //!< Time (s) at which the lamella starts to
                                    //!< enter the sector (t0)
    double    band_loading_duration;//!< Time (s) after band_loading_start until
-                                   //!< the complete lamella has entered
+                                   //!< the complete lamella has entered (mode 1, 2)
+                                   //!< or loading time constant (mode 3)
+   double    band_loading_fraction;//!< Fraction (0,1] of the lamella volume that
+                                   //!< enters the sector (partial overlay)
    double    bottom_position;      //!< Bottom at rest from centerpiece,channel
    QString   rotorCalID;           //!< Rotor calibration identifier in DB/XML
    double    rotorcoeffs[ 2 ];     //!< Rotor coefficients for stretch calculation

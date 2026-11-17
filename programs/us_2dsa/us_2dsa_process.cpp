@@ -556,7 +556,8 @@ void US_2dsaProcess::calculate_cosedimenting_component()
                                  (int)edata->scanData.last().seconds,
                                  simparms->band_loading_mode,
                                  simparms->band_loading_start,
-                                 simparms->band_loading_duration)){
+                                 simparms->band_loading_duration,
+                                 simparms->band_loading_fraction)){
                recalc = false;
             }
             if ( recalc ){

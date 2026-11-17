@@ -32,6 +32,7 @@ US_Math_BF::Band_Forming_Gradient::Band_Forming_Gradient(const double m, const d
    loading_mode = 0;
    loading_start = 0.0;
    loading_duration = 0.0;
+   loading_fraction = 1.0;
    total_volume = M_PI * cp_pathlen * cp_angle / 360 * (sq(bottom) - sq(meniscus));
    lower_volume = M_PI * cp_pathlen * cp_angle / 360 * (sq(bottom) - sq(meniscus + overlay_thickness));
    Nx = 0;
@@ -164,6 +165,7 @@ US_Math_BF::Band_Forming_Gradient::Band_Forming_Gradient( const US_Math_BF::Band
    loading_mode = bfg.loading_mode;
    loading_start = bfg.loading_start;
    loading_duration = bfg.loading_duration;
+   loading_fraction = bfg.loading_fraction;
    cp_pathlen = bfg.cp_pathlen;
    cp_angle = bfg.cp_angle;
    cosed_component = bfg.cosed_component;
@@ -212,7 +214,9 @@ US_Math_BF::Band_Forming_Gradient::Band_Forming_Gradient(const US_SimulationPara
    loading_mode = 0;
    loading_start = 0.0;
    loading_duration = 0.0;
-   set_loading(sim_params.band_loading_mode, sim_params.band_loading_start, sim_params.band_loading_duration);
+   loading_fraction = 1.0;
+   set_loading(sim_params.band_loading_mode, sim_params.band_loading_start, sim_params.band_loading_duration,
+               sim_params.band_loading_fraction);
    total_volume = M_PI * cp_pathlen * cp_angle / 360 * (sq(bottom) - sq(meniscus));
    lower_volume = M_PI * cp_pathlen * cp_angle / 360 * (sq(bottom) - sq(meniscus + overlay_thickness));
    Nx = 0;
@@ -347,7 +351,8 @@ US_Math_BF::Band_Forming_Gradient::Band_Forming_Gradient(const US_SimulationPara
    US_DataIO::readRawData(dens_file, conc );
    // The file key does not encode the lamella loading model; stored gradients are
    // only valid for the instantaneous overlay
-   if (dens.pointCount() == 0 || visc.pointCount() == 0 || conc.pointCount() == 0 || loading_mode != 0){
+   if (dens.pointCount() == 0 || visc.pointCount() == 0 || conc.pointCount() == 0 || loading_mode != 0 ||
+       loading_fraction != 1.0){
       is_empty = true;
    }
    else{
@@ -551,7 +556,7 @@ double US_Math_BF::Band_Forming_Gradient::calc_comp_conc(const double &x, const 
          return cosed_comp.concentration_offset;
       }
       else{
-         return cosed_conc + cosed_comp.concentration_offset;
+         return loading_fraction * cosed_conc + cosed_comp.concentration_offset;
       }
    }
    else {
@@ -570,42 +575,58 @@ double US_Math_BF::Band_Forming_Gradient::calc_comp_conc(const double &x, const 
          decay += pre_calc * eigenfunction(i, x) * exp(exp_factor * beta_sq);
       }
    }
-   return eq_conc + decay * cosed_conc;
+   // only the fraction loading_fraction of the overlay enters the sector
+   return cosed_comp.concentration_offset + loading_fraction * ( eq_conc - cosed_comp.concentration_offset
+                                                               + decay * cosed_conc );
 }
 
-void US_Math_BF::Band_Forming_Gradient::set_loading( const int mode, const double start, const double duration ) {
-   const int    n_mode     = ( mode == 1 || mode == 2 ) ? mode : 0;
+void US_Math_BF::Band_Forming_Gradient::set_loading( const int mode, const double start, const double duration,
+                                                     const double fraction ) {
+   const int    n_mode     = ( mode >= 1 && mode <= 3 ) ? mode : 0;
    const double n_start    = ( n_mode == 0 ) ? 0.0 : qMax( start, 0.0 );
    const double n_duration = ( n_mode == 0 ) ? 0.0 : qMax( duration, 0.0 );
-   if ( n_mode != loading_mode || n_start != loading_start || n_duration != loading_duration ) {
+   // a fraction outside (0,1] is treated as unset -> complete overlay
+   const double n_fraction = ( fraction > 0.0 && fraction <= 1.0 ) ? fraction : 1.0;
+   if ( n_mode != loading_mode || n_start != loading_start || n_duration != loading_duration ||
+        n_fraction != loading_fraction ) {
       // cached gradient values belong to the previous loading model
       value_cache.clear();
    }
    loading_mode     = n_mode;
    loading_start    = n_start;
    loading_duration = n_duration;
-   DbgLv(1) << "BFG: loading mode start duration" << loading_mode << loading_start << loading_duration;
+   loading_fraction = n_fraction;
+   DbgLv(1) << "BFG: loading mode start duration fraction" << loading_mode << loading_start << loading_duration
+            << loading_fraction;
 }
 
 double US_Math_BF::Band_Forming_Gradient::loaded_fraction( const double &t ) const {
    if ( loading_mode == 0 ) {
-      return 1.0;
+      return loading_fraction;
    }
    const double tl = t - loading_start;
    if ( tl <= 0.0 ) {
       return 0.0;
    }
-   if ( loading_duration <= 0.0 || tl >= loading_duration ) {
-      return 1.0;
+   if ( loading_duration <= 0.0 ) {
+      return loading_fraction;
+   }
+   if ( loading_mode == 3 ) {
+      // first-order (exponential) loading, loading_duration is the time constant
+      return loading_fraction * ( -expm1( -tl / loading_duration ) );
+   }
+   if ( tl >= loading_duration ) {
+      return loading_fraction;
    }
    const double f = tl / loading_duration;
-   return ( loading_mode == 1 ) ? sqrt( f ) : f;
+   return loading_fraction * ( ( loading_mode == 1 ) ? sqrt( f ) : f );
 }
 
 double US_Math_BF::Band_Forming_Gradient::loading_kernel( const double &k, const double &t ) const {
    // Returns int_{t0}^{t} F'(t') exp(-k (t - t')) dt' for the loaded fraction F of the current mode
+   // (F includes loading_fraction)
    if ( loading_mode == 0 ) {
-      return exp( -k * t );
+      return loading_fraction * exp( -k * t );
    }
    const double tl = t - loading_start;
    if ( tl <= 0.0 ) {
@@ -613,19 +634,26 @@ double US_Math_BF::Band_Forming_Gradient::loading_kernel( const double &k, const
    }
    if ( loading_duration <= 0.0 ) {
       // everything enters at loading_start
-      return exp( -k * tl );
+      return loading_fraction * exp( -k * tl );
    }
-   const double a = qMin( tl, loading_duration );   // time span of loading up to t
-   const double b = tl - a;                          // time since loading finished
    if ( k <= 0.0 ) {
       return loaded_fraction( t );
    }
+   if ( loading_mode == 3 ) {
+      // F' = exp(-u/tau)/tau: a (e^{-a tl} - e^{-k tl})/(k - a), a = 1/tau, written without cancellation
+      const double a  = 1.0 / loading_duration;
+      const double dk = fabs( k - a );
+      const double g  = ( dk * tl < 1.0e-10 ) ? tl : -expm1( -dk * tl ) / dk;
+      return loading_fraction * a * exp( -qMin( k, a ) * tl ) * g;
+   }
+   const double a = qMin( tl, loading_duration );   // time span of loading up to t
+   const double b = tl - a;                          // time since loading finished
    if ( loading_mode == 1 ) {
       // F = sqrt(u/tau): e^{-k b} * Dawson( sqrt(k a) ) / sqrt(k tau)
-      return exp( -k * b ) * dawson( sqrt( k * a ) ) / sqrt( k * loading_duration );
+      return loading_fraction * exp( -k * b ) * dawson( sqrt( k * a ) ) / sqrt( k * loading_duration );
    }
    // F = u/tau: e^{-k b} * (1 - e^{-k a}) / (k tau)
-   return exp( -k * b ) * ( -expm1( -k * a ) ) / ( k * loading_duration );
+   return loading_fraction * exp( -k * b ) * ( -expm1( -k * a ) ) / ( k * loading_duration );
 }
 
 double US_Math_BF::Band_Forming_Gradient::dawson( const double x ) {
@@ -846,7 +874,8 @@ US_Math_BF::Band_Forming_Gradient::calculate_gradient(
    US_SimulationParameters sim_params,US_DataIO::RawData* editedData) {
 
    simparms = std::move(sim_params);
-   set_loading(simparms.band_loading_mode, simparms.band_loading_start, simparms.band_loading_duration);
+   set_loading(simparms.band_loading_mode, simparms.band_loading_start, simparms.band_loading_duration,
+               simparms.band_loading_fraction);
    int bfg_idx = 1;
    QVector<double> x_values;
    // Limit the radial_resolution to 0.001
@@ -1212,6 +1241,7 @@ US_Math_BF::Band_Forming_Gradient::Band_Forming_Gradient() {
    loading_mode = 0;
    loading_start = 0.0;
    loading_duration = 0.0;
+   loading_fraction = 1.0;
    cp_pathlen = 0.0;
    cp_angle = 0.0;
    cosed_component.clear();
@@ -1243,6 +1273,7 @@ bool US_Math_BF::Band_Forming_Gradient::operator==(const US_Math_BF::Band_Formin
        loading_mode != bfg.loading_mode ||
        abs(loading_start - bfg.loading_start) > GSL_ROOT5_DBL_EPSILON ||
        abs(loading_duration - bfg.loading_duration) > GSL_ROOT5_DBL_EPSILON ||
+       abs(loading_fraction - bfg.loading_fraction) > GSL_ROOT5_DBL_EPSILON ||
        abs( cp_pathlen - bfg.cp_pathlen) > GSL_ROOT5_DBL_EPSILON ||
        abs( cp_angle - bfg.cp_angle) > GSL_ROOT5_DBL_EPSILON ||
        simparms.radial_resolution != bfg.simparms.radial_resolution ||
@@ -1415,7 +1446,8 @@ bool US_Math_BF::Band_Forming_Gradient::is_suitable( const double n_meniscus, co
                                                      const int n_maxTime,
                                                      const int n_loading_mode,
                                                      const double n_loading_start,
-                                                     const double n_loading_duration ) {
+                                                     const double n_loading_duration,
+                                                     const double n_loading_fraction ) {
    if ( is_empty ) {
       return false;
    }
@@ -1426,6 +1458,7 @@ bool US_Math_BF::Band_Forming_Gradient::is_suitable( const double n_meniscus, co
         QString::number(cp_angle, 'f', 4) != QString::number(n_cp_angle, 'f', 4) ||
         cosed_component != n_cosed_component || dens_bfg_data.scanData.last().seconds >= n_maxTime ||
         loading_mode != n_loading_mode ||
+        QString::number(loading_fraction, 'f', 4) != QString::number(n_loading_fraction, 'f', 4) ||
         ( loading_mode != 0 &&
           ( QString::number(loading_start, 'f', 2) != QString::number(n_loading_start, 'f', 2) ||
             QString::number(loading_duration, 'f', 2) != QString::number(n_loading_duration, 'f', 2) ) ) ) {

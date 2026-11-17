@@ -3427,7 +3427,8 @@ void US_MPI_Analysis::calculate_cosed() {
                                                 (int)data_sets[0]->run_data.scanData.last().seconds,
                                                 data_sets[0]->simparams.band_loading_mode,
                                                 data_sets[0]->simparams.band_loading_start,
-                                                data_sets[0]->simparams.band_loading_duration) ){
+                                                data_sets[0]->simparams.band_loading_duration,
+                                                data_sets[0]->simparams.band_loading_fraction) ){
             recalc = false;
          }
          if ( recalc ){
