@@ -224,6 +224,9 @@ class US_UTIL_EXTERN US_SimulationParameters
                                    //!< or loading time constant (mode 3)
    double    band_loading_fraction;//!< Fraction (0,1] of the lamella volume that
                                    //!< enters the sector (partial overlay)
+   double    band_loading_dilution;//!< Dilution factor (>=1) of the lamella on
+                                   //!< entry: it enters as a layer of dilution x
+                                   //!< its volume at concentration / dilution
    double    bottom_position;      //!< Bottom at rest from centerpiece,channel
    QString   rotorCalID;           //!< Rotor calibration identifier in DB/XML
    double    rotorcoeffs[ 2 ];     //!< Rotor coefficients for stretch calculation

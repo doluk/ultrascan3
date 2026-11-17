@@ -48,6 +48,7 @@ US_SimulationParameters::US_SimulationParameters()
    band_loading_start          = 0.0;
    band_loading_duration       = 0.0;
    band_loading_fraction       = 1.0;
+   band_loading_dilution       = 1.0;
    bottom_position             = 7.2;
    rotorcoeffs[ 0 ]            = 0.0;
    rotorcoeffs[ 1 ]            = 0.0;
@@ -1012,6 +1013,7 @@ int US_SimulationParameters::load_simparms( QString fname )
             band_loading_start    = 0.0;
             band_loading_duration = 0.0;
             band_loading_fraction = 1.0;
+            band_loading_dilution = 1.0;
             if ( band_forming )
             {
                astr  = a.value( "bandloadmode" ).toString();
@@ -1026,6 +1028,9 @@ int US_SimulationParameters::load_simparms( QString fname )
                astr  = a.value( "bandloadfrac" ).toString();
                if ( !astr.isEmpty() )
                   band_loading_fraction = astr.toDouble();
+               astr  = a.value( "bandloaddil" ).toString();
+               if ( !astr.isEmpty() )
+                  band_loading_dilution = astr.toDouble();
             }
             astr  = a.value( "rotorCalID" ).toString();
             if ( !astr.isEmpty() )
@@ -1154,12 +1159,14 @@ int US_SimulationParameters::save_simparms( QString fname )
       if ( band_forming )
       {
          xml.writeAttribute   ( "bandvolume",  QString::number( band_volume ) );
-         if ( band_loading_mode != 0 || band_loading_fraction != 1.0 )
+         if ( band_loading_mode != 0 || band_loading_fraction != 1.0 ||
+              band_loading_dilution != 1.0 )
          {
             xml.writeAttribute( "bandloadmode",  QString::number( band_loading_mode ) );
             xml.writeAttribute( "bandloadstart", QString::number( band_loading_start ) );
             xml.writeAttribute( "bandloadtime",  QString::number( band_loading_duration ) );
             xml.writeAttribute( "bandloadfrac",  QString::number( band_loading_fraction ) );
+            xml.writeAttribute( "bandloaddil",   QString::number( band_loading_dilution ) );
          }
       }
 
@@ -1856,7 +1863,8 @@ void US_SimulationParameters::debug( void )
    qDebug() << "Band Forming    :" << band_forming;
    qDebug() << "Band Volume     :" << band_volume;
    qDebug() << "Band Load Mode  :" << band_loading_mode
-            << band_loading_start << band_loading_duration << band_loading_fraction;
+            << band_loading_start << band_loading_duration << band_loading_fraction
+            << band_loading_dilution;
    qDebug() << "Rotor Calibr.ID :" << rotorCalID;
    qDebug() << "Rotor Coeffs    :" << rotorcoeffs[ 0 ] << rotorcoeffs[ 1 ];
    qDebug() << "CP Sector       :" << cp_sector;

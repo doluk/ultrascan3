@@ -86,6 +86,8 @@ class US_UTIL_EXTERN US_Math_BF final : public QObject {
             double loading_start;     //!< Time (s) at which the lamella starts to enter the sector
             double loading_duration;  //!< Loading time (s) for mode 1 and 2, time constant (s) for mode 3
             double loading_fraction;  //!< Fraction (0,1] of the overlay volume that enters the sector
+            double loading_dilution;  //!< Dilution factor (>=1) of the overlay on entry into the sector
+            double entry_thickness;   //!< Thickness (cm) of the layer holding the diluted overlay
             double cp_pathlen;        //!< Pathlength of centerpiece in cm
             double cp_angle;          //!< Angle of centerpiece sector
             QList<US_CosedComponent> cosed_component; //!< Cosedimenting components
@@ -130,12 +132,19 @@ class US_UTIL_EXTERN US_Math_BF final : public QObject {
             //! Mode 1: loaded fraction F = sqrt((t-start)/duration), equivalent to a source of constant
             //! concentration at the meniscus. Mode 2: F = (t-start)/duration, constant flux.
             //! Mode 3: F = 1 - exp(-(t-start)/duration), first-order draining of the reservoir.
-            //! In all modes F is multiplied by fraction (partial overlay).
+            //! In all modes F is multiplied by fraction (partial overlay). Each loaded increment enters as a
+            //! layer at the meniscus that holds the overlay diluted dilution-fold (thickness of the layer of
+            //! dilution * overlay_volume, concentration / dilution).
             //! \param mode     The loading mode (0, 1, 2, 3)
             //! \param start    The time in seconds at which loading starts
             //! \param duration The loading duration (mode 1, 2) or time constant (mode 3) in seconds
             //! \param fraction The fraction (0,1] of the overlay volume that enters the sector
-            void set_loading( int mode, double start, double duration, double fraction = 1.0 );
+            //! \param dilution The dilution factor (>=1) of the overlay on entry into the sector
+            void set_loading( int mode, double start, double duration, double fraction = 1.0,
+                              double dilution = 1.0 );
+
+            //! \brief Calculate the expansion coefficients of the overlay layer for the current eigenvalues
+            void calc_pre_calc_betas( );
 
             //! \brief Fraction of the lamella that has entered the sector at time t
             //! \param t The double value representing the point of time
@@ -165,6 +174,7 @@ class US_UTIL_EXTERN US_Math_BF final : public QObject {
             //! \param n_loading_start The start of lamella loading in seconds
             //! \param n_loading_duration The duration of lamella loading in seconds
             //! \param n_loading_fraction The fraction of the overlay volume entering the sector
+            //! \param n_loading_dilution The dilution factor of the overlay on entry
             //! \return A boolean if the band forming gradient is suitable
             bool is_suitable(double n_meniscus,
                              double n_bottom,
@@ -176,7 +186,8 @@ class US_UTIL_EXTERN US_Math_BF final : public QObject {
                              int n_loading_mode = 0,
                              double n_loading_start = 0.0,
                              double n_loading_duration = 0.0,
-                             double n_loading_fraction = 1.0);
+                             double n_loading_fraction = 1.0,
+                             double n_loading_dilution = 1.0);
 
             QString readGradientDataFromDB(const QString& load_key, QString &dir, IUS_DB2 *db) const;
 

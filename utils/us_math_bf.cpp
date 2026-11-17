@@ -33,6 +33,8 @@ US_Math_BF::Band_Forming_Gradient::Band_Forming_Gradient(const double m, const d
    loading_start = 0.0;
    loading_duration = 0.0;
    loading_fraction = 1.0;
+   loading_dilution = 1.0;
+   entry_thickness = overlay_thickness;
    total_volume = M_PI * cp_pathlen * cp_angle / 360 * (sq(bottom) - sq(meniscus));
    lower_volume = M_PI * cp_pathlen * cp_angle / 360 * (sq(bottom) - sq(meniscus + overlay_thickness));
    Nx = 0;
@@ -166,6 +168,8 @@ US_Math_BF::Band_Forming_Gradient::Band_Forming_Gradient( const US_Math_BF::Band
    loading_start = bfg.loading_start;
    loading_duration = bfg.loading_duration;
    loading_fraction = bfg.loading_fraction;
+   loading_dilution = bfg.loading_dilution;
+   entry_thickness = bfg.entry_thickness;
    cp_pathlen = bfg.cp_pathlen;
    cp_angle = bfg.cp_angle;
    cosed_component = bfg.cosed_component;
@@ -215,8 +219,10 @@ US_Math_BF::Band_Forming_Gradient::Band_Forming_Gradient(const US_SimulationPara
    loading_start = 0.0;
    loading_duration = 0.0;
    loading_fraction = 1.0;
+   loading_dilution = 1.0;
+   entry_thickness = overlay_thickness;
    set_loading(sim_params.band_loading_mode, sim_params.band_loading_start, sim_params.band_loading_duration,
-               sim_params.band_loading_fraction);
+               sim_params.band_loading_fraction, sim_params.band_loading_dilution);
    total_volume = M_PI * cp_pathlen * cp_angle / 360 * (sq(bottom) - sq(meniscus));
    lower_volume = M_PI * cp_pathlen * cp_angle / 360 * (sq(bottom) - sq(meniscus + overlay_thickness));
    Nx = 0;
@@ -352,7 +358,7 @@ US_Math_BF::Band_Forming_Gradient::Band_Forming_Gradient(const US_SimulationPara
    // The file key does not encode the lamella loading model; stored gradients are
    // only valid for the instantaneous overlay
    if (dens.pointCount() == 0 || visc.pointCount() == 0 || conc.pointCount() == 0 || loading_mode != 0 ||
-       loading_fraction != 1.0){
+       loading_fraction != 1.0 || loading_dilution != 1.0){
       is_empty = true;
    }
    else{
@@ -470,19 +476,25 @@ bool US_Math_BF::Band_Forming_Gradient::get_eigenvalues( ) {
    US_Math_BF::Secant_Solver secantSolver( 0.01, 5000, func, 0.01, GSL_DBL_EPSILON, 20 );
    const bool return_value = secantSolver.solve_wrapper();
    eigenvalues = secantSolver.solutions;
+   calc_pre_calc_betas();
+   return return_value;
+}
+
+void US_Math_BF::Band_Forming_Gradient::calc_pre_calc_betas( ) {
+   // Expansion coefficients of the initial overlay layer: the overlay enters as a layer of thickness
+   // entry_thickness (overlay volume diluted loading_dilution-fold), its concentration is reduced by the
+   // same factor, so the amount of the overlaying components is conserved
+   const double outer = meniscus + entry_thickness;
+   pre_calc_betas.clear();
    for (double beta: eigenvalues){
       pre_calc_betas.append(1 / beta * ((-meniscus * bessel("J1", (meniscus * beta)) +
-                                           (meniscus + overlay_thickness) *
-                                           bessel("J1",(beta * (meniscus + overlay_thickness)))) *
+                                           outer * bessel("J1",(beta * outer))) *
                                           bessel("Y1",(bottom * beta)) +
                                           bessel("J1",(bottom * beta)) *
                                           (meniscus * bessel("Y1",(meniscus * beta)) -
-                                          (meniscus + overlay_thickness) *
-                                          bessel("Y1",(beta * (meniscus + overlay_thickness)))))
-                                          * norm(beta));
-      //pre_calc_betas.append((sq(bottom)-sq(meniscus))/2 * eigenfunction(beta, meniscus)* norm(beta));
+                                           outer * bessel("Y1",(beta * outer))))
+                                          * norm(beta) / loading_dilution);
    }
-   return return_value;
 }
 
 double US_Math_BF::Band_Forming_Gradient::norm(const double &beta) {
@@ -552,11 +564,11 @@ double US_Math_BF::Band_Forming_Gradient::calc_comp_conc(const double &x, const 
              loaded_fraction(t) * (eq_conc - cosed_comp.concentration_offset) + decay * cosed_conc;
    }
    if (t < 1){
-      if (x > meniscus+overlay_thickness){
+      if (x > meniscus+entry_thickness){
          return cosed_comp.concentration_offset;
       }
       else{
-         return loading_fraction * cosed_conc + cosed_comp.concentration_offset;
+         return loading_fraction * cosed_conc / loading_dilution + cosed_comp.concentration_offset;
       }
    }
    else {
@@ -581,23 +593,34 @@ double US_Math_BF::Band_Forming_Gradient::calc_comp_conc(const double &x, const 
 }
 
 void US_Math_BF::Band_Forming_Gradient::set_loading( const int mode, const double start, const double duration,
-                                                     const double fraction ) {
+                                                     const double fraction, const double dilution ) {
    const int    n_mode     = ( mode >= 1 && mode <= 3 ) ? mode : 0;
    const double n_start    = ( n_mode == 0 ) ? 0.0 : qMax( start, 0.0 );
    const double n_duration = ( n_mode == 0 ) ? 0.0 : qMax( duration, 0.0 );
    // a fraction outside (0,1] is treated as unset -> complete overlay
    const double n_fraction = ( fraction > 0.0 && fraction <= 1.0 ) ? fraction : 1.0;
+   // the overlay can only be diluted on entry -> dilution >= 1
+   const double n_dilution = ( dilution >= 1.0 ) ? dilution : 1.0;
    if ( n_mode != loading_mode || n_start != loading_start || n_duration != loading_duration ||
-        n_fraction != loading_fraction ) {
+        n_fraction != loading_fraction || n_dilution != loading_dilution ) {
       // cached gradient values belong to the previous loading model
       value_cache.clear();
+   }
+   if ( n_dilution != loading_dilution || entry_thickness <= 0.0 ) {
+      loading_dilution = n_dilution;
+      // thickness of the sector layer holding the diluted overlay volume, limited to the cell
+      const double base = sq(meniscus) + overlay_volume * loading_dilution * 360.0 / (cp_angle * cp_pathlen * M_PI);
+      entry_thickness = qMin( sqrt(base) - meniscus, bottom - meniscus );
+      if ( !eigenvalues.isEmpty() ) {
+         calc_pre_calc_betas();
+      }
    }
    loading_mode     = n_mode;
    loading_start    = n_start;
    loading_duration = n_duration;
    loading_fraction = n_fraction;
-   DbgLv(1) << "BFG: loading mode start duration fraction" << loading_mode << loading_start << loading_duration
-            << loading_fraction;
+   DbgLv(1) << "BFG: loading mode start duration fraction dilution thickness" << loading_mode << loading_start
+            << loading_duration << loading_fraction << loading_dilution << entry_thickness;
 }
 
 double US_Math_BF::Band_Forming_Gradient::loaded_fraction( const double &t ) const {
@@ -875,7 +898,7 @@ US_Math_BF::Band_Forming_Gradient::calculate_gradient(
 
    simparms = std::move(sim_params);
    set_loading(simparms.band_loading_mode, simparms.band_loading_start, simparms.band_loading_duration,
-               simparms.band_loading_fraction);
+               simparms.band_loading_fraction, simparms.band_loading_dilution);
    int bfg_idx = 1;
    QVector<double> x_values;
    // Limit the radial_resolution to 0.001
@@ -1242,6 +1265,8 @@ US_Math_BF::Band_Forming_Gradient::Band_Forming_Gradient() {
    loading_start = 0.0;
    loading_duration = 0.0;
    loading_fraction = 1.0;
+   loading_dilution = 1.0;
+   entry_thickness = overlay_thickness;
    cp_pathlen = 0.0;
    cp_angle = 0.0;
    cosed_component.clear();
@@ -1274,6 +1299,7 @@ bool US_Math_BF::Band_Forming_Gradient::operator==(const US_Math_BF::Band_Formin
        abs(loading_start - bfg.loading_start) > GSL_ROOT5_DBL_EPSILON ||
        abs(loading_duration - bfg.loading_duration) > GSL_ROOT5_DBL_EPSILON ||
        abs(loading_fraction - bfg.loading_fraction) > GSL_ROOT5_DBL_EPSILON ||
+       abs(loading_dilution - bfg.loading_dilution) > GSL_ROOT5_DBL_EPSILON ||
        abs( cp_pathlen - bfg.cp_pathlen) > GSL_ROOT5_DBL_EPSILON ||
        abs( cp_angle - bfg.cp_angle) > GSL_ROOT5_DBL_EPSILON ||
        simparms.radial_resolution != bfg.simparms.radial_resolution ||
@@ -1447,7 +1473,8 @@ bool US_Math_BF::Band_Forming_Gradient::is_suitable( const double n_meniscus, co
                                                      const int n_loading_mode,
                                                      const double n_loading_start,
                                                      const double n_loading_duration,
-                                                     const double n_loading_fraction ) {
+                                                     const double n_loading_fraction,
+                                                     const double n_loading_dilution ) {
    if ( is_empty ) {
       return false;
    }
@@ -1459,6 +1486,7 @@ bool US_Math_BF::Band_Forming_Gradient::is_suitable( const double n_meniscus, co
         cosed_component != n_cosed_component || dens_bfg_data.scanData.last().seconds >= n_maxTime ||
         loading_mode != n_loading_mode ||
         QString::number(loading_fraction, 'f', 4) != QString::number(n_loading_fraction, 'f', 4) ||
+        QString::number(loading_dilution, 'f', 4) != QString::number(qMax(n_loading_dilution, 1.0), 'f', 4) ||
         ( loading_mode != 0 &&
           ( QString::number(loading_start, 'f', 2) != QString::number(n_loading_start, 'f', 2) ||
             QString::number(loading_duration, 'f', 2) != QString::number(n_loading_duration, 'f', 2) ) ) ) {
