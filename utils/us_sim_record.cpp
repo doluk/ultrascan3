@@ -1,8 +1,11 @@
 //! \file us_sim_record.cpp
 
 #include "us_sim_record.h"
+
 #include "us_settings.h"
 #include "us_util.h"
+#include <QSaveFile>
+#include <QXmlStreamWriter>
 
 #include <QUuid>
 
@@ -120,6 +123,21 @@ US_Solution US_SimRecord::solution( const QList<US_Model>& models, const QList<d
    }
 
    desc += " | " + buffer.description;
+
+   // A description over the LIMS limit cannot be stored, so name the solute
+   // count instead of every solute, and cut anything still too long.
+   const int limit = US_Solution::descriptionLimit;
+   if ( desc.toUcs4().size() > limit )
+   {
+      const int count = first.components.size();
+      desc            = QString( "%1 %2 | %3" ).arg( count ).arg( count == 1 ? "solute" : "solutes" ).arg( buffer.description );
+   }
+   if ( desc.toUcs4().size() > limit )
+   {
+      const auto characters = desc.toUcs4();
+      desc                  = QString::fromUcs4( reinterpret_cast<const char32_t*>( characters.constData() ), limit );
+   }
+
    solution.solutionDesc = desc;
 
    return solution;
@@ -140,4 +158,44 @@ double US_SimRecord::maxOD( US_DataIO::RawData& data )
    }
 
    return maxc;
+}
+
+bool US_SimRecord::writeRangeEdit( const QString& path, const US_DataIO::EditValues& ev )
+{
+   QSaveFile file( path );
+   if ( !file.open( QIODevice::WriteOnly | QIODevice::Text ) )
+   {
+      return false;
+   }
+   QXmlStreamWriter xml( &file );
+   xml.setAutoFormatting( true );
+   xml.writeStartDocument();
+   xml.writeDTD( "<!DOCTYPE UltraScanEdits>" );
+   xml.writeStartElement( "experiment" );
+   xml.writeAttribute( "type", ev.expType.isEmpty() ? QString( "Velocity" ) : ev.expType );
+   xml.writeStartElement( "identification" );
+   xml.writeStartElement( "runid" );
+   xml.writeAttribute( "value", ev.runID );
+   xml.writeEndElement();
+   xml.writeStartElement( "editGUID" );
+   xml.writeAttribute( "value", ev.editGUID );
+   xml.writeEndElement();
+   xml.writeStartElement( "rawDataGUID" );
+   xml.writeAttribute( "value", ev.dataGUID );
+   xml.writeEndElement();
+   xml.writeEndElement(); // identification
+   xml.writeStartElement( "run" );
+   xml.writeAttribute( "cell", ev.cell );
+   xml.writeAttribute( "channel", ev.channel );
+   xml.writeAttribute( "wavelength", ev.wavelength );
+   xml.writeStartElement( "parameters" );
+   xml.writeStartElement( "data_range" );
+   xml.writeAttribute( "left", QString::number( ev.rangeLeft, 'f', 8 ) );
+   xml.writeAttribute( "right", QString::number( ev.rangeRight, 'f', 8 ) );
+   xml.writeEndElement(); // data_range
+   xml.writeEndElement(); // parameters
+   xml.writeEndElement(); // run
+   xml.writeEndElement(); // experiment
+   xml.writeEndDocument();
+   return file.commit();
 }

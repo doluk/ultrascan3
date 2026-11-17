@@ -211,6 +211,7 @@ bool US_AbstractCenterpiece::read_centerpieces( IUS_DB2* db,
       }
 
       std::sort( cpids.begin(), cpids.end() );
+      bool info_ok = true;
 
       for (int ii : cpids)
       {
@@ -219,7 +220,13 @@ bool US_AbstractCenterpiece::read_centerpieces( IUS_DB2* db,
          query.clear();
          query << "get_abstractCenterpiece_info" << cpid;
          db->query( query );
-         db->next();
+
+         if ( db->lastErrno() != IUS_DB2::OK || !db->next() )
+         {
+            qDebug() << "*ERROR* Unable to get info for centerpiece ID" << cpid;
+            info_ok = false;
+            break;
+         }
 
          cp.guid          = db->value( 0 ).toString();
          cp.name          = db->value( 1 ).toString();
@@ -267,12 +274,15 @@ bool US_AbstractCenterpiece::read_centerpieces( IUS_DB2* db,
          centerpieces << cp;       // Add centerpiece entry
       }
 
-      got_cp  = true;
+      // An incomplete DB list would silently drop centerpieces, so use the local file instead.
+      got_cp = info_ok;
       break;
    }
 
    if ( ! got_cp )
    {  // Get centerpiece information from local (if db==NULL or db failed)
+      centerpieces.clear();
+      cp = US_AbstractCenterpiece();
       QFile   cp_file( US_Settings::appBaseDir() + "/etc/abstractCenterpieces.xml" );
 
       if ( ! cp_file.open( QIODevice::ReadOnly | QIODevice::Text ) )

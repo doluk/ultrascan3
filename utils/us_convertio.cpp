@@ -328,6 +328,211 @@ int US_ConvertIO::uploadEditedDataBlob( IUS_DB2* db, int editedDataID, const QSt
    return IUS_DB2::OK;
 }
 
+int US_ConvertIO::downloadEditedDataBlob( IUS_DB2* db, int editedDataID, const QString& filename, QString& error )
+{
+   error.clear();
+
+   if ( !IUS_DB2::requireConnected( db, "edited data download", error ) )
+   {
+      return IUS_DB2::NOT_CONNECTED;
+   }
+
+   if ( editedDataID < 1 || filename.isEmpty() )
+   {
+      error = QString( "Cannot download edited data: record ID and destination "
+                       "path are required" );
+      return EDITED_DATA_INVALID_REQUEST;
+   }
+
+   const int status = db->readBlobFromDB( filename, "download_editData", editedDataID );
+
+   if ( status != IUS_DB2::OK )
+   {
+      error = QString( "Could not download editedData record %1 to %2: "
+                       "%3 (status %4)" )
+                 .arg( editedDataID )
+                 .arg( filename, db->lastError() )
+                 .arg( status );
+      return status;
+   }
+
+   return IUS_DB2::OK;
+}
+
+int US_ConvertIO::downloadRawDataBlob( IUS_DB2* db, int rawDataID, const QString& filename, QString& error )
+{
+   error.clear();
+
+   if ( !IUS_DB2::requireConnected( db, "raw data download", error ) )
+   {
+      return IUS_DB2::NOT_CONNECTED;
+   }
+
+   if ( rawDataID < 1 || filename.isEmpty() )
+   {
+      error = QString( "Cannot download raw data: record ID and destination "
+                       "path are required" );
+      return EDITED_DATA_INVALID_REQUEST;
+   }
+
+   const int status = db->readBlobFromDB( filename, "download_aucData", rawDataID );
+
+   if ( status != IUS_DB2::OK )
+   {
+      error = QString( "Could not download rawData record %1 to %2: "
+                       "%3 (status %4)" )
+                 .arg( rawDataID )
+                 .arg( filename, db->lastError() )
+                 .arg( status );
+      return status;
+   }
+
+   return IUS_DB2::OK;
+}
+
+int US_ConvertIO::readEditedDataFromDB( IUS_DB2*                        db,
+                                        const EditedDataReadRequest&    request,
+                                        QVector<US_DataIO::EditedData>& editedData,
+                                        QVector<US_DataIO::RawData>&    rawData,
+                                        QString&                        error )
+{
+   editedData.clear();
+   rawData.clear();
+   error.clear();
+
+   const QString loadFilename = request.loadFilename.isEmpty() ? request.editFilename : request.loadFilename;
+   const auto    isBasename   = []( const QString& filename )
+   {
+      return !filename.isEmpty() && filename != "." && filename != ".." && !filename.contains( "/" ) &&
+             !filename.contains( "\\" ) && QFileInfo( filename ).fileName() == filename;
+   };
+
+   if ( request.directory.trimmed().isEmpty() || !isBasename( request.editFilename ) || !isBasename( loadFilename ) )
+   {
+      error = QString( "Cannot read edited data: a destination directory and "
+                       "valid edit basenames are required" );
+      return EDITED_DATA_INVALID_REQUEST;
+   }
+
+   QString rawFilename = request.rawFilename;
+
+   if ( rawFilename.isEmpty() )
+   {
+      rawFilename = US_DataIO::rawFilenameForEdit( loadFilename );
+   }
+
+   if ( !isBasename( rawFilename ) )
+   {
+      error = QString( "Cannot determine a valid raw-data filename from %1" ).arg( loadFilename );
+      return EDITED_DATA_INVALID_REQUEST;
+   }
+
+   if ( request.downloadEdit && request.editedDataID < 1 )
+   {
+      error = QString( "Cannot download %1 without a valid editedData ID" ).arg( request.editFilename );
+      return EDITED_DATA_INVALID_REQUEST;
+   }
+
+   if ( request.downloadRaw && request.rawDataID < 1 )
+   {
+      error = QString( "Cannot download %1 without a valid rawData ID" ).arg( rawFilename );
+      return EDITED_DATA_INVALID_REQUEST;
+   }
+
+   QDir directory( request.directory );
+
+   if ( !directory.exists() && !QDir().mkpath( request.directory ) )
+   {
+      error = QString( "Could not create edited-data directory %1" ).arg( request.directory );
+      return EDITED_DATA_DIRECTORY_ERROR;
+   }
+
+   const QString editPath = directory.filePath( request.editFilename );
+   const QString rawPath  = directory.filePath( rawFilename );
+   int           status   = IUS_DB2::OK;
+
+   if ( request.downloadEdit )
+   {
+      status = downloadEditedDataBlob( db, request.editedDataID, editPath, error );
+      if ( status != IUS_DB2::OK )
+      {
+         return status;
+      }
+   }
+   else if ( !QFileInfo( editPath ).isFile() )
+   {
+      error = QString( "Cached edit file does not exist: %1" ).arg( editPath );
+      return EDITED_DATA_FILE_MISSING;
+   }
+
+   if ( request.downloadRaw )
+   {
+      status = downloadRawDataBlob( db, request.rawDataID, rawPath, error );
+      if ( status != IUS_DB2::OK )
+      {
+         return status;
+      }
+   }
+   else if ( !QFileInfo( rawPath ).isFile() )
+   {
+      error = QString( "Cached raw-data file does not exist: %1" ).arg( rawPath );
+      return EDITED_DATA_FILE_MISSING;
+   }
+
+   // A successful blob status is not useful if an implementation failed to
+   // materialize the destination.  Check both before asking US_DataIO to open
+   // them so the error identifies the failed stage.
+   if ( !QFileInfo( editPath ).isFile() || !QFileInfo( rawPath ).isFile() )
+   {
+      error = QString( "The edited-data download did not create both %1 and %2" ).arg( editPath, rawPath );
+      return EDITED_DATA_FILE_MISSING;
+   }
+
+   QVector<US_DataIO::EditedData> loadedEdits;
+   QVector<US_DataIO::RawData>    loadedRaw;
+
+   try
+   {
+      status = US_DataIO::loadData( directory.absolutePath(), loadFilename, loadedEdits, loadedRaw );
+   }
+   catch ( const US_DataIO::ioError& dataError )
+   {
+      error = QString( "Could not decode edited data %1: %2 (status %3)" )
+                 .arg( loadFilename, US_DataIO::errorString( dataError ) )
+                 .arg( (int) dataError );
+      return EDITED_DATA_DECODE_ERROR;
+   }
+   catch ( int dataError )
+   {
+      error = QString( "Could not decode edited data %1: %2 (status %3)" )
+                 .arg( loadFilename, US_DataIO::errorString( dataError ) )
+                 .arg( dataError );
+      return EDITED_DATA_DECODE_ERROR;
+   }
+
+   if ( status != US_DataIO::OK )
+   {
+      error = QString( "Could not decode edited data %1: %2 (status %3)" )
+                 .arg( loadFilename, US_DataIO::errorString( status ) )
+                 .arg( status );
+      return EDITED_DATA_DECODE_ERROR;
+   }
+
+   if ( loadedEdits.size() != 1 || loadedRaw.size() != 1 )
+   {
+      error = QString( "Loading %1 produced %2 edit datasets and %3 raw "
+                       "datasets; exactly one of each was expected" )
+                 .arg( loadFilename )
+                 .arg( loadedEdits.size() )
+                 .arg( loadedRaw.size() );
+      return EDITED_DATA_SHAPE_ERROR;
+   }
+
+   editedData = loadedEdits;
+   rawData    = loadedRaw;
+   return IUS_DB2::OK;
+}
+
 QString US_ConvertIO::writeRawDataToDB( US_Experiment&                 ExpData,
                                         QList<US_Convert::TripleInfo>& triples,
                                         const QString&                 dir,
@@ -616,28 +821,46 @@ else
    if ( readStatus == US_DB2::NO_EXPERIMENT )
       return( "The current run ID is not found in the database." );
 
-   else if ( readStatus == US_DB2::DBERROR )
-      ; // Didn't find any RI Profile data
-
    else if ( readStatus != US_DB2::OK )
-      return( db->lastError() );
+   {
+      const QString error = db->lastError();
+      return error.isEmpty() ? QObject::tr( "Could not read experiment from database." ) : error;
+   }
 
-   // Erase auc files in the local directory,
-   //  in case the user has messed with it locally
-qDebug() << "rDBE: remove local auc files";
-   QDir d( dir );
-   QStringList nameFilters = QStringList( "*.auc" );
-   QStringList files = d.entryList( nameFilters,
-                                    QDir::NoDotAndDotDot | QDir::Files );
-   foreach ( QString file, files )
-      if ( ! d.remove( file ) )
-         qDebug() << "Unable to remove file " << file;
-   
-   // Now read the auc data
-qDebug() << "rDBE: call readRawDataFromDB";
+   // Now read the auc data. readRawDataFromDB downloads into the results
+   // folder and sets dir to it.
+   const QString callerDir = dir;
+   qDebug() << "rDBE: call readRawDataFromDB";
    QString status = readRawDataFromDB( ExpData, triples, dir, db );
    if ( status != QString( "" ) )
       return status;
+
+   // Only discard stale AUC files after selection and the raw-data read succeed.
+   // Retain the downloaded files; a failed DB read must not erase local data.
+   // Clean both the caller's folder and the results folder, so a caller that
+   // copies the results folder into its own gets only the database's files.
+   QStringList downloaded;
+   for ( const auto& triple : triples )
+   {
+      downloaded << triple.tripleFilename;
+   }
+   QStringList cleanDirs{ QDir::cleanPath( dir ) };
+   if ( !callerDir.isEmpty() && !cleanDirs.contains( QDir::cleanPath( callerDir ) ) )
+   {
+      cleanDirs << QDir::cleanPath( callerDir );
+   }
+   for ( const QString& cleanDir : cleanDirs )
+   {
+      QDir              local( cleanDir );
+      const QStringList files = local.entryList( { "*.auc" }, QDir::Files );
+      for ( const QString& file : files )
+      {
+         if ( !downloaded.contains( file ) && !local.remove( file ) )
+         {
+            qDebug() << "Unable to remove stale file " << local.filePath( file );
+         }
+      }
+   }
 
    // Verify that the solution and project files are on disk too
 qDebug() << "rDBE: call ExpData.project.saveToDisk";
@@ -715,12 +938,12 @@ qDebug() << "rDBE:  HAVE tmst Loc: cksumf" << cksumf;
 qDebug() << "rDBE:  needTmst" << needTmst;
       if ( needTmst )
       {  // Download the .tmst file
-         US_TimeState::dbDownload( db, tmstID, tfpath );
-         // And write the xdefs sibling file
+         const bool tmstOK = ( US_TimeState::dbDownload( db, tmstID, tfpath ) == IUS_DB2::OK );
+         // And write the xdefs sibling file, only next to a downloaded .tmst
          QString xfpath = QString( tfpath ).replace( ".tmst", ".xml" );
-qDebug() << "rDBE:   xfpath" << xfpath;
+         qDebug() << "rDBE:   xfpath" << xfpath << "downloaded" << tmstOK;
          QFile fileo( xfpath );
-         if ( fileo.open( QIODevice::WriteOnly | QIODevice::Text ) )
+         if ( tmstOK && fileo.open( QIODevice::WriteOnly | QIODevice::Text ) )
          {
             QTextStream tso( &fileo );
             tso << xdefs;
@@ -746,6 +969,16 @@ qDebug() << " rRDD: build raw list";
    QStringList q( "get_rawDataIDs" );
    q  << QString::number( ExpData.expID );
    db->query( q );
+   const int queryStatus = db->lastErrno();
+   if ( queryStatus != IUS_DB2::OK && queryStatus != IUS_DB2::NOROWS )
+   {
+      const QString error = db->lastError();
+      return error.isEmpty() ? QObject::tr( "Could not read raw data list from database." ) : error;
+   }
+   if ( queryStatus == IUS_DB2::NOROWS )
+   {
+      return QObject::tr( "There were no auc files found in the database." );
+   }
 
    QStringList rawDataIDs;
    QStringList filenames;
@@ -754,6 +987,13 @@ qDebug() << " rRDD: build raw list";
    {
       rawDataIDs << db->value( 0 ).toString();
       filenames  << db->value( 2 ).toString();
+   }
+
+   const int rowStatus = db->lastErrno();
+   if ( rowStatus != IUS_DB2::OK && rowStatus != IUS_DB2::NOROWS )
+   {
+      const QString error = db->lastError();
+      return error.isEmpty() ? QObject::tr( "Could not read raw data list from database." ) : error;
    }
 
    if ( rawDataIDs.size() < 1 )
@@ -855,6 +1095,11 @@ qDebug() << " rRDD: build TripleInfo";
 
          }
 
+         if ( !found && cells.isEmpty() )
+         {
+            return QObject::tr( "No centerpiece information found for raw data." );
+         }
+
          if ( ! found )
          {
             // if we're here, then it's old data and needs to find the centerpiece
@@ -892,7 +1137,16 @@ qDebug() << " rRDD: build TripleInfo";
          error += "Error processing file: " + filenames[ i ] + "\n" +
                   db->lastError() + "\n";
    }
-      
+
+   if ( !error.isEmpty() )
+   {
+      return error;
+   }
+   if ( triples.isEmpty() )
+   {
+      return QObject::tr( "No raw data records could be read from the database." );
+   }
+
    // Get runType
    QStringList part = triples[ 0 ].tripleFilename.split( "." );
    ExpData.opticalSystem = part[ 1 ].toUtf8();

@@ -48,6 +48,10 @@ class US_UTIL_EXTERN US_SimRecord
           in their descriptions.
           \param models      Models in wavelength order.
           \param wavelengths One wavelength per model.
+          The description is the component names and the buffer
+          description, "names | buffer".  When that is longer than
+          US_Solution::descriptionLimit it becomes "N solutes | buffer", cut
+          to the limit if still too long.
           \param buffer      Simulation buffer.
           \returns           A solution, or an empty solution for empty or
                              unequal-length inputs.
@@ -66,6 +70,17 @@ class US_UTIL_EXTERN US_SimRecord
           \returns    The maximum, or zero for an empty dataset.
       */
       static double        maxOD( US_DataIO::RawData& data );
+
+      /*! \brief Write an edit file that sets only a data range.
+          A wavelength scan has no meniscus, bottom, plateau or baseline, so
+          its edit carries the one generic parameter, data_range, in the
+          scan's own units. US_DataIO::readEdits treats the others as optional.
+          \param path Edit file to write.
+          \param ev   Identity (run ID, GUIDs, cell, channel, wavelength) and
+                      rangeLeft/rangeRight; other values are ignored.
+          \returns    True when the file was written.
+      */
+      static bool          writeRangeEdit( const QString& path, const US_DataIO::EditValues& ev );
 };
 
 #endif
