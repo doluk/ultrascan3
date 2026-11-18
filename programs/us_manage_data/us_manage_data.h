@@ -96,6 +96,9 @@ class US_ManageData : public US_Widgets
         //! \brief Tell the user what went wrong in the last scan
         void report_scan_errors( void );
 
+        //! \brief Tell the user which runs have a problem, and why
+        void report_run_problems( void );
+
         //! \brief Tell the user about records that share a GUID
         void review_duplicates( void );
 

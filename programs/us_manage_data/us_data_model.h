@@ -13,6 +13,8 @@
 #include "us_data_catalog.h"
 #include "us_disk_scan.h"
 
+#include <functional>
+
 #ifndef DbgLv
 #define DbgLv(a) if(dbg_level>=a)qDebug()  //!< debug-level-conditioned qDebug()
 #endif
@@ -115,6 +117,13 @@ class US_DataModel : public QObject
                 //! that attach to no experiment's chain
                 bool      orphans;
 
+                //! What is wrong with the run, when either source says it
+                //! should not be acted on as it is (US_DataCatalog::Run::
+                //! problem): a run ID UltraScan no longer accepts -- dotted
+                //! run IDs are legacy -- a directory not named after its
+                //! run, or a run ID two directories claim.  Empty when fine.
+                QString   problem;
+
                 //! \brief True when both sources hold this experiment
                 bool      inBoth( void ) const;
         };
@@ -131,7 +140,7 @@ class US_DataModel : public QObject
 
         //! \brief Set the database connection
         //! \param db Database connection pointer
-        void setDatabase( US_DB2* db );
+        void setDatabase( IUS_DB2* db );
 
         //! \brief Set the progress bar and status label
         //! \param progress Progress bar of the work inside one experiment
@@ -197,7 +206,7 @@ class US_DataModel : public QObject
 
         //! \brief Get the database connection
         //! \return Database connection pointer
-        US_DB2* dbase( void );
+        IUS_DB2* dbase( void );
 
         //! \brief Get the progress bar
         //! \return Progress bar pointer
@@ -430,6 +439,10 @@ class US_DataModel : public QObject
         //! \brief Errors the last scan ran into
         QStringList scan_errors( void ) const;
 
+        //! \brief The experiments with a problem, one line each
+        //! \see RunEntry::problem
+        QStringList run_problems( void ) const;
+
         //! \brief True when the last scan could not list the database
         //!
         //! Every record then reads as local only, which is not true.
@@ -492,8 +505,12 @@ class US_DataModel : public QObject
         //! \brief A comparison was asked for while no scan was running
         void verifyRequested( void );
 
+        //! \brief The records of no experiment were put under a stand-in
+        //! \param index The position of the stand-in experiment
+        void orphansAdded( int index );
+
     private:
-        US_DB2*       db;               //!< Pointer to opened DB connection
+        IUS_DB2*      db;               //!< Pointer to opened DB connection
         US_DataCatalog* cat_db;         //!< Catalog of the database records
 
         //! Catalog of the local records.  It belongs to \ref scanner and
@@ -577,6 +594,43 @@ class US_DataModel : public QObject
 
         //! \brief Compare one experiment, without the queue check
         bool do_verify_run( int index );
+
+        //! \brief Compare the checksums both catalogs hold for one experiment
+        void apply_digests( int index );
+
+        //! \brief Start a disk worker job, after the one before it is done
+        //! \param job Starts the job; false when the worker was busy
+        bool start_disk( const std::function< bool() >& job );
+
+        //! \brief Put the records of no experiment under a stand-in
+        //! \returns The position of the stand-in, or -1 when there is none
+        int  collect_orphans( void );
+
+        //! \brief Turn a catalog's orphan records into tree records
+        void orphan_descs( US_DataCatalog* catalog, int state,
+                           QVector< DataDesc >& descs );
+
+        //! \brief One raw record and everything under it, as tree records
+        void append_raw( const US_DataCatalog::Raw& raw, const QString& runID,
+                         const QString& runGUID, const QString& runDbID,
+                         int state, QVector< DataDesc >& descs );
+
+        //! \brief One edit record and everything under it
+        void append_edit( const US_DataCatalog::Edit& edit,
+                          const QString& runID, const QString& rawGUID,
+                          const QString& rawDbID, int state,
+                          QVector< DataDesc >& descs );
+
+        //! \brief One model record and its noise
+        void append_model( const US_DataCatalog::Model& model,
+                           const QString& editGUID, const QString& editDbID,
+                           int state, QVector< DataDesc >& descs );
+
+        //! \brief One noise record
+        void append_noise( const US_DataCatalog::Noise& noise,
+                           const QString& modelGUID,
+                           const QString& modelDbID, int state,
+                           QVector< DataDesc >& descs );
 
         //! \brief Build the experiment record of one run entry
         //! \param entry The run entry to describe

@@ -167,6 +167,28 @@ void US_DataTree::add_run( int runIndex )
    if ( ! entry.loaded )
       item->setChildIndicatorPolicy( QTreeWidgetItem::ShowIndicator );
 
+   // A run that should not be acted on as it is says why
+   if ( ! entry.problem.isEmpty() )
+   {
+      QString tip = tr( "This run has a problem:\n%1\n\n"
+                        "Run IDs with dots in them are from older versions"
+                        " of UltraScan; new runs may use only letters,"
+                        " digits, '_' and '-'." ).arg( entry.problem );
+
+      for ( int jj = 0; jj < ntcols; jj++ )
+         item->setToolTip( jj, tip );
+
+      item->setText( 1, desc.label + " (!)" );
+   }
+
+   else if ( entry.orphans )
+   {
+      for ( int jj = 0; jj < ntcols; jj++ )
+         item->setToolTip( jj, tr( "Records whose experiment or parent"
+                                   " record is missing; the gray rows stand"
+                                   " in for the missing parents." ) );
+   }
+
    runitems << item;
 
    if ( entry.loaded )
@@ -500,7 +522,12 @@ void US_DataTree::dtree_help()
       tr( "              or one copy could not be read to compare it.\n")+
       tr( "  Gray   :  This record is a filler for a missing parent.\n" ) +
       tr( "              Records whose parent is missing are shown under\n" ) +
-      tr( "              such fillers, so they can still be removed.\n\n" ) +
+      tr( "              such fillers, under a last experiment row,\n" ) +
+      tr( "              \"(records of no experiment)\", so they can still\n" ) +
+      tr( "              be removed.  A run marked \"(!)\" has a problem;\n" ) +
+      tr( "              hold the mouse over it to see which.  Run IDs\n" ) +
+      tr( "              with dots are legacy: still shown, no longer\n" ) +
+      tr( "              accepted for new runs.\n\n" ) +
       tr( "Scan Progress --\n\n" ) +
       tr( "  The upper bar counts the steps of the phase that is running\n" ) +
       tr( "  (listing, reading, comparing); the lower bar the work inside\n" ) +

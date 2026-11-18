@@ -354,6 +354,8 @@ DbgLv(1) << "GUI setup complete";
             this,     &US_ManageData::runs_listed );
    connect( da_model, &US_DataModel::runMerged,
             this,     &US_ManageData::run_merged );
+   connect( da_model, &US_DataModel::orphansAdded, this, [ this ]( int index )
+            { da_tree->add_run( index ); reportDataStatus(); } );
    connect( da_model, &US_DataModel::runCompared,
             da_tree,  &US_DataTree::refresh_run );
 
@@ -618,6 +620,7 @@ DbgLv(1) << "ScnDM:  Scan Done      " << nowTime();
    set_controls_enabled( true );
 
    report_scan_errors();
+   report_run_problems();
    review_duplicates();
 DbgLv(1) << "ScnDM:  Scan All Done  " << nowTime();
 }
@@ -690,6 +693,27 @@ void US_ManageData::report_scan_errors()
       tr( "The scan ran into %1 error(s); the records concerned may be "
           "missing, or read as not yet compared:\n\n" )
       .arg( errors.size() ) + text );
+}
+
+// Say which runs should not be acted on as they are, and why
+void US_ManageData::report_run_problems()
+{
+   QStringList problems = da_model->run_problems();
+
+   if ( problems.isEmpty() )   return;
+
+   int     nshow = qMin( problems.size(), 12 );
+   QString text  = QStringList( problems.mid( 0, nshow ) ).join( "\n" );
+
+   if ( nshow < problems.size() )
+      text += tr( "\n... and %1 more" ).arg( problems.size() - nshow );
+
+   QMessageBox::information( this, tr( "Runs With Problems" ),
+      tr( "%1 run(s) are marked \"(!)\" in the tree; hold the mouse over "
+          "one to see why:\n\n" ).arg( problems.size() ) + text +
+      tr( "\n\nRun IDs with dots in them are from older versions of "
+          "UltraScan and are still shown; new runs may use only letters, "
+          "digits, '_' and '-'." ) );
 }
 
 /* Tell the user about records that share a GUID.

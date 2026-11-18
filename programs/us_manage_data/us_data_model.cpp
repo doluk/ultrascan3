@@ -58,7 +58,7 @@ US_DataModel::~US_DataModel()
 }
 
 // Set database related pointers
-void US_DataModel::setDatabase( US_DB2* a_db )
+void US_DataModel::setDatabase( IUS_DB2* a_db )
 {
    db         = a_db;      // pointer to opened db connection
 }
@@ -78,7 +78,7 @@ void US_DataModel::setSiblings( QObject* a_proc, QObject* a_tree )
 }
 
 // Get database pointer
-US_DB2* US_DataModel::dbase()
+IUS_DB2* US_DataModel::dbase()
 {
    return db;
 }
@@ -417,6 +417,12 @@ DbgLv(1) << "ScnD: bulk read" << bulk << nowTime();
    }
 DbgLv(1) << "ScnD: chain read   " << nowTime();
 
+   // What attaches to no experiment, under a stand-in experiment of its own
+   int orphx = collect_orphans();
+
+   if ( orphx >= 0 )
+      emit orphansAdded( orphx );
+
    // Third layer:  compare the experiments that are in both places
    int nver = queue_verifies();
    done     = 0;
@@ -677,7 +683,7 @@ void US_DataModel::scan_runs( )
    // The local store is walked on the worker thread while the database is
    // queried here, so the two passes overlap
    if ( scanner != NULL )
-      scanner->list();
+      start_disk( [ this ]() { return scanner->list(); } );
 
    // An experiment is the same experiment in both places when it has the
    // same run identifier.  Two database experiments may share a run
@@ -701,6 +707,8 @@ void US_DataModel::scan_runs( )
             entry.runID     = run.runID;
             entry.dbIndex   = ii;
             entry.dbCount   = run_record_count( run );
+            entry.problem   = run.usable ? QString()
+                            : tr( "database: %1" ).arg( run.problem );
             byRun.insert( run.runID, entries.size() );
             entries << entry;
          }
@@ -752,6 +760,15 @@ void US_DataModel::scan_runs( )
 
          entries[ match ].loIndex = ii;
          entries[ match ].loCount = run_record_count( run );
+
+         if ( ! run.usable )
+         {
+            QString lprob = tr( "local %1: %2" )
+                            .arg( QDir( run.dirPath ).dirName() )
+                            .arg( run.problem );
+            QString& prob = entries[ match ].problem;
+            prob = prob.isEmpty() ? lprob : prob + "; " + lprob;
+         }
       }
    }
 
@@ -996,14 +1013,18 @@ bool US_DataModel::scan_all( void )
    // Again the local store is walked on the worker thread while the
    // database is queried here
    if ( scanner != NULL )
-      scanner->readChain();
+      start_disk( [ this ]() { return scanner->readChain(); } );
 
    bool ok = true;
 
+   // An older server is read with the whole-store procedures it has, so a
+   // failure here is a real one; the scan then reads one experiment at a
+   // time, which may still get some of them
    if ( cat_db != NULL  &&  ! cat_db->loadAll( error ) )
    {
-      DbgLv(1) << "ScnA: db" << error;
-      ok = false;             // an older server: one experiment at a time
+      scan_error( tr( "The database records could not be read in one pass: "
+                      "%1" ).arg( error ) );
+      ok = false;
    }
 
    await_disk();
@@ -1101,6 +1122,13 @@ bool US_DataModel::do_merge_run( int index )
    runents[ index ] = entry;
 
    run_queue.removeAll( index );
+
+   // A read that came with checksums on both sides (a detail read, or an
+   // older server's whole-store read) has nothing left to compare later
+   if ( entry.inBoth()  &&  cat_db != NULL  &&  cat_lo != NULL  &&
+        cat_db->run( entry.dbIndex ).verified  &&
+        cat_lo->run( entry.loIndex ).verified )
+      apply_digests( index );
 
    if ( progress != NULL )
       progress->setValue( 1 );
@@ -1239,8 +1267,8 @@ bool US_DataModel::do_verify_run( int index )
 
    // The local files are hashed on the worker thread while the database
    // hashes its blobs, so the two halves of the comparison overlap
-   if ( entry.loIndex >= 0  &&  scanner != NULL )
-      scanner->verify( entry.loIndex );
+   bool loJob = ( entry.loIndex >= 0  &&  scanner != NULL  &&
+                  start_disk( [ & ]() { return scanner->verify( entry.loIndex ); } ) );
 
    if ( entry.dbIndex >= 0  &&  cat_db != NULL  &&
         ! cat_db->verifyRun( entry.dbIndex, error ) )
@@ -1252,15 +1280,30 @@ bool US_DataModel::do_verify_run( int index )
 
    await_disk();
 
-   if ( entry.loIndex >= 0  &&  scanner != NULL  &&  ! scanner->ok() )
+   if ( entry.loIndex >= 0  &&  ( ! loJob  ||  ! scanner->ok() ) )
    {
       loOk = false;
       scan_error( tr( "%1: the local copies could not be compared: %2" )
-                  .arg( entry.runID ).arg( scanner->error() ) );
+                  .arg( entry.runID )
+                  .arg( loJob ? scanner->error() : tr( "no local reader" ) ) );
    }
 
    if ( ! dbOk  ||  ! loOk )
       return false;                  // the rows stay unverified
+
+   apply_digests( index );
+
+   return true;
+}
+
+/* Compare the checksums both catalogs hold for one experiment.
+
+   A side without a checksum is a side that could not be read, and that is
+   not the same thing as the two being equal: the record is a conflict.
+*/
+void US_DataModel::apply_digests( int index )
+{
+   RunEntry entry = runents.at( index );
 
    QMap< QString, QString > dbDigests = run_digests( cat_db, entry.dbIndex );
    QMap< QString, QString > loDigests = run_digests( cat_lo, entry.loIndex );
@@ -1278,8 +1321,6 @@ bool US_DataModel::do_verify_run( int index )
       QString dbc = dbDigests.value( desc.dataGUID );
       QString loc = loDigests.value( desc.dataGUID );
 
-      // A side without a checksum is a side that could not be read, and
-      // that is not the same thing as the two being equal
       desc.contents  = ( dbc.isEmpty() ? QString( "- -" ) : dbc ) + " "
                      + ( loc.isEmpty() ? QString( "- -" ) : loc );
       desc.recState |= HV_DET;
@@ -1297,10 +1338,22 @@ bool US_DataModel::do_verify_run( int index )
    adescs[ entry.row ] = edesc;
 
    entry.verified   = true;
+   ver_queue.removeAll( index );
    runents[ index ] = entry;
-
-   return true;
 }
+
+// Start a job of the disk worker, waiting for the one before it to finish
+bool US_DataModel::start_disk( const std::function< bool() >& job )
+{
+   if ( scanner == NULL )   return false;
+
+   if ( job() )             return true;
+
+   await_disk();            // it was still busy with the last one
+
+   return job();
+}
+
 
 // The sync state of a record
 US_DataModel::SyncState US_DataModel::sync_state( const DataDesc& desc )
@@ -1453,7 +1506,6 @@ void US_DataModel::catalog_descs( US_DataCatalog* catalog, int index,
 {
    const US_DataCatalog::Run& run = catalog->run( index );
 
-   bool isDb = ( state == REC_DB );
    bool tfilt = ( ! filt_triple.isEmpty()  &&  filt_triple != "ALL" );
 
    for ( int ii = 0; ii < run.raws.size(); ii++ )
@@ -1462,119 +1514,231 @@ void US_DataModel::catalog_descs( US_DataCatalog* catalog, int index,
 
       if ( tfilt  &&  raw.triple != filt_triple )   continue;
 
-      DataDesc desc;
-      desc.recordID    = isDb ? raw.id.toInt() : -1;
-      desc.recType     = RAW;
-      desc.subType     = "";
-      desc.recState    = state;
-      desc.dataGUID    = raw.guid.simplified();
-      desc.parentGUID  = run.guid.simplified();
-      desc.parentID    = isDb ? run.id.toInt() : -1;
-      desc.filename    = isDb ? raw.filename : raw.path;
-      desc.contents    = raw.checksum.isEmpty() ? QString()
-                         : raw.checksum + " " + raw.size;
-      desc.label       = run.runID + "." + raw.triple;
-      desc.description = raw.description.isEmpty()
-                         ? raw.filename.section( ".", 0, -2 )
-                         : raw.description;
-      desc.filemodDate = isDb ? QString() : raw.lastUpdated;
-      desc.lastmodDate = isDb ? raw.lastUpdated : QString();
-
-      if ( desc.dataGUID.length() != 36  ||  desc.dataGUID == dmyGUID )
-         desc.dataGUID = US_Util::new_guid();
-
-      if ( desc.parentGUID.length() != 36 )
-         desc.parentGUID = dmyGUID;
-
-      descs << desc;
-
-      for ( int jj = 0; jj < raw.edits.size(); jj++ )
-      {
-         const US_DataCatalog::Edit& edit = raw.edits.at( jj );
-
-         DataDesc edesc;
-         edesc.recordID    = isDb ? edit.id.toInt() : -1;
-         edesc.recType     = EDIT;
-         edesc.subType     = edit_subtype( edit.filename );
-         edesc.recState    = state;
-         edesc.dataGUID    = edit.guid.simplified();
-         edesc.parentGUID  = desc.dataGUID;
-         edesc.parentID    = isDb ? raw.id.toInt() : -1;
-         edesc.filename    = isDb ? edit.filename : edit.path;
-         edesc.contents    = edit.checksum.isEmpty() ? QString()
-                             : edit.checksum + " " + edit.size;
-         edesc.label       = edit_label( run.runID, edit.filename );
-         edesc.description = edit.filename.section( "/", -1, -1 )
-                                          .section( ".", 0, -2 );
-         edesc.filemodDate = isDb ? QString() : edit.lastUpdated;
-         edesc.lastmodDate = isDb ? edit.lastUpdated : QString();
-
-         if ( edesc.dataGUID.length() != 36  ||  edesc.dataGUID == dmyGUID )
-            edesc.dataGUID = US_Util::new_guid();
-
-         descs << edesc;
-
-         for ( int kk = 0; kk < edit.models.size(); kk++ )
-         {
-            const US_DataCatalog::Model& model = edit.models.at( kk );
-
-            // A listing without checksums has no size either; the size of
-            // a local model is its file's, which costs nothing to ask for
-            QString msize = model.size;
-
-            if ( msize.isEmpty()  &&  ! isDb  &&  ! model.path.isEmpty() )
-               msize = QString::number( QFileInfo( model.path ).size() );
-
-            DataDesc mdesc;
-            mdesc.recordID    = isDb ? model.id.toInt() : -1;
-            mdesc.recType     = MODEL;
-            mdesc.subType     = model_subtype( model.description, msize );
-            mdesc.recState    = state;
-            mdesc.dataGUID    = model.guid.simplified();
-            mdesc.parentGUID  = edesc.dataGUID;
-            mdesc.parentID    = isDb ? edit.id.toInt() : -1;
-            mdesc.filename    = isDb ? QString() : model.path;
-            mdesc.contents    = model.checksum.isEmpty() ? QString()
-                                : model.checksum + " " + model.size;
-            mdesc.label       = short_label( model.description );
-            mdesc.description = model.description;
-            mdesc.filemodDate = isDb ? QString() : model.lastUpdated;
-            mdesc.lastmodDate = isDb ? model.lastUpdated : QString();
-
-            if ( mdesc.dataGUID.length() != 36  ||  mdesc.dataGUID == dmyGUID )
-               mdesc.dataGUID = US_Util::new_guid();
-
-            descs << mdesc;
-
-            for ( int mm = 0; mm < model.noises.size(); mm++ )
-            {
-               const US_DataCatalog::Noise& noise = model.noises.at( mm );
-
-               DataDesc ndesc;
-               ndesc.recordID    = isDb ? noise.id.toInt() : -1;
-               ndesc.recType     = NOISE;
-               ndesc.subType     = noise.noiseType.left( 2 ).toUpper();
-               ndesc.recState    = state;
-               ndesc.dataGUID    = noise.guid.simplified();
-               ndesc.parentGUID  = mdesc.dataGUID;
-               ndesc.parentID    = isDb ? model.id.toInt() : -1;
-               ndesc.filename    = isDb ? QString() : noise.path;
-               ndesc.contents    = noise.checksum.isEmpty() ? QString()
-                                   : noise.checksum + " " + noise.size;
-               ndesc.label       = short_label( noise.description );
-               ndesc.description = noise.description;
-               ndesc.filemodDate = isDb ? QString() : noise.lastUpdated;
-               ndesc.lastmodDate = isDb ? noise.lastUpdated : QString();
-
-               if ( ndesc.dataGUID.length() != 36  ||
-                    ndesc.dataGUID == dmyGUID )
-                  ndesc.dataGUID = US_Util::new_guid();
-
-               descs << ndesc;
-            }
-         }
-      }
+      append_raw( raw, run.runID, run.guid, run.id, state, descs );
    }
+}
+
+// One raw record, and everything under it
+void US_DataModel::append_raw( const US_DataCatalog::Raw& raw,
+                               const QString& runID, const QString& runGUID,
+                               const QString& runDbID, int state,
+                               QVector< DataDesc >& descs )
+{
+   bool isDb = ( state == REC_DB );
+
+   DataDesc desc;
+   desc.recordID    = isDb ? raw.id.toInt() : -1;
+   desc.recType     = RAW;
+   desc.subType     = "";
+   desc.recState    = state;
+   desc.dataGUID    = raw.guid.simplified();
+   desc.parentGUID  = runGUID.simplified();
+   desc.parentID    = isDb ? runDbID.toInt() : -1;
+   desc.filename    = isDb ? raw.filename : raw.path;
+   desc.contents    = raw.checksum.isEmpty() ? QString()
+                      : raw.checksum + " " + raw.size;
+   desc.label       = runID + "." + raw.triple;
+   desc.description = raw.description.isEmpty()
+                      ? raw.filename.section( ".", 0, -2 )
+                      : raw.description;
+   desc.filemodDate = isDb ? QString() : raw.lastUpdated;
+   desc.lastmodDate = isDb ? raw.lastUpdated : QString();
+
+   if ( desc.dataGUID.length() != 36  ||  desc.dataGUID == dmyGUID )
+      desc.dataGUID = US_Util::new_guid();
+
+   if ( desc.parentGUID.length() != 36 )
+      desc.parentGUID = dmyGUID;
+
+   descs << desc;
+
+   for ( int jj = 0; jj < raw.edits.size(); jj++ )
+      append_edit( raw.edits.at( jj ), runID, desc.dataGUID, raw.id,
+                   state, descs );
+}
+
+// One edit record, and everything under it
+void US_DataModel::append_edit( const US_DataCatalog::Edit& edit,
+                                const QString& runID, const QString& rawGUID,
+                                const QString& rawDbID, int state,
+                                QVector< DataDesc >& descs )
+{
+   bool isDb = ( state == REC_DB );
+
+   DataDesc edesc;
+   edesc.recordID    = isDb ? edit.id.toInt() : -1;
+   edesc.recType     = EDIT;
+   edesc.subType     = edit_subtype( edit.filename );
+   edesc.recState    = state;
+   edesc.dataGUID    = edit.guid.simplified();
+   edesc.parentGUID  = rawGUID.simplified();
+   edesc.parentID    = isDb ? rawDbID.toInt() : -1;
+   edesc.filename    = isDb ? edit.filename : edit.path;
+   edesc.contents    = edit.checksum.isEmpty() ? QString()
+                       : edit.checksum + " " + edit.size;
+   edesc.label       = edit_label( runID, edit.filename );
+   edesc.description = edit.filename.section( "/", -1, -1 )
+                                    .section( ".", 0, -2 );
+   edesc.filemodDate = isDb ? QString() : edit.lastUpdated;
+   edesc.lastmodDate = isDb ? edit.lastUpdated : QString();
+
+   if ( edesc.dataGUID.length() != 36  ||  edesc.dataGUID == dmyGUID )
+      edesc.dataGUID = US_Util::new_guid();
+
+   descs << edesc;
+
+   for ( int kk = 0; kk < edit.models.size(); kk++ )
+      append_model( edit.models.at( kk ), edesc.dataGUID, edit.id,
+                    state, descs );
+}
+
+// One model record, and its noise
+void US_DataModel::append_model( const US_DataCatalog::Model& model,
+                                 const QString& editGUID,
+                                 const QString& editDbID, int state,
+                                 QVector< DataDesc >& descs )
+{
+   bool isDb = ( state == REC_DB );
+
+   // A listing without checksums has no size either; the size of a local
+   // model is its file's, which costs nothing to ask for
+   QString msize = model.size;
+
+   if ( msize.isEmpty()  &&  ! isDb  &&  ! model.path.isEmpty() )
+      msize = QString::number( QFileInfo( model.path ).size() );
+
+   DataDesc mdesc;
+   mdesc.recordID    = isDb ? model.id.toInt() : -1;
+   mdesc.recType     = MODEL;
+   mdesc.subType     = model_subtype( model.description, msize );
+   mdesc.recState    = state;
+   mdesc.dataGUID    = model.guid.simplified();
+   mdesc.parentGUID  = editGUID.simplified();
+   mdesc.parentID    = isDb ? editDbID.toInt() : -1;
+   mdesc.filename    = isDb ? QString() : model.path;
+   mdesc.contents    = model.checksum.isEmpty() ? QString()
+                       : model.checksum + " " + model.size;
+   mdesc.label       = short_label( model.description );
+   mdesc.description = model.description;
+   mdesc.filemodDate = isDb ? QString() : model.lastUpdated;
+   mdesc.lastmodDate = isDb ? model.lastUpdated : QString();
+
+   if ( mdesc.dataGUID.length() != 36  ||  mdesc.dataGUID == dmyGUID )
+      mdesc.dataGUID = US_Util::new_guid();
+
+   descs << mdesc;
+
+   for ( int mm = 0; mm < model.noises.size(); mm++ )
+      append_noise( model.noises.at( mm ), mdesc.dataGUID, model.id,
+                    state, descs );
+}
+
+// One noise record
+void US_DataModel::append_noise( const US_DataCatalog::Noise& noise,
+                                 const QString& modelGUID,
+                                 const QString& modelDbID, int state,
+                                 QVector< DataDesc >& descs )
+{
+   bool isDb = ( state == REC_DB );
+
+   DataDesc ndesc;
+   ndesc.recordID    = isDb ? noise.id.toInt() : -1;
+   ndesc.recType     = NOISE;
+   ndesc.subType     = noise.noiseType.left( 2 ).toUpper();
+   ndesc.recState    = state;
+   ndesc.dataGUID    = noise.guid.simplified();
+   ndesc.parentGUID  = modelGUID.simplified();
+   ndesc.parentID    = isDb ? modelDbID.toInt() : -1;
+   ndesc.filename    = isDb ? QString() : noise.path;
+   ndesc.contents    = noise.checksum.isEmpty() ? QString()
+                       : noise.checksum + " " + noise.size;
+   ndesc.label       = short_label( noise.description );
+   ndesc.description = noise.description;
+   ndesc.filemodDate = isDb ? QString() : noise.lastUpdated;
+   ndesc.lastmodDate = isDb ? noise.lastUpdated : QString();
+
+   if ( ndesc.dataGUID.length() != 36  ||  ndesc.dataGUID == dmyGUID )
+      ndesc.dataGUID = US_Util::new_guid();
+
+   descs << ndesc;
+}
+
+// The records of a catalog that attach to no experiment, as tree records
+//
+// Each one keeps the parent GUID it points at, which merge_descs() turns
+// into a gray filler parent -- one per missing parent, shared by all of
+// its orphans.
+void US_DataModel::orphan_descs( US_DataCatalog* catalog, int state,
+                                 QVector< DataDesc >& descs )
+{
+   if ( catalog == NULL )   return;
+
+   const US_DataCatalog::Orphans& orph = catalog->orphans();
+
+   for ( int ii = 0; ii < orph.raws.size(); ii++ )
+   {
+      const US_DataCatalog::Raw& raw = orph.raws.at( ii );
+      QString runID = raw.runID.isEmpty()
+                    ? US_DataCatalog::runIdOfFile(
+                         raw.filename.section( "/", -1, -1 ), false )
+                    : raw.runID;
+
+      append_raw( raw, runID, QString(), raw.experimentID, state, descs );
+   }
+
+   for ( int ii = 0; ii < orph.edits.size(); ii++ )
+   {
+      const US_DataCatalog::Edit& edit = orph.edits.at( ii );
+      QString runID = edit.runID.isEmpty()
+                    ? US_DataCatalog::runIdOfFile(
+                         edit.filename.section( "/", -1, -1 ), true )
+                    : edit.runID;
+
+      append_edit( edit, runID, edit.rawGUID, QString(), state, descs );
+   }
+
+   for ( int ii = 0; ii < orph.models.size(); ii++ )
+   {
+      const US_DataCatalog::Model& model = orph.models.at( ii );
+
+      append_model( model, model.editGUID, model.editID, state, descs );
+   }
+
+   for ( int ii = 0; ii < orph.noises.size(); ii++ )
+   {
+      const US_DataCatalog::Noise& noise = orph.noises.at( ii );
+
+      append_noise( noise, noise.modelGUID, QString(), state, descs );
+   }
+}
+
+// Put the records of no experiment under a stand-in experiment
+//
+// Only a whole-store read can tell an orphan from a record whose parent was
+// not read, so there are none after a read one experiment at a time, and
+// none when the tree is narrowed to one run or triple.
+int US_DataModel::collect_orphans( void )
+{
+   if ( ! filt_run.isEmpty()     &&  filt_run    != "ALL" )   return -1;
+   if ( ! filt_triple.isEmpty()  &&  filt_triple != "ALL" )   return -1;
+
+   BusyGuard           guard( busy );
+   QVector< DataDesc > dbo;
+   QVector< DataDesc > loo;
+
+   if ( use_db )
+   {
+      orphan_descs( cat_db, REC_DB, dbo );
+      repair_descriptions( dbo, db );
+   }
+
+   if ( use_lo )
+   {
+      await_disk();
+      orphan_descs( cat_lo, REC_LO, loo );
+   }
+
+   return add_orphans( dbo, loo );
 }
 
 /* Repair the model and noise descriptions of older servers.
@@ -2118,4 +2282,16 @@ void US_DataModel::dummy_data()
 
    kdb_recs   = ddescs.size();
    klo_recs   = ldescs.size();
+}
+
+// What is wrong with the experiments that should not be acted on as they are
+QStringList US_DataModel::run_problems( void ) const
+{
+   QStringList problems;
+
+   for ( int ii = 0; ii < runents.size(); ii++ )
+      if ( ! runents.at( ii ).problem.isEmpty() )
+         problems << runents.at( ii ).runID + ":  " + runents.at( ii ).problem;
+
+   return problems;
 }

@@ -1006,3 +1006,185 @@ TEST_F( TestUSDataModel, OpeningAnExperimentDuringTheScanOnlyQueuesIt )
    EXPECT_TRUE ( model.run_entry( last ).loaded );
    EXPECT_GT   ( tw.topLevelItem( last )->childCount(), 0 );
 }
+
+// -------------------------------------------------------- orphans
+//
+// Records whose parent is missing are not in any experiment's chain; the
+// scan shows them under a stand-in experiment, each under gray fillers for
+// its missing parents.
+
+TEST_F( TestUSDataModel, OrphansAreShownAfterTheScan )
+{
+   QString lostEdit   = US_Util::new_guid();
+   QString orphModel  = US_Util::new_guid();
+   QString orphNoise  = US_Util::new_guid();
+   QString globModel  = US_Util::new_guid();
+
+   US_Model lost;                     // its edit is gone
+   lost.modelGUID   = orphModel;
+   lost.editGUID    = lostEdit;
+   lost.description = runOne + ".1A280.e2301011200_a2301011300_2DSA_i01.model";
+   ASSERT_EQ( lost.write( US_Settings::dataDir() + "/models/M0000005.xml" ),
+              US_DB2::OK );
+
+   US_Noise noise;                    // under the orphan model
+   noise.noiseGUID   = orphNoise;
+   noise.modelGUID   = orphModel;
+   noise.description = runOne + ".1A280.e2301011200_a2301011300_2DSA_i01.ti_noise";
+   noise.type        = US_Noise::TI;
+   noise.values << 0.001 << 0.002;
+   noise.count       = 2;
+   ASSERT_EQ( noise.write( US_Settings::dataDir() + "/noises/N0000005.xml" ),
+              US_DB2::OK );
+
+   US_Model global;                   // a global model has no edit at all
+   global.modelGUID   = globModel;
+   global.description = "Global-run.global.e2301011200_a2301011300_2DSA-GL_i01.model";
+   ASSERT_EQ( global.write( US_Settings::dataDir() + "/models/M0000006.xml" ),
+              US_DB2::OK );
+
+   US_DataModel   model;
+   prepare( model );
+
+   QTreeWidget    tw;
+   US_DataProcess proc( &model );
+   US_DataTree    tree( &model, &tw );
+   model.setSiblings( &proc, &tree );
+
+   int added = -1;
+   QObject::connect( &model, &US_DataModel::runsListed,
+                     [ & ]() { tree.build_dtree(); } );
+   QObject::connect( &model, &US_DataModel::runMerged,
+                     [ & ]( int index ) { tree.fill_run( index ); } );
+   QObject::connect( &model, &US_DataModel::orphansAdded,
+                     [ & ]( int index ) { added = index; tree.add_run( index ); } );
+
+   model.scan_data();
+
+   ASSERT_EQ( added, model.runCount() - 1 );
+   US_DataModel::RunEntry entry = model.run_entry( added );
+   EXPECT_TRUE( entry.orphans );
+   EXPECT_EQ  ( tw.topLevelItemCount(), model.runCount() );
+   EXPECT_GT  ( tw.topLevelItem( added )->childCount(), 0 );
+
+   QVector< int > rows = model.descendant_rows( entry.row );
+   ASSERT_FALSE( rows.isEmpty() );
+
+   QMap< QString, int > rowOf;
+   int nfill = 0;
+
+   for ( int jj = 0; jj < rows.size(); jj++ )
+   {
+      US_DataModel::DataDesc desc = model.row_datadesc( rows[ jj ] );
+      rowOf[ desc.dataGUID ] = rows[ jj ];
+
+      if ( desc.recState == US_DataModel::NOSTAT )
+         nfill++;
+   }
+
+   ASSERT_TRUE( rowOf.contains( orphModel ) );
+   ASSERT_TRUE( rowOf.contains( orphNoise ) );
+   ASSERT_TRUE( rowOf.contains( globModel ) );
+   EXPECT_GT  ( nfill, 0 );
+
+   // the orphan model hangs off a filler edit with its edit's GUID
+   int prow = model.parent_row( rowOf[ orphModel ] );
+   ASSERT_GE( prow, 0 );
+   EXPECT_EQ( model.row_datadesc( prow ).recState, (int)US_DataModel::NOSTAT );
+   EXPECT_EQ( model.row_datadesc( prow ).dataGUID.toStdString(),
+              lostEdit.toStdString() );
+
+   // and its noise hangs off it
+   EXPECT_EQ( model.parent_row( rowOf[ orphNoise ] ), rowOf[ orphModel ] );
+
+   // the experiments keep their own records; nothing is in two places
+   int covered = 0;
+
+   for ( int ii = 0; ii < model.runCount(); ii++ )
+      covered += model.descendant_rows( model.run_entry( ii ).row ).size();
+
+   EXPECT_EQ( covered, model.recCount() - model.runCount() );
+   EXPECT_TRUE( model.find_duplicates().isEmpty() );
+
+   // a stand-in row's records can be acted on like any other's
+   tw.clearSelection();
+   tw.topLevelItem( added )->setSelected( true );
+   EXPECT_EQ( tree.act_on_selection( "Local disk only", "Local-only remove" ),
+              0 ) << proc.lastError().toStdString();
+   EXPECT_FALSE( QFile::exists( US_Settings::dataDir() + "/models/M0000005.xml" ) );
+   EXPECT_FALSE( QFile::exists( US_Settings::dataDir() + "/noises/N0000005.xml" ) );
+   EXPECT_TRUE ( QFile::exists( US_Settings::dataDir() + "/models/M0000001.xml" ) );
+}
+
+// Narrowed to one run, nothing is an orphan of that run
+TEST_F( TestUSDataModel, ARunFilterShowsNoOrphans )
+{
+   US_Model lost;
+   lost.modelGUID   = US_Util::new_guid();
+   lost.editGUID    = US_Util::new_guid();
+   lost.description = runOne + ".1A280.e1_a1_2DSA_i01.model";
+   ASSERT_EQ( lost.write( US_Settings::dataDir() + "/models/M0000005.xml" ),
+              US_DB2::OK );
+
+   US_DataModel model;
+   model.setProgress( bar, label );
+   model.setFilters ( runOne, "ALL", "Local Only" );
+
+   int added = -1;
+   QObject::connect( &model, &US_DataModel::orphansAdded,
+                     [ & ]( int index ) { added = index; } );
+
+   model.scan_data();
+
+   EXPECT_EQ( added, -1 );
+   EXPECT_EQ( model.runCount(), 1 );
+}
+
+// -------------------------------------------------------- run problems
+
+TEST_F( TestUSDataModel, ARunWithAProblemSaysSo )
+{
+   // A directory named for one run, holding another's data
+   QString dir = US_Settings::resultDir() + "/Misnamed_dir";
+   QDir().mkpath( dir );
+   writeAuc( dir + "/Other_run.RA.4.A.280.auc", US_Util::new_guid(), "four" );
+
+   US_DataModel   model;
+   prepare( model );
+
+   QTreeWidget    tw;
+   US_DataProcess proc( &model );
+   US_DataTree    tree( &model, &tw );
+   model.setSiblings( &proc, &tree );
+
+   model.scan_data();
+   tree.build_dtree();
+
+   int other = model.index_of_run( "Other_run" );
+   int dots  = model.index_of_run( runTwo );
+   int fine  = model.index_of_run( runOne );
+   ASSERT_GE( other, 0 );
+   ASSERT_GE( dots,  0 );
+   ASSERT_GE( fine,  0 );
+
+   EXPECT_FALSE( model.run_entry( other ).problem.isEmpty() );
+   EXPECT_FALSE( model.run_entry( dots  ).problem.isEmpty() );   // legacy ID
+   EXPECT_TRUE ( model.run_entry( fine  ).problem.isEmpty() );
+
+   EXPECT_EQ( model.run_problems().size(), 2 );
+
+   // the tree row says why
+   EXPECT_FALSE( tw.topLevelItem( dots )->toolTip( 1 ).isEmpty() );
+   EXPECT_TRUE ( tw.topLevelItem( dots )->text( 1 ).endsWith( "(!)" ) );
+   EXPECT_TRUE ( tw.topLevelItem( fine )->toolTip( 1 ).isEmpty() );
+}
+
+// The dates the catalog writes are the ones the upload check reads
+TEST_F( TestUSDataModel, CatalogDatesAreRead )
+{
+   QDateTime when( QDate( 2024, 5, 6 ), QTime( 7, 8, 9 ), QTimeZone::utc() );
+   QString   text = US_DataCatalog::utcText( QVariant( when ) );
+
+   EXPECT_EQ( text.toStdString(), "2024-05-06 07:08:09 UTC" );
+   EXPECT_EQ( US_DataModel::parse_date( text ), when );
+}
