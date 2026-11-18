@@ -3,10 +3,13 @@
 // These tests need a MySQL/MariaDB server with the US3 schema and stored
 // procedures loaded.  Point them at one with:
 //
-//   US3_TEST_DB_HOST=localhost US3_TEST_DB_NAME=us3test \
-//   US3_TEST_DB_USER=us3test US3_TEST_DB_PASS=... \
-//   US3_TEST_DB_PERSON_GUID=... US3_TEST_DB_PERSON_PW=... \
-//   US3_TEST_DB_PERSON_ID=2 ./test_us_utils
+//   US3_TEST_DB_HOST=localhost US3_TEST_DB_NAME=us3test
+//   US3_TEST_DB_USER=us3test US3_TEST_DB_PASS=...
+//   US3_TEST_DB_PERSON_GUID=... US3_TEST_DB_PERSON_PW=...
+//   US3_TEST_DB_PERSON_ID=2 ./test_us_utils_db
+//
+// (all on one command line).  The DB paths are also covered without a
+// server, against a mock, in test_us_data_catalog_mock.cpp.
 //
 // Without those, every test here skips, so an ordinary build needs no
 // database.
@@ -85,19 +88,47 @@ class TestUSDataCatalogDb : public QtTestBase
          US_Settings::set_us_inv_ID( personID );
       }
 
-      /* True when the server has the catalog procedures.
+      // True when the server has a stored procedure, whatever it answers
+      bool hasProcedure( const QStringList& call )
+      {
+         db->query( call );
+
+         return db->lastServerErrno() != IUS_DB2::serverNoSuchRoutine  &&
+                db->lastServerErrno() != IUS_DB2::serverRoutineDenied;
+      }
+
+      /* True when the server has every procedure of a catalog tier.
 
          They are an optimization: the catalog falls back on the procedures
          UltraScan has always had when a server does not have them, and
          these tests are meant to pass either way, so the ones that are
-         about the fast path ask first.
+         about a fast path ask first -- for every procedure of the tier,
+         since a partly upgraded server can have some and not others.
       */
+      bool hasTier( int tier )
+      {
+         QString inv = QString::number( personID );
+         bool    all = true;
+
+         if ( tier & US_DataCatalog::ListingTier )
+            all = all  &&  hasProcedure( QStringList() << "get_experiment_summary" << inv );
+
+         if ( tier & US_DataCatalog::ExperimentTier )
+            all = all  &&  hasProcedure( QStringList() << "get_rawData_by_experiment" << "0" )
+                       &&  hasProcedure( QStringList() << "get_editedData_by_experiment" << "0" )
+                       &&  hasProcedure( QStringList() << "get_model_desc_by_experiment" << inv << "0" )
+                       &&  hasProcedure( QStringList() << "get_noise_desc_by_experiment" << inv << "0" );
+
+         if ( tier & US_DataCatalog::StoreTier )
+            all = all  &&  hasProcedure( QStringList() << "get_rawData_by_person" << inv )
+                       &&  hasProcedure( QStringList() << "get_editedData_by_person" << inv );
+
+         return all;
+      }
+
       bool hasCatalogProcedures()
       {
-         db->rawQuery( "CALL get_experiment_summary( '', '', 0 )" );
-
-         return ! db->lastError().contains( "does not exist",
-                                            Qt::CaseInsensitive );
+         return hasTier( US_DataCatalog::AllTiers );
       }
 
       void TearDown() override
@@ -121,7 +152,7 @@ class TestUSDataCatalogDb : public QtTestBase
 
 TEST_F( TestUSDataCatalogDb, FirstLayerListsExperimentsWithCounts )
 {
-   bool           bulk = hasCatalogProcedures();
+   bool           bulk = hasTier( US_DataCatalog::ListingTier );
    US_DataCatalog catalog;
    QString        error;
 
@@ -164,7 +195,7 @@ TEST_F( TestUSDataCatalogDb, FirstLayerListsExperimentsWithCounts )
 
 TEST_F( TestUSDataCatalogDb, SecondLayerMatchesTheCounts )
 {
-   bool           bulk = hasCatalogProcedures();
+   bool           bulk = hasTier( US_DataCatalog::ListingTier );
    US_DataCatalog catalog;
    QString        error;
 
@@ -293,10 +324,10 @@ TEST_F( TestUSDataCatalogDb, BulkAndLegacyPathsAgree )
 
       // The first layer of the legacy path cannot count the chain without
       // walking it, and says so with -1; where it does answer, it agrees.
-      if ( ll.rawCount   >= 0 )  EXPECT_EQ( bb.rawCount,   ll.rawCount   );
-      if ( ll.editCount  >= 0 )  EXPECT_EQ( bb.editCount,  ll.editCount  );
-      if ( ll.modelCount >= 0 )  EXPECT_EQ( bb.modelCount, ll.modelCount );
-      if ( ll.noiseCount >= 0 )  EXPECT_EQ( bb.noiseCount, ll.noiseCount );
+      if ( ll.rawCount   >= 0 )  { EXPECT_EQ( bb.rawCount,   ll.rawCount   ); }
+      if ( ll.editCount  >= 0 )  { EXPECT_EQ( bb.editCount,  ll.editCount  ); }
+      if ( ll.modelCount >= 0 )  { EXPECT_EQ( bb.modelCount, ll.modelCount ); }
+      if ( ll.noiseCount >= 0 )  { EXPECT_EQ( bb.noiseCount, ll.noiseCount ); }
 
       ASSERT_TRUE( bulk  .loadRunDetail( ii, error ) ) << error.toStdString();
       ASSERT_TRUE( legacy.loadRunDetail( ii, error ) ) << error.toStdString();
@@ -354,9 +385,9 @@ TEST_F( TestUSDataCatalogDb, BulkAndLegacyPathsAgree )
 // experiment at a time gives, or the fast path is not the same scan.
 TEST_F( TestUSDataCatalogDb, LoadAllGivesTheSameChainAsOneAtATime )
 {
-   if ( ! hasCatalogProcedures() )
-      GTEST_SKIP() << "this server has no whole-store procedures; "
-                      "OldServerRefusesLoadAllAndReadsOneAtATime covers it";
+   if ( ! hasTier( US_DataCatalog::ExperimentTier | US_DataCatalog::StoreTier ) )
+      GTEST_SKIP() << "this server lacks catalog procedures; "
+                      "TheOldWholeStoreProceduresGiveTheSameChain covers it";
 
    US_DataCatalog oneAtATime;
    US_DataCatalog allAtOnce;
@@ -422,8 +453,8 @@ TEST_F( TestUSDataCatalogDb, LoadAllGivesTheSameChainAsOneAtATime )
 // per-experiment procedures report.
 TEST_F( TestUSDataCatalogDb, VerifyFillsInTheChecksumsTheBulkListingLeftOut )
 {
-   if ( ! hasCatalogProcedures() )
-      GTEST_SKIP() << "this server has no whole-store procedures";
+   if ( ! hasTier( US_DataCatalog::ExperimentTier | US_DataCatalog::StoreTier ) )
+      GTEST_SKIP() << "this server lacks catalog procedures";
 
    US_DataCatalog catalog;
    QString        error;
@@ -483,22 +514,57 @@ TEST_F( TestUSDataCatalogDb, VerifyFillsInTheChecksumsTheBulkListingLeftOut )
    }
 }
 
-// A server without the whole-store procedures still has the per-experiment
-// ones, so the fall-back is one experiment at a time rather than all the
-// way down to one record at a time.
-TEST_F( TestUSDataCatalogDb, WithoutTheBulkProceduresOneExperimentAtATimeWorks )
+// The whole-store read without the whole-store catalog procedures: the
+// ones UltraScan has always had give the same chain, in four queries.
+TEST_F( TestUSDataCatalogDb, TheOldWholeStoreProceduresGiveTheSameChain )
+{
+   US_DataCatalog oneAtATime;
+   US_DataCatalog oldStore;
+   QString        error;
+
+   ASSERT_TRUE( oneAtATime.attach( db, error ) );
+   ASSERT_TRUE( oldStore  .attach( db, error ) );
+   oldStore.setTiers( US_DataCatalog::AllTiers & ~US_DataCatalog::StoreTier );
+
+   ASSERT_TRUE( oneAtATime.loadRuns( error ) ) << error.toStdString();
+   ASSERT_TRUE( oldStore  .loadRuns( error ) ) << error.toStdString();
+   ASSERT_GT  ( oldStore.runCount(), 0 );
+
+   for ( int ii = 0; ii < oneAtATime.runCount(); ii++ )
+      ASSERT_TRUE( oneAtATime.loadRunDetail( ii, error ) ) << error.toStdString();
+
+   ASSERT_TRUE( oldStore.loadAll( error ) ) << error.toStdString();
+   ASSERT_EQ  ( oldStore.runCount(), oneAtATime.runCount() );
+
+   for ( int ii = 0; ii < oldStore.runCount(); ii++ )
+   {
+      const US_DataCatalog::Run& one = oneAtATime.run( ii );
+      const US_DataCatalog::Run& old = oldStore  .run( ii );
+
+      ASSERT_EQ( old.runID.toStdString(), one.runID.toStdString() );
+      EXPECT_EQ( old.editCount,  one.editCount  );
+      EXPECT_EQ( old.modelCount, one.modelCount );
+      EXPECT_EQ( old.noiseCount, one.noiseCount );
+      ASSERT_EQ( old.raws.size(), one.raws.size() );
+
+      // the old procedures hash the blobs, so the checksums are there
+      for ( int jj = 0; jj < old.raws.size(); jj++ )
+         EXPECT_EQ( old.raws[ jj ].checksum.toStdString(),
+                    one.raws[ jj ].checksum.toStdString() );
+   }
+}
+
+// One experiment at a time without the per-experiment catalog procedures:
+// one query per record, as UltraScan always read it
+TEST_F( TestUSDataCatalogDb, WithoutTheExperimentTierOneRecordAtATimeWorks )
 {
    US_DataCatalog catalog;
    QString        error;
 
    ASSERT_TRUE( catalog.attach  ( db, error ) );
-   catalog.setBulkQueries( false );
+   catalog.setTiers( US_DataCatalog::AllTiers & ~US_DataCatalog::ExperimentTier );
    ASSERT_TRUE( catalog.loadRuns( error ) )  << error.toStdString();
-
-   EXPECT_FALSE( catalog.loadAll( error ) );     // refused, with a reason
-   EXPECT_FALSE( error.isEmpty() );
-
-   ASSERT_GT( catalog.runCount(), 0 );
+   ASSERT_GT  ( catalog.runCount(), 0 );
 
    int index = -1;
 
@@ -508,12 +574,19 @@ TEST_F( TestUSDataCatalogDb, WithoutTheBulkProceduresOneExperimentAtATimeWorks )
    ASSERT_GE  ( index, 0 );
    ASSERT_TRUE( catalog.loadRunDetail( index, error ) ) << error.toStdString();
    EXPECT_TRUE( catalog.run( index ).isLoaded() );
+   EXPECT_TRUE( catalog.isRunVerified( index ) );
+
+   for ( const US_DataCatalog::Raw& raw : catalog.run( index ).raws )
+   {
+      EXPECT_FALSE( raw.guid    .isEmpty() );
+      EXPECT_FALSE( raw.checksum.isEmpty() );
+   }
 }
 
 // A server that really does not have the procedures -- as opposed to one
 // told to pretend -- has to be recognised as such, and the scan has to go
 // on working through the procedures UltraScan has always had.
-TEST_F( TestUSDataCatalogDb, OldServerRefusesLoadAllAndReadsOneAtATime )
+TEST_F( TestUSDataCatalogDb, AnOldServerIsReadWithTheOldProcedures )
 {
    if ( hasCatalogProcedures() )
       GTEST_SKIP() << "this server has the catalog procedures";
@@ -528,26 +601,25 @@ TEST_F( TestUSDataCatalogDb, OldServerRefusesLoadAllAndReadsOneAtATime )
    ASSERT_GT  ( catalog.runCount(), 0 )
       << "the fall-back listing found nothing";
 
-   // The whole-store read is refused, with a reason
-   EXPECT_FALSE( catalog.loadAll( error ) );
-   EXPECT_FALSE( error.isEmpty() );
+   // The whole store is read with the old whole-store procedures
+   ASSERT_TRUE( catalog.loadAll( error ) ) << error.toStdString();
+   EXPECT_NE  ( catalog.tiers(), int( US_DataCatalog::AllTiers ) );
 
-   // ... and the chain still comes back one experiment at a time
    int index = -1;
 
    for ( int ii = 0; ii < catalog.runCount(); ii++ )
-      if ( catalog.run( ii ).rawCount != 0 )  index = ii;
+      if ( catalog.run( ii ).raws.size() > 0 )  index = ii;
 
-   ASSERT_GE  ( index, 0 );
-   ASSERT_TRUE( catalog.loadRunDetail( index, error ) ) << error.toStdString();
+   ASSERT_GE( index, 0 );
 
    const US_DataCatalog::Run& run = catalog.run( index );
-
    ASSERT_TRUE( run.isLoaded() );
-   ASSERT_GT  ( run.raws.size(), 0 );
 
    for ( int ii = 0; ii < run.raws.size(); ii++ )
       EXPECT_FALSE( run.raws[ ii ].guid.isEmpty() );
+
+   // and verifying works too, with the per-record procedures
+   ASSERT_TRUE( catalog.verifyRun( index, error ) ) << error.toStdString();
 }
 
 // The root of it: a statement the server cannot run is reported as an
@@ -562,6 +634,15 @@ TEST_F( TestUSDataCatalogDb, AMissingProcedureIsReportedAsAnError )
    db->query( query );
 
    EXPECT_NE  ( db->lastErrno(), US_DB2::OK );
+   EXPECT_EQ  ( db->lastServerErrno(), IUS_DB2::serverNoSuchRoutine );
+   EXPECT_TRUE( db->lastError().contains( "does not exist",
+                                          Qt::CaseInsensitive ) )
+      << db->lastError().toStdString();
+
+   // statusQuery() too: the reason is what the server said about the CALL,
+   // not whatever SELECT last_error() answers afterwards
+   EXPECT_NE  ( db->statusQuery( query ), US_DB2::OK );
+   EXPECT_EQ  ( db->lastServerErrno(), IUS_DB2::serverNoSuchRoutine );
    EXPECT_TRUE( db->lastError().contains( "does not exist",
                                           Qt::CaseInsensitive ) )
       << db->lastError().toStdString();

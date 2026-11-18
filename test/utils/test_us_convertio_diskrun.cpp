@@ -394,3 +394,16 @@ TEST_F( ReadDiskRunTest, StartsFromAnEmptyRunEachTime )
    EXPECT_EQ( run.runID.toStdString(), "second-run" );
    EXPECT_TRUE( run.speedSteps.isEmpty() );
 }
+
+// The rule readDiskRun applies to a directory name, offered on its own so
+// that a caller can check a run ID before it reads anything
+TEST( US_ConvertIORunId, TheRunIdRuleIsOfferedOnItsOwn )
+{
+   EXPECT_TRUE ( US_ConvertIO::runIdIsUsable( "Run_01-a" ) );
+   EXPECT_TRUE ( US_ConvertIO::runIdIsUsable( QString( 80, QChar( 'x' ) ) ) );
+   EXPECT_FALSE( US_ConvertIO::runIdIsUsable( QString( 81, QChar( 'x' ) ) ) );
+   EXPECT_FALSE( US_ConvertIO::runIdIsUsable( "" ) );
+   EXPECT_FALSE( US_ConvertIO::runIdIsUsable( "dotted.run" ) );
+   EXPECT_FALSE( US_ConvertIO::runIdIsUsable( "a b" ) );
+   EXPECT_FALSE( US_ConvertIO::runIdIsUsable( "../up" ) );
+}

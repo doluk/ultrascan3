@@ -204,7 +204,14 @@ US3_TEST_DB_NAME=us3old ... ./bin/test_us_datapub
 ```
 
 The cases that are about the fast path ask the server what it has and skip;
-the rest are expected to pass against either.
+the rest are expected to pass against either.  A partly upgraded server --
+some of those procedures dropped, not all -- is worth a run as well: each of
+the catalog's three tiers (listing, per-experiment, whole-store) falls back on
+its own.
+
+Every fall-back is also covered without a server, in
+`test/utils/test_us_data_catalog_mock.cpp`, against the `IUS_DB2` mock
+answering the procedures of servers of each vintage.
 
 ## Debugging Failed Tests
 

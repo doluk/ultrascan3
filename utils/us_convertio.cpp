@@ -19,15 +19,16 @@ US_ConvertIO::US_ConvertIO( void )
 // reports what is wrong with the run; whether that stops the load is left to
 // the caller.
 
-namespace
-{
 //! A usable run ID: letters, digits, '_' and '-', at most 80 characters.
-bool runIdIsUsable( const QString& runID )
+bool US_ConvertIO::runIdIsUsable( const QString& runID )
 {
    static const QRegularExpression rx( "^[A-Za-z0-9_-]{1,80}$" );
 
    return rx.match( runID ).hasMatch();
 }
+
+namespace
+{
 
 //! "runID.runType." prefix fields of an AUC basename, or empty if malformed.
 QPair<QString, QString> runFieldsOf( const QString& filename )

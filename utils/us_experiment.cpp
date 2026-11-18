@@ -195,7 +195,8 @@ qDebug() << "Exp:svToDB:  ss count" << speedsteps.count() << "expID" << expID;
 
 
 // Function to read an experiment from DB
-int US_Experiment::readFromDB( QString runID, IUS_DB2* db, QVector<SP_SPEEDPROFILE>& speedsteps, const QString invid_p )
+int US_Experiment::readFromDB( QString runID, IUS_DB2* db, QVector<SP_SPEEDPROFILE>& speedsteps, const QString invid_p,
+                               bool cacheRIProfile )
 {
    if ( db == nullptr )
    {
@@ -318,7 +319,7 @@ qDebug() << "Exp:rdDB: ExpInfRun: xmlFile size" << xmlFile.size();
    {
       // If we have a profile from DB, make sure there is a local copy
 qDebug() << "Exp:rdDB: xmlFile size" << xmlFile.size();
-      if ( xmlFile.size() > 0 )
+      if ( cacheRIProfile  &&  xmlFile.size() > 0 )
       {
          QDir    readDir( US_Settings::resultDir() );
          QString RIPfname = readDir.absolutePath() + "/" + runID + "/"
@@ -945,6 +946,13 @@ qDebug() << "readRIDisk() error" << error;
    if ( error ) return US_Convert::BADXML;
 
    return US_Convert::OK;
+}
+
+QByteArray US_Experiment::riProfileXml( void )
+{
+   QByteArray xml;
+   createRIXml( xml );
+   return xml;
 }
 
 void US_Experiment::createRIXml( QByteArray& str )

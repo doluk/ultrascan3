@@ -279,6 +279,11 @@ TEST_F( TestUSDataCatalog, FirstLayerListsRunsWithCounts )
    ASSERT_GE( two, 0 ) << "a run identifier with dots must still be found";
    EXPECT_EQ( catalog.run( two ).rawCount,  1 );
    EXPECT_EQ( catalog.run( two ).editCount, 0 );
+
+   // ... but it is not one UltraScan accepts any more, and says so
+   EXPECT_TRUE ( run.usable ) << run.problem.toStdString();
+   EXPECT_FALSE( catalog.run( two ).usable );
+   EXPECT_FALSE( catalog.run( two ).problem.isEmpty() );
 }
 
 TEST_F( TestUSDataCatalog, SecondLayerLoadsTheWholeChain )
@@ -451,10 +456,10 @@ TEST_F( TestUSDataCatalog, TheStoreIsReadOncePerScan )
       << "the scan in progress still completes";
    EXPECT_EQ( catalog.runCount(), 2 );
 
-   // and a fresh scan picks it up
-   catalog.clear();
+   // and the next listing picks it up, with nothing cleared by hand
    ASSERT_TRUE( catalog.loadRuns( error ) );
    EXPECT_EQ( catalog.runCount(), 3 );
+   EXPECT_GE( catalog.indexOfRun( "Late_arrival" ), 0 );
 }
 
 TEST_F( TestUSDataCatalog, NoiseOfOneModelIsFoundWithoutTheChain )
@@ -673,7 +678,12 @@ TEST_F( TestUSDataCatalog, DiskCatalogHasNoDatabaseConnection )
 */
 TEST_F( TestUSDataCatalog, TheSelectedInvestigatorIsPickedUp )
 {
-   int savedInv = US_Settings::us_inv_ID();
+   // Put the investigator back however the test ends, a failed ASSERT too
+   struct Restore
+   {
+      int saved = US_Settings::us_inv_ID();
+      ~Restore() { US_Settings::set_us_inv_ID( saved ); }
+   } restore;
 
    US_Settings::set_us_inv_ID( 11 );
 
@@ -688,6 +698,301 @@ TEST_F( TestUSDataCatalog, TheSelectedInvestigatorIsPickedUp )
 
    EXPECT_FALSE( catalog.refreshInvestigator() );
    EXPECT_EQ   ( catalog.investigatorID(), 12 );
+}
 
-   US_Settings::set_us_inv_ID( savedInv );
+// ------------------------------------------------------- run directories
+
+// Two directories whose files carry the same run ID are two runs.  Keyed
+// by run ID they used to collapse into one, and the triples of one were
+// shown as the other's.
+TEST_F( TestUSDataCatalog, TwoDirectoriesWithTheSameRunIdAreTwoRuns )
+{
+   QString copyGUID = US_Util::new_guid();
+   QString dir      = runDir( "Copy_of_" + runOne );
+   writeAuc( dir + "/" + runOne + ".RA.1.A.280.auc", copyGUID, "the copy" );
+
+   US_DataCatalog catalog;
+   QString        error;
+
+   ASSERT_TRUE( catalog.open( US_DataCatalog::Disk, QString(), error ) );
+   ASSERT_TRUE( catalog.loadRuns( error ) );
+   ASSERT_EQ  ( catalog.runCount(), 3 );
+
+   QList< int > same;
+
+   for ( int ii = 0; ii < catalog.runCount(); ii++ )
+      if ( catalog.run( ii ).runID == runOne )  same << ii;
+
+   ASSERT_EQ( same.size(), 2 );
+
+   QStringList rawGUIDs;
+
+   for ( int ii : same )
+   {
+      const US_DataCatalog::Run& run = catalog.run( ii );
+
+      // both are flagged: neither can be acted on as the run it claims to be
+      EXPECT_FALSE( run.usable );
+      EXPECT_TRUE ( run.problem.contains( "also in" ) ) << run.problem.toStdString();
+
+      ASSERT_TRUE( catalog.loadRunDetail( ii, error ) ) << error.toStdString();
+
+      for ( const US_DataCatalog::Raw& raw : catalog.run( ii ).raws )
+         rawGUIDs << raw.guid;
+   }
+
+   // each directory gives its own triples
+   EXPECT_EQ( rawGUIDs.size(), 3 );
+   EXPECT_TRUE( rawGUIDs.contains( copyGUID ) );
+   EXPECT_TRUE( rawGUIDs.contains( rawOneGUID ) );
+
+   // and the directory whose name is not the run ID says that too
+   for ( int ii : same )
+      if ( catalog.run( ii ).dirPath.endsWith( "Copy_of_" + runOne ) )
+         EXPECT_TRUE( catalog.run( ii ).problem.contains( "Copy_of_" + runOne ) )
+            << catalog.run( ii ).problem.toStdString();
+}
+
+// A run ID that is a prefix of another followed by a dot does not count
+// the other run's models as its own
+TEST_F( TestUSDataCatalog, ModelCountsDoNotSpillIntoARunWithALongerId )
+{
+   QString longer = runOne + ".b";
+   QString dir    = runDir( longer );
+   writeAuc( dir + "/" + longer + ".RA.1.A.280.auc", US_Util::new_guid(), "longer" );
+
+   US_Model model;
+   model.modelGUID   = US_Util::new_guid();
+   model.editGUID    = US_Util::new_guid();
+   model.description = longer + ".1A280.2dsa.model";
+   model.write( US_Settings::dataDir() + "/models/M0000009.xml" );
+
+   US_DataCatalog catalog;
+   QString        error;
+
+   ASSERT_TRUE( catalog.open( US_DataCatalog::Disk, QString(), error ) );
+   ASSERT_TRUE( catalog.loadRuns( error ) );
+
+   int one = catalog.indexOfRun( runOne );
+   int two = catalog.indexOfRun( longer );
+   ASSERT_GE( one, 0 );
+   ASSERT_GE( two, 0 );
+
+   EXPECT_EQ( catalog.run( one ).modelCount, 1 );
+   EXPECT_EQ( catalog.run( two ).modelCount, 1 );
+}
+
+// --------------------------------------------------------- empty GUIDs
+
+// A record written without a GUID must not become the parent of every
+// other record written without one
+TEST_F( TestUSDataCatalog, AnEmptyGuidJoinsNothing )
+{
+   QString dir = runDir( runOne );
+   writeEdit( dir + "/" + runOne + ".2401011500.RA.1.A.281.xml", "", rawTwoGUID );
+
+   US_Model model;
+   model.modelGUID   = "";
+   model.editGUID    = "";
+   model.description = runOne + ".1A281.nothing.model";
+   model.write( US_Settings::dataDir() + "/models/M0000005.xml" );
+
+   US_Noise noise;
+   noise.noiseGUID   = US_Util::new_guid();
+   noise.modelGUID   = "";
+   noise.description = runOne + ".1A281.nothing.ti_noise";
+   noise.type        = US_Noise::TI;
+   noise.values << 0.1;
+   noise.count  = 1;
+   noise.write( US_Settings::dataDir() + "/noises/N0000005.xml" );
+
+   US_DataCatalog catalog;
+   QString        error;
+
+   ASSERT_TRUE( catalog.open( US_DataCatalog::Disk, QString(), error ) );
+   ASSERT_TRUE( catalog.loadRuns( error ) );
+   ASSERT_TRUE( catalog.loadAll ( error ) ) << error.toStdString();
+
+   const US_DataCatalog::Run& run = catalog.run( catalog.indexOfRun( runOne ) );
+
+   for ( const US_DataCatalog::Raw& raw : run.raws )
+      for ( const US_DataCatalog::Edit& edit : raw.edits )
+      {
+         if ( ! edit.guid.isEmpty() )  continue;
+
+         EXPECT_TRUE( edit.models.isEmpty() )
+            << "a model with no editGUID was attached to an edit with none";
+      }
+
+   EXPECT_TRUE( catalog.noisesOfModel( "", error ).isEmpty() );
+   EXPECT_TRUE( catalog.noisesOfEdit ( "", QString(), error ).isEmpty() );
+
+   // both are listed as what they are: records with no parent
+   bool modelFound = false;
+
+   for ( const US_DataCatalog::Model& mm : catalog.orphans().models )
+      if ( mm.description == runOne + ".1A281.nothing.model" )
+      {
+         modelFound = true;
+         EXPECT_TRUE( mm.noises.isEmpty() );
+      }
+
+   EXPECT_TRUE( modelFound );
+
+   bool noiseFound = false;
+
+   for ( const US_DataCatalog::Noise& nn : catalog.orphans().noises )
+      if ( nn.guid == noise.noiseGUID )  noiseFound = true;
+
+   EXPECT_TRUE( noiseFound );
+}
+
+// ------------------------------------------------------------- orphans
+
+TEST_F( TestUSDataCatalog, RecordsWithNoParentAreKeptAsOrphans )
+{
+   // an edit of a triple with no .auc file, with a model and its noise
+   QString lostEdit  = US_Util::new_guid();
+   QString lostModel = US_Util::new_guid();
+   QString lostNoise = US_Util::new_guid();
+   writeEdit( runDir( runOne ) + "/" + runOne + ".2401011600.RA.1.A.290.xml",
+              lostEdit, US_Util::new_guid() );
+
+   US_Model model;
+   model.modelGUID   = lostModel;
+   model.editGUID    = lostEdit;
+   model.description = runOne + ".1A290.2dsa.model";
+   model.write( US_Settings::dataDir() + "/models/M0000006.xml" );
+
+   US_Noise noise;
+   noise.noiseGUID   = lostNoise;
+   noise.modelGUID   = lostModel;
+   noise.description = runOne + ".1A290.2dsa.ti_noise";
+   noise.type        = US_Noise::TI;
+   noise.values << 0.1;
+   noise.count  = 1;
+   noise.write( US_Settings::dataDir() + "/noises/N0000006.xml" );
+
+   // a run directory with an edit and no .auc file at all
+   QString bareEdit = US_Util::new_guid();
+   writeEdit( runDir( "Bare_run" ) + "/Bare_run.2401011700.RA.1.A.280.xml",
+              bareEdit, US_Util::new_guid() );
+
+   // noise of a model that is nowhere
+   US_Noise stray;
+   stray.noiseGUID   = US_Util::new_guid();
+   stray.modelGUID   = US_Util::new_guid();
+   stray.description = "Nowhere.1A280.2dsa.ti_noise";
+   stray.type        = US_Noise::TI;
+   stray.values << 0.1;
+   stray.count  = 1;
+   stray.write( US_Settings::dataDir() + "/noises/N0000007.xml" );
+
+   US_DataCatalog catalog;
+   QString        error;
+
+   ASSERT_TRUE( catalog.open( US_DataCatalog::Disk, QString(), error ) );
+   ASSERT_TRUE( catalog.loadRuns( error ) );
+   EXPECT_EQ  ( catalog.runCount(), 2 ) << "a directory with no .auc is not a run";
+   EXPECT_TRUE( catalog.orphans().isEmpty() );
+
+   ASSERT_TRUE( catalog.loadAll( error ) ) << error.toStdString();
+
+   const US_DataCatalog::Orphans& orphans = catalog.orphans();
+
+   EXPECT_TRUE( orphans.raws.isEmpty() );
+
+   // both loose edits, the first carrying its model and that model's noise
+   ASSERT_EQ( orphans.edits.size(), 2 );
+   const US_DataCatalog::Edit* lost = nullptr;
+
+   for ( const US_DataCatalog::Edit& ed : orphans.edits )
+   {
+      if ( ed.guid == lostEdit )  lost = &ed;
+      EXPECT_TRUE( ed.guid == lostEdit  ||  ed.guid == bareEdit );
+   }
+
+   ASSERT_NE( lost, nullptr );
+   EXPECT_EQ( lost->runID,  runOne );
+   EXPECT_EQ( lost->triple, QString( "1.A.290" ) );
+   ASSERT_EQ( lost->models.size(), 1 );
+   EXPECT_EQ( lost->models[ 0 ].guid, lostModel );
+   ASSERT_EQ( lost->models[ 0 ].noises.size(), 1 );
+   EXPECT_EQ( lost->models[ 0 ].noises[ 0 ].guid, lostNoise );
+
+   // the fixture's model of somebody else's edit, and the stray noise
+   ASSERT_EQ( orphans.models.size(), 1 );
+   EXPECT_EQ( orphans.models[ 0 ].description,
+              QString( "Somebody_elses_run.1A280.2dsa.model" ) );
+   ASSERT_EQ( orphans.noises.size(), 1 );
+   EXPECT_EQ( orphans.noises[ 0 ].guid, stray.noiseGUID );
+
+   // and nothing in the chain is listed again as an orphan
+   for ( const US_DataCatalog::Model& mm : orphans.models )
+      EXPECT_NE( mm.guid, modelGUID );
+}
+
+// ------------------------------------------------------------- checksums
+
+TEST_F( TestUSDataCatalog, NoiseOfAModelHonoursTheChecksumSetting )
+{
+   US_DataCatalog catalog;
+   QString        error;
+
+   ASSERT_TRUE( catalog.open( US_DataCatalog::Disk, QString(), error ) );
+   catalog.setChecksums( false );
+
+   QList< US_DataCatalog::Noise > noises = catalog.noisesOfModel( modelGUID, error );
+   ASSERT_EQ  ( noises.size(), 1 );
+   EXPECT_TRUE( noises[ 0 ].checksum.isEmpty() );
+   EXPECT_EQ  ( noises[ 0 ].editGUID, editOneGUID );
+   EXPECT_FALSE( noises[ 0 ].lastUpdated.isEmpty() );
+
+   noises = catalog.noisesOfEdit( editOneGUID, QString(), error );
+   ASSERT_EQ( noises.size(), 1 );
+   EXPECT_EQ( noises[ 0 ].editGUID, editOneGUID );
+}
+
+// Reading the whole store keeps what is known about an experiment already
+// read, rather than reading it again with less
+TEST_F( TestUSDataCatalog, LoadAllKeepsAnExperimentAlreadyVerified )
+{
+   US_DataCatalog catalog;
+   QString        error;
+
+   ASSERT_TRUE( catalog.open( US_DataCatalog::Disk, QString(), error ) );
+   ASSERT_TRUE( catalog.loadRuns( error ) );
+
+   int one = catalog.indexOfRun( runOne );
+   ASSERT_TRUE( catalog.loadRunDetail( one, error ) );
+   ASSERT_TRUE( catalog.isRunVerified( one ) );
+
+   catalog.setChecksums( false );
+   ASSERT_TRUE( catalog.loadAll( error ) );
+
+   EXPECT_TRUE ( catalog.isRunVerified( one ) );
+   EXPECT_FALSE( catalog.run( one ).raws[ 0 ].checksum.isEmpty() );
+
+   int two = catalog.indexOfRun( runTwo );
+   EXPECT_TRUE ( catalog.isRunLoaded  ( two ) );
+   EXPECT_FALSE( catalog.isRunVerified( two ) );
+}
+
+// Every date is in the form the database's dates are given in
+TEST_F( TestUSDataCatalog, DatesAreInTheCatalogsOneForm )
+{
+   US_DataCatalog catalog;
+   QString        error;
+
+   ASSERT_TRUE( catalog.open( US_DataCatalog::Disk, QString(), error ) );
+   ASSERT_TRUE( catalog.loadRuns( error ) );
+   ASSERT_TRUE( catalog.loadAll ( error ) );
+
+   QRegularExpression form( "^\\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d UTC$" );
+
+   const US_DataCatalog::Run& run = catalog.run( catalog.indexOfRun( runOne ) );
+   EXPECT_TRUE( form.match( run.date ).hasMatch() ) << run.date.toStdString();
+   EXPECT_TRUE( form.match( run.raws[ 0 ].lastUpdated ).hasMatch() )
+      << run.raws[ 0 ].lastUpdated.toStdString();
+   EXPECT_TRUE( form.match( run.raws[ 0 ].edits[ 0 ].models[ 0 ].lastUpdated ).hasMatch() );
 }

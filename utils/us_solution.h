@@ -85,7 +85,8 @@ class US_UTIL_EXTERN US_Solution
                                 store; if false, only the identifying
                                 information held in the solution file itself
                                 is filled in
-          \return   One of the IUS_DB2 error codes
+          \return   One of the IUS_DB2 error codes.  On failure the
+                    solution is left as it was, never partly loaded.
       */
       int readFromFile( const QString& filename, bool resolveRefs = true );
 
@@ -159,8 +160,11 @@ class US_UTIL_EXTERN US_Solution
       //!                protocols could not be read
       int countInProtocols   ( IUS_DB2* = 0 );
 
-      //! \brief An overloaded assignment operator
-      US_Solution&           operator=( const US_Solution& );
+      //! \brief Copies every member.  The assignment used to be written
+      //!        out by hand, member by member, which left the copy
+      //!        constructor implicit and deprecated; both are the defaults.
+      US_Solution( const US_Solution& )            = default;
+      US_Solution& operator=( const US_Solution& ) = default;
 
       //! \brief Displays the contents of the class variables in qDebug() statements
       void show              ( void );
@@ -169,6 +173,8 @@ class US_UTIL_EXTERN US_Solution
 
       void readSolutionInfo  ( QXmlStreamReader& xml );
       int     loadFromDisk( QString& );
+      //! \brief Parse a solution file into this object, as it goes
+      int     parseFile   ( const QString&, bool );
       int readBufferDiskGUID ( US_Buffer& , QString& );
       void saveBufferDisk    ( void ) const;
       void saveAnalytesDisk  ( void );

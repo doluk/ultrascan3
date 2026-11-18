@@ -72,6 +72,14 @@ class US_UTIL_EXTERN US_ConvertIO
       */
       static int                   readDiskRun( const QString& directory, DiskRun& run, QString& error );
 
+      /*! \brief True when a name can be a run ID: letters, digits, '_' and
+                 '-', at least one and at most 80 of them.  readDiskRun()
+                 refuses a directory whose name is not one; older data may
+                 still hold run IDs with dots in them.
+          \param runID The run ID to check
+      */
+      static bool                  runIdIsUsable( const QString& runID );
+
       //! \brief readDiskRun() error formats, shared with the tests; fill them
       //! with QString::arg().
       //! A directory name that cannot be a run ID: %1 the name.

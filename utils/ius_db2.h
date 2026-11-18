@@ -161,6 +161,26 @@ public:
     // Error methods (used in tests and error handling)
     virtual QString lastError() = 0;
     virtual int lastErrno() = 0;
+
+    /*! \brief The MySQL server's own error number for the last statement a
+               query sent, or 0 when the server accepted it.
+
+        lastErrno() says that a query failed; this says how, in the server's
+        terms, which do not change with the server's language the way the
+        text of lastError() does.  A procedure the server does not have is
+        ER_SP_DOES_NOT_EXIST (1305), for example.  It is the statement the
+        caller asked for that counts: the follow-up reads of the US3 status
+        a query makes do not change it.  Implementations without a server
+        answer 0.
+    */
+    virtual int lastServerErrno() { return 0; }
+
+    //! Server error numbers lastServerErrno() is compared against
+    enum ServerErrno
+    {
+        serverNoSuchRoutine = 1305,  //!< ER_SP_DOES_NOT_EXIST: no such stored routine
+        serverRoutineDenied = 1370   //!< ER_PROCACCESS_DENIED_ERROR: may not run it
+    };
     virtual int lastInsertID() = 0;
 
     // Connection test methods (used in tests)

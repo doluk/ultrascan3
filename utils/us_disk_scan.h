@@ -23,11 +23,18 @@
     \section diskscan_contract Who may touch the catalog
 
     Exactly one thread is in the \ref US_DataCatalog at a time.  A caller
-    asks for a job, waits for \ref busy to go false, and only then reads
-    \ref catalog; while a job is running \ref catalog answers null.  The
-    worker publishes what it read by going idle and the caller sees it by
-    reading that, so what the worker wrote is visible to whoever finds it
-    idle.  Nothing else is shared, so there is nothing else to lock.
+    asks for a job and waits for \ref busy to go false, and only then reads
+    \ref catalog; while a job is running \ref catalog answers null and a
+    request for another job is refused.
+
+    The scanner goes idle on the thread that owns it -- the one that
+    created it -- not on the worker: the worker finishes the job and posts
+    the result, and when that thread's event loop delivers it, \ref busy
+    goes false and then \ref jobDone is emitted.  So a caller waiting for a
+    job keeps its event loop turning, as a window does anyway, and a slot
+    connected to \ref jobDone finds the scanner idle and its catalog
+    readable, whatever kind of connection it used.  What the worker wrote
+    is visible to the owning thread once it sees the scanner idle.
 
     \section diskscan_jobs The jobs
 
@@ -35,6 +42,13 @@
     below them, and \ref verify reads and hashes the files of one
     experiment.  They are the same three phases a scan has, so a caller
     can run each of them against the database at the same time.
+
+    \section diskscan_cancel Stopping
+
+    \ref cancel stops the job that is running at the next file it would
+    read, and the job then finishes as failed.  Destroying the scanner
+    cancels whatever it is doing first, so closing a window does not wait
+    for a whole store to be indexed.
 */
 class US_UTIL_EXTERN US_DiskScan : public QThread
 {
@@ -54,25 +68,32 @@ class US_UTIL_EXTERN US_DiskScan : public QThread
       //! \param parent The parent object, for Qt ownership
       explicit US_DiskScan( QObject* parent = nullptr );
 
-      //! \brief Finish the current job, stop the thread and release the
+      //! \brief Cancel the current job, stop the thread and release the
       //!        catalog
       ~US_DiskScan() override;
 
       //! \brief Read the experiments of the local store
       //! \param projectGUID When not empty, only experiments of that project
-      void list     ( const QString& projectGUID = QString() );
+      //! \returns False, and nothing is done, while a job is running
+      bool list     ( const QString& projectGUID = QString() );
 
       //! \brief Read the records below the experiments
-      void readChain( void );
+      //! \returns False, and nothing is done, while a job is running
+      bool readChain( void );
 
       //! \brief Read and hash the files of one experiment
       //! \param index The position of the experiment
-      void verify   ( int index );
+      //! \returns False, and nothing is done, while a job is running
+      bool verify   ( int index );
 
-      //! \brief True while a job is running
+      //! \brief Stop the job that is running, if any; it finishes as failed
+      void cancel   ( void );
+
+      //! \brief True from a request until the owning thread has seen the
+      //!        job finish
       //!
-      //! A caller waits for this to go false before reading anything the
-      //! worker produced.
+      //! A caller waits for this to go false, with its event loop turning,
+      //! before reading anything the worker produced.
       bool busy( void ) const;
 
       /*! \brief The catalog the worker reads into
@@ -89,7 +110,7 @@ class US_UTIL_EXTERN US_DiskScan : public QThread
       bool ok( void ) const;
 
    signals:
-      //! \brief A job has finished
+      //! \brief A job has finished, and the scanner is idle again
       //! \param job   The job that finished
       //! \param index The experiment it was for, or -1
       void jobDone ( int job, int index );
@@ -99,7 +120,7 @@ class US_UTIL_EXTERN US_DiskScan : public QThread
       void message ( const QString& message );
 
    protected:
-      //! \brief The worker loop: wait for a job, do it, say it is done
+      //! \brief The worker loop: wait for a job, do it, post the result
       void run( void ) override;
 
    private:
@@ -113,14 +134,20 @@ class US_UTIL_EXTERN US_DiskScan : public QThread
       int              job_index;  //!< Its experiment, guarded by mutex
       bool             stopping;   //!< Guarded by mutex
 
-      //! Zero while a job is running.  The worker publishes what it read by
-      //! storing 1 here, and a caller reads it with an acquire, so what the
-      //! worker wrote is visible to whoever sees the 1.
+      //! Zero from a request until the owning thread has taken the result.
+      //! Only the owning thread changes it, so a caller that sees 1 sees
+      //! everything the worker wrote before it posted the result.
       QAtomicInt       idle;
 
-      QString          err_text;   //!< Written by the worker before idle
-      bool             err_ok;     //!< Written by the worker before idle
+      //! Non-zero once the running job should stop; the catalog checks it
+      QAtomicInt       abort_flag;
 
-      void request( Job job, const QString& guid, int index );
+      QString          err_text;   //!< Written by the worker before posting
+      bool             err_ok;     //!< Written by the worker before posting
+
+      bool request ( Job job, const QString& guid, int index );
+
+      //! \brief Take a finished job's result, on the owning thread
+      void finished( int job, int index );
 };
 #endif
