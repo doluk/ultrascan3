@@ -40,6 +40,7 @@ int US_Project::readFromFile( const QString& filename )
 
    // Leave the destination unchanged if parsing fails.
    US_Project pr;
+   bool       sawProject = false;
 
    while ( ! xml.atEnd() )
    {
@@ -49,6 +50,7 @@ int US_Project::readFromFile( const QString& filename )
       {
          if ( xml.name() == "project" )
          {
+            sawProject = true;
             QXmlStreamAttributes a = xml.attributes();
             pr.projectID   = a.value( "id" ).toString().toInt();
             pr.projectGUID = a.value( "guid" ).toString();
@@ -66,6 +68,14 @@ int US_Project::readFromFile( const QString& filename )
       qDebug() << "Error: xml error: \n"
                << xml.errorString();
       return IUS_DB2::DBERROR;
+   }
+
+   // A well-formed file that is not a project -- or a project with no GUID
+   // to know it by -- is not a project that was read
+   if ( ! sawProject  ||  pr.projectGUID.isEmpty() )
+   {
+      qDebug() << "Error: no project in" << filename;
+      return IUS_DB2::NO_PROJECT;
    }
 
    pr.saveStatus = HD_ONLY;

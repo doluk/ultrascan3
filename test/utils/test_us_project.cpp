@@ -358,3 +358,28 @@ TEST_F( US_ProjectTest, FileBlockingDataDirectoryReportsFailureWithoutReplacingI
    ASSERT_TRUE( file.open( QIODevice::ReadOnly ) );
    EXPECT_EQ( file.readAll(), QByteArray( "sentinel" ) );
 }
+
+// Well-formed XML that holds no project is not a project that was read:
+// it used to return OK with an empty GUID and overwrite what was loaded.
+TEST_F( US_ProjectTest, AFileWithoutAProjectIsAnErrorAndChangesNothing )
+{
+   populateTestProject();
+
+   QString notProject;
+   writeIntoProjectsDir( "<?xml version=\"1.0\"?>\n<SolutionData>\n"
+                         "<solution id=\"3\" guid=\"aaaa\"/>\n</SolutionData>\n",
+                         "P0000007.xml", &notProject );
+   EXPECT_EQ( project->readFromFile( notProject ), IUS_DB2::NO_PROJECT );
+   EXPECT_EQ( project->projectGUID, QString( "test-guid-123" ) );
+   EXPECT_EQ( project->projectID,   42 );
+
+   QString noGuid;
+   writeIntoProjectsDir( createTestProjectXml( "" ), "P0000008.xml", &noGuid );
+   EXPECT_EQ( project->readFromFile( noGuid ), IUS_DB2::NO_PROJECT );
+   EXPECT_EQ( project->projectGUID, QString( "test-guid-123" ) );
+
+   QString good;
+   writeIntoProjectsDir( createTestProjectXml( "fresh-guid", 7 ), "P0000009.xml", &good );
+   EXPECT_EQ( project->readFromFile( good ), IUS_DB2::OK );
+   EXPECT_EQ( project->projectGUID, QString( "fresh-guid" ) );
+}
