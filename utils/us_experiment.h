@@ -215,6 +215,11 @@ class US_UTIL_EXTERN US_Experiment
       void clear( void ); //!< Function to reset all class variables to defaults
       void show ( void ); //!< Temporary function to display current exp info
 
+      //! \brief The RI intensity profile as the US_RIProfile XML that
+      //!        saveRIDisk() writes and the database stores, without
+      //!        writing anything.  Empty unless the optical system is RI.
+      QByteArray riProfileXml( void );
+
       RotorInfo         hwInfo;
 
    private:

@@ -101,4 +101,10 @@ TEST_F( ExperimentRiCache, AReadOnlyCallerLeavesTheResultsDirectoryAlone )
    ASSERT_EQ( experiment.readFromDB( kRun, &db, speedsteps, "17", false ), IUS_DB2::OK );
    EXPECT_EQ   ( experiment.RIProfile.size(), 2 ) << "the profile is still read";
    EXPECT_FALSE( QFile::exists( profile ) );
+
+   // and its XML is to be had without a file
+   QByteArray xml = experiment.riProfileXml();
+   EXPECT_TRUE ( xml.contains( "US_RIProfile" ) );
+   EXPECT_FALSE( QFile::exists( profile ) );
+   EXPECT_EQ   ( xml.count( "<RI " ), 2 ) << xml.toStdString();
 }

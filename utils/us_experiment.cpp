@@ -948,6 +948,13 @@ qDebug() << "readRIDisk() error" << error;
    return US_Convert::OK;
 }
 
+QByteArray US_Experiment::riProfileXml( void )
+{
+   QByteArray xml;
+   createRIXml( xml );
+   return xml;
+}
+
 void US_Experiment::createRIXml( QByteArray& str )
 {
    if ( this->opticalSystem != "RI" )
