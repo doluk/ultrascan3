@@ -15,15 +15,24 @@
 
     Deciding whether an existing record in the target is "the same" record
     needs something weaker, because a record that was copied between
-    installations legitimately differs in its IDs and time stamps.  The
-    property fingerprint therefore re-serializes an XML payload in a
-    canonical form with the volatile identity attributes dropped, so two
-    records that only differ in their IDs, GUIDs and time stamps compare
-    equal.
+    installations legitimately differs in its own identity, its numeric IDs
+    and its time stamps.  The property fingerprint therefore re-serializes an
+    XML payload in a canonical form with exactly those keys dropped.  Every
+    other attribute is kept -- including the GUIDs a record uses to name its
+    parents, so a caller comparing two records has to put both in terms of
+    the same parents first (the importer rewrites its copy of the bundle
+    record to name the target's parents before it compares).
 */
 class US_DataPubHash
 {
    public:
+      //! \brief The largest XML payload the fingerprint reads, in bytes
+      //!
+      //! Record payloads are a few kilobytes and a large Monte Carlo model a
+      //! few megabytes.  Anything beyond this is refused rather than read
+      //! whole into memory.
+      static const qint64 maxXmlSize = 64 * 1024 * 1024;
+
       //! \brief The SHA-256 digest of a file, as lower-case hexadecimal
       //! \param filename The full path of the file to digest
       //! \returns An empty string when the file cannot be read
@@ -33,32 +42,53 @@ class US_DataPubHash
       //! \param data The bytes to digest
       static QString dataHash( const QByteArray& data );
 
-      //! \brief The property fingerprint of a file
-      //!
-      //! For XML payloads this is the digest of the canonical form
-      //! described by \ref canonicalXml; for any other payload it is the
-      //! plain file digest.
-      //! \param filename The full path of the file to fingerprint
-      static QString fingerprint( const QString& filename );
+      /*! \brief The property fingerprint of a file
+
+          For XML payloads this is the digest of the canonical form described
+          by \ref canonicalXml; for any other payload it is the plain file
+          digest.
+          \param filename   The full path of the file to fingerprint
+          \param ownElement The element carrying the record's own identity
+          \param ownAttr    The attribute of \a ownElement holding that
+                            identity (its GUID); dropped from the first
+                            \a ownElement only
+          \returns An empty string when the file cannot be read, or is an
+                   XML file larger than \ref maxXmlSize
+      */
+      static QString fingerprint( const QString& filename,
+                                  const QString& ownElement = QString(),
+                                  const QString& ownAttr    = QString() );
 
       //! \brief The property fingerprint of XML text
-      //! \param xml The XML text to fingerprint
-      static QString xmlFingerprint( const QByteArray& xml );
+      //! \param xml        The XML text to fingerprint
+      //! \param ownElement As for \ref fingerprint
+      //! \param ownAttr    As for \ref fingerprint
+      static QString xmlFingerprint( const QByteArray& xml,
+                                     const QString& ownElement = QString(),
+                                     const QString& ownAttr    = QString() );
 
-      //! \brief A canonical rendering of XML with volatile keys dropped
-      //!
-      //! Elements are emitted in document order, attributes in sorted order,
-      //! text is whitespace-collapsed and attributes whose name identifies a
-      //! record instance (anything ending in \c ID, anything containing
-      //! \c guid) or a time stamp (anything containing \c date, \c updated
-      //! or \c created) are left out.
-      //! \param xml The XML text to render
-      //! \returns The canonical text, or an empty array on a parse error
-      static QByteArray canonicalXml( const QByteArray& xml );
+      /*! \brief A canonical rendering of XML with volatile keys dropped
 
-      //! \brief True when an attribute or element name is left out of the
-      //!        canonical rendering
-      //! \param name The attribute or element name to test
+          Elements are emitted in document order, attributes in sorted order
+          and text whitespace-collapsed.  Left out are the attributes named by
+          \ref isVolatileKey (numeric record IDs and time stamps, from an
+          explicit list) and the record's own identity attribute \a ownAttr
+          on the first \a ownElement.  Nothing else is dropped: an attribute
+          such as \c solid or \c liquid, or the GUID of a parent record, is
+          part of what the record means.
+          \param xml        The XML text to render
+          \param ownElement As for \ref fingerprint
+          \param ownAttr    As for \ref fingerprint
+          \returns The canonical text, or an empty array on a parse error
+      */
+      static QByteArray canonicalXml( const QByteArray& xml,
+                                      const QString& ownElement = QString(),
+                                      const QString& ownAttr    = QString() );
+
+      //! \brief True when an attribute name is left out of every canonical
+      //!        rendering: an installation-specific numeric record ID or a
+      //!        time stamp, from an explicit list
+      //! \param name The attribute name to test
       static bool    isVolatileKey( const QString& name );
 
       //! \brief True when the file name looks like an XML payload

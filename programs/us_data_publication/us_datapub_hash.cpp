@@ -37,24 +37,43 @@ bool US_DataPubHash::isXmlFile( const QString& filename )
    return filename.endsWith( ".xml", Qt::CaseInsensitive );
 }
 
+/* The keys a copied record legitimately differs in.
+
+   This is an explicit list on purpose.  Matching on a pattern -- "anything
+   ending in id", "anything containing guid" -- also dropped real properties
+   (a buffer component that is "solid", an analyte that is "liquid") and the
+   GUIDs records use to name their parents, so two records that differed in
+   exactly those compared equal and one was silently reused for the other.
+   The record's own GUID is not on the list: which attribute holds it
+   depends on the record type, so the caller names it.
+*/
 bool US_DataPubHash::isVolatileKey( const QString& name )
 {
-   QString key = name.toLower();
+   static const QStringList keys = QStringList()
+      // numeric record IDs, which each installation allocates itself
+      << "id"         << "ID"           << "rotorID"      << "calExpID"
+      << "bufferID"   << "analyteID"    << "solutionID"   << "projectID"
+      << "expID"      << "experimentID" << "rawDataID"    << "editedDataID"
+      << "editID"     << "modelID"      << "noiseID"      << "calibrationID"
+      << "labID"      << "instrumentID" << "operatorID"   << "invID"
+      << "personID"
+      // time stamps
+      << "date"       << "lastUpdated"  << "dateUpdated"  << "updated"
+      << "created"    << "timeCreated"  << "dateCreated"
+      // the calibration experiment of a rotor calibration: an import does
+      // not carry it, so the target's copy never has the source's
+      << "calExpGUID";
 
-   if ( key == "id"          )  return true;
-   if ( key.endsWith( "id" ) )  return true;
-   if ( key.contains( "guid"    ) )  return true;
-   if ( key.contains( "date"    ) )  return true;
-   if ( key.contains( "updated" ) )  return true;
-   if ( key.contains( "created" ) )  return true;
-
-   return false;
+   return keys.contains( name );
 }
 
-QByteArray US_DataPubHash::canonicalXml( const QByteArray& xml )
+QByteArray US_DataPubHash::canonicalXml( const QByteArray& xml,
+                                         const QString& ownElement,
+                                         const QString& ownAttr )
 {
    QXmlStreamReader reader( xml );
    QByteArray       out;
+   bool             ownSeen = ownElement.isEmpty()  ||  ownAttr.isEmpty();
 
    while ( ! reader.atEnd() )
    {
@@ -62,7 +81,16 @@ QByteArray US_DataPubHash::canonicalXml( const QByteArray& xml )
 
       if ( reader.isStartElement() )
       {
-         out += "<" + reader.name().toString().toUtf8();
+         QString ename = reader.name().toString();
+         bool    isOwn = false;
+
+         if ( ! ownSeen  &&  ename == ownElement )
+         {
+            isOwn   = true;
+            ownSeen = true;
+         }
+
+         out += "<" + ename.toUtf8();
 
          QXmlStreamAttributes attrs = reader.attributes();
          QStringList          names;
@@ -76,7 +104,8 @@ QByteArray US_DataPubHash::canonicalXml( const QByteArray& xml )
          {
             QString aname = names[ ii ];
 
-            if ( isVolatileKey( aname ) )  continue;
+            if ( isVolatileKey( aname ) )        continue;
+            if ( isOwn  &&  aname == ownAttr )   continue;
 
             out += " " + aname.toUtf8() + "=\""
                    + attrs.value( aname ).toString().trimmed().toUtf8() + "\"";
@@ -104,9 +133,11 @@ QByteArray US_DataPubHash::canonicalXml( const QByteArray& xml )
    return out;
 }
 
-QString US_DataPubHash::xmlFingerprint( const QByteArray& xml )
+QString US_DataPubHash::xmlFingerprint( const QByteArray& xml,
+                                        const QString& ownElement,
+                                        const QString& ownAttr )
 {
-   QByteArray canonical = canonicalXml( xml );
+   QByteArray canonical = canonicalXml( xml, ownElement, ownAttr );
 
    if ( canonical.isEmpty() )              // Not parseable as XML
       return dataHash( xml );
@@ -114,7 +145,9 @@ QString US_DataPubHash::xmlFingerprint( const QByteArray& xml )
    return dataHash( canonical );
 }
 
-QString US_DataPubHash::fingerprint( const QString& filename )
+QString US_DataPubHash::fingerprint( const QString& filename,
+                                     const QString& ownElement,
+                                     const QString& ownAttr )
 {
    if ( ! isXmlFile( filename ) )  return fileHash( filename );
 
@@ -122,8 +155,11 @@ QString US_DataPubHash::fingerprint( const QString& filename )
 
    if ( ! file.open( QIODevice::ReadOnly ) )  return QString();
 
-   QByteArray xml = file.readAll();
+   // Read no more than the cap, whatever the file claims its size is
+   QByteArray xml = file.read( maxXmlSize + 1 );
    file.close();
 
-   return xmlFingerprint( xml );
+   if ( xml.size() > maxXmlSize )  return QString();
+
+   return xmlFingerprint( xml, ownElement, ownAttr );
 }

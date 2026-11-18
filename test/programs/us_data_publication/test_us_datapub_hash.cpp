@@ -37,8 +37,8 @@ TEST( DataPubHash, MissingFileHasNoDigest )
 TEST( DataPubHash, VolatileKeysAreRecognized )
 {
    EXPECT_TRUE ( US_DataPubHash::isVolatileKey( "id" ) );
-   EXPECT_TRUE ( US_DataPubHash::isVolatileKey( "modelGUID" ) );
    EXPECT_TRUE ( US_DataPubHash::isVolatileKey( "editedDataID" ) );
+   EXPECT_TRUE ( US_DataPubHash::isVolatileKey( "rotorID" ) );
    EXPECT_TRUE ( US_DataPubHash::isVolatileKey( "lastUpdated" ) );
    EXPECT_TRUE ( US_DataPubHash::isVolatileKey( "timeCreated" ) );
    EXPECT_TRUE ( US_DataPubHash::isVolatileKey( "date" ) );
@@ -46,6 +46,64 @@ TEST( DataPubHash, VolatileKeysAreRecognized )
    EXPECT_FALSE( US_DataPubHash::isVolatileKey( "description" ) );
    EXPECT_FALSE( US_DataPubHash::isVolatileKey( "density" ) );
    EXPECT_FALSE( US_DataPubHash::isVolatileKey( "vbar20" ) );
+}
+
+// The list is explicit: a property that merely ends in "id" or a reference
+// that merely contains "guid" is part of what the record means
+TEST( DataPubHash, RealPropertiesAndReferencesAreNotVolatile )
+{
+   EXPECT_FALSE( US_DataPubHash::isVolatileKey( "solid" ) );
+   EXPECT_FALSE( US_DataPubHash::isVolatileKey( "liquid" ) );
+   EXPECT_FALSE( US_DataPubHash::isVolatileKey( "editGUID" ) );
+   EXPECT_FALSE( US_DataPubHash::isVolatileKey( "modelGUID" ) );
+   EXPECT_FALSE( US_DataPubHash::isVolatileKey( "guid" ) );
+}
+
+TEST( DataPubHash, FingerprintSeesAPropertyEndingInId )
+{
+   QByteArray one = "<r><component name=\"salt\" solid=\"1\"/></r>";
+   QByteArray two = "<r><component name=\"salt\" solid=\"0\"/></r>";
+
+   EXPECT_NE( US_DataPubHash::xmlFingerprint( one ),
+              US_DataPubHash::xmlFingerprint( two ) );
+}
+
+// A solution of another buffer is another solution, even when everything
+// else about it is the same
+TEST( DataPubHash, FingerprintSeesADifferentParent )
+{
+   QByteArray one =
+      "<SolutionData><solution id=\"1\" guid=\"11111111-1111-1111-1111-111111111111\">"
+      "<buffer id=\"3\" guid=\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\" desc=\"b\"/>"
+      "</solution></SolutionData>";
+   QByteArray two =
+      "<SolutionData><solution id=\"2\" guid=\"22222222-2222-2222-2222-222222222222\">"
+      "<buffer id=\"3\" guid=\"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb\" desc=\"b\"/>"
+      "</solution></SolutionData>";
+   QByteArray three =
+      "<SolutionData><solution id=\"9\" guid=\"33333333-3333-3333-3333-333333333333\">"
+      "<buffer id=\"8\" guid=\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\" desc=\"b\"/>"
+      "</solution></SolutionData>";
+
+   EXPECT_NE( US_DataPubHash::xmlFingerprint( one, "solution", "guid" ),
+              US_DataPubHash::xmlFingerprint( two, "solution", "guid" ) );
+
+   // Its own identity and the numeric IDs are what may differ
+   EXPECT_EQ( US_DataPubHash::xmlFingerprint( one,   "solution", "guid" ),
+              US_DataPubHash::xmlFingerprint( three, "solution", "guid" ) );
+}
+
+TEST( DataPubHash, AnOversizedXmlPayloadHasNoFingerprint )
+{
+   QString path = QDir::tempPath() + "/us_datapub_hash_big.xml";
+   QFile   file( path );
+   ASSERT_TRUE( file.open( QIODevice::WriteOnly ) );
+   ASSERT_TRUE( file.resize( US_DataPubHash::maxXmlSize + 16 ) );
+   file.close();
+
+   EXPECT_TRUE( US_DataPubHash::fingerprint( path ).isEmpty() );
+
+   QFile::remove( path );
 }
 
 // Two copies of the same record that were made in different installations
@@ -66,8 +124,8 @@ TEST( DataPubHash, FingerprintIgnoresIdentityAndTimestamps )
       " description=\"Demo buffer\" density=\"1.0\" lastUpdated=\"2026-09-12\">"
       "</buffer></BufferData>";
 
-   EXPECT_EQ( US_DataPubHash::xmlFingerprint( one ),
-              US_DataPubHash::xmlFingerprint( two ) );
+   EXPECT_EQ( US_DataPubHash::xmlFingerprint( one, "buffer", "guid" ),
+              US_DataPubHash::xmlFingerprint( two, "buffer", "guid" ) );
    EXPECT_NE( US_DataPubHash::dataHash( one ),
               US_DataPubHash::dataHash( two ) );
 }
