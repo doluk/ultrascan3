@@ -447,6 +447,10 @@ class US_UTIL_EXTERN US_DataIO
                                const Parameters& );
       static void write      ( QDataStream&, const char*, int, quint32& );
       static void read       ( QDataStream&,       char*, int, quint32& );
+
+      //! \private Read the fixed file header into \a rd; throws an ioError
+      //! \returns The format version of the file
+      static quint32 readHeader( QDataStream&, RawData&, quint32& );
       
       static void ident      ( QXmlStreamReader&, EditValues& );
       static void run        ( QXmlStreamReader&, EditValues& );
