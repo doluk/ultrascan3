@@ -1,29 +1,37 @@
 //! \file us_data_model.cpp
 
 #include "us_data_model.h"
-#include "us_data_process.h"
-#include "us_data_tree.h"
 #include "us_util.h"
 #include "us_settings.h"
 #include "us_model.h"
 #include "us_noise.h"
-#include "us_editor.h"
+
+#include <algorithm>
+#include <functional>
 
 #define timeFmt QString("hh:mm:ss")
 #define nowTime() "T="+QDateTime::currentDateTime().toString(timeFmt)
+
+namespace
+{
+   const QString dmyGUID = "00000000-0000-0000-0000-000000000000";
+
+   // A label short enough for the tree, from a model or noise description
+   QString short_label( const QString& descript )
+   {
+      QString label = descript.section( ".", 0, -2 );
+
+      if ( label.length() > 40 )
+         label = label.left( 13 ) + "..." + label.right( 24 );
+
+      return label;
+   }
+}
 
 // Scan the database and local disk for R/E/M/N data sets
 US_DataModel::US_DataModel( QWidget* parwidg /*=0*/ )
 {
    parentw    = parwidg;   // parent (main manage_data) widget
-
-   ddescs .clear();        // db descriptions
-   ldescs .clear();        // local descriptions
-   adescs .clear();        // all descriptions
-   mdescs .clear();        // merged descriptions of one experiment
-   chgrows.clear();        // changed rows
-   runents.clear();        // experiment entries
-   run_queue.clear();      // experiments still to read
 
    db         = NULL;
    cat_db     = NULL;
@@ -31,6 +39,13 @@ US_DataModel::US_DataModel( QWidget* parwidg /*=0*/ )
    scanner    = NULL;
    use_db     = false;
    use_lo     = false;
+   db_failed  = false;
+   scanning   = false;
+   busy       = 0;
+   progress   = NULL;
+   lb_status  = NULL;
+   ob_process = NULL;
+   ob_tree    = NULL;
    kdb_recs   = 0;
    klo_recs   = 0;
 
@@ -39,20 +54,13 @@ US_DataModel::US_DataModel( QWidget* parwidg /*=0*/ )
 
 US_DataModel::~US_DataModel()
 {
-   // The worker has to be stopped before its catalog goes away, and the
-   // catalog is the worker's, so deleting the scanner does both
-   delete scanner;
-
-   scanner = NULL;
-   cat_lo  = NULL;
+   close_catalogs();
 }
 
 // Set database related pointers
 void US_DataModel::setDatabase( US_DB2* a_db )
 {
    db         = a_db;      // pointer to opened db connection
-   invID      = QString::number( US_Settings::us_inv_ID() );
-DbgLv(1) << "DMod:setDB: invID" << invID;
 }
 
 // Set progress bar related pointers
@@ -98,60 +106,178 @@ QObject* US_DataModel::treeobj()
 {
    return ob_tree;
 }
-// Scan the database and local disk for run identifiers
+
+// ------------------------------------------------------------ the selectors
 //
-// The catalog answers this from its first layer, which is one query against
-// the database and one pass over the results directory -- the same pass the
-// scan itself uses, so a store is not walked twice to fill in a combo box.
+// The run and triple selectors only need names, so they are filled the way
+// they always were: one query and one directory listing.  Reading the
+// record chain, or indexing the local store, to fill a combo box is what
+// made opening the window and picking a run slow.
+
+// The run IDs of one person's database experiments
+QStringList US_DataModel::db_run_ids( IUS_DB2* dbP, int invID,
+                                      QString& error )
+{
+   QStringList runIDs;
+   error.clear();
+
+   if ( dbP == NULL )   return runIDs;
+
+   QStringList query;
+   query << "get_experiment_desc" << QString::number( invID );
+   dbP->query( query );
+
+   int status = dbP->lastErrno();
+
+   if ( status != IUS_DB2::OK  &&  status != IUS_DB2::NOROWS )
+   {
+      error = QObject::tr( "The experiments could not be listed: %1" )
+              .arg( dbP->lastError() );
+      return runIDs;
+   }
+
+   while ( dbP->next() )
+   {
+      QString runID = dbP->value( 1 ).toString();
+
+      if ( ! runID.isEmpty()  &&  ! runIDs.contains( runID ) )
+         runIDs << runID;
+   }
+
+   return runIDs;
+}
+
+// The run IDs of the local results directory
+QStringList US_DataModel::local_run_ids( void )
+{
+   QStringList runIDs;
+   QString     rdir    = US_Settings::resultDir() + "/";
+   QStringList aucdirs = QDir( rdir )
+      .entryList( QDir::AllDirs | QDir::NoDotAndDotDot, QDir::Name );
+   QStringList aucfilt( "*.auc" );
+
+   for ( int ii = 0; ii < aucdirs.size(); ii++ )
+   {  // A run directory is one that holds AUC data; its name is the run ID
+      if ( QDir( rdir + aucdirs[ ii ] )
+           .entryList( aucfilt, QDir::Files ).isEmpty() )
+         continue;
+
+      runIDs << aucdirs[ ii ];
+   }
+
+   return runIDs;
+}
+
+// The triples of one database run
+QStringList US_DataModel::db_triples( IUS_DB2* dbP, const QString& runID,
+                                      int invID, QString& error )
+{
+   QStringList triples;
+   error.clear();
+
+   if ( dbP == NULL )   return triples;
+
+   QStringList query;
+   query << "get_experiment_info_by_runID" << runID
+         << QString::number( invID );
+   dbP->query( query );
+
+   if ( dbP->lastErrno() != IUS_DB2::OK  ||  ! dbP->next() )
+      return triples;                  // not in the database: nothing to add
+
+   QString expID = dbP->value( 1 ).toString();
+
+   query.clear();
+   query << "get_rawDataIDs" << expID;
+   dbP->query( query );
+
+   int status = dbP->lastErrno();
+
+   if ( status != IUS_DB2::OK  &&  status != IUS_DB2::NOROWS )
+   {
+      error = QObject::tr( "The raw data of %1 could not be listed: %2" )
+              .arg( runID ).arg( dbP->lastError() );
+      return triples;
+   }
+
+   while ( dbP->next() )
+   {
+      QString fname = dbP->value( 2 ).toString().section( "/", -1, -1 );
+
+      if ( US_DataCatalog::runIdOfFile( fname, false ) != runID )
+         continue;
+
+      QString triple = fname.section( ".", -4, -2 );
+
+      if ( ! triples.contains( triple ) )
+         triples << triple;
+   }
+
+   return triples;
+}
+
+// The triples of one local run
+QStringList US_DataModel::local_triples( const QString& runID )
+{
+   QStringList triples;
+   QStringList aucfiles = QDir( US_Settings::resultDir() + "/" + runID )
+      .entryList( QStringList( "*.auc" ), QDir::Files, QDir::Name );
+
+   for ( int ii = 0; ii < aucfiles.size(); ii++ )
+   {
+      QString fname = aucfiles.at( ii );
+
+      if ( US_DataCatalog::runIdOfFile( fname, false ) != runID )
+         continue;
+
+      QString triple = fname.section( ".", -4, -2 );
+
+      if ( ! triples.contains( triple ) )
+         triples << triple;
+   }
+
+   return triples;
+}
+
+// Scan the database and local disk for run identifiers
 void US_DataModel::getRunIDs( QStringList& runIDs, int& source )
 {
    runIDs.clear();
 
-   QString error;
-
    // source: 0=ALL, 1=DB Only, 2=Local Only,
    //         3=Exclude Local-Only Trees, 4=Exclude DB-Only Trees
-   if ( source != 2  &&  db != NULL )
+   QStringList dbIDs;
+   QStringList loIDs;
+   QString     error;
+
+   if ( source != 2 )
    {
-      US_DataCatalog catalog( this );
+      dbIDs = db_run_ids( db, US_Settings::us_inv_ID(), error );
 
-      if ( catalog.attach( db, error )  &&  catalog.loadRuns( error ) )
-      {
-         for ( int ii = 0; ii < catalog.runCount(); ii++ )
-         {
-            QString runID = catalog.run( ii ).runID;
-
-            if ( ! runIDs.contains( runID ) )
-               runIDs << runID;
-         }
-      }
-
-      else
-         DbgLv(1) << "gRI: db" << error;
+      if ( ! error.isEmpty() )
+         note( error );
    }
-DbgLv(1) << "gRI: db runs" << runIDs.size();
 
    if ( source != 1 )
+      loIDs = local_run_ids();
+
+   if ( source == 3 )
+   {  // only runs that are in the database
+      runIDs = dbIDs;
+   }
+
+   else if ( source == 4 )
+   {  // only runs that are on local disk
+      runIDs = loIDs;
+   }
+
+   else
    {
-      US_DataCatalog catalog( this );
+      runIDs = dbIDs;
 
-      if ( catalog.open( US_DataCatalog::Disk, "", error )  &&
-           catalog.loadRuns( error ) )
-      {
-         for ( int ii = 0; ii < catalog.runCount(); ii++ )
-         {
-            const US_DataCatalog::Run& run = catalog.run( ii );
-
-            if ( run.rawCount < 1 )                 continue;
-            if ( runIDs.contains( run.runID ) )     continue;
-            if ( source == 4 )                      continue;
-
-            runIDs << run.runID;
-         }
-      }
-
-      else
-         DbgLv(1) << "gRI: local" << error;
+      for ( int ii = 0; ii < loIDs.size(); ii++ )
+         if ( ! runIDs.contains( loIDs[ ii ] ) )
+            runIDs << loIDs[ ii ];
    }
 DbgLv(1) << "gRI: db+local runs" << runIDs.size();
 
@@ -161,43 +287,18 @@ DbgLv(1) << "gRI: db+local runs" << runIDs.size();
 // Scan the database and local for triples in a runID then return to caller
 void US_DataModel::getTriples( QStringList& triples, QString runID )
 {
-   triples.clear();
-
    QString error;
 
-   if ( db != NULL )
-   {
-      US_DataCatalog catalog( this );
+   triples = db_triples( db, runID, US_Settings::us_inv_ID(), error );
 
-      if ( catalog.attach( db, error )  &&  catalog.loadRuns( error ) )
-      {
-         int index = catalog.indexOfRun( runID );
+   if ( ! error.isEmpty() )
+      note( error );
 
-         if ( index >= 0  &&  catalog.loadRunDetail( index, error ) )
-         {
-            const US_DataCatalog::Run& run = catalog.run( index );
+   QStringList lotrips = local_triples( runID );
 
-            for ( int ii = 0; ii < run.raws.size(); ii++ )
-               if ( ! triples.contains( run.raws.at( ii ).triple ) )
-                  triples << run.raws.at( ii ).triple;
-         }
-      }
-   }
-DbgLv(1) << "gTr: db triples" << triples.size();
-
-   // Add any local triples not already represented
-   QStringList aucfilt;
-   aucfilt << "*.auc";
-   QStringList aucfiles = QDir( US_Settings::resultDir() + "/" + runID )
-      .entryList( aucfilt, QDir::Files, QDir::Name );
-
-   for ( int ii = 0; ii < aucfiles.size(); ii++ )
-   {
-      QString triple = aucfiles.at( ii ).section( ".", -4, -2 );
-
-      if ( ! triples.contains( triple ) )
-         triples << triple;
-   }
+   for ( int ii = 0; ii < lotrips.size(); ii++ )
+      if ( ! triples.contains( lotrips[ ii ] ) )
+         triples << lotrips[ ii ];
 DbgLv(1) << "gTr: db+local triples" << triples.size();
 
    triples.sort();
@@ -206,74 +307,142 @@ DbgLv(1) << "gTr: db+local triples" << triples.size();
 // Set run and triple filters
 void US_DataModel::setFilters( QString a_runf, QString a_tripf, QString a_srcf )
 {
-   if ( filt_run != a_runf  ||
-        filt_triple != a_tripf  ||
-        filt_source != a_srcf )
-      chgrows.clear();     // Reset changed rows if any filters changed
-
    filt_run    = a_runf;   // Filter string for runID
    filt_triple = a_tripf;  // Filter string for triple
    filt_source = a_srcf;   // Filter string for source (DB/local)
 }
 
+// ------------------------------------------------------------ status
+
+// Put a note on the status line, cut to what the line can show
+void US_DataModel::note( const QString& text )
+{
+   if ( lb_status == NULL )   return;
+
+   int width = qMax( lb_status->width() - 4, 80 );
+
+   lb_status->setText( lb_status->fontMetrics().elidedText(
+                       text, Qt::ElideMiddle, width ) );
+}
+
+// What a catalog has to say goes on the status line
+void US_DataModel::scanner_note( const QString& text )
+{
+   note( text );
+}
+
+// Record an error of the scan, so it is not only in the debug log
+void US_DataModel::scan_error( const QString& text )
+{
+   DbgLv(1) << "ScanErr:" << text;
+
+   if ( ! errors.contains( text ) )
+      errors << text;
+}
+
+QStringList US_DataModel::scan_errors( void ) const
+{
+   return errors;
+}
+
+bool US_DataModel::db_listing_failed( void ) const
+{
+   return db_failed;
+}
+
+bool US_DataModel::scan_active( void ) const
+{
+   return scanning;
+}
+
+bool US_DataModel::is_busy( void ) const
+{
+   return ( busy > 0 );
+}
+
+// A read asked for while another is in progress, or while the scan loop
+// runs, is queued: the scan loop, or whoever runs the queue, gets to it
+bool US_DataModel::must_queue( void ) const
+{
+   return ( busy > 0  ||  scanning );
+}
+
 /* Scan the database and local disk for R/E/M/N data sets.
 
-   This is the whole scan for a caller that does not want to drive the
-   phases itself; us_manage_data drives them so it can fill the tree in as
-   the experiments arrive.
+   This is the loop the window runs.  It processes events between
+   experiments so the window stays usable, and anything the window asks of
+   the model meanwhile is only queued -- see must_queue().
 */
 void US_DataModel::scan_data()
 {
+   if ( must_queue() )   return;
+
+   scanning = true;
+
 DbgLv(1) << "ScnD: start scan   " << nowTime();
+   emit scanPhase( tr( "Listing experiments..." ), 1 );
+
    scan_runs();            // First layer:  list the experiments
+
+   emit runsListed();
+   emit scanStep( 1 );
+   qApp->processEvents();
 DbgLv(1) << "ScnD: runs listed  " << nowTime();
 
    int  nruns = runents.size();
-   bool bulk  = ( nruns > 0 )  &&  scan_all();
+   bool bulk  = false;
+
+   if ( nruns > 0 )
+   {
+      emit scanPhase( tr( "Reading %1 experiment(s)..." ).arg( nruns ), nruns );
+      bulk = scan_all();
+   }
 DbgLv(1) << "ScnD: bulk read" << bulk << nowTime();
 
-   progress->setMaximum( qMax( nruns, 1 ) );
-   progress->setValue  ( 0 );
+   int done  = 0;
+   int index = -1;
 
-   for ( int ii = 0; ii < nruns; ii++ )
+   while ( ( index = next_pending_run() ) >= 0 )
    {  // Second layer:  merge one experiment at a time
-      int index  = next_pending_run();
+      note( tr( "Reading %1 ..." ).arg( runents.at( index ).runID ) );
 
-      if ( index < 0 )   break;
+      if ( bulk )  do_merge_run( index );
+      else         do_scan_run ( index );
 
-      lb_status->setText( tr( "Reading %1 ..." )
-                          .arg( runents.at( index ).runID ) );
+      run_queue.removeAll( index );     // never the same one twice
 
-      if ( bulk )  merge_run( index );
-      else         scan_run ( index );
-
-      progress->setValue( ii + 1 );
+      emit runMerged( index );
+      emit scanStep ( ++done );
       qApp->processEvents();
    }
 DbgLv(1) << "ScnD: chain read   " << nowTime();
 
    // Third layer:  compare the experiments that are in both places
    int nver = queue_verifies();
+   done     = 0;
 
-   progress->setMaximum( qMax( nver, 1 ) );
-   progress->setValue  ( 0 );
+   if ( nver > 0 )
+      emit scanPhase( tr( "Comparing %1 experiment(s) held in both places..." )
+                      .arg( nver ), nver );
 
-   for ( int ii = 0; ii < nver; ii++ )
+   while ( ( index = next_pending_verify() ) >= 0 )
    {
-      int index = next_pending_verify();
+      note( tr( "Comparing %1 ..." ).arg( runents.at( index ).runID ) );
 
-      if ( index < 0 )   break;
+      if ( do_verify_run( index ) )
+         emit runCompared( index );
 
-      lb_status->setText( tr( "Comparing %1 ..." )
-                          .arg( runents.at( index ).runID ) );
-      verify_run( index );
+      ver_queue.removeAll( index );
 
-      progress->setValue( ii + 1 );
+      emit scanStep( ++done );
       qApp->processEvents();
    }
 
-   lb_status->setText( tr( "Data Scan Complete" ) );
-   qApp->processEvents();
+   scanning = false;
+
+   note( errors.isEmpty() ? tr( "Data scan complete" )
+                          : tr( "Data scan complete, with %1 error(s)" )
+                            .arg( errors.size() ) );
 DbgLv(1) << "ScnD: scan done    " << nowTime();
 }
 
@@ -294,7 +463,6 @@ void US_DataModel::change_datadesc( DataDesc ddesc, int row )
 {
    adescs[ row ] = ddesc;
    cdesc         = ddesc;
-   chgrows << row;
 }
 
 // Set current data description object
@@ -329,6 +497,12 @@ int US_DataModel::recCountLoc()
 // one of them.  Both sources -- the database and the local disk -- are read
 // through US_DataCatalog, so the walk of the record chain is the same one
 // every other program uses, and the local store is read once per scan.
+//
+// The experiment rows are rows 0 to N-1, and each experiment's records are
+// appended when it is read.  So the records of an experiment are its
+// firstRow to lastRow, and the rows that follow an experiment row are other
+// experiments: anything that walks the rows below a row has to stay inside
+// the row range of its experiment -- see run_of_row() and descendant_rows().
 
 US_DataModel::RunEntry::RunEntry()
 {
@@ -341,6 +515,7 @@ US_DataModel::RunEntry::RunEntry()
    loCount  = 0;
    loaded   = false;
    verified = false;
+   orphans  = false;
 }
 
 bool US_DataModel::RunEntry::inBoth( void ) const
@@ -348,7 +523,18 @@ bool US_DataModel::RunEntry::inBoth( void ) const
    return ( dbIndex >= 0  &&  loIndex >= 0 );
 }
 
-// Open the catalogs the current source filter calls for
+// Release the catalogs and the disk worker
+void US_DataModel::close_catalogs( )
+{
+   // The worker has to be stopped before its catalog goes away, and the
+   // catalog is the worker's, so deleting the scanner does both
+   delete cat_db;
+   delete scanner;
+   cat_db     = NULL;
+   cat_lo     = NULL;
+   scanner    = NULL;
+}
+
 /* Open the sources the current filter calls for.
 
    The local store is read on a worker thread, so that walking thousands of
@@ -359,11 +545,7 @@ bool US_DataModel::RunEntry::inBoth( void ) const
 */
 void US_DataModel::open_catalogs( )
 {
-   delete cat_db;
-   delete scanner;
-   cat_db     = NULL;
-   cat_lo     = NULL;
-   scanner    = NULL;
+   close_catalogs();
 
    use_db     = ( db != NULL  &&  filt_source != "Local Only" );
    use_lo     = ( filt_source != "DB Only" );
@@ -374,9 +556,13 @@ void US_DataModel::open_catalogs( )
    {
       cat_db     = new US_DataCatalog( this );
 
+      connect( cat_db, &US_DataCatalog::message,
+               this,   &US_DataModel::scanner_note );
+
       if ( ! cat_db->attach( db, error ) )
       {
-         DbgLv(1) << "ScnR: db catalog" << error;
+         scan_error( tr( "The database could not be read: %1" ).arg( error ) );
+         db_failed  = true;
          delete cat_db;
          cat_db     = NULL;
          use_db     = false;
@@ -390,13 +576,6 @@ void US_DataModel::open_catalogs( )
       connect( scanner, &US_DiskScan::message,
                this,    &US_DataModel::scanner_note );
    }
-}
-
-// What the local scan has to say goes on the status line
-void US_DataModel::scanner_note( const QString& note )
-{
-   if ( lb_status != NULL )
-      lb_status->setText( note );
 }
 
 /* Wait for the disk worker to be between jobs, keeping the window alive.
@@ -444,6 +623,9 @@ bool US_DataModel::excluded_tree( int state ) const
    if ( isDba  &&  isLoc )
       return false;                            // in both: never excluded
 
+   if ( ! isDba  &&  ! isLoc )
+      return false;                            // a filler: never excluded
+
    return filt_source.contains( "DB" ) ? isDba : isLoc;
 }
 
@@ -464,20 +646,30 @@ int US_DataModel::run_record_count( const US_DataCatalog::Run& run )
 // Read the first layer:  one record per experiment
 void US_DataModel::scan_runs( )
 {
+   if ( busy > 0 )   return;
+
+   BusyGuard guard( busy );
+
    ddescs   .clear();
    ldescs   .clear();
    adescs   .clear();
    runents  .clear();
    run_queue.clear();
+   ver_queue.clear();
+   errors   .clear();
+   db_failed  = false;
    kdb_recs   = 0;
    klo_recs   = 0;
 
    open_catalogs();
 
-   lb_status->setText( tr( "Listing Experiments..." ) );
-   progress ->setMaximum( 1 );
-   progress ->setValue  ( 0 );
-   qApp->processEvents();
+   note( tr( "Listing Experiments..." ) );
+
+   if ( progress != NULL )
+   {
+      progress->setMaximum( 1 );
+      progress->setValue  ( 0 );
+   }
 
    bool    rfilt = ( ! filt_run.isEmpty()  &&  filt_run != "ALL" );
    QString error;
@@ -487,9 +679,13 @@ void US_DataModel::scan_runs( )
    if ( scanner != NULL )
       scanner->list();
 
-   // Both sources meet in one map, keyed by run identifier, which also
-   // gives the experiments a stable alphabetic order
-   QMap< QString, RunEntry > byRun;
+   // An experiment is the same experiment in both places when it has the
+   // same run identifier.  Two database experiments may share a run
+   // identifier (they are told apart by their experiment IDs), so each
+   // database experiment is an entry of its own, and a local run joins the
+   // first one of its name that has no local run yet.
+   QList< RunEntry > entries;
+   QMultiMap< QString, int > byRun;
 
    if ( use_db )
    {
@@ -501,22 +697,28 @@ void US_DataModel::scan_runs( )
 
             if ( rfilt  &&  run.runID != filt_run )   continue;
 
-            RunEntry entry  = byRun.value( run.runID );
+            RunEntry entry;
             entry.runID     = run.runID;
             entry.dbIndex   = ii;
             entry.dbCount   = run_record_count( run );
-            byRun.insert( run.runID, entry );
+            byRun.insert( run.runID, entries.size() );
+            entries << entry;
          }
       }
 
       else
-         DbgLv(1) << "ScnR: db runs" << error;
+      {
+         db_failed  = true;
+         scan_error( tr( "The database experiments could not be listed: %1" )
+                     .arg( error ) );
+      }
    }
 
    await_disk();                  // the worker has finished its listing
 
    if ( use_lo  &&  scanner != NULL  &&  ! scanner->ok() )
-      DbgLv(1) << "ScnR: local runs" << scanner->error();
+      scan_error( tr( "The local results could not be listed: %1" )
+                  .arg( scanner->error() ) );
 
    if ( use_lo  &&  cat_lo != NULL )
    {
@@ -526,19 +728,46 @@ void US_DataModel::scan_runs( )
 
          if ( rfilt  &&  run.runID != filt_run )   continue;
 
-         RunEntry entry  = byRun.value( run.runID );
-         entry.runID     = run.runID;
-         entry.loIndex   = ii;
-         entry.loCount   = run_record_count( run );
-         byRun.insert( run.runID, entry );
+         int  match = -1;
+         QList< int > same = byRun.values( run.runID );
+         std::sort( same.begin(), same.end() );
+
+         for ( int jj = 0; jj < same.size(); jj++ )
+         {
+            if ( entries[ same[ jj ] ].loIndex < 0 )
+            {
+               match = same[ jj ];
+               break;
+            }
+         }
+
+         if ( match < 0 )
+         {
+            RunEntry entry;
+            entry.runID = run.runID;
+            match       = entries.size();
+            byRun.insert( run.runID, match );
+            entries << entry;
+         }
+
+         entries[ match ].loIndex = ii;
+         entries[ match ].loCount = run_record_count( run );
       }
    }
 
-   QStringList runIDs = byRun.keys();
+   // A stable alphabetic order of the experiments
+   QList< int > order;
 
-   for ( int ii = 0; ii < runIDs.size(); ii++ )
+   for ( int ii = 0; ii < entries.size(); ii++ )
+      order << ii;
+
+   std::stable_sort( order.begin(), order.end(),
+      [ &entries ]( int a, int b )
+      { return entries[ a ].runID < entries[ b ].runID; } );
+
+   for ( int ii = 0; ii < order.size(); ii++ )
    {
-      RunEntry entry = byRun.value( runIDs[ ii ] );
+      RunEntry entry = entries[ order[ ii ] ];
       int      state = ( entry.dbIndex >= 0 ? REC_DB : 0 )
                      | ( entry.loIndex >= 0 ? REC_LO : 0 );
 
@@ -551,10 +780,10 @@ void US_DataModel::scan_runs( )
       run_queue << ( runents.size() - 1 );
    }
 
-   progress ->setMaximum( qMax( runents.size(), 1 ) );
-   progress ->setValue  ( runents.size() );
-   lb_status->setText( tr( "%1 Experiments Listed" ).arg( runents.size() ) );
-   qApp->processEvents();
+   if ( progress != NULL )
+      progress->setValue( 1 );
+
+   note( tr( "%1 Experiments Listed" ).arg( runents.size() ) );
 DbgLv(1) << "ScnR: experiments" << runents.size() << nowTime();
 }
 
@@ -583,6 +812,111 @@ int US_DataModel::index_of_run( const QString& runID ) const
    return -1;
 }
 
+// The experiment a row belongs to
+int US_DataModel::run_of_row( int row ) const
+{
+   if ( row < 0  ||  row >= adescs.size() )   return -1;
+
+   for ( int ii = 0; ii < runents.size(); ii++ )
+   {
+      const RunEntry& entry = runents.at( ii );
+
+      if ( entry.row == row )
+         return ii;
+
+      if ( entry.firstRow >= 0  &&
+           row >= entry.firstRow  &&  row <= entry.lastRow )
+         return ii;
+   }
+
+   return -1;
+}
+
+// The row of a record's parent
+int US_DataModel::parent_row( int row ) const
+{
+   int index = run_of_row( row );
+
+   if ( index < 0 )   return -1;
+
+   const RunEntry& entry = runents.at( index );
+   int  ityp = adescs.at( row ).recType;
+
+   if ( row == entry.row  ||  ityp <= EXPERIMENT )
+      return -1;
+
+   if ( ityp == RAW )
+      return entry.row;
+
+   // The records are in tree order, so the parent is the nearest record
+   // above of a lower level
+   for ( int jj = row - 1; jj >= entry.firstRow; jj-- )
+      if ( adescs.at( jj ).recType < ityp )
+         return jj;
+
+   return -1;
+}
+
+// The rows of every descendant of a row
+QVector< int > US_DataModel::descendant_rows( int row ) const
+{
+   QVector< int > rows;
+   int index = run_of_row( row );
+
+   if ( index < 0 )   return rows;
+
+   const RunEntry& entry = runents.at( index );
+
+   if ( ! entry.loaded  ||  entry.firstRow < 0 )
+      return rows;
+
+   if ( row == entry.row )
+   {  // An experiment: everything in its range
+      for ( int jj = entry.firstRow; jj <= entry.lastRow; jj++ )
+         rows << jj;
+
+      return rows;
+   }
+
+   int ityp = adescs.at( row ).recType;
+
+   for ( int jj = row + 1; jj <= entry.lastRow; jj++ )
+   {
+      if ( adescs.at( jj ).recType <= ityp )   break;
+
+      rows << jj;
+   }
+
+   return rows;
+}
+
+// The run ID a row belongs to
+QString US_DataModel::run_id_of_row( int row ) const
+{
+   if ( row < 0  ||  row >= adescs.size() )   return QString();
+
+   int index = run_of_row( row );
+
+   if ( index >= 0  &&  ! runents.at( index ).orphans )
+      return runents.at( index ).runID;
+
+   // An orphan: the run its file or its description names
+   const DataDesc& desc = adescs.at( row );
+   QString fname = desc.filename.section( "/", -1, -1 );
+
+   if ( desc.recType == RAW  &&  fname.endsWith( ".auc" ) )
+      return US_DataCatalog::runIdOfFile( fname, false );
+
+   if ( desc.recType == EDIT  &&  fname.endsWith( ".xml" ) )
+      return US_DataCatalog::runIdOfFile( fname, true );
+
+   // runID.triple.analysis.model, or .ti_noise / .ri_noise
+   if ( desc.description.count( "." ) >= 3 )
+      return desc.description.section( ".", 0, -4 );
+
+   return desc.description.section( ".", 0, 0 );
+}
+
 // Ask for an experiment to be read before the others
 void US_DataModel::request_run( int index )
 {
@@ -608,9 +942,21 @@ int US_DataModel::pending_runs( ) const
 // Read the second layer of one experiment and merge it into the whole
 bool US_DataModel::scan_run( int index )
 {
+   if ( must_queue() )
+   {
+      request_run( index );
+      return false;
+   }
+
+   return do_scan_run( index );
+}
+
+bool US_DataModel::do_scan_run( int index )
+{
    if ( index < 0  ||  index >= runents.size() )   return false;
 
-   RunEntry entry = runents.at( index );
+   BusyGuard guard( busy );
+   RunEntry  entry = runents.at( index );
 
    if ( entry.loaded )
    {
@@ -620,26 +966,17 @@ bool US_DataModel::scan_run( int index )
 
    QString error;
 
-   ddescs.clear();
-   ldescs.clear();
+   if ( entry.dbIndex >= 0  &&  cat_db != NULL  &&
+        ! cat_db->loadRunDetail( entry.dbIndex, error ) )
+      scan_error( tr( "%1: the database records could not be read: %2" )
+                  .arg( entry.runID ).arg( error ) );
 
-   if ( entry.dbIndex >= 0  &&  cat_db != NULL )
-   {
-      if ( cat_db->loadRunDetail( entry.dbIndex, error ) )
-         catalog_descs( cat_db, entry.dbIndex, REC_DB, ddescs );
-      else
-         DbgLv(1) << "ScnR: db detail" << entry.runID << error;
-   }
+   if ( entry.loIndex >= 0  &&  cat_lo != NULL  &&
+        ! cat_lo->loadRunDetail( entry.loIndex, error ) )
+      scan_error( tr( "%1: the local records could not be read: %2" )
+                  .arg( entry.runID ).arg( error ) );
 
-   if ( entry.loIndex >= 0  &&  cat_lo != NULL )
-   {
-      if ( cat_lo->loadRunDetail( entry.loIndex, error ) )
-         catalog_descs( cat_lo, entry.loIndex, REC_LO, ldescs );
-      else
-         DbgLv(1) << "ScnR: local detail" << entry.runID << error;
-   }
-
-   return merge_run( index );
+   return do_merge_run( index );
 }
 
 /* Read the chain of every experiment at once.
@@ -651,7 +988,10 @@ bool US_DataModel::scan_run( int index )
 */
 bool US_DataModel::scan_all( void )
 {
-   QString error;
+   if ( busy > 0 )   return false;
+
+   BusyGuard guard( busy );
+   QString   error;
 
    // Again the local store is walked on the worker thread while the
    // database is queried here
@@ -669,7 +1009,8 @@ bool US_DataModel::scan_all( void )
    await_disk();
 
    if ( scanner != NULL  &&  ! scanner->ok() )
-      DbgLv(1) << "ScnA: local" << scanner->error();
+      scan_error( tr( "The local records could not be read: %1" )
+                  .arg( scanner->error() ) );
 
    return ok;
 }
@@ -681,9 +1022,21 @@ bool US_DataModel::scan_all( void )
 */
 bool US_DataModel::merge_run( int index )
 {
+   if ( must_queue() )
+   {
+      request_run( index );
+      return false;
+   }
+
+   return do_merge_run( index );
+}
+
+bool US_DataModel::do_merge_run( int index )
+{
    if ( index < 0  ||  index >= runents.size() )   return false;
 
-   RunEntry entry = runents.at( index );
+   BusyGuard guard( busy );
+   RunEntry  entry = runents.at( index );
 
    if ( entry.loaded )
    {
@@ -691,29 +1044,35 @@ bool US_DataModel::merge_run( int index )
       return true;
    }
 
+   if ( progress != NULL )
+   {  // one range per experiment
+      progress->setMaximum( 1 );
+      progress->setValue  ( 0 );
+   }
+
    ddescs.clear();
    ldescs.clear();
 
    if ( entry.dbIndex >= 0  &&  cat_db != NULL )
+   {
       catalog_descs( cat_db, entry.dbIndex, REC_DB, ddescs );
+      repair_descriptions( ddescs, db );
+   }
 
    if ( entry.loIndex >= 0  &&  cat_lo != NULL )
       catalog_descs( cat_lo, entry.loIndex, REC_LO, ldescs );
 
-   sort_descs( ddescs );
-   sort_descs( ldescs );
-
    kdb_recs      += ddescs.size();
    klo_recs      += ldescs.size();
+
+   QVector< DataDesc > mdescs = merge_descs( ddescs, ldescs );
 
    int  base  = adescs.size();
    bool exctr = false;
 
-   merge_dblocal();
-
    for ( int ii = 0; ii < mdescs.size(); ii++ )
    {
-      DataDesc desc = mdescs.at( ii );
+      const DataDesc& desc = mdescs.at( ii );
 
       if ( desc.recType == RAW )        // heads of the trees under the run
          exctr = excluded_tree( desc.recState );
@@ -723,12 +1082,28 @@ bool US_DataModel::merge_run( int index )
       adescs << desc;
    }
 
-   entry.firstRow = ( adescs.size() > base ) ? base : -1;
-   entry.lastRow  = adescs.size() - 1;
+   bool any       = ( adescs.size() > base );
+   entry.firstRow = any ? base : -1;
+   entry.lastRow  = any ? adescs.size() - 1 : -1;
    entry.loaded   = true;
+
+   // The counts on the experiment row are now what is really under it
+   entry.dbCount  = 0;
+   entry.loCount  = 0;
+
+   for ( int row = entry.firstRow; row >= 0  &&  row <= entry.lastRow; row++ )
+   {
+      int state = adescs.at( row ).recState;
+      entry.dbCount += ( ( state & REC_DB ) != 0 ) ? 1 : 0;
+      entry.loCount += ( ( state & REC_LO ) != 0 ) ? 1 : 0;
+   }
+
    runents[ index ] = entry;
 
    run_queue.removeAll( index );
+
+   if ( progress != NULL )
+      progress->setValue( 1 );
 
    return true;
 }
@@ -767,6 +1142,9 @@ void US_DataModel::request_verify( int index )
 
    ver_queue.removeAll( index );
    ver_queue.prepend  ( index );
+
+   if ( ! scanning )
+      emit verifyRequested();
 }
 
 int US_DataModel::next_pending_verify( void ) const
@@ -830,20 +1208,34 @@ QMap< QString, QString > US_DataModel::run_digests( US_DataCatalog* catalog,
 /* Read the checksums of one experiment and compare them again.
 
    Listing a store leaves the checksums out, so up to here a record that is
-   in both places reads as in sync.  This is what decides whether it really
-   is.
+   in both places reads as unverified.  This is what decides whether it is
+   in sync or in conflict.
 */
 bool US_DataModel::verify_run( int index )
 {
+   if ( must_queue() )
+   {
+      request_verify( index );
+      return false;
+   }
+
+   return do_verify_run( index );
+}
+
+bool US_DataModel::do_verify_run( int index )
+{
    if ( index < 0  ||  index >= runents.size() )   return false;
 
-   RunEntry entry = runents.at( index );
+   BusyGuard guard( busy );
+   RunEntry  entry = runents.at( index );
 
    ver_queue.removeAll( index );
 
    if ( entry.verified  ||  ! entry.loaded )       return false;
 
    QString error;
+   bool    dbOk = true;
+   bool    loOk = true;
 
    // The local files are hashed on the worker thread while the database
    // hashes its blobs, so the two halves of the comparison overlap
@@ -852,15 +1244,27 @@ bool US_DataModel::verify_run( int index )
 
    if ( entry.dbIndex >= 0  &&  cat_db != NULL  &&
         ! cat_db->verifyRun( entry.dbIndex, error ) )
-      DbgLv(1) << "VfyR: db" << entry.runID << error;
+   {
+      dbOk = false;
+      scan_error( tr( "%1: the database copies could not be compared: %2" )
+                  .arg( entry.runID ).arg( error ) );
+   }
 
    await_disk();
 
    if ( entry.loIndex >= 0  &&  scanner != NULL  &&  ! scanner->ok() )
-      DbgLv(1) << "VfyR: local" << entry.runID << scanner->error();
+   {
+      loOk = false;
+      scan_error( tr( "%1: the local copies could not be compared: %2" )
+                  .arg( entry.runID ).arg( scanner->error() ) );
+   }
+
+   if ( ! dbOk  ||  ! loOk )
+      return false;                  // the rows stay unverified
 
    QMap< QString, QString > dbDigests = run_digests( cat_db, entry.dbIndex );
    QMap< QString, QString > loDigests = run_digests( cat_lo, entry.loIndex );
+   bool anyConflict = false;
 
    for ( int row = entry.firstRow; row >= 0  &&  row <= entry.lastRow; row++ )
    {
@@ -874,17 +1278,59 @@ bool US_DataModel::verify_run( int index )
       QString dbc = dbDigests.value( desc.dataGUID );
       QString loc = loDigests.value( desc.dataGUID );
 
-      // One side without a checksum is still nothing to compare
-      desc.contents = ( dbc.isEmpty()  ||  loc.isEmpty() )
-                      ? QString() : dbc + " " + loc;
+      // A side without a checksum is a side that could not be read, and
+      // that is not the same thing as the two being equal
+      desc.contents  = ( dbc.isEmpty() ? QString( "- -" ) : dbc ) + " "
+                     + ( loc.isEmpty() ? QString( "- -" ) : loc );
+      desc.recState |= HV_DET;
+
+      if ( sync_state( desc ) == SYNC_CONFLICT )
+         anyConflict = true;
 
       adescs[ row ] = desc;
    }
+
+   // The experiment row says whether anything under it differs
+   DataDesc edesc  = adescs.at( entry.row );
+   edesc.recState |= HV_DET;
+   edesc.contents  = anyConflict ? QString( "differ 1 - -" ) : QString();
+   adescs[ entry.row ] = edesc;
 
    entry.verified   = true;
    runents[ index ] = entry;
 
    return true;
+}
+
+// The sync state of a record
+US_DataModel::SyncState US_DataModel::sync_state( const DataDesc& desc )
+{
+   if ( desc.recState == NOSTAT  ||
+        desc.description.contains( "-ARTIFICIAL" ) )
+      return SYNC_DUMMY;
+
+   bool isDba = ( ( desc.recState & REC_DB ) != 0 );
+   bool isLoc = ( ( desc.recState & REC_LO ) != 0 );
+
+   if ( isLoc  &&  ! isDba )   return SYNC_LOCAL;
+   if ( isDba  &&  ! isLoc )   return SYNC_DB;
+   if ( ! isDba )              return SYNC_DUMMY;
+
+   if ( ( desc.recState & HV_DET ) == 0 )
+      return SYNC_UNVERIFIED;
+
+   if ( desc.recType == EXPERIMENT )
+      return desc.contents.isEmpty() ? SYNC_INSYNC : SYNC_CONFLICT;
+
+   QString cont1 = desc.contents.section( " ", 0, 1 ).simplified();
+   QString cont2 = desc.contents.section( " ", 2, 4 ).simplified();
+
+   // Compared, and one side had nothing to compare: that is a conflict
+   if ( cont1.isEmpty()  ||  cont2.isEmpty()  ||
+        cont1.startsWith( "-" )  ||  cont2.startsWith( "-" ) )
+      return SYNC_CONFLICT;
+
+   return ( cont1 == cont2 ) ? SYNC_INSYNC : SYNC_CONFLICT;
 }
 
 // Build the experiment record of one run entry
@@ -947,7 +1393,7 @@ QString US_DataModel::model_subtype( const QString& descript,
 
    // Set as CUSTOMGRID if so marked or large non-MC
    if ( descript.contains( "CustomGrid" )  ||
-        ( ! descript.contains( "_mc" )  &&  recsize.toInt() > _M_LARGE_ ) )
+        ( ! descript.contains( "_mc" )  &&  recsize.toLongLong() > _M_LARGE_ ) )
       subType = "CUSTOMGRID";
 
    // If empty subtype, mark as MANUAL
@@ -957,12 +1403,54 @@ QString US_DataModel::model_subtype( const QString& descript,
    return subType;
 }
 
+// The run type of an edit file:  runID.editID.TYPE.cell.channel.wl.xml
+QString US_DataModel::edit_subtype( const QString& filename )
+{
+   return filename.section( "/", -1, -1 ).section( ".", -5, -5 );
+}
+
+// The label of an edit:  runID.editID.cell.channel.wavelength
+QString US_DataModel::edit_label( const QString& runID,
+                                  const QString& filename )
+{
+   QString fname  = filename.section( "/", -1, -1 );
+   QString editID = fname.section( ".", -6, -6 );
+   QString triple = fname.section( ".", -4, -2 );
+
+   return runID + "." + editID + "." + triple;
+}
+
+// Parse a record date, as either source writes one
+QDateTime US_DataModel::parse_date( const QString& text )
+{
+   QString dtext = text.simplified();
+
+   if ( dtext.endsWith( "UTC" ) )
+      dtext = dtext.left( dtext.length() - 3 ).simplified();
+
+   if ( dtext.endsWith( "Z" ) )
+      dtext.chop( 1 );
+
+   dtext.replace( "T", " " );
+
+   QDateTime dtime = QDateTime::fromString( dtext, "yyyy-MM-dd hh:mm:ss" );
+
+   if ( ! dtime.isValid() )
+      dtime = QDateTime::fromString( dtext, "yyyy-MM-dd hh:mm" );
+
+   if ( ! dtime.isValid() )
+      dtime = QDateTime::fromString( dtext, "yyyy-MM-dd hh:mm:ss.zzz" );
+
+   if ( dtime.isValid() )
+      dtime.setTimeZone( QTimeZone::utc() );
+
+   return dtime;
+}
+
 // Turn the chain of one catalog run into description records
 void US_DataModel::catalog_descs( US_DataCatalog* catalog, int index,
                                   int state, QVector< DataDesc >& descs )
 {
-   const QString dmyGUID = "00000000-0000-0000-0000-000000000000";
-
    const US_DataCatalog::Run& run = catalog->run( index );
 
    bool isDb = ( state == REC_DB );
@@ -1007,7 +1495,7 @@ void US_DataModel::catalog_descs( US_DataCatalog* catalog, int index,
          DataDesc edesc;
          edesc.recordID    = isDb ? edit.id.toInt() : -1;
          edesc.recType     = EDIT;
-         edesc.subType     = edit.filename.section( ".", -4, -4 );
+         edesc.subType     = edit_subtype( edit.filename );
          edesc.recState    = state;
          edesc.dataGUID    = edit.guid.simplified();
          edesc.parentGUID  = desc.dataGUID;
@@ -1015,8 +1503,9 @@ void US_DataModel::catalog_descs( US_DataCatalog* catalog, int index,
          edesc.filename    = isDb ? edit.filename : edit.path;
          edesc.contents    = edit.checksum.isEmpty() ? QString()
                              : edit.checksum + " " + edit.size;
-         edesc.label       = run.runID + "." + edit.filename.section( ".", 1, 3 );
-         edesc.description = edit.filename.section( ".", 0, -2 );
+         edesc.label       = edit_label( run.runID, edit.filename );
+         edesc.description = edit.filename.section( "/", -1, -1 )
+                                          .section( ".", 0, -2 );
          edesc.filemodDate = isDb ? QString() : edit.lastUpdated;
          edesc.lastmodDate = isDb ? edit.lastUpdated : QString();
 
@@ -1029,15 +1518,17 @@ void US_DataModel::catalog_descs( US_DataCatalog* catalog, int index,
          {
             const US_DataCatalog::Model& model = edit.models.at( kk );
 
-            QString label = model.description.section( ".", 0, -2 );
+            // A listing without checksums has no size either; the size of
+            // a local model is its file's, which costs nothing to ask for
+            QString msize = model.size;
 
-            if ( label.length() > 40 )
-               label = label.left( 13 ) + "..." + label.right( 24 );
+            if ( msize.isEmpty()  &&  ! isDb  &&  ! model.path.isEmpty() )
+               msize = QString::number( QFileInfo( model.path ).size() );
 
             DataDesc mdesc;
             mdesc.recordID    = isDb ? model.id.toInt() : -1;
             mdesc.recType     = MODEL;
-            mdesc.subType     = model_subtype( model.description, model.size );
+            mdesc.subType     = model_subtype( model.description, msize );
             mdesc.recState    = state;
             mdesc.dataGUID    = model.guid.simplified();
             mdesc.parentGUID  = edesc.dataGUID;
@@ -1045,7 +1536,7 @@ void US_DataModel::catalog_descs( US_DataCatalog* catalog, int index,
             mdesc.filename    = isDb ? QString() : model.path;
             mdesc.contents    = model.checksum.isEmpty() ? QString()
                                 : model.checksum + " " + model.size;
-            mdesc.label       = label;
+            mdesc.label       = short_label( model.description );
             mdesc.description = model.description;
             mdesc.filemodDate = isDb ? QString() : model.lastUpdated;
             mdesc.lastmodDate = isDb ? model.lastUpdated : QString();
@@ -1059,11 +1550,6 @@ void US_DataModel::catalog_descs( US_DataCatalog* catalog, int index,
             {
                const US_DataCatalog::Noise& noise = model.noises.at( mm );
 
-               QString nlabel = noise.description.section( ".", 0, -2 );
-
-               if ( nlabel.length() > 40 )
-                  nlabel = nlabel.left( 13 ) + "..." + nlabel.right( 24 );
-
                DataDesc ndesc;
                ndesc.recordID    = isDb ? noise.id.toInt() : -1;
                ndesc.recType     = NOISE;
@@ -1075,7 +1561,7 @@ void US_DataModel::catalog_descs( US_DataCatalog* catalog, int index,
                ndesc.filename    = isDb ? QString() : noise.path;
                ndesc.contents    = noise.checksum.isEmpty() ? QString()
                                    : noise.checksum + " " + noise.size;
-               ndesc.label       = nlabel;
+               ndesc.label       = short_label( noise.description );
                ndesc.description = noise.description;
                ndesc.filemodDate = isDb ? QString() : noise.lastUpdated;
                ndesc.lastmodDate = isDb ? noise.lastUpdated : QString();
@@ -1091,930 +1577,442 @@ void US_DataModel::catalog_descs( US_DataCatalog* catalog, int index,
    }
 }
 
-// merge the database and local description vectors of one experiment
-//
-// Both inputs hold the records of a single experiment, sorted, and the
-// output is that experiment's part of the tree.  Merging one experiment at
-// a time is what lets the tree be filled in as the scan goes.
-void US_DataModel::merge_dblocal( )
+/* Repair the model and noise descriptions of older servers.
+
+   A model description the database cut at 80 characters is read in full
+   from the model record, and a noise record with an empty description takes
+   its model's.  These are a handful of records on an old store and none on
+   a new one, so reading them one at a time costs nothing that matters.
+*/
+void US_DataModel::repair_descriptions( QVector< DataDesc >& descs,
+                                        IUS_DB2* dbP )
 {
-   mdescs.clear();
+   QHash< QString, QString > modelDescs;     // model GUID -> description
 
-   int nddes = ddescs.size();
-   int nldes = ldescs.size();
-   int nstep = ( ( nddes + nldes ) * 5 ) / 8;
+   for ( int ii = 0; ii < descs.size(); ii++ )
+   {
+      DataDesc& desc = descs[ ii ];
 
-   int jdr   = 0;
-   int jlr   = 0;
-   int kar   = 1;
+      if ( desc.recType != MODEL )   continue;
 
-   DataDesc  descd = ( nddes > 0 ) ? ddescs.at( 0 ) : DataDesc();
-   DataDesc  descl = ( nldes > 0 ) ? ldescs.at( 0 ) : DataDesc();
-DbgLv(1) << "MERGE: nd nl dlab llab"
- << nddes << nldes << descd.label << descl.label;
+      if ( desc.description.length() == 80  &&  dbP != NULL  &&
+           desc.recordID >= 0 )
+      {
+         US_Model model;
 
-   lb_status->setText( tr( "Merging Data ..." ) );
-   progress->setMaximum( nstep );
-   qApp->processEvents();
-
-   while ( jdr < nddes  &&  jlr < nldes )
-   {  // main loop to merge records until one is exhausted
-
-      progress->setValue( kar );           // report progress
-
-      if ( kar > nstep )
-      {  // if count beyond max, bump max by one eighth
-         nstep = ( kar * 9 ) / 8;
-         progress->setMaximum( nstep );
-      }
-      qApp->processEvents();
-
-      while ( descd.dataGUID == descl.dataGUID )
-      {  // records match in GUID:  merge them into one
-         descd.recState    |= descl.recState;     // OR states
-         descd.filename     = descl.filename;     // filename from local
-         descd.filemodDate  = descl.filemodDate;  // file last mod from local
-         descd.description  = descl.description;  // description from local
-//if ( descl.recType == 3 && descd.contents != descl.contents ) {
-// US_Model modell;
-// US_Model modeld;
-// modell.load( descl.filename );
-// modeld.load( QString::number(descd.recordID), db );
-// DbgLv(1) << " ++LOCAL Model:";
-// modell.debug();
-// DbgLv(1) << " ++DB Model:";
-// modeld.debug(); }
-         // A checksum on one side only is nothing to compare, so the
-         // combined contents stays empty and the record reads as in sync
-         // until verify_run() has read both
-         descd.contents     = ( descd.contents.isEmpty()  ||
-                                descl.contents.isEmpty() )
-                              ? QString()
-                              : descd.contents + " " + descl.contents;
-
-         mdescs << descd;                  // output combo record
-DbgLv(2) << "MERGE:  kar jdr jlr (1)GID" << kar << jdr << jlr << descd.dataGUID;
-         kar++;
-
-         if ( ++jdr < nddes )              // bump db count and test if done
-            descd = ddescs.at( jdr );      // get next db record
-
-         else
+         if ( model.load( QString::number( desc.recordID ), dbP )
+                 == IUS_DB2::OK  &&
+              ! model.description.isEmpty() )
          {
-            if ( ++jlr < nldes )
-               descl = ldescs.at( jlr );   // get next local record
-            break;
+            desc.description = model.description;
+            desc.label       = short_label( desc.description );
+         }
+      }
+
+      modelDescs.insert( desc.dataGUID, desc.description );
+   }
+
+   for ( int ii = 0; ii < descs.size(); ii++ )
+   {
+      DataDesc& desc = descs[ ii ];
+
+      if ( desc.recType != NOISE )   continue;
+
+      bool cut   = ( desc.description.length() == 80 );
+      bool empty = desc.description.isEmpty();
+
+      if ( ! cut  &&  ! empty )      continue;
+
+      bool read  = false;
+
+      if ( cut  &&  dbP != NULL  &&  desc.recordID >= 0 )
+      {
+         US_Noise noise;
+
+         if ( noise.load( QString::number( desc.recordID ), dbP )
+                 == IUS_DB2::OK  &&
+              ! noise.description.isEmpty() )
+         {
+            desc.description = noise.description;
+            read             = true;
+         }
+      }
+
+      if ( ! read  &&  empty )
+      {  // An empty description is its model's, with the noise type
+         QString mdesc  = modelDescs.value( desc.parentGUID );
+         QString ntype  = ( desc.subType == "RI" ) ? "ri_noise" : "ti_noise";
+
+         if ( ! mdesc.isEmpty() )
+            desc.description = QString( mdesc ).replace( ".model",
+                                                         "." + ntype );
+      }
+
+      desc.label = short_label( desc.description );
+   }
+}
+
+/* Merge the database and local records of one experiment.
+
+   Records are paired by GUID within their parent -- a hash lookup, so it
+   does not matter where either side has a record in its list, and one
+   record never splits into a DB-only and a local-only row because the other
+   side holds something the first does not.  The result is in tree order,
+   each level sorted by label (raw and edit) or description (model, noise),
+   and a record whose parent is missing hangs off a gray filler.
+*/
+QVector< US_DataModel::DataDesc > US_DataModel::merge_descs(
+      const QVector< DataDesc >& dbs, const QVector< DataDesc >& los )
+{
+   struct Node
+   {
+      DataDesc       desc;
+      QVector< int > kids;
+   };
+
+   QVector< Node > nodes;
+   QVector< int >  roots;
+
+   // A raw record's parent is the experiment the caller is merging, so a
+   // raw is matched by its own GUID; anything else by GUID and parent
+   auto pairKey = []( const DataDesc& desc )
+   {
+      return QString::number( desc.recType ) + ":"
+           + ( desc.recType == RAW ? QString() : desc.parentGUID ) + ":"
+           + desc.dataGUID;
+   };
+
+   // One record listed twice by its source (a noise under each of two
+   // models that claim one GUID, say) is still one record
+   QSet< QString > seen;
+   auto sameRecord = [ & ]( const DataDesc& desc, const QString& where )
+   {
+      QString id = pairKey( desc ) + "|" + where + "|"
+                 + ( desc.recordID >= 0 ? QString::number( desc.recordID )
+                                        : desc.filename );
+
+      if ( seen.contains( id ) )   return true;
+
+      seen.insert( id );
+      return false;
+   };
+
+   QHash< QString, QList< int > > dbByKey;
+
+   for ( int ii = 0; ii < dbs.size(); ii++ )
+   {
+      if ( sameRecord( dbs.at( ii ), "D" ) )   continue;
+
+      Node node;
+      node.desc = dbs.at( ii );
+      dbByKey[ pairKey( node.desc ) ] << nodes.size();
+      nodes << node;
+   }
+
+   for ( int ii = 0; ii < los.size(); ii++ )
+   {
+      const DataDesc& descl = los.at( ii );
+      QString         key   = pairKey( descl );
+
+      if ( sameRecord( descl, "L" ) )   continue;
+
+      if ( ! dbByKey.value( key ).isEmpty() )
+      {  // the same record in both places:  one row
+         int       jj    = dbByKey[ key ].takeFirst();
+         DataDesc& descd = nodes[ jj ].desc;
+
+         descd.recState    |= descl.recState;
+         descd.filename     = descl.filename;     // the file is the local one
+         descd.filemodDate  = descl.filemodDate;
+
+         if ( ! descl.description.isEmpty() )
+         {
+            descd.description = descl.description;
+
+            if ( ! descl.label.isEmpty() )
+               descd.label    = descl.label;
          }
 
+         // Both sides with a checksum have been compared; otherwise the
+         // record is unverified until verify_run() reads them
+         if ( ! descd.contents.isEmpty()  &&  ! descl.contents.isEmpty() )
+         {
+            descd.contents  = descd.contents + " " + descl.contents;
+            descd.recState |= HV_DET;
+         }
 
-         if ( ++jlr < nldes )              // bump local count and test if done
-            descl = ldescs.at( jlr );      // get next local record
          else
-            break;
-      }
+            descd.contents  = QString();
 
-      if ( jdr >= nddes  ||  jlr >= nldes )
-         break;
-
-      while ( descd.recType > descl.recType )
-      {  // output db records that are left-over children
-         mdescs << descd;
-DbgLv(2) << "MERGE:  kar jdr jlr (2)GID" << kar << jdr << jlr << descd.dataGUID;
-         kar++;
-
-         if ( ++jdr < nddes )
-            descd = ddescs.at( jdr );
-         else
-            break;
-      }
-
-      if ( jdr >= nddes  ||  jlr >= nldes )
-         break;
-
-      while ( descl.recType > descd.recType )
-      {  // output local records that are left-over children
-         mdescs << descl;
-DbgLv(2) << "MERGE:  kar jdr jlr (3)GID" << kar << jdr << jlr << descl.dataGUID;
-         kar++;
-
-         if ( ++jlr < nldes )
-            descl = ldescs.at( jlr );
-         else
-            break;
-      }
-
-      if ( jdr >= nddes  ||  jlr >= nldes )
-         break;
-
-      // If we've reached another matching pair or if we are not at
-      // the same level, go back up to the start of the main loop.
-      if ( descd.dataGUID == descl.dataGUID  ||
-           descd.recType  != descl.recType  )
          continue;
-
-      // If we are here, we have records at the same level,
-      // but with different GUIDs. Output one of them, based on
-      // an alphanumeric comparison of label values.
-
-      QString dlabel = descd.label;
-      QString llabel = descl.label;
-      if ( descd.recType > 2 )
-      {
-         dlabel = descd.description;
-         llabel = descl.description;
-      }
-DbgLv(2) << "MERGE: rtype dlabel llabel" << descd.recType << dlabel << llabel;
-
-      if ( dlabel < llabel )
-      {  // output db record first based on alphabetic label sort
-         mdescs << descd;
-DbgLv(2) << "MERGE:  kar jdr jlr (4)GID" << kar << jdr << jlr << descd.dataGUID;
-         kar++;
-
-         if ( ++jdr < nddes )
-            descd = ddescs.at( jdr );
-         else
-            break;
       }
 
+      Node node;
+      node.desc = descl;
+      nodes << node;
+   }
+
+   // The parent of each record, by level and GUID
+   QHash< QString, int > byGuid;
+   auto guidKey = []( int recType, const QString& guid )
+   {
+      return QString::number( recType ) + ":" + guid;
+   };
+
+   int nreal = nodes.size();
+
+   for ( int ii = 0; ii < nreal; ii++ )
+   {
+      QString key = guidKey( nodes[ ii ].desc.recType,
+                             nodes[ ii ].desc.dataGUID );
+
+      if ( ! byGuid.contains( key ) )
+         byGuid.insert( key, ii );
+   }
+
+   // A filler parent for records whose parent is missing.  Fillers are
+   // shared by GUID, so the orphans of one missing parent stay together.
+   static const char* names[] = { "Experiment", "Raw", "Edit", "Model" };
+   std::function< int( int, const QString& ) > filler;
+   filler = [ & ]( int recType, const QString& guid ) -> int
+   {
+      QString pguid = ( guid.length() == 36 ) ? guid : dmyGUID;
+      QString key   = guidKey( recType, pguid );
+
+      if ( byGuid.contains( key ) )
+         return byGuid.value( key );
+
+      Node node;
+      node.desc.recordID    = -1;
+      node.desc.recType     = recType;
+      node.desc.parentID    = -1;
+      node.desc.recState    = NOSTAT;
+      node.desc.subType     = "";
+      node.desc.dataGUID    = pguid;
+      node.desc.parentGUID  = dmyGUID;
+      node.desc.filename    = "";
+      node.desc.contents    = "";
+      node.desc.label       = QString( "Dummy-%1-for-Orphans" )
+                              .arg( names[ recType ] );
+      node.desc.description = node.desc.label + "--ARTIFICIAL-RECORD";
+      node.desc.lastmodDate = US_Util::toUTCDatetimeText(
+                              QDateTime::currentDateTime().toUTC()
+                              .toString( Qt::ISODate ), true );
+      node.desc.filemodDate = node.desc.lastmodDate;
+
+      int index = nodes.size();
+      nodes << node;
+      byGuid.insert( key, index );
+
+      if ( recType == RAW )
+         roots << index;
       else
-      {  // output local record first based on alphabetic label sort
-         mdescs << descl;
-DbgLv(2) << "MERGE:  kar jdr jlr (5)GID" << kar << jdr << jlr << descl.dataGUID;
-         kar++;
+         nodes[ filler( recType - 1, dmyGUID ) ].kids << index;
 
-         if ( ++jlr < nldes )
-            descl = ldescs.at( jlr );
-         else
-            break;
-      }
+      return index;
+   };
 
-   }  // end of main merge loop;
-
-   // after breaking from main loop, output any records left from one
-   // source (db/local) or the other.
-   nstep += ( nddes - jdr + nldes - jlr );
-   progress->setMaximum( nstep );
-   qApp->processEvents();
-
-   while ( jdr < nddes )
+   for ( int ii = 0; ii < nreal; ii++ )
    {
-      mdescs << ddescs.at( jdr++ );
-descd=ddescs.at(jdr-1);
-DbgLv(2) << "MERGE:  kar jdr jlr (8)GID" << kar << jdr << jlr << descd.dataGUID;
-      progress->setValue( ++kar );
-      qApp->processEvents();
-   }
+      int ityp = nodes[ ii ].desc.recType;
 
-   while ( jlr < nldes )
-   {
-      mdescs << ldescs.at( jlr++ );
-descl=ldescs.at(jlr-1);
-DbgLv(2) << "MERGE:  kar jdr jlr (9)GID" << kar << jdr << jlr << descl.dataGUID;
-      progress->setValue( ++kar );
-      qApp->processEvents();
-   }
-
-DbgLv(2) << "MERGE: nddes nldes kar" << nddes << nldes << --kar;
-DbgLv(2) << " a/d/l sizes" << mdescs.size() << ddescs.size() << ldescs.size();
-
-   progress->setValue( nstep );
-   lb_status->setText( tr( "Data Merge Complete" ) );
-   qApp->processEvents();
-}
-
-// sort a data-set description vector
-void US_DataModel::sort_descs( QVector< DataDesc >& descs )
-{
-   QVector< DataDesc > tdess;                 // temporary descr. vector
-   DataDesc            desct;                 // temporary descr. entry
-   QStringList         sortr;                 // sort string lists
-   QStringList         sorte;
-   QStringList         sortm;
-   QStringList         sortn;
-   int                 nrecs = descs.size();  // number of descr. records
-
-   lb_status->setText( tr( "Sorting Descriptions..." ) );
-   qApp->processEvents();
-DbgLv(1) << "sort_desc: nrecs" << nrecs;
-   if ( nrecs == 0 )
-      return;
-
-   tdess.resize( nrecs );
-   // Determine maximum description string length
-   maxdlen = 0;
-   for ( int ii = 0; ii < nrecs; ii++ )
-      maxdlen = qMax( maxdlen, descs[ ii ].description.length() );
-
-   for ( int ii = 0; ii < nrecs; ii++ )
-   {  // build sort strings for Raw,Edit,Model,Noise; copy unsorted vector
-      desct        = descs[ ii ];
-
-      if (      desct.recType == 1 )
-         sortr << sort_string( desct, ii );
-
-      else if ( desct.recType == 2 )
-         sorte << sort_string( desct, ii );
-
-      else if ( desct.recType == 3 )
-         sortm << sort_string( desct, ii );
-
-      else if ( desct.recType == 4 )
-         sortn << sort_string( desct, ii );
-
-      tdess[ ii ]  = desct;
-   }
-DbgLv(2) << "SrtD:  nrecs" << nrecs << nowTime();
-
-   // sort the string lists for each type
-   sortr.sort();
-   sorte.sort();
-   sortm.sort();
-   sortn.sort();
-DbgLv(2) << "SrtD:  sort[remn]" << nowTime();
-
-   lb_status->setText( tr( "Finding Duplicates..." ) );
-   qApp->processEvents();
-   // review each type for duplicate GUIDs
-   if ( review_descs( sortr, tdess ) )
-      return;
-DbgLv(2) << "SrtD:  RD(r)" << nowTime();
-   if ( review_descs( sorte, tdess ) )
-      return;
-DbgLv(2) << "SrtD:  RD(e)" << nowTime();
-   if ( review_descs( sortm, tdess ) )
-      return;
-DbgLv(2) << "SrtD:  RD(m)" << nowTime();
-   if ( review_descs( sortn, tdess ) )
-      return;
-DbgLv(2) << "SrtD:  RD(n)" << nowTime();
-
-   lb_status->setText( tr( "Finding Orphans..." ) );
-   qApp->processEvents();
-
-   // create list of noise,model,edit orphans
-   QStringList orphn = list_orphans( sortn, sortm );
-   QStringList orphm = list_orphans( sortm, sorte );
-   QStringList orphe = list_orphans( sorte, sortr );
-DbgLv(2) << "SrtD:  Orph(nme)" << nowTime();
-
-   QString dmyGUID = "00000000-0000-0000-0000-000000000000";
-   QString dsorts;
-   QString dlabel;
-   QString dindex;
-   QString ddGUID;
-   QString dpGUID;
-   QString ppGUID;
-   int kndx = tdess.size();
-   int jndx;
-   int kk;
-   int ndmy = 0;     // flag of duplicate dummies
-
-   // Create lists of parent GUIDs
-   QStringList guidsr;
-   QStringList guidse;
-   QStringList guidsm;
-
-   for ( int ii = 0; ii < sortr.size(); ii++ )
-      guidsr << sortr.at( ii ).section( ":", 2, 2 ).simplified();
-
-   for ( int ii = 0; ii < sorte.size(); ii++ )
-      guidse << sorte.at( ii ).section( ":", 2, 2 ).simplified();
-
-   for ( int ii = 0; ii < sortm.size(); ii++ )
-      guidsm << sortm.at( ii ).section( ":", 2, 2 ).simplified();
-
-   // create dummy records to parent each orphan
-
-   int nstep   = orphn.size() + orphm.size() + orphe.size();
-   int istep   = 0;
-   progress->setMaximum( nstep );
-   progress->setValue  ( istep );
-   qApp->processEvents();
-DbgLv(2) << "(1) orphan: N size M size" << orphn.size() << orphm.size();
-   for ( int ii = 0; ii < orphn.size(); ii++ )
-   {  // for each orphan noise, create a dummy model
-      dsorts = orphn.at( ii );
-      dlabel = dsorts.section( ":", 0, 0 );
-      dindex = dsorts.section( ":", 1, 1 );
-      ddGUID = dsorts.section( ":", 2, 2 ).simplified();
-      dpGUID = dsorts.section( ":", 3, 3 ).simplified();
-      jndx   = dindex.toInt();
-      cdesc  = tdess[ jndx ];
-
-      if ( dpGUID.length() < 2  ||  dpGUID == dmyGUID )
-      { // handle case where there is no valid parentGUID
-         if ( ndmy == 0 )      // first time:  create one
-            dpGUID = dmyGUID;
-         else
-            dpGUID = ppGUID;   // afterwards:  re-use same parent
-
-         kk     = sortn.indexOf( dsorts );  // find index in full list
-         dsorts = dlabel + ":" + dindex + ":" + ddGUID + ":" + dpGUID;
-
-         if ( kk >= 0 )
-         {  // replace present record for new parentGUID
-            sortn.replace( kk, dsorts );
-            cdesc.parentGUID  = dpGUID;
-            tdess[ jndx ]     = cdesc;
-         }
-
-         if ( ndmy > 0 )       // after 1st time, skip creating new parent
-            continue;
-
-         ndmy++;               // flag that we have a parent for invalid ones
-         ppGUID = dpGUID;      // save the GUID for new dummy parent
-      }
-
-      // If this record is no longer an orphan, skip creating new parent
-      if ( guidsm.indexOf( dpGUID ) >= 0 )
-         continue;
-
-      if ( dpGUID == dmyGUID )
-         cdesc.label       = "Dummy-Model-for-Orphans";
-
-      cdesc.parentID    = cdesc.recordID;
-      cdesc.recordID    = -1;
-      cdesc.recType     = 3;
-      cdesc.subType     = "";
-      cdesc.recState    = NOSTAT;
-      cdesc.dataGUID    = dpGUID;
-      cdesc.parentGUID  = dmyGUID;
-      cdesc.parentID    = -1;
-      cdesc.filename    = "";
-      cdesc.contents    = "";
-      cdesc.label       = cdesc.label.section( ".", 0, 0 );
-      cdesc.description = cdesc.label + "--ARTIFICIAL-RECORD";
-      cdesc.filemodDate = US_Util::toUTCDatetimeText(
-                          QDateTime::currentDateTime().toUTC()
-                          .toString( Qt::ISODate ), true );
-      cdesc.lastmodDate = cdesc.filemodDate;
-
-      dlabel = dlabel.section( ".", 0, 0 );
-      dindex = QString::asprintf( "%4.4d", kndx++ );
-      ddGUID = cdesc.dataGUID;
-      dpGUID = cdesc.parentGUID;
-      dsorts = dlabel + ":" + dindex + ":" + ddGUID + ":" + dpGUID;
-
-      sortm  << dsorts;
-      orphm  << dsorts;
-      guidsm << ddGUID;
-      tdess  << cdesc;
-DbgLv(2) << "N orphan:" << orphn.at( ii ) << ii;
-DbgLv(2) << "  M dummy:" << dsorts;
-      progress->setValue( ++istep );
-      qApp->processEvents();
-   }
-DbgLv(2) << "(2) orphan: N size M size" << orphn.size() << orphm.size();
-DbgLv(2) << "SrtD:  Orph(N)" << nowTime();
-
-   ndmy   = 0;
-
-   for ( int ii = 0; ii < orphm.size(); ii++ )
-   {  // for each orphan model, create a dummy edit
-      dsorts = orphm.at( ii );
-      dlabel = dsorts.section( ":", 0, 0 );
-      dindex = dsorts.section( ":", 1, 1 );
-      ddGUID = dsorts.section( ":", 2, 2 ).simplified();
-      dpGUID = dsorts.section( ":", 3, 3 ).simplified();
-      jndx   = dindex.toInt();
-      cdesc  = tdess[ jndx ];
-
-      if ( dpGUID.length() < 16  ||  dpGUID == dmyGUID )
-      { // handle case where there is no valid parentGUID
-         if ( ndmy == 0 )      // first time:  create one
-            dpGUID = dmyGUID;
-         else
-            dpGUID = ppGUID;   // afterwards:  re-use same parent
-
-         kk     = sortm.indexOf( dsorts );  // find index in full list
-         dsorts = dlabel + ":" + dindex + ":" + ddGUID + ":" + dpGUID;
-
-         if ( kk >= 0 )
-         {  // replace present record for new parentGUID
-            sortm.replace( kk, dsorts );
-            cdesc.parentGUID  = dpGUID;
-            tdess[ jndx ]     = cdesc;
-         }
-
-         if ( ndmy > 0 )       // after 1st time, skip creating new parent
-            continue;
-
-         ndmy++;               // flag that we have a parent for invalid ones
-         ppGUID = dpGUID;      // save the GUID for new dummy parent
-      }
-
-      // If this record is no longer an orphan, skip creating new parent
-      if ( guidse.indexOf( dpGUID ) >= 0 )
-         continue;
-
-      if ( dpGUID == dmyGUID )
-         cdesc.label       = "Dummy-Edit-for-Orphans";
-
-      cdesc.parentID    = cdesc.recordID;
-      cdesc.recordID    = -1;
-      cdesc.recType     = 2;
-      cdesc.subType     = "";
-      cdesc.recState    = NOSTAT;
-      cdesc.dataGUID    = dpGUID;
-      cdesc.parentGUID  = dmyGUID;
-      cdesc.parentID    = -1;
-      cdesc.filename    = "";
-      cdesc.contents    = "";
-      cdesc.label       = cdesc.label.section( ".", 0, 0 );
-      cdesc.description = cdesc.label + "--ARTIFICIAL-RECORD";
-      cdesc.lastmodDate = US_Util::toUTCDatetimeText(
-                          QDateTime::currentDateTime().toUTC()
-                          .toString( Qt::ISODate ), true );
-      cdesc.filemodDate = cdesc.lastmodDate;
-
-      dlabel = dlabel.section( ".", 0, 0 );
-      dindex = QString::asprintf( "%4.4d", kndx++ );
-      ddGUID = cdesc.dataGUID;
-      dpGUID = cdesc.parentGUID;
-      dsorts = dlabel + ":" + dindex + ":" + ddGUID + ":" + dpGUID;
-
-      sorte  << dsorts;
-      orphe  << dsorts;
-      guidse << ddGUID;
-      tdess  << cdesc;
-DbgLv(2) << "M orphan:" << orphm.at( ii ) << ii;
-DbgLv(2) << "  E dummy:" << dsorts;
-      progress->setValue( ++istep );
-      qApp->processEvents();
-   }
-
-DbgLv(2) << "(3) orphan: N size M size" << orphn.size() << orphm.size();
-DbgLv(2) << "SrtD:  Orph(M)" << nowTime();
-   ndmy   = 0;
-DbgLv(2) << "(4) orphan: M size E size" << orphm.size() << orphe.size();
-
-   for ( int ii = 0; ii < orphe.size(); ii++ )
-   {  // for each orphan edit, create a dummy raw
-      dsorts = orphe.at( ii );
-      dlabel = dsorts.section( ":", 0, 0 );
-      dindex = dsorts.section( ":", 1, 1 );
-      ddGUID = dsorts.section( ":", 2, 2 ).simplified();
-      dpGUID = dsorts.section( ":", 3, 3 ).simplified();
-      jndx   = dindex.toInt();
-      cdesc  = tdess[ jndx ];
-
-      if ( dpGUID.length() < 2 )
-      { // handle case where there is no valid parentGUID
-         if ( ndmy == 0 )      // first time:  create one
-            dpGUID = dmyGUID;
-         else
-            dpGUID = ppGUID;   // afterwards:  re-use same parent
-
-         kk     = sorte.indexOf( dsorts );  // find index in full list
-         dsorts = dlabel + ":" + dindex + ":" + ddGUID + ":" + dpGUID;
-
-         if ( kk >= 0 )
-         {  // replace present record for new parentGUID
-            sorte.replace( kk, dsorts );
-            cdesc.parentGUID  = dpGUID;
-            tdess[ jndx ]     = cdesc;
-         }
-
-         if ( ndmy > 0 )       // after 1st time, skip creating new parent
-           continue;
-
-         ndmy++;               // flag that we have a parent for invalid ones
-         ppGUID = dpGUID;      // save the GUID for new dummy parent
-      }
-
-      // If this record is no longer an orphan, skip creating new parent
-      if ( guidsr.indexOf( dpGUID ) >= 0 )
-         continue;
-
-      if ( dpGUID == dmyGUID )
-         cdesc.label       = "Dummy-Raw-for-Orphans";
-
-      cdesc.parentID    = cdesc.recordID;
-      cdesc.recordID    = -1;
-      cdesc.recType     = 1;
-      cdesc.subType     = "";
-      cdesc.recState    = NOSTAT;
-      cdesc.dataGUID    = dpGUID;
-      cdesc.parentGUID  = dmyGUID;
-      cdesc.parentID    = -1;
-      cdesc.filename    = "";
-      cdesc.contents    = "";
-      cdesc.label       = cdesc.label.section( ".", 0, 0 );
-      cdesc.description = cdesc.label + "--ARTIFICIAL-RECORD";
-      cdesc.lastmodDate = US_Util::toUTCDatetimeText(
-                          QDateTime::currentDateTime().toUTC()
-                          .toString( Qt::ISODate ), true );
-      cdesc.filemodDate = cdesc.lastmodDate;
-
-      dlabel = dlabel.section( ".", 0, 0 );
-      dindex = QString::asprintf( "%4.4d", kndx++ );
-      ddGUID = cdesc.dataGUID;
-      dpGUID = cdesc.parentGUID;
-      dsorts = dlabel + ":" + dindex + ":" + ddGUID + ":" + dpGUID;
-
-      sortr  << dsorts;
-      guidsr << ddGUID;
-      tdess  << cdesc;
-DbgLv(2) << "E orphan:" << orphe.at( ii );
-DbgLv(2) << "  R dummy:" << dsorts;
-      progress->setValue( ++istep );
-      qApp->processEvents();
-   }
-DbgLv(2) << "(5) orphan: M size E size" << orphm.size() << orphe.size();
-DbgLv(2) << "SrtD:  Orph(E)" << nowTime();
-
-//for ( int ii = 0; ii < sortr.size(); ii++ )
-// DbgLv(2) << "R entry:" << sortr.at( ii );
-   int countR = sortr.size();    // count of each kind in sorted lists
-   int countE = sorte.size();
-   int countM = sortm.size();
-   int countN = sortn.size();
-
-   //sortr.sort();                 // re-sort for dummy additions
-   //sorte.sort();
-   //sortm.sort();
-   //sortn.sort();
-DbgLv(1) << "sort/dumy: count REMN" << countR << countE << countM << countN;
-//for(int ii=0;ii<countM;ii++) DbgLv(2) << "sm" << ii << "++ " << sortm[ii];
-
-   int noutR  = 0;               // count of each kind in hierarchical output
-   int noutE  = 0;
-   int noutM  = 0;
-   int noutN  = 0;
-   int indx;
-   int pstate = REC_LO | PAR_LO;
-
-   descs.clear();                // reset input vector to become sorted output
-   lb_status->setText( tr( "Building Sorted Trees..." ) );
-   istep       = 0;
-   progress->setMaximum( countR );
-   progress->setValue  ( istep  );
-   qApp->processEvents();
-
-   // rebuild the description vector with sorted trees
-   for ( int ii = 0; ii < countR; ii++ )
-   {  // loop to output sorted Raw records
-      QString recr = sortr[ ii ];
-      QString didr = recr.section( ":", 2, 2 );
-      QString pidr = recr.section( ":", 3, 3 );
-      indx         = recr.section( ":", 1, 1 ).toInt();
-      cdesc        = tdess.at( indx );
-
-      // set up a default parent state flag
-      pstate = cdesc.recState;
-      pstate = ( pstate & REC_DB ) != 0 ? ( pstate | PAR_DB ) : pstate;
-      pstate = ( pstate & REC_LO ) != 0 ? ( pstate | PAR_LO ) : pstate;
-
-      // new state is the default,  or NOSTAT if this is a dummy record
-      cdesc.recState = record_state_flag( cdesc, pstate );
-
-      descs << cdesc;                   // output Raw rec
-      noutR++;
-
-      // set up parent state for children to follow
-      int rpstate    = cdesc.recState;
-
-      for ( int jj = 0; jj < countE; jj++ )
-      {  // loop to output sorted Edit records for the above Raw
-         QString rece   = sorte[ jj ];
-         QString pide   = rece.section( ":", 3, 3 );
-
-         if ( pide != didr )            // skip if current Raw not parent
-            continue;
-
-         QString dide   = rece.section( ":", 2, 2 );
-         indx           = rece.section( ":", 1, 1 ).toInt();
-         cdesc          = tdess.at( indx );
-         cdesc.recState = record_state_flag( cdesc, rpstate );
-
-         descs << cdesc;                // output Edit rec
-         noutE++;
-
-         // set up parent state for children to follow
-         int epstate    = cdesc.recState;
-
-         for ( int mm = 0; mm < countM; mm++ )
-         {  // loop to output sorted Model records for above Edit
-            QString recm   = sortm[ mm ];
-            QString pidm   = recm.section( ":", 3, 3 );
-
-            if ( pidm != dide )         // skip if current Edit not parent
-               continue;
-
-            QString didm   = recm.section( ":", 2, 2 );
-            indx           = recm.section( ":", 1, 1 ).toInt();
-            cdesc          = tdess.at( indx );
-            cdesc.recState = record_state_flag( cdesc, epstate );
-
-            descs << cdesc;             // output Model rec
-
-            noutM++;
-
-            // set up parent state for children to follow
-            int mpstate    = cdesc.recState;
-
-            for ( int nn = 0; nn < countN; nn++ )
-            {  // loop to output sorted Noise records for above Model
-               QString recn   = sortn[ nn ];
-               QString pidn   = recn.section( ":", 3, 3 );
-
-               if ( pidn != didm )      // skip if current Model not parent
-                  continue;
-
-               indx           = recn.section( ":", 1, 1 ).toInt();
-               cdesc          = tdess.at( indx );
-               cdesc.recState = record_state_flag( cdesc, mpstate );
-
-               descs << cdesc;          // output Noise rec
-
-               noutN++;
-            }
-         }
-      }
-      progress->setValue( ++istep );
-      qApp->processEvents();
-   }
-DbgLv(2) << "SrtD:  END" << nowTime();
-
-   if ( noutR != countR  ||  noutE != countE  ||
-        noutM != countM  ||  noutN != countN )
-   {  // not all accounted for, so we will need some dummy parents
-      DbgLv(1) << "sort_desc: count REMN"
-         << countR << countE << countM << countN;
-      DbgLv(1) << "sort_desc:   nout REMN"
-         << noutR << noutE << noutM << noutN;
-   }
-}
-
-// review sorted string lists for duplicate GUIDs
-bool US_DataModel::review_descs( QStringList& sorts,
-      QVector< DataDesc >& descv )
-{
-   bool           abort = false;
-   int            nrecs = sorts.size();
-   int            nmult = 0;
-   int            kmult = 0;
-   int            ityp;
-   QString        cGUID;
-   QString        pGUID;
-   QString        rtyp;
-   QVector< int > multis;
-   const char* rtyps[] = { "RawData", "EditedData", "Model", "Noise" };
-   QStringList    tGUIDs;
-
-   if ( nrecs < 1 )
-      return abort;
-
-   int ii   = sorts[ 0 ].section( ":", 1, 1 ).toInt();
-   ityp     = descv[ ii ].recType;
-   rtyp     = QString( rtyps[ ityp - 1 ] );
-
-   if ( descv[ ii ].recordID >= 0 )
-      rtyp     = "DB " + rtyp;
-   else
-      rtyp     = "Local " + rtyp;
-DbgLv(2) << "RvwD: ii ityp rtyp nrecs" << ii << ityp << rtyp << nrecs;
-   cGUID    = sorts[ 0 ].section( ":", 2, 2 );
-   tGUIDs << cGUID;
-
-   for ( int ii = 1; ii < nrecs; ii++ )
-   {  // do a pass to determine if there are duplicate GUIDs
-      cGUID    = sorts[ ii ].section( ":", 2, 2 );     // current rec GUID
-      kmult    = 0;                                    // flag no multiples yet
-
-      int jj = tGUIDs.indexOf( cGUID );
-
-      if ( jj >= 0 )
+      if ( ityp <= RAW )
       {
-         kmult++;
-         if ( ! multis.contains( jj ) )
-         {  // not yet marked, so mark previous as multiple
-            multis << jj;    // save index
-            nmult++;         // bump count
-         }
+         roots << ii;
+         continue;
       }
 
-      if ( kmult > 0 )
-      {  // this pass found a duplicate:  save the index and bump count
-         multis << ii;
-         nmult++;
-DbgLv(1) << "RvwD: nmult" << nmult << "ii,jj" << ii << jj
- << "cGUID,pGUID" << cGUID << tGUIDs[jj];
-      }
+      QString pkey = guidKey( ityp - 1, nodes[ ii ].desc.parentGUID );
+      int     prnt = byGuid.value( pkey, -1 );
 
-      tGUIDs << cGUID;
-//DbgLv(2) << "RvwD:   ii kmult nmult" << ii << kmult << nmult;
+      if ( prnt < 0  ||  prnt == ii )
+         prnt = filler( ityp - 1, nodes[ ii ].desc.parentGUID );
+
+      nodes[ prnt ].kids << ii;
    }
 
-DbgLv(2) << "RvwD:      GUID nmult" << nmult << nowTime();
-   if ( nmult > 0 )
-   {  // there were multiple instances of the same GUID
-      QMessageBox msgBox;
-      QString     msg;
+   // Each level in order of label (raw, edit) or description (model, noise)
+   auto before = [ &nodes ]( int a, int b )
+   {
+      const DataDesc& da = nodes[ a ].desc;
+      const DataDesc& db = nodes[ b ].desc;
+      bool dummyA = ( da.recState == NOSTAT );
+      bool dummyB = ( db.recState == NOSTAT );
 
-      // format a message for the warning pop-up
-      msg  =
-         tr( "There are %1 %2 records that have\n" ).arg( nmult ).arg( rtyp ) +
-         tr( "the same GUID as another.\n" ) +
-         tr( "You should correct the situation before proceeding.\n" ) +
-         tr( "  Click \"Ok\" to see details, then abort.\n" ) +
-         tr( "  Click \"Ignore\" to proceed to further review.\n" );
-      msgBox.setWindowTitle( tr( "Duplicate %1 Records" ).arg( rtyp ) );
-      msgBox.setText( msg );
-      msgBox.setStandardButtons( QMessageBox::Ok | QMessageBox::Ignore );
-      msgBox.setDefaultButton( QMessageBox::Ok );
+      if ( dummyA != dummyB )   return dummyB;     // fillers go last
 
-      if ( msgBox.exec() == QMessageBox::Ok )
-      {  // user wants details, so display them
-         QString fileexts = tr( "Text,Log files (*.txt *.log);;" )
-            + tr( "All files (*)" );
-         QString pGUID = "";
-         QString cGUID;
-         QString label;
+      QString ka = ( da.recType < MODEL ) ? da.label : da.description;
+      QString kb = ( db.recType < MODEL ) ? db.label : db.description;
 
-         msg =
-            tr( "Review the details below on duplicate records.\n" ) +
-            tr( "Save or Print the contents of this message.\n" ) +
-            tr( "Decide which of the duplicates should be removed.\n" ) +
-            tr( "Close the main US_DataModel window after exiting here.\n" ) +
-            tr( "\nSummary of Duplicates:\n\n" );
+      if ( ka != kb )   return ka < kb;
 
-         for ( int ii = 0; ii < nmult; ii++ )
-         {  // add summary lines on duplicates
-            int jj = multis.at( ii );
-            cGUID  = sorts.at( jj ).section( ":", 2, 2 );
-            label  = sorts.at( jj ).section( ":", 0, 0 );
+      return da.dataGUID < db.dataGUID;
+   };
 
-            if ( cGUID != pGUID )
-            {  // first instance of this GUID:  show GUID
-               msg  += tr( "GUID:  " ) + cGUID + "\n";
-               pGUID = cGUID;
-            }
+   std::stable_sort( roots.begin(), roots.end(), before );
 
-            // one label line for each multiple
-            msg  += tr( "  Label:  " ) + label + "\n";
-         }
+   for ( int ii = 0; ii < nodes.size(); ii++ )
+      std::stable_sort( nodes[ ii ].kids.begin(), nodes[ ii ].kids.end(),
+                        before );
 
-         msg += tr( "\nDetails of Duplicates:\n\n" );
+   // Out in tree order, each record marked with where its parent is
+   QVector< DataDesc > merged;
+   std::function< void( int, int ) > emitNode;
+   emitNode = [ & ]( int index, int pstate )
+   {
+      DataDesc desc = nodes[ index ].desc;
 
-         for ( int ii = 0; ii < nmult; ii++ )
-         {  // add detail lines
-            int jj = multis.at( ii );
-            cGUID  = sorts.at( jj ).section( ":", 2, 2 );
-            pGUID  = sorts.at( jj ).section( ":", 3, 3 );
-            label  = sorts.at( jj ).section( ":", 0, 0 );
-            int kk = sorts.at( jj ).section( ":", 1, 1 ).toInt();
-            cdesc  = descv[ kk ];
+      if ( desc.recType == RAW )
+         pstate = desc.recState;          // a raw is its own parent's state
 
-            msg   += tr( "GUID:  " ) + cGUID + "\n" +
-               tr( "  ParentGUID:  " ) + pGUID + "\n" +
-               tr( "  Label:  " ) + label + "\n" +
-               tr( "  Description:  " ) + cdesc.description + "\n" +
-               tr( "  DB record ID:  %1" ).arg( cdesc.recordID ) + "\n" +
-               tr( "  File Directory:  " ) +
-               cdesc.filename.section( "/",  0, -2 ) + "\n" +
-               tr( "  File Name:  " ) +
-               cdesc.filename.section( "/", -1, -1 ) + "\n" +
-               tr( "  File Last Mod:  " ) +
-               cdesc.filemodDate + "\n" +
-               tr( "  Last Mod Date:  " ) +
-               cdesc.lastmodDate + "\n";
-         }
-
-         // pop up text dialog
-         US_Editor* editd = new US_Editor( US_Editor::LOAD, true, fileexts );
-         editd->setWindowTitle( tr( "Data Set Duplicate GUID Details" ) );
-         editd->move( QCursor::pos() + QPoint( 200, 200 ) );
-         editd->resize( 600, 500 );
-         editd->e->setFont( QFont( US_Widgets::fixedFont().family(),
-                            US_GuiSettings::fontSize() ) );
-         editd->e->setText( msg );
-         editd->show();
-
-         abort = true;      // tell caller to abort data tree build
-      }
+      if ( desc.recState == NOSTAT  ||
+           desc.description.contains( "-ARTIFICIAL" ) )
+         desc.recState = NOSTAT;          // a filler
 
       else
       {
-         abort = false;     // signal to proceed with data tree build
+         if ( ( pstate & REC_DB ) != 0 )  desc.recState |= PAR_DB;
+         if ( ( pstate & REC_LO ) != 0 )  desc.recState |= PAR_LO;
       }
-DbgLv(2) << "review_descs   abort flag:" << abort;
+
+      merged << desc;
+
+      for ( int jj = 0; jj < nodes[ index ].kids.size(); jj++ )
+         emitNode( nodes[ index ].kids[ jj ], desc.recState );
+   };
+
+   for ( int ii = 0; ii < roots.size(); ii++ )
+      emitNode( roots[ ii ], NOSTAT );
+
+   return merged;
+}
+
+// ------------------------------------------------------------ orphans
+
+/* Show records that attach to no experiment, under a stand-in experiment.
+
+   The stand-in is appended after everything else, like any experiment that
+   is read: its row and its records' rows are its own range.
+*/
+int US_DataModel::add_orphans( const QVector< DataDesc >& dbOrphans,
+                               const QVector< DataDesc >& loOrphans )
+{
+   if ( dbOrphans.isEmpty()  &&  loOrphans.isEmpty() )   return -1;
+
+   RunEntry entry;
+   entry.runID   = tr( "(records of no experiment)" );
+   entry.orphans = true;
+   entry.loaded  = true;
+
+   DataDesc edesc;
+   edesc.recordID    = -1;
+   edesc.recType     = EXPERIMENT;
+   edesc.parentID    = -1;
+   edesc.recState    = ( dbOrphans.isEmpty() ? 0 : REC_DB )
+                     | ( loOrphans.isEmpty() ? 0 : REC_LO );
+   edesc.subType     = "";
+   edesc.dataGUID    = dmyGUID;
+   edesc.parentGUID  = "";
+   edesc.filename    = "";
+   edesc.contents    = "";
+   edesc.label       = entry.runID;
+   edesc.description = tr( "Records whose experiment or parent is missing" );
+
+   QVector< DataDesc > mdescs = merge_descs( dbOrphans, loOrphans );
+
+   entry.row = adescs.size();
+   adescs << edesc;
+
+   int  base  = adescs.size();
+   bool exctr = false;
+
+   for ( int ii = 0; ii < mdescs.size(); ii++ )
+   {
+      const DataDesc& desc = mdescs.at( ii );
+
+      if ( desc.recType == RAW )
+         exctr = excluded_tree( desc.recState );
+
+      if ( exctr )   continue;
+
+      adescs << desc;
+
+      entry.dbCount += ( ( desc.recState & REC_DB ) != 0 ) ? 1 : 0;
+      entry.loCount += ( ( desc.recState & REC_LO ) != 0 ) ? 1 : 0;
    }
 
-   return abort;
+   bool any       = ( adescs.size() > base );
+   entry.firstRow = any ? base : -1;
+   entry.lastRow  = any ? adescs.size() - 1 : -1;
+
+   kdb_recs      += dbOrphans.size();
+   klo_recs      += loOrphans.size();
+
+   runents << entry;
+
+   return runents.size() - 1;
 }
 
-// find index of substring at given position in strings of string list
-int US_DataModel::index_substring( QString ss, int ixs, QStringList& sl )
+// ------------------------------------------------------------ duplicates
+
+/* Rows that share a GUID, across the whole tree.
+
+   A record in both places is one row, so two rows of one kind with one GUID
+   are two records that claim to be the same one -- whichever experiments
+   they are in.
+*/
+QList< US_DataModel::Duplicate > US_DataModel::find_duplicates( void ) const
 {
-   QString sexp = "XXX";
-   QRegularExpression rexp;
+   QHash< QString, QVector< int > > rowsByKey;
+   QStringList keys;
 
-   if ( ixs == 0 )
-      sexp = ss + ":*";        // label at beginning of strings in list
+   for ( int row = 0; row < adescs.size(); row++ )
+   {
+      const DataDesc& desc = adescs.at( row );
 
-   else if ( ixs == 1  ||  ixs == 2 )
-      sexp = "*:" + ss + ":*"; // RecIndex/recGUID in middle of list strings
+      if ( desc.recType < RAW  ||  desc.recState == NOSTAT )   continue;
 
-   else if ( ixs == 3 )
-      sexp = "*:" + ss;        // parentGUID at end of strings in list
+      QString key = QString::number( desc.recType ) + ":" + desc.dataGUID;
 
-   rexp = QRegularExpression( QRegularExpression::wildcardToRegularExpression( sexp ) );
+      if ( ! rowsByKey.contains( key ) )
+         keys << key;
 
-   return sl.indexOf( rexp );
-}
-
-// Get sublist from string list of substring matches at given string position
-QStringList US_DataModel::filter_substring( QString ss, int ixs,
-   QStringList& sl )
-{
-   QStringList subl;
-
-   if ( ixs == 0 )
-      // match label at beginning of strings in list
-      subl = sl.filter( QRegularExpression( "^" + ss + ":" ) );
-
-   else if ( ixs == 1  ||  ixs == 2 )
-      // match RecIndex or recGUID in middle of strings in list
-      subl = sl.filter( ":" + ss + ":" );
-
-   else if ( ixs == 3 )
-      // match parentGUID at end of strings in list
-      subl = sl.filter( QRegularExpression( ":" + ss + "$" ) );
-
-   return subl;
-}
-
-// List orphans of a record type (in rec list, no tie to parent list)
-QStringList US_DataModel::list_orphans( QStringList& rlist,
-   QStringList& plist )
-{
-   QStringList olist;
-   QStringList tlist;
-
-   for ( int ii = 0; ii < plist.size(); ii++ )
-   {  // Build test-parent-GUID list
-      tlist << plist.at( ii ).section( ":", 2, 2 );
+      rowsByKey[ key ] << row;
    }
 
-   for ( int ii = 0; ii < rlist.size(); ii++ )
-   {  // examine parentGUID for each record in the list
-      QString pReco = rlist.at( ii );
-      QString pGUID = pReco.section( ":", 3, 3 );
+   QList< Duplicate > dups;
 
-      // see if it is the recordGUID of any in the potential parent list
-      if ( ! tlist.contains( pGUID ) )
-         olist << pReco;          // no parent found, so add to the orphan list
+   for ( int ii = 0; ii < keys.size(); ii++ )
+   {
+      const QVector< int >& rows = rowsByKey[ keys[ ii ] ];
+
+      if ( rows.size() < 2 )   continue;
+
+      Duplicate dup;
+      dup.recType = keys[ ii ].section( ":", 0, 0 ).toInt();
+      dup.guid    = keys[ ii ].section( ":", 1 );
+      dup.rows    = rows;
+      dups << dup;
    }
 
-   return olist;
-}
-
-// return a record state flag with parent state ORed in
-int US_DataModel::record_state_flag( DataDesc descr, int pstate )
-{
-   int state = descr.recState;
-
-   if ( descr.recState == NOSTAT  ||
-        descr.description.contains( "-ARTIFICIAL" ) )
-      state = NOSTAT;                    // mark a dummy record
-
-   else
-   {  // detect and mark parentage of non-dummy
-      if ( ( pstate & REC_DB ) != 0 )
-         state = state | PAR_DB;         // mark a record with db parent
-
-      if ( ( pstate & REC_LO ) != 0 )
-         state = state | PAR_LO;         // mark a record with local parent
-   }
-
-   return state;
-}
-
-// compose concatenation on which to sort (label:index:dataGUID:parentGUID)
-QString US_DataModel::sort_string( DataDesc ddesc, int indx )
-{  // create string for ascending sort on label
-   QString label  = ( ddesc.recType < 3 ) ? ddesc.label : ddesc.description;
-   int     lablen = label.length();
-   if ( lablen < maxdlen )
-      label = label.leftJustified( maxdlen, ' ' );
-
-   QString ostr  = label                              // label to sort on
-      + ":"      + QString::asprintf( "%4.4d", indx ) // index in desc. vector
-      + ":"      + ddesc.dataGUID                     // data GUID
-      + ":"      + ddesc.parentGUID;                  // parent GUID
-   return ostr;
+   return dups;
 }
 
 // Build a sample tree, shown before the first scan
 void US_DataModel::dummy_data()
 {
+   if ( must_queue() )   return;          // never under a running scan
+
+   close_catalogs();
+
    adescs   .clear();
    ddescs   .clear();
    ldescs   .clear();
    runents  .clear();
    run_queue.clear();
+   ver_queue.clear();
+   errors   .clear();
+   db_failed  = false;
    kdb_recs   = 0;
    klo_recs   = 0;
 
@@ -2023,15 +2021,16 @@ void US_DataModel::dummy_data()
    entry.row            = 0;
    entry.firstRow       = 1;
    entry.loaded         = true;
+   entry.verified       = true;
 
    cdesc.recType        = EXPERIMENT;
-   cdesc.recState       = REC_DB | REC_LO;
+   cdesc.recState       = REC_DB | REC_LO | HV_DET;
    cdesc.subType        = "velocity";
    cdesc.label          = "demo1_veloc";
    cdesc.description    = "demo1_veloc";
    cdesc.dataGUID       = "demo1_exper";
    cdesc.parentGUID     = "";
-   cdesc.contents       = "";
+   cdesc.contents       = "differ 1 - -";
    cdesc.parentID       = 1;
    cdesc.recordID       = 1;
    cdesc.filename       = "";
@@ -2044,6 +2043,7 @@ void US_DataModel::dummy_data()
    cdesc.description    = "demo1_veloc";
    cdesc.dataGUID       = "demo1_veloc";
    cdesc.parentGUID     = "demo1_exper";
+   cdesc.contents       = "";
    cdesc.parentID       = 1;
    cdesc.recordID       = 1;
    cdesc.filename       = "";
@@ -2051,7 +2051,7 @@ void US_DataModel::dummy_data()
    ddescs<<cdesc;
 
    cdesc.recType        = EDIT;
-   cdesc.recState       = REC_DB | REC_LO | PAR_DB | PAR_LO;
+   cdesc.recState       = REC_DB | REC_LO | PAR_DB | PAR_LO | HV_DET;
    cdesc.subType        = "RA";
    cdesc.label          = "item_2_2";
    cdesc.description    = "demo1_veloc";
@@ -2068,6 +2068,7 @@ void US_DataModel::dummy_data()
    cdesc.subType        = "2DSA";
    cdesc.label          = "item_3_2";
    cdesc.description    = "demo1_veloc.sa2d.model.11";
+   cdesc.contents       = "";
    cdesc.parentID       = 2;
    cdesc.recordID       = -1;
    cdesc.filename       = "demo1_veloc_model.xml";
@@ -2075,7 +2076,7 @@ void US_DataModel::dummy_data()
    ldescs<<cdesc;
 
    cdesc.recType        = NOISE;
-   cdesc.recState       = REC_DB | REC_LO | PAR_DB | PAR_LO;
+   cdesc.recState       = REC_DB | REC_LO | PAR_DB | PAR_LO | HV_DET;
    cdesc.subType        = "TI";
    cdesc.label          = "item_4_2";
    cdesc.description    = "demo1_veloc.ti_noise";
@@ -2087,10 +2088,23 @@ void US_DataModel::dummy_data()
    ddescs<<cdesc;
    ldescs<<cdesc;
 
+   cdesc.recType        = NOISE;
+   cdesc.recState       = REC_DB | REC_LO | PAR_DB | PAR_LO;
+   cdesc.subType        = "RI";
+   cdesc.label          = "item_5_2";
+   cdesc.description    = "demo1_veloc.ri_noise";
+   cdesc.contents       = "";
+   cdesc.parentID       = 2;
+   cdesc.recordID       = 4;
+   cdesc.filename       = "demo1_veloc_noise2.xml";
+   adescs<<cdesc;
+   ddescs<<cdesc;
+   ldescs<<cdesc;
+
    cdesc.recType        = EDIT;
    cdesc.recState       = NOSTAT;
    cdesc.subType        = "RA";
-   cdesc.label          = "item_5_2";
+   cdesc.label          = "item_6_2";
    cdesc.description    = "demo1_veloc";
    cdesc.contents       = "CC 15";
    cdesc.recordID       = -1;
@@ -2098,6 +2112,8 @@ void US_DataModel::dummy_data()
    adescs<<cdesc;
 
    entry.lastRow        = adescs.size() - 1;
+   entry.dbCount        = 4;
+   entry.loCount        = 3;
    runents << entry;
 
    kdb_recs   = ddescs.size();

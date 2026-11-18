@@ -5,10 +5,9 @@
 #include "us_extern.h"
 #include "us_widgets.h"
 #include "us_db2.h"
+#include "ius_db2.h"
 #include "us_model.h"
 #include "us_noise.h"
-#include "us_buffer.h"
-#include "us_analyte.h"
 #include "us_help.h"
 #include "us_dataIO.h"
 #include "us_data_catalog.h"
@@ -34,6 +33,9 @@ class US_DataModel : public QObject
 
         //! \enum State
         //! \brief Enumeration for data record states
+        //!
+        //! HV_DET marks a record in both places whose contents have been
+        //! compared: until then it reads as unverified, not as in sync.
         enum State { NOSTAT=0,  REC_DB=1,  REC_LO=2, PAR_DB=4, PAR_LO=8,
             HV_DET=16, IS_CON=32, ALL_OK=64 };
 
@@ -43,6 +45,19 @@ class US_DataModel : public QObject
         //! The tree nests by this number, so an experiment has to sort
         //! before the raw data under it.
         enum RecType { EXPERIMENT=0, RAW=1, EDIT=2, MODEL=3, NOISE=4 };
+
+        //! \enum SyncState
+        //! \brief How a record stands between the database and local disk
+        enum SyncState
+        {
+            SYNC_DUMMY = 0,    //!< A filler for a missing parent
+            SYNC_LOCAL,        //!< On local disk only
+            SYNC_DB,           //!< In the database only
+            SYNC_UNVERIFIED,   //!< In both, contents not compared yet
+            SYNC_INSYNC,       //!< In both, contents compared and equal
+            SYNC_CONFLICT      //!< In both, contents differ, or one side
+                               //!< has no checksum to compare
+        };
 
         //! \class DataDesc
         //! \brief Class for describing data records
@@ -69,7 +84,10 @@ class US_DataModel : public QObject
         //!
         //! The first layer of a scan produces one of these per experiment.
         //! The second layer reads the chain of one experiment at a time and
-        //! fills in the row range its records occupy.
+        //! fills in the row range its records occupy.  The experiment rows
+        //! come first and each experiment's records are appended as it is
+        //! read, so the records of an experiment are \ref firstRow to
+        //! \ref lastRow, never the rows that follow \ref row.
         class RunEntry
         {
             public:
@@ -93,8 +111,22 @@ class US_DataModel : public QObject
                 //! only has nothing to be compared against.
                 bool      verified;
 
+                //! True for the stand-in experiment that holds the records
+                //! that attach to no experiment's chain
+                bool      orphans;
+
                 //! \brief True when both sources hold this experiment
                 bool      inBoth( void ) const;
+        };
+
+        //! \class Duplicate
+        //! \brief Rows that share one GUID within one kind of record
+        class Duplicate
+        {
+            public:
+                int            recType;  //!< The kind of record
+                QString        guid;     //!< The shared GUID
+                QVector< int > rows;     //!< The rows holding it
         };
 
         //! \brief Set the database connection
@@ -102,7 +134,7 @@ class US_DataModel : public QObject
         void setDatabase( US_DB2* db );
 
         //! \brief Set the progress bar and status label
-        //! \param progress Progress bar
+        //! \param progress Progress bar of the work inside one experiment
         //! \param status Status label
         void setProgress( QProgressBar* progress, QLabel* status );
 
@@ -111,15 +143,51 @@ class US_DataModel : public QObject
         //! \param tree Data tree handler object
         void setSiblings( QObject* proc, QObject* tree );
 
-        //! \brief Get the list of run IDs
-        //! \param runIDs List of run IDs
-        //! \param count Count of run IDs
-        void getRunIDs( QStringList& runIDs, int& count );
+        /*! \brief Get the list of run IDs
 
-        //! \brief Get the list of triples
-        //! \param triples List of triples
-        //! \param runID Run ID
+            A cheap listing for the run selector: one query against the
+            database and one directory listing, without reading the record
+            chain or indexing the local store.
+            \param runIDs Filled in with the run IDs
+            \param source The source filter index (0=ALL, 1=DB Only,
+                          2=Local Only, 3=Exclude Local-Only, 4=Exclude DB-Only)
+        */
+        void getRunIDs( QStringList& runIDs, int& source );
+
+        /*! \brief Get the triples of one run
+
+            One lookup of the experiment and one listing of its raw data
+            records, plus a listing of the run directory: no record is read
+            and no checksum is computed.
+            \param triples Filled in with the triples
+            \param runID   The run ID
+        */
         void getTriples( QStringList& triples, QString runID );
+
+        //! \brief The run IDs of the database experiments of one person
+        //! \param dbP   The database connection
+        //! \param invID The investigator
+        //! \param error Filled in with a message when the query fails
+        static QStringList db_run_ids( IUS_DB2* dbP, int invID,
+                                       QString& error );
+
+        //! \brief The run IDs of the local results directory
+        //!
+        //! A run is a directory holding at least one .auc file, and its run
+        //! ID is the whole directory name, since a run ID may contain dots.
+        static QStringList local_run_ids( void );
+
+        //! \brief The triples of one database run
+        //! \param dbP   The database connection
+        //! \param runID The run ID
+        //! \param invID The investigator
+        //! \param error Filled in with a message when a query fails
+        static QStringList db_triples( IUS_DB2* dbP, const QString& runID,
+                                       int invID, QString& error );
+
+        //! \brief The triples of one local run
+        //! \param runID The run ID
+        static QStringList local_triples( const QString& runID );
 
         //! \brief Set filters for data selection
         //! \param run Filter by run
@@ -130,10 +198,6 @@ class US_DataModel : public QObject
         //! \brief Get the database connection
         //! \return Database connection pointer
         US_DB2* dbase( void );
-
-        //! \brief Get investigator text
-        //! \return Investigator text
-        QString invtext( void );
 
         //! \brief Get the progress bar
         //! \return Progress bar pointer
@@ -151,14 +215,26 @@ class US_DataModel : public QObject
         //! \return Data tree handler object pointer
         QObject* treeobj( void );
 
-        //! \brief Browse data
-        void browse_data( void );
+        /*! \brief Scan the database and the local disk
 
-        //! \brief Scan data
-        //!
-        //! This is the whole scan, both layers, for a caller that does not
-        //! want to drive the layers itself.
+            The whole scan -- both layers and the comparison -- and the loop
+            the window runs.  It reports through \ref scanPhase, \ref
+            scanStep, \ref runsListed, \ref runMerged and \ref runCompared.
+            While it runs \ref scan_active is true, and a request to read or
+            compare an experiment that arrives from the window meanwhile is
+            only queued (see \ref scan_run).  The window stays responsive
+            between experiments.
+        */
         void scan_data( void );
+
+        //! \brief True while \ref scan_data is running
+        bool scan_active( void ) const;
+
+        //! \brief True while the model is reading or merging
+        //!
+        //! A request that arrives meanwhile, from an event the window
+        //! processed, is only queued.
+        bool is_busy( void ) const;
 
         //! \brief Read the first layer: one record per experiment
         //!
@@ -179,6 +255,32 @@ class US_DataModel : public QObject
         //! \returns -1 when there is no such experiment
         int  index_of_run( const QString& runID ) const;
 
+        //! \brief The experiment a row belongs to
+        //! \param row An experiment row or one of its records
+        //! \returns The position of the experiment, or -1
+        int  run_of_row( int row ) const;
+
+        //! \brief The row of a record's parent
+        //! \param row A record row
+        //! \returns The parent row (the experiment row for a raw record),
+        //!          or -1 for an experiment or an unknown row
+        int  parent_row( int row ) const;
+
+        /*! \brief The rows of every descendant of a row
+
+            For an experiment these are its own row range, whatever its
+            position; for a record, the records below it within its
+            experiment.  An experiment not read yet has no descendants.
+            \param row The row whose descendants are wanted
+        */
+        QVector< int > descendant_rows( int row ) const;
+
+        //! \brief The run ID a row belongs to
+        //!
+        //! The experiment the row hangs under, or, for an orphan, the run
+        //! its file name or description names.
+        QString run_id_of_row( int row ) const;
+
         /*! \brief Read the chain of every experiment at once
 
             The second layer in bulk.  Against the database this is four
@@ -191,8 +293,9 @@ class US_DataModel : public QObject
 
         /*! \brief Merge one experiment's records into the tree
 
-            The records have to be in the catalogs already, which \ref
-            scan_all put them there.
+            The records have to be in the catalogs already: \ref scan_all
+            put them there.  While the model is busy, or a scan is running,
+            the experiment is only queued and false is returned.
             \param index The position of the experiment
         */
         bool merge_run( int index );
@@ -203,8 +306,10 @@ class US_DataModel : public QObject
             experiment's data blobs and the local files are read -- and all
             it answers is whether records that exist in both places still
             match, so it is only worth doing for an experiment that is in
-            both.
+            both.  While the model is busy, or a scan is running, the
+            experiment is only queued and false is returned.
             \param index The position of the experiment
+            \returns True when the experiment was compared
         */
         bool verify_run( int index );
 
@@ -217,6 +322,9 @@ class US_DataModel : public QObject
         int  queue_verifies( void );
 
         //! \brief Ask for an experiment to be verified before the others
+        //!
+        //! Outside a scan this emits \ref verifyRequested, so whoever runs
+        //! the comparisons knows there is one waiting.
         //! \param index The position of the experiment
         void request_verify( int index );
 
@@ -230,7 +338,8 @@ class US_DataModel : public QObject
         //!
         //! The records are appended, so rows already in the tree keep their
         //! position.  Reading an experiment that is already read does
-        //! nothing.
+        //! nothing.  While the model is busy, or a scan is running, the
+        //! experiment is only queued and false is returned.
         //! \param index The position of the experiment
         //! \returns True when the experiment now has its records
         bool scan_run( int index );
@@ -248,16 +357,86 @@ class US_DataModel : public QObject
         //! \brief How many experiments are still waiting to be read
         int  pending_runs( void ) const;
 
+        /*! \brief Show records that attach to no experiment
+
+            The records are put under a stand-in experiment, each under
+            gray filler parents for the links of its chain that are
+            missing, so a record whose edit or raw data is gone can still
+            be seen and removed.
+            \param dbOrphans Orphan records read from the database
+            \param loOrphans Orphan records read from local disk
+            \returns The position of the stand-in experiment, or -1 when
+                     there were no orphans
+        */
+        int  add_orphans( const QVector< DataDesc >& dbOrphans,
+                          const QVector< DataDesc >& loOrphans );
+
+        /*! \brief Merge the database and local records of one experiment
+
+            Records are paired by GUID within their parent, so a record in
+            both places is one row whatever else either side holds.  The
+            output is in tree order: each raw record, then its edits, each
+            followed by its models and their noise.  A record whose parent
+            is missing is given a gray filler parent.
+            \param dbs The database records
+            \param los The local records
+            \returns The merged records
+        */
+        QVector< DataDesc > merge_descs( const QVector< DataDesc >& dbs,
+                                         const QVector< DataDesc >& los );
+
+        /*! \brief Repair database model and noise descriptions
+
+            Older servers cut model descriptions to 80 characters and leave
+            noise descriptions empty.  A cut model description is read in
+            full from its model record; an empty noise description is made
+            from its model's, and a cut one is read in full from its noise
+            record.
+            \param descs The database records of one experiment
+            \param dbP   The database connection, or null to skip the reads
+        */
+        static void repair_descriptions( QVector< DataDesc >& descs,
+                                         IUS_DB2* dbP );
+
+        //! \brief Rows that share a GUID, over the whole tree
+        //!
+        //! Detected once, after the scan, across every experiment.
+        QList< Duplicate > find_duplicates( void ) const;
+
+        //! \brief The sync state of a record
+        //! \param desc The record
+        static SyncState sync_state( const DataDesc& desc );
+
+        //! \brief The run type of an edit file, its SubType
+        //! \param filename runID.editID.type.cell.channel.wavelength.xml
+        static QString edit_subtype( const QString& filename );
+
+        //! \brief The label of an edit: run ID, edit ID and triple
+        //! \param runID    The run ID
+        //! \param filename The edit file name
+        static QString edit_label( const QString& runID,
+                                   const QString& filename );
+
+        //! \brief The sub-type of a model, from its description and size
+        //! \param descript The model description
+        //! \param recsize  The length of the model contents
+        static QString model_subtype( const QString& descript,
+                                      const QString& recsize );
+
+        //! \brief Parse a record date, as either source writes one
+        //! \returns An invalid date-time when the text is not a date
+        static QDateTime parse_date( const QString& text );
+
+        //! \brief Errors the last scan ran into
+        QStringList scan_errors( void ) const;
+
+        //! \brief True when the last scan could not list the database
+        //!
+        //! Every record then reads as local only, which is not true.
+        bool db_listing_failed( void ) const;
+
         //! \brief Load dummy data
         void dummy_data( void );
-
-        //! \brief Set the investigator
-        //! \param investigator Investigator name
-        void set_investigator( QString investigator );
-
-        //! \brief Get investigator text
-        //! \return Investigator text
-        QString investigator_text( void );
 
         //! \brief Get data description for a specific row
         //! \param row Row index
@@ -289,6 +468,30 @@ class US_DataModel : public QObject
         //! \return Local record count
         int recCountLoc( void );
 
+    signals:
+        //! \brief A phase of the scan starts
+        //! \param text  What the phase is doing
+        //! \param steps How many steps it has
+        void scanPhase( const QString& text, int steps );
+
+        //! \brief A step of the running phase is done
+        //! \param done How many steps are done
+        void scanStep( int done );
+
+        //! \brief The first layer is listed
+        void runsListed( void );
+
+        //! \brief An experiment's records are merged in
+        //! \param index The position of the experiment
+        void runMerged( int index );
+
+        //! \brief An experiment's records have been compared
+        //! \param index The position of the experiment
+        void runCompared( int index );
+
+        //! \brief A comparison was asked for while no scan was running
+        void verifyRequested( void );
+
     private:
         US_DB2*       db;               //!< Pointer to opened DB connection
         US_DataCatalog* cat_db;         //!< Catalog of the database records
@@ -301,56 +504,63 @@ class US_DataModel : public QObject
         US_DiskScan*    scanner;        //!< Reads the local store off-thread
         bool          use_db;           //!< True when the database is scanned
         bool          use_lo;           //!< True when the local disk is scanned
+        bool          db_failed;        //!< The database could not be listed
+        bool          scanning;         //!< True while scan_data runs
+        int           busy;             //!< Depth of reads in progress
         QProgressBar* progress;         //!< Progress bar on main window
         QLabel*       lb_status;        //!< Status label on main window
         QWidget*      parentw;          //!< Parent widget (main window)
-
-        QTreeWidget*        tw_recs;    //!< Tree widget
-        QTreeWidgetItem*    tw_item;    //!< Current tree widget item
 
         DataDesc            cdesc;      //!< Current record description
         QVector< DataDesc > ddescs;     //!< DB descriptions
         QVector< DataDesc > ldescs;     //!< Local-disk descriptions
         QVector< DataDesc > adescs;     //!< All (merged) descriptions
-        QVector< DataDesc > mdescs;     //!< Merged descriptions of one run
-        QVector< int >      chgrows;    //!< Changed rows
         QVector< RunEntry > runents;    //!< Experiment entries of the scan
         QList< int >        run_queue;  //!< Experiments still to be read
         QList< int >        ver_queue;  //!< Experiments still to be verified
+        QStringList         errors;     //!< Errors of the last scan
         int                 kdb_recs;   //!< Database records merged so far
         int                 klo_recs;   //!< Local records merged so far
 
         QObject*            ob_process; //!< Data processor
         QObject*            ob_tree;    //!< Data tree handler
-        QObject*            ob_exper;   //!< Experiment synchronizer
 
-        US_Buffer     buffer;           //!< Buffer object
-        US_Analyte    analyte;          //!< Analyte object
-
-        int           personID;         //!< Person ID
         int           dbg_level;        //!< Debug level
-        int           maxdlen;          //!< Maximum data length
 
-        QString       invID;            //!< Investigator ID
-        QString       run_name;         //!< Run name
-        QString       cell;             //!< Cell
         QString       filt_run;         //!< Filter run
         QString       filt_triple;      //!< Filter triple
         QString       filt_source;      //!< Filter source
 
-        QPoint        cur_pos;          //!< Current position
+        //! \brief Counts a read in progress for as long as it lives
+        class BusyGuard
+        {
+            public:
+                explicit BusyGuard( int& depth ) : count( depth ) { count++; }
+                ~BusyGuard() { count--; }
+            private:
+                int& count;
+        };
 
     private slots:
-        //! \brief Slot to merge database and local data
-        void merge_dblocal( void );
-
-        //! \brief Put a note from the local scan on the status line
+        //! \brief Put a note from a catalog on the status line
         //! \param note The note
         void scanner_note( const QString& note );
 
     private:
+        //! \brief Put a note on the status line, cut to what it can show
+        void note( const QString& text );
+
+        //! \brief Record an error of the scan
+        void scan_error( const QString& text );
+
+        //! \brief True when a read has to be queued instead of done now
+        bool must_queue( void ) const;
+
         //! \brief Open the catalogs the current source filter calls for
         void open_catalogs( void );
+
+        //! \brief Release the catalogs and the disk worker
+        void close_catalogs( void );
 
         //! \brief Wait for the disk worker to be between jobs
         //!
@@ -358,6 +568,15 @@ class US_DataModel : public QObject
         //! first: the worker publishes what it read before it goes idle,
         //! so what is read afterwards is what it wrote.
         void await_disk( void );
+
+        //! \brief Read and merge one experiment, without the queue check
+        bool do_scan_run( int index );
+
+        //! \brief Merge one experiment, without the queue check
+        bool do_merge_run( int index );
+
+        //! \brief Compare one experiment, without the queue check
+        bool do_verify_run( int index );
 
         //! \brief Build the experiment record of one run entry
         //! \param entry The run entry to describe
@@ -387,56 +606,6 @@ class US_DataModel : public QObject
         //! \brief Whether the source filter excludes this tree
         //! \param state The record state flags of the head of the tree
         bool excluded_tree( int state ) const;
-
-        //! \brief The sub-type of a model, from its description and size
-        //! \param descript The model description
-        //! \param recsize  The length of the model contents
-        QString model_subtype( const QString& descript,
-                               const QString& recsize );
-
-
-        //! \brief Sort descriptions
-        //! \param descs Vector of descriptions
-        void sort_descs( QVector< DataDesc >& descs );
-
-        //! \brief Review descriptions
-        //! \param list List of strings
-        //! \param descs Vector of descriptions
-        //! \return true if successful, false otherwise
-        bool review_descs( QStringList& list, QVector< DataDesc >& descs );
-
-        //! \brief Get the index of a substring in a list
-        //! \param str String to search for
-        //! \param pos Position to start searching
-        //! \param list List to search in
-        //! \return Index of the substring
-        int index_substring( QString str, int pos, QStringList& list );
-
-        //! \brief Filter a list by substring
-        //! \param str Substring to filter by
-        //! \param pos Position to start filtering
-        //! \param list List to filter
-        //! \return Filtered list
-        QStringList filter_substring( QString str, int pos, QStringList& list );
-
-        //! \brief List orphans
-        //! \param list1 First list
-        //! \param list2 Second list
-        //! \return List of orphans
-        QStringList list_orphans( QStringList& list1, QStringList& list2 );
-
-        //! \brief Get the record state flag
-        //! \param desc Data description
-        //! \param flag State flag
-        //! \return Record state flag
-        int record_state_flag( DataDesc desc, int flag );
-
-        //! \brief Get the sort string for a data description
-        //! \param desc Data description
-        //! \param flag State flag
-        //! \return Sort string
-        QString sort_string( DataDesc desc, int flag );
-
 };
 
 #endif // US_DATA_MODEL_H

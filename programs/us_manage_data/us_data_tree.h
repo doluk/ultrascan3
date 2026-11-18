@@ -8,8 +8,6 @@
 #include "us_data_process.h"
 #include "us_db2.h"
 #include "us_model.h"
-#include "us_buffer.h"
-#include "us_analyte.h"
 #include "us_help.h"
 #include "us_dataIO.h"
 
@@ -20,6 +18,14 @@ class US_DataTree : public QObject
     Q_OBJECT
 
     public:
+        //! \brief Statuses of an action that are not an error
+        enum ActStatus
+        {
+            ACT_REFUSED   = 997,  //!< Refused by the GMP guard
+            ACT_NOTHING   = 998,  //!< No selected record could take it
+            ACT_CANCELLED = 999   //!< The user cancelled
+        };
+
         //! \brief Constructor for US_DataTree
         //! \param model Pointer to US_DataModel object
         //! \param tree Pointer to QTreeWidget object
@@ -38,6 +44,12 @@ class US_DataTree : public QObject
         //! or when the user opens it.
         void build_dtree( void );
 
+        //! \brief Add the row of an experiment added after the tree was built
+        //!
+        //! The stand-in experiment of the orphan records is one.
+        //! \param runIndex The position of the experiment
+        void add_run( int runIndex );
+
         //! \brief Add the records of one experiment under its row
         //! \param runIndex The position of the experiment
         void fill_run( int runIndex );
@@ -46,32 +58,51 @@ class US_DataTree : public QObject
         //!
         //! A scan compares the records of an experiment after its rows are
         //! already in the tree, so this is how a row that turns out to be a
-        //! conflict stops reading as in sync.
+        //! conflict stops reading as unverified.
         //! \param runIndex The position of the experiment
         void refresh_run( int runIndex );
 
+        /*! \brief Act on the selected rows
+
+            What a context menu action does once confirmed: the selection
+            is the tree's, and the action rows are the selected records
+            and their descendants (see \ref action_row_list).
+            \param item_exs Where the records exist ("Database only", ...)
+            \param item_act The action ("DB-only remove", ...)
+            \returns 0 on success, an error status, \ref ACT_NOTHING when
+                     no record could be acted on, or \ref ACT_REFUSED when
+                     the GMP guard refused
+        */
+        int act_on_selection( QString item_exs, QString item_act );
+
+        //! \brief The rows the selection acts on
+        //!
+        //! The selected records and every descendant of them, in tree
+        //! order, with raw records left out (they are never acted on).
+        QVector< int > action_row_list( void );
+
     public slots:
-                //! \brief Show help information for the data tree
-                void dtree_help( void );
+        //! \brief Show help information for the data tree
+        void dtree_help( void );
 
         //! \brief Show context menu for a tree item
         //! \param item Pointer to the tree widget item
         void row_context_menu( QTreeWidgetItem* item );
 
-        //! \brief Read an experiment the user opened
-        //!
-        //! An experiment the layered scan has not reached yet is read now,
-        //! ahead of the ones still queued, so opening a row never shows an
-        //! empty branch.
-        //! \param item The tree item that was opened or selected
+        /*! \brief Read an experiment the user opened
+
+            An experiment the layered scan has not reached yet is read now,
+            ahead of the ones still queued, and is asked to be compared;
+            the comparison itself is left to whoever runs the queue, so
+            opening rows never blocks.  While a scan runs, both requests
+            are only queued.
+            \param item The tree item that was opened
+        */
         void item_opened( QTreeWidgetItem* item );
 
     private:
         US_DataModel*    da_model;     //!< Data model object
         QTreeWidget*     tw_recs;      //!< Tree widget
-        QPushButton*     pb_hsedit;    //!< Pointer to edits hide/show button
-        QPushButton*     pb_hsmodl;    //!< Pointer to models hide/show button
-        QPushButton*     pb_hsnois;    //!< Pointer to noises hide/show button
         QWidget*         parentw;      //!< Pointer to parent widget
         US_DataProcess*  da_process;   //!< Data processor object
         QTreeWidgetItem* tw_item;      //!< Current tree widget item
@@ -81,33 +112,11 @@ class US_DataTree : public QObject
         QVector< int > selrows;        //!< All selected rows
         QVector< int > actrows;        //!< All action rows
         QVector< int > rawrows;        //!< Raw selected rows
-        QLabel*       lb_status;       //!< Status label
-        QTextEdit*    te_status;       //!< Status text edit
-        QLineEdit*    le_invtor;       //!< Investigator line edit
-        QPushButton*  pb_browse;       //!< Browse button
-        QPushButton*  pb_detail;       //!< Detail button
-        QPushButton*  pb_reset;        //!< Reset button
-        QPushButton*  pb_help;         //!< Help button
-        QPushButton*  pb_close;        //!< Close button
+        QMap< QString, bool > gmp_runs;     //!< Runs the GMP guard checked
+        QStringList    gmp_models;     //!< Model IDs produced by autoflow
+        bool           gmp_models_read; //!< True once gmp_models is read
 
-        int ntrows;                    //!< Number of tree rows
         int ntcols;                    //!< Number of tree columns
-        int ncrecs;                    //!< Number of current records
-        int ncraws;                    //!< Number of current raw records
-        int ncedts;                    //!< Number of current edit records
-        int ncmods;                    //!< Number of current model records
-        int ncnois;                    //!< Number of current noise records
-        int ndrecs;                    //!< Number of database records
-        int ndraws;                    //!< Number of database raw records
-        int ndedts;                    //!< Number of database edit records
-        int ndmods;                    //!< Number of database model records
-        int ndnois;                    //!< Number of database noise records
-        int nlrecs;                    //!< Number of local records
-        int nlraws;                    //!< Number of local raw records
-        int nledts;                    //!< Number of local edit records
-        int nlmods;                    //!< Number of local model records
-        int nlnois;                    //!< Number of local noise records
-        int kdmy;                      //!< Dummy variable
         int dbg_level;                 //!< Debug level
 
     private:
@@ -119,21 +128,14 @@ class US_DataTree : public QObject
         void row_look( const US_DataModel::DataDesc& desc, QBrush& fbru,
                        QString& rtyp, QString& rsrc );
 
-        //! \brief Add one record to the per-type counters
-        //! \param desc The record to count
-        void count_row( const US_DataModel::DataDesc& desc );
-
-        //! \brief The look of a record, and the record counted
-        //! \param desc The record to classify
-        //! \param fbru Filled in with the foreground brush
-        //! \param rtyp Filled in with the record type name
-        //! \param rsrc Filled in with the source text
-        void classify_row( const US_DataModel::DataDesc& desc, QBrush& fbru,
-                           QString& rtyp, QString& rsrc );
+        //! \brief Make sure an experiment's records are read
+        //! \param runIndex The position of the experiment
+        //! \returns True when the experiment has its records
+        bool ensure_loaded( int runIndex );
 
     private slots:
-                //! \brief Upload a tree item
-                void item_upload( void );
+        //! \brief Upload a tree item
+        void item_upload( void );
 
         //! \brief Download a tree item
         void item_download( void );
@@ -153,6 +155,12 @@ class US_DataTree : public QObject
         //! \brief Show details of all selected tree items
         void items_details( void );
 
+    private:
+        //! \brief Ask for, then perform, one context menu action
+        //! \param item_exs Where the records exist
+        //! \param item_act The action
+        void confirm_and_act( QString item_exs, QString item_act );
+
         //! \brief Get the action rows
         //! \return Number of action rows
         int action_rows( void );
@@ -168,9 +176,17 @@ class US_DataTree : public QObject
         //! \return Status code of the operation
         int do_actions( QString action, QString text );
 
-        bool check_filename_for_autoflow( QString );
-        bool is_modelIDs_from_autoflow  ( QString );
-        bool parse_models_desc_json( QStringList, QString );
+        //! \brief True when a run is required by the GMP framework
+        //! \param runID The run ID
+        bool check_filename_for_autoflow( const QString& runID );
+
+        //! \brief True when a model was produced by an autoflow
+        //! \param mID The model ID
+        bool is_modelIDs_from_autoflow( const QString& mID );
+
+        //! \brief The model IDs in a list of autoflow model descriptions
+        //! \param modelInfos The JSON model descriptions
+        static QStringList parse_models_desc_json( const QStringList& modelInfos );
 
         //! \brief Get the action text
         //! \param action Action to perform
@@ -190,9 +206,9 @@ class US_DataTree : public QObject
 
         //! \brief Check for significant differences between data descriptions
         //! \param desc Data description
-        //! \param db Pointer to US_DB2 object
+        //! \param db Pointer to the database connection
         //! \return True if there are significant differences, false otherwise
-        bool significant_diffs( US_DataModel::DataDesc desc, US_DB2* db );
+        bool significant_diffs( US_DataModel::DataDesc desc, IUS_DB2* db );
 };
 
 #endif // US_DATA_TREE_H

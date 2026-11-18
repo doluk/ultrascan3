@@ -12,14 +12,19 @@ This module is used to display the four main types of data that may exist for th
 
 .. note::
 
-   A row reads as **In Sync** as soon as both the database and local disk hold
-   that record; it turns **Conflict** only once the two copies have actually
-   been compared. Comparing means hashing the record contents on both sides,
-   which for a multi-wavelength run is the slowest part of a scan by a wide
-   margin, so it is done after the tree is complete and only for the
-   experiments that exist in both places -- a record that is in one place only
-   has nothing to be compared against. Opening an experiment compares it
-   straight away.
+   A row that both the database and local disk hold reads **Unverified**
+   (teal) until the two copies have actually been compared; it then turns
+   **In Sync** (green) or **Conflict** (red). A copy that could not be read
+   for the comparison counts as a conflict, not as in sync. Comparing means
+   hashing the record contents on both sides, which for a multi-wavelength
+   run is the slowest part of a scan by a wide margin, so it is done after
+   the tree is complete and only for the experiments that exist in both
+   places -- a record that is in one place only has nothing to be compared
+   against. Opening an experiment moves it to the front of the comparison
+   queue; the comparison runs in the background, so opening rows never waits
+   for it. An experiment row reads **In Sync** once everything under it has
+   been compared and matches, and **Conflict** when anything under it
+   differs.
 
 The primary end of any processing of the data is to achieve a synchronizing of data in the database and on local disk. Particularly when preparing for off-network work or when returning to the network after such work, it is desirable to insure that any new data produced has a presence on local disk for off-network work and in the database for normal day-to-day processing. Instances of any data need to be in sync on the two media. This module provides a means to accomplish that.   
 
@@ -28,8 +33,10 @@ Data Management Process:
 
     * **Database Password:** Upon opening, US_ManageData requires you to sign on to the database with your DB password. 
     * **Investigator:** For database work, you must specify your investigator name so you are limited to data that you have permission to access and modify. 
-    * **Scan Data:** Initiate a scan of all your data on the database and local disk. The scan runs in three phases: the experiments appear first, each with a count of the records under it; the records below them are then read -- from the database in a handful of queries for the whole store, and from disk in a single pass -- and filled into the tree as they arrive; finally the experiments that exist in *both* the database and on local disk are compared record by record, which is what turns a row red when the two copies have drifted apart. The local disk is read on a thread of its own, so that walking thousands of files happens at the same time as the database queries rather than after them, and the window keeps responding while it does. You can start working with the tree while the rest of it is still being read. Two progress bars say where a scan is: the upper one counts the experiments of the phase that is running, the lower one the work inside the experiment being read.
-    * **Navigate and Process:** Once you have a tree view of your data, you may navigate it using expand/collapse buttons or the normal **+** and **-** mechanism for specific branch expand and collapse. Opening an experiment the scan has not reached yet moves it to the front of the queue -- both for reading it and for comparing it -- so what you are looking at is dealt with first. Context menus at each row allow upload/download/remove/details, and acting on an experiment acts on everything under it. 
+    * **Scan Data:** Initiate a scan of all your data on the database and local disk. The scan runs in three phases: the experiments appear first, each with a count of the records under it; the records below them are then read -- from the database in a handful of queries for the whole store, and from disk in a single pass -- and filled into the tree as they arrive; finally the experiments that exist in *both* the database and on local disk are compared record by record, which is what turns a row red when the two copies have drifted apart. The local disk is read on a thread of its own, so that walking thousands of files happens at the same time as the database queries rather than after them, and the window keeps responding while it does. You can open experiments in the tree while the rest of it is still being read; the buttons, the filters and the row context menus are disabled until the scan is done. Two progress bars say where a scan is: the upper one (**Overall**) counts the steps of the phase that is running -- listing, reading, comparing -- and the lower one (**This experiment**) the work inside the experiment being read or compared. When the scan is done, any error it ran into is reported -- in particular, if the database could not be listed, every record would otherwise appear to be on local disk only -- and records that share a GUID with another record, in any experiment, are reported once.
+    * **Navigate and Process:** Once you have a tree view of your data, you may navigate it using expand/collapse buttons or the normal **+** and **-** mechanism for specific branch expand and collapse. Opening an experiment the scan has not reached yet moves it to the front of the queue -- both for reading it and for comparing it -- so what you are looking at is dealt with first. Context menus at each row allow upload/download/remove/details, and acting on an experiment acts on everything under it, and only on that. When nothing selected can take an action (removing from the database records that are only on local disk, say) you are told so rather than shown a success.
+    * **Experiments:** The top level of the tree is one row per experiment, labelled with its run ID. Before an experiment has been read, its *Descendants* column shows how many records the listing says are under it ("?" when the source cannot say without reading them); once read, it shows what is actually in the tree.
+    * **Orphans:** A record whose parent is missing (a model whose edit was removed, say) is shown under gray **dummy** filler rows, so that it can still be seen and removed.
 
 
 Initially you are presented with a small window to enter your database password. Then you will see the main window with a sample data tree that shows the kinds of states that data may be in (see tree help below).

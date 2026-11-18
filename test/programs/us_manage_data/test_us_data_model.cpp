@@ -10,13 +10,22 @@
 #include <QtCore>
 #include <QProgressBar>
 #include <QLabel>
+#include <QTreeWidget>
 
 #include "us_data_model.h"
+#include "us_data_process.h"
+#include "us_data_tree.h"
 #include "us_settings.h"
 #include "us_util.h"
 #include "us_dataIO.h"
 #include "us_model.h"
 #include "us_noise.h"
+
+// The names of the files in a directory that match a pattern
+static QStringList filesIn( const QString& dir, const QString& pattern )
+{
+   return QDir( dir ).entryList( QStringList( pattern ), QDir::Files );
+}
 
 class TestUSDataModel : public ::testing::Test
 {
@@ -261,8 +270,19 @@ TEST_F( TestUSDataModel, SecondLayerAppendsTheChainOfOneExperiment )
    US_DataModel::RunEntry entry = model.run_entry( index );
 
    ASSERT_TRUE( entry.loaded );
-   ASSERT_GE  ( entry.firstRow, 3 );          // appended after every header
+
+   // The records are appended after every experiment row, so they are NOT
+   // the rows that follow their experiment's row: what is under an
+   // experiment is its own row range, and only that
+   ASSERT_GE  ( entry.firstRow, 3 );
    EXPECT_EQ  ( entry.lastRow, model.recCount() - 1 );
+   EXPECT_EQ  ( model.row_datadesc( entry.row + 1 ).recType,
+                (int)US_DataModel::EXPERIMENT );
+
+   QVector< int > below = model.descendant_rows( entry.row );
+   ASSERT_EQ( below.size(), entry.lastRow - entry.firstRow + 1 );
+   EXPECT_EQ( below.first(), entry.firstRow );
+   EXPECT_EQ( below.last(),  entry.lastRow );
 
    EXPECT_EQ( countOfType( model, US_DataModel::RAW   ), 2 );
    EXPECT_EQ( countOfType( model, US_DataModel::EDIT  ), 2 );
@@ -483,4 +503,506 @@ TEST_F( TestUSDataModel, ListingCarriesNoChecksums )
    }
 
    EXPECT_GT( rows, 0 );
+}
+
+// -------------------------------------------------------- experiment ranges
+//
+// The experiment rows are rows 0..N-1 and each experiment's records are
+// appended after all of them.  Everything that acts on "an experiment and
+// what is under it" has to use the experiment's own row range: walking down
+// from the experiment row reaches the next experiment instead (first and
+// middle experiments), or every experiment's records (the last one).
+
+TEST_F( TestUSDataModel, EachExperimentOwnsExactlyItsRowRange )
+{
+   // Give the first experiment an edit of its own too
+   QString dir = runDir( runTwo );
+   QString rawGUID = US_Util::new_guid();
+   writeAuc ( dir + "/" + runTwo + ".RA.2.B.290.auc", rawGUID, "two" );
+   writeEdit( dir + "/" + runTwo + ".2401021200.RA.2.B.290.xml",
+              US_Util::new_guid(), rawGUID );
+
+   US_DataModel model;
+   prepare( model );
+   model.scan_data();
+
+   ASSERT_EQ( model.runCount(), 3 );
+
+   int covered = 0;
+
+   for ( int ii = 0; ii < model.runCount(); ii++ )
+   {
+      SCOPED_TRACE( "experiment " + std::to_string( ii ) );
+      US_DataModel::RunEntry entry = model.run_entry( ii );
+
+      ASSERT_TRUE( entry.loaded );
+      ASSERT_GE  ( entry.firstRow, model.runCount() );
+
+      QVector< int > rows = model.descendant_rows( entry.row );
+      ASSERT_EQ( rows.size(), entry.lastRow - entry.firstRow + 1 );
+
+      for ( int jj = 0; jj < rows.size(); jj++ )
+      {
+         EXPECT_EQ( rows[ jj ], entry.firstRow + jj );
+         EXPECT_EQ( model.run_of_row( rows[ jj ] ), ii );
+         EXPECT_NE( model.row_datadesc( rows[ jj ] ).recType,
+                    (int)US_DataModel::EXPERIMENT );
+      }
+
+      EXPECT_EQ( model.run_of_row( entry.row ), ii );
+      EXPECT_EQ( model.run_id_of_row( entry.firstRow ).toStdString(),
+                 entry.runID.toStdString() );
+      covered += rows.size();
+   }
+
+   // every record row belongs to exactly one experiment
+   EXPECT_EQ( covered, model.recCount() - model.runCount() );
+}
+
+TEST_F( TestUSDataModel, ParentsAndDescendantsStayInsideTheExperiment )
+{
+   US_DataModel model;
+   prepare( model );
+   model.scan_data();
+
+   US_DataModel::RunEntry entry = model.run_entry( model.index_of_run( runOne ) );
+   ASSERT_TRUE( entry.loaded );
+
+   for ( int row = entry.firstRow; row <= entry.lastRow; row++ )
+   {
+      US_DataModel::DataDesc desc = model.row_datadesc( row );
+      int prow = model.parent_row( row );
+
+      if ( desc.recType == US_DataModel::RAW )
+      {
+         EXPECT_EQ( prow, entry.row );
+         continue;
+      }
+
+      ASSERT_GE( prow, entry.firstRow );
+      EXPECT_EQ( model.row_datadesc( prow ).recType, desc.recType - 1 );
+      EXPECT_EQ( model.row_datadesc( prow ).dataGUID.toStdString(),
+                 desc.parentGUID.toStdString() );
+      EXPECT_TRUE( model.descendant_rows( prow ).contains( row ) );
+   }
+
+   // the raw with the edits has the edits, the model and the noise below it
+   int nraw = 0;
+
+   for ( int row = entry.firstRow; row <= entry.lastRow; row++ )
+   {
+      if ( model.row_datadesc( row ).dataGUID != rawOneGUID )   continue;
+
+      nraw++;
+      EXPECT_EQ( model.descendant_rows( row ).size(), 4 );
+   }
+
+   EXPECT_EQ( nraw, 1 );
+}
+
+// ------------------------------------------------------- edits in the tree
+
+TEST_F( TestUSDataModel, AnEditIsLabelledAndTypedByItsFileName )
+{
+   US_DataModel model;
+   prepare( model );
+   model.scan_data();
+
+   int nedit = 0;
+
+   for ( int row = 0; row < model.recCount(); row++ )
+   {
+      US_DataModel::DataDesc desc = model.row_datadesc( row );
+
+      if ( desc.recType != US_DataModel::EDIT )   continue;
+
+      nedit++;
+      EXPECT_EQ( desc.subType.toStdString(), "RA" );   // the run type
+      EXPECT_TRUE( desc.label.startsWith( runOne + ".24010" ) )
+         << desc.label.toStdString();
+      EXPECT_TRUE( desc.label.endsWith( ".1.A.280" ) )
+         << desc.label.toStdString();
+   }
+
+   EXPECT_EQ( nedit, 2 );
+}
+
+// A large local model is a custom grid even when the listing read no sizes
+TEST_F( TestUSDataModel, ALargeLocalModelIsACustomGrid )
+{
+   US_Model big;
+   big.modelGUID   = US_Util::new_guid();
+   big.editGUID    = editTwoGUID;
+   big.description = runOne + ".1A280.e2401011300_a2401011400_2DSA_i01.model";
+
+   for ( int ii = 0; ii < 1000; ii++ )
+   {
+      US_Model::SimulationComponent comp;
+      comp.s    = 1.0e-13 * ( ii + 1 );
+      comp.f_f0 = 1.25;
+      comp.name = QString( "component number %1" ).arg( ii );
+      big.components << comp;
+   }
+
+   QString path = US_Settings::dataDir() + "/models/M0000009.xml";
+   ASSERT_EQ( big.write( path ), US_DB2::OK );
+   ASSERT_GT( QFileInfo( path ).size(), 65000 );
+
+   US_DataModel model;
+   prepare( model );
+   model.scan_data();
+
+   bool found = false;
+
+   for ( int row = 0; row < model.recCount(); row++ )
+   {
+      US_DataModel::DataDesc desc = model.row_datadesc( row );
+
+      if ( desc.dataGUID != big.modelGUID )   continue;
+
+      found = true;
+      EXPECT_TRUE( desc.contents.isEmpty() );        // no checksum was read
+      EXPECT_EQ  ( desc.subType.toStdString(), "CUSTOMGRID" );
+   }
+
+   EXPECT_TRUE( found );
+}
+
+// -------------------------------------------------------- duplicates
+
+TEST_F( TestUSDataModel, DuplicateGuidsAreFoundOnceOverTheWholeTree )
+{
+   // A second file claiming to be the same model
+   US_Model dup;
+   ASSERT_EQ( dup.load( US_Settings::dataDir() + "/models/M0000001.xml" ),
+              US_DB2::OK );
+   ASSERT_EQ( dup.write( US_Settings::dataDir() + "/models/M0000002.xml" ),
+              US_DB2::OK );
+
+   US_DataModel model;
+   prepare( model );
+   model.scan_data();                // no dialog in the middle of the scan
+
+   // every experiment is still merged
+   for ( int ii = 0; ii < model.runCount(); ii++ )
+      EXPECT_TRUE( model.run_entry( ii ).loaded );
+
+   QList< US_DataModel::Duplicate > dups = model.find_duplicates();
+   ASSERT_EQ( dups.size(), 1 );
+   EXPECT_EQ( dups[ 0 ].recType, (int)US_DataModel::MODEL );
+   EXPECT_EQ( dups[ 0 ].guid.toStdString(), modelGUID.toStdString() );
+   EXPECT_EQ( dups[ 0 ].rows.size(), 2 );
+
+   // A record of no experiment with the GUID of a record in an experiment:
+   // a duplicate across experiments
+   US_DataModel::RunEntry first = model.run_entry( 0 );
+   ASSERT_GE( first.firstRow, 0 );
+
+   US_DataModel::DataDesc orphan = model.row_datadesc( first.firstRow );
+   orphan.recState = US_DataModel::REC_LO;
+   QVector< US_DataModel::DataDesc > orphans;
+   orphans << orphan;
+   ASSERT_GE( model.add_orphans( QVector< US_DataModel::DataDesc >(),
+                                 orphans ), 0 );
+
+   EXPECT_EQ( model.find_duplicates().size(), 2 );
+}
+
+// -------------------------------------------------------- re-entrancy
+//
+// The scan loop processes events between experiments, so the window can be
+// used while it runs.  Anything that asks the model to read or compare an
+// experiment meanwhile only queues it.
+
+TEST_F( TestUSDataModel, AReadAskedForDuringTheScanIsOnlyQueued )
+{
+   US_DataModel model;
+   prepare( model );
+
+   int  last      = -1;
+   int  calls     = 0;
+   bool reentered = true;
+   bool queued    = false;
+   bool loadedThen = true;
+   int  rowsThen  = -1;
+   int  rowsAfterReset = -2;
+   bool activeThen = false;
+
+   QObject::connect( &model, &US_DataModel::runMerged, [ & ]( int )
+   {
+      if ( calls++ > 0 )   return;
+
+      last       = model.runCount() - 1;
+      loadedThen = model.run_entry( last ).loaded;
+      rowsThen   = model.recCount();
+      reentered  = model.scan_run( last )  ||  model.merge_run( last )  ||
+                   model.verify_run( last );
+      queued     = ( model.next_pending_run() == last );
+
+      model.dummy_data();            // a Reset is refused under a scan too
+      rowsAfterReset = model.recCount();
+      activeThen     = model.scan_active();
+   } );
+
+   model.scan_data();
+
+   EXPECT_FALSE( loadedThen );
+   EXPECT_FALSE( reentered );
+   EXPECT_TRUE ( queued );
+   EXPECT_TRUE ( activeThen );
+   EXPECT_EQ   ( rowsAfterReset, rowsThen );
+   EXPECT_FALSE( model.scan_active() );
+
+   // the queued experiment was read once, by the loop, and the ranges hold
+   int covered = 0;
+
+   for ( int ii = 0; ii < model.runCount(); ii++ )
+   {
+      US_DataModel::RunEntry entry = model.run_entry( ii );
+      EXPECT_TRUE( entry.loaded );
+      covered += model.descendant_rows( entry.row ).size();
+   }
+
+   EXPECT_EQ( covered, model.recCount() - model.runCount() );
+   EXPECT_EQ( countOfType( model, US_DataModel::RAW ), 4 );
+}
+
+// A call that arrives while a merge is in progress -- from an event the
+// merge let through -- is queued too, outside any scan
+TEST_F( TestUSDataModel, AReadAskedForDuringAMergeIsOnlyQueued )
+{
+   US_DataModel model;
+   prepare( model );
+
+   model.scan_runs();
+   ASSERT_TRUE( model.scan_all() );
+
+   int  other     = model.runCount() - 1;
+   bool reentered = false;
+   bool queued    = false;
+   bool fired     = false;
+
+   QObject::connect( bar, &QProgressBar::valueChanged, [ & ]( int )
+   {
+      if ( fired  ||  ! model.is_busy() )   return;
+
+      fired     = true;
+      reentered = model.scan_run( other );
+      queued    = ( model.next_pending_run() == other );
+   } );
+
+   ASSERT_TRUE( model.merge_run( 0 ) );
+
+   EXPECT_TRUE ( fired );
+   EXPECT_FALSE( reentered );
+   EXPECT_TRUE ( queued );
+   EXPECT_FALSE( model.run_entry( other ).loaded );
+   EXPECT_FALSE( model.is_busy() );
+
+   // and it is read when asked again with nothing in progress
+   EXPECT_TRUE( model.scan_run( other ) );
+   EXPECT_TRUE( model.run_entry( other ).loaded );
+}
+
+// The window's loop and the layers driven by hand give the same tree
+TEST_F( TestUSDataModel, TheScanLoopGivesTheSameRowsAsTheLayers )
+{
+   US_DataModel looped;
+   US_DataModel layered;
+   prepare( looped  );
+   prepare( layered );
+
+   QList< int > merged;
+   QObject::connect( &looped, &US_DataModel::runMerged,
+                     [ & ]( int index ) { merged << index; } );
+
+   looped.scan_data();
+
+   layered.scan_runs();
+   ASSERT_TRUE( layered.scan_all() );
+
+   for ( int ii = 0; ii < layered.runCount(); ii++ )
+      ASSERT_TRUE( layered.merge_run( ii ) );
+
+   EXPECT_EQ( merged.size(), looped.runCount() );
+   ASSERT_EQ( looped.recCount(), layered.recCount() );
+
+   for ( int row = 0; row < looped.recCount(); row++ )
+      EXPECT_EQ( looped .row_datadesc( row ).dataGUID.toStdString(),
+                 layered.row_datadesc( row ).dataGUID.toStdString() );
+
+   EXPECT_TRUE( looped.scan_errors().isEmpty() );
+   EXPECT_FALSE( looped.db_listing_failed() );
+}
+
+// -------------------------------------------------------- the selectors
+
+TEST_F( TestUSDataModel, TheSelectorsListRunsAndTriplesFromTheDirectory )
+{
+   QStringList runs = US_DataModel::local_run_ids();
+
+   EXPECT_TRUE( runs.contains( runOne ) );
+   EXPECT_TRUE( runs.contains( runTwo ) );     // a run ID with dots, whole
+   EXPECT_TRUE( runs.contains( runThree ) );
+
+   QStringList trips = US_DataModel::local_triples( runOne );
+   trips.sort();
+   ASSERT_EQ( trips.size(), 2 );
+   EXPECT_EQ( trips[ 0 ].toStdString(), "1.A.280" );
+   EXPECT_EQ( trips[ 1 ].toStdString(), "1.A.281" );
+
+   trips = US_DataModel::local_triples( runTwo );
+   ASSERT_EQ( trips.size(), 1 );
+   EXPECT_EQ( trips[ 0 ].toStdString(), "2.B.280" );
+}
+
+// -------------------------------------------------------- tree actions
+//
+// A context menu action on an experiment acts on that experiment's records
+// and nothing else -- whichever position the experiment has.
+
+TEST_F( TestUSDataModel, AnActionOnAnExperimentActsOnItsOwnRecordsOnly )
+{
+   // Records under the first and the last experiment as well
+   QString dirTwo   = runDir( runTwo );
+   QString dirThree = runDir( runThree );
+   QString rawGUID  = US_Util::new_guid();
+   writeAuc ( dirTwo + "/" + runTwo + ".RA.2.B.290.auc", rawGUID, "two" );
+   writeEdit( dirTwo + "/" + runTwo + ".2401021200.RA.2.B.290.xml",
+              US_Util::new_guid(), rawGUID );
+   rawGUID          = US_Util::new_guid();
+   writeAuc ( dirThree + "/" + runThree + ".RA.3.A.290.auc", rawGUID, "three" );
+   writeEdit( dirThree + "/" + runThree + ".2401031200.RA.3.A.290.xml",
+              US_Util::new_guid(), rawGUID );
+
+   US_DataModel   model;
+   prepare( model );
+
+   QTreeWidget    tw;
+   tw.setSelectionMode( QAbstractItemView::ExtendedSelection );
+   US_DataProcess proc( &model );
+   US_DataTree    tree( &model, &tw );
+   model.setSiblings( &proc, &tree );
+
+   model.scan_data();
+   tree.build_dtree();
+
+   ASSERT_EQ( model.runCount(), 3 );
+   ASSERT_EQ( tw.topLevelItemCount(), 3 );
+
+   // first, middle and last:  the action rows are the experiment's own
+   for ( int ii = 0; ii < model.runCount(); ii++ )
+   {
+      SCOPED_TRACE( "experiment " + std::to_string( ii ) );
+      US_DataModel::RunEntry entry = model.run_entry( ii );
+
+      QVector< int > expected;
+
+      for ( int row = entry.firstRow; row >= 0  &&  row <= entry.lastRow; row++ )
+         if ( model.row_datadesc( row ).recType > US_DataModel::RAW )
+            expected << row;
+
+      ASSERT_FALSE( expected.isEmpty() );
+
+      tw.clearSelection();
+      tw.topLevelItem( ii )->setSelected( true );
+
+      EXPECT_EQ( tree.action_row_list(), expected );
+   }
+
+   // An experiment and one of its own records selected together: each
+   // record is acted on once
+   int middle = model.index_of_run( runOne );
+   ASSERT_EQ( middle, 1 );
+   US_DataModel::RunEntry mentry = model.run_entry( middle );
+   QTreeWidgetItem* mitem = tw.topLevelItem( middle );
+   ASSERT_GT( mitem->childCount(), 0 );
+
+   tw.clearSelection();
+   mitem->setSelected( true );
+   mitem->child( 0 )->setSelected( true );
+   QVector< int > both = tree.action_row_list();
+   QVector< int > uniq = both;
+   std::sort( uniq.begin(), uniq.end() );
+   uniq.erase( std::unique( uniq.begin(), uniq.end() ), uniq.end() );
+   EXPECT_EQ( both, uniq );
+
+   // Remove the middle experiment's local records:  its edits, model and
+   // noise go, nobody else's do
+   tw.clearSelection();
+   mitem->setSelected( true );
+
+   EXPECT_EQ( tree.act_on_selection( "Local disk only", "Local-only remove" ),
+              0 ) << proc.lastError().toStdString();
+
+   EXPECT_TRUE ( filesIn( runDir( runOne ), "*.xml" ).isEmpty() );
+   EXPECT_EQ   ( filesIn( runDir( runOne ), "*.auc" ).size(), 2 );
+   EXPECT_FALSE( QFile::exists( US_Settings::dataDir() + "/models/M0000001.xml" ) );
+   EXPECT_FALSE( QFile::exists( US_Settings::dataDir() + "/noises/N0000001.xml" ) );
+   EXPECT_EQ   ( filesIn( dirTwo,   "*.xml" ).size(), 1 );
+   EXPECT_EQ   ( filesIn( dirThree, "*.xml" ).size(), 1 );
+
+   for ( int row = mentry.firstRow; row <= mentry.lastRow; row++ )
+   {
+      US_DataModel::DataDesc desc = model.row_datadesc( row );
+
+      if ( desc.recType > US_DataModel::RAW )
+      {
+         EXPECT_EQ( desc.recState, (int)US_DataModel::NOSTAT );
+      }
+   }
+
+   // Asked again, there is nothing left to do -- and that is not "Success"
+   EXPECT_EQ( tree.act_on_selection( "Local disk only", "Local-only remove" ),
+              US_DataTree::ACT_NOTHING );
+
+   // Nothing of a local store is in the database
+   tw.clearSelection();
+   tw.topLevelItem( 0 )->setSelected( true );
+   EXPECT_EQ( tree.act_on_selection( "Database only", "DB-only remove" ),
+              US_DataTree::ACT_NOTHING );
+   EXPECT_EQ( filesIn( dirTwo, "*.xml" ).size(), 1 );
+}
+
+// Opening an experiment while a scan runs only queues it
+TEST_F( TestUSDataModel, OpeningAnExperimentDuringTheScanOnlyQueuesIt )
+{
+   US_DataModel   model;
+   prepare( model );
+
+   QTreeWidget    tw;
+   US_DataProcess proc( &model );
+   US_DataTree    tree( &model, &tw );
+   model.setSiblings( &proc, &tree );
+
+   QObject::connect( &model, &US_DataModel::runsListed,
+                     [ & ]() { tree.build_dtree(); } );
+
+   int  calls      = 0;
+   int  last       = -1;
+   bool loadedThen = true;
+   bool queued     = false;
+   int  childThen  = -1;
+
+   QObject::connect( &model, &US_DataModel::runMerged, [ & ]( int index )
+   {
+      tree.fill_run( index );
+
+      if ( calls++ > 0 )   return;
+
+      last = model.runCount() - 1;
+      tree.item_opened( tw.topLevelItem( last ) );
+
+      loadedThen = model.run_entry( last ).loaded;
+      childThen  = tw.topLevelItem( last )->childCount();
+      queued     = ( model.next_pending_run() == last );
+   } );
+
+   model.scan_data();
+
+   EXPECT_FALSE( loadedThen );
+   EXPECT_EQ   ( childThen, 0 );
+   EXPECT_TRUE ( queued );
+   EXPECT_TRUE ( model.run_entry( last ).loaded );
+   EXPECT_GT   ( tw.topLevelItem( last )->childCount(), 0 );
 }

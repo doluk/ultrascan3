@@ -1,6 +1,7 @@
 //! \file us_manage_data.cpp
 
 #include <QApplication>
+#include <QTimer>
 
 #include "us_manage_data.h"
 #include "us_data_model.h"
@@ -49,6 +50,8 @@ int main( int argc, char* argv[] )
 US_ManageData::US_ManageData() : US_Widgets()
 {
    dbg_level     = US_Settings::us_debug();
+   nmerged       = 0;
+   verify_pending = false;
 
    // set up the GUI
    setWindowTitle( tr( "Manage US DB/Local Data Sets" ) );
@@ -264,7 +267,6 @@ DbgLv(1) << "te_status size" << te_status->size();
    QStringList theads;
    theads << "Type" << "Label" << "SubType" << "Source"
       << "Children\nDB, Local" << "Descendants\nDB, Local";
-   ntrows = 5;
    ntcols = theads.size();
    tw_recs->setHeaderLabels( theads );
    tw_recs->setFont(  QFont( US_Widgets::fixedFont().family(),
@@ -342,6 +344,23 @@ DbgLv(1) << "GUI setup complete";
    // An experiment the user opens is read before the ones still queued
    connect( tw_recs, &QTreeWidget::itemExpanded,
             da_tree, &US_DataTree::item_opened );
+
+   // The scan loop is the model's; the window shows what it reports
+   connect( da_model, &US_DataModel::scanPhase,
+            this,     &US_ManageData::scan_phase );
+   connect( da_model, &US_DataModel::scanStep,
+            progress, &QProgressBar::setValue );
+   connect( da_model, &US_DataModel::runsListed,
+            this,     &US_ManageData::runs_listed );
+   connect( da_model, &US_DataModel::runMerged,
+            this,     &US_ManageData::run_merged );
+   connect( da_model, &US_DataModel::runCompared,
+            da_tree,  &US_DataTree::refresh_run );
+
+   // A comparison asked for outside a scan is done in the background, one
+   // experiment per turn of the event loop
+   connect( da_model, &US_DataModel::verifyRequested,
+            this,     [ this ]() { schedule_verifies(); } );
 DbgLv(1) << "classes setup complete";
 
    // Set up initial state of GUI
@@ -354,6 +373,9 @@ DbgLv(1) << "classes setup complete";
 // Reset the GUI
 void US_ManageData::reset( void )
 {
+   if ( da_model->scan_active()  ||  da_model->is_busy() )
+      return;                          // never under a running scan
+
    da_model->dummy_data ();
    da_tree ->build_dtree();
 
@@ -506,7 +528,6 @@ void US_ManageData::scan_phase( const QString& text, int steps )
    pgb_step->setValue  ( 0 );
 
    status_text( text );
-   qApp->processEvents();
 }
 
 // Put a message on the status line, cut to what the line can show
@@ -516,6 +537,40 @@ void US_ManageData::status_text( const QString& text )
 
    lb_status->setText( lb_status->fontMetrics().elidedText(
                        text, Qt::ElideMiddle, width ) );
+}
+
+// The experiments are listed:  draw the top of the tree
+void US_ManageData::runs_listed()
+{
+   da_tree ->build_dtree();
+   fit_tree_columns();
+   reportDataStatus();
+   nmerged = 0;
+}
+
+// One experiment's records are in:  hang them under its row
+void US_ManageData::run_merged( int index )
+{
+   da_tree->fill_run( index );
+
+   if ( ( ++nmerged % 8 ) == 0 )
+      reportDataStatus();
+}
+
+// Everything a scan could be disturbed by is off while it runs.  The tree
+// stays usable for opening experiments -- which only queues them -- but
+// offers no actions until the scan is done.
+void US_ManageData::set_controls_enabled( bool enabled )
+{
+   pb_scanda->setEnabled( enabled );
+   pb_reset ->setEnabled( enabled );
+   pb_hsedit->setEnabled( enabled );
+   pb_hsmodl->setEnabled( enabled );
+   pb_hsnois->setEnabled( enabled );
+   cb_runid ->setEnabled( enabled );
+   cb_triple->setEnabled( enabled );
+   cb_source->setEnabled( enabled );
+   pb_invtor->setEnabled( enabled  &&  US_Settings::us_inv_level() >= 3 );
 }
 
 /* Scan the database and the local disk.
@@ -532,111 +587,183 @@ void US_ManageData::status_text( const QString& text )
      3. the checksums, for the experiments that are in both places, since
         those are the only ones that can be out of step with themselves.
 
+   The loop is US_DataModel::scan_data(); this window draws what it reports.
    An experiment the user opens meanwhile moves to the front of whichever
    queue is running.
 */
 void US_ManageData::scan_data()
 {
+   if ( da_model->scan_active()  ||  da_model->is_busy() )   return;
+
    QString rF = cb_runid ->currentText();
    QString tF = cb_triple->currentText();
    QString sF = cb_source->currentText();
 DbgLv(1) << "ScnDM:  Start          " << nowTime();
    da_model->setFilters( rF, tF, sF );  // Set any run,triple,source filters
 
-   pb_scanda->setEnabled( false );
+   set_controls_enabled( false );
 
-   // ---- the experiments --------------------------------------------------
-   scan_phase( tr( "Listing experiments..." ), 1 );
-
-   da_model->scan_runs();
-DbgLv(1) << "ScnDM:  Runs Listed    " << nowTime();
-
-   status_text( tr( "Building the data tree..." ) );
-   qApp->processEvents();
-
-   da_tree ->build_dtree();
-DbgLv(1) << "ScnDM:  Tree Built     " << nowTime();
-
-   fit_tree_columns();
-   reportDataStatus();
-   progress->setValue( progress->maximum() );
-   qApp->processEvents();
-
-   // ---- the chain below them ---------------------------------------------
-   int  nruns = da_model->runCount();
-   bool bulk  = false;
-
-   if ( nruns > 0 )
-   {
-      scan_phase( tr( "Reading %1 experiment(s)..." ).arg( nruns ), nruns );
-
-      bulk = da_model->scan_all();
-DbgLv(1) << "ScnDM:  Bulk Read" << bulk << nowTime();
-   }
-
-   for ( int ii = 0; ii < nruns; ii++ )
-   {
-      int index = da_model->next_pending_run();
-
-      if ( index < 0 )   break;
-
-      status_text( tr( "Reading %1 ..." )
-                   .arg( da_model->run_entry( index ).runID ) );
-
-      if ( bulk )  da_model->merge_run( index );
-      else         da_model->scan_run ( index );
-
-      da_tree ->fill_run( index );
-
-      progress->setValue( ii + 1 );
-
-      if ( ( ii % 8 ) == 7  ||  ii == ( nruns - 1 ) )
-         reportDataStatus();
-
-      qApp->processEvents();
-   }
+   da_model->scan_data();
 DbgLv(1) << "ScnDM:  Scan Done      " << nowTime();
-
-   // ---- the checksums, where they can tell us anything -------------------
-   int nver = da_model->queue_verifies();
-
-   if ( nver > 0 )
-   {
-      scan_phase( tr( "Comparing %1 experiment(s) held in both places..." )
-                  .arg( nver ), nver );
-
-      for ( int ii = 0; ii < nver; ii++ )
-      {
-         int index = da_model->next_pending_verify();
-
-         if ( index < 0 )   break;
-
-         status_text( tr( "Comparing %1 ..." )
-                      .arg( da_model->run_entry( index ).runID ) );
-
-         da_model->verify_run ( index );
-         da_tree ->refresh_run( index );
-
-         progress->setValue( ii + 1 );
-         qApp->processEvents();
-      }
-   }
-DbgLv(1) << "ScnDM:  Compare Done   " << nowTime();
 
    fit_tree_columns();
 
    pgb_step ->setValue( pgb_step->maximum() );
-   status_text( tr( "Data scan complete" ) );
 
    reset_hsbuttons( false, true, true, true );  // hs button labels,tooltips
 
    // reformat and display report on record counts
    reportDataStatus();
 
-   pb_scanda->setEnabled( true );
-   pb_reset ->setEnabled( true );
-   qApp->processEvents();
+   set_controls_enabled( true );
+
+   report_scan_errors();
+   review_duplicates();
 DbgLv(1) << "ScnDM:  Scan All Done  " << nowTime();
+}
+
+// Make sure the comparisons asked for outside a scan get done
+void US_ManageData::schedule_verifies( int delay )
+{
+   if ( verify_pending )   return;     // one pass at a time
+
+   verify_pending = true;
+   QTimer::singleShot( delay, this, &US_ManageData::pump_verifies );
+}
+
+// Compare the experiments asked for outside a scan, one per event-loop turn
+//
+// Opening an experiment only asks for it to be compared, so opening rows --
+// or "Show All Edits", which opens all of them -- never waits for a
+// comparison; this does them in the background, one at a time.
+void US_ManageData::pump_verifies()
+{
+   verify_pending = false;
+
+   if ( da_model->scan_active() )   return;   // the scan does its own queue
+
+   if ( da_model->is_busy() )
+   {  // something else is reading just now: try again shortly
+      schedule_verifies( 50 );
+      return;
+   }
+
+   int index = da_model->next_pending_verify();
+
+   if ( index < 0 )   return;
+
+   status_text( tr( "Comparing %1 ..." )
+                .arg( da_model->run_entry( index ).runID ) );
+
+   if ( da_model->verify_run( index ) )
+      da_tree->refresh_run( index );
+
+   if ( da_model->pending_verifies() > 0 )
+      schedule_verifies();
+   else
+      status_text( tr( "Comparison complete" ) );
+}
+
+// Say what went wrong in a scan, rather than leaving it in the debug log
+void US_ManageData::report_scan_errors()
+{
+   QStringList errors = da_model->scan_errors();
+
+   if ( da_model->db_listing_failed() )
+   {
+      QMessageBox::warning( this, tr( "Database Not Listed" ),
+         tr( "The database could not be listed, so this tree shows only "
+             "what is on local disk:  a record shown as \"Local\" may be in "
+             "the database too.\n\n" ) + errors.join( "\n" ) );
+      return;
+   }
+
+   if ( errors.isEmpty() )   return;
+
+   int     nshow = qMin( errors.size(), 12 );
+   QString text  = QStringList( errors.mid( 0, nshow ) ).join( "\n" );
+
+   if ( nshow < errors.size() )
+      text += tr( "\n... and %1 more" ).arg( errors.size() - nshow );
+
+   QMessageBox::warning( this, tr( "Scan Errors" ),
+      tr( "The scan ran into %1 error(s); the records concerned may be "
+          "missing, or read as not yet compared:\n\n" )
+      .arg( errors.size() ) + text );
+}
+
+/* Tell the user about records that share a GUID.
+
+   This used to be asked once per experiment and per source, in the middle
+   of the scan; it is asked once, over the whole tree, when the scan is done
+   -- so records duplicated across experiments are found too.
+*/
+void US_ManageData::review_duplicates()
+{
+   QList< US_DataModel::Duplicate > dups = da_model->find_duplicates();
+
+   if ( dups.isEmpty() )   return;
+
+   const char* rtyps[] = { "Experiment", "RawData", "EditedData",
+                           "Model", "Noise" };
+   int nrecs = 0;
+
+   for ( int ii = 0; ii < dups.size(); ii++ )
+      nrecs += dups[ ii ].rows.size();
+
+   QMessageBox msgBox( this );
+   msgBox.setWindowTitle( tr( "Duplicate Records" ) );
+   msgBox.setText(
+      tr( "There are %1 records that have the same GUID as another.\n" )
+         .arg( nrecs ) +
+      tr( "You should correct the situation before proceeding.\n" ) +
+      tr( "  Click \"Ok\" to see details.\n" ) +
+      tr( "  Click \"Ignore\" to go on.\n" ) );
+   msgBox.setStandardButtons( QMessageBox::Ok | QMessageBox::Ignore );
+   msgBox.setDefaultButton( QMessageBox::Ok );
+
+   if ( msgBox.exec() != QMessageBox::Ok )   return;
+
+   QString msg =
+      tr( "Review the details below on duplicate records.\n" ) +
+      tr( "Save or Print the contents of this message.\n" ) +
+      tr( "Decide which of the duplicates should be removed.\n\n" );
+
+   for ( int ii = 0; ii < dups.size(); ii++ )
+   {
+      const US_DataModel::Duplicate& dup = dups[ ii ];
+
+      msg += tr( "%1 GUID:  " ).arg( rtyps[ dup.recType ] ) + dup.guid + "\n";
+
+      for ( int jj = 0; jj < dup.rows.size(); jj++ )
+      {
+         US_DataModel::DataDesc desc = da_model->row_datadesc( dup.rows[ jj ] );
+
+         msg += tr( "  Experiment     :  " )
+                   + da_model->run_id_of_row( dup.rows[ jj ] ) + "\n" +
+                tr( "  Label          :  " ) + desc.label + "\n" +
+                tr( "  Description    :  " ) + desc.description + "\n" +
+                tr( "  ParentGUID     :  " ) + desc.parentGUID + "\n" +
+                tr( "  DB record ID   :  %1" ).arg( desc.recordID ) + "\n" +
+                tr( "  File           :  " ) + desc.filename + "\n" +
+                tr( "  File Last Mod  :  " ) + desc.filemodDate + "\n" +
+                tr( "  DB Last Mod    :  " ) + desc.lastmodDate + "\n";
+      }
+
+      msg += "\n";
+   }
+
+   QString fileexts = tr( "Text,Log files (*.txt *.log);;" )
+      + tr( "All files (*)" );
+   US_Editor* editd = new US_Editor( US_Editor::LOAD, true, fileexts );
+   editd->setAttribute( Qt::WA_DeleteOnClose );
+   editd->setWindowTitle( tr( "Data Set Duplicate GUID Details" ) );
+   editd->move( QCursor::pos() + QPoint( 200, 200 ) );
+   editd->resize( 600, 500 );
+   editd->e->setFont( QFont( US_Widgets::fixedFont().family(),
+                      US_GuiSettings::fontSize() ) );
+   editd->e->setText( msg );
+   editd->show();
 }
 
 /* Fit the tree columns to what is in them, without letting that decide how
@@ -678,69 +805,14 @@ void US_ManageData::assign_investigator( int invID )
    da_model->setDatabase( db );
 }
 
-// Handle a right-mouse click of a row cell
+// Handle a mouse press on a row cell
 void US_ManageData::clickedItem( QTreeWidgetItem* item )
 {
-//DbgLv(2) << "TABLE ITEM CLICKED";
-
+   // Only a right-button press does anything: it brings up the context
+   // menu.  Selecting a row reads and compares nothing -- opening an
+   // experiment does that (US_DataTree::item_opened).
    if ( QApplication::mouseButtons() == Qt::RightButton )
-   {  // only bring up context menu if right-mouse-button was clicked
       da_tree->row_context_menu( item );
-   }
-
-   else
-   {  // selecting an experiment the scan has not reached reads it now
-      da_tree->item_opened( item );
-   }
-}
-
-// open a dialog and display data tree help
-void US_ManageData::dtree_help()
-{
-}
-
-// format an item action text for a message box
-QString US_ManageData::action_text( QString exstext, QString acttext )
-{
-   return tr( "This item exists on %1.<br>"
-              "Are you sure you want to proceed with a %2?<ul>"
-              "<li><b>No </b> to cancel the action;</li>"
-              "<li><b>Yes</b> to proceed with the action.</li></ul>" )
-          .arg( exstext ).arg( acttext );
-}
-
-// report the result of an item action
-void US_ManageData::action_result( int stat, QString item_act )
-{
-   if ( stat != 999 )
-   {  // proceed was selected:  test status of action
-
-      if ( stat == 0 )
-      {  // action was successful
-         //QMessageBox::information( this,
-         //      item_act + tr( " Successful!" ),
-         //      tr( "The \"%1\" action was successfully performed." )
-         //      .arg( item_act ) );
-         lb_status->setText( tr( "\"%1\" Success!" ).arg( item_act ) );
-      }
-
-      else
-      {  // action got an error
-         QMessageBox::warning( this,
-               item_act + tr( " *ERROR*!" ),
-               tr( "The \"%1\" action had an error: %2" )
-               .arg( item_act ).arg( stat ) );
-         lb_status->setText( tr( "\"%1\" ERROR!" ).arg( item_act ) );
-      }
-   }
-
-   else
-   {  // cancel was selected:  report it
-      //QMessageBox::information( this,
-      //      item_act + tr( " Cancelled!" ),
-      //      tr( "The \"%1\" action was cancelled." ).arg( item_act ) );
-      lb_status->setText( tr( "\"%1\" Cancelled!" ).arg( item_act ) );
-   }
 }
 
 // report status of data
@@ -858,12 +930,14 @@ DbgLv(0) << "selected_runID: selrunID" << selrunID;
          runid_data << QStringList( runIDs[ ii ] );
       }
 
-      US_SelectItem* srdiag = new US_SelectItem( runid_data, hdrs, dtitl,
-                                                 &selx, 1 );
-      if ( srdiag->exec() == QDialog::Accepted  &&
-           selx >= 0 )
+      US_SelectItem srdiag( runid_data, hdrs, dtitl, &selx, 1 );
+
+      if ( srdiag.exec() != QDialog::Accepted  ||  selx < 0 )
+         return;                       // no run picked: no triples to list
+
       {  // Add selected run to comboBox and set Run ID variable
          QString srunID = runid_data[ selx ][ 0 ];
+         selrunID       = srunID;      // the triples are this run's
          cb_runid->disconnect();
          cb_runid->clear();
          cb_runid->addItem( tr( "ALL" ) );
