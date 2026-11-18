@@ -11,6 +11,7 @@
 #include "us_datapub_import.h"
 #include "us_datapub_hash.h"
 #include "us_datapub_records.h"
+#include "us_datapub_export.h"
 
 #include <functional>
 
@@ -63,6 +64,7 @@ US_DataPubImporter::US_DataPubImporter( QObject* parent ) : QObject( parent )
    own_db      = false;
    in_txn      = false;
    exp_indexed = false;
+   tcomps_read = false;
    step_count  = 0;
 }
 
@@ -137,9 +139,7 @@ bool US_DataPubImporter::warn( const QString& text, QString& error )
 bool US_DataPubImporter::runIdIsUsable( const QString& runID )
 {
    // The rule of US_ConvertIO::readDiskRun(), which keeps it to itself
-   static const QRegularExpression rx( "^[A-Za-z0-9_-]{1,80}$" );
-
-   return rx.match( runID ).hasMatch();
+   return US_DataPub::runIdIsUsable( runID );
 }
 
 QString US_DataPubImporter::resolutionText( US_DataPub::Resolution resolution )
@@ -569,15 +569,26 @@ bool US_DataPubImporter::checkBundle( QString& error ) const
          }
       }
 
-      if ( type == US_DataPub::TimeState )
-      {
-         QString defs = entity.attrs.value( "definitionsPayload" );
+      // Every extra payload -- a time state's definitions, an RI profile,
+      // a buffer's components -- is a path into the bundle as well
+      QStringList keys = entity.payloadKeys();
 
-         if ( ! defs.isEmpty()  &&  ! insideBundle( defs, path, error ) )
+      for ( int jj = 0; jj < keys.size(); jj++ )
+      {
+         if ( keys[ jj ] == "payload" )  continue;
+
+         if ( ! insideBundle( entity.attrs.value( keys[ jj ] ), path, error ) )
          {
             error = tr( "%1: %2" ).arg( entity.label() ).arg( error );
             return false;
          }
+      }
+
+      if ( type == US_DataPub::TimeState  &&
+           entity.attrs.value( "definitionsPayload" ).isEmpty() )
+      {
+         error = tr( "%1 carries no field definitions" ).arg( entity.label() );
+         return false;
       }
    }
 
@@ -602,70 +613,80 @@ QStringList US_DataPubImporter::verifyPayloads( void ) const
    QStringList               problems;
    QList< US_DataPubEntity > entities = mani.all();
 
+   // The manifest itself first: manifest.sha256 holds its digest in the
+   // format sha256sum reads
+   QString root     = bundle.rootPath();
+   QString digests  = root + "/" + US_DataPubExporter::manifestDigestName();
+   QString manifest = root + "/" + US_DataPubBundle::manifestName();
+   QFile   dfile( digests );
+
+   if ( ! dfile.open( QIODevice::ReadOnly | QIODevice::Text ) )
+      problems << tr( "The bundle carries no %1, so its manifest cannot be"
+                      " verified" ).arg( US_DataPubExporter::manifestDigestName() );
+
+   else
+   {
+      QString line   = QString::fromUtf8( dfile.readLine( 4096 ) ).trimmed();
+      QString digest = line.section( ' ', 0, 0 ).toLower();
+      QString named  = line.section( ' ', -1 ).remove( '*' );
+      dfile.close();
+
+      if ( digest.isEmpty()  ||  named != US_DataPubBundle::manifestName() )
+         problems << tr( "%1 does not name the manifest's digest" )
+                     .arg( US_DataPubExporter::manifestDigestName() );
+
+      else if ( US_DataPubHash::fileHash( manifest ) != digest )
+         problems << tr( "The manifest does not match its digest" );
+   }
+
    for ( int ii = 0; ii < entities.size(); ii++ )
    {
       const US_DataPubEntity& entity = entities[ ii ];
-      QString                 path   = payloadPath( entity );
+      QStringList             keys   = entity.payloadKeys();
 
-      if ( path.isEmpty() )
+      if ( ! keys.contains( "payload" ) )
+         problems << tr( "%1 has no payload" ).arg( entity.label() );
+
+      // The main payload and every extra one, each against its own digest
+      for ( int jj = 0; jj < keys.size(); jj++ )
       {
-         problems << tr( "%1 has no usable payload path" ).arg( entity.label() );
-         continue;
+         bool    main   = ( keys[ jj ] == "payload" );
+         QString rel    = main ? entity.payload
+                               : entity.attrs.value( keys[ jj ] );
+         QString digest = main ? entity.sha256
+                               : entity.attrs.value(
+                                 US_DataPub::digestKeyOf( keys[ jj ] ) );
+         QString path;
+         QString error;
+
+         if ( ! insideBundle( rel, path, error ) )
+         {
+            problems << tr( "%1: %2" ).arg( entity.label() ).arg( error );
+            continue;
+         }
+
+         if ( ! QFile::exists( path ) )
+         {
+            problems << tr( "%1: the payload %2 is missing" )
+                        .arg( entity.label() ).arg( rel );
+            continue;
+         }
+
+         // A payload without a digest cannot be verified, which is not the
+         // same as being intact
+         if ( digest.isEmpty() )
+            problems << tr( "%1: the payload %2 carries no digest" )
+                        .arg( entity.label() ).arg( rel );
+
+         else if ( US_DataPubHash::fileHash( path ) != digest )
+            problems << tr( "%1: the payload %2 does not match its digest" )
+                        .arg( entity.label() ).arg( rel );
       }
 
-      if ( ! QFile::exists( path ) )
-      {
-         problems << tr( "%1: the payload %2 is missing" )
-                     .arg( entity.label() ).arg( entity.payload );
-         continue;
-      }
-
-      // A payload without a digest cannot be verified, which is not the
-      // same as being intact
-      if ( entity.sha256.isEmpty() )
-      {
-         problems << tr( "%1: the payload %2 carries no digest" )
-                     .arg( entity.label() ).arg( entity.payload );
-      }
-
-      else if ( US_DataPubHash::fileHash( path ) != entity.sha256 )
-      {
-         problems << tr( "%1: the payload %2 does not match its digest" )
-                     .arg( entity.label() ).arg( entity.payload );
-      }
-
-      if ( entity.type != US_DataPub::TimeState )  continue;
-
-      // The field definitions of a time state are a payload too
-      QString defs = entity.attrs.value( "definitionsPayload" );
-      QString dsha = entity.attrs.value( "definitionsSha256" );
-      QString dpath;
-      QString error;
-
-      if ( defs.isEmpty() )
-      {
+      if ( entity.type == US_DataPub::TimeState  &&
+           entity.attrs.value( "definitionsPayload" ).isEmpty() )
          problems << tr( "%1 carries no field definitions" )
                      .arg( entity.label() );
-         continue;
-      }
-
-      if ( ! insideBundle( defs, dpath, error ) )
-      {
-         problems << tr( "%1: %2" ).arg( entity.label() ).arg( error );
-         continue;
-      }
-
-      if ( ! QFile::exists( dpath ) )
-         problems << tr( "%1: the field definitions %2 are missing" )
-                     .arg( entity.label() ).arg( defs );
-
-      else if ( dsha.isEmpty() )
-         problems << tr( "%1: the field definitions %2 carry no digest" )
-                     .arg( entity.label() ).arg( defs );
-
-      else if ( US_DataPubHash::fileHash( dpath ) != dsha )
-         problems << tr( "%1: the field definitions %2 do not match their"
-                         " digest" ).arg( entity.label() ).arg( defs );
    }
 
    return problems;
@@ -933,6 +954,29 @@ bool US_DataPubImporter::checkPayload( const US_DataPubEntity& entity,
             return false;
          }
 
+         // An RI run's intensity profile travels beside its XML
+         QString rip = entity.attrs.value( "riProfilePayload" );
+
+         if ( ! rip.isEmpty() )
+         {
+            QString    rpath;
+            QByteArray rdata;
+            bool       rgood = false;
+
+            if ( ! insideBundle( rip, rpath, error )  ||
+                 ! read_capped( rpath, rdata, error ) )
+               return false;
+
+            element_value( rdata, "RI", "value", rgood );
+
+            if ( ! rgood  ||  ! rdata.contains( "<US_RIProfile" ) )
+            {
+               error = tr( "The RI intensity profile of run %1 does not"
+                           " parse" ).arg( entity.name );
+               return false;
+            }
+         }
+
          break;
       }
 
@@ -1044,7 +1088,7 @@ QString US_DataPubImporter::workCopy( const US_DataPubEntity& entity,
       return QString();
    }
 
-   QString workDir = bundle.stagingPath() + "/.work";
+   QString workDir = bundle.workPath() + "/import";
 
    if ( ! QDir().mkpath( workDir ) )
    {
@@ -1271,6 +1315,209 @@ bool US_DataPubImporter::rewriteWork( const US_DataPubEntity& entity,
    {
       error = tr( "The payload of %1 could not be rewritten for the target:"
                   " %2" ).arg( entity.label() ).arg( error );
+      return false;
+   }
+
+   // A buffer names its components by the source's IDs
+   if ( type == US_DataPub::Buffer )
+      return mapComponents( entity, workPath, false, error );
+
+   return true;
+}
+
+namespace
+{
+   // Two buffer component definitions describe the same component: the
+   // same name and unit, and coefficients that agree to the precision the
+   // database stores them at
+   bool same_component( const US_BufferComponent& one,
+                        const US_BufferComponent& two )
+   {
+      if ( one.name != two.name  ||  one.unit != two.unit )  return false;
+
+      for ( int ii = 0; ii < 6; ii++ )
+      {
+         if ( QString::number( one.dens_coeff[ ii ], 'f', 5 ) !=
+              QString::number( two.dens_coeff[ ii ], 'f', 5 ) )  return false;
+
+         if ( QString::number( one.visc_coeff[ ii ], 'f', 5 ) !=
+              QString::number( two.visc_coeff[ ii ], 'f', 5 ) )  return false;
+      }
+
+      return true;
+   }
+}
+
+/* The target's buffer component table: the database's, or on disk the
+   installation's etc/bufferComponents.xml, which is where US_Buffer looks a
+   component ID up.  Read once per import.
+*/
+bool US_DataPubImporter::targetComponents( QString& error )
+{
+   if ( tcomps_read )  return true;
+
+   tcomps.clear();
+
+   if ( opts.target == US_DataPub::TargetDisk )
+   {
+      US_BufferComponent::getAllFromHD( tcomps );
+      tcomps_read = true;
+      return true;
+   }
+
+   QStringList query( "get_buffer_component_desc" );
+   QStringList ids;
+   dbase->query( query );
+
+   if ( lookupFailed( tr( "its buffer components" ) ) )
+   {
+      error = lookup_error;
+      return false;
+   }
+
+   while ( dbase->next() )
+      ids << dbase->value( 0 ).toString();
+
+   for ( int ii = 0; ii < ids.size(); ii++ )
+   {
+      US_BufferComponent comp;
+      comp.componentID = ids[ ii ];
+
+      if ( ! comp.getInfoFromDB( dbase ) )
+      {
+         error = tr( "Buffer component %1 of the target could not be read" )
+                 .arg( ids[ ii ] );
+         return false;
+      }
+
+      tcomps.insert( ids[ ii ], comp );
+   }
+
+   tcomps_read = true;
+
+   return true;
+}
+
+/* Point a buffer's components at the target's.
+
+   The bundle carries the definitions of the components a buffer names, so
+   each is matched by what it is -- name, unit and coefficients -- in the
+   target's table.  A component the target does not have is created there
+   when the buffer is written (create), and until then named "new:<ID>", so
+   that no target buffer can look the same as this one.
+*/
+bool US_DataPubImporter::mapComponents( const US_DataPubEntity& entity,
+                                        const QString& workPath, bool create,
+                                        QString& error )
+{
+   QString rel = entity.attrs.value( "componentsPayload" );
+   QMap< QString, US_BufferComponent > source;
+
+   if ( ! rel.isEmpty() )
+   {
+      QString path;
+
+      if ( ! insideBundle( rel, path, error )  ||
+           ! US_DataPubRecords::readBufferComponents( path, source ) )
+      {
+         error = tr( "The component definitions of %1 could not be read" )
+                 .arg( entity.label() );
+         return false;
+      }
+   }
+
+   QString  failure;
+   AttrEdit edit = [ & ]( const QString& element,
+                          QMap< QString, QString >& values )
+   {
+      if ( element != "component"  ||  ! failure.isEmpty() )  return;
+
+      QString id    = values.value( "id" );
+      bool    fresh = id.startsWith( "new:" );
+      QString srcID = fresh ? id.mid( 4 ) : id;
+
+      // The writing pass comes after rewriteWork() has mapped every ID it
+      // could: what is left to do is the components the target lacks
+      if ( create  &&  ! fresh )  return;
+
+      if ( ! source.contains( srcID ) )
+      {
+         failure = tr( "%1 names component %2, which the bundle does not"
+                       " define" ).arg( entity.label() ).arg( srcID );
+         return;
+      }
+
+      const US_BufferComponent& want = source[ srcID ];
+
+      if ( ! targetComponents( failure ) )  return;
+
+      QList< QString > ids = tcomps.keys();
+
+      for ( int ii = 0; ii < ids.size(); ii++ )
+      {
+         if ( ! same_component( tcomps[ ids[ ii ] ], want ) )  continue;
+
+         values.insert( "id", ids[ ii ] );
+         return;
+      }
+
+      if ( ! create )
+      {
+         values.insert( "id", "new:" + srcID );
+         return;
+      }
+
+      // The target does not have it: it is added to the target's table
+      US_BufferComponent added = want;
+      QString            newID;
+
+      if ( opts.target == US_DataPub::TargetDb )
+      {
+         added.componentID.clear();
+
+         if ( added.saveToDB( dbase ) < 1 )
+         {
+            failure = tr( "Buffer component \"%1\" could not be added to the"
+                          " database: %2" ).arg( want.name )
+                      .arg( dbase->lastError() );
+            return;
+         }
+
+         newID = added.componentID;
+      }
+
+      else
+      {
+         int top = 0;
+
+         for ( int ii = 0; ii < ids.size(); ii++ )
+            top = qMax( top, ids[ ii ].toInt() );
+
+         newID = QString::number( top + 1 );
+         added.componentID = newID;
+         QMap< QString, US_BufferComponent > table = tcomps;
+         table.insert( newID, added );
+         US_BufferComponent::putAllToHD( table );
+         disk_written << US_Settings::appBaseDir()
+                         + "/etc/bufferComponents.xml";
+      }
+
+      tcomps.insert( newID, added );
+      note( tr( "Buffer component \"%1\" was added to the target's"
+                " component table as %2" ).arg( want.name ).arg( newID ) );
+      values.insert( "id", newID );
+   };
+
+   if ( ! rewrite_xml( workPath, edit, error ) )
+   {
+      error = tr( "The components of %1 could not be pointed at the"
+                  " target's: %2" ).arg( entity.label() ).arg( error );
+      return false;
+   }
+
+   if ( ! failure.isEmpty() )
+   {
+      error = failure;
       return false;
    }
 
@@ -1584,6 +1831,8 @@ bool US_DataPubImporter::runImport( const Options& options, QString& error )
    exp_indexed = false;
    created_exps.clear();
    staged_runs.clear();
+   tcomps.clear();
+   tcomps_read = false;
    raw_written.clear();
    step_count = 0;
 
@@ -2151,7 +2400,7 @@ bool US_DataPubImporter::importCenterpiece( const US_DataPubEntity& entity,
    QString path = payloadPath( entity );
    QString print = US_DataPubHash::fingerprint( path, "abstractCenterpiece",
                                                 "guid" );
-   QString workDir = bundle.stagingPath() + "/.target";
+   QString workDir = bundle.workPath() + "/target";
    QDir().mkpath( workDir );
    QString theirs = workDir + "/centerpiece.xml";
 
@@ -2907,7 +3156,7 @@ QString US_DataPubImporter::targetFingerprint( US_DataPub::EntityType type,
    QString ownAttr;
    own_identity( type, ownElem, ownAttr );
 
-   QString workDir = bundle.stagingPath() + "/.target";
+   QString workDir = bundle.workPath() + "/target";
    QDir().mkpath( workDir );
 
    QString path = workDir + "/" + US_DataPub::typeKey( type ) + ".xml";
@@ -3353,6 +3602,31 @@ bool US_DataPubImporter::createDisk( const US_DataPubEntity& entity,
 
       QString defsSource;
       QString defsTarget;
+      QString ripSource;
+      QString ripTarget;
+
+      if ( type == US_DataPub::Experiment  &&
+           ! entity.attrs.value( "riProfilePayload" ).isEmpty() )
+      {
+         // The RI intensity profile is a file of the run directory too
+         if ( ! insideBundle( entity.attrs.value( "riProfilePayload" ),
+                              ripSource, error )  ||
+              ! QFile::exists( ripSource ) )
+         {
+            error = tr( "The RI intensity profile of run %1 is missing from"
+                        " the bundle" ).arg( runID );
+            return false;
+         }
+
+         ripTarget = dir + "/" + runID + ".RIProfile.xml";
+
+         if ( QFile::exists( ripTarget ) )
+         {
+            error = tr( "The file %1 already exists; the import will not"
+                        " overwrite it" ).arg( ripTarget );
+            return false;
+         }
+      }
 
       if ( type == US_DataPub::TimeState )
       {
@@ -3390,6 +3664,17 @@ bool US_DataPubImporter::createDisk( const US_DataPubEntity& entity,
                                    | QFileDevice::ReadGroup
                                    | QFileDevice::ReadOther );
 
+      if ( ! ripTarget.isEmpty() )
+      {
+         if ( ! QFile::copy( ripSource, ripTarget ) )
+         {
+            error = tr( "Cannot write %1" ).arg( ripTarget );
+            return false;
+         }
+
+         disk_written << ripTarget;
+      }
+
       if ( ! defsTarget.isEmpty() )
       {
          if ( ! QFile::copy( defsSource, defsTarget ) )
@@ -3405,6 +3690,10 @@ bool US_DataPubImporter::createDisk( const US_DataPubEntity& entity,
    }
 
    // ---- the file-backed records of the data directory ---------------------
+   if ( type == US_DataPub::Buffer  &&
+        ! mapComponents( entity, workPath, true, error ) )
+      return false;
+
    QString dir = diskDir( type, true );
    QString prefix;
 
@@ -3770,7 +4059,7 @@ bool US_DataPubImporter::createExperimentDb( const US_DataPubEntity& entity,
                                              QString& newID, QString& error )
 {
    QString runType = entity.attrs.value( "runType", "RA" );
-   QString runDir  = bundle.stagingPath() + "/.runs/" + name;
+   QString runDir  = bundle.workPath() + "/runs/" + name;
 
    QDir( runDir ).removeRecursively();
 
@@ -3882,6 +4171,43 @@ bool US_DataPubImporter::createExperimentDb( const US_DataPubEntity& entity,
    }
 
    US_Experiment& exper = run.experiment;
+
+   // An RI run's intensity profile: read the bundle's file the way the
+   // experiment reads its own, and store what it writes back, which is the
+   // XML US_Experiment::saveToDB() would have stored
+   QByteArray RIxml;
+   QString    rip = entity.attrs.value( "riProfilePayload" );
+
+   if ( ! rip.isEmpty() )
+   {
+      QString rsource;
+      QString rname = name + ".RIProfile.xml";
+
+      if ( ! insideBundle( rip, rsource, error )  ||
+           ! QFile::copy( rsource, runDir + "/" + rname ) )
+      {
+         error = tr( "Cannot stage the RI intensity profile of run %1" )
+                 .arg( name );
+         return false;
+      }
+
+      QFile::setPermissions( runDir + "/" + rname, QFileDevice::ReadOwner
+                                                   | QFileDevice::WriteOwner );
+
+      if ( exper.readRIDisk( name, runDir + "/" ) != US_Convert::OK  ||
+           exper.RIProfile.isEmpty()  ||
+           exper.saveRIDisk( name, runDir ) != US_Convert::OK  ||
+           ! read_capped( runDir + "/" + rname, RIxml, error ) )
+      {
+         error = tr( "The RI intensity profile of run %1 could not be read" )
+                 .arg( name );
+         return false;
+      }
+
+      if ( RIxml.isEmpty() )
+         note( tr( "Run %1 carries an RI profile but is not RI data; the"
+                   " profile is not stored" ).arg( name ) );
+   }
    exper.runID = name;
 
    // ---- the project -------------------------------------------------------
@@ -3967,7 +4293,7 @@ bool US_DataPubImporter::createExperimentDb( const US_DataPubEntity& entity,
          << QString::number( exper.calibrationID )
          << exper.expType
          << QString( exper.opticalSystem )
-         << QString()
+         << QString::fromUtf8( RIxml )
          << exper.runTemp
          << exper.label
          << exper.comments
@@ -4292,10 +4618,29 @@ bool US_DataPubImporter::createDb( const US_DataPubEntity& entity,
       {
          US_Buffer buffer;
 
+         if ( ! mapComponents( entity, workPath, true, error ) )  return false;
+
          if ( ! buffer.readFromDisk( workPath ) )
          {
             error = tr( "The buffer payload could not be read" );
             return false;
+         }
+
+         // US_Buffer::saveToDB() links the components it holds, which a
+         // buffer read from a file names by ID only
+         buffer.component.clear();
+
+         for ( int ii = 0; ii < buffer.componentIDs.size(); ii++ )
+         {
+            if ( ! tcomps.contains( buffer.componentIDs[ ii ] ) )
+            {
+               error = tr( "Component %1 of buffer \"%2\" is not in the"
+                           " target" ).arg( buffer.componentIDs[ ii ] )
+                       .arg( name );
+               return false;
+            }
+
+            buffer.component << tcomps.value( buffer.componentIDs[ ii ] );
          }
 
          buffer.bufferID = QString( "-1" );

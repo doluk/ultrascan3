@@ -11,6 +11,7 @@
 #include "us_experiment.h"
 #include "us_convertio.h"
 #include "us_project.h"
+#include "us_buffer.h"
 
 /*! \class US_DataPubConflictResolver
     \brief Asked what to do when an import runs into a name conflict
@@ -291,6 +292,14 @@ class US_DataPubImporter : public QObject
 
       //! Raw data a database import wrote: bundle GUID -> rawData ID
       QMap< QString, QString >   raw_written;
+
+      //! The target's buffer components by ID, once read
+      QMap< QString, US_BufferComponent > tcomps;
+      bool                       tcomps_read;
+
+      bool    targetComponents( QString& error );
+      bool    mapComponents   ( const US_DataPubEntity&, const QString& workPath,
+                                bool create, QString& error );
 
       bool    openTarget ( QString& error );
       void    closeTarget( void );

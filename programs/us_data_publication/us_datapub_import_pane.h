@@ -89,12 +89,8 @@ class US_DataPubImportPane : public US_Widgets,
 
       bool cancelled( void ) const override;
 
-      //! \brief True while an import runs
-      bool busy( void ) const;
-
-   protected:
-      //! Refuses to let the window close while an import runs
-      bool eventFilter( QObject* watched, QEvent* event ) override;
+      //! \brief True while an import runs; the window does not close then
+      bool isBusy( void ) const;
 
    signals:
       //! \brief A note for the window's status line

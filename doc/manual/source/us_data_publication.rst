@@ -254,9 +254,11 @@ is either pointed at or imported again under a new name.
 A bundle is checked as a whole before anything is written, and refused as a
 whole when any check fails: every payload path has to stay inside the bundle;
 every run ID has to hold only letters, digits, ``_`` and ``-`` (at most 80);
-every run file has to be a plain file name starting with its run ID; every
-payload, including a time state's field definitions, has to match its digest
-(a payload without one fails too, unless the check is switched off); every
+every run file has to be a plain file name starting with its run ID; the
+manifest has to match ``manifest.sha256`` and every payload -- including a
+time state's field definitions, an RI profile and a buffer's component
+definitions -- its digest (a payload without one fails too, unless the check
+is switched off); every
 payload has to parse as its record type and carry the GUID the manifest gives
 it; and every buffer and analyte a solution names has to be in the bundle or
 the target.
@@ -296,6 +298,11 @@ then ``<name> (imported 2)``, and so on. A run is renamed
 ``<runID>-imported``, and everything that carries the run ID follows: the raw
 data, edit and time state files, the run ID inside each edit, and the models
 and noise records named after the run.
+
+An RI run's intensity profile is restored beside its experiment XML on disk,
+and stored with the experiment in a database. A buffer's components are
+matched in the target's component table by name, unit and coefficients, and
+added to it when the target lacks one.
 
 A record matched to a target record of another GUID is renamed in every
 payload that names it: a solution's buffer and analytes, a model's edit, a

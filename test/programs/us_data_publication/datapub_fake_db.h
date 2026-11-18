@@ -146,6 +146,7 @@ class DataPubFakeDb
       static bool isWrite( const QString& proc )
       {
          return proc.startsWith( "new_" )    ||  proc.startsWith( "add_" )  ||
+                proc.startsWith( "create_" ) ||
                 proc.startsWith( "update_" ) ||  proc.startsWith( "delete_" ) ||
                 proc.startsWith( "upload_" );
       }

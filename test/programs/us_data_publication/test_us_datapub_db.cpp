@@ -1187,3 +1187,131 @@ TEST_F( DataPubMockImport, TheSameRunIsRecognisedByItsGuid )
    EXPECT_EQ   ( fake.callsOf( "new_experiment" ).size(), 0 );
    EXPECT_EQ   ( fake.rollbacks, 1 );
 }
+
+// ------------------------------- buffer components and the RI profile, in DB
+
+class DataPubMockExtras : public DataPubMockImport
+{
+   protected:
+      US_BufferComponent component;
+
+      // The fixture's buffer gets local component 1, and the bundle is
+      // made again
+      void exportWithComponent()
+      {
+         QMap< QString, US_BufferComponent > table;
+         US_BufferComponent::getAllFromHD( table );
+         ASSERT_TRUE( table.contains( "1" ) ) << "no local component table";
+         component = table.value( "1" );
+
+         US_Buffer buffer;
+         QString   bpath = US_Settings::dataDir() + "/buffers/B0000001.xml";
+         ASSERT_TRUE( buffer.readFromDisk( bpath ) );
+         buffer.component     << component;
+         buffer.componentIDs  << "1";
+         buffer.concentration << 150.0;
+         ASSERT_TRUE( buffer.writeToDisk( bpath ) );
+
+         reexport();
+      }
+
+      void reexport()
+      {
+         US_DataPubExporter            exporter;
+         US_DataPubExporter::Selection selection;
+         selection.fromDb = false;
+         selection.scope  = US_DataPub::ScopeNoise;
+         selection.runIDs << runID;
+
+         QString error;
+         ASSERT_TRUE( exporter.exportBundle( selection, bundlePath, error ) )
+            << error.toStdString();
+      }
+
+      // The component as the database would list it
+      QVariantList componentRow( const US_BufferComponent& comp )
+      {
+         QStringList dens;
+         QStringList visc;
+
+         for ( int ii = 0; ii < 6; ii++ )
+         {
+            dens << QString::number( comp.dens_coeff[ ii ], 'f', 5 );
+            visc << QString::number( comp.visc_coeff[ ii ], 'f', 5 );
+         }
+
+         return QVariantList() << comp.unit << comp.name << visc.join( " " )
+                               << dens.join( " " ) << comp.range << "0";
+      }
+};
+
+// A component the database has under another ID is linked by that ID
+TEST_F( DataPubMockExtras, AKnownComponentIsLinkedByTheTargetsId )
+{
+   exportWithComponent();
+
+   fake.canned.insert( "get_buffer_component_desc", QList< QVariantList >()
+                       << ( QVariantList() << 42 ) );
+   fake.canned.insert( "get_buffer_component_info", QList< QVariantList >()
+                       << componentRow( component ) );
+
+   US_DataPubImporter importer;
+   QString            error;
+   ASSERT_TRUE( importOnce( importer, error, dbOptions() ) )
+      << error.toStdString();
+
+   EXPECT_EQ( fake.callsOf( "create_buffer_component" ).size(), 0 );
+   ASSERT_EQ( fake.callsOf( "add_buffer_component" ).size(), 1 );
+   EXPECT_EQ( fake.callsOf( "add_buffer_component" )[ 0 ].value( 2 ), "42" );
+}
+
+// One the database lacks is created, and the buffer linked to the new row
+TEST_F( DataPubMockExtras, AnUnknownComponentIsCreated )
+{
+   exportWithComponent();
+
+   US_DataPubImporter importer;
+   QString            error;
+   ASSERT_TRUE( importOnce( importer, error, dbOptions() ) )
+      << error.toStdString();
+
+   ASSERT_EQ( fake.callsOf( "create_buffer_component" ).size(), 1 );
+   EXPECT_EQ( fake.callsOf( "create_buffer_component" )[ 0 ].value( 2 ),
+              component.name );
+   ASSERT_EQ( fake.callsOf( "add_buffer_component" ).size(), 1 );
+   EXPECT_NE( fake.callsOf( "add_buffer_component" )[ 0 ].value( 2 ), "1" );
+   EXPECT_EQ( fake.commits, 1 );
+}
+
+// An RI run's intensity profile goes into the experiment row
+TEST_F( DataPubMockExtras, AnRiProfileIsStoredWithTheRun )
+{
+   QString xml = runDir() + "/" + runID + "." + runType + ".xml";
+   QFile   file( xml );
+   ASSERT_TRUE( file.open( QIODevice::ReadOnly ) );
+   QString text = QString::fromUtf8( file.readAll() );
+   file.close();
+   text.replace( "<opticalSystem value=\"RA\"", "<opticalSystem value=\"RI\"" );
+   ASSERT_TRUE( file.open( QIODevice::WriteOnly | QIODevice::Truncate ) );
+   file.write( text.toUtf8() );
+   file.close();
+
+   QFile rip( runDir() + "/" + runID + ".RIProfile.xml" );
+   ASSERT_TRUE( rip.open( QIODevice::WriteOnly ) );
+   rip.write( "<?xml version=\"1.0\"?>\n<!DOCTYPE US_RIProfile>\n"
+              "<US_RIProfile version=\"1.0\"><RI value=\"1.5\"/>"
+              "<RI value=\"1.25\"/></US_RIProfile>\n" );
+   rip.close();
+
+   reexport();
+
+   US_DataPubImporter importer;
+   QString            error;
+   ASSERT_TRUE( importOnce( importer, error, dbOptions() ) )
+      << error.toStdString();
+
+   ASSERT_EQ( fake.callsOf( "new_experiment" ).size(), 1 );
+   QString stored = fake.callsOf( "new_experiment" )[ 0 ].value( 11 );
+   EXPECT_TRUE( stored.contains( "<RI value=\"1.5\"" ) ) << stored.toStdString();
+   EXPECT_TRUE( stored.contains( "<RI value=\"1.25\"" ) ) << stored.toStdString();
+}

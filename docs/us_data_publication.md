@@ -532,8 +532,10 @@ checked as a whole first, and refused as a whole when any check fails:
   `_` and `-`, at most 80 characters (the rule `US_ConvertIO` applies to run
   directories). Every raw data, edit and time state file name has to be a
   plain file name that starts with its run ID.
-* **Digests.** Every payload, and every time state's field definitions, has to
-  match its digest. A payload without a digest fails the check too;
+* **Digests.** The manifest has to match `manifest.sha256`, and every payload
+  has to match its digest -- the main payload of each record and every extra
+  one (a time state's field definitions, an RI intensity profile, a buffer's
+  component definitions). A payload without a digest fails the check too;
   `--no-verify` (or unchecking **Verify payload digests**) is the only way to
   import such a bundle.
 * **Contents.** Every payload has to parse as the record type the manifest
@@ -627,6 +629,21 @@ then `<name> (imported 2)`, and so on until one is free. A run is renamed
 `_`), and everything that carries the run ID follows it: the raw data, edit
 and time state file names, the `runid` inside each edit, and the descriptions
 of models and noise records named after the run.
+
+### RI profiles and buffer components
+
+An RI run's intensity profile travels as a file of its own. A disk import
+puts it back beside the experiment XML as `<runID>.RIProfile.xml`, under the
+run's new ID when it was renamed; a database import stores it in the
+experiment row, as `US_Experiment::saveToDB()` would.
+
+A buffer names its components by the source installation's IDs, which mean
+nothing in the target, so the bundle carries their definitions. Each
+component is matched in the target's component table by name, unit and
+coefficients, and the buffer is pointed at the target's ID. A component the
+target does not have is added to its table when the buffer is written (the
+database's table, or on disk the installation's `etc/bufferComponents.xml`),
+and the log says so.
 
 ### Pointing records at the target's records
 

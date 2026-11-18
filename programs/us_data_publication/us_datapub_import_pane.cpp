@@ -282,7 +282,7 @@ void US_DataPubImportPane::bundle_edited( const QString& )
    le_summary->setText( tr( "No bundle inspected" ) );
 }
 
-bool US_DataPubImportPane::busy( void ) const
+bool US_DataPubImportPane::isBusy( void ) const
 {
    return importing;
 }
@@ -292,23 +292,10 @@ bool US_DataPubImportPane::cancelled( void ) const
    return was_cancelled;
 }
 
-bool US_DataPubImportPane::eventFilter( QObject* watched, QEvent* event )
-{
-   if ( importing  &&  event->type() == QEvent::Close )
-   {
-      event->ignore();
-      emit status( tr( "An import is running; the window closes once it is"
-                       " done" ) );
-      return true;
-   }
-
-   return US_Widgets::eventFilter( watched, event );
-}
-
 /* While an import runs the importer hands control back to the event loop
    to show its progress, so everything that could change or destroy what it
    works on -- the bundle, the target, the options, Reset, Inspect -- is
-   switched off, and the window refuses to close.
+   switched off; US_DataPublication asks isBusy() before it closes.
 */
 void US_DataPubImportPane::setBusy( bool on )
 {
@@ -336,14 +323,6 @@ void US_DataPubImportPane::setBusy( bool on )
       pb_import->setEnabled( inspected );
    }
 
-   QWidget* top = window();
-
-   if ( top == nullptr )  return;
-
-   if ( on )
-      top->installEventFilter( this );
-   else
-      top->removeEventFilter( this );
 }
 
 void US_DataPubImportPane::browse_bundle( void )

@@ -626,6 +626,17 @@ class DataPubCrafted : public DataPubImport
 
          if ( ! mani.write( mpath, error ) )  return QString();
 
+         // A crafted manifest gets a matching manifest digest, so only the
+         // check under test can catch it
+         QFile digest( stage + "/" + US_DataPubExporter::manifestDigestName() );
+
+         if ( ! digest.open( QIODevice::WriteOnly | QIODevice::Truncate ) )
+            return QString();
+
+         digest.write( ( US_DataPubHash::fileHash( mpath ) + "  "
+                         + US_DataPubBundle::manifestName() + "\n" ).toUtf8() );
+         digest.close();
+
          QString path = root + "/" + name + ".tar.gz";
 
          if ( ! out.pack( path, error ) )  return QString();
@@ -829,7 +840,7 @@ TEST_F( DataPubCrafted, TamperedTimeStateDefinitionsAreCaught )
          file.write( "<!-- tampered -->" );
          file.close();
       } );
-   } ), "definitions" );
+   } ), "time_state.xml does not match its digest" );
 }
 
 TEST_F( DataPubCrafted, MissingTimeStateDefinitionsFailTheImport )
@@ -1207,4 +1218,148 @@ TEST_F( DataPubCli, ADiskImportSucceedsAndAFailedOneSaysSo )
    EXPECT_EQ( run( QStringList() << "--mode" << "import" << "--bundle"
                    << root + "/no_such.tar.gz" << "--target" << "disk"
                    << "--output-dir" << targetDir ), 1 );
+}
+
+// ------------------------------------------- the manifest and extra payloads
+
+// The manifest is checked against manifest.sha256 like any payload
+TEST_F( DataPubImport, AnAlteredManifestIsCaught )
+{
+   US_DataPubImporter importer;
+   QString            error;
+   ASSERT_TRUE( importer.inspect( bundlePath, error ) ) << error.toStdString();
+
+   QFile file( importer.bundleRoot() + "/" + US_DataPubBundle::manifestName() );
+   ASSERT_TRUE( file.open( QIODevice::Append ) );
+   file.write( "# edited after export\n" );
+   file.close();
+
+   EXPECT_FALSE( importer.runImport( diskOptions(), error ) );
+   EXPECT_TRUE ( error.contains( "manifest does not match" ) )
+      << error.toStdString();
+   EXPECT_EQ   ( filesIn( targetDir ), 0 );
+}
+
+TEST_F( DataPubImport, AManifestWithoutItsDigestIsCaught )
+{
+   US_DataPubImporter importer;
+   QString            error;
+   ASSERT_TRUE( importer.inspect( bundlePath, error ) ) << error.toStdString();
+   ASSERT_TRUE( QFile::remove( importer.bundleRoot() + "/"
+                + US_DataPubExporter::manifestDigestName() ) );
+
+   EXPECT_FALSE( importer.runImport( diskOptions(), error ) );
+   EXPECT_TRUE ( error.contains( US_DataPubExporter::manifestDigestName() ) )
+      << error.toStdString();
+}
+
+// An RI run's intensity profile goes into the run directory beside the
+// experiment XML, under the run's (possibly new) ID
+TEST_F( DataPubImport, AnRiProfileIsRestoredBesideTheRun )
+{
+   QString rip = runDir() + "/" + runID + ".RIProfile.xml";
+   QFile   file( rip );
+   ASSERT_TRUE( file.open( QIODevice::WriteOnly ) );
+   file.write( "<?xml version=\"1.0\"?>\n<!DOCTYPE US_RIProfile>\n"
+               "<US_RIProfile version=\"1.0\"><RI value=\"1.5\"/>"
+               "<RI value=\"1.25\"/></US_RIProfile>\n" );
+   file.close();
+
+   QString bundle = root + "/ri.tar.gz";
+   QString error;
+   {
+      US_DataPubExporter            exporter;
+      US_DataPubExporter::Selection selection;
+      selection.fromDb = false;
+      selection.scope  = US_DataPub::ScopeNoise;
+      selection.runIDs << runID;
+      ASSERT_TRUE( exporter.exportBundle( selection, bundle, error ) )
+         << error.toStdString();
+   }
+
+   US_DataPubImporter importer;
+   ASSERT_TRUE( importer.inspect  ( bundle, error ) ) << error.toStdString();
+   ASSERT_TRUE( importer.runImport( diskOptions(), error ) )
+      << error.toStdString();
+
+   QString restored = targetDir + "/results/" + runID + "/" + runID
+                      + ".RIProfile.xml";
+   ASSERT_TRUE( QFile::exists( restored ) );
+   EXPECT_EQ  ( US_DataPubHash::fileHash( restored ),
+                US_DataPubHash::fileHash( rip ) );
+}
+
+// A buffer's components are found in the target by what they are, not by
+// the number the source happened to give them
+TEST_F( DataPubCrafted, BufferComponentsAreMatchedByDefinition )
+{
+   QMap< QString, US_BufferComponent > table;
+   US_BufferComponent::getAllFromHD( table );
+   ASSERT_TRUE( table.contains( "1" ) ) << "no local buffer component table";
+
+   US_Buffer buffer;
+   ASSERT_TRUE( buffer.readFromDisk( US_Settings::dataDir()
+                                     + "/buffers/B0000001.xml" ) );
+   buffer.component     << table.value( "1" );
+   buffer.componentIDs  << "1";
+   buffer.concentration << 150.0;
+   ASSERT_TRUE( buffer.writeToDisk( US_Settings::dataDir()
+                                    + "/buffers/B0000001.xml" ) );
+
+   QString error;
+   {
+      US_DataPubExporter            exporter;
+      US_DataPubExporter::Selection selection;
+      selection.fromDb = false;
+      selection.scope  = US_DataPub::ScopeNoise;
+      selection.runIDs << runID;
+      ASSERT_TRUE( exporter.exportBundle( selection, bundlePath, error ) )
+         << error.toStdString();
+   }
+
+   // The source called component 1 "999"
+   QString path = craft( "renumbered", [ & ]( US_DataPubManifest& m,
+                                              const QString& stage )
+   {
+      editPayload( m, stage, US_DataPub::Buffer, "id=\"1\"", "id=\"999\"" );
+      editEntity( m, US_DataPub::Buffer, [ & ]( US_DataPubEntity& e )
+      {
+         QString cpath = stage + "/" + e.attrs.value( "componentsPayload" );
+         QFile   cfile( cpath );
+         ASSERT_TRUE( cfile.open( QIODevice::ReadOnly ) );
+         QString text = QString::fromUtf8( cfile.readAll() );
+         cfile.close();
+         text.replace( "id=\"1\"", "id=\"999\"" );
+         ASSERT_TRUE( cfile.open( QIODevice::WriteOnly | QIODevice::Truncate ) );
+         cfile.write( text.toUtf8() );
+         cfile.close();
+         e.attrs.insert( "componentsSha256", US_DataPubHash::fileHash( cpath ) );
+      } );
+   } );
+   ASSERT_FALSE( path.isEmpty() );
+
+   US_DataPubImporter importer;
+   ASSERT_TRUE( importer.inspect  ( path, error ) ) << error.toStdString();
+   ASSERT_TRUE( importer.runImport( diskOptions(), error ) )
+      << error.toStdString();
+
+   QStringList bufs = QDir( targetDir + "/data/buffers" ).entryList(
+                      QStringList( "B*.xml" ), QDir::Files );
+   ASSERT_EQ( bufs.size(), 1 );
+
+   US_Buffer imported;
+   ASSERT_TRUE( imported.readFromDisk( targetDir + "/data/buffers/"
+                                       + bufs[ 0 ] ) );
+   EXPECT_EQ( imported.componentIDs, QStringList() << "1" );
+}
+
+// A component digest is checked like the buffer's own
+TEST_F( DataPubCrafted, AnExtraPayloadWithoutADigestIsNotIntact )
+{
+   expectImportFails( craft( "notsdigest", [ & ]( US_DataPubManifest& m,
+                                                  const QString& )
+   {
+      editEntity( m, US_DataPub::TimeState, []( US_DataPubEntity& e )
+      { e.attrs.remove( "definitionsSha256" ); } );
+   } ), "carries no digest" );
 }

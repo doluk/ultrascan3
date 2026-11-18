@@ -90,5 +90,13 @@ void US_DataPublication::closeEvent( QCloseEvent* event )
       return;
    }
 
+   if ( importPane->isBusy() )
+   {
+      lb_status->setText( tr( "An import is running; the window closes"
+                              " once it is done." ) );
+      event->ignore();
+      return;
+   }
+
    US_Widgets::closeEvent( event );
 }
