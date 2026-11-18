@@ -11,6 +11,8 @@ US_SyncExperiment::US_SyncExperiment( US_DB2* a_db, QWidget* parent /*= 0*/ )
    parentw    = parent;
    dbg_level  = US_Settings::us_debug();
 
+   if ( db == NULL )   return;      // nothing to list without a database
+
    QString invID = QString::number( US_Settings::us_inv_ID() );
 
    // get lists of experimental IDs and run IDs

@@ -16,7 +16,9 @@ US_DataProcess::US_DataProcess( US_DataModel* dmodel, QWidget* parent /*=0*/ )
    db               = da_model->dbase();
    dbg_level        = US_Settings::us_debug();
 
-   syncExper        = new US_SyncExperiment( db, parent );
+   // Nothing here synchronizes experiments any more (see record_upload),
+   // and building the synchronizer lists every experiment in the database
+   syncExper        = NULL;
 }
 
 // perform a record upload to the database from local disk
@@ -37,11 +39,13 @@ DbgLv(1) << "REC_ULD: row" << row+1;
       return stat;
    }
 
-   QDateTime dtime  = QDateTime::fromString( cdesc.lastmodDate );
-   QDateTime ftime  = QDateTime::fromString( cdesc.filemodDate );
+   // Both sources write UTC date-times; a date that cannot be read is no
+   // reason to refuse
+   QDateTime dtime  = US_DataModel::parse_date( cdesc.lastmodDate );
+   QDateTime ftime  = US_DataModel::parse_date( cdesc.filemodDate );
 
    if ( ( cdesc.recState & US_DataModel::REC_DB ) != 0  &&
-        ftime < dtime )
+        dtime.isValid()  &&  ftime.isValid()  &&  ftime < dtime )
    {  // Cannot replace DB record with older Local record
       errMsg = tr( "The Local file record is older than the DB record." );
       stat   = 3061;
@@ -80,7 +84,8 @@ DbgLv(1) << "REC_ULD:RAW: parentGUID" << cdesc.parentGUID;
    else if ( cdesc.recType == 2 )
    {  // upload an EditedData record
       QString runID    = US_DataCatalog::runIdOfFile( filename, true );
-      QString comment  = filename.section( ".", 0, 2 );
+      // runID.editID.type -- the run ID may itself contain dots
+      QString comment  = filename.section( ".", 0, -5 );
       QString editGUID = cdesc.dataGUID;
       QString rawGUID  = cdesc.parentGUID;
       QString editID   = QString::number( idData );
@@ -178,7 +183,10 @@ DbgLv(2) << "NOISE: (2) filepath" << filepath;
    }
 
    if ( stat == 0 )
-   {
+   {  // The record is in the DB now; the two copies are not compared yet
+      cdesc.recState |= US_DataModel::REC_DB;
+      cdesc.recState &= ~US_DataModel::HV_DET;
+      cdesc.contents  = QString();
       da_model->change_datadesc( cdesc, row );
    }
 
@@ -235,7 +243,9 @@ int US_DataProcess::record_download( int row )
    //if      ( cdesc.recType == 1 )
    if      ( cdesc.recType == 1  &&  cdesc.recType != 1 )  // never download raw
    {  // download a Raw record
-      stat   = db->readBlobFromDB( filepath, "download_aucData", idData );
+      QString opError;
+      stat   = US_ConvertIO::downloadRawDataBlob( db, idData, filepath,
+                                                  opError );
       if ( stat != 0 )
          errMsg = tr( "Raw download status %1" ).arg( stat )
                   + "\n " + filepath;
@@ -243,10 +253,12 @@ int US_DataProcess::record_download( int row )
 
    else if ( cdesc.recType == 2 )
    {  // download an EditedData record
-      stat   = db->readBlobFromDB( filepath, "download_editData", idData );
+      QString opError;
+      stat   = US_ConvertIO::downloadEditedDataBlob( db, idData, filepath,
+                                                     opError );
       if ( stat != 0 )
-         errMsg = tr( "Edited download status %1" ).arg( stat )
-                  + "\n " + filepath;
+         errMsg = tr( "Edited download status %1: %2" ).arg( stat )
+                  .arg( opError ) + "\n " + filepath;
    }
 
    else if ( cdesc.recType == 3 )
@@ -270,7 +282,14 @@ int US_DataProcess::record_download( int row )
             QTextStream tso( &fileo );
             tso << contents;
             fileo.close();
+            cdesc.filename = filepath;
 //qDebug() << "DwnLd:   model time3" << timer3.elapsed();
+         }
+
+         else
+         {
+            errMsg = tr( "Model file could not be written\n " ) + filepath;
+            stat   = 3023;  // download write error
          }
       }
 
@@ -316,8 +335,16 @@ int US_DataProcess::record_download( int row )
    }
 
    if ( stat == 0 )
-   {  // Change the record state to include "in-DB"
-      cdesc.recState |= US_DataModel::REC_DB;
+   {  // The record is on local disk now, in the file just written; the two
+      // copies are not compared yet
+      cdesc.recState |= US_DataModel::REC_LO;
+      cdesc.recState &= ~US_DataModel::HV_DET;
+      cdesc.contents  = QString();
+
+      if ( cdesc.recType == US_DataModel::RAW  ||
+           cdesc.recType == US_DataModel::EDIT )
+         cdesc.filename = filepath;
+
       da_model->change_datadesc( cdesc, row );
    }
 
@@ -405,8 +432,14 @@ DbgLv(1) << "NOI_RMV:    lastErr" << db->lastError() << db->lastErrno();
    }
 
    if ( stat == 0 )
-   {
-      cdesc.recordID = irecID;
+   {  // Gone from the DB:  local only now, or gone altogether
+      cdesc.recordID  = irecID;
+      cdesc.recState &= ~( US_DataModel::REC_DB | US_DataModel::HV_DET );
+      cdesc.contents  = QString();
+
+      if ( ( cdesc.recState & US_DataModel::REC_LO ) == 0 )
+         cdesc.recState  = US_DataModel::NOSTAT;
+
       da_model->change_datadesc( cdesc, row );
    }
 
@@ -436,7 +469,8 @@ int US_DataProcess::record_remove_local( int row )
 
          else
          {  // it was on both, so now it's db-only
-            cdesc.recState &= ~US_DataModel::REC_LO;
+            cdesc.recState &= ~( US_DataModel::REC_LO | US_DataModel::HV_DET );
+            cdesc.contents  = QString();
          }
       }
 
@@ -542,11 +576,13 @@ bool US_DataProcess::raw_ancestor_ok( int row )
    int  jrow = row;
    int  bSrc = US_DataModel::REC_DB | US_DataModel::REC_LO;
 
-   while ( --jrow >= 0 )
-   {  // walk up tree until a Raw record is encountered.
+   // Walk up the parents -- not up the rows, which belong to other
+   // experiments above the first record of this one -- to the Raw record
+   while ( ( jrow = da_model->parent_row( jrow ) ) >= 0 )
+   {
       US_DataModel::DataDesc ddesc = da_model->row_datadesc( jrow );
 
-      if ( ddesc.recType == 1 )
+      if ( ddesc.recType == US_DataModel::RAW )
       {  // This is the Raw ancestor of the given record
          if ( ( ddesc.recState & bSrc ) == bSrc )
          {  // If both DB and Local, mark as OK for upload/download

@@ -51,6 +51,7 @@ target_include_directories(test_us_manage_data
         ${manage_dir}
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_SOURCE_DIR}/test/common
+        ${CMAKE_SOURCE_DIR}/test/utils/mock
         ${CMAKE_SOURCE_DIR}/utils
         ${CMAKE_SOURCE_DIR}/gui
         ${CMAKE_BINARY_DIR}
