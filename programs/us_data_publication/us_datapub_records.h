@@ -7,6 +7,7 @@
 #include "us_datapub_defs.h"
 #include "us_rotor.h"
 #include "us_hardware.h"
+#include "us_buffer.h"
 
 /*! \class US_DataPubRecords
     \brief Payload serialization for the records without a file writer
@@ -56,6 +57,35 @@ class US_DataPubRecords
       //! \returns An empty string when the name cannot be found
       static QString recordName( const QString& filename,
                                  US_DataPub::EntityType type );
+
+      /*! \brief Write the definitions of buffer components to a file
+
+          A buffer file names its components by ID and concentration only;
+          what a component is -- its name, unit and the density and
+          viscosity coefficients the buffer's properties are computed from
+          -- lives in the installation's component table.  The IDs of one
+          installation mean nothing in another, so a bundle carries the
+          definitions next to the buffer.  The file has the format of the
+          local \c etc/bufferComponents.xml (which
+          US_BufferComponent::component() reads), with the coefficients at
+          full precision.
+          \param components The component definitions to write
+          \param filename   The full path of the file to write
+          \returns True when the file was written
+      */
+      static bool writeBufferComponents(
+            const QList< US_BufferComponent >& components,
+            const QString& filename );
+
+      /*! \brief Read buffer component definitions written by
+                 writeBufferComponents()
+          \param filename   The full path of the file to read
+          \param components Filled in with the definitions, keyed by ID
+          \returns True when the file could be read
+      */
+      static bool readBufferComponents(
+            const QString& filename,
+            QMap< QString, US_BufferComponent >& components );
 
       /*! \brief Rename a record inside its payload file
 

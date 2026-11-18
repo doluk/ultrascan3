@@ -4,6 +4,7 @@
 
 #include "us_settings.h"
 #include "us_time_state.h"
+#include "us_util.h"
 
 US_DataPubCatalog::ExpInfo::ExpInfo()
 {
@@ -290,6 +291,14 @@ bool US_DataPubCatalog::ensureListed( const QString& projectGUID,
    return true;
 }
 
+void US_DataPubCatalog::attachDb( IUS_DB2* db )
+{
+   from_db = true;
+   dbase   = db;
+   listed  = false;
+   listed_project.clear();
+}
+
 bool US_DataPubCatalog::isDb( void ) const
 {
    return from_db;
@@ -300,7 +309,7 @@ void US_DataPubCatalog::setBulkQueries( bool on )
    cat->setBulkQueries( on );
 }
 
-US_DB2* US_DataPubCatalog::db( void )
+IUS_DB2* US_DataPubCatalog::db( void )
 {
    return dbase;
 }
@@ -335,10 +344,11 @@ QList< US_DataPubCatalog::Project > US_DataPubCatalog::projectsDb(
    query << "get_project_desc" << QString::number( inv_id );
    dbase->query( query );
 
-   if ( dbase->lastErrno() != US_DB2::OK  &&
-        dbase->lastErrno() != US_DB2::NOROWS )
+   if ( dbase->lastErrno() != IUS_DB2::OK  &&
+        dbase->lastErrno() != IUS_DB2::NOROWS )
    {
-      error = dbase->lastError();
+      error = QObject::tr( "The projects could not be listed: %1" )
+              .arg( dbase->lastError() );
       return list;
    }
 
@@ -356,11 +366,16 @@ QList< US_DataPubCatalog::Project > US_DataPubCatalog::projectsDb(
       query << "get_project_info" << project.id;
       dbase->query( query );
 
-      if ( dbase->next() )
+      if ( dbase->lastErrno() != IUS_DB2::OK  ||  ! dbase->next() )
       {
-         project.guid        = dbase->value(  1 ).toString();
-         project.description = dbase->value( 10 ).toString();
+         error = QObject::tr( "The project %1 could not be read: %2" )
+                 .arg( project.id ).arg( dbase->lastError() );
+         list.clear();
+         return list;
       }
+
+      project.guid        = dbase->value(  1 ).toString();
+      project.description = dbase->value( 10 ).toString();
 
       list << project;
    }
@@ -500,13 +515,6 @@ bool US_DataPubCatalog::loadRunDetails( Run& run, QString& error )
    if ( ! cat->loadRunDetail( index, error ) )  return false;
 
    run = cat->run( index );
-
-   if ( run.raws.isEmpty() )
-   {
-      error = QObject::tr( "No raw data was found for run \"%1\"" )
-              .arg( run.runID );
-      return false;
-   }
 
    error.clear();
 
@@ -654,10 +662,26 @@ bool US_DataPubCatalog::expInfo( const Run& run, ExpInfo& info,
       return false;
    }
 
+   // A query that failed is an error; one that found nothing is for the
+   // caller to judge
+   auto failed = [ this, &error, &run ]( const QString& what )
+   {
+      int status = dbase->lastErrno();
+
+      if ( status == IUS_DB2::OK  ||  status == IUS_DB2::NOROWS )
+         return false;
+
+      error = QObject::tr( "The %1 of run %2 could not be read: %3" )
+              .arg( what ).arg( run.runID ).arg( dbase->lastError() );
+      return true;
+   };
+
    QString     invID = QString::number( inv_id );
    QStringList query;
    query << "get_experiment_info_by_runID" << run.runID << invID;
    dbase->query( query );
+
+   if ( failed( QObject::tr( "experiment" ) ) )  return false;
 
    if ( ! dbase->next() )
    {
@@ -680,6 +704,8 @@ bool US_DataPubCatalog::expInfo( const Run& run, ExpInfo& info,
    query << "get_project_info" << info.projectID;
    dbase->query( query );
 
+   if ( failed( QObject::tr( "project" ) ) )  return false;
+
    if ( dbase->next() )
    {
       info.projectGUID = dbase->value(  1 ).toString();
@@ -689,6 +715,8 @@ bool US_DataPubCatalog::expInfo( const Run& run, ExpInfo& info,
    query.clear();
    query << "get_rotor_info" << info.rotorID;
    dbase->query( query );
+
+   if ( failed( QObject::tr( "rotor" ) ) )  return false;
 
    if ( dbase->next() )
    {
@@ -703,6 +731,8 @@ bool US_DataPubCatalog::expInfo( const Run& run, ExpInfo& info,
       query << "get_rotor_calibration_profiles" << info.rotorID;
       dbase->query( query );
 
+      if ( failed( QObject::tr( "rotor calibration" ) ) )  return false;
+
       if ( dbase->next() )
          info.calibrationID = dbase->value( 0 ).toString();
    }
@@ -711,9 +741,12 @@ bool US_DataPubCatalog::expInfo( const Run& run, ExpInfo& info,
    query << "all_cell_experiments" << info.expID;
    dbase->query( query );
 
+   if ( failed( QObject::tr( "cell assignments" ) ) )  return false;
+
+   const QString letters = US_Util::channel_letters();
+
    while ( dbase->next() )
    {
-      QString letters( "SABCDEFGH" );
       QString cell  = dbase->value( 2 ).toString();
       int     chanx = qMax( 0, dbase->value( 3 ).toInt() );
       chanx         = qMin( chanx, letters.size() - 1 );
@@ -728,15 +761,13 @@ bool US_DataPubCatalog::expInfo( const Run& run, ExpInfo& info,
                                         cpID );
    }
 
-   query.clear();
-   query << "get_solutionIDs" << info.expID;
-   dbase->query( query );
-
-   while ( dbase->next() )
+   // The solutions are those of the triples the run brings, not every
+   // solution ever associated with the experiment
+   for ( int ii = 0; ii < run.raws.size(); ii++ )
    {
-      QString solID = dbase->value( 0 ).toString();
+      QString solID = run.raws[ ii ].solutionID;
 
-      if ( ! solID.isEmpty()  &&  ! info.solutionIDs.contains( solID ) )
+      if ( solID.toInt() > 0  &&  ! info.solutionIDs.contains( solID ) )
          info.solutionIDs << solID;
    }
 
@@ -747,10 +778,16 @@ bool US_DataPubCatalog::expInfo( const Run& run, ExpInfo& info,
 
 // -------------------------------------------------------------- time state
 
-bool US_DataPubCatalog::timeState( const Run& run, const QString& workDir,
-                                   QString& tmstPath, QString& xdefPath )
+US_DataPubCatalog::TimeStateStatus US_DataPubCatalog::timeState(
+      const Run& run, const QString& workDir, bool fetch,
+      QString& tmstPath, QString& xdefPath, QString& tmstID, QString& error )
 {
    QString base = run.runID + ".time_state.tmst";
+
+   tmstPath.clear();
+   xdefPath.clear();
+   tmstID = QString( "-1" );
+   error.clear();
 
    if ( ! from_db )
    {
@@ -760,42 +797,98 @@ bool US_DataPubCatalog::timeState( const Run& run, const QString& workDir,
       tmstPath = dirPath + "/" + base;
       xdefPath = US_DataPub::timeStateDefs( tmstPath );
 
-      return QFile( tmstPath ).exists();
+      if ( ! QFile::exists( tmstPath ) )  return TimeStateNone;
+
+      if ( ! QFile::exists( xdefPath ) )
+      {
+         error = QObject::tr( "The time state of run %1 has no field"
+                              " definitions file (%2), so it cannot be read;"
+                              " leave the time state out to export the run"
+                              " without it" )
+                 .arg( run.runID ).arg( QFileInfo( xdefPath ).fileName() );
+         return TimeStateFailed;
+      }
+
+      return TimeStateFound;
    }
 
-   if ( dbase == nullptr )  return false;
+   if ( dbase == nullptr )
+   {
+      error = QObject::tr( "No database connection" );
+      return TimeStateFailed;
+   }
 
-   int       tmstID = 0;
-   int       expID  = run.id.toInt();
-   QString   fname  = base;
+   int       tmstDbID = 0;
+   int       expID    = run.id.toInt();
+   QString   fname    = base;
    QString   xdefs;
    QString   cksum;
    QDateTime updated;
 
-   US_TimeState::dbExamine( dbase, &tmstID, &expID, &fname, &xdefs, &cksum,
-                            &updated );
+   int status = US_TimeState::dbExamine( dbase, &tmstDbID, &expID, &fname,
+                                         &xdefs, &cksum, &updated );
 
-   if ( tmstID <= 0 )  return false;
+   if ( status == IUS_DB2::NOROWS )  return TimeStateNone;
 
-   if ( fname.isEmpty() )  fname = base;
+   if ( status != IUS_DB2::OK  ||  tmstDbID <= 0 )
+   {
+      error = QObject::tr( "The time state of run %1 could not be looked up"
+                           " (status %2): %3" )
+              .arg( run.runID ).arg( status ).arg( dbase->lastError() );
+      return TimeStateFailed;
+   }
 
-   QDir().mkpath( workDir );
+   tmstID = QString::number( tmstDbID );
+
+   if ( xdefs.trimmed().isEmpty() )
+   {
+      error = QObject::tr( "The time state of run %1 has no field"
+                           " definitions in the database, so it cannot be"
+                           " read; leave the time state out to export the"
+                           " run without it" ).arg( run.runID );
+      return TimeStateFailed;
+   }
+
+   // The record keeps its own file name, but nothing in a bundle may name
+   // a path; only the base name of a usable one is kept
+   fname = QFileInfo( fname ).fileName();
+
+   if ( ! US_DataPub::isSafeFileName( fname )  ||  ! fname.endsWith( ".tmst" ) )
+      fname = base;
 
    tmstPath = workDir + "/" + fname;
    xdefPath = US_DataPub::timeStateDefs( tmstPath );
 
-   if ( US_TimeState::dbDownload( dbase, tmstID, tmstPath ) != US_DB2::OK )
-      return false;
+   if ( ! fetch )  return TimeStateFound;
 
-   QFile xfile( xdefPath );
-
-   if ( xfile.open( QIODevice::WriteOnly | QIODevice::Text ) )
+   if ( ! QDir().mkpath( workDir ) )
    {
-      QTextStream ts( &xfile );
-      ts << xdefs;
-      ts.flush();
-      xfile.close();
+      error = QObject::tr( "Cannot create the work directory %1" )
+              .arg( workDir );
+      return TimeStateFailed;
    }
 
-   return QFile( tmstPath ).exists();
+   status = US_TimeState::dbDownload( dbase, tmstDbID, tmstPath );
+
+   if ( status != IUS_DB2::OK  ||  ! QFile::exists( tmstPath ) )
+   {
+      error = QObject::tr( "The time state of run %1 could not be downloaded"
+                           " (status %2): %3" )
+              .arg( run.runID ).arg( status ).arg( dbase->lastError() );
+      return TimeStateFailed;
+   }
+
+   QSaveFile  xfile( xdefPath );
+   QByteArray bytes = xdefs.toUtf8();
+
+   if ( ! xfile.open( QIODevice::WriteOnly )  ||
+        xfile.write( bytes ) != bytes.size()  ||  ! xfile.commit() )
+   {
+      error = QObject::tr( "The field definitions of the time state of run %1"
+                           " could not be written to %2" )
+              .arg( run.runID ).arg( xdefPath );
+      return TimeStateFailed;
+   }
+
+   return TimeStateFound;
 }

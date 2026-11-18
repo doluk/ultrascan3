@@ -414,17 +414,15 @@ TEST_F( DataPubDb, ABundleIsExportedFromTheDatabase )
    selection.scope      = US_DataPub::ScopeEdits;
    selection.runIDs << chosen;
 
+   // An export that fails is a failure of this test, whatever the reason:
+   // a run the catalog lists with raw data has to be exportable
    bool made = exporter.exportBundle( selection, bundle, error );
 
-   if ( ! made )
-   {
-      // The fixture may not carry the hardware an experiment record needs.
-      // That is about the data, not about which procedures the server has,
-      // so say so rather than failing.
-      QDir( root ).removeRecursively();
-      GTEST_SKIP() << "this database cannot export " << chosen.toStdString()
-                   << ": " << error.toStdString();
-   }
+   if ( ! made )  QDir( root ).removeRecursively();
+
+   ASSERT_TRUE( made ) << "this database cannot export "
+                       << chosen.toStdString() << ": "
+                       << error.toStdString();
 
    EXPECT_TRUE( QFile::exists( bundle ) );
    EXPECT_GT  ( QFileInfo( bundle ).size(), 0 );
@@ -581,12 +579,10 @@ TEST_F( DataPubDb, TheExportedTimeStateCarriesItsDefinitions )
 
    bool made = exporter.exportBundle( selection, bundle, error );
 
-   if ( ! made )
-   {  // The fixture may not carry the hardware an experiment record needs
-      QString why = error;
-      QDir( root ).removeRecursively();
-      GTEST_SKIP() << "the run could not be exported: " << why.toStdString();
-   }
+   if ( ! made )  QDir( root ).removeRecursively();
+
+   ASSERT_TRUE( made ) << "the run could not be exported: "
+                       << error.toStdString();
 
    QList< US_DataPubEntity > states =
       exporter.manifest().section( US_DataPub::TimeState );
