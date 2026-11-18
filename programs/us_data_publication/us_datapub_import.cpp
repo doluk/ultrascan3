@@ -144,17 +144,7 @@ bool US_DataPubImporter::runIdIsUsable( const QString& runID )
 
 QString US_DataPubImporter::resolutionText( US_DataPub::Resolution resolution )
 {
-   switch ( resolution )
-   {
-      case US_DataPub::ResolvedSubstituted:
-         return tr( "substituted" );
-
-      case US_DataPub::ResolvedOmitted:
-         return tr( "not imported" );
-
-      default:
-         return US_DataPub::resolutionText( resolution );
-   }
+   return US_DataPub::resolutionText( resolution );
 }
 
 // ------------------------------------------------------------ small helpers

@@ -221,8 +221,13 @@ QString US_DataPub::resolutionText( US_DataPub::Resolution resolution )
       case US_DataPub::ResolvedReused:   return QObject::tr( "reused"  );
       case US_DataPub::ResolvedRenamed:  return QObject::tr( "renamed" );
       case US_DataPub::ResolvedSkipped:  return QObject::tr( "skipped" );
-      default:                           return QObject::tr( "failed"  );
+      case US_DataPub::ResolvedSubstituted:
+                                         return QObject::tr( "substituted" );
+      case US_DataPub::ResolvedOmitted:  return QObject::tr( "not imported" );
+      case US_DataPub::ResolvedFailed:   return QObject::tr( "failed"  );
    }
+
+   return QObject::tr( "failed" );
 }
 
 // ------------------------------------------------------------ path safety

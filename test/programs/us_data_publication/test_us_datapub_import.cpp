@@ -1162,7 +1162,7 @@ TEST_F( DataPubImport, ADiskImportCarriesNoSourceIds )
 
 // ------------------------------------------------------ the command line
 
-class DataPubCli : public DataPubImport
+class DataPubCliImport : public DataPubImport
 {
    protected:
       int run( const QStringList& args )
@@ -1172,12 +1172,12 @@ class DataPubCli : public DataPubImport
       }
 };
 
-TEST_F( DataPubCli, ImportNeedsABundle )
+TEST_F( DataPubCliImport, ImportNeedsABundle )
 {
    EXPECT_EQ( run( QStringList() << "--mode" << "import" ), 2 );
 }
 
-TEST_F( DataPubCli, ImportRefusesAnUnknownTargetOrPolicy )
+TEST_F( DataPubCliImport, ImportRefusesAnUnknownTargetOrPolicy )
 {
    EXPECT_EQ( run( QStringList() << "--mode" << "import" << "--bundle"
                    << bundlePath << "--target" << "cloud" ), 2 );
@@ -1191,7 +1191,7 @@ TEST_F( DataPubCli, ImportRefusesAnUnknownTargetOrPolicy )
    EXPECT_EQ( filesIn( targetDir ), 0 );
 }
 
-TEST_F( DataPubCli, ADatabaseImportWithoutAPasswordStopsEarly )
+TEST_F( DataPubCliImport, ADatabaseImportWithoutAPasswordStopsEarly )
 {
    QByteArray saved = qgetenv( "US3_DB_PASSWORD" );
    qunsetenv( "US3_DB_PASSWORD" );
@@ -1203,7 +1203,7 @@ TEST_F( DataPubCli, ADatabaseImportWithoutAPasswordStopsEarly )
    if ( ! saved.isEmpty() )  qputenv( "US3_DB_PASSWORD", saved );
 }
 
-TEST_F( DataPubCli, ADiskImportSucceedsAndAFailedOneSaysSo )
+TEST_F( DataPubCliImport, ADiskImportSucceedsAndAFailedOneSaysSo )
 {
    EXPECT_EQ( run( QStringList() << "--mode" << "import" << "--bundle"
                    << bundlePath << "--target" << "disk" << "--output-dir"

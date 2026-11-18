@@ -525,3 +525,13 @@ TEST( DataPubManifest, ParseRejectsUnknownSection )
                                 error ) );
    EXPECT_TRUE ( error.contains( "nonsense" ) ) << error.toStdString();
 }
+
+TEST( DataPubDefs, EveryResolutionHasItsOwnText )
+{
+   EXPECT_EQ( US_DataPub::resolutionText( US_DataPub::ResolvedSubstituted ),
+              QString( "substituted" ) );
+   EXPECT_EQ( US_DataPub::resolutionText( US_DataPub::ResolvedOmitted ),
+              QString( "not imported" ) );
+   EXPECT_EQ( US_DataPub::resolutionText( US_DataPub::ResolvedFailed ),
+              QString( "failed" ) );
+}
