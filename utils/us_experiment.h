@@ -104,12 +104,22 @@ class US_UTIL_EXTERN US_Experiment
           A missing optional RI intensity profile leaves RIProfile empty and
           does not prevent speed-step loading or turn success into DBERROR.
 
+          For RI data the profile the database holds is also copied to
+          resultDir/runID/runID.RIProfile.xml when no copy is there, unless
+          \p cacheRIProfile is false; a caller that only reads the record --
+          to export it, say -- passes false so that nothing is written into
+          the user's results directory.
+
           \param runID  The run ID of the experiment.
           \param    db For database access, an open database connection
           \param    speedsteps Reference to vector of experiment speed steps
+          \param    invid_p The investigator ID, or empty for the selected one
+          \param    cacheRIProfile False to leave the local results directory
+                    untouched
           \returns  One of the IUS_DB2 error codes
       */
-      int readFromDB( QString, IUS_DB2*, QVector<SP_SPEEDPROFILE>&, const QString = QString( "" ) );
+      int readFromDB( QString, IUS_DB2*, QVector<SP_SPEEDPROFILE>&, const QString = QString( "" ),
+                      bool cacheRIProfile = true );
 
       /*! \brief    Writes an xml file
 
