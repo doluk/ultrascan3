@@ -15,12 +15,21 @@
 // Main constructor with flags for edit, latest-edit and local-data
 
 US_SelectRuns::US_SelectRuns( bool dbase, QStringList& runIDs )
+ : US_SelectRuns( dbase, runIDs, QStringList() )
+{
+}
+
+// Constructor that offers only the runs of a given list.  The filter is in
+// place before the first listing, so the source is listed once.
+
+US_SelectRuns::US_SelectRuns( bool dbase, QStringList& runIDs,
+                              const QStringList& allowed )
  : US_WidgetsDialog( nullptr, Qt::WindowFlags() ), runIDs( runIDs )
 {
    sel_db        = dbase;
+   runFilter     = allowed;
 
-   setWindowTitle( tr( "Select Run(s) as Models Pre-Filter (%1)" )
-         .arg( sel_db ? "DB" : "Local" ) );
+   set_title();
    setPalette    ( US_GuiSettings::frameColor() );
    setMinimumSize( 480, 300 );
 
@@ -105,20 +114,25 @@ US_SelectRuns::US_SelectRuns( bool dbase, QStringList& runIDs )
    resize( 720, 360 );
 }
 
-// Alternate constructor that offers only the runs of a given list
-
-US_SelectRuns::US_SelectRuns( bool dbase, QStringList& runIDs,
-                              const QStringList& allowed )
- : US_SelectRuns( dbase, runIDs )
+// The title says which source is listed, and whether it is filtered
+void US_SelectRuns::set_title( void )
 {
-   runFilter     = allowed;
+   if ( runFilter.isEmpty() )
+      setWindowTitle( tr( "Select Run(s) as Models Pre-Filter (%1)" )
+            .arg( sel_db ? "DB" : "Local" ) );
+   else
+      setWindowTitle( tr( "Select Run(s) as Models Pre-Filter (%1, filtered)" )
+            .arg( sel_db ? "DB" : "Local" ) );
+}
 
-   if ( runFilter.isEmpty() )  return;
+QStringList US_SelectRuns::offeredRuns( void ) const
+{
+   return rlabels;
+}
 
-   setWindowTitle( tr( "Select Run(s) as Models Pre-Filter (%1, filtered)" )
-         .arg( sel_db ? "DB" : "Local" ) );
-
-   list_data();
+bool US_SelectRuns::isFiltered( void ) const
+{
+   return ! runFilter.isEmpty();
 }
 
 void US_SelectRuns::search( const QString& search_string )
@@ -471,6 +485,10 @@ void US_SelectRuns::update_person( int ID )
    QString number = ( ID > 0 ) ? QString::number( ID ) + ": " : "";
    le_invest->setText( number + US_Settings::us_inv_name() );
 
+   // The caller chose the runs to offer from the person selected before
+   runFilter.clear();
+   set_title();
+
    list_data();
 }
 
@@ -480,21 +498,13 @@ void US_SelectRuns::update_disk_db( bool isDB )
    emit dkdb_changed( isDB );
 
    sel_db         = isDB;
-   runmap .clear();
-   rlabels.clear();
 
-   if ( isDB )                // Scan database
-   {
-      scan_dbase_run();
-      setWindowTitle( tr( "Select Run(s) as Models Pre-Filter (DB)" ) );
-   }
-   else                       // Scan local disk data
-   {
-      scan_local_run();
-      setWindowTitle( tr( "Select Run(s) as Models Pre-Filter (Local)" ) );
-   }
+   // The caller chose the runs to offer from the other source, so they say
+   // nothing about this one: every run of the new source is offered
+   runFilter.clear();
+   set_title();
 
-   list_data();
+   list_data();               // which scans the source
 
    QString sfilt    = le_dfilter->text();
    if ( ! sfilt.isEmpty() )
