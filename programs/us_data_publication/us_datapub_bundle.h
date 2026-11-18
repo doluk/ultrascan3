@@ -39,21 +39,48 @@ class US_DataPubBundle
       //! \param relativePath The bundle-relative path of the payload
       QString stagedPath( const QString& relativePath );
 
-      //! \brief Pack the staging directory into an archive
-      //!
-      //! The archive is built under a temporary name and moved into place,
-      //! so that a name with extra dots in it still produces a valid
-      //! \c .tar.gz, and so that a failed pack leaves no partial file.
-      //! \param archivePath The full path of the .tar.gz to write
-      //! \param error       Filled in with a message when packing fails
-      //! \returns True when the archive was written
+      /*! \brief A scratch directory that goes with the staging directory
+
+          It lies beside the staged tree, not inside it, so whatever is put
+          there -- a downloaded time state, a packing work file -- can never
+          end up in the bundle.  It is removed with the staging directory.
+      */
+      QString workPath( void ) const;
+
+      /*! \brief Pack the staging directory into an archive
+
+          The archive is built in the work directory, read back and
+          compared with the staged files -- every file, with its size --
+          and only then written to \a archivePath through a QSaveFile, so
+          that an existing file of that name is replaced atomically and a
+          failed pack leaves it untouched.  A staged hidden file or
+          symbolic link is refused rather than silently left out.
+          \param archivePath The full path of the .tar.gz to write
+          \param error       Filled in with a message when packing fails
+          \returns True when the archive was written and verified
+      */
       bool    pack( const QString& archivePath, QString& error );
 
-      //! \brief Unpack an archive into a private staging directory
-      //! \param archivePath The full path of the .tar.gz to read
-      //! \param error       Filled in with a message when unpacking fails
-      //! \returns True when the archive was unpacked
+      /*! \brief Unpack an archive into a private staging directory
+
+          The unpacked tree is checked afterwards: a bundle that put
+          anything outside the staging directory, or holds a symbolic link,
+          is refused.
+          \param archivePath The full path of the .tar.gz to read
+          \param error       Filled in with a message when unpacking fails
+          \returns True when the archive was unpacked
+      */
       bool    unpack( const QString& archivePath, QString& error );
+
+      /*! \brief The bundle-relative paths and sizes of the files in a tree
+          \param dir   The root of the tree
+          \param files Filled in with path -> size, for every regular file
+          \param error Filled in when the tree holds a symbolic link, or
+                       something that is neither a file nor a directory
+          \returns True when the tree could be listed
+      */
+      static bool listTree( const QString& dir, QMap< QString, qint64 >& files,
+                            QString& error );
 
       //! \brief The directory holding the manifest of an unpacked bundle
       //!
@@ -71,9 +98,13 @@ class US_DataPubBundle
       void    cleanup( void );
 
    private:
-      QString staging;
+      QString base;       //!< The private directory holding the two below
+      QString staging;    //!< The bundle tree
+      QString work;       //!< Scratch space beside it
       QString root;
       bool    keep;
+
+      bool    verifyEscapes( QString& error ) const;
 
       static bool removeTree( const QString& path );
 };
