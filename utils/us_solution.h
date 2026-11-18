@@ -160,8 +160,11 @@ class US_UTIL_EXTERN US_Solution
       //!                protocols could not be read
       int countInProtocols   ( IUS_DB2* = 0 );
 
-      //! \brief An overloaded assignment operator
-      US_Solution&           operator=( const US_Solution& );
+      //! \brief Copies every member.  The assignment used to be written
+      //!        out by hand, member by member, which left the copy
+      //!        constructor implicit and deprecated; both are the defaults.
+      US_Solution( const US_Solution& )            = default;
+      US_Solution& operator=( const US_Solution& ) = default;
 
       //! \brief Displays the contents of the class variables in qDebug() statements
       void show              ( void );

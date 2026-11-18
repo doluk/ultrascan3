@@ -860,31 +860,6 @@ bool US_Solution::AnalyteInfo::operator==( const AnalyteInfo& rhs ) const
    return true;
 }
 
-US_Solution& US_Solution::operator=( const US_Solution& rhs )
-{
-   if ( this != &rhs )            // guard against self assignment
-   {
-      clear();
-
-      solutionID    = rhs.solutionID;
-      solutionGUID  = rhs.solutionGUID;
-      solutionDesc  = rhs.solutionDesc;
-      buffer        = rhs.buffer;
-      commonVbar20  = rhs.commonVbar20;
-      storageTemp   = rhs.storageTemp;
-      notes         = rhs.notes;
-      saveStatus    = rhs.saveStatus;
-      extinction              = rhs.extinction;
-      replace_spectrum        = rhs.replace_spectrum;
-      new_or_changed_spectrum = rhs.new_or_changed_spectrum;
-
-      for (const auto & i : rhs.analyteInfo)
-         analyteInfo      << i;
-   }
-
-   return *this;
-}
-
 void US_Solution::clear( void )
 {
    replace_spectrum = false;

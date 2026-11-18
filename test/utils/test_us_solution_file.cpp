@@ -104,3 +104,36 @@ TEST_F( TestUSSolutionFile, ABrokenFileLeavesTheSolutionAsItWas )
               IUS_DB2::OK );
    EXPECT_EQ( held.solutionGUID, heldGUID );
 }
+
+// Copies carry every member, by construction and by assignment
+TEST_F( TestUSSolutionFile, CopiesCarryEveryMember )
+{
+   US_Solution original;
+   original.solutionID   = 9;
+   original.solutionGUID = "guid-9";
+   original.solutionDesc = "nine";
+   original.notes        = "notes";
+   original.storageTemp  = 4.0;
+   original.saveStatus   = US_Solution::BOTH;
+   original.extinction[ 280.0 ] = 1.5;
+   US_Solution::AnalyteInfo info;
+   info.amount = 2.0;
+   info.analyte.analyteGUID = "an-1";
+   original.analyteInfo << info;
+
+   US_Solution built( original );
+   US_Solution assigned;
+   assigned.analyteInfo << info << info;      // replaced, not appended to
+   assigned = original;
+
+   for ( const US_Solution* copy : { &built, &assigned } )
+   {
+      EXPECT_EQ( copy->solutionID,   9 );
+      EXPECT_EQ( copy->solutionGUID, QString( "guid-9" ) );
+      EXPECT_EQ( copy->notes,        QString( "notes" ) );
+      EXPECT_EQ( copy->saveStatus,   US_Solution::BOTH );
+      EXPECT_EQ( copy->extinction.value( 280.0 ), 1.5 );
+      ASSERT_EQ( copy->analyteInfo.size(), 1 );
+      EXPECT_EQ( copy->analyteInfo[ 0 ].analyte.analyteGUID, QString( "an-1" ) );
+   }
+}
