@@ -426,12 +426,20 @@ bool US_Buffer::writeToDisk( const QString& filename ) const
                                 QString::number( compressibility, 'e', 4 ) );
    xml.writeAttribute( "manual"     , US_Util::bool_string( manual ) );
 
-   for ( int i = 0; i < component.size(); i++ )
+   // A buffer read from disk has its component IDs and no component
+   // details, and one built from the components may have only those, so
+   // the components are counted by whichever of the two is filled.
+   const int ncomp = qMax( componentIDs.size(), component.size() );
+
+   for ( int i = 0; i < ncomp; i++ )
    {
+      const QString id = ( i < componentIDs.size() ) ? componentIDs[ i ]
+                                                     : component[ i ].componentID;
+      const double  cc = ( i < concentration.size() ) ? concentration[ i ] : 0.0;
+
       xml.writeStartElement( "component" );
-      xml.writeAttribute( "id"           , componentIDs[ i ] );
-      xml.writeAttribute( "concentration", 
-            QString::number( concentration[ i ], 'f', 5 ) );
+      xml.writeAttribute( "id"           , id );
+      xml.writeAttribute( "concentration", QString::number( cc, 'f', 5 ) );
       xml.writeEndElement(); // component
    }
 

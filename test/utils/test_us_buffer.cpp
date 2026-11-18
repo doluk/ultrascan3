@@ -146,3 +146,37 @@ TEST_F( US_BufferTest, EmptySpectrumDoesNotReadNonexistentColumns )
    buffer.getSpectrum( &db, "Extinction" );
    EXPECT_TRUE( buffer.extinction.isEmpty() );
 }
+
+// A buffer read from disk has its component IDs and concentrations but no
+// component details.  Written back, it must keep its components: the write
+// used to count them by the (empty) detail list.
+TEST( US_BufferDiskRoundTrip, AReadBufferIsWrittenBackWithItsComponents )
+{
+   QTemporaryDir dir;
+   ASSERT_TRUE( dir.isValid() );
+
+   US_Buffer original;
+   original.GUID        = "aaaaaaaa-1111-2222-3333-444444444444";
+   original.description = "two components";
+   original.componentIDs  << "12" << "34";
+   original.concentration << 0.5  << 0.25;
+   ASSERT_TRUE( original.component.isEmpty() );
+
+   const QString first = dir.path() + "/B0000001.xml";
+   ASSERT_TRUE( original.writeToDisk( first ) );
+
+   US_Buffer read;
+   ASSERT_TRUE( read.readFromDisk( first ) );
+   ASSERT_EQ  ( read.componentIDs, QStringList() << "12" << "34" );
+   EXPECT_TRUE( read.component.isEmpty() );
+
+   const QString second = dir.path() + "/B0000002.xml";
+   ASSERT_TRUE( read.writeToDisk( second ) );
+
+   US_Buffer again;
+   ASSERT_TRUE( again.readFromDisk( second ) );
+   EXPECT_EQ  ( again.componentIDs, QStringList() << "12" << "34" );
+   ASSERT_EQ  ( again.concentration.size(), 2 );
+   EXPECT_DOUBLE_EQ( again.concentration[ 0 ], 0.5 );
+   EXPECT_DOUBLE_EQ( again.concentration[ 1 ], 0.25 );
+}
