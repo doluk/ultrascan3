@@ -72,6 +72,7 @@ class US_DataPubCLI : public QObject
             bool                     nonInteractive;
             bool                     verify;
             bool                     listOnly;
+            bool                     strictHardware;
             bool                     help;
             bool                     version;
       };

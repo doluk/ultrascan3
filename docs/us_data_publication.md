@@ -93,7 +93,8 @@ rules compare. `runID` is the name of an experiment, not an ID — a run called
 `Demo_2024_Run3` is named, not numbered.
 
 Numeric IDs are never carried over on import. The database allocates its own,
-and a local disk store does not use them at all.
+and a record written to a local disk store carries `-1` (see
+[Import](#import)).
 
 ---
 
@@ -197,7 +198,8 @@ Header keys:
 Every entry carries a `payload` and a `sha256`. **The digest is the digest of
 the payload file**, not of the record's properties, so a bundle can be verified
 the way any downloaded file is verified. An import checks every digest before
-it writes anything, and refuses a bundle whose payloads do not match.
+it writes anything, and refuses a bundle whose payloads do not match or carry
+no digest.
 
 A section that was in scope but has nothing in it is written as `[]`, so a
 reader can tell "exported and empty" from "not exported at all".
@@ -335,15 +337,71 @@ which. The database connection is the one already configured in UltraScan.
 **Nothing in the target is ever overwritten.** A record that is already there
 is either pointed at or imported again under a new name.
 
+### What is checked before anything is written
+
+A bundle is data from another installation — or from anyone — so it is
+checked as a whole first, and refused as a whole when any check fails:
+
+* **Paths.** Every `payload` and every time state's `definitionsPayload` has to
+  be a relative path inside the bundle: no leading `/`, no `..`, no
+  backslash, and no symbolic link that leads out of it.
+* **Run IDs and file names.** Every run ID — the bundle's, a renamed one, one
+  typed into the conflict dialog — has to be a usable run ID: letters, digits,
+  `_` and `-`, at most 80 characters (the rule `US_ConvertIO` applies to run
+  directories). Every raw data, edit and time state file name has to be a
+  plain file name that starts with its run ID.
+* **Digests.** Every payload, and every time state's field definitions, has to
+  match its digest. A payload without a digest fails the check too;
+  `--no-verify` (or unchecking **Verify payload digests**) is the only way to
+  import such a bundle.
+* **Contents.** Every payload has to parse as the record type the manifest
+  gives it, and has to carry the GUID the manifest gives it — including the
+  `rawGUID` inside an `.auc` file and the `editGUID` and `rawDataGUID` inside an
+  edit. The library writers update a record by the GUID inside its payload, so
+  a payload naming another record could otherwise overwrite that one.
+* **Dependencies.** Every buffer and analyte a solution names, and the model a
+  noise record names, has to be in the bundle or already in the target.
+* **The chosen project** (below) has to exist in the target, and in a database
+  belong to the current investigator.
+
+### One transaction in a database
+
+A database import runs in a single transaction on one connection. It is
+committed once every record is in, and rolled back on any failure, so a failed
+import leaves the database as it was. That holds within what a MySQL
+transaction can promise: the tables written are InnoDB, and no stored procedure
+commits by itself.
+
+Raw data and edits are written the way the rest of UltraScan writes them, with
+`US_ConvertIO`: `writeRawDataToDB()` for a run's raw data rows and blobs, its
+cell rows and its experiment-solution links, and `findRawDataId()`,
+`createEditedData()` and `uploadEditedDataBlob()` for the edits. A run's speed
+profile is read from its experiment XML and stored with the run.
+
+A database import writes nothing into the local disk store. Several library
+writers keep a local copy of what they store (`US_Project::saveToDB()`,
+`US_Solution::saveToDB()`, `US_Model::write()`, `US_Experiment::saveToDB()`,
+`US_Rotor::readLabsDB()`), so the import writes those records with the same
+stored procedures but without the copy. Its only files are work copies in the
+bundle's own staging directory, removed with it.
+
+A disk import writes files as it goes. When it fails part way, the files it
+already wrote stay, and the error lists them.
+
+A **dry run** reads the target and decides everything, but opens no
+transaction and writes nothing — not even the output directory.
+
 ### Which project the data lands in
 
 A bundle names the project its runs came from, but that is the *exporting*
 installation's project. **Import into Project…** (or `--project-guid`) files
 the data under a project this installation already has: every run is attached
 to it, and the bundle's own project record — when it carries one — is reused
-rather than created. The project has to exist in the target already; being
-told which project to use only means something if it is really there, so an
-unknown one stops the import rather than being created.
+rather than created. The project has to exist in the target already, and in a
+database it has to be one of the current investigator's; an unknown or foreign
+one stops the import rather than being created. Switching the target between
+disk and database clears the choice, since it was made from the other target's
+list.
 
 Left empty, the bundle decides as before: its project record is imported when
 it carries one, and otherwise each run is attached to the project its own
@@ -355,26 +413,51 @@ target does not have it.
 For every record in the manifest, in dependency order:
 
 1. **Same GUID already in the target** → that is the same record. It is reused,
-   and everything that depends on it is pointed at it.
+   and everything that depends on it is pointed at it. This includes a run: the
+   database has no lookup of an experiment by GUID, so the import reads the
+   investigator's experiments once and matches their GUIDs, whatever run ID
+   the run went by.
 2. **Name free** → the record is created, keeping its GUID from the bundle. A
    database allocates a fresh ID.
 3. **Name taken by a record with a different GUID** → the properties of the two
-   are compared. The comparison re-serializes the record already in the target
-   in the same canonical form the bundle uses and drops the volatile keys —
-   anything ending in `ID`, anything containing `guid`, and the time stamps —
-   so that two copies of the same record made in different installations
-   compare equal.
+   are compared. The bundle's copy is first rewritten to name the target's
+   records (below), and both are re-serialized in a canonical form without the
+   keys a copied record legitimately differs in: its own GUID, numeric record
+   IDs and time stamps — an explicit list, so a property such as `solid` and
+   the GUID of a parent record still count. A record the target holds without
+   a GUID is never taken for the bundle's.
    - **Properties match** → the policy decides: `reuse` points at the existing
      record, `rename` imports a renamed copy, `fail` stops the import.
    - **Properties differ** → the record is always imported under a new name.
      Reusing a record that differs would silently change what the imported data
      means, so `reuse` is not offered. `fail` still stops the import.
+   - A run of the same ID and another GUID is another run; it is always
+     renamed.
 
-Renaming changes the name inside the payload and nothing else; the GUID is
-untouched, so the record's dependants follow it. Auto-generated names are
-`<name> (imported)`, then `<name> (imported 2)`, and so on until one is free.
-A run is renamed `<runID>-imported`, and its raw data, edit and time state
-files are renamed to match.
+A run that is already in the database is not added to: when its raw data is
+not there too, the import stops rather than attach data to a run it did not
+create.
+
+Renaming changes the name inside the payload; the GUID is untouched, so the
+record's dependants follow it. Auto-generated names are `<name> (imported)`,
+then `<name> (imported 2)`, and so on until one is free. A run is renamed
+`<runID>-imported` (the suffix with anything a run ID cannot hold replaced by
+`_`), and everything that carries the run ID follows it: the raw data, edit
+and time state file names, the `runid` inside each edit, and the descriptions
+of models and noise records named after the run.
+
+### Pointing records at the target's records
+
+When a record was matched to a target record of another GUID, every payload
+that names it is rewritten to name the target's: a solution's buffer and
+analytes, a model's edit (and the analytes of its components), a noise
+record's model, an edit's raw data, and in a run's experiment XML its project,
+solutions, centerpieces and rotor calibration.
+
+Numeric IDs are never carried over. A database allocates its own. In a disk
+store a record the import writes carries the ID `-1`, and a reference names the
+ID the target's record has, or `-1`. A rotor calibration written to disk names
+the target's rotor of the same GUID, or none.
 
 ### Order of replay
 
@@ -384,11 +467,13 @@ them in the order the target's own dependencies require:
 * **Database:** project, rotor calibration, centerpiece, buffers, analytes,
   experiment, solutions, raw data, time state, edits, models, noise. The
   experiment goes in before the solutions because a database allocates the
-  experiment ID a new solution record is first associated with.
+  experiment ID a new solution record is associated with — always the run the
+  bundle says the solution belongs to.
 * **Disk store:** project, rotor calibration, centerpiece, buffers, analytes,
   solutions, experiment, raw data, time state, edits, models, noise. The
   solutions go in first because the run's experiment XML names them, and that
   file is rewritten as it is written out to name the records of the target.
+  An experiment XML that cannot be rewritten stops the import.
 
 ### A bundle without a project
 
@@ -400,29 +485,44 @@ with `--no-project` still has to land somewhere:
 * When it is not, a project record is created from what the run itself names
   (GUID and description), and the log says so.
 
-Importing to a disk store needs none of that: the run's experiment XML keeps
-its project reference untouched, exactly as an installation that received the
-data without the project would have it.
+Importing to a disk store keeps the run's project GUID and description; the
+project ID becomes the target's ID for that project, or `-1` when the target
+does not have it.
 
-### Reference data the import does not create
+### Hardware: matched, substituted or left out
 
-* **Centerpieces** are the reference table an installation ships with, not user
-  data. The import matches the bundle's centerpiece against the target's table
-  and remaps the serial number; it never adds a row. When the target has no
-  matching entry, the run keeps the serial number from the bundle and a note
-  says so.
-* **Rotors, labs, instruments and operators** are site hardware. A rotor
-  calibration is attached to the rotor in the target with the same rotor GUID.
-  When an experiment's rotor, instrument or operator is not in the target
-  database, the import falls back to the target's first rotor, to the lab's
-  first instrument and to the current investigator, and says which substitution
-  it made. Check those runs afterwards if the hardware matters to you.
+Centerpieces, rotors, rotor calibrations, labs, instruments and operators are
+the site's hardware. The import matches them and never invents them:
+
+* A **centerpiece** is matched by GUID, then by an identical entry of the same
+  name in the target's table, and the runs are pointed at the target's serial
+  number. It is never created.
+* A **rotor calibration** is created under the target's rotor of the same rotor
+  GUID. Without that rotor it is *not imported*.
+* A run's **rotor and calibration** are the imported calibration and its rotor;
+  its **lab** is the lab that owns that rotor; its **instrument** is the lab's
+  instrument of the same serial number; its **operator** is the person of the
+  same GUID.
+
+When the target has no match, another of its records *stands in*: the target's
+first centerpiece, rotor or calibration, the lab's first instrument, the
+current investigator. Such a record is reported as **substituted** (or **not
+imported**), never as created, and every substitution is a warning: in the
+log, on the command line's error output, and in the window's closing message.
+`--strict-hardware` makes a substitution fail the import instead. A target with
+no rotor, calibration or instrument at all cannot take the run.
+
+A disk store has no lab, instrument or operator tables of its own (those are
+database records), so a run imported to disk keeps the lab, instrument and
+operator its experiment XML names; `US_Convert` resolves them when the run is
+uploaded to a database.
 
 ### The window
 
 1. **Import data into** — the disk/database selector.
-2. **Select Bundle…** and **Inspect** — unpacks the bundle, reads the manifest,
-   verifies every payload digest and fills the contents tree.
+2. **Select Bundle…** and **Inspect** — unpacks the bundle, reads and checks the
+   manifest, verifies every payload digest and fills the contents tree. Editing
+   the bundle path afterwards means the bundle has to be inspected again.
 3. **Disk Target Folder…** — where a disk import writes. Left empty, the
    UltraScan3 data and results directories are used. Set to a folder, the
    import builds `<folder>/data/...` and `<folder>/results/...` there.
@@ -430,11 +530,12 @@ data without the project would have it.
    dialog per conflict showing whether the two records match and offering
    *Use the Existing Record*, *Import Under a New Name* (with the name to give
    it) or *Abort the Import*. The dialog can apply its answer to every further
-   conflict of the same record type.
+   conflict of the same record type. Escape or *Abort* cancels the import.
 5. **Dry run** decides everything and writes nothing. **Verify payload digests**
    checks the bundle before the first write.
-6. **Import Bundle**, then the log and the counts of created, reused and
-   renamed records.
+6. **Import Bundle**, then the log and the counts of created, reused, renamed,
+   substituted and not-imported records, with the warnings. While the import
+   runs the tab's controls are disabled and the window does not close.
 
 ### Command line
 
@@ -450,8 +551,14 @@ us_data_publication --mode import --bundle <file.tar.gz> [options]
 | `--on-conflict <policy>` | `reuse`, `rename` or `fail` (default: `reuse`) |
 | `--on-conflict-<type> <policy>` | The policy for one record type |
 | `--rename-suffix <text>` | Suffix for auto-renamed records (default: `imported`) |
-| `--no-verify` | Skip the payload digest check |
+| `--no-verify` | Skip the payload digest check; the only way to import a bundle without digests |
+| `--strict-hardware` | Fail rather than stand another rotor, calibration, centerpiece, instrument or operator in for a missing one |
 | `--list` | Print the manifest and stop |
+
+The closing line counts the records created, reused, renamed, substituted and
+not imported; warnings go to the error output. A failed import says what it
+left behind: a rolled-back transaction, or the files a disk import had already
+written.
 
 Examples:
 
@@ -472,6 +579,10 @@ us_data_publication --mode import --bundle run3_full.tar.gz --target db \
 us_data_publication --mode import --bundle project7.tar.gz --target db \
     --on-conflict reuse --on-conflict-models rename
 
+# Only into a database with all the hardware the runs used
+us_data_publication --mode import --bundle run3_full.tar.gz --target db \
+    --strict-hardware
+
 # What is in this bundle?
 us_data_publication --mode import --bundle project7.tar.gz --list
 ```
@@ -488,8 +599,9 @@ us_data_publication --mode import --bundle project7.tar.gz --list
 | `-h`, `--help` | Usage |
 | `--version` | Program version |
 
-Exit codes: `0` success, `1` the export or import failed, `2` the arguments
-were wrong.
+Exit codes: `0` success, `1` the export or import failed (a database import
+is then rolled back), `2` the arguments were wrong. An import that substituted
+hardware still exits with `0`, and says so on the error output.
 
 ---
 
@@ -531,4 +643,10 @@ and property digests, the rotor-calibration and centerpiece payload formats,
 renaming a record inside its payload, packing and unpacking a bundle, exporting
 data only and exporting models with their dependencies, and importing into a
 disk store along the create, reuse and rename paths, including the GUID remap
-that a reused project forces into the run's experiment XML.
+that a reused record forces into the payloads that name it. Crafted bundles
+check that the import refuses paths outside the bundle, unusable run IDs,
+payloads without a digest or of another GUID, and tampered time state
+definitions. The database import runs against the `IUS_DB2` gmock mock
+(`datapub_fake_db.h`), which pins down its single transaction, the rollback on
+a failure part way, the speed profile, hardware substitution and a second
+import of the same bundle writing nothing.

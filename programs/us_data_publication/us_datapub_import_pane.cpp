@@ -43,6 +43,13 @@ US_DataPubConflictDialog::US_DataPubConflictDialog(
    namelay->addWidget( us_label( tr( "Import under the name:" ) ) );
    le_name = us_lineedit( newName, 0, false );
    namelay->addWidget( le_name );
+
+   // A run ID becomes a directory and file name, so only a usable one can
+   // be typed
+   if ( type == US_DataPub::Experiment )
+      le_name->setValidator( new QRegularExpressionValidator(
+                             QRegularExpression( "[A-Za-z0-9_-]{1,80}" ),
+                             le_name ) );
    main->addLayout( namelay );
 
    QGridLayout* alllay = us_checkbox(
@@ -106,7 +113,9 @@ void US_DataPubConflictDialog::chose_cancel( void )
 US_DataPubImportPane::US_DataPubImportPane( QWidget* parent )
    : US_Widgets( true, parent )
 {
-   inspected = false;
+   inspected     = false;
+   importing     = false;
+   was_cancelled = false;
 
    setPalette( US_GuiSettings::frameColor() );
 
@@ -153,6 +162,8 @@ US_DataPubImportPane::US_DataPubImportPane( QWidget* parent )
 
    connect( pb_browse,  &QPushButton::clicked,
             this,       &US_DataPubImportPane::browse_bundle );
+   connect( le_bundle,  &QLineEdit::textEdited,
+            this,       &US_DataPubImportPane::bundle_edited );
    connect( pb_outdir,  &QPushButton::clicked,
             this,       &US_DataPubImportPane::browse_outdir );
    connect( pb_project, &QPushButton::clicked,
@@ -249,6 +260,90 @@ void US_DataPubImportPane::target_changed( bool db )
 {
    pb_outdir->setEnabled( ! db );
    le_outdir->setEnabled( ! db );
+
+   // A project was chosen from the other target's list; it means nothing in
+   // this one
+   if ( ! project_guid.isEmpty() )
+   {
+      clear_project();
+      te_status->append( tr( "The chosen project belongs to the other target"
+                             " and was cleared" ) );
+   }
+}
+
+// A bundle path typed after an inspection is not the bundle inspected
+void US_DataPubImportPane::bundle_edited( const QString& )
+{
+   if ( ! inspected )  return;
+
+   inspected = false;
+   pb_import->setEnabled( false );
+   tw_bundle->clear();
+   le_summary->setText( tr( "No bundle inspected" ) );
+}
+
+bool US_DataPubImportPane::busy( void ) const
+{
+   return importing;
+}
+
+bool US_DataPubImportPane::cancelled( void ) const
+{
+   return was_cancelled;
+}
+
+bool US_DataPubImportPane::eventFilter( QObject* watched, QEvent* event )
+{
+   if ( importing  &&  event->type() == QEvent::Close )
+   {
+      event->ignore();
+      emit status( tr( "An import is running; the window closes once it is"
+                       " done" ) );
+      return true;
+   }
+
+   return US_Widgets::eventFilter( watched, event );
+}
+
+/* While an import runs the importer hands control back to the event loop
+   to show its progress, so everything that could change or destroy what it
+   works on -- the bundle, the target, the options, Reset, Inspect -- is
+   switched off, and the window refuses to close.
+*/
+void US_DataPubImportPane::setBusy( bool on )
+{
+   importing = on;
+
+   QList< QWidget* > widgets;
+   widgets << pb_browse << pb_inspect << pb_outdir << pb_project
+           << pb_clearproj << pb_details << pb_reset << pb_import
+           << le_bundle << le_outdir << cb_policy << ck_dryrun << ck_verify
+           << ck_prompt << tw_bundle;
+
+   for ( int ii = 0; ii < dkdb_cntrls->count(); ii++ )
+   {
+      QWidget* widget = dkdb_cntrls->itemAt( ii )->widget();
+
+      if ( widget != nullptr )  widgets << widget;
+   }
+
+   for ( int ii = 0; ii < widgets.size(); ii++ )
+      widgets[ ii ]->setEnabled( ! on );
+
+   if ( ! on )
+   {
+      target_changed( dkdb_cntrls->db() );
+      pb_import->setEnabled( inspected );
+   }
+
+   QWidget* top = window();
+
+   if ( top == nullptr )  return;
+
+   if ( on )
+      top->installEventFilter( this );
+   else
+      top->removeEventFilter( this );
 }
 
 void US_DataPubImportPane::browse_bundle( void )
@@ -273,6 +368,8 @@ void US_DataPubImportPane::browse_bundle( void )
 */
 void US_DataPubImportPane::select_project( void )
 {
+   if ( importing )  return;
+
    int state = dkdb_cntrls->db() ? US_Disk_DB_Controls::DB
                                  : US_Disk_DB_Controls::Disk;
    US_ProjectGui* dialog = new US_ProjectGui( true, state );
@@ -319,6 +416,8 @@ void US_DataPubImportPane::browse_outdir( void )
 
 void US_DataPubImportPane::inspect( void )
 {
+   if ( importing )  return;
+
    QString path = le_bundle->text().trimmed();
 
    if ( path.isEmpty() )
@@ -408,6 +507,8 @@ void US_DataPubImportPane::updateSummary( void )
 
 void US_DataPubImportPane::show_details( void )
 {
+   if ( importing )  return;
+
    if ( ! inspected )
    {
       QMessageBox::information( this, tr( "No Bundle" ),
@@ -440,8 +541,12 @@ US_DataPub::ConflictPolicy US_DataPubImportPane::resolve(
                                     this );
    int answer = dialog.exec();
 
+   // Escape, the close button and "Abort" all end the import as cancelled
    if ( answer != QDialog::Accepted )
+   {
+      was_cancelled = true;
       return US_DataPub::PolicyFail;
+   }
 
    if ( ! dialog.chosenName().isEmpty() )
       newName = dialog.chosenName();
@@ -474,6 +579,8 @@ void US_DataPubImportPane::importer_step( int step )
 
 void US_DataPubImportPane::run_import( void )
 {
+   if ( importing )  return;
+
    if ( ! inspected )
    {
       inspect();
@@ -495,58 +602,87 @@ void US_DataPubImportPane::run_import( void )
    {
       US_Passwd pw;
       options.dbPassword = pw.getPasswd();
+
+      if ( options.dbPassword.isEmpty() )
+      {
+         te_status->append( tr( "Import cancelled: no master password was"
+                                " given, so the database cannot be opened" ) );
+         emit status( tr( "Import cancelled" ) );
+         return;
+      }
    }
 
    sticky.clear();
+   was_cancelled = false;
    te_status->clear();
    pgb_progress->setValue( 0 );
-   pb_import->setEnabled( false );
+   setBusy( true );
    QApplication::setOverrideCursor( QCursor( Qt::WaitCursor ) );
 
    QString error;
    bool    ok = importer.runImport( options, error );
 
    QApplication::restoreOverrideCursor();
-   pb_import->setEnabled( true );
+   setBusy( false );
+
+   QStringList warnings = importer.warnings();
 
    if ( ! ok )
    {
-      te_status->append( tr( "Import failed: " ) + error );
-      QMessageBox::critical( this, tr( "Import Failed" ), error );
-      emit status( tr( "Import failed" ) );
+      QString title = was_cancelled ? tr( "Import Cancelled" )
+                                    : tr( "Import Failed" );
+      QString text  = error;
+
+      if ( ! importer.outcome().isEmpty() )
+         text += "\n\n" + importer.outcome();
+
+      te_status->append( title + ": " + text );
+      QMessageBox::critical( this, title, text );
+      emit status( title );
       return;
    }
 
    QList< US_DataPubImporter::Result > results = importer.results();
-   int created = 0;
-   int reused  = 0;
-   int renamed = 0;
+   int counts[ 8 ] = { 0, 0, 0, 0, 0, 0, 0, 0 };
 
    for ( int ii = 0; ii < results.size(); ii++ )
    {
-      switch ( results[ ii ].resolution )
-      {
-         case US_DataPub::ResolvedCreated:  created++;  break;
-         case US_DataPub::ResolvedReused:   reused++;   break;
-         case US_DataPub::ResolvedRenamed:  renamed++;  break;
-         default:                                       break;
-      }
+      int res = int( results[ ii ].resolution );
+
+      if ( res >= 0  &&  res < 8 )  counts[ res ]++;
    }
 
    pgb_progress->setValue( pgb_progress->maximum() );
 
+   QString tally = tr( "%1 created, %2 reused, %3 renamed, %4 substituted,"
+                       " %5 not imported" )
+                   .arg( counts[ US_DataPub::ResolvedCreated     ] )
+                   .arg( counts[ US_DataPub::ResolvedReused      ] )
+                   .arg( counts[ US_DataPub::ResolvedRenamed     ] )
+                   .arg( counts[ US_DataPub::ResolvedSubstituted ] )
+                   .arg( counts[ US_DataPub::ResolvedOmitted     ] );
    QString summary = options.dryRun
-      ? tr( "Dry run: %1 records would be created, %2 reused, %3 renamed" )
-        .arg( created ).arg( reused ).arg( renamed )
-      : tr( "Imported %1 records: %2 created, %3 reused, %4 renamed" )
-        .arg( results.size() ).arg( created ).arg( reused ).arg( renamed );
+      ? tr( "Dry run, nothing was written: %1 records would be %2" )
+        .arg( results.size() ).arg( tally )
+      : tr( "%1 records: %2" ).arg( results.size() ).arg( tally );
 
    emit status( summary );
-   QMessageBox::information( this, tr( "Import Complete" ), summary );
+
+   if ( warnings.isEmpty() )
+   {
+      QMessageBox::information( this, tr( "Import Complete" ), summary );
+      return;
+   }
+
+   QMessageBox::warning( this, tr( "Import Complete, With Warnings" ),
+                         summary + "\n\n" + warnings.join( "\n" ) );
 }
 
 void US_DataPubImportPane::reset( void )
 {
+   if ( importing )  return;
+
+   clear_project();
    inspected = false;
    sticky.clear();
    tw_bundle->clear();

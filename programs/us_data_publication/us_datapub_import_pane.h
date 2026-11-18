@@ -87,6 +87,15 @@ class US_DataPubImportPane : public US_Widgets,
                                           const QString& details,
                                           QString& newName ) override;
 
+      bool cancelled( void ) const override;
+
+      //! \brief True while an import runs
+      bool busy( void ) const;
+
+   protected:
+      //! Refuses to let the window close while an import runs
+      bool eventFilter( QObject* watched, QEvent* event ) override;
+
    signals:
       //! \brief A note for the window's status line
       //! \param message The note
@@ -122,6 +131,8 @@ class US_DataPubImportPane : public US_Widgets,
 
       US_DataPubImporter importer;
       bool               inspected;
+      bool               importing;
+      bool               was_cancelled;
 
       //! The project of the target the runs are attached to; empty means
       //! the bundle decides
@@ -133,9 +144,13 @@ class US_DataPubImportPane : public US_Widgets,
       void buildTree    ( void );
       void updateSummary( void );
 
+      //! \brief Enable or disable every control while an import runs
+      void setBusy      ( bool );
+
    private slots:
       void target_changed( bool );
       void browse_bundle ( void );
+      void bundle_edited ( const QString& );
       void browse_outdir ( void );
       void select_project( void );
       void project_chosen( US_Project& );

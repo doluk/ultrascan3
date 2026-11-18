@@ -20,6 +20,7 @@ US_DataPubCLI::Args::Args()
    nonInteractive = false;
    verify         = true;
    listOnly       = false;
+   strictHardware = false;
    help           = false;
    version        = false;
 }
@@ -99,8 +100,17 @@ QString US_DataPubCLI::usage( void )
       "  --on-conflict <policy>  reuse, rename or fail (default: reuse)\n"
       "  --on-conflict-<type> <policy>   the policy for one record type\n"
       "  --rename-suffix <text>  suffix for auto-renamed records\n"
-      "  --no-verify             skip the payload digest check\n"
+      "  --no-verify             skip the payload digest check; the only\n"
+      "                          way to import a bundle without digests\n"
+      "  --strict-hardware       fail rather than stand another rotor,\n"
+      "                          calibration, centerpiece, instrument or\n"
+      "                          operator of the target in for a missing one\n"
       "  --list                  print the manifest and stop\n"
+      "\n"
+      "An import exits with 0 when every record was imported, 1 when it\n"
+      "failed (a database import is then rolled back) and 2 on a usage\n"
+      "error.  Substitutions and records that could not be imported are\n"
+      "reported as warnings on the error output.\n"
       "\n"
       "Scopes and record types: %1\n"
       "\n"
@@ -164,6 +174,7 @@ bool US_DataPubCLI::parse( const QStringList& arguments, QString& error )
       if ( arg == "--no-timestate" )   { args.timeState      = false;    continue; }
       if ( arg == "--no-project" )     { args.project        = false;    continue; }
       if ( arg == "--list" )           { args.listOnly       = true;     continue; }
+      if ( arg == "--strict-hardware" ){ args.strictHardware = true;     continue; }
 
       if ( arg.startsWith( "--include-" ) )
       {
@@ -434,25 +445,7 @@ int US_DataPubCLI::runImport( void )
       return 2;
    }
 
-   US_DataPubImporter importer;
-   connect( &importer, &US_DataPubImporter::message,
-            this,      &US_DataPubCLI::onMessage );
-
-   QString error;
-
-   if ( ! importer.inspect( args.bundle, error ) )
-   {
-      fail( error );
-      return 1;
-   }
-
-   if ( args.listOnly )
-   {
-      print( importer.manifest().toYaml() );
-      return 0;
-   }
-
-   if ( args.target != "db"  &&  args.target != "disk" )
+   if ( ! args.listOnly  &&  args.target != "db"  &&  args.target != "disk" )
    {
       fail( tr( "--target must be \"db\" or \"disk\"" ) );
       return 2;
@@ -460,23 +453,13 @@ int US_DataPubCLI::runImport( void )
 
    bool ok = true;
    US_DataPubImporter::Options options;
-   options.target       = ( args.target == "db" ) ? US_DataPub::TargetDb
-                                                  : US_DataPub::TargetDisk;
-   options.dbPassword   = password( options.target == US_DataPub::TargetDb );
-   options.outputDir    = args.outputDir;
-   options.projectGUID  = args.projectGUID;
-   options.dryRun       = args.dryRun;
-   options.verifyHashes = args.verify;
-   options.policy       = US_DataPub::policyOfKey( args.conflict, &ok );
+   options.policy = US_DataPub::policyOfKey( args.conflict, &ok );
 
    if ( ! ok )
    {
       fail( tr( "--on-conflict must be \"reuse\", \"rename\" or \"fail\"" ) );
       return 2;
    }
-
-   if ( ! args.renameSuffix.isEmpty() )
-      options.renameSuffix = args.renameSuffix;
 
    QList< QString > keys = args.typeConflicts.keys();
 
@@ -497,26 +480,57 @@ int US_DataPubCLI::runImport( void )
       options.typePolicies.insert( int( type ), policy );
    }
 
-   if ( ! importer.runImport( options, error ) )
+   US_DataPubImporter importer;
+   connect( &importer, &US_DataPubImporter::message,
+            this,      &US_DataPubCLI::onMessage );
+
+   QString error;
+
+   if ( ! importer.inspect( args.bundle, error ) )
    {
       fail( error );
       return 1;
    }
 
+   if ( args.listOnly )
+   {
+      print( importer.manifest().toYaml() );
+      return 0;
+   }
+
+   options.target         = ( args.target == "db" ) ? US_DataPub::TargetDb
+                                                    : US_DataPub::TargetDisk;
+   options.outputDir      = args.outputDir;
+   options.projectGUID    = args.projectGUID;
+   options.dryRun         = args.dryRun;
+   options.verifyHashes   = args.verify;
+   options.strictHardware = args.strictHardware;
+
+   if ( ! args.renameSuffix.isEmpty() )
+      options.renameSuffix = args.renameSuffix;
+
+   if ( options.target == US_DataPub::TargetDb )
+   {
+      options.dbPassword = password( true );
+
+      if ( options.dbPassword.isEmpty() )
+      {
+         fail( tr( "A database import needs the master password: give"
+                   " --db-password or set US3_DB_PASSWORD" ) );
+         return 2;
+      }
+   }
+
+   bool imported = importer.runImport( options, error );
+
    QList< US_DataPubImporter::Result > results = importer.results();
-   int created = 0;
-   int reused  = 0;
-   int renamed = 0;
+   int counts[ 8 ] = { 0, 0, 0, 0, 0, 0, 0, 0 };
 
    for ( int ii = 0; ii < results.size(); ii++ )
    {
-      switch ( results[ ii ].resolution )
-      {
-         case US_DataPub::ResolvedCreated:  created++;  break;
-         case US_DataPub::ResolvedReused:   reused++;   break;
-         case US_DataPub::ResolvedRenamed:  renamed++;  break;
-         default:                                       break;
-      }
+      int res = int( results[ ii ].resolution );
+
+      if ( res >= 0  &&  res < 8 )  counts[ res ]++;
 
       if ( ! verbose )  continue;
 
@@ -524,15 +538,47 @@ int US_DataPubCLI::runImport( void )
              .arg( US_DataPub::typeText( results[ ii ].type ) )
              .arg( results[ ii ].name )
              .arg( results[ ii ].targetName )
-             .arg( US_DataPub::resolutionText( results[ ii ].resolution ) ) );
+             .arg( US_DataPubImporter::resolutionText(
+                   results[ ii ].resolution ) ) );
    }
 
+   QStringList warnings = importer.warnings();
+
+   for ( int ii = 0; ii < warnings.size(); ii++ )
+   {
+      err << tr( "Warning: " ) << warnings[ ii ] << "\n";
+      err.flush();
+   }
+
+   if ( ! imported )
+   {
+      fail( error );
+
+      // What the failure left behind: rolled back, or the files kept
+      if ( ! importer.outcome().isEmpty() )
+      {
+         err << importer.outcome() << "\n";
+         err.flush();
+      }
+
+      return 1;
+   }
+
+   QString tally = tr( "%1 created, %2 reused, %3 renamed, %4 substituted,"
+                       " %5 not imported" )
+                   .arg( counts[ US_DataPub::ResolvedCreated     ] )
+                   .arg( counts[ US_DataPub::ResolvedReused      ] )
+                   .arg( counts[ US_DataPub::ResolvedRenamed     ] )
+                   .arg( counts[ US_DataPub::ResolvedSubstituted ] )
+                   .arg( counts[ US_DataPub::ResolvedOmitted     ] );
+
    print( args.dryRun
-          ? tr( "Dry run: %1 records would be created, %2 reused, %3 renamed" )
-            .arg( created ).arg( reused ).arg( renamed )
-          : tr( "Imported %1 records: %2 created, %3 reused, %4 renamed" )
-            .arg( results.size() ).arg( created ).arg( reused )
-            .arg( renamed ) );
+          ? tr( "Dry run, nothing was written: %1 records would be %2" )
+            .arg( results.size() ).arg( tally )
+          : tr( "%1 records: %2" ).arg( results.size() ).arg( tally ) );
+
+   if ( ! warnings.isEmpty() )
+      print( tr( "%1 warnings; see the error output" ).arg( warnings.size() ) );
 
    return 0;
 }
