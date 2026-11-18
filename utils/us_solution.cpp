@@ -51,6 +51,20 @@ int US_Solution::loadFromDisk( QString& guid )
 
 int US_Solution::readFromFile( const QString& filename, bool resolveRefs )
 {
+   // Parse into a fresh solution and publish it only when the file -- and,
+   // when asked for, its buffer and analytes -- all load.  A failed read
+   // leaves this solution as it was.
+   US_Solution loaded;
+   const int   status = loaded.parseFile( filename, resolveRefs );
+
+   if ( status == IUS_DB2::OK )
+      *this = loaded;
+
+   return status;
+}
+
+int US_Solution::parseFile( const QString& filename, bool resolveRefs )
+{
    QFile file( filename );
    if ( !file.open( QIODevice::ReadOnly | QIODevice::Text) )
    {

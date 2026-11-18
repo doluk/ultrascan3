@@ -85,7 +85,8 @@ class US_UTIL_EXTERN US_Solution
                                 store; if false, only the identifying
                                 information held in the solution file itself
                                 is filled in
-          \return   One of the IUS_DB2 error codes
+          \return   One of the IUS_DB2 error codes.  On failure the
+                    solution is left as it was, never partly loaded.
       */
       int readFromFile( const QString& filename, bool resolveRefs = true );
 
@@ -169,6 +170,8 @@ class US_UTIL_EXTERN US_Solution
 
       void readSolutionInfo  ( QXmlStreamReader& xml );
       int     loadFromDisk( QString& );
+      //! \brief Parse a solution file into this object, as it goes
+      int     parseFile   ( const QString&, bool );
       int readBufferDiskGUID ( US_Buffer& , QString& );
       void saveBufferDisk    ( void ) const;
       void saveAnalytesDisk  ( void );
