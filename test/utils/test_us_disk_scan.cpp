@@ -137,6 +137,19 @@ class TestUSDiskScan : public QtTestBase
          file.close();
       }
 
+      // Run directories, each with one small .auc file, so that a scan
+      // takes long enough to be caught part way
+      void buildManyRuns( int count )
+      {
+         for ( int ii = 0; ii < count; ii++ )
+         {
+            QString runID = QString( "Many_%1" ).arg( ii, 4, 10, QChar( '0' ) );
+            QString dir   = US_Settings::resultDir() + "/" + runID;
+            QDir().mkpath( dir );
+            writeAuc( dir + "/" + runID + ".RA.1.A.280.auc", US_Util::new_guid() );
+         }
+      }
+
       void buildStore()
       {
          QString rawOne = US_Util::new_guid();
@@ -169,25 +182,54 @@ class TestUSDiskScan : public QtTestBase
       }
 };
 
+// The scanner goes idle only when the owning thread takes the result, so
+// right after a request it is busy, whatever the worker has done by then:
+// the catalog is not handed out and a second job is refused.
 TEST_F( TestUSDiskScan, TheCatalogIsNotOfferedWhileAJobIsRunning )
 {
    US_DiskScan scan;
 
    ASSERT_TRUE( scan.isRunning() );          // the worker waits for a job
-   settle( scan );                           // nothing asked for yet
+   EXPECT_FALSE( scan.busy() );
    EXPECT_NE( scan.catalog(), nullptr );
 
-   scan.list();
+   ASSERT_TRUE( scan.list() );
 
-   // It may already be done on a store this small, but while it is not,
-   // the catalog is the worker's and is not handed out
-   if ( scan.busy() )
-      EXPECT_EQ( scan.catalog(), nullptr );
+   EXPECT_TRUE ( scan.busy() );
+   EXPECT_EQ   ( scan.catalog(), nullptr );
+   EXPECT_FALSE( scan.ok() );
+   EXPECT_FALSE( scan.readChain() ) << "a second job was taken while busy";
+   EXPECT_FALSE( scan.verify( 0 ) );
 
    settle( scan );
 
    ASSERT_NE ( scan.catalog(), nullptr );
    EXPECT_TRUE( scan.ok() ) << scan.error().toStdString();
+   EXPECT_TRUE( scan.readChain() ) << "idle again, the next job is taken";
+   settle( scan );
+}
+
+// Whoever jobDone reaches finds the scanner idle and its catalog readable,
+// however the slot is connected
+TEST_F( TestUSDiskScan, JobDoneFindsTheScannerIdle )
+{
+   US_DiskScan scan;
+   int         seen    = 0;
+   bool        allIdle = true;
+
+   QObject::connect( &scan, &US_DiskScan::jobDone, [ & ]( int, int )
+   {
+      seen++;
+      allIdle = allIdle  &&  ! scan.busy()  &&  scan.catalog() != nullptr;
+   } );
+
+   ASSERT_TRUE( scan.list() );
+   settle( scan );
+   ASSERT_TRUE( scan.readChain() );
+   settle( scan );
+
+   EXPECT_EQ  ( seen, 2 );
+   EXPECT_TRUE( allIdle );
 }
 
 TEST_F( TestUSDiskScan, TheWorkerReadsWhatTheCallingThreadWouldRead )
@@ -296,16 +338,72 @@ TEST_F( TestUSDiskScan, JobsRunOneAfterAnotherInTheOrderTheyWereAsked )
 }
 
 // Destroying the scanner while it is working must not crash or hang: the
-// worker finishes what it is doing and the thread is joined.
+// job is cancelled at the next file and the thread is joined.  The
+// scanner is certainly busy when it is destroyed here, since it goes idle
+// only on this thread.
 TEST_F( TestUSDiskScan, TearingItDownWhileItWorksIsSafe )
 {
+   buildManyRuns( 200 );
+
+   QElapsedTimer timer;
+   timer.start();
+
    {
       US_DiskScan scan;
-      scan.list();
-      // no settle(): the destructor runs while the job may still be going
+      ASSERT_TRUE( scan.list() );
+      ASSERT_TRUE( scan.busy() );
    }
 
-   SUCCEED();
+   EXPECT_LT( timer.elapsed(), 20000 );
+}
+
+// A job that is cancelled stops, and says why
+TEST_F( TestUSDiskScan, ACancelledJobFailsAndSaysSo )
+{
+   buildManyRuns( 200 );
+
+   US_DiskScan scan;
+   ASSERT_TRUE( scan.list() );
+   scan.cancel();
+   settle( scan );
+
+   if ( scan.ok() )
+      GTEST_SKIP() << "the worker finished the listing before it was cancelled";
+
+   EXPECT_TRUE( scan.error().contains( "cancelled" ) ) << scan.error().toStdString();
+
+   // and the next job is not cancelled by the last one's request
+   ASSERT_TRUE( scan.list() );
+   settle( scan );
+   EXPECT_TRUE( scan.ok() ) << scan.error().toStdString();
+}
+
+// The cancel flag, checked by the catalog itself, deterministically
+TEST_F( TestUSDiskScan, ACatalogStopsWhenItsCancelFlagIsSet )
+{
+   QAtomicInt     flag;
+   US_DataCatalog catalog;
+   QString        error;
+
+   catalog.setCancelFlag( &flag );
+   ASSERT_TRUE( catalog.open( US_DataCatalog::Disk, QString(), error ) );
+   ASSERT_TRUE( catalog.loadRuns( error ) ) << error.toStdString();
+   ASSERT_EQ  ( catalog.runCount(), 2 );
+
+   flag.storeRelease( 1 );
+
+   EXPECT_FALSE( catalog.loadAll( error ) );
+   EXPECT_TRUE ( error.contains( "cancelled" ) ) << error.toStdString();
+   EXPECT_FALSE( catalog.isRunLoaded( 0 ) );
+
+   EXPECT_FALSE( catalog.loadRuns( error ) );
+   EXPECT_EQ   ( catalog.runCount(), 2 ) << "a cancelled listing keeps the last one";
+
+   EXPECT_FALSE( catalog.verifyRun( 0, error ) );
+   EXPECT_FALSE( catalog.isRunVerified( 0 ) );
+
+   flag.storeRelease( 0 );
+   EXPECT_TRUE( catalog.loadAll( error ) ) << error.toStdString();
 }
 
 // A store that is not there is an answer, not a crash

@@ -18,6 +18,9 @@ US_DiskScan::US_DiskScan( QObject* parent ) : QThread( parent )
    // Listing a store does not hash its files; that is what a verify job is
    cat->setChecksums( false );
 
+   // A job asked to stop stops at the next file it would read
+   cat->setCancelFlag( &abort_flag );
+
    connect( cat, &US_DataCatalog::message,
             this, &US_DiskScan::message );
 
@@ -31,6 +34,7 @@ US_DiskScan::~US_DiskScan()
    {
       QMutexLocker lock( &mutex );
       stopping = true;
+      abort_flag.storeRelease( 1 );   // stop what it is doing, not just after
       wakeup.wakeOne();
    }
 
@@ -40,32 +44,44 @@ US_DiskScan::~US_DiskScan()
    cat = nullptr;
 }
 
-void US_DiskScan::request( Job a_job, const QString& guid, int index )
+bool US_DiskScan::request( Job a_job, const QString& guid, int index )
 {
    QMutexLocker lock( &mutex );
 
-   idle.storeRelease( 0 );      // busy from here until the worker is done
+   // One job at a time: the catalog is the worker's until the owning
+   // thread has taken the last result
+   if ( idle.loadAcquire() == 0 )  return false;
+
+   idle.storeRelease( 0 );      // busy from here until the result is taken
+   abort_flag.storeRelease( 0 );
 
    job       = a_job;
    job_guid  = guid;
    job_index = index;
 
    wakeup.wakeOne();
+
+   return true;
 }
 
-void US_DiskScan::list( const QString& projectGUID )
+bool US_DiskScan::list( const QString& projectGUID )
 {
-   request( JobList, projectGUID, -1 );
+   return request( JobList, projectGUID, -1 );
 }
 
-void US_DiskScan::readChain( void )
+bool US_DiskScan::readChain( void )
 {
-   request( JobChain, QString(), -1 );
+   return request( JobChain, QString(), -1 );
 }
 
-void US_DiskScan::verify( int index )
+bool US_DiskScan::verify( int index )
 {
-   request( JobVerify, QString(), index );
+   return request( JobVerify, QString(), index );
+}
+
+void US_DiskScan::cancel( void )
+{
+   abort_flag.storeRelease( 1 );
 }
 
 bool US_DiskScan::busy( void ) const
@@ -94,6 +110,15 @@ bool US_DiskScan::ok( void ) const
    if ( idle.loadAcquire() == 0 )  return false;
 
    return err_ok;
+}
+
+// The owning thread takes the result: idle first, so whoever jobDone
+// reaches finds the catalog readable
+void US_DiskScan::finished( int a_job, int index )
+{
+   idle.storeRelease( 1 );
+
+   emit jobDone( a_job, index );
 }
 
 void US_DiskScan::run( void )
@@ -144,8 +169,13 @@ void US_DiskScan::run( void )
       err_ok   = done;
       err_text = message;
 
-      idle.storeRelease( 1 );      // publishes everything written above
-
-      emit jobDone( int( current ), index );
+      // Posting the result is what hands the catalog back: the event
+      // queue's lock orders everything written above before the owning
+      // thread reads it.  If the scanner is destroyed first, the posted
+      // call is dropped with it.
+      const int finished_job = int( current );
+      QMetaObject::invokeMethod( this, [ this, finished_job, index ]()
+                                 { finished( finished_job, index ); },
+                                 Qt::QueuedConnection );
    }
 }
