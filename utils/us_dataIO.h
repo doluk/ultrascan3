@@ -3,6 +3,7 @@
 #define US_DATAIO_H
 
 #include "us_extern.h"
+#include <QXmlStreamReader>
 
 //! \brief Data structures and methods to read/write experimental data
 //!
@@ -113,7 +114,7 @@ class US_UTIL_EXTERN US_DataIO
          int    xindex      ( double );      //!< Get index of X (radius) value
          double radius      ( int );         //!< Get radius value at index
          double scWavelength( int );         //!< Get wavelength value at index
-         double value       ( int, int );    //!< Get reading for scan,radius
+         double            value( int, int ) const;     //!< Get reading for scan,radius
          double reading     ( int, int );    //!< Get reading for scan,radius
          bool   setValue    ( int, int, double ); //!< Set reading value
          double std_dev     ( int, int );    //!< Get std.dev. for scan,radius
@@ -165,8 +166,16 @@ class US_UTIL_EXTERN US_DataIO
             ODlimit      = 1.5;
             bottom       = 0.0;
 
-	    bl_corr_slope = 0.0;
-	    bl_corr_yintercept = 0.0; 
+            //! Defaults for optional XML elements.
+            meniscus     = 0.0;
+            gapTolerance = 0.0;
+            rangeLeft    = 0.0;
+            rangeRight   = 0.0;
+            plateau      = 0.0;
+            baseline     = 0.0;
+
+            bl_corr_slope      = 0.0;
+            bl_corr_yintercept = 0.0;
 
             //! Air Gap is only for interference data
             airGapLeft   = 0.0;
@@ -268,7 +277,7 @@ class US_UTIL_EXTERN US_DataIO
 
       //! Values that are returned for various errors when managing scan data
       enum ioError { OK, CANTOPEN, BADCRC, NOT_USDATA, BADTYPE, BADXML, 
-                     NODATA, NO_GUID_MATCH, BAD_VERSION };
+                     NODATA, NO_GUID_MATCH, BAD_VERSION, CANTWRITE };
 
       /*! Read a set of legacy data in raw teckman data set format
           \param file  The filename to be read
@@ -304,7 +313,8 @@ class US_UTIL_EXTERN US_DataIO
 
           \param file  The filename to be read
           \param data  A reference to the data structure for the read data;
-                       its scan data and x values are left empty
+                       its scan data and x values are left empty.  It is
+                       left unchanged if the header cannot be read.
           \return      One of the \ref ioError codes
       */
       static int     readRawHeader( const QString&, RawData& );
@@ -314,6 +324,12 @@ class US_UTIL_EXTERN US_DataIO
           \param parameters A reference to the data structure for the read data
       */
       static int     readEdits   ( const QString&, EditValues& );
+
+      /*! Write a set of edit parameters in xml format, as read by readEdits
+          \param filename   The filename to be written
+          \param parameters The edit parameters to write
+      */
+      static int     writeEdits( const QString&, const EditValues& );
 
       /*! A string describing the last read or write error
           \param code  The error code to be described
@@ -368,8 +384,20 @@ class US_UTIL_EXTERN US_DataIO
           \param data         The location where the edited data is placed
       */
 
-      static int     loadData    ( const QString&, const QString&, 
-                                   EditedData& ); 
+      static int     loadData( const QString&, const QString&, EditedData& );
+
+      /*! Return the raw AUC basename named by an edit-profile basename.
+
+          For a normal edit this removes the edit identifier and changes the
+          suffix to `.auc`.  For a logical MWL name such as
+          `run.edit.RA.1.A.190-800@280.xml`, it selects wavelength 280.  An
+          empty string means the edit filename is not structurally usable.
+
+          This is the same rule loadData() uses, exposed so code which must
+          obtain the raw file before calling loadData() does not carry a
+          second, subtly different copy of the filename convention.
+      */
+      static QString rawFilenameForEdit( const QString& editFilename );
 
       /*! Adjust interference data by aligning air gaps at zero fringes 
           \param data A reference to the RawData structure to be adjusted

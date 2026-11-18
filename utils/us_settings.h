@@ -4,6 +4,24 @@
 
 #include "us_extern.h"
 
+#include <QSettings>
+
+//! \brief UltraScan settings with an optional directory override.
+//!
+//! Use instead of QSettings( US3, "UltraScan" ). US3_SETTINGS_ROOT selects
+//! an INI store in that directory; otherwise, use the native user store.
+//! INI format allows isolation on macOS and Windows, where setPath cannot
+//! relocate native stores. Set the override before first use; it is cached
+//! for the process lifetime.
+class US_UTIL_EXTERN US_SettingsStore : public QSettings
+{
+  public:
+    US_SettingsStore( void );
+
+    //! \brief The format this process resolved to, native unless overridden.
+    static QSettings::Format format( void );
+};
+
 //! \brief Fetch and set values via QSettings.  All functions are static.
 class US_UTIL_EXTERN US_Settings
 {
@@ -77,6 +95,9 @@ class US_UTIL_EXTERN US_Settings
     //! \brief Set the temperature tolerance for runs
     static void        set_tempTolerance( double );
 
+    //! \brief Get the set-speed rounding resolution in RPM
+    static double      speedResolution( void );
+
     //! \brief Get the Beckman Bug flag
     static bool        beckmanBug( void );
     //! \brief Set the Beckman Bug flag
@@ -86,6 +107,17 @@ class US_UTIL_EXTERN US_Settings
     static int         default_data_location( void );
     //! \brief Set the default data  setting
     static void        set_default_data_location( int );
+
+    //! \brief Override the default data location for this process only,
+    //! without persisting it. Takes precedence over the stored setting;
+    //! lets concurrent headless runs use --no-db without racing on or
+    //! permanently changing the user's stored setting.
+    static void               set_default_data_location_override( int );
+    //! \brief Clear the process-only default data location override.
+    static void               clear_default_data_location_override( void );
+
+    //! Return the process-only override, or -1 when no override is active.
+    static int                default_data_location_override( void );
 
     //! \brief Get the US_Debug setting
     static int         us_debug( void );
@@ -155,7 +187,7 @@ class US_UTIL_EXTERN US_Settings
     //! \brief Set the current stored database connection description
     static void        set_def_xpn_host( const QStringList& );
 
-    // DA status
+    // DA status: accept only COM:0/1 or ACAD:0/1; ignore malformed updates.
     static void set_DA_status( const QString& );
     static bool get_DA_status( const QString& );
 

@@ -523,7 +523,7 @@ program ships:
 ```bash
 cmake -S . -B build -DUS3_PROFILE=TEST
 cmake --build build --target test_us_datapub
-ctest --test-dir build -L us_data_publication --output-on-failure
+ctest --test-dir build -L gtest-unit-programs-datapub --output-on-failure
 ```
 
 The suite covers the manifest vocabulary and its YAML round trip, the payload

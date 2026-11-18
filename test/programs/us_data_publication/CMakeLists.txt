@@ -19,6 +19,12 @@ else()
     endif()
 endif()
 
+# As in test/utils: with its own main, only gmock (which carries the gtest
+# runtime) may be linked on MSVC, or SCOPED_TRACE crosses DLL copies.
+if(MSVC)
+    set(GTEST_LIBRARIES gmock)
+endif()
+
 set(DATAPUB_SOURCES
         ${datapub_dir}/us_datapub_defs.cpp
         ${datapub_dir}/us_datapub_manifest.cpp
@@ -77,13 +83,13 @@ endif()
 include(GoogleTest)
 gtest_discover_tests(test_us_datapub
         PROPERTIES
-        LABELS "gtest;unit;programs;us_data_publication"
+        LABELS gtest-unit-programs-datapub
         TIMEOUT 120
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
         )
 
 add_custom_target(test_data_publication
-        COMMAND ${CMAKE_CTEST_COMMAND} -L us_data_publication --output-on-failure
+        COMMAND ${CMAKE_CTEST_COMMAND} -L gtest-unit-programs-datapub --output-on-failure
         DEPENDS test_us_datapub
         COMMENT "Running us_data_publication tests only"
         )

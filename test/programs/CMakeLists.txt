@@ -1,7 +1,7 @@
-# Unit tests for the application programs under programs/
-#
-# The programs themselves are not built in the TEST profile, so each test
-# target compiles the program sources it needs directly.
-
+add_subdirectory(us_astfem_sim)
+add_subdirectory(us_import_run)
+add_subdirectory(us_mwl_species_sim)
+add_subdirectory(us_edited_data_loaders)
+add_subdirectory(us_sim_inputs_gen)
 add_subdirectory(us_data_publication)
 add_subdirectory(us_manage_data)

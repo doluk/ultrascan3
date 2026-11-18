@@ -38,7 +38,8 @@ int US_Project::readFromFile( const QString& filename )
 
    QXmlStreamReader xml( &file );
 
-   clear();
+   // Leave the destination unchanged if parsing fails.
+   US_Project pr;
 
    while ( ! xml.atEnd() )
    {
@@ -49,25 +50,27 @@ int US_Project::readFromFile( const QString& filename )
          if ( xml.name() == "project" )
          {
             QXmlStreamAttributes a = xml.attributes();
-            projectID   = a.value( "id" ).toString().toInt();
-            projectGUID = a.value( "guid" ).toString();
-            lastUpdated = QFileInfo( filename ).lastModified().toUTC();
+            pr.projectID   = a.value( "id" ).toString().toInt();
+            pr.projectGUID = a.value( "guid" ).toString();
+            pr.lastUpdated = QFileInfo( filename ).lastModified().toUTC();
 
-            readProjectInfo( xml );
+            pr.readProjectInfo( xml );
          }
       }
    }
 
    file.close();
 
-   if ( xml.hasError() ) 
+   if ( xml.hasError() )
    {
       qDebug() << "Error: xml error: \n"
                << xml.errorString();
       return IUS_DB2::DBERROR;
    }
 
-   saveStatus = HD_ONLY;
+   pr.saveStatus = HD_ONLY;
+
+   *this = pr;
 
    return IUS_DB2::OK;
 }
@@ -148,10 +151,20 @@ void US_Project::readProjectInfo( QXmlStreamReader& xml )
 // Function to load a project from the db
 int US_Project::readFromDB  ( int projectID, IUS_DB2* db )
 {
+   if ( db == nullptr )
+   {
+      return IUS_DB2::NOT_CONNECTED;
+   }
+
    // Try to get project info
    QStringList q( "get_project_info" );
    q  << QString::number( projectID );
    db->query( q );
+   const int queryStatus = db->lastErrno();
+   if ( queryStatus != IUS_DB2::OK )
+   {
+      return queryStatus == IUS_DB2::NOROWS ? IUS_DB2::NO_PROJECT : queryStatus;
+   }
 
    if ( db->next() )
    {
@@ -174,7 +187,10 @@ int US_Project::readFromDB  ( int projectID, IUS_DB2* db )
    }
 
    else
-      return IUS_DB2::NO_PROJECT;
+   {
+      const int rowStatus = db->lastErrno();
+      return rowStatus == IUS_DB2::OK || rowStatus == IUS_DB2::NOROWS ? IUS_DB2::NO_PROJECT : rowStatus;
+   }
 
    saveStatus = DB_ONLY;
 
@@ -248,76 +264,7 @@ bool US_Project::saveToFile( const QString& filename ) const
 // Function to save project information to db
 int US_Project::saveToDB( IUS_DB2* db )
 {
-   // Save it to disk too
-   saveToDisk();
-
-   // Check for GUID in database
-   projectID = 0;
-   QStringList q( "get_projectID_from_GUID" );
-   q << projectGUID;
-   db->query( q );
-
-   int db_status = db->lastErrno();
-   if ( db_status == IUS_DB2::OK )
-   {
-      // Edit existing project entry
-      db->next();
-      projectID = db->value( 0 ).toInt();
-      q.clear();
-      q  << "update_project2"
-         << QString::number( projectID )
-         << projectGUID
-         << goals
-         << molecules
-         << purity
-         << expense
-         << bufferComponents
-         << saltInformation
-         << AUC_questions
-         << expDesign
-         << notes
-         << projectDesc
-         << status;
-
-      db->statusQuery( q );
-   }
-
-   else if ( db_status == IUS_DB2::NOROWS )
-   {
-      // Create new project entry
-      q.clear();
-      q  << "new_project2"
-         << projectGUID
-         << goals
-         << molecules
-         << purity
-         << expense
-         << bufferComponents
-         << saltInformation
-         << AUC_questions
-         << expDesign
-         << notes
-         << projectDesc
-         << status
-         << QString::number( US_Settings::us_inv_ID() );
-
-
-      db->statusQuery( q );
-      projectID = db->lastInsertID();
-   }
-
-   else   // unspecified error
-   {
-      qDebug() << "MySQL error: " << db->lastError();
-      return db_status;
-   }
-
-   if ( projectID == 0 )        // double check
-      return IUS_DB2::NO_PROJECT;
-
-   saveStatus = BOTH;
-
-   return IUS_DB2::OK;
+   return saveToDB_auto( US_Settings::us_inv_ID(), db );
 }
 
 // Function to save project information to db
@@ -325,9 +272,14 @@ int US_Project::saveToDB_auto( int invID_passed, IUS_DB2* db )
 {
    // Save it to disk too
    saveToDisk();
+   // A previous DB save does not establish success for this write attempt.
+   if ( saveStatus == BOTH )
+   {
+      saveStatus = HD_ONLY;
+   }
 
    // Check for GUID in database
-   projectID = 0;
+   int         savedID = 0;
    QStringList q( "get_projectID_from_GUID" );
    q << projectGUID;
    db->query( q );
@@ -336,25 +288,26 @@ int US_Project::saveToDB_auto( int invID_passed, IUS_DB2* db )
    if ( db_status == IUS_DB2::OK )
    {
       // Edit existing project entry
-      db->next();
-      projectID = db->value( 0 ).toInt();
+      if ( !db->next() )
+      {
+         const int rowStatus = db->lastErrno();
+         return rowStatus == IUS_DB2::OK || rowStatus == IUS_DB2::NOROWS ? IUS_DB2::NO_PROJECT : rowStatus;
+      }
+      bool validID = false;
+      savedID      = db->value( 0 ).toInt( &validID );
+      if ( !validID || savedID <= 0 )
+      {
+         return IUS_DB2::NO_PROJECT;
+      }
       q.clear();
-      q  << "update_project2"
-         << QString::number( projectID )
-         << projectGUID
-         << goals
-         << molecules
-         << purity
-         << expense
-         << bufferComponents
-         << saltInformation
-         << AUC_questions
-         << expDesign
-         << notes
-         << projectDesc
-         << status;
+      q << "update_project2" << QString::number( savedID ) << projectGUID << goals << molecules << purity << expense
+        << bufferComponents << saltInformation << AUC_questions << expDesign << notes << projectDesc << status;
 
-      db->statusQuery( q );
+      const int writeStatus = db->statusQuery( q );
+      if ( writeStatus != IUS_DB2::OK )
+      {
+         return writeStatus;
+      }
    }
 
    else if ( db_status == IUS_DB2::NOROWS )
@@ -377,8 +330,12 @@ int US_Project::saveToDB_auto( int invID_passed, IUS_DB2* db )
 	 << QString::number( invID_passed ); //ALEXEY: passed invID, NOT the US_Settings ::us_inv_ID()
 
 
-      db->statusQuery( q );
-      projectID = db->lastInsertID();
+      const int writeStatus = db->statusQuery( q );
+      if ( writeStatus != IUS_DB2::OK )
+      {
+         return writeStatus;
+      }
+      savedID = db->lastInsertID();
    }
 
    else   // unspecified error
@@ -387,9 +344,12 @@ int US_Project::saveToDB_auto( int invID_passed, IUS_DB2* db )
       return db_status;
    }
 
-   if ( projectID == 0 )        // double check
+   if ( savedID <= 0 ) // double check
+   {
       return IUS_DB2::NO_PROJECT;
+   }
 
+   projectID  = savedID;
    saveStatus = BOTH;
 
    return IUS_DB2::OK;

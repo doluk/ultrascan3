@@ -54,7 +54,7 @@ on:
         required: false
         default: qt6
         type: choice
-        options: [qt6, qt5-qwt630]
+        options: [qt6, qt5]
       ref:
         description: "Branch, tag or SHA"
         required: false
@@ -91,8 +91,6 @@ jobs:
         shell: bash
         env:
           TARGET: ${{ inputs.target }}
-          # Use the current repository owner so forks resolve their own images.
-          OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
@@ -121,8 +119,7 @@ jobs:
                       "Run the Toolchain workflow and merge the pin update."
                   )
               # Pinned by digest, not tag: a tag can be moved, a digest cannot.
-              owner = os.environ["OWNER"].lower()
-              print(f"container=ghcr.io/{owner}/{pin['image']}@{digest}")
+              print(f"container={pin['image']}@{digest}")
               print("needs_container=true")
           else:
               print("container=")
@@ -137,7 +134,7 @@ jobs:
     needs: resolve
     if: needs.resolve.outputs.needs_container == 'true'
     runs-on: ${{ needs.resolve.outputs.runner }}
-    timeout-minutes: 90
+    timeout-minutes: 360
     container:
       image: ${{ needs.resolve.outputs.container }}
       credentials:
@@ -172,7 +169,7 @@ jobs:
     needs: resolve
     if: needs.resolve.outputs.needs_container == 'false'
     runs-on: ${{ needs.resolve.outputs.runner }}
-    timeout-minutes: 90
+    timeout-minutes: 360
     steps:
       - name: Checkout
         uses: actions/checkout@v5

@@ -193,6 +193,7 @@ option(US3_NO_DB "Build without database support (for supercomputer backends)" O
 option(US3_BUILD_PROGRAMS "Build application programs" ON)
 option(USE_QT6 "Use Qt6 instead of Qt5" OFF)
 option(BUILD_DOCUMENTATION "Build Sphinx documentation" ON)
+option(US3_BUILD_SOMO "Build the SOMO/US-SOMO hydrodynamics suite (us_somo)" OFF)
 
 # High-level profile to make builds scriptable:
 #   APP  = desktop/user build (GUI + programs + DB)
@@ -231,6 +232,36 @@ endif()
 # Configuration-based definitions
 if(US3_NO_DB)
     add_compile_definitions(NO_DB)
+endif()
+
+# =============================================================================
+# COVERAGE INSTRUMENTATION
+# =============================================================================
+# Instrument libraries and tests consistently; filter reports to production code.
+# Coverage measures execution only and enforces no threshold.
+option(US3_COVERAGE "Instrument the build for gcov line and branch coverage" OFF)
+
+if(US3_COVERAGE)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        message(FATAL_ERROR
+                "US3_COVERAGE requires GCC or Clang; got ${CMAKE_CXX_COMPILER_ID}")
+    endif()
+
+    if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+        message(WARNING
+                "US3_COVERAGE is intended for a Debug build; "
+                "optimized builds attribute lines unreliably")
+    endif()
+
+    # Disable optimization for accurate line attribution.
+    # Record absolute source paths on GCC for reports run from any directory.
+    add_compile_options(--coverage -O0 -g)
+    add_link_options(--coverage)
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        add_compile_options(-fprofile-abs-path)
+    endif()
+
+    message(STATUS "Coverage instrumentation enabled (US3_COVERAGE=ON)")
 endif()
 
 # Platform-specific definitions
@@ -921,6 +952,12 @@ else ()
     message(STATUS "qhelpgenerator not found - Qt help files will not be built")
 endif ()
 
+if(APPLE AND US3_BUILD_PROGRAMS AND NOT US3_PROFILE STREQUAL "HPC")
+    find_program(CMAKE_OTOOL NAMES otool REQUIRED)
+    find_program(CMAKE_INSTALL_NAME_TOOL NAMES install_name_tool REQUIRED)
+    find_program(US3_CODESIGN_EXECUTABLE NAMES codesign REQUIRED)
+endif()
+
 if(BUILD_DOCUMENTATION AND NOT US3_PROFILE STREQUAL "HPC")
     add_subdirectory(doc/manual)
 endif()
@@ -933,11 +970,24 @@ endif()
 # HPC: only us_mpi_analysis (NO_DB, no GUI)
 if(US3_BUILD_PROGRAMS)
     add_subdirectory(programs)
+elseif(BUILD_TESTING AND NOT US3_NO_DB)
+    # TEST: us_sim_inputs_gen needs only Utils, so build it for its CLI test.
+    add_subdirectory(programs/us_sim_inputs_gen)
 endif()
 
 if(BUILD_TESTING)
     add_compile_definitions(US3_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
     add_subdirectory(test)
+endif()
+
+# IDE launches need the plugins from the same Qt configuration as the linked
+# libraries. Derive this from the imported plugin target rather than assuming
+# that every installation has debug/ or uses the same Qt5/Qt6 directory layout.
+if(WIN32 AND TARGET ${QT_VERSION_BASE}::QWindowsIntegrationPlugin)
+    file(GENERATE
+        OUTPUT "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<$<BOOL:${CMAKE_CONFIGURATION_TYPES}>:$<CONFIG>/>qt.conf"
+        CONTENT "[Paths]\nPlugins = $<TARGET_FILE_DIR:${QT_VERSION_BASE}::QWindowsIntegrationPlugin>/..\n"
+    )
 endif()
 
 # =============================================================================
@@ -966,8 +1016,28 @@ endif()
 # =============================================================================
 # SoMo BUILD (CMake native)
 # =============================================================================
-# build has errors
-# add_subdirectory(us_somo)
+# Opt-in via -DUS3_BUILD_SOMO=ON, with the APP profile or none (the root presets
+# set none). SOMO is a Qt-GUI suite (needs Qt + Multimedia + Qwt), so it is
+# incompatible with the headless HPC profile, and the TEST profile, which builds
+# UltraScan's tests, has no use for it. It vendors its own utils fork and is
+# otherwise self-contained; the forwarder us_somo/CMakeLists.txt delegates to
+# us_somo/develop. Requires an APP feature that provides
+# qt5-multimedia/qtmultimedia + qwt (qt5-app / qt6-app).
+# SOMO has never been compiled with MSVC (on Windows it builds with MinGW, as
+# qmake builds it for the packages), so under MSVC it is skipped with a
+# warning rather than failing the UltraScan build, until
+# ehb54/ultrascan-tickets#1131 lands.
+if(US3_BUILD_SOMO AND (US3_PROFILE STREQUAL "APP" OR US3_PROFILE STREQUAL ""))
+    if(MSVC)
+        message(WARNING "SOMO does not build with MSVC yet (ehb54/ultrascan-tickets#1131), "
+                        "so it is skipped. Build it with MinGW (MSYS2), or configure "
+                        "without -DUS3_BUILD_SOMO=ON.")
+    else()
+        add_subdirectory(us_somo)
+    endif()
+elseif(US3_BUILD_SOMO)
+    message(STATUS "SOMO: not built with the ${US3_PROFILE} profile, only with APP or none")
+endif()
 
 # =============================================================================
 # macOS DEPLOYMENT (folder-based layout)
@@ -999,6 +1069,12 @@ if(APPLE AND US3_BUILD_PROGRAMS AND NOT US3_PROFILE STREQUAL "HPC")
         set(_VCPKG_TOOLS_STA5 "")
     endif()
 
+    # Rediscover the installed tool when the cache points at our previous copy.
+    # Otherwise reconfigure compares the wrapper against itself and misses Qt updates.
+    if(MACDEPLOYQT_EXECUTABLE STREQUAL "${CMAKE_BINARY_DIR}/tools/macdeployqt-dyn/macdeployqt")
+        unset(MACDEPLOYQT_EXECUTABLE CACHE)
+        unset(MACDEPLOYQT_EXECUTABLE)
+    endif()
     find_program(MACDEPLOYQT_EXECUTABLE macdeployqt
         HINTS
             # vcpkg dynamic triplet (unlikely to have it, but try first)
@@ -1087,6 +1163,23 @@ if(APPLE AND US3_BUILD_PROGRAMS AND NOT US3_PROFILE STREQUAL "HPC")
         # HostPrefix is intentionally omitted so no search redirects to arm64-osx/.
         get_filename_component(_DYN_TRIPLET_ROOT
             "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}" ABSOLUTE)
+        # qt.conf controls Qt's deployment searches, but dyld must load Qt before
+        # the tool can read it. Moving the binary breaks its loader-relative RPATH.
+        # Repair only our build-tree copy, including copies from earlier configures.
+        execute_process(COMMAND "${CMAKE_OTOOL}" -l "${_MACDEPLOYQT_DYN_PATH}"
+            OUTPUT_VARIABLE _macdeployqt_load_commands
+            COMMAND_ERROR_IS_FATAL ANY)
+        string(FIND "${_macdeployqt_load_commands}"
+            "path ${_DYN_TRIPLET_ROOT}/lib (offset " _macdeployqt_rpath_pos)
+        if(_macdeployqt_rpath_pos EQUAL -1)
+            execute_process(COMMAND "${CMAKE_INSTALL_NAME_TOOL}"
+                -add_rpath "${_DYN_TRIPLET_ROOT}/lib" "${_MACDEPLOYQT_DYN_PATH}"
+                COMMAND_ERROR_IS_FATAL ANY)
+            # Modifying Mach-O load commands invalidates its signature on ARM64.
+            execute_process(COMMAND "${US3_CODESIGN_EXECUTABLE}" --force --sign -
+                "${_MACDEPLOYQT_DYN_PATH}"
+                COMMAND_ERROR_IS_FATAL ANY)
+        endif()
         file(WRITE "${_DYN_QT_CONF}"
             "# Auto-generated by UltraScan3 CMakeLists.txt (Option A)\n"
             "# Points macdeployqt at the dynamic triplet: ${_DYN_TRIPLET_ROOT}\n"

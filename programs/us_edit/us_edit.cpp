@@ -2,33 +2,34 @@
 
 #include <QApplication>
 //#include <QDomDocument>
-#include <QToolTip>
-#include <QMessageBox>
+#include "us_constants.h"
+#include "us_convertio.h"
+#include "us_edit.h"
+#include "us_edit_scan.h"
+#include "us_editor.h"
+#include "us_exclude_profile.h"
+#include "us_get_edit.h"
+#include "us_gui_settings.h"
+#include "us_images.h"
+#include "us_investigator.h"
+#include "us_license.h"
+#include "us_license_t.h"
+#include "us_load_auc.h"
+#include "us_math2.h"
+#include "us_passwd.h"
+#include "us_protocol_util.h"
+#include "us_report.h"
+#include "us_ri_noise.h"
+#include "us_run_details2.h"
+#include "us_select_lambdas.h"
+#include "us_settings.h"
+#include "us_util.h"
 #include <QLineF>
+#include <QMessageBox>
+#include <QToolTip>
+#include <qwt_picker_machine.h>
 #include <qwt_scale_div.h>
 #include <qwt_scale_map.h>
-#include <qwt_picker_machine.h>
-#include "us_edit.h"
-#include "us_exclude_profile.h"
-#include "us_select_lambdas.h"
-#include "us_ri_noise.h"
-#include "us_edit_scan.h"
-#include "us_license_t.h"
-#include "us_license.h"
-#include "us_settings.h"
-#include "us_gui_settings.h"
-#include "us_investigator.h"
-#include "us_run_details2.h"
-#include "us_math2.h"
-#include "us_util.h"
-#include "us_load_auc.h"
-#include "us_passwd.h"
-#include "us_get_edit.h"
-#include "us_constants.h"
-#include "us_images.h"
-#include "us_editor.h"
-#include "us_report.h"
-#include "us_protocol_util.h"
 
 #ifndef DbgLv
 #define DbgLv(a) if(dbg_level>=a)qDebug()
@@ -84,7 +85,7 @@ DbgLv(1) << " 0)gap_fringe" << gap_fringe;
    setWindowTitle( tr( "Edit UltraScan Data" ) );
    setPalette( US_GuiSettings::frameColor() );
 
-   QVBoxLayout* top = new QVBoxLayout( this );
+   top = new QVBoxLayout( this );
    top->setSpacing         ( 2 );
    top->setContentsMargins ( 2, 2, 2, 2 );
 
@@ -95,6 +96,7 @@ DbgLv(1) << " 0)gap_fringe" << gap_fringe;
    runInfo->addWidget( lb_info );
 
    le_info = us_lineedit( "", 1, true );
+   le_info->setAccessibleName( tr( "Run Info" ) );
    runInfo->addWidget( le_info );
 
    //top->addLayout( runInfo );
@@ -145,8 +147,10 @@ DbgLv(1) << " 0)gap_fringe" << gap_fringe;
    // Triple and Speed Step
    lb_triple       = us_label( tr( "Cell / Channel / Wavelength" ), -1 );
    cb_triple       = us_comboBox();
+   cb_triple->setAccessibleName( tr( "Cell, Channel, and Wavelength" ) );
    lb_rpms         = us_label( tr( "Speed Step (RPM) of triple" ), -1 );
    cb_rpms         = us_comboBox();
+   cb_rpms->setAccessibleName( tr( "Speed Step of Triple" ) );
    lb_rpms->setVisible( false );
    cb_rpms->setVisible( false );
 
@@ -154,6 +158,7 @@ DbgLv(1) << " 0)gap_fringe" << gap_fringe;
    QFont font( US_GuiSettings::fontFamily(), US_GuiSettings::fontSize() - 1 );
    lb_gaps         = us_label( tr( "Threshold for Scan Gaps" ), -1 );
    ct_gaps         = us_counter( 1, 10.0, 100.0 );
+   ct_gaps->setAccessibleName( tr( "Threshold for Scan Gaps" ) );
    ct_gaps->setSingleStep ( 10.0 );
    ct_gaps->setValue( 50.0 );
 
@@ -176,6 +181,7 @@ DbgLv(1) << " 0)gap_fringe" << gap_fringe;
    r_group->addButton( rb_custom, 1 );
    lb_ldelta       = us_label( tr( "%1 Index Increment:" ).arg( chlamb ), -1 );
    ct_ldelta       = us_counter( 1, 1, 100, 1 );
+   ct_ldelta->setAccessibleName( tr( "Wavelength Index Increment" ) );
    ct_ldelta->setFont( font );
    ct_ldelta->setSingleStep( 1 );
    ct_ldelta->setMinimumWidth( lwid );
@@ -195,8 +201,11 @@ DbgLv(1) << " 0)gap_fringe" << gap_fringe;
       .arg( nlmbd ).arg( chlamb ).arg( lmbdlo ).arg( lmbdhi ).arg( lmbddl );
    le_lxrng       = us_lineedit( lxsmry, -1, true );
    cb_lplot       = us_comboBox();
+   cb_lplot->setAccessibleName( tr( "Plot Wavelength" ) );
    cb_lstart      = us_comboBox();
+   cb_lstart->setAccessibleName( tr( "Wavelength Start" ) );
    cb_lend        = us_comboBox();
+   cb_lend->setAccessibleName( tr( "Wavelength End" ) );
 
    cb_lplot ->setFont( font );
    cb_lstart->setFont( font );
@@ -238,12 +247,14 @@ lambdas << "250" << "350" << "450" << "550" << "580" << "583" << "650";
    lb_from->setAlignment( Qt::AlignVCenter | Qt::AlignRight );
 
    ct_from        = us_counter( 3, 0.0, 0.0 ); // Update range upon load
+   ct_from->setAccessibleName( tr( "Scan Focus From" ) );
    ct_from->setSingleStep( 1 );
 
    QLabel* lb_to  = us_label( tr( "to:" ), -1 );
    lb_to->setAlignment( Qt::AlignVCenter | Qt::AlignRight );
 
    ct_to          = us_counter( 3, 0.0, 0.0 ); // Update range upon load
+   ct_to->setAccessibleName( tr( "Scan Focus To" ) );
    ct_to->setSingleStep( 1 );
 
    // Exclude and Include pushbuttons
@@ -260,18 +271,21 @@ lambdas << "250" << "350" << "450" << "550" << "580" << "583" << "650";
    // Edit Triple:Speed display (Equilibrium only)
    lb_edtrsp      = us_label( tr( "Edit Triple:Speed :" ), -1, true );
    le_edtrsp      = us_lineedit( "" );
+   le_edtrsp->setAccessibleName( tr( "Edit Triple Speed" ) );
    lb_edtrsp->setVisible(  false );
    le_edtrsp->setVisible(  false );
 
    // Meniscus
    pb_meniscus    = us_pushbutton( tr( "Specify Meniscus" ), false );
    le_meniscus    = us_lineedit( "", 1, true);
+   le_meniscus->setAccessibleName( tr( "Meniscus" ) );
    lb_meniscus    = us_label(      tr( "Meniscus:" ), -1 );
 
    // Air Gap (hidden by default)
    pb_airGap = us_pushbutton( tr( "Specify Air Gap" ), false );
    lb_airGap = us_label(      tr( "Air Gap:" ), -1 );
    le_airGap = us_lineedit( "", 1, true );
+   le_airGap->setAccessibleName( tr( "Air Gap" ) );
    pb_airGap->setVisible( false );
    lb_airGap->setHidden( true );
    le_airGap->setHidden( true );
@@ -279,29 +293,34 @@ lambdas << "250" << "350" << "450" << "550" << "580" << "583" << "650";
    // Data range
    pb_dataRange   = us_pushbutton( tr( "Specify Data Range" ), false );
    le_dataRange   = us_lineedit( "", 1, true );
-pb_dataRange->setVisible(false);
-le_dataRange->setVisible(false);
+   le_dataRange->setAccessibleName( tr( "Data Range" ) );
+   pb_dataRange->setVisible( false );
+   le_dataRange->setVisible( false );
    // Plateau
    pb_plateau     = us_pushbutton( tr( "Specify Plateau" ), false );
 pb_plateau->setVisible(false);
    le_plateau     = us_lineedit( "", 1, true );
+   le_plateau->setAccessibleName( tr( "Plateau" ) );
    // Baseline
    lb_baseline    = us_label(      tr( "Baseline:" ), -1 );
    le_baseline    = us_lineedit( "", 1, true );
+   le_baseline->setAccessibleName( tr( "Baseline" ) );
 
-//*NEW STUFF
-//QLabel*
+   //*NEW STUFF
+   //QLabel*
    lb_dataStart   = us_label(      tr( "Data Start:" ), -1 );
 //QLineEdit*
    le_dataStart   = us_lineedit( "", 1, true );
-//QPushButton*
+   le_dataStart->setAccessibleName( tr( "Data Start" ) );
+   //QPushButton*
    //pb_dataEnd     = us_pushbutton( tr( "Specify Range/End:" ), false );
-   pb_dataEnd     = us_pushbutton( tr( "Specify Top/Bottom:" ), false );
+   pb_dataEnd     = us_pushbutton( tr( "Top/Bottom:" ), false );
 
    lb_dataEnd     = us_label(      tr( "Data End:" ), -1 );
 //QLineEdit*
    le_dataEnd     = us_lineedit( "", 1, true );
-//QLabel*
+   le_dataEnd->setAccessibleName( tr( "Data End" ) );
+   //QLabel*
    lb_plateau     = us_label(      tr( "Plateau:" ), -1 );
 //QPushButton*
    pb_nextChan    = us_pushbutton( tr( "Next Triple" ), false );
@@ -312,6 +331,7 @@ pb_plateau->setVisible(false);
    lb_odlim       = us_label( tr( "OD Limit:" ), -1 );
    odlimit        = 1.8;
    ct_odlim       = us_counter( 3, 0.1, 50000.0, odlimit );
+   ct_odlim->setAccessibleName( tr( "OD Limit" ) );
    ct_odlim ->setFont( font );
    ct_odlim ->setSingleStep( 0.01 );
    ct_odlim ->setMinimumWidth( lwid );
@@ -344,8 +364,10 @@ pb_plateau->setVisible(false);
    pb_bll_modify       = us_pushbutton( tr( "Modify Baseline Correction for Selected Triple" ), false );
    lb_bll_slope        = us_label(      tr( "Slope:" ), -1 );
    le_bll_slope        = us_lineedit( "", 1, true );
+   le_bll_slope->setAccessibleName( tr( "Baseline Slope" ) );
    lb_bll_intercept    = us_label(      tr( "Y-intercept:" ), -1 );
    le_bll_intercept    = us_lineedit( "", 1, true );
+   le_bll_intercept->setAccessibleName( tr( "Baseline Y-intercept" ) );
    pb_bll_modify       -> setVisible( false );
    lb_baseline_correct -> setVisible( false );
    lb_bll_slope        -> setVisible( false );
@@ -617,6 +639,7 @@ pb_plateau->setVisible(false);
          true, "", "rainbow" );
    plot->getPicker()->setEnabled(false);
    data_plot->setMinimumSize( 600, 400 );
+   data_plot->setAccessibleName( tr( "Edit Data Plot" ) );
 
    data_plot->enableAxis( QwtPlot::xBottom, true );
    data_plot->enableAxis( QwtPlot::yLeft  , true );
@@ -636,6 +659,7 @@ pb_plateau->setVisible(false);
 
    QLabel* lb_status = us_label(      tr( "Status:" ) );
    le_status         = us_lineedit(   tr( "(no data loaded)" ), 1, true );
+   le_status->setAccessibleName( tr( "Status" ) );
    QPalette stpal;
    stpal.setColor( QPalette::Text, Qt::white );
    stpal.setColor( QPalette::Base, Qt::blue  );
@@ -862,6 +886,9 @@ US_Edit::US_Edit( QVector< US_DataIO::RawData > allData, QStringList  triples,
    bottom       = 0.0;
 DbgLv(1) << " 0)gap_fringe" << gap_fringe;
 
+   sdiag     = NULL;
+   sdiag_bll = NULL;
+  
    us_edit_auto_mode = false;
    us_edit_auto_mode_manual = true;
    us_edit_auto_mode_manual_bll = false;
@@ -873,7 +900,7 @@ DbgLv(1) << " 0)gap_fringe" << gap_fringe;
    setWindowTitle( tr( "Edit UltraScan Data Manually" ) );
    setPalette( US_GuiSettings::frameColor() );
 
-   QVBoxLayout* top = new QVBoxLayout( this );
+   top = new QVBoxLayout( this );
    top->setSpacing         ( 2 );
    top->setContentsMargins ( 2, 2, 2, 2 );
 
@@ -883,12 +910,28 @@ DbgLv(1) << " 0)gap_fringe" << gap_fringe;
    runInfo->addWidget( lb_info );
 
    le_info = us_lineedit( "", 1, true );
+   le_info->setAccessibleName( tr( "Run Info" ) );
    runInfo->addWidget( le_info );
 
    top->addLayout( runInfo );
 
    QHBoxLayout* main = new QHBoxLayout();
-   QVBoxLayout* left = new QVBoxLayout;
+   leftWidget = new QWidget();
+   // Unlike the other US_Edit constructors, this one (Manual Edit) shows
+   // Scan Controls + Edit Controls + Linear Baseline Correction all at
+   // once, so its natural/minimum content width is larger. A QHBoxLayout
+   // distributes any *extra* space beyond each side's minimum according to
+   // the stretch factors below (2:3) regardless of whether a side actually
+   // needs it -- so leftWidget was being inflated well past its own
+   // content's requirements just because it had a nonzero stretch share.
+   // Capping its horizontal size policy at Maximum means it only ever
+   // takes what its content actually needs; every leftover pixel goes to
+   // the plot side instead, keeping this panel's left column comparable in
+   // width to the other US_Edit constructors.
+   leftWidget->setSizePolicy( QSizePolicy::Maximum, QSizePolicy::Preferred );
+   QVBoxLayout* left = new QVBoxLayout( leftWidget );
+   left->setSpacing        ( 0 );
+   left->setContentsMargins( 0, 1, 0, 1 );
 
    // Start of Grid Layout
    QGridLayout* specs = new QGridLayout;
@@ -918,8 +961,10 @@ DbgLv(1) << " 0)gap_fringe" << gap_fringe;
    // Triple and Speed Step
    lb_triple       = us_label( tr( "Cell / Channel / Wavelength" ), -1 );
    cb_triple       = us_comboBox();
+   cb_triple->setAccessibleName( tr( "Cell, Channel, and Wavelength" ) );
    lb_rpms         = us_label( tr( "Speed Step (RPM) of triple" ), -1 );
    cb_rpms         = us_comboBox();
+   cb_rpms->setAccessibleName( tr( "Speed Step of Triple" ) );
    lb_rpms->setVisible( false );
    cb_rpms->setVisible( false );
 
@@ -927,6 +972,7 @@ DbgLv(1) << " 0)gap_fringe" << gap_fringe;
    QFont font( US_GuiSettings::fontFamily(), US_GuiSettings::fontSize() - 1 );
    lb_gaps         = us_label( tr( "Threshold for Scan Gaps" ), -1 );
    ct_gaps         = us_counter( 1, 10.0, 100.0 );
+   ct_gaps->setAccessibleName( tr( "Threshold for Scan Gaps" ) );
    ct_gaps->setSingleStep ( 10.0 );
    ct_gaps->setValue( 50.0 );
 
@@ -949,6 +995,7 @@ DbgLv(1) << " 0)gap_fringe" << gap_fringe;
    r_group->addButton( rb_custom, 1 );
    lb_ldelta       = us_label( tr( "%1 Index Increment:" ).arg( chlamb ), -1 );
    ct_ldelta       = us_counter( 1, 1, 100, 1 );
+   ct_ldelta->setAccessibleName( tr( "Wavelength Index Increment" ) );
    ct_ldelta->setFont( font );
    ct_ldelta->setSingleStep( 1 );
    ct_ldelta->setMinimumWidth( lwid );
@@ -968,8 +1015,11 @@ DbgLv(1) << " 0)gap_fringe" << gap_fringe;
       .arg( nlmbd ).arg( chlamb ).arg( lmbdlo ).arg( lmbdhi ).arg( lmbddl );
    le_lxrng       = us_lineedit( lxsmry, -1, true );
    cb_lplot       = us_comboBox();
+   cb_lplot->setAccessibleName( tr( "Plot Wavelength" ) );
    cb_lstart      = us_comboBox();
+   cb_lstart->setAccessibleName( tr( "Wavelength Start" ) );
    cb_lend        = us_comboBox();
+   cb_lend->setAccessibleName( tr( "Wavelength End" ) );
 
    cb_lplot ->setFont( font );
    cb_lstart->setFont( font );
@@ -1011,12 +1061,14 @@ lambdas << "250" << "350" << "450" << "550" << "580" << "583" << "650";
    lb_from->setAlignment( Qt::AlignVCenter | Qt::AlignRight );
 
    ct_from        = us_counter( 3, 0.0, 0.0 ); // Update range upon load
+   ct_from->setAccessibleName( tr( "Scan Focus From" ) );
    ct_from->setSingleStep( 1 );
 
    QLabel* lb_to  = us_label( tr( "to:" ), -1 );
    lb_to->setAlignment( Qt::AlignVCenter | Qt::AlignRight );
 
    ct_to          = us_counter( 3, 0.0, 0.0 ); // Update range upon load
+   ct_to->setAccessibleName( tr( "Scan Focus To" ) );
    ct_to->setSingleStep( 1 );
 
    // Exclude and Include pushbuttons
@@ -1036,18 +1088,21 @@ lambdas << "250" << "350" << "450" << "550" << "580" << "583" << "650";
    // Edit Triple:Speed display (Equilibrium only)
    lb_edtrsp      = us_label( tr( "Edit Triple:Speed :" ), -1, true );
    le_edtrsp      = us_lineedit( "" );
+   le_edtrsp->setAccessibleName( tr( "Edit Triple Speed" ) );
    lb_edtrsp->setVisible(  false );
    le_edtrsp->setVisible(  false );
 
    // Meniscus
    pb_meniscus    = us_pushbutton( tr( "Specify Meniscus" ), false );
    le_meniscus    = us_lineedit( "", 1 );
+   le_meniscus->setAccessibleName( tr( "Meniscus" ) );
    lb_meniscus    = us_label(      tr( "Meniscus:" ), -1 );
 
    // Air Gap (hidden by default)
    pb_airGap = us_pushbutton( tr( "Specify Air Gap" ), false );
    lb_airGap = us_label(      tr( "Air Gap:" ), -1 );
    le_airGap = us_lineedit( "", 1, true );
+   le_airGap->setAccessibleName( tr( "Air Gap" ) );
    pb_airGap->setVisible( false );
    lb_airGap->setHidden( true );
    le_airGap->setHidden( true );
@@ -1062,27 +1117,32 @@ lambdas << "250" << "350" << "450" << "550" << "580" << "583" << "650";
    // Data range
    pb_dataRange   = us_pushbutton( tr( "Specify Data Range" ), false );
    le_dataRange   = us_lineedit( "", 1, true );
-pb_dataRange->setVisible(false);
-le_dataRange->setVisible(false);
+   le_dataRange->setAccessibleName( tr( "Data Range" ) );
+   pb_dataRange->setVisible( false );
+   le_dataRange->setVisible( false );
    // Plateau
    pb_plateau     = us_pushbutton( tr( "Specify Plateau" ), false );
 pb_plateau->setVisible(false);
    le_plateau     = us_lineedit( "", 1, true );
+   le_plateau->setAccessibleName( tr( "Plateau" ) );
    // Baseline
    lb_baseline    = us_label(      tr( "Baseline:" ), -1 );
    le_baseline    = us_lineedit( "", 1, true );
+   le_baseline->setAccessibleName( tr( "Baseline" ) );
 
-//*NEW STUFF
-//QLabel*
+   //*NEW STUFF
+   //QLabel*
    lb_dataStart   = us_label(      tr( "Data Start:" ), -1 );
 //QLineEdit*
    le_dataStart   = us_lineedit( "", 1, true );
-//QPushButton*
+   le_dataStart->setAccessibleName( tr( "Data Start" ) );
+   //QPushButton*
    //pb_dataEnd     = us_pushbutton( tr( "Specify Range/End:" ), false );
-   pb_dataEnd     = us_pushbutton( tr( "Specify Top/Bottom:" ), false );
+   pb_dataEnd     = us_pushbutton( tr( "Top/Bottom:" ), false );
 //QLineEdit*
    le_dataEnd     = us_lineedit( "", 1, false );
-//QLabel*
+   le_dataEnd->setAccessibleName( tr( "Data End" ) );
+   //QLabel*
    lb_plateau     = us_label(      tr( "Plateau:" ), -1 );
 //QPushButton*
    pb_nextChan    = us_pushbutton( tr( "Next Triple" ), false );
@@ -1091,6 +1151,7 @@ pb_plateau->setVisible(false);
    lb_odlim       = us_label( tr( "OD Limit:" ), -1 );
    odlimit        = 1.8;
    ct_odlim       = us_counter( 3, 0.1, 50000.0, odlimit );
+   ct_odlim->setAccessibleName( tr( "OD Limit" ) );
    ct_odlim ->setFont( font );
    ct_odlim ->setSingleStep( 0.01 );
    ct_odlim ->setMinimumWidth( lwid );
@@ -1120,8 +1181,10 @@ pb_plateau->setVisible(false);
    pb_baseline_correct         = us_pushbutton( tr( "Correct Baseline" ), false );
    QLabel* lb_bll_slope        = us_label(      tr( "Slope:" ), -1 );
    le_bll_slope                = us_lineedit( "", 0, true );
+   le_bll_slope->setAccessibleName( tr( "Baseline Slope" ) );
    QLabel* lb_bll_intercept    = us_label(      tr( "Y-intercept:" ), -1 );
    le_bll_intercept            = us_lineedit( "", 0, true );
+   le_bll_intercept->setAccessibleName( tr( "Baseline Y-intercept" ) );
    connect( pb_baseline_correct, &QAbstractButton::clicked, this, &US_Edit::set_linear_baseline_corr );
 
    //Information field for baseline correction
@@ -1374,6 +1437,7 @@ pb_plateau->setVisible(false);
          true, "", "rainbow" );
    plot->getPicker()->setEnabled( false );
    data_plot->setMinimumSize( 600, 400 );
+   data_plot->setAccessibleName( tr( "Edit Data Plot" ) );
 
    data_plot->enableAxis( QwtPlot::xBottom, true );
    data_plot->enableAxis( QwtPlot::yLeft  , true );
@@ -1388,10 +1452,14 @@ pb_plateau->setVisible(false);
    left->addStretch();
    left->addLayout( buttons );
 
-   main->addLayout( left );
-   main->addLayout( plot );
-   main->setStretchFactor( left, 2 );
-   main->setStretchFactor( plot, 3 );
+   rightWidget = new QWidget();
+   QVBoxLayout* rightLayout = new QVBoxLayout( rightWidget );
+   rightLayout->setSpacing        ( 0 );
+   rightLayout->setContentsMargins( 0, 1, 0, 1 );
+   rightLayout->addLayout( plot );
+
+   main->addWidget( leftWidget, 2 );
+   main->addWidget( rightWidget, 3 );
    top ->addLayout( main );
 
    qDebug() << "US_Edit manual setup 1";
@@ -1457,6 +1525,9 @@ US_Edit::US_Edit( QVector< US_DataIO::RawData > allData, QStringList  triples,
    bottom       = 0.0;
 DbgLv(1) << " 0)gap_fringe" << gap_fringe;
 
+   sdiag     = NULL;
+   sdiag_bll = NULL;
+  
    us_edit_auto_mode = false;
    us_edit_auto_mode_manual = false;
    us_edit_auto_mode_manual_bll = true;
@@ -1468,7 +1539,7 @@ DbgLv(1) << " 0)gap_fringe" << gap_fringe;
    setWindowTitle( tr( "Edit UltraScan Data Manually" ) );
    setPalette( US_GuiSettings::frameColor() );
 
-   QVBoxLayout* top = new QVBoxLayout( this );
+   top = new QVBoxLayout( this );
    top->setSpacing         ( 2 );
    top->setContentsMargins ( 2, 2, 2, 2 );
 
@@ -1478,12 +1549,16 @@ DbgLv(1) << " 0)gap_fringe" << gap_fringe;
    runInfo->addWidget( lb_info );
 
    le_info = us_lineedit( "", 1, true );
+   le_info->setAccessibleName( tr( "Run Info" ) );
    runInfo->addWidget( le_info );
 
    top->addLayout( runInfo );
 
    QHBoxLayout* main = new QHBoxLayout();
-   QVBoxLayout* left = new QVBoxLayout;
+   leftWidget = new QWidget();
+   QVBoxLayout* left = new QVBoxLayout( leftWidget );
+   left->setSpacing        ( 0 );
+   left->setContentsMargins( 0, 1, 0, 1 );
 
    // Start of Grid Layout
    QGridLayout* specs = new QGridLayout;
@@ -1513,8 +1588,10 @@ DbgLv(1) << " 0)gap_fringe" << gap_fringe;
    // Triple and Speed Step
    lb_triple       = us_label( tr( "Cell / Channel / Wavelength" ), -1 );
    cb_triple       = us_comboBox();
+   cb_triple->setAccessibleName( tr( "Cell, Channel, and Wavelength" ) );
    lb_rpms         = us_label( tr( "Speed Step (RPM) of triple" ), -1 );
    cb_rpms         = us_comboBox();
+   cb_rpms->setAccessibleName( tr( "Speed Step of Triple" ) );
    lb_rpms->setVisible( false );
    cb_rpms->setVisible( false );
 
@@ -1522,6 +1599,7 @@ DbgLv(1) << " 0)gap_fringe" << gap_fringe;
    QFont font( US_GuiSettings::fontFamily(), US_GuiSettings::fontSize() - 1 );
    lb_gaps         = us_label( tr( "Threshold for Scan Gaps" ), -1 );
    ct_gaps         = us_counter( 1, 10.0, 100.0 );
+   ct_gaps->setAccessibleName( tr( "Threshold for Scan Gaps" ) );
    ct_gaps->setSingleStep ( 10.0 );
    ct_gaps->setValue( 50.0 );
 
@@ -1544,6 +1622,7 @@ DbgLv(1) << " 0)gap_fringe" << gap_fringe;
    r_group->addButton( rb_custom, 1 );
    lb_ldelta       = us_label( tr( "%1 Index Increment:" ).arg( chlamb ), -1 );
    ct_ldelta       = us_counter( 1, 1, 100, 1 );
+   ct_ldelta->setAccessibleName( tr( "Wavelength Index Increment" ) );
    ct_ldelta->setFont( font );
    ct_ldelta->setSingleStep( 1 );
    ct_ldelta->setMinimumWidth( lwid );
@@ -1563,8 +1642,11 @@ DbgLv(1) << " 0)gap_fringe" << gap_fringe;
       .arg( nlmbd ).arg( chlamb ).arg( lmbdlo ).arg( lmbdhi ).arg( lmbddl );
    le_lxrng       = us_lineedit( lxsmry, -1, true );
    cb_lplot       = us_comboBox();
+   cb_lplot->setAccessibleName( tr( "Plot Wavelength" ) );
    cb_lstart      = us_comboBox();
+   cb_lstart->setAccessibleName( tr( "Wavelength Start" ) );
    cb_lend        = us_comboBox();
+   cb_lend->setAccessibleName( tr( "Wavelength End" ) );
 
    cb_lplot ->setFont( font );
    cb_lstart->setFont( font );
@@ -1606,12 +1688,14 @@ lambdas << "250" << "350" << "450" << "550" << "580" << "583" << "650";
    lb_from->setAlignment( Qt::AlignVCenter | Qt::AlignRight );
 
    ct_from        = us_counter( 3, 0.0, 0.0 ); // Update range upon load
+   ct_from->setAccessibleName( tr( "Scan Focus From" ) );
    ct_from->setSingleStep( 1 );
 
    QLabel* lb_to  = us_label( tr( "to:" ), -1 );
    lb_to->setAlignment( Qt::AlignVCenter | Qt::AlignRight );
 
    ct_to          = us_counter( 3, 0.0, 0.0 ); // Update range upon load
+   ct_to->setAccessibleName( tr( "Scan Focus To" ) );
    ct_to->setSingleStep( 1 );
 
    // Exclude and Include pushbuttons
@@ -1631,18 +1715,21 @@ lambdas << "250" << "350" << "450" << "550" << "580" << "583" << "650";
    // Edit Triple:Speed display (Equilibrium only)
    lb_edtrsp      = us_label( tr( "Edit Triple:Speed :" ), -1, true );
    le_edtrsp      = us_lineedit( "" );
+   le_edtrsp->setAccessibleName( tr( "Edit Triple Speed" ) );
    lb_edtrsp->setVisible(  false );
    le_edtrsp->setVisible(  false );
 
    // Meniscus
    pb_meniscus    = us_pushbutton( tr( "Specify Meniscus" ), false );
    le_meniscus    = us_lineedit( "", 1 );
+   le_meniscus->setAccessibleName( tr( "Meniscus" ) );
    lb_meniscus    = us_label(      tr( "Meniscus:" ), -1 );
 
    // Air Gap (hidden by default)
    pb_airGap = us_pushbutton( tr( "Specify Air Gap" ), false );
    lb_airGap = us_label(      tr( "Air Gap:" ), -1 );
    le_airGap = us_lineedit( "", 1, true );
+   le_airGap->setAccessibleName( tr( "Air Gap" ) );
    pb_airGap->setVisible( false );
    lb_airGap->setHidden( true );
    le_airGap->setHidden( true );
@@ -1657,27 +1744,32 @@ lambdas << "250" << "350" << "450" << "550" << "580" << "583" << "650";
    // Data range
    pb_dataRange   = us_pushbutton( tr( "Specify Data Range" ), false );
    le_dataRange   = us_lineedit( "", 1, true );
-pb_dataRange->setVisible(false);
-le_dataRange->setVisible(false);
+   le_dataRange->setAccessibleName( tr( "Data Range" ) );
+   pb_dataRange->setVisible( false );
+   le_dataRange->setVisible( false );
    // Plateau
    pb_plateau     = us_pushbutton( tr( "Specify Plateau" ), false );
 pb_plateau->setVisible(false);
    le_plateau     = us_lineedit( "", 1, true );
+   le_plateau->setAccessibleName( tr( "Plateau" ) );
    // Baseline
    lb_baseline    = us_label(      tr( "Baseline:" ), -1 );
    le_baseline    = us_lineedit( "", 1, true );
+   le_baseline->setAccessibleName( tr( "Baseline" ) );
 
-//*NEW STUFF
-//QLabel*
+   //*NEW STUFF
+   //QLabel*
    lb_dataStart   = us_label(      tr( "Data Start:" ), -1 );
 //QLineEdit*
    le_dataStart   = us_lineedit( "", 1, true );
-//QPushButton*
+   le_dataStart->setAccessibleName( tr( "Data Start" ) );
+   //QPushButton*
    //pb_dataEnd     = us_pushbutton( tr( "Specify Range/End:" ), false );
-   pb_dataEnd     = us_pushbutton( tr( "Specify Top/Bottom:" ), false );
+   pb_dataEnd     = us_pushbutton( tr( "Top/Bottom:" ), false );
 //QLineEdit*
    le_dataEnd     = us_lineedit( "", 1, false );
-//QLabel*
+   le_dataEnd->setAccessibleName( tr( "Data End" ) );
+   //QLabel*
    lb_plateau     = us_label(      tr( "Plateau:" ), -1 );
 //QPushButton*
    pb_nextChan    = us_pushbutton( tr( "Next Triple" ), false );
@@ -1686,6 +1778,7 @@ pb_plateau->setVisible(false);
    lb_odlim       = us_label( tr( "OD Limit:" ), -1 );
    odlimit        = 1.8;
    ct_odlim       = us_counter( 3, 0.1, 50000.0, odlimit );
+   ct_odlim->setAccessibleName( tr( "OD Limit" ) );
    ct_odlim ->setFont( font );
    ct_odlim ->setSingleStep( 0.01 );
    ct_odlim ->setMinimumWidth( lwid );
@@ -1715,8 +1808,10 @@ pb_plateau->setVisible(false);
    pb_baseline_correct         = us_pushbutton( tr( "Correct Baseline" ), true );
    QLabel* lb_bll_slope        = us_label(      tr( "Slope:" ), -1 );
    le_bll_slope                = us_lineedit( "", 0, true );
+   le_bll_slope->setAccessibleName( tr( "Baseline Slope" ) );
    QLabel* lb_bll_intercept    = us_label(      tr( "Y-intercept:" ), -1 );
    le_bll_intercept            = us_lineedit( "", 0, true );
+   le_bll_intercept->setAccessibleName( tr( "Baseline Y-intercept" ) );
    connect( pb_baseline_correct, &QAbstractButton::clicked, this, &US_Edit::set_linear_baseline_corr );
 
    //Information field for baseline correction
@@ -1984,6 +2079,7 @@ pb_plateau->setVisible(false);
          true, "", "rainbow" );
    plot->getPicker()->setEnabled(false);
    data_plot->setMinimumSize( 600, 400 );
+   data_plot->setAccessibleName( tr( "Edit Data Plot" ) );
 
    data_plot->enableAxis( QwtPlot::xBottom, true );
    data_plot->enableAxis( QwtPlot::yLeft  , true );
@@ -1998,10 +2094,14 @@ pb_plateau->setVisible(false);
    left->addStretch();
    left->addLayout( buttons );
 
-   main->addLayout( left );
-   main->addLayout( plot );
-   main->setStretchFactor( left, 2 );
-   main->setStretchFactor( plot, 3 );
+   rightWidget = new QWidget();
+   QVBoxLayout* rightLayout = new QVBoxLayout( rightWidget );
+   rightLayout->setSpacing        ( 0 );
+   rightLayout->setContentsMargins( 0, 1, 0, 1 );
+   rightLayout->addLayout( plot );
+
+   main->addWidget( leftWidget, 2 );
+   main->addWidget( rightWidget, 3 );
    top ->addLayout( main );
 
    qDebug() << "US_Edit manual setup 1";
@@ -2066,8 +2166,10 @@ US_Edit::US_Edit() : US_Widgets()
    lb_baseline_correct = us_banner( tr( "Linear Baseline Correction" ) );
    lb_bll_slope        = us_label( tr( "Slope:" ), -1 );
    le_bll_slope        = us_lineedit( "", 1, true );
+   le_bll_slope->setAccessibleName( tr( "Baseline Slope" ) );
    lb_bll_intercept    = us_label( tr( "Y-intercept:" ), -1 );
    le_bll_intercept    = us_lineedit( "", 1, true );
+   le_bll_intercept->setAccessibleName( tr( "Baseline Y-intercept" ) );
    pb_pass             = us_pushbutton( tr( "Accept Changes for a Channel" ), false );
 
    expType_manual = "";
@@ -2092,6 +2194,9 @@ US_Edit::US_Edit() : US_Widgets()
    bottom       = 0.0;
 DbgLv(1) << " 0)gap_fringe" << gap_fringe;
 
+   sdiag     = NULL;
+   sdiag_bll = NULL;
+  
    us_edit_auto_mode = false;
    us_edit_auto_mode_manual = false;
    us_edit_auto_mode_manual_bll = false;
@@ -2103,7 +2208,7 @@ DbgLv(1) << " 0)gap_fringe" << gap_fringe;
    setWindowTitle( tr( "Edit UltraScan Data" ) );
    setPalette( US_GuiSettings::frameColor() );
 
-   QVBoxLayout* top = new QVBoxLayout( this );
+   top = new QVBoxLayout( this );
    top->setSpacing         ( 2 );
    top->setContentsMargins ( 2, 2, 2, 2 );
 
@@ -2113,12 +2218,16 @@ DbgLv(1) << " 0)gap_fringe" << gap_fringe;
    runInfo->addWidget( lb_info );
 
    le_info = us_lineedit( "", 1, true );
+   le_info->setAccessibleName( tr( "Run Info" ) );
    runInfo->addWidget( le_info );
 
    top->addLayout( runInfo );
 
    QHBoxLayout* main = new QHBoxLayout();
-   QVBoxLayout* left = new QVBoxLayout;
+   leftWidget = new QWidget();
+   QVBoxLayout* left = new QVBoxLayout( leftWidget );
+   left->setSpacing        ( 0 );
+   left->setContentsMargins( 0, 1, 0, 1 );
 
    // Start of Grid Layout
    QGridLayout* specs = new QGridLayout;
@@ -2148,8 +2257,10 @@ DbgLv(1) << " 0)gap_fringe" << gap_fringe;
    // Triple and Speed Step
    lb_triple       = us_label( tr( "Cell / Channel / Wavelength" ), -1 );
    cb_triple       = us_comboBox();
+   cb_triple->setAccessibleName( tr( "Cell, Channel, and Wavelength" ) );
    lb_rpms         = us_label( tr( "Speed Step (RPM) of triple" ), -1 );
    cb_rpms         = us_comboBox();
+   cb_rpms->setAccessibleName( tr( "Speed Step of Triple" ) );
    lb_rpms->setVisible( false );
    cb_rpms->setVisible( false );
 
@@ -2157,6 +2268,7 @@ DbgLv(1) << " 0)gap_fringe" << gap_fringe;
    QFont font( US_GuiSettings::fontFamily(), US_GuiSettings::fontSize() - 1 );
    lb_gaps         = us_label( tr( "Threshold for Scan Gaps" ), -1 );
    ct_gaps         = us_counter( 1, 10.0, 100.0 );
+   ct_gaps->setAccessibleName( tr( "Threshold for Scan Gaps" ) );
    ct_gaps->setSingleStep ( 10.0 );
    ct_gaps->setValue( 50.0 );
 
@@ -2179,6 +2291,7 @@ DbgLv(1) << " 0)gap_fringe" << gap_fringe;
    r_group->addButton( rb_custom, 1 );
    lb_ldelta       = us_label( tr( "%1 Index Increment:" ).arg( chlamb ), -1 );
    ct_ldelta       = us_counter( 1, 1, 100, 1 );
+   ct_ldelta->setAccessibleName( tr( "Wavelength Index Increment" ) );
    ct_ldelta->setFont( font );
    ct_ldelta->setSingleStep( 1 );
    ct_ldelta->setMinimumWidth( lwid );
@@ -2198,8 +2311,11 @@ DbgLv(1) << " 0)gap_fringe" << gap_fringe;
       .arg( nlmbd ).arg( chlamb ).arg( lmbdlo ).arg( lmbdhi ).arg( lmbddl );
    le_lxrng       = us_lineedit( lxsmry, -1, true );
    cb_lplot       = us_comboBox();
+   cb_lplot->setAccessibleName( tr( "Plot Wavelength" ) );
    cb_lstart      = us_comboBox();
+   cb_lstart->setAccessibleName( tr( "Wavelength Start" ) );
    cb_lend        = us_comboBox();
+   cb_lend->setAccessibleName( tr( "Wavelength End" ) );
 
    cb_lplot ->setFont( font );
    cb_lstart->setFont( font );
@@ -2241,12 +2357,14 @@ lambdas << "250" << "350" << "450" << "550" << "580" << "583" << "650";
    lb_from->setAlignment( Qt::AlignVCenter | Qt::AlignRight );
 
    ct_from        = us_counter( 3, 0.0, 0.0 ); // Update range upon load
+   ct_from->setAccessibleName( tr( "Scan Focus From" ) );
    ct_from->setSingleStep( 1 );
 
    QLabel* lb_to  = us_label( tr( "to:" ), -1 );
    lb_to->setAlignment( Qt::AlignVCenter | Qt::AlignRight );
 
    ct_to          = us_counter( 3, 0.0, 0.0 ); // Update range upon load
+   ct_to->setAccessibleName( tr( "Scan Focus To" ) );
    ct_to->setSingleStep( 1 );
 
    // Exclude and Include pushbuttons
@@ -2263,18 +2381,21 @@ lambdas << "250" << "350" << "450" << "550" << "580" << "583" << "650";
    // Edit Triple:Speed display (Equilibrium only)
    lb_edtrsp      = us_label( tr( "Edit Triple:Speed :" ), -1, true );
    le_edtrsp      = us_lineedit( "" );
+   le_edtrsp->setAccessibleName( tr( "Edit Triple Speed" ) );
    lb_edtrsp->setVisible(  false );
    le_edtrsp->setVisible(  false );
 
    // Meniscus
    pb_meniscus    = us_pushbutton( tr( "Specify Meniscus" ), false );
    le_meniscus    = us_lineedit( "", 1 );
+   le_meniscus->setAccessibleName( tr( "Meniscus" ) );
    lb_meniscus    = us_label(      tr( "Meniscus:" ), -1 );
 
    // Air Gap (hidden by default)
    pb_airGap = us_pushbutton( tr( "Specify Air Gap" ), false );
    lb_airGap = us_label(      tr( "Air Gap:" ), -1 );
    le_airGap = us_lineedit( "", 1, true );
+   le_airGap->setAccessibleName( tr( "Air Gap" ) );
    pb_airGap->setVisible( false );
    lb_airGap->setHidden( true );
    le_airGap->setHidden( true );
@@ -2282,27 +2403,32 @@ lambdas << "250" << "350" << "450" << "550" << "580" << "583" << "650";
    // Data range
    pb_dataRange   = us_pushbutton( tr( "Specify Data Range" ), false );
    le_dataRange   = us_lineedit( "", 1, true );
-pb_dataRange->setVisible(false);
-le_dataRange->setVisible(false);
+   le_dataRange->setAccessibleName( tr( "Data Range" ) );
+   pb_dataRange->setVisible( false );
+   le_dataRange->setVisible( false );
    // Plateau
    pb_plateau     = us_pushbutton( tr( "Specify Plateau" ), false );
 pb_plateau->setVisible(false);
    le_plateau     = us_lineedit( "", 1, true );
+   le_plateau->setAccessibleName( tr( "Plateau" ) );
    // Baseline
    lb_baseline    = us_label(      tr( "Baseline:" ), -1 );
    le_baseline    = us_lineedit( "", 1, true );
+   le_baseline->setAccessibleName( tr( "Baseline" ) );
 
-//*NEW STUFF
-//QLabel*
+   //*NEW STUFF
+   //QLabel*
    lb_dataStart   = us_label(      tr( "Data Start:" ), -1 );
 //QLineEdit*
    le_dataStart   = us_lineedit( "", 1, true );
-//QPushButton*
+   le_dataStart->setAccessibleName( tr( "Data Start" ) );
+   //QPushButton*
    //pb_dataEnd     = us_pushbutton( tr( "Specify Range/End:" ), false );
-   pb_dataEnd     = us_pushbutton( tr( "Specify Top/Bottom:" ), false );
+   pb_dataEnd     = us_pushbutton( tr( "Top/Bottom:" ), false );
 //QLineEdit*
    le_dataEnd     = us_lineedit( "", 1, false );
-//QLabel*
+   le_dataEnd->setAccessibleName( tr( "Data End" ) );
+   //QLabel*
    lb_plateau     = us_label(      tr( "Plateau:" ), -1 );
 //QPushButton*
    pb_nextChan    = us_pushbutton( tr( "Next Triple" ), false );
@@ -2311,6 +2437,7 @@ pb_plateau->setVisible(false);
    lb_odlim       = us_label( tr( "OD Limit:" ), -1 );
    odlimit        = 1.8;
    ct_odlim       = us_counter( 3, 0.1, 50000.0, odlimit );
+   ct_odlim->setAccessibleName( tr( "OD Limit" ) );
    ct_odlim ->setFont( font );
    ct_odlim ->setSingleStep( 0.01 );
    ct_odlim ->setMinimumWidth( lwid );
@@ -2477,6 +2604,7 @@ pb_plateau->setVisible(false);
          true, "", "rainbow" );
    plot->getPicker()->setEnabled(false);
    data_plot->setMinimumSize( 600, 400 );
+   data_plot->setAccessibleName( tr( "Edit Data Plot" ) );
 
    data_plot->enableAxis( QwtPlot::xBottom, true );
    data_plot->enableAxis( QwtPlot::yLeft  , true );
@@ -2491,10 +2619,14 @@ pb_plateau->setVisible(false);
    left->addStretch();
    left->addLayout( buttons );
 
-   main->addLayout( left );
-   main->addLayout( plot );
-   main->setStretchFactor( left, 2 );
-   main->setStretchFactor( plot, 3 );
+   rightWidget = new QWidget();
+   QVBoxLayout* rightLayout = new QVBoxLayout( rightWidget );
+   rightLayout->setSpacing        ( 0 );
+   rightLayout->setContentsMargins( 0, 1, 0, 1 );
+   rightLayout->addLayout( plot );
+
+   main->addWidget( leftWidget, 2 );
+   main->addWidget( rightWidget, 3 );
    top ->addLayout( main );
 
    //hide abde base line corr. for now
@@ -2960,6 +3092,13 @@ void US_Edit::gap_check( void )
    }
 }
 
+// For VEL-MWL:GMP
+void US_Edit::load_auto_velmwl( QMap<QString, QString>& details_at_editing )
+{
+   velmwl_edit_ok = false; // set true only after every triple's save succeeded
+   load_auto( details_at_editing );
+}
+
 // Load an AUC data set
 void US_Edit::load_auto( QMap < QString, QString > & details_at_editing )
 {
@@ -3003,6 +3142,8 @@ void US_Edit::load_auto( QMap < QString, QString > & details_at_editing )
   qDebug() << "autoflowID_passed, dataSource, ProtocolName_auto, autoflow_expType : "
 	   << autoflowID_passed << dataSource << ProtocolName_auto << autoflow_expType;
 
+  auto_flag_ = details_at_editing["auto_flag_edit"];
+
   // Deal with different filenames if any.... //////////////////////////
   filename_runID_passed = details_at_editing[ "filename" ];
   runType_combined_IP_RI = false;
@@ -3035,6 +3176,14 @@ void US_Edit::load_auto( QMap < QString, QString > & details_at_editing )
 
       qDebug() << "IN EDIT - filename_base for combined runs: " << filename_runID_auto_base;
 
+    }
+
+    if ( !auto_flag_.isEmpty() && auto_flag_ == "VELMWL_EDIT_SIM_ANALYSIS" )
+    {
+       qDebug() << "[US_Edit: VEL-MWL:GMP], auto_flag_, filename : " << auto_flag_ << filename_runID_passed;
+       qDebug() << "[US_Edit: VEL-MWL:GMP], " << details_at_editing["meniscus"] << details_at_editing["data_left"]
+                << details_at_editing["data_right"] << details_at_editing["bottom"] << details_at_editing["baseline"]
+                << details_at_editing["plateau"] << details_at_editing["od_limit"];
     }
 
   ///////////////////////////////////////////////////////////////////////
@@ -3690,8 +3839,79 @@ DbgLv(1) << "IS-MWL: celchns size" << celchns.size();
    //all_loaded = true;
    le_status->setText( tr( "Data loaded..." ) );
 
-   emit data_loaded(); 
-   
+   emit data_loaded();
+
+   /******* FOR VEL-MWL ext *********************************************/
+   if ( !auto_flag_.isEmpty() && auto_flag_ == "VELMWL_EDIT_SIM_ANALYSIS" )
+   {
+      /** DEBUG **********************************************/
+      iwavl_edit_ref.resize( cb_triple->count() );
+      iwavl_edit_ref_index.resize( cb_triple->count() );
+      triple_plot_first_time.resize( cb_triple->count() );
+      for ( int trx = 0; trx < cb_triple->count(); trx++ )
+      {
+         iwavl_edit_ref[trx]         = 0;
+         iwavl_edit_ref_index[trx]   = 0;
+         triple_plot_first_time[trx] = 0;
+      }
+      /** DEBUG ********************************************/
+
+      for ( int trx = 0; trx < cb_triple->count(); trx++ )
+      {
+         QString triple_name = cb_triple->itemText( trx );
+
+         meniscus    = details_at_editing_local["meniscus"].toDouble();
+         range_left  = details_at_editing_local["data_left"].toDouble();
+         range_right = details_at_editing_local["data_right"].toDouble();
+         bottom      = details_at_editing_local["bottom"].toDouble();
+         baseline    = details_at_editing_local["baseline"].toDouble();
+         plateau     = details_at_editing_local["plateau"].toDouble();
+         baseline_od = details_at_editing_local["od_limit"].toDouble();
+
+         triple_info.clear();
+         triple_info << QString::number( meniscus ) << QString::number( range_left ) << QString::number( range_right )
+                     << QString::number( plateau ) << QString::number( baseline ) << QString::number( baseline_od )
+                     << QString( "spike_false" );
+
+         editProfile[triple_name] = triple_info;
+         qDebug() << "[FOR VEL-MWL]: triple_info -- " << triple_info;
+
+         /** DEBUG ********************************************/
+         plotndx                   = cb_lplot->currentIndex();
+         iwavl_edit_ref[trx]       = expi_wvlns[plotndx];
+         iwavl_edit_ref_index[trx] = plotndx;
+
+         QStringList scan_excl               = { "0", "0", "1" };
+         editProfile_scans_excl[triple_name] = scan_excl;
+
+         le_meniscus->setText( QString::number( meniscus, 'f', 3 ) );
+         le_dataStart->setText( QString::number( range_left, 'f', 3 ) );
+         le_dataEnd->setText( QString::number( range_right, 'f', 3 ) );
+         step = PLATEAU;
+         next_step();
+         /** DEBUG ********************************************/
+      }
+      if ( editProfile.count() == cb_triple->count() )
+      {
+         all_loaded = true;
+      }
+      /** DEBUG *********************************************/
+      new_triple_auto( 0 );
+      // new_triple(0);
+      /** DEBUG *********************************************/
+
+      // and save edit profiles
+      bool all_saved = ( cb_triple->count() > 0 );
+      for ( int trx = 0; trx < cb_triple->count(); trx++ )
+      {
+         write_mwl_auto( trx );
+         all_saved = all_saved && mwl_auto_write_ok;
+      }
+      velmwl_edit_ok = all_saved;
+
+      return;
+   }
+
    // editProfile.clear();
    // centerpieceParameters.clear();
    // aprofileParameters.clear();
@@ -6494,6 +6714,14 @@ void US_Edit::plot_current( int index )
 
    data_plot->setTitle( title );
 
+   // Re-fit the (possibly multi-line) title's font to the plot's current
+   // width now that its text has changed, rather than waiting for the
+   // next resize to notice.
+   if ( plot != NULL )
+   {
+      plot->fitTitleToWidth();
+   }
+
    // Initialize include list
    init_includes();
 
@@ -8054,6 +8282,12 @@ DbgLv(1) << "PlMwl:  title" << title;
 
    data_plot->setTitle    ( title );
 
+   // See the matching comment near the other setTitle() call: re-fit the
+   // title's font to the plot's current width immediately.
+   if ( plot != NULL )
+   {
+      plot->fitTitleToWidth();
+   }
 
    data_plot->detachItems ( QwtPlotItem::Rtti_PlotCurve );
    v_line = NULL;
@@ -10165,6 +10399,13 @@ void US_Edit::correct_bll_for_triple_auto( void )
   leftWidget  -> hide();
   rightWidget -> hide();
 
+  if ( sdiag_bll != NULL )
+    {
+      sdiag_bll->disconnect();
+      delete sdiag_bll;
+      sdiag_bll = NULL;
+    }
+
   int currChIndex = cb_triple->currentIndex();
   //int plotInd = index_data();
   int plotInd = plotndx;
@@ -10188,18 +10429,37 @@ void US_Edit::correct_bll_for_triple_auto( void )
 
   connect( sdiag_bll, &US_Edit::restore_main_view, this, &US_Edit::restore_view );
 
+  // Add the sub-panel into this widget's own top-level layout (the same
+  // QVBoxLayout that manages upperWidget/leftWidget/rightWidget). Since
+  // those are hidden above, and hidden widgets take no space in a Qt
+  // layout by default, sdiag_bll automatically receives the full area they
+  // vacated -- filled correctly immediately, and kept correct on every
+  // future resize of this widget, entirely by Qt's own layout engine (no
+  // manual move()/resize() bookkeeping, and no dependence on this->size()
+  // being settled yet at this point).
+  top->addWidget( sdiag_bll );
   sdiag_bll->show();
 
-  int offset = 20;
-  sdiag_bll->move(2*offset, 2*offset);
-  int newWidth  = this->width() - 3*offset;
-  int newHeight = this->height() - 4*offset;
-  sdiag_bll->setMaximumSize( newWidth, newHeight );
-  sdiag_bll->adjustSize();
-  sdiag_bll->resize( QSize(newWidth, newHeight ));
-  sdiag_bll->update();
-  sdiag_bll->update();
+  // Adding sdiag_bll to our layout only lets it fill *this* widget
+  // correctly -- but this widget's own size is itself only ever recomputed
+  // by US_EditingGui::resizeEvent(), which only runs in response to an
+  // actual resize event delivered to the top-level main window (see also
+  // US_EditingGui::resize_main(), connected to sdiag's data_loaded signal,
+  // which nudges the main window's size by 1px for exactly this reason).
+  // If this panel hasn't been through that cascade recently, its own size
+  // can still be stale here. Trigger the same nudge ourselves, via the
+  // actual top-level window rather than a hard dependency on
+  // US_EditingGui/mainw, so the whole chain -- main window -> this widget
+  // -> our layout -> sdiag_bll -- recomputes with accurate, current
+  // geometry every time this panel is opened.
+  QWidget* topLevel = this->window();
 
+  if ( topLevel != NULL )
+    {
+      QSize sz = topLevel->size();
+      topLevel->resize( sz.width() + 1, sz.height() + 1 );
+      topLevel->resize( sz );
+    }
 }
 
 
@@ -10213,6 +10473,7 @@ void US_Edit::manual_edit_auto( void )
 
   if ( sdiag != NULL )
     {
+      sdiag->disconnect();
       delete sdiag;
       sdiag = NULL;
     }
@@ -10244,19 +10505,62 @@ void US_Edit::manual_edit_auto( void )
 
   //connect( sdiag, SIGNAL( man_data_loaded(  ) ), this, SLOT( resize_main ( ) ) );
 
-  int offset = 20;
-  sdiag->move(2*offset, 2*offset);
-  int newWidth  = this->width() - 3*offset;
-  int newHeight = this->height() - 4*offset;
-  //sdiag->setMinimumSize( newWidth, newHeight );
-  //sdiag->setMaximumSize( newWidth, newHeight );
-  //sdiag->adjustSize();
-  sdiag->resize( QSize(newWidth, newHeight ));
-  sdiag->update();
-
+  // Add the sub-panel into this widget's own top-level layout (the same
+  // QVBoxLayout that manages upperWidget/leftWidget/rightWidget). Since
+  // those are hidden above, and hidden widgets take no space in a Qt
+  // layout by default, sdiag automatically receives the full area they
+  // vacated -- filled correctly immediately, and kept correct on every
+  // future resize of this widget, entirely by Qt's own layout engine (no
+  // manual move()/resize() bookkeeping, and no dependence on this->size()
+  // being settled yet at this point).
+  top->addWidget( sdiag );
   sdiag->show();
-  //sdiag->trigger_resize();
-  //resize_main ( );
+
+  // See the matching comment in correct_bll_for_triple_auto(): force the
+  // same "nudge the top-level window size" resize cascade that
+  // US_EditingGui::resize_main() already relies on elsewhere in this
+  // codebase, so this widget's own size (and therefore sdiag's, via our
+  // layout) is recomputed from current, accurate geometry rather than
+  // whatever it happened to be the last time an actual resize event came
+  // through.
+  QWidget* topLevel = this->window();
+
+  if ( topLevel != NULL )
+    {
+      QSize sz = topLevel->size();
+      topLevel->resize( sz.width() + 1, sz.height() + 1 );
+      topLevel->resize( sz );
+    }
+}
+
+// Manual Edit's left column packs in noticeably more controls (Scan
+// Controls + Edit Controls + Linear Baseline Correction all shown at
+// once) than the other US_Edit constructors, giving it a naturally wider
+// minimum/preferred size. A size-policy cap (QSizePolicy::Maximum) only
+// limits growth *beyond* a widget's sizeHint -- it can't shrink the
+// widget below what its own content already claims to need, which is
+// exactly the ~524px this grid's content was reporting. So enforce a
+// hard ceiling here instead, proportional to this panel's own current
+// width, gated to only the Manual Edit constructor (us_edit_auto_mode_manual)
+// so the other constructors -- whose left columns are already a
+// reasonable size -- are left untouched.
+void US_Edit::resizeEvent( QResizeEvent* event )
+{
+  QWidget::resizeEvent( event );
+
+  if ( us_edit_auto_mode_manual && leftWidget != NULL )
+    {
+      leftWidget->setMaximumWidth( qMax( 200, int( this->width() * 0.40 ) ) );
+    }
+
+  // US_Plot::fitTitleToWidth() is opt-in, not automatic, so re-fit the
+  // plot title's font here on every resize of this panel -- otherwise it
+  // would only re-fit when the title text itself changes (switching
+  // triples/channels), not on a plain window resize.
+  if ( plot != NULL )
+    {
+      plot->fitTitleToWidth();
+    }
 }
 
 // void US_Edit::trigger_resize()
@@ -10273,6 +10577,33 @@ void US_Edit::restore_view( void )
   upperWidget -> show();
   leftWidget  -> show();
   rightWidget -> show();
+
+  // This slot fires when the nested manual-edit sub-panel (sdiag or
+  // sdiag_bll) is cancelled (see close_manual_edit()), via the
+  // restore_main_view signal both sub-panels are connected to. Identify
+  // which one sent it and tear it down: remove it from the top layout and
+  // null the pointer immediately (so any subsequent manual-edit invocation
+  // doesn't touch a stale/closing widget), and defer the actual delete,
+  // since we're still inside a slot invoked synchronously from that
+  // widget's own click handler (close_manual_edit() still runs `close()`
+  // on it after this returns) -- deleting it here outright would be a
+  // use-after-free.
+  QObject* src = sender();
+
+  if ( sdiag != NULL && src == sdiag )
+    {
+      sdiag->disconnect();
+      top->removeWidget( sdiag );
+      sdiag->deleteLater();
+      sdiag = NULL;
+    }
+  else if ( sdiag_bll != NULL && src == sdiag_bll )
+    {
+      sdiag_bll->disconnect();
+      top->removeWidget( sdiag_bll );
+      sdiag_bll->deleteLater();
+      sdiag_bll = NULL;
+    }
 }
 
 // [Modify-per-triple]Update triple's Linear-baseline-correction edit params with those obtained manually...
@@ -10656,12 +10987,8 @@ void US_Edit::write_auto( void )
    gmp_submitter_map  = pw_at.getPasswd_auditTrail( "GMP Run EDIT Form", "Please fill out GMP run EDIT form:", user_submitter );
 
    int gmp_submitter_map_size = gmp_submitter_map.keys().size();
-   qDebug() << "Submitter map: "
-	    << gmp_submitter_map.keys()  << gmp_submitter_map.keys().size() << gmp_submitter_map_size
-	    << gmp_submitter_map.keys().isEmpty()
-	    << gmp_submitter_map[ "User:" ]
-	    << gmp_submitter_map[ "Comment:" ]
-	    << gmp_submitter_map[ "Master Password:" ];
+   qDebug() << "Submitter map: " << gmp_submitter_map.keys() << gmp_submitter_map.keys().size() << gmp_submitter_map_size
+            << gmp_submitter_map.keys().isEmpty() << gmp_submitter_map["User:"] << gmp_submitter_map["Comment:"];
 
    if ( gmp_submitter_map_size == 0 ||  gmp_submitter_map.keys().isEmpty() )
      {
@@ -11973,13 +12300,11 @@ DbgLv(1) << "AppPri: IN  dkdb" << disk_controls->db();
          return;
       }
 
-      QStringList q( "get_rawDataID_from_GUID" );
+      int     rawDataIDnum = -1;
+      QString opError;
 
-      q << US_Util::uuid_unparse( (uchar*)data.rawGUID );
-      dbP->query( q );
-
-      // Error check
-      if ( dbP->lastErrno() != US_DB2::OK )
+      if ( US_ConvertIO::findRawDataId( dbP, US_Util::uuid_unparse( (uchar*) data.rawGUID ), rawDataIDnum, opError ) !=
+           IUS_DB2::OK )
       {
          QMessageBox::warning( this,
            tr( "AUC Data is not in DB" ),
@@ -11988,10 +12313,8 @@ DbgLv(1) << "AppPri: IN  dkdb" << disk_controls->db();
          return;
       }
 
-      dbP->next();
-      QString rawDataID = dbP->value( 0 ).toString();
-
-      q.clear();
+      QString     rawDataID = QString::number( rawDataIDnum );
+      QStringList q;
       q << "get_editedDataIDs" << rawDataID;
 
       dbP->query( q );
@@ -12186,14 +12509,11 @@ void US_Edit::prior_equil( void )
          return;
       }
 
-      QStringList q( "get_rawDataID_from_GUID" );
+      int     rawDataIDnum = -1;
+      QString opError;
 
-      q << US_Util::uuid_unparse( (uchar*)data.rawGUID );
-
-      db.query( q );
-
-      // Error check
-      if ( db.lastErrno() != US_DB2::OK )
+      if ( US_ConvertIO::findRawDataId( &db, US_Util::uuid_unparse( (uchar*) data.rawGUID ), rawDataIDnum, opError ) !=
+           IUS_DB2::OK )
       {
          QMessageBox::warning( this,
            tr( "AUC Data is not in DB" ),
@@ -12202,10 +12522,8 @@ void US_Edit::prior_equil( void )
          return;
       }
 
-      db.next();
-      QString rawDataID = db.value( 0 ).toString();
-
-      q.clear();
+      QString     rawDataID = QString::number( rawDataIDnum );
+      QStringList q;
       q << "get_editedDataIDs" << rawDataID;
 
       db.query( q );
@@ -12249,12 +12567,14 @@ void US_Edit::prior_equil( void )
       for ( int ii = 1; ii < outData.size(); ii++ )
       {
          data    = *outData[ ii ];
-         q.clear();
-         q << "get_rawDataID_from_GUID"
-           << US_Util::uuid_unparse( (uchar*)data.rawGUID );
-         db.query( q );
-         db.next();
-         rawDataID = db.value( 0 ).toString();
+
+         if ( US_ConvertIO::findRawDataId( &db, US_Util::uuid_unparse( (uchar*) data.rawGUID ), rawDataIDnum, opError ) !=
+              IUS_DB2::OK )
+         { // Without its raw record, this triple has no matching edit
+            cefnames << "";
+            continue;
+         }
+         rawDataID = QString::number( rawDataIDnum );
 
          q.clear();
          q << "get_editedDataIDs" << rawDataID;
@@ -13261,16 +13581,17 @@ DbgLv(1) << "od_radius_limit  value" << value;
 // Write edit to all wavelengths of the current cell/channel
 void US_Edit::write_mwl_auto( int trx )
 {
+   mwl_auto_write_ok = false; // every early 'return' below is a failure
 
-  US_Passwd pw;
-  US_DB2* dbP            = new US_DB2( pw.getPasswd() );
+   US_Passwd pw;
+   US_DB2*   dbP = new US_DB2( pw.getPasswd() );
 
-  if ( dbP->lastErrno() != US_DB2::OK )
-    {
+   if ( dbP->lastErrno() != US_DB2::OK )
+   {
       QMessageBox::warning( this, tr( "Connection Problem" ),
 			    tr( "Could not connect to database: \n" ) + dbP->lastError() );
       return;
-    }
+   }
 
   // triple_index = trx;
 
@@ -13330,14 +13651,19 @@ void US_Edit::write_mwl_auto( int trx )
      }
 
    //old way: just read form centerpiece
-   double bottom_cent = centerpieceParameters[ trx ][1].toDouble();  //Should be from centerpiece info from protocol
-   
-   US_SimulationParameters simparams;
-   simparams.initFromData( dbP, data, idInv_auto.toInt(), false, runID, dataType );
-   bottom         = simparams.bottom;
+     if ( !auto_flag_.isEmpty() && auto_flag_ == "VELMWL_EDIT_SIM_ANALYSIS" )
+     {
+        bottom = details_at_editing_local["bottom"].toDouble();
+     }
+     else
+     {
+        double bottom_cent = centerpieceParameters[trx][1].toDouble(); // Should be from centerpiece info from protocol
+        US_SimulationParameters simparams;
+        simparams.initFromData( dbP, data, idInv_auto.toInt(), false, runID, dataType );
+        bottom = simparams.bottom;
+        qDebug() << "[in write_mwl_auto()]: bottom_cent, bottom -- " << bottom_cent << ", " << bottom;
+     }
 
-   qDebug() << "[in write_mwl_auto()]: bottom_cent, bottom -- "
-	    << bottom_cent << ", " << bottom; 
    // End of base parameters
 
    //Is this needed ?
@@ -13530,6 +13856,8 @@ DbgLv(1) << "EDT:WrMwl:  dax fname" << idax << filename << "wrstat" << wrstat;
    // ck_writemwl ->setEnabled( false );
    le_info->setText( saved_info );
    qApp->processEvents();
+
+   mwl_auto_write_ok = true; // reached the end: XML and DB writes all succeeded
 
    if ( runType_combined_IP_RI )
      cb_triple->disconnect();
@@ -14084,20 +14412,22 @@ DbgLv(1) << "EDT:WrXml:  waveln" << waveln;
 int US_Edit::write_edit_db( IUS_DB2* dbP, QString& fname, QString& editGUID,
       QString& editID, QString& rawGUID )
 {
-   int idEdit;
+   // The database mechanics live in US_ConvertIO; what stays here is this
+   // program's own policy: which failures deserve which dialog, whether the
+   // record is created or updated, and the editIDs bookkeeping that only the
+   // editor keeps.  The numbered return codes are unchanged, because four call
+   // sites in this file branch on them.
+   int     idEdit;
+   int     rawDataID = -1;
+   QString error;
 
    if ( dbP == NULL )
    {
-      QMessageBox::warning( this, tr( "Connection Problem" ),
-         tr( "Could not connect to database \n" ) + dbP->lastError() );
+      QMessageBox::warning( this, tr( "Connection Problem" ), tr( "Could not connect to database \n" ) );
       return 1;
    }
 
-   QStringList query( "get_rawDataID_from_GUID" );
-   query << rawGUID;
-   dbP->query( query );
-
-   if ( dbP->lastErrno() != US_DB2::OK )
+   if ( US_ConvertIO::findRawDataId( dbP, rawGUID, rawDataID, error ) != IUS_DB2::OK )
    {
       QMessageBox::warning( this,
          tr( "AUC Data is not in DB" ),
@@ -14106,30 +14436,21 @@ int US_Edit::write_edit_db( IUS_DB2* dbP, QString& fname, QString& editGUID,
       return 2;
    }
 
-   dbP->next();
-   QString rawDataID = dbP->value( 0 ).toString();
-
-
-   // Save edit file to DB
-   query.clear();
+   US_ConvertIO::EditedDataRecord record;
+   record.rawDataID = rawDataID;
+   record.editGUID  = editGUID;
+   record.label     = runID;
+   record.filename  = fname;
 
    if ( editID.isEmpty() )
    {
-      query << "new_editedData" << rawDataID << editGUID << runID
-            << fname << "";
-
-      dbP->query( query );
-
-      if ( dbP->lastErrno() != US_DB2::OK )
+      if ( US_ConvertIO::createEditedData( dbP, record, idEdit, error ) != IUS_DB2::OK )
       {
-         QMessageBox::warning( this, tr( "Database Problem" ),
-            tr( "Could not insert metadata into the database\n" ) +
-                dbP->lastError() );
+         QMessageBox::warning( this, tr( "Database Problem" ), tr( "Could not insert metadata into the database\n" ) + error );
 
          return 3;
       }
 
-      idEdit   = dbP->lastInsertID();
       editID   = QString::number( idEdit );
       int dax  = editGUIDs.indexOf( editGUID );
       editIDs.replace( dax, editID );
@@ -14137,29 +14458,19 @@ int US_Edit::write_edit_db( IUS_DB2* dbP, QString& fname, QString& editGUID,
 
    else
    {
-      query << "update_editedData" << editID << rawDataID << editGUID
-            << runID << fname << "";
-      dbP->query( query );
+      idEdit = editID.toInt();
 
-      if ( dbP->lastErrno() != US_DB2::OK )
+      if ( US_ConvertIO::updateEditedData( dbP, idEdit, record, error ) != IUS_DB2::OK )
       {
-         QMessageBox::warning( this, tr( "Database Problem" ),
-            tr( "Could not update metadata in the database \n" ) +
-            dbP->lastError() );
+         QMessageBox::warning( this, tr( "Database Problem" ), tr( "Could not update metadata in the database \n" ) + error );
 
          return 4;
       }
-
-      idEdit   = editID.toInt();
    }
 
-   dbP->writeBlobToDB( workingDir + fname, "upload_editData", idEdit );
-
-   if ( dbP->lastErrno() != US_DB2::OK )
+   if ( US_ConvertIO::uploadEditedDataBlob( dbP, idEdit, workingDir + fname, error ) != IUS_DB2::OK )
    {
-      QMessageBox::warning( this, tr( "Database Problem" ),
-         tr( "Could not insert edit xml data into database \n" ) +
-         dbP->lastError() );
+      QMessageBox::warning( this, tr( "Database Problem" ), tr( "Could not insert edit xml data into database \n" ) + error );
       return 5;
    }
 
@@ -15195,23 +15506,11 @@ void US_Edit::pass_values( void )
 //
 void US_Edit::close_manual_edit( void )
 {
+  // Tell the parent to restore its layouts; the parent's restore_view()
+  // slot also owns cleanup of the pointer it holds to this sub-panel
+  // (sdiag or sdiag_bll) -- see restore_view() for details.
   emit restore_main_view();
   close();
-
-  // if ( sdiag != NULL )
-  //   {
-  //     delete sdiag;
-  //     sdiag = NULL;
-  //   }
-
-  // if ( sdiag_bll != NULL )
-  //   {
-  //     delete sdiag_bll;
-  //     sdiag_bll = NULL;
-  //   }
-
-  // sdiag = NULL;
-  // sdiag_bll = NULL;
 }
 
 
@@ -15250,42 +15549,10 @@ void US_Edit::close_edit( void )
    close();
 }
 
-// //resize event
-
-// void US_Edit::resizeEvent(QResizeEvent *event)
-// {
-//   qDebug() << "US_EDIT resizing1...";
-//   int offset = 20;
-//   int new_main_w = this->width() - 3*offset;
-//   int new_main_h = this->height() - 4*offset;
-//   qDebug() << "US_EDIT resizing2...";
-
-//   if ( sdiag != NULL )
-//     {
-//       qDebug() << "Resizing sdiag...";
-//       //if (mainw->width() - offset > sdiag->width() || mainw->height() - 2*offset > sdiag->height()) {
-//       if ( new_main_w > sdiag->width() || new_main_h > sdiag->height()) {
-// 	int newWidth = qMax( new_main_w, sdiag->width());
-// 	int newHeight = qMax( new_main_h, sdiag->height());
-
-// 	sdiag->setMaximumSize( newWidth, newHeight );
-// 	sdiag->resize( QSize(newWidth, newHeight) );
-// 	update();
-//       }
-
-//       //if (mainw->width() < sdiag->width() || mainw->height() < sdiag->height()) {
-//       if ( new_main_w < sdiag->width() ||  new_main_h < sdiag->height() ) {
-// 	int newWidth = qMin( new_main_w, sdiag->width());
-// 	int newHeight = qMin( new_main_h, sdiag->height());
-
-// 	sdiag->setMaximumSize( newWidth, newHeight );
-// 	sdiag->resize( QSize(newWidth, newHeight) );
-// 	update();
-//       }
-//     }
-
-//   QWidget::resizeEvent(event);
-// }
+// Note: US_Edit::resizeEvent() is implemented above, right after
+// manual_edit_auto() / correct_bll_for_triple_auto() -- it keeps the
+// nested manual-edit sub-panel (sdiag / sdiag_bll) synced to this
+// widget's size whenever the window is resized.
 
 // void US_Edit::resize_main( void )
 // {

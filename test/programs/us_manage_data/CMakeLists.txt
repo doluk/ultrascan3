@@ -19,6 +19,12 @@ else()
     endif()
 endif()
 
+# As in test/utils: with its own main, only gmock (which carries the gtest
+# runtime) may be linked on MSVC, or SCOPED_TRACE crosses DLL copies.
+if(MSVC)
+    set(GTEST_LIBRARIES gmock)
+endif()
+
 set(MANAGE_SOURCES
         ${manage_dir}/us_data_model.cpp
         ${manage_dir}/us_data_model.h
@@ -38,7 +44,6 @@ add_executable(test_us_manage_data
         ${CMAKE_CURRENT_SOURCE_DIR}/test_us_manage_data_main.cpp
         ${MANAGE_TEST_SOURCES}
         ${MANAGE_SOURCES}
-        ${CMAKE_SOURCE_DIR}/test/common/us_test_settings.cpp
         )
 
 target_include_directories(test_us_manage_data
@@ -83,13 +88,13 @@ endif()
 include(GoogleTest)
 gtest_discover_tests(test_us_manage_data
         PROPERTIES
-        LABELS "gtest;unit;programs;us_manage_data"
+        LABELS gtest-unit-programs-manage-data
         TIMEOUT 120
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
         )
 
 add_custom_target(test_manage_data
-        COMMAND ${CMAKE_CTEST_COMMAND} -L us_manage_data --output-on-failure
+        COMMAND ${CMAKE_CTEST_COMMAND} -L gtest-unit-programs-manage-data --output-on-failure
         DEPENDS test_us_manage_data
         COMMENT "Running us_manage_data tests only"
         )
