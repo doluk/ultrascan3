@@ -3,11 +3,172 @@
 #include "archive_entry.h"
 #include "archive.h"
 
+namespace
+{
+// The entry name, or an empty string when the archive gives none
+QString entry_name( struct archive_entry* entry )
+{
+    const char* name = archive_entry_pathname_utf8( entry );
+
+    if ( name == nullptr )
+        name = archive_entry_pathname( entry );
+
+    return ( name == nullptr ) ? QString() : QString::fromUtf8( name );
+}
+
+// Release an archive opened for reading
+void close_reader( struct archive* archive )
+{
+    archive_read_close( archive );
+    archive_read_free( archive );
+}
+
+// Open an archive for reading, with every format and filter
+struct archive* open_reader( const QString& filename, QString& error )
+{
+    struct archive* archive = archive_read_new();
+    archive_read_support_format_all( archive );
+    archive_read_support_filter_all( archive );
+
+    if ( archive_read_open_filename( archive, filename.toUtf8().constData(),
+                                     10240 ) != ARCHIVE_OK )
+    {
+        error = QObject::tr( "US_Archive: Error: %1: %2" )
+                .arg( archive_error_string( archive ), filename );
+        close_reader( archive );
+        return nullptr;
+    }
+
+    return archive;
+}
+
+// True when an entry is something other than a plain file or directory.
+// A hard link is stored as a regular file that names another one.
+bool unsafe_type( struct archive_entry* entry )
+{
+    const auto type = archive_entry_filetype( entry );
+
+    return ( type != AE_IFREG  &&  type != AE_IFDIR )  ||
+           archive_entry_hardlink( entry ) != nullptr  ||
+           archive_entry_symlink ( entry ) != nullptr;
+}
+
+// True when a cleaned target path is the destination or below it
+bool inside( const QString& root, const QString& target )
+{
+    const QString clean = QDir::cleanPath( target );
+
+    return clean == root  ||  clean.startsWith( root + "/" );
+}
+}
+
+void US_Archive::setLimits( qint64 maxEntry, qint64 maxTotal )
+{
+    max_entry = maxEntry;
+    max_total = maxTotal;
+}
+
+bool US_Archive::safeEntryName( const QString& name )
+{
+    if ( name.isEmpty() )
+        return false;
+
+    // Absolute, on either kind of system, or carrying a drive letter
+    if ( name.startsWith( "/" )  ||  name.startsWith( "\\" ) )
+        return false;
+
+    if ( name.size() >= 2  &&  name.at( 1 ) == ':' )
+        return false;
+
+    const QStringList parts = QString( name ).replace( "\\", "/" ).split( "/" );
+
+    for ( const QString& part : parts )
+    {
+        if ( part == ".." )
+            return false;
+    }
+
+    return true;
+}
+
+bool US_Archive::check_entries( const QString& filename, const QDir& dir )
+{
+    struct archive* archive = open_reader( filename, error );
+
+    if ( archive == nullptr )
+        return false;
+
+    const QString root  = dir.path();
+    qint64        total = 0;
+    int           result;
+    struct archive_entry* entry;
+
+    while ( ( result = archive_read_next_header( archive, &entry ) ) == ARCHIVE_OK )
+    {
+        const QString name = entry_name( entry );
+
+        if ( ! safeEntryName( name )  ||  ! inside( root, root + "/" + name ) )
+        {
+            error = QObject::tr( "US_Archive: Error: refusing an entry outside the"
+                                 " destination: \"%1\"" ).arg( name );
+            close_reader( archive );
+            return false;
+        }
+
+        if ( unsafe_type( entry ) )
+        {
+            error = QObject::tr( "US_Archive: Error: refusing \"%1\": only regular"
+                                 " files and directories are extracted" ).arg( name );
+            close_reader( archive );
+            return false;
+        }
+
+        if ( archive_entry_filetype( entry ) == AE_IFREG  &&
+             archive_entry_size_is_set( entry ) )
+        {
+            const qint64 size = archive_entry_size( entry );
+
+            if ( size > max_entry )
+            {
+                error = QObject::tr( "US_Archive: Error: \"%1\" is %2 bytes, more than"
+                                     " the limit of %3" )
+                        .arg( name ).arg( size ).arg( max_entry );
+                close_reader( archive );
+                return false;
+            }
+
+            total += qMax( size, Q_INT64_C( 0 ) );
+
+            if ( total > max_total )
+            {
+                error = QObject::tr( "US_Archive: Error: the archive holds more than"
+                                     " the limit of %1 bytes" ).arg( max_total );
+                close_reader( archive );
+                return false;
+            }
+        }
+
+        archive_read_data_skip( archive );
+    }
+
+    if ( result != ARCHIVE_EOF )
+    {
+        error = QObject::tr( "US_Archive: Error: %1: %2" )
+                .arg( archive_error_string( archive ), filename );
+        close_reader( archive );
+        return false;
+    }
+
+    close_reader( archive );
+    return true;
+}
+
 bool US_Archive::extract(const QString& filename, const QString& path, QStringList* file_list) {
 
     if ( file_list != nullptr ) {
         file_list->clear();
     }
+    error.clear();
     QStringList file_list_in;
     QDir dir;
     QFileInfo fino(filename);
@@ -22,92 +183,146 @@ bool US_Archive::extract(const QString& filename, const QString& path, QStringLi
         dir.setPath(outpath);
     }
     dir.makeAbsolute();
+    dir.setPath( QDir::cleanPath( dir.absolutePath() ) );
+
+    // Everything is checked before anything is written, so a hostile
+    // archive leaves no trace in the destination
+    if ( ! check_entries( filename, dir ) ) {
+        return false;
+    }
+
     if (! dir.mkpath(dir.path())) {
         error = "US_Archive: Error: Could not make the directory: " + dir.path();
         return false;
     }
 
-    struct archive *archive;
+    struct archive *archive = open_reader( filename, error );
     struct archive_entry *entry;
 
-    // Initialize archive object to read
-    archive = archive_read_new();
-    archive_read_support_format_all(archive);    // Enable support for all formats
-    archive_read_support_filter_all(archive);    // Enable support for all compression filters
-
-    int result;
-    // Open archive file
-    result = archive_read_open_filename(archive, filename.toUtf8().constData(), 10240);
-    if (result != ARCHIVE_OK) {
-        error = QObject::tr("US_Archive: Error: %1: %2").
-                arg(archive_error_string(archive), filename);
-        archive_read_close(archive);
-        archive_read_free(archive);
+    if ( archive == nullptr ) {
         return false;
     }
 
+    qint64 total = 0;
+    int    result;
+
     // Loop into the archive file as far as it has files
-    while (archive_read_next_header(archive, &entry) == ARCHIVE_OK) {
+    while ((result = archive_read_next_header(archive, &entry)) == ARCHIVE_OK) {
         // Get the relative path of entry
-        QString entry_path = QObject::tr("%1").arg(archive_entry_pathname(entry));
+        QString entry_path = entry_name( entry );
         QFileInfo target(dir.absoluteFilePath(entry_path));
 
-        // mode_t entry_type = archive_entry_mode(entry);
-        // entry_type = entry_type & AE_IFMT;
-        auto entry_type = archive_entry_filetype(entry);
+        // The file is read a second time here, so check again rather than
+        // trust that it is the archive the first pass saw
+        if ( ! safeEntryName( entry_path )  ||
+             ! inside( dir.path(), target.absoluteFilePath() )  ||
+             unsafe_type( entry ) ) {
+            error = QObject::tr( "US_Archive: Error: refusing \"%1\"" ).arg( entry_path );
+            close_reader( archive );
+            return false;
+        }
+
         //If the entry is a directory, make its absolute path
         //If the entry is a file, make its parent's absolute path
-        if (entry_type == AE_IFDIR) {
+        if (archive_entry_filetype(entry) == AE_IFDIR) {
             if (! dir.mkpath(target.absoluteFilePath())) {
                 error = "US_Archive: Error: Failed to make path: " + target.absoluteFilePath();
-                archive_read_close(archive);
-                archive_read_free(archive);
+                close_reader( archive );
                 return false;
             }
             // emit itemExtracted(entry_path, target.absoluteFilePath());
-        } else if (entry_type == AE_IFREG) {
+        } else {
             if (! dir.mkpath(target.absolutePath())) {
                 error = "US_Archive: Error: Failed to make path: " + target.absolutePath();
-                archive_read_close(archive);
-                archive_read_free(archive);
+                close_reader( archive );
                 return false;
             }
 
             QFile file(target.absoluteFilePath());
             file.setPermissions(QFileDevice::WriteOwner);
-            if (file.open(QIODevice::WriteOnly)) {
-                QDataStream dstream(&file);
-                const void *buff;
-                size_t size;
-                int64_t offset;
-                //Read data blocks with a buffer to write them in a file
-                while (archive_read_data_block(archive, &buff, &size, &offset) == ARCHIVE_OK) {
-                    size_t size_o = static_cast<size_t>(dstream.writeRawData(static_cast<const char*>(buff),
-                                                                             static_cast<qint64>(size)));
-                    if (size != size_o) {
-                        error = "US_Archive: Error: Failed to write data blocks: " + target.absolutePath();
-                        file.close();
-                        archive_read_close(archive);
-                        archive_read_free(archive);
-                        return false;
-                    }
-                }
-                file.close();
-                emit itemExtracted(entry_path, target.absoluteFilePath());
-                file_list_in << target.absoluteFilePath();
-            } else {
+            if (! file.open(QIODevice::WriteOnly)) {
                 error = "US_Archive: Error: Failed to open file: " + target.absolutePath();
-                archive_read_close(archive);
-                archive_read_free(archive);
+                close_reader( archive );
                 return false;
             }
+
+            const void *buff;
+            size_t size;
+            la_int64_t offset;
+            qint64 written = 0;
+            int block;
+            //Read data blocks with a buffer to write them in a file
+            while ((block = archive_read_data_block(archive, &buff, &size, &offset)) == ARCHIVE_OK) {
+                const qint64 end = static_cast<qint64>(offset) + static_cast<qint64>(size);
+
+                // What the header declared was checked already; this is
+                // what the data really decompresses to
+                total += qMax( end - written, Q_INT64_C( 0 ) );
+                if ( end > max_entry  ||  total > max_total ) {
+                    error = QObject::tr( "US_Archive: Error: \"%1\" decompresses to more"
+                                         " than the size limit" ).arg( entry_path );
+                    file.close();
+                    file.remove();
+                    close_reader( archive );
+                    return false;
+                }
+
+                // A sparse entry leaves holes between its blocks
+                if ( offset != file.pos()  &&  ! file.seek( offset ) ) {
+                    error = "US_Archive: Error: Failed to write data blocks: " + target.absolutePath();
+                    file.close();
+                    close_reader( archive );
+                    return false;
+                }
+
+                const qint64 size_o = file.write(static_cast<const char*>(buff),
+                                                 static_cast<qint64>(size));
+                if (size_o != static_cast<qint64>(size)) {
+                    error = "US_Archive: Error: Failed to write data blocks: " + target.absolutePath();
+                    file.close();
+                    close_reader( archive );
+                    return false;
+                }
+                written = qMax( written, end );
+            }
+
+            // Anything but the end of the entry is a damaged archive, and a
+            // file cut short there is not one to report as extracted
+            if ( block != ARCHIVE_EOF ) {
+                error = QObject::tr( "US_Archive: Error: Failed to read \"%1\": %2" )
+                        .arg( entry_path, archive_error_string( archive ) );
+                file.close();
+                file.remove();
+                close_reader( archive );
+                return false;
+            }
+
+            // A sparse entry may end in a hole
+            if ( archive_entry_size_is_set( entry )  &&
+                 written < archive_entry_size( entry )  &&
+                 ! file.resize( archive_entry_size( entry ) ) ) {
+                error = "US_Archive: Error: Failed to write data blocks: " + target.absolutePath();
+                file.close();
+                close_reader( archive );
+                return false;
+            }
+
+            file.close();
+            emit itemExtracted(entry_path, target.absoluteFilePath());
+            file_list_in << target.absoluteFilePath();
         }
         // Skip the current entry data blocks
         archive_read_data_skip(archive);
     }
 
-    archive_read_close(archive);
-    archive_read_free(archive);
+    if ( result != ARCHIVE_EOF ) {
+        error = QObject::tr( "US_Archive: Error: %1: %2" )
+                .arg( archive_error_string( archive ), filename );
+        close_reader( archive );
+        return false;
+    }
+
+    close_reader( archive );
     if ( file_list != nullptr) {
         file_list->append(file_list_in);
     }
@@ -212,7 +427,8 @@ bool US_Archive::compress(const QStringList& list, QString& filename) {
     }
 
     // Loop to add all files to the archive file
-    for (int ii = 0; ii < absolute_paths.size(); ii++) {
+    bool written = true;
+    for (int ii = 0; ii < absolute_paths.size() && written; ii++) {
         QString absolute = absolute_paths.at(ii);
         QString relative = relative_paths.at(ii);
         struct archive_entry *entry;
@@ -220,9 +436,8 @@ bool US_Archive::compress(const QStringList& list, QString& filename) {
 
         if (!file.open(QIODevice::ReadOnly)) {
             error = "US_Archive: Error: Failed to open file: " + absolute;
-            archive_write_close(archive);
-            archive_write_free(archive);
-            return false;
+            written = false;
+            break;
         }
 
         // Write the file header
@@ -231,23 +446,60 @@ bool US_Archive::compress(const QStringList& list, QString& filename) {
         archive_entry_set_size(entry, file.size());
         archive_entry_set_filetype(entry, AE_IFREG);
         archive_entry_set_perm(entry, 0644);
-        archive_write_header(archive, entry);
-
-        // Write the file content
-        QByteArray file_content = file.readAll();
-        archive_write_data(archive, file_content.data(), file_content.size());
-
-        // Free the entry
+        result = archive_write_header(archive, entry);
         archive_entry_free(entry);
+
+        if (result < ARCHIVE_WARN) {
+            error = QObject::tr("US_Archive: Error: Failed to add %1: %2")
+                    .arg(absolute, archive_error_string(archive));
+            written = false;
+            break;
+        }
+
+        // Write the file content, a block at a time
+        qint64 copied = 0;
+        while (! file.atEnd()) {
+            QByteArray block = file.read(1024 * 256);
+            if (block.isEmpty()) {
+                break;
+            }
+            const la_ssize_t sent = archive_write_data(archive, block.constData(),
+                                                       static_cast<size_t>(block.size()));
+            if (sent != static_cast<la_ssize_t>(block.size())) {
+                error = QObject::tr("US_Archive: Error: Failed to write %1: %2")
+                        .arg(absolute, archive_error_string(archive));
+                written = false;
+                break;
+            }
+            copied += block.size();
+        }
+
+        if (written && copied != file.size()) {
+            error = "US_Archive: Error: Failed to read file: " + absolute;
+            written = false;
+        }
+
         file.close();
 
         // emit signal
-        emit itemAdded(relative, absolute);
+        if (written) {
+            emit itemAdded(relative, absolute);
+        }
     }
 
-    archive_write_close(archive);
+    // Closing flushes what the compressor still holds, so it can fail too
+    result = archive_write_close(archive);
+    if (written && result != ARCHIVE_OK) {
+        error = QObject::tr("US_Archive: Error: Failed to finish %1: %2")
+                .arg(filename, archive_error_string(archive));
+        written = false;
+    }
     archive_write_free(archive);
-    return true;
+
+    if (! written) {
+        QFile::remove(filename);
+    }
+    return written;
 }
 
 void US_Archive::list_files(const QString& abs_path, const QString& base_dir) {

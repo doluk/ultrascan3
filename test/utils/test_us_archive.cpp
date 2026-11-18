@@ -1,0 +1,324 @@
+// test_us_archive.cpp - US_Archive treats an archive as untrusted input
+//
+// The archives are built here with libarchive itself, entry by entry, so a
+// test can put into one exactly the entry a hostile archive would carry.
+#include "qt_test_base.h"
+
+#include <QtCore>
+
+#include "archive.h"
+#include "archive_entry.h"
+
+#include "us_archive.h"
+
+namespace
+{
+   // One entry of a crafted archive
+   struct Entry
+   {
+      QString    name;
+      QByteArray data;
+      int        type     = AE_IFREG;
+      QString    linkTo;              // a symbolic link's target
+      QString    hardTo;              // a hard link's target
+      qint64     declared = -1;       // the size the header claims, if not data's
+   };
+
+   Entry file( const QString& name, const QByteArray& data )
+   {
+      Entry entry;
+      entry.name = name;
+      entry.data = data;
+      return entry;
+   }
+}
+
+class TestUSArchive : public QtTestBase
+{
+   protected:
+      QTemporaryDir* scratch = nullptr;
+      QString        root;
+
+      void SetUp() override
+      {
+         QtTestBase::SetUp();
+         scratch = new QTemporaryDir();
+         ASSERT_TRUE( scratch->isValid() );
+         root = scratch->path();
+      }
+
+      void TearDown() override
+      {
+         delete scratch;
+         scratch = nullptr;
+         QtTestBase::TearDown();
+      }
+
+      // Write a tar archive holding exactly the given entries
+      QString makeTar( const QString& name, const QList< Entry >& entries )
+      {
+         QString path = root + "/" + name;
+         struct archive* out = archive_write_new();
+         archive_write_set_format_pax_restricted( out );
+         EXPECT_EQ( archive_write_open_filename( out, path.toUtf8().constData() ),
+                    ARCHIVE_OK );
+
+         for ( const Entry& ee : entries )
+         {
+            struct archive_entry* entry = archive_entry_new();
+            archive_entry_set_pathname( entry, ee.name.toUtf8().constData() );
+            archive_entry_set_filetype( entry, ee.type );
+            archive_entry_set_perm    ( entry, 0644 );
+
+            if ( ! ee.linkTo.isEmpty() )
+               archive_entry_set_symlink( entry, ee.linkTo.toUtf8().constData() );
+
+            if ( ! ee.hardTo.isEmpty() )
+               archive_entry_set_hardlink( entry, ee.hardTo.toUtf8().constData() );
+
+            archive_entry_set_size( entry, ee.type == AE_IFREG
+                                    ? ( ee.declared >= 0 ? ee.declared : ee.data.size() )
+                                    : 0 );
+            EXPECT_GE( archive_write_header( out, entry ), ARCHIVE_WARN );
+
+            if ( ! ee.data.isEmpty() )
+               archive_write_data( out, ee.data.constData(), ee.data.size() );
+
+            archive_entry_free( entry );
+         }
+
+         archive_write_close( out );
+         archive_write_free ( out );
+         return path;
+      }
+
+      // Everything below a directory, relative to it
+      QStringList contentsOf( const QString& dir )
+      {
+         QStringList   found;
+         QDirIterator  it( dir, QDir::AllEntries | QDir::NoDotAndDotDot | QDir::System
+                                | QDir::Hidden, QDirIterator::Subdirectories );
+
+         while ( it.hasNext() )
+            found << QDir( dir ).relativeFilePath( it.next() );
+
+         found.sort();
+         return found;
+      }
+
+      // Extract a crafted archive and expect it refused with nothing written
+      void expectRefused( const QList< Entry >& entries, const QString& why )
+      {
+         QString    tar  = makeTar( "crafted.tar", entries );
+         QString    dest = root + "/out";
+         US_Archive archive;
+         QStringList files;
+
+         EXPECT_FALSE( archive.extract( tar, dest, &files ) ) << why.toStdString();
+         EXPECT_FALSE( archive.getError().isEmpty() );
+         EXPECT_TRUE ( files.isEmpty() );
+
+         // Nothing at all is written, inside the destination or next to it
+         EXPECT_TRUE( contentsOf( dest ).isEmpty() )
+            << contentsOf( dest ).join( ", " ).toStdString();
+         EXPECT_FALSE( QFile::exists( root + "/evil.txt" ) ) << why.toStdString();
+      }
+};
+
+TEST_F( TestUSArchive, AnOrdinaryArchiveIsExtracted )
+{
+   Entry dir;
+   dir.name = "run";
+   dir.type = AE_IFDIR;
+
+   QString tar = makeTar( "good.tar", QList< Entry >()
+                          << dir
+                          << file( "run/a.auc", "alpha" )
+                          << file( "run/sub/b.xml", "beta" ) );
+
+   US_Archive  archive;
+   QStringList files;
+
+   ASSERT_TRUE( archive.extract( tar, root + "/out", &files ) )
+      << archive.getError().toStdString();
+   EXPECT_EQ( files.size(), 2 );
+
+   QFile ff( root + "/out/run/sub/b.xml" );
+   ASSERT_TRUE( ff.open( QIODevice::ReadOnly ) );
+   EXPECT_EQ( ff.readAll(), QByteArray( "beta" ) );
+}
+
+TEST_F( TestUSArchive, ParentDirectoryComponentsAreRefused )
+{
+   expectRefused( QList< Entry >() << file( "ok.txt", "x" )
+                                   << file( "../evil.txt", "x" ),
+                  "a leading .." );
+   expectRefused( QList< Entry >() << file( "a/../../evil.txt", "x" ),
+                  "a .. in the middle" );
+   expectRefused( QList< Entry >() << file( "a\\..\\..\\evil.txt", "x" ),
+                  "a .. behind backslashes" );
+}
+
+TEST_F( TestUSArchive, AbsolutePathsAndDriveLettersAreRefused )
+{
+   expectRefused( QList< Entry >() << file( root + "/evil.txt", "x" ),
+                  "an absolute path" );
+   expectRefused( QList< Entry >() << file( "C:/evil.txt", "x" ),
+                  "a drive letter" );
+   expectRefused( QList< Entry >() << file( "\\evil.txt", "x" ),
+                  "a rooted backslash path" );
+}
+
+TEST_F( TestUSArchive, LinksAndSpecialFilesAreRefused )
+{
+   Entry symlink;
+   symlink.name   = "link";
+   symlink.type   = AE_IFLNK;
+   symlink.linkTo = root + "/evil.txt";
+   expectRefused( QList< Entry >() << symlink, "a symbolic link" );
+
+   Entry hardlink;
+   hardlink.name   = "hard";
+   hardlink.hardTo = "../evil.txt";
+   expectRefused( QList< Entry >() << file( "target", "x" ) << hardlink,
+                  "a hard link" );
+
+   Entry fifo;
+   fifo.name = "pipe";
+   fifo.type = AE_IFIFO;
+   expectRefused( QList< Entry >() << fifo, "a FIFO" );
+
+   Entry device;
+   device.name = "dev";
+   device.type = AE_IFCHR;
+   expectRefused( QList< Entry >() << device, "a device" );
+}
+
+TEST_F( TestUSArchive, EntriesOverTheSizeLimitAreRefused )
+{
+   QString    tar  = makeTar( "big.tar", QList< Entry >()
+                              << file( "small.txt", QByteArray( 10, 'a' ) )
+                              << file( "large.txt", QByteArray( 4096, 'b' ) ) );
+   US_Archive archive;
+
+   archive.setLimits( 1000, 1000000 );
+   EXPECT_FALSE( archive.extract( tar, root + "/out" ) );
+   EXPECT_TRUE ( archive.getError().contains( "large.txt" ) )
+      << archive.getError().toStdString();
+   EXPECT_TRUE ( contentsOf( root + "/out" ).isEmpty() );
+
+   // the same archive under a total limit it exceeds only in sum
+   archive.setLimits( 5000, 4100 );
+   EXPECT_FALSE( archive.extract( tar, root + "/out2" ) );
+   EXPECT_TRUE ( contentsOf( root + "/out2" ).isEmpty() );
+
+   // and within the limits it is fine
+   archive.setLimits( 5000, 5000 );
+   EXPECT_TRUE( archive.extract( tar, root + "/out3" ) )
+      << archive.getError().toStdString();
+}
+
+// A small compressed file that inflates to far more than it is, refused
+// before a byte of it is written.  (The limit is applied a second time to
+// the bytes actually decompressed, for formats whose header can leave the
+// size out; libarchive's own writers always record it, so that second
+// check is not reachable from an archive built here.)
+TEST_F( TestUSArchive, ACompressionBombIsRefusedBeforeAnythingIsWritten )
+{
+   QString source = root + "/zeros.bin";
+   QFile   ff( source );
+   ASSERT_TRUE( ff.open( QIODevice::WriteOnly ) );
+   ff.write( QByteArray( 1 << 20, '\0' ) );
+   ff.close();
+
+   QString    tgz = root + "/bomb.tar.gz";
+   US_Archive archive;
+   ASSERT_TRUE( archive.compress( QStringList() << source, tgz ) )
+      << archive.getError().toStdString();
+   EXPECT_LT( QFileInfo( tgz ).size(), 100000 );
+
+   archive.setLimits( 1000, 1000 );
+   EXPECT_FALSE( archive.extract( tgz, root + "/out" ) );
+   EXPECT_FALSE( QFile::exists( root + "/out/zeros.bin" ) );
+}
+
+TEST_F( TestUSArchive, SafeEntryNamesAreRecognised )
+{
+   EXPECT_TRUE ( US_Archive::safeEntryName( "a.txt" ) );
+   EXPECT_TRUE ( US_Archive::safeEntryName( "dir/sub/a..b.txt" ) );
+   EXPECT_TRUE ( US_Archive::safeEntryName( "./a.txt" ) );
+   EXPECT_FALSE( US_Archive::safeEntryName( "" ) );
+   EXPECT_FALSE( US_Archive::safeEntryName( "/etc/passwd" ) );
+   EXPECT_FALSE( US_Archive::safeEntryName( "c:evil" ) );
+   EXPECT_FALSE( US_Archive::safeEntryName( "a/../../b" ) );
+   EXPECT_FALSE( US_Archive::safeEntryName( ".." ) );
+}
+
+TEST_F( TestUSArchive, ARoundTripKeepsTheContents )
+{
+   QDir().mkpath( root + "/src/sub" );
+   QFile aa( root + "/src/sub/a.txt" );
+   ASSERT_TRUE( aa.open( QIODevice::WriteOnly ) );
+   aa.write( "contents of a" );
+   aa.close();
+
+   QString    zip = root + "/round.zip";
+   US_Archive archive;
+   ASSERT_TRUE( archive.compress( QStringList() << root + "/src", zip ) )
+      << archive.getError().toStdString();
+   ASSERT_TRUE( archive.extract( zip, root + "/back" ) )
+      << archive.getError().toStdString();
+
+   QFile back( root + "/back/src/sub/a.txt" );
+   ASSERT_TRUE( back.open( QIODevice::ReadOnly ) );
+   EXPECT_EQ( back.readAll(), QByteArray( "contents of a" ) );
+}
+
+// A write that fails part way must not be reported as an archive.  An
+// archive named *.tar that is really /dev/full accepts the open and fails
+// every write, which is the failure compress() used to ignore.
+TEST_F( TestUSArchive, AFailedWriteFailsTheCompression )
+{
+#ifdef Q_OS_LINUX
+   if ( ! QFile::exists( "/dev/full" ) )
+      GTEST_SKIP() << "no /dev/full";
+
+   QString source = root + "/data.bin";
+   QFile   ff( source );
+   ASSERT_TRUE( ff.open( QIODevice::WriteOnly ) );
+   ff.write( QByteArray( 300000, 'x' ) );
+   ff.close();
+
+   QString full = root + "/full.tar";
+   ASSERT_TRUE( QFile::link( "/dev/full", full ) );
+
+   US_Archive archive;
+   EXPECT_FALSE( archive.compress( QStringList() << source, full ) );
+   EXPECT_FALSE( archive.getError().isEmpty() );
+#else
+   GTEST_SKIP() << "needs /dev/full";
+#endif
+}
+
+// A truncated archive is a damaged one, not a short success
+TEST_F( TestUSArchive, ATruncatedArchiveIsAnError )
+{
+   QString source = root + "/data.bin";
+   QFile   ff( source );
+   ASSERT_TRUE( ff.open( QIODevice::WriteOnly ) );
+   for ( int ii = 0; ii < 20000; ii++ )
+      ff.write( QByteArray::number( ii * 7919 ) );
+   ff.close();
+
+   QString    tgz = root + "/cut.tar.gz";
+   US_Archive archive;
+   ASSERT_TRUE( archive.compress( QStringList() << source, tgz ) );
+
+   QFile cut( tgz );
+   ASSERT_TRUE( cut.open( QIODevice::ReadWrite ) );
+   ASSERT_TRUE( cut.resize( cut.size() / 2 ) );
+   cut.close();
+
+   EXPECT_FALSE( archive.extract( tgz, root + "/out" ) );
+   EXPECT_FALSE( archive.getError().isEmpty() );
+}
