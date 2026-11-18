@@ -249,6 +249,14 @@ public:
     */
     int lastErrno() override;
 
+    /*! \brief Returns the MySQL error number of the last statement query(),
+        statusQuery() or functionQuery() sent, or 0 when the server accepted
+        it.  The follow-up reads of the US3 status those make do not change
+        it, and arguments refused before anything is sent leave it 0.
+        See IUS_DB2::lastServerErrno().
+    */
+    int lastServerErrno() override;
+
     /*! \brief Returns the ID of the row resulting from the most recent INSERT or
         UPDATE statement.
     */
@@ -398,7 +406,9 @@ public:
     QString    keyFile;
     QString    caFile;
     QString    error;
-    int        db_errno;
+    int        db_errno     = OK;
+    //! mysql_errno() of the statement a query sent; see lastServerErrno()
+    int        server_errno = 0;
 
     //! \brief Consume and discard any result sets still pending on the
     //!        connection.

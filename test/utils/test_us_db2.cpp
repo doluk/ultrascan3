@@ -103,6 +103,42 @@ TEST( UsDb2Query, ARefusedProcedureNameFailsTheQueryWithItsOwnError )
    EXPECT_FALSE( db.next() );
 }
 
+// Arguments refused before anything is sent never reach a server, so there
+// is no server error to report.
+TEST( UsDb2Query, ARefusedProcedureNameHasNoServerError )
+{
+   US_DB2 db;
+
+   EXPECT_EQ( db.lastServerErrno(), 0 );
+   EXPECT_EQ( db.statusQuery( QStringList() << "p; DROP" ), IUS_DB2::DBERROR );
+   EXPECT_EQ( db.lastServerErrno(), 0 );
+}
+
+#ifndef NO_DB
+// A statement the client cannot send at all -- here because the connection
+// was never made -- is reported with the client's own error number, and
+// with the reason in lastError(), by both kinds of query.  (That the US3
+// status read after a refused statement does not replace the reason needs
+// a server that refuses one statement and answers the next; the database
+// suite checks it with a procedure the server does not have.)
+TEST( UsDb2Query, AStatementThatCannotBeSentReportsTheServerError )
+{
+   US_DB2 db;
+
+   db.query( QString( "CALL no_such_procedure()" ) );
+   EXPECT_EQ( db.lastErrno(), IUS_DB2::DBERROR );
+   EXPECT_NE( db.lastServerErrno(), 0 );
+   EXPECT_TRUE( db.lastError().startsWith( "MySQL error:" ) )
+      << db.lastError().toStdString();
+
+   EXPECT_EQ( db.statusQuery( QString( "CALL no_such_procedure()" ) ),
+              IUS_DB2::DBERROR );
+   EXPECT_NE( db.lastServerErrno(), 0 );
+   EXPECT_TRUE( db.lastError().startsWith( "MySQL error:" ) )
+      << db.lastError().toStdString();
+}
+#endif
+
 // NO_DB compiles blob transfers as no-op stubs; this validates the DB adapter.
 #ifndef NO_DB
 TEST( UsDb2Query, TheBlobTransfersRefuseAnInvalidProcedureName )

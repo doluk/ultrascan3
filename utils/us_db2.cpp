@@ -106,6 +106,10 @@ int US_DB2::lastErrno() {
     return db_errno;
 }
 
+int US_DB2::lastServerErrno() {
+    return server_errno;
+}
+
 #ifdef NO_DB
 bool US_DB2::test_db_connection( const QString&, const QString&,
       const QString&, const QString&, QString& ) { return false; }
@@ -683,6 +687,10 @@ int US_DB2::statusQuery( const QString& sqlQuery )
 
    this->rawQuery( sqlQuery );
 
+   // What the server said about the statement itself; the reads of the US3
+   // status below are statements too, and must not overwrite it
+   server_errno = int( mysql_errno( db ) );
+
    if ( ! result  &&  mysql_errno( db ) != 0 )
    {
       // The statement itself failed, so the procedure never reached the
@@ -743,7 +751,8 @@ int US_DB2::refuseArguments( const QStringList& arguments )
 {
    // Nothing is sent, so clear what the last query left for next() to read.
    drainResults();
-   db_errno = DBERROR;
+   db_errno     = DBERROR;
+   server_errno = 0;
    error    = QObject::tr( invalidProcedureMessage ).arg( arguments.value( 0 ) );
    return db_errno;
 }
@@ -754,6 +763,10 @@ void US_DB2::query( const QString& ) {}
 void US_DB2::query( const QString& sqlQuery )
 {
    this->rawQuery( sqlQuery );
+
+   // What the server said about the statement itself; the reads of the US3
+   // status below are statements too, and must not overwrite it
+   server_errno = int( mysql_errno( db ) );
 
    // A statement the server refused outright leaves no result set, and
    // rawQuery() reports that only through `error`.  Without this, db_errno
@@ -780,8 +793,9 @@ void US_DB2::query( const QString& sqlQuery )
       // The procedure failed after its status row, while producing its data.
       if ( next > 0 )
       {
-         error    = QString( "MySQL error: " ) + mysql_error( db );
-         db_errno = DBERROR;
+         error        = QString( "MySQL error: " ) + mysql_error( db );
+         db_errno     = DBERROR;
+         server_errno = int( mysql_errno( db ) );
          noteStatementError();
          return;
       }

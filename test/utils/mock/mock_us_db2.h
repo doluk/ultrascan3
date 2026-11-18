@@ -59,6 +59,7 @@ public:
     // Error handling methods
     MOCK_METHOD(QString, lastError, (), (override));
     MOCK_METHOD(int, lastErrno, (), (override));
+    MOCK_METHOD(int, lastServerErrno, (), (override));
     MOCK_METHOD(int, lastInsertID, (), (override));
     MOCK_METHOD(QString, lastDebug, (), (override));
 
@@ -98,6 +99,7 @@ public:
         ON_CALL(*mock, isConnected()).WillByDefault(::testing::Return(true));
         ON_CALL(*mock, lastErrno()).WillByDefault(::testing::Return(IUS_DB2::OK));
         ON_CALL(*mock, lastError()).WillByDefault(::testing::Return(QString()));
+        ON_CALL(*mock, lastServerErrno()).WillByDefault(::testing::Return(0));
 
         // Default successful connections
         ON_CALL( *mock, connect( ::testing::_, ::testing::_ ) )
