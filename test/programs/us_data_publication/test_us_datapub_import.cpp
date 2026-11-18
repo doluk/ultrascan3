@@ -680,8 +680,12 @@ class DataPubCrafted : public DataPubImport
          US_DataPubImporter importer;
          QString            error;
 
+         // The manifest reader refuses most of these itself; the importer
+         // checks again.  Either message will do, as long as it is refused.
          EXPECT_FALSE( importer.inspect( path, error ) );
-         EXPECT_TRUE ( error.contains( text ) ) << error.toStdString();
+         EXPECT_TRUE ( error.contains( text )  ||
+                       error.contains( "cannot be used" ) )
+            << error.toStdString();
       }
 
       // Inspect may pass, but the import must fail and write nothing
@@ -720,6 +724,8 @@ TEST_F( DataPubCrafted, AnAbsolutePayloadIsRefused )
    } ), "not a relative path" );
 }
 
+// An archive could carry a symbolic link; whether or not the archive code
+// lets one through, the import must not follow it out of the bundle
 TEST_F( DataPubCrafted, APayloadLinkedOutOfTheBundleIsRefused )
 {
    QString secret = root + "/secret.xml";
@@ -728,30 +734,24 @@ TEST_F( DataPubCrafted, APayloadLinkedOutOfTheBundleIsRefused )
    file.write( "<secret/>" );
    file.close();
 
-   // Whether the archive keeps the link depends on the archive code; when
-   // it does, the import must not follow it
-   QString path = craft( "link", [ & ]( US_DataPubManifest& m,
-                                        const QString& stage )
-   {
-      editEntity( m, US_DataPub::Buffer, [ & ]( US_DataPubEntity& e )
-      {
-         QFile::remove( stage + "/" + e.payload );
-         QFile::link( secret, stage + "/" + e.payload );
-      } );
-   } );
-   ASSERT_FALSE( path.isEmpty() );
-
    US_DataPubImporter importer;
    QString            error;
+   ASSERT_TRUE( importer.inspect( bundlePath, error ) ) << error.toStdString();
 
-   if ( importer.inspect( path, error ) )
-   {
-      EXPECT_FALSE( importer.runImport( diskOptions(), error ) );
-      EXPECT_EQ   ( filesIn( targetDir ), 0 );
-   }
+   US_DataPubEntity buffer;
+   ASSERT_TRUE( importer.manifest().entity( US_DataPub::Buffer, bufferGUID,
+                                            buffer ) );
+   QString payload = importer.bundleRoot() + "/" + buffer.payload;
+   ASSERT_TRUE( QFile::remove( payload ) );
+   ASSERT_TRUE( QFile::link( secret, payload ) );
 
-   else
-      EXPECT_FALSE( error.isEmpty() );
+   US_DataPubImporter::Options options = diskOptions();
+   options.verifyHashes = false;
+
+   EXPECT_FALSE( importer.runImport( options, error ) );
+   EXPECT_TRUE ( error.contains( "outside the bundle" )  ||
+                 error.contains( "missing" ) ) << error.toStdString();
+   EXPECT_EQ   ( filesIn( targetDir ), 0 );
 }
 
 TEST_F( DataPubCrafted, TimeStateDefinitionsOutsideTheBundleAreRefused )

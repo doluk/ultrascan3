@@ -24,6 +24,10 @@ class US_DataPublication : public US_Widgets
       //! \brief Build the window
       US_DataPublication();
 
+   protected:
+      //! \brief Refuse to close while an export is running
+      void closeEvent( QCloseEvent* event ) override;
+
    private:
       QTabWidget*             tabs;
       US_DataPubExportPane*   exportPane;

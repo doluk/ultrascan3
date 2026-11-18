@@ -10,6 +10,9 @@
 #include "us_datapub_catalog.h"
 
 #include "us_convert.h"
+#include "us_experiment.h"
+#include "us_hardware.h"
+#include "us_buffer.h"
 
 /*! \class US_DataPubExporter
     \brief Collects records into a data-publication bundle
@@ -93,13 +96,24 @@ class US_DataPubExporter : public QObject
       //! \brief Destroy the exporter and its staging directory
       ~US_DataPubExporter();
 
-      //! \brief Collect the records and write the bundle
-      //! \param selection  What to export
-      //! \param bundlePath The full path of the .tar.gz to write
-      //! \param error      Filled in with a message when the export fails
-      //! \returns True when the bundle was written
+      /*! \brief Collect the records and write the bundle
+
+          The export fails -- and writes nothing -- when there would be
+          nothing in the bundle, when a GUID it was explicitly given matches
+          no record, when a run named belongs to a project other than the
+          one asked for, and when any record it needs cannot be read.  Next
+          to \c manifest.yaml the bundle carries \c manifest.sha256, the
+          digest of the manifest file in \c sha256sum format.
+          \param selection  What to export
+          \param bundlePath The full path of the .tar.gz to write
+          \param error      Filled in with a message when the export fails
+          \returns True when the bundle was written
+      */
       bool exportBundle( const Selection& selection,
                          const QString& bundlePath, QString& error );
+
+      //! \brief The bundle-relative name of the manifest digest file
+      static QString manifestDigestName( void );
 
       /*! \brief Collect the record list without staging any payload
 
@@ -134,6 +148,15 @@ class US_DataPubExporter : public QObject
       //! \param step The number of records finished
       void stepDone( int step );
 
+   public:
+      /*! \brief The run type a run's payloads are named with
+
+          The same answer for a preview and an export, from the database or
+          from disk: the catalog's run type, or the data type of the run's
+          first triple when the catalog has none.
+      */
+      static QString runTypeOf( const US_DataPubCatalog::Run& run );
+
    private:
       US_DataPubManifest mani;
       US_DataPubBundle   bundle;
@@ -145,27 +168,53 @@ class US_DataPubExporter : public QObject
       //! runID -> GUID of the rotor calibration the run was made with
       QMap< QString, QString > cal_guids;
 
-      //! solutionID -> solutionGUID, for the solutions already collected
-      QMap< QString, QString > sol_guids;
+      //! rawDataGUID -> solutionGUID of the solution in its channel
+      QMap< QString, QString > raw_solutions;
+
+      //! runID -> GUIDs of the run's triples that were not selected
+      QMap< QString, QStringList > dropped_raws;
+
+      //! The abstract centerpiece table, read once per export
+      QList< US_AbstractCenterpiece > cp_table;
+      bool                            cp_loaded;
+
+      //! The local buffer component table, read once per export
+      QMap< QString, US_BufferComponent > hd_components;
+      bool                                hd_comp_loaded;
 
       bool build( const Selection&, bool payloads, QString& error );
 
       bool gatherRuns   ( const Selection&, QList< US_DataPubCatalog::Run >&,
                           QString& );
-      bool addProject   ( const Selection&,
+      bool addProjects  ( const Selection&,
                           const QList< US_DataPubCatalog::ExpInfo >&,
                           QString& );
+      bool addProject   ( const QString& guid, const QString& id, QString& );
       bool addExperiment( const US_DataPubCatalog::Run&,
                           const US_DataPubCatalog::ExpInfo&, QString& );
+      bool readExperimentDb( const US_DataPubCatalog::Run&, US_Experiment&,
+                             QVector< US_SimulationParameters::SpeedProfile >&,
+                             QString& );
+      bool stageExperimentXml( const US_DataPubCatalog::Run&,
+                               const QString& source, const QString& staged,
+                               QString& );
       bool addRawData   ( const US_DataPubCatalog::Run&,
                           const US_DataPubCatalog::ExpInfo&, QString& );
       bool addTimeState ( const US_DataPubCatalog::Run&, QString& );
       bool addCalibration( const US_DataPubCatalog::ExpInfo&, QString& );
-      bool addCenterpieces( const US_DataPubCatalog::ExpInfo&, QString& );
+      bool addCenterpieces( const US_DataPubCatalog::Run&,
+                            const US_DataPubCatalog::ExpInfo&, QString& );
       bool addSolutions ( const US_DataPubCatalog::Run&,
                           const US_DataPubCatalog::ExpInfo&, QString& );
+      bool addBuffer    ( US_Buffer&, QString& );
       bool addEdits     ( const US_DataPubCatalog::Run&, QString& );
+      bool collectModels( const Selection&,
+                          const QList< US_DataPubCatalog::Run >&,
+                          QList< US_DataPubCatalog::Model >&, QString& );
       bool addModels    ( const QList< US_DataPubCatalog::Model >&, QString& );
+      bool collectNoises( const Selection&,
+                          const QList< US_DataPubCatalog::Model >&,
+                          QList< US_DataPubCatalog::Noise >&, QString& );
       bool addNoises    ( const QList< US_DataPubCatalog::Noise >&, QString& );
 
       bool buildTriplesFromDb( const US_DataPubCatalog::Run&,

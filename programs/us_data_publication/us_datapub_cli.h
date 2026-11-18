@@ -27,8 +27,11 @@ class US_DataPubCLI : public QObject
 
       //! \brief True when the arguments ask for the command line
       //!
-      //! The window is what starts without arguments; \c --mode, \c --no-ui,
-      //! \c --help and \c --version all select the command line instead.
+      //! The window is what starts without arguments.  Any long option
+      //! (\c --mode, \c --no-ui, \c --help, \c --version, but also a
+      //! misspelt one) selects the command line instead, so that arguments
+      //! meant for it are reported when they are wrong rather than
+      //! silently opening the window.  Single-dash options are left to Qt.
       //! \param arguments The arguments the program was started with
       static bool wanted( const QStringList& arguments );
 
@@ -60,11 +63,13 @@ class US_DataPubCLI : public QObject
             QStringList              modelGUIDs;
             QStringList              noiseGUIDs;
             QString                  scope;
+            QString                  includeScope;
             QString                  conflict;
             QMap< QString, QString > typeConflicts;
             QString                  renameSuffix;
             QString                  comment;
             QString                  dbPassword;
+            QString                  dbPasswordFile;
             bool                     timeState;
             bool                     project;
             bool                     dryRun;
@@ -86,6 +91,14 @@ class US_DataPubCLI : public QObject
       int  runExport( void );
       int  runImport( void );
 
+      /*! \brief The master password, when \a needed
+
+          From --db-password-file, --db-password (with a warning: it is
+          visible to other users in the process list), the US3_DB_PASSWORD
+          environment variable or, last, an interactive prompt that does
+          not echo what is typed.  A non-interactive run that has none of
+          them gets an empty string and a message saying how to give one.
+      */
       QString password( bool needed );
       void    print( const QString& );
       void    fail ( const QString& );

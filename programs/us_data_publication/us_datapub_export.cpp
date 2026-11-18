@@ -17,6 +17,30 @@
 #include "us_hardware.h"
 #include "us_rotor.h"
 #include "us_time_state.h"
+#include "us_convertio.h"
+
+namespace
+{
+   // "cell/channel" of a raw-data triple, the key the experiment XML of a
+   // run assigns solutions and centerpieces by
+   QString channel_key( const US_DataPubCatalog::Raw& raw )
+   {
+      return raw.triple.section( ".", 0, 0 ) + "/"
+           + raw.triple.section( ".", 1, 1 );
+   }
+
+   // A list without repeats, in the order first seen
+   QStringList unique( const QStringList& items )
+   {
+      QStringList out;
+
+      for ( int ii = 0; ii < items.size(); ii++ )
+         if ( ! items[ ii ].isEmpty()  &&  ! out.contains( items[ ii ] ) )
+            out << items[ ii ];
+
+      return out;
+   }
+}
 
 US_DataPubExporter::Selection::Selection()
 {
@@ -67,6 +91,8 @@ US_DataPubExporter::US_DataPubExporter( QObject* parent ) : QObject( parent )
 {
    stage_payloads = true;
    step_count     = 0;
+   cp_loaded      = false;
+   hd_comp_loaded = false;
 }
 
 US_DataPubExporter::~US_DataPubExporter()
@@ -89,6 +115,22 @@ void US_DataPubExporter::cleanup( void )
    bundle.cleanup();
 }
 
+QString US_DataPubExporter::manifestDigestName( void )
+{
+   return QString( "manifest.sha256" );
+}
+
+QString US_DataPubExporter::runTypeOf( const US_DataPubCatalog::Run& run )
+{
+   if ( ! run.runType.isEmpty() )  return run.runType;
+
+   for ( int ii = 0; ii < run.raws.size(); ii++ )
+      if ( ! run.raws[ ii ].dataType.isEmpty() )
+         return run.raws[ ii ].dataType;
+
+   return QString( "RA" );
+}
+
 void US_DataPubExporter::note( const QString& text )
 {
    logtext << text;
@@ -98,6 +140,13 @@ void US_DataPubExporter::note( const QString& text )
 bool US_DataPubExporter::copyPayload( const QString& source,
                                       const QString& staged, QString& error )
 {
+   if ( staged.isEmpty() )
+   {
+      error = tr( "The payload of %1 has no place in the bundle" )
+              .arg( source );
+      return false;
+   }
+
    if ( ! QFile::exists( source ) )
    {
       error = tr( "The payload file %1 does not exist" ).arg( source );
@@ -121,6 +170,12 @@ bool US_DataPubExporter::copyPayload( const QString& source,
    return true;
 }
 
+/* Count the record and digest its payloads.
+
+   Every payload an entity names -- the main one and every "...Payload"
+   attribute -- gets its digest here, so that no extra file can travel
+   without one.
+*/
 bool US_DataPubExporter::finishEntity( US_DataPubEntity& entity,
                                        const QString& stagedPath )
 {
@@ -131,7 +186,23 @@ bool US_DataPubExporter::finishEntity( US_DataPubEntity& entity,
 
    entity.sha256 = US_DataPubHash::fileHash( stagedPath );
 
-   return ! entity.sha256.isEmpty();
+   if ( entity.sha256.isEmpty() )  return false;
+
+   QStringList keys = entity.payloadKeys();
+
+   for ( int ii = 0; ii < keys.size(); ii++ )
+   {
+      if ( keys[ ii ] == "payload" )  continue;
+
+      QString path = bundle.stagingPath() + "/" + entity.attrs.value( keys[ ii ] );
+      QString hash = US_DataPubHash::fileHash( path );
+
+      if ( hash.isEmpty() )  return false;
+
+      entity.attrs.insert( US_DataPub::digestKeyOf( keys[ ii ] ), hash );
+   }
+
+   return true;
 }
 
 // --------------------------------------------------------------- entry points
@@ -152,15 +223,43 @@ bool US_DataPubExporter::exportBundle( const Selection& selection,
       return false;
    }
 
-   if ( ! build( selection, true, error ) )  return false;
+   if ( ! build( selection, true, error ) )
+   {
+      bundle.cleanup();
+      return false;
+   }
 
    QString manifestPath = bundle.stagedPath( US_DataPubBundle::manifestName() );
 
-   if ( ! mani.write( manifestPath, error ) )  return false;
+   if ( ! mani.write( manifestPath, error ) )
+   {
+      bundle.cleanup();
+      return false;
+   }
+
+   // The digest of the manifest itself, in the format sha256sum reads, so
+   // that a bundle can be checked with ordinary tools as well
+   QString   digest = US_DataPubHash::fileHash( manifestPath );
+   QString   digestPath = bundle.stagedPath( manifestDigestName() );
+   QSaveFile dfile( digestPath );
+   QByteArray line = ( digest + "  " + US_DataPubBundle::manifestName()
+                       + "\n" ).toUtf8();
+
+   if ( digest.isEmpty()  ||  ! dfile.open( QIODevice::WriteOnly )  ||
+        dfile.write( line ) != line.size()  ||  ! dfile.commit() )
+   {
+      error = tr( "The manifest digest could not be written" );
+      bundle.cleanup();
+      return false;
+   }
 
    note( tr( "Packing the bundle into %1" ).arg( bundlePath ) );
 
-   if ( ! bundle.pack( bundlePath, error ) )  return false;
+   if ( ! bundle.pack( bundlePath, error ) )
+   {
+      bundle.cleanup();
+      return false;
+   }
 
    note( tr( "Wrote %1 records to %2" ).arg( mani.total() ).arg( bundlePath ) );
 
@@ -176,8 +275,13 @@ bool US_DataPubExporter::build( const Selection& selection, bool payloads,
 {
    mani.clear();
    logtext.clear();
-   cal_guids.clear();
-   sol_guids.clear();
+   cal_guids    .clear();
+   raw_solutions.clear();
+   dropped_raws .clear();
+   cp_table     .clear();
+   hd_components.clear();
+   cp_loaded      = false;
+   hd_comp_loaded = false;
    stage_payloads = payloads;
    step_count     = 0;
 
@@ -215,6 +319,24 @@ bool US_DataPubExporter::build( const Selection& selection, bool payloads,
    mani.bundleGUID = US_Util::new_guid();
    mani.comment    = selection.comment;
 
+   // The sections this export fills in, so that the manifest can tell an
+   // exported but empty section from one that was not exported at all
+   QList< US_DataPub::EntityType > types = US_DataPubManifest::orderedTypes();
+
+   for ( int ii = 0; ii < types.size(); ii++ )
+   {
+      US_DataPub::EntityType type = types[ ii ];
+
+      if ( type == US_DataPub::Project  &&  ! selection.includeProject )
+         continue;
+
+      if ( type == US_DataPub::TimeState  &&  ! selection.includeTimeState )
+         continue;
+
+      if ( US_DataPub::typeScope( type ) <= scope )
+         mani.declareSection( type );
+   }
+
    QList< US_DataPubCatalog::Run > runs;
 
    if ( ! gatherRuns( selection, runs, error ) )  return false;
@@ -230,17 +352,46 @@ bool US_DataPubExporter::build( const Selection& selection, bool payloads,
       infos << info;
    }
 
-   // The records are collected in dependency order so that every entity
-   // can name the GUIDs it depends on.  The manifest still lists them in
-   // the declared section order, which the sections take care of.
+   // The models are known before anything is staged, so the number of
+   // steps can be announced up front
+   QList< US_DataPubCatalog::Model > models;
 
-   // ---- project -----------------------------------------------------------
-   if ( scope >= US_DataPub::ScopeProject  &&  selection.includeProject )
+   if ( scope >= US_DataPub::ScopeModels )
    {
-      if ( ! addProject( selection, infos, error ) )  return false;
+      if ( ! collectModels( selection, runs, models, error ) )  return false;
    }
 
-   else if ( scope >= US_DataPub::ScopeProject )
+   else if ( selection.modelsExplicit  &&  ! selection.modelGUIDs.isEmpty() )
+      note( tr( "%1 selected model(s) are left out: the scope ends at \"%2\"" )
+            .arg( selection.modelGUIDs.size() )
+            .arg( US_DataPub::scopeKey( scope ) ) );
+
+   int estimate = runs.size() + models.size()
+                  + ( selection.includeProject ? 1 : 0 );
+
+   for ( int ii = 0; ii < runs.size(); ii++ )
+   {
+      if ( scope >= US_DataPub::ScopeRawData )
+         estimate += runs[ ii ].raws.size() * 2      // raw data, solution
+                     + ( selection.includeTimeState ? 1 : 0 ) + 2;
+
+      for ( int jj = 0; jj < runs[ ii ].raws.size(); jj++ )
+         if ( scope >= US_DataPub::ScopeEdits )
+            estimate += runs[ ii ].raws[ jj ].edits.size();
+   }
+
+   emit steps( estimate );
+
+   // The records are collected in dependency order so that every entity
+   // can name the GUIDs it depends on.
+
+   // ---- project -----------------------------------------------------------
+   if ( selection.includeProject )
+   {
+      if ( ! addProjects( selection, infos, error ) )  return false;
+   }
+
+   else
       note( tr( "The project is left out of the bundle; the runs still name"
                 " it, so an import can attach them to a project the target"
                 " already has" ) );
@@ -252,8 +403,9 @@ bool US_DataPubExporter::build( const Selection& selection, bool payloads,
 
    // ---- centerpieces ------------------------------------------------------
    if ( scope >= US_DataPub::ScopeCenterpiece )
-      for ( int ii = 0; ii < infos.size(); ii++ )
-         if ( ! addCenterpieces( infos[ ii ], error ) )  return false;
+      for ( int ii = 0; ii < runs.size(); ii++ )
+         if ( ! addCenterpieces( runs[ ii ], infos[ ii ], error ) )
+            return false;
 
    // ---- experiment --------------------------------------------------------
    if ( scope >= US_DataPub::ScopeExperiment )
@@ -283,46 +435,45 @@ bool US_DataPubExporter::build( const Selection& selection, bool payloads,
          if ( ! addEdits( runs[ ii ], error ) )  return false;
 
    // ---- models ------------------------------------------------------------
-   QList< US_DataPubCatalog::Model > models;
-
    if ( scope >= US_DataPub::ScopeModels )
-   {
-      QList< US_DataPubCatalog::Model > found = catalog.models( runs, error );
-
-      if ( ! error.isEmpty() )  return false;
-
-      for ( int ii = 0; ii < found.size(); ii++ )
-      {
-         if ( selection.modelsExplicit  &&
-              ! selection.modelGUIDs.contains( found[ ii ].guid ) )  continue;
-
-         models << found[ ii ];
-      }
-
       if ( ! addModels( models, error ) )  return false;
-   }
 
    // ---- noise -------------------------------------------------------------
-   if ( scope >= US_DataPub::ScopeNoise  &&  ! models.isEmpty() )
+   if ( scope >= US_DataPub::ScopeNoise )
    {
-      QList< US_DataPubCatalog::Noise > found = catalog.noises( models, error );
-
-      if ( ! error.isEmpty() )  return false;
-
       QList< US_DataPubCatalog::Noise > noises;
 
-      for ( int ii = 0; ii < found.size(); ii++ )
-      {
-         if ( selection.noisesExplicit  &&
-              ! selection.noiseGUIDs.contains( found[ ii ].guid ) )  continue;
-
-         noises << found[ ii ];
-      }
+      if ( ! collectNoises( selection, models, noises, error ) )  return false;
 
       if ( ! addNoises( noises, error ) )  return false;
    }
 
+   else if ( selection.noisesExplicit  &&  ! selection.noiseGUIDs.isEmpty() )
+      note( tr( "%1 selected noise record(s) are left out: the scope ends at"
+                " \"%2\"" ).arg( selection.noiseGUIDs.size() )
+            .arg( US_DataPub::scopeKey( scope ) ) );
+
    emit steps( step_count );
+
+   if ( mani.total() < 1 )
+   {
+      error = tr( "There is nothing to export: the selection holds no record"
+                  " within the scope \"%1\"" )
+              .arg( US_DataPub::scopeKey( scope ) );
+      return false;
+   }
+
+   // Raw data cannot be re-created without the solution in its channel
+   QList< US_DataPubEntity > raws = mani.section( US_DataPub::RawData );
+
+   for ( int ii = 0; ii < raws.size(); ii++ )
+   {
+      if ( ! raws[ ii ].depend( US_DataPub::Solution ).isEmpty() )  continue;
+
+      error = tr( "The raw data %1 has no solution in the bundle" )
+              .arg( raws[ ii ].filename );
+      return false;
+   }
 
    if ( ! mani.validate( error ) )  return false;
 
@@ -337,10 +488,11 @@ bool US_DataPubExporter::gatherRuns( const Selection& selection,
 {
    runs.clear();
 
-   QStringList runIDs = selection.runIDs;
+   QStringList runIDs = unique( selection.runIDs );
+   US_DataPub::Scope scope = selection.effectiveScope();
 
    if ( runIDs.isEmpty()  &&  ! selection.projectGUID.isEmpty()  &&
-        selection.scope > US_DataPub::ScopeProject )
+        scope > US_DataPub::ScopeProject )
    {
       QList< US_DataPubCatalog::Run > found =
             catalog.runs( selection.projectGUID, error );
@@ -351,29 +503,64 @@ bool US_DataPubExporter::gatherRuns( const Selection& selection,
          runIDs << found[ ii ].runID;
    }
 
-   if ( runIDs.isEmpty()  &&  selection.scope > US_DataPub::ScopeProject )
+   if ( runIDs.isEmpty()  &&  scope > US_DataPub::ScopeProject )
    {
       error = tr( "No runs were selected for export" );
       return false;
    }
 
+   QStringList seenRaws;
+   QStringList seenEdits;
+   int         nraws = 0;
+
    for ( int ii = 0; ii < runIDs.size(); ii++ )
    {
+      // The run ID names directories and files in the bundle
+      if ( ! US_DataPub::runIdIsUsable( runIDs[ ii ] ) )
+      {
+         error = tr( "\"%1\" cannot be exported: a run ID may hold only"
+                     " letters, digits, '_' and '-', at most 80 of them" )
+                 .arg( runIDs[ ii ] );
+         return false;
+      }
+
       US_DataPubCatalog::Run run;
 
       if ( ! catalog.runByID( runIDs[ ii ], run, error ) )  return false;
 
       if ( ! catalog.loadRunDetails( run, error ) )         return false;
 
+      if ( ! selection.projectGUID.isEmpty()  &&
+           run.projectGUID != selection.projectGUID )
+      {
+         error = tr( "Run %1 belongs to project %2, not to the project %3"
+                     " the export was asked for" )
+                 .arg( run.runID )
+                 .arg( run.projectGUID.isEmpty() ? tr( "(none)" )
+                                                 : run.projectGUID )
+                 .arg( selection.projectGUID );
+         return false;
+      }
+
       // Keep only the selected raw triples and edits
       QList< US_DataPubCatalog::Raw > raws;
+      QStringList                     dropped;
 
       for ( int jj = 0; jj < run.raws.size(); jj++ )
       {
          US_DataPubCatalog::Raw raw = run.raws[ jj ];
 
+         for ( int kk = 0; kk < raw.edits.size(); kk++ )
+            seenEdits << raw.edits[ kk ].guid;
+
+         seenRaws << raw.guid;
+
          if ( selection.rawsExplicit  &&
-              ! selection.rawGUIDs.contains( raw.guid ) )  continue;
+              ! selection.rawGUIDs.contains( raw.guid ) )
+         {
+            dropped << raw.guid;
+            continue;
+         }
 
          if ( selection.editsExplicit )
          {
@@ -390,12 +577,49 @@ bool US_DataPubExporter::gatherRuns( const Selection& selection,
       }
 
       run.raws = raws;
+      nraws   += raws.size();
+      dropped_raws.insert( run.runID, dropped );
 
       if ( run.raws.isEmpty() )
-         note( tr( "Run %1 contributes no raw data to this bundle" )
+         note( tr( "Warning: run %1 contributes no raw data to this bundle" )
                .arg( run.runID ) );
 
       runs << run;
+   }
+
+   // A GUID that was asked for by name and matches nothing is a mistake
+   // in the request, not something to pass over
+   QStringList unknown;
+
+   if ( selection.rawsExplicit )
+      for ( int ii = 0; ii < selection.rawGUIDs.size(); ii++ )
+         if ( ! seenRaws.contains( selection.rawGUIDs[ ii ] ) )
+            unknown << selection.rawGUIDs[ ii ];
+
+   if ( ! unknown.isEmpty() )
+   {
+      error = tr( "No raw data of the selected runs has the GUID %1" )
+              .arg( unknown.join( ", " ) );
+      return false;
+   }
+
+   if ( selection.editsExplicit  &&  scope >= US_DataPub::ScopeEdits )
+      for ( int ii = 0; ii < selection.editGUIDs.size(); ii++ )
+         if ( ! seenEdits.contains( selection.editGUIDs[ ii ] ) )
+            unknown << selection.editGUIDs[ ii ];
+
+   if ( ! unknown.isEmpty() )
+   {
+      error = tr( "No edit of the selected runs has the GUID %1" )
+              .arg( unknown.join( ", " ) );
+      return false;
+   }
+
+   if ( scope >= US_DataPub::ScopeRawData  &&  ! runs.isEmpty()  &&
+        nraws == 0 )
+   {
+      error = tr( "None of the selected runs has raw data to export" );
+      return false;
    }
 
    error.clear();
@@ -405,28 +629,60 @@ bool US_DataPubExporter::gatherRuns( const Selection& selection,
 
 // ------------------------------------------------------------------- project
 
-bool US_DataPubExporter::addProject(
+/* Every project the runs belong to travels with them.  A selection names
+   at most one -- and gatherRuns() has made sure the runs belong to it --
+   but runs picked one by one may come from several.
+*/
+bool US_DataPubExporter::addProjects(
       const Selection& selection,
       const QList< US_DataPubCatalog::ExpInfo >& infos, QString& error )
 {
-   QString guid = selection.projectGUID;
-   QString id   = QString( "-1" );
+   QStringList guids;
+   QStringList ids;
 
-   for ( int ii = 0; ii < infos.size()  &&  guid.isEmpty(); ii++ )
+   if ( ! selection.projectGUID.isEmpty() )
    {
-      guid = infos[ ii ].projectGUID;
-      id   = infos[ ii ].projectID;
+      guids << selection.projectGUID;
+      ids   << QString( "-1" );
    }
 
-   if ( guid.isEmpty() )
+   for ( int ii = 0; ii < infos.size(); ii++ )
+   {
+      QString guid = infos[ ii ].projectGUID;
+      int     at   = guids.indexOf( guid );
+
+      if ( guid.isEmpty() )  continue;
+
+      if ( at < 0 )
+      {
+         guids << guid;
+         ids   << infos[ ii ].projectID;
+      }
+
+      else if ( ids[ at ].toInt() < 1 )
+         ids[ at ] = infos[ ii ].projectID;
+   }
+
+   if ( guids.isEmpty() )
    {
       note( tr( "No project is associated with the selected runs" ) );
       return true;
    }
 
-   for ( int ii = 0; ii < infos.size(); ii++ )
-      if ( infos[ ii ].projectGUID == guid )
-         id = infos[ ii ].projectID;
+   if ( guids.size() > 1 )
+      note( tr( "The selected runs belong to %1 projects; all of them are"
+                " exported" ).arg( guids.size() ) );
+
+   for ( int ii = 0; ii < guids.size(); ii++ )
+      if ( ! addProject( guids[ ii ], ids[ ii ], error ) )  return false;
+
+   return true;
+}
+
+bool US_DataPubExporter::addProject( const QString& guid, const QString& id,
+                                     QString& error )
+{
+   if ( mani.contains( US_DataPub::Project, guid ) )  return true;
 
    US_Project project;
    QString    lookup = guid;
@@ -434,25 +690,40 @@ bool US_DataPubExporter::addProject(
 
    if ( catalog.isDb() )
    {
-      int projectID = id.toInt();
+      IUS_DB2* dbase     = catalog.db();
+      int      projectID = id.toInt();
 
       if ( projectID < 1 )
       {
          QStringList query;
          query << "get_projectID_from_GUID" << guid;
-         catalog.db()->query( query );
+         dbase->query( query );
 
-         if ( catalog.db()->next() )
-            projectID = catalog.db()->value( 0 ).toString().toInt();
+         if ( dbase->lastErrno() != IUS_DB2::OK  &&
+              dbase->lastErrno() != IUS_DB2::NOROWS )
+         {
+            error = tr( "The project %1 could not be looked up: %2" )
+                    .arg( guid ).arg( dbase->lastError() );
+            return false;
+         }
+
+         if ( dbase->next() )
+            projectID = dbase->value( 0 ).toString().toInt();
       }
 
-      status = project.readFromDB( projectID, catalog.db() );
+      if ( projectID < 1 )
+      {
+         error = tr( "The project %1 is not in the database" ).arg( guid );
+         return false;
+      }
+
+      status = project.readFromDB( projectID, dbase );
    }
 
    else
       status = project.readFromDisk( lookup );
 
-   if ( status != US_DB2::OK )
+   if ( status != IUS_DB2::OK  ||  project.projectGUID != guid )
    {
       error = tr( "The project %1 could not be read (status %2)" )
               .arg( guid ).arg( status );
@@ -470,7 +741,7 @@ bool US_DataPubExporter::addProject(
    {
       QString staged = bundle.stagedPath( entity.payload );
 
-      if ( ! project.saveToFile( staged ) )
+      if ( staged.isEmpty()  ||  ! project.saveToFile( staged ) )
       {
          error = tr( "The project %1 could not be staged" ).arg( guid );
          return false;
@@ -494,14 +765,21 @@ bool US_DataPubExporter::addProject(
 
 // ---------------------------------------------------------------- experiment
 
+/* The triples the experiment XML of a database run describes.
+
+   This is what US_ConvertIO's raw-data reader builds before it writes the
+   XML, without downloading any data into the results directory: the
+   catalog already knows each triple's GUID, file name and solution.
+*/
 bool US_DataPubExporter::buildTriplesFromDb(
       const US_DataPubCatalog::Run& run,
       QList< US_Convert::TripleInfo >& triples, QString& error )
 {
    triples.clear();
 
-   US_DB2*     dbase = catalog.db();
-   QStringList query;
+   IUS_DB2*      dbase   = catalog.db();
+   const QString letters = US_Util::channel_letters();
+   QStringList   query;
 
    // Cell/channel/centerpiece assignments of the experiment
    QStringList cellNames;
@@ -511,45 +789,37 @@ bool US_DataPubExporter::buildTriplesFromDb(
    query << "all_cell_experiments" << run.id;
    dbase->query( query );
 
+   if ( dbase->lastErrno() != IUS_DB2::OK  &&
+        dbase->lastErrno() != IUS_DB2::NOROWS )
+   {
+      error = tr( "The cell assignments of run %1 could not be read: %2" )
+              .arg( run.runID ).arg( dbase->lastError() );
+      return false;
+   }
+
    while ( dbase->next() )
    {
-      QString letters( "SABCDEFGH" );
-      int     chanx = qMax( 0, dbase->value( 3 ).toInt() );
-      chanx         = qMin( chanx, letters.size() - 1 );
+      int chanx = qBound( 0, dbase->value( 3 ).toInt(), letters.size() - 1 );
 
       cellNames << dbase->value( 2 ).toString();
       chanNames << QString( letters[ chanx ] );
       cpIDs     << dbase->value( 4 ).toString();
    }
 
-   int     prevSolID = -1;
-   QString prevRunType;
+   QMap< int, US_Solution > solutions;
 
    for ( int ii = 0; ii < run.raws.size(); ii++ )
    {
       const US_DataPubCatalog::Raw& raw = run.raws[ ii ];
 
-      query.clear();
-      query << "get_rawData" << raw.id;
-      dbase->query( query );
-
-      if ( ! dbase->next() )
-      {
-         error = tr( "The raw data record %1 could not be read: %2" )
-                 .arg( raw.id ).arg( dbase->lastError() );
-         return false;
-      }
-
       US_Convert::TripleInfo triple;
-      QString uuidc = dbase->value( 0 ).toString();
-      US_Util::uuid_parse( uuidc, (unsigned char*)triple.tripleGUID );
+      US_Util::uuid_parse( raw.guid, (unsigned char*)triple.tripleGUID );
 
-      triple.tripleFilename      = dbase->value( 2 ).toString();
-      triple.tripleID            = raw.id.toInt();
-      triple.solution.solutionID = dbase->value( 5 ).toInt();
-      triple.excluded            = false;
+      triple.tripleFilename = raw.filename;
+      triple.tripleID       = raw.id.toInt();
+      triple.excluded       = false;
 
-      QStringList parts   = triple.tripleFilename.split( "." );
+      QStringList parts = triple.tripleFilename.split( "." );
 
       if ( parts.size() < 6 )
       {
@@ -558,14 +828,13 @@ bool US_DataPubExporter::buildTriplesFromDb(
          return false;
       }
 
-      QString runType     = parts[ 1 ];
-      QString cell        = parts[ 2 ];
-      QString channel     = parts[ 3 ];
-      QString wl          = ( runType == "WA" )
-                            ? QString::number( parts[ 4 ].toDouble() / 1000.0 )
-                            : parts[ 4 ];
-      triple.tripleDesc   = cell + " / " + channel + " / " + wl;
-      prevRunType         = runType;
+      QString runType   = parts[ 1 ];
+      QString cell      = parts[ 2 ];
+      QString channel   = parts[ 3 ];
+      QString wl        = ( runType == "WA" )
+                          ? QString::number( parts[ 4 ].toDouble() / 1000.0 )
+                          : parts[ 4 ];
+      triple.tripleDesc = cell + " / " + channel + " / " + wl;
 
       int cellx = -1;
 
@@ -578,24 +847,190 @@ bool US_DataPubExporter::buildTriplesFromDb(
          break;
       }
 
-      if ( cellx < 0  &&  ! cpIDs.isEmpty() )   // Pre-channel-table data
-         cellx = 0;
+      // A channel the cell table does not describe has no centerpiece; it
+      // is not given some other channel's
+      if ( cellx < 0 )
+         note( tr( "Run %1 records no centerpiece for cell %2, channel %3" )
+               .arg( run.runID ).arg( cell ).arg( channel ) );
 
       triple.centerpiece = ( cellx < 0 ) ? 0 : cpIDs[ cellx ].toInt();
 
-      if ( triple.solution.solutionID != prevSolID )
+      int solID = raw.solutionID.toInt();
+
+      if ( solID < 1 )
       {
-         triple.solution.readFromDB( triple.solution.solutionID, dbase );
-         prevSolID = triple.solution.solutionID;
+         error = tr( "The raw data %1 names no solution" ).arg( raw.filename );
+         return false;
       }
 
-      else if ( ! triples.isEmpty() )
-         triple.solution = triples.last().solution;
+      if ( ! solutions.contains( solID ) )
+      {
+         US_Solution solution;
+         int status = solution.readFromDB( solID, dbase );
+
+         if ( status != IUS_DB2::OK )
+         {
+            error = tr( "The solution %1 of %2 could not be read: %3" )
+                    .arg( solID ).arg( raw.filename )
+                    .arg( US_Solution::readErrorText( status,
+                                                      dbase->lastError() ) );
+            return false;
+         }
+
+         solutions.insert( solID, solution );
+      }
+
+      triple.solution = solutions.value( solID );
 
       triples << triple;
    }
 
    error.clear();
+
+   return true;
+}
+
+/* Read the experiment record of a database run.
+
+   US_Experiment::readFromDB() keeps a local copy of an RI intensity profile
+   in the user's results directory as a side effect.  An export only reads,
+   so a file that was not there before is taken away again.
+*/
+bool US_DataPubExporter::readExperimentDb(
+      const US_DataPubCatalog::Run& run, US_Experiment& exper,
+      QVector< US_SimulationParameters::SpeedProfile >& speedsteps,
+      QString& error )
+{
+   QString   ripPath = US_Settings::resultDir() + "/" + run.runID + "/"
+                       + run.runID + ".RIProfile.xml";
+   QFileInfo before( ripPath );
+   bool      existed = before.exists();
+   qint64    oldSize = existed ? before.size() : -1;
+
+   int status = exper.readFromDB( run.runID, catalog.db(), speedsteps );
+
+   QFileInfo after( ripPath );
+
+   if ( ! existed  &&  after.exists() )
+      QFile::remove( ripPath );
+
+   else if ( existed  &&  oldSize == 0  &&  after.size() > 0 )
+   {
+      QFile rfile( ripPath );
+
+      if ( rfile.open( QIODevice::WriteOnly | QIODevice::Truncate ) )
+         rfile.close();
+   }
+
+   if ( status != IUS_DB2::OK )
+   {
+      error = tr( "The experiment of run %1 could not be read (status %2): %3" )
+              .arg( run.runID ).arg( status )
+              .arg( catalog.db()->lastError() );
+      return false;
+   }
+
+   return true;
+}
+
+/* Stage the experiment XML of a disk run.
+
+   The file is copied as it is when every triple of the run is exported.
+   When some were deselected, the datasets that describe them are left out,
+   so the bundle does not name triples -- and their solutions -- that it
+   does not carry.
+*/
+bool US_DataPubExporter::stageExperimentXml(
+      const US_DataPubCatalog::Run& run, const QString& source,
+      const QString& staged, QString& error )
+{
+   QStringList dropped = dropped_raws.value( run.runID );
+
+   if ( dropped.isEmpty() )
+      return copyPayload( source, staged, error );
+
+   QFile input( source );
+
+   if ( ! input.open( QIODevice::ReadOnly ) )
+   {
+      error = tr( "The experiment XML file %1 cannot be read" ).arg( source );
+      return false;
+   }
+
+   QSaveFile output( staged );
+
+   if ( ! output.open( QIODevice::WriteOnly ) )
+   {
+      error = tr( "Cannot stage the experiment XML of run %1" )
+              .arg( run.runID );
+      return false;
+   }
+
+   QXmlStreamReader xml( &input );
+   QXmlStreamWriter out( &output );
+   out.setAutoFormatting( true );
+
+   int skipDepth = 0;
+   int knt       = 0;
+
+   while ( ! xml.atEnd() )
+   {
+      xml.readNext();
+
+      if ( skipDepth > 0 )
+      {
+         if ( xml.isStartElement() )  skipDepth++;
+         if ( xml.isEndElement() )    skipDepth--;
+         continue;
+      }
+
+      if ( xml.isStartElement()  &&  xml.name().toString() == "dataset" )
+      {
+         QString guid = xml.attributes().value( "guid" ).toString();
+
+         if ( dropped.contains( guid ) )
+         {
+            skipDepth = 1;
+            knt++;
+            continue;
+         }
+      }
+
+      // Whitespace is re-made by the writer's own formatting
+      if ( xml.isWhitespace() )  continue;
+
+      out.writeCurrentToken( xml );
+   }
+
+   input.close();
+
+   if ( xml.hasError() )
+   {
+      output.cancelWriting();
+      error = tr( "The experiment XML file %1 is not well-formed: %2" )
+              .arg( source ).arg( xml.errorString() );
+      return false;
+   }
+
+   if ( knt < dropped.size() )
+   {
+      output.cancelWriting();
+      error = tr( "The experiment XML of run %1 does not describe every"
+                  " triple by its GUID, so the deselected ones cannot be left"
+                  " out of it; export all triples of the run instead" )
+              .arg( run.runID );
+      return false;
+   }
+
+   if ( ! output.commit() )
+   {
+      error = tr( "Cannot stage the experiment XML of run %1" )
+              .arg( run.runID );
+      return false;
+   }
+
+   note( tr( "Run %1: %2 deselected triple(s) left out of the experiment XML" )
+         .arg( run.runID ).arg( knt ) );
 
    return true;
 }
@@ -632,78 +1067,131 @@ bool US_DataPubExporter::addExperiment( const US_DataPubCatalog::Run& run,
       return false;
    }
 
-   QString runType = run.runType;
+   QString runType = runTypeOf( run );
+   QString expDir  = US_DataPub::payloadDir( US_DataPub::Experiment );
+   QString ripName = run.runID + ".RIProfile.xml";
 
-   if ( stage_payloads )
+   entity.filename = run.runID + "." + runType + ".xml";
+   entity.payload  = expDir + "/" + entity.filename;
+   entity.attrs.insert( "runType", runType );
+
+   if ( ! stage_payloads )
+   {  // A preview names the RI profile when it can see one without reading
+      if ( ! catalog.isDb()  &&  ! run.dirPath.isEmpty()  &&
+           QFile::exists( run.dirPath + "/" + ripName ) )
+         entity.attrs.insert( "riProfilePayload", expDir + "/" + ripName );
+
+      finishEntity( entity, QString() );
+      mani.add( entity );
+      return true;
+   }
+
+   QString staged = bundle.stagedPath( entity.payload );
+
+   if ( staged.isEmpty() )
    {
-      if ( ! catalog.isDb() )
-      {
-         QString source = US_DataPubCatalog::expFilePath( run );
-         entity.filename = QFileInfo( source ).fileName();
-         entity.payload  = US_DataPub::payloadDir( US_DataPub::Experiment )
-                           + "/" + entity.filename;
+      error = tr( "Run %1 cannot be staged" ).arg( run.runID );
+      return false;
+   }
 
-         if ( ! copyPayload( source, bundle.stagedPath( entity.payload ),
-                             error ) )
-            return false;
-      }
+   if ( ! catalog.isDb() )
+   {
+      QString source = US_DataPubCatalog::expFilePath( run );
 
-      else
-      {
-         US_Experiment              exper;
-         QVector< US_SimulationParameters::SpeedProfile > speedsteps;
-         int status = exper.readFromDB( run.runID, catalog.db(), speedsteps );
+      if ( QFileInfo( source ).fileName() != entity.filename )
+         source = run.dirPath + "/" + entity.filename;
 
-         if ( status != US_DB2::OK  &&  status != US_DB2::DBERROR )
-         {
-            error = tr( "The experiment of run %1 could not be read"
-                        " (status %2)" ).arg( run.runID ).arg( status );
-            return false;
-         }
-
-         QList< US_Convert::TripleInfo > triples;
-
-         if ( ! buildTriplesFromDb( run, triples, error ) )  return false;
-
-         runType = QString( exper.opticalSystem );
-
-         if ( runType.isEmpty()  &&  ! run.raws.isEmpty() )
-            runType = run.raws[ 0 ].dataType;
-
-         QString dirPath = bundle.stagedPath(
-                           US_DataPub::payloadDir( US_DataPub::Experiment )
-                           + "/placeholder" );
-         dirPath = QFileInfo( dirPath ).absolutePath();
-
-         if ( exper.saveToDisk( triples, runType, run.runID, dirPath + "/",
-                                speedsteps ) != US_Convert::OK )
-         {
-            error = tr( "The experiment XML of run %1 could not be staged" )
-                    .arg( run.runID );
-            return false;
-         }
-
-         entity.filename = run.runID + "." + runType + ".xml";
-         entity.payload  = US_DataPub::payloadDir( US_DataPub::Experiment )
-                           + "/" + entity.filename;
-      }
-
-      if ( ! finishEntity( entity, bundle.stagedPath( entity.payload ) ) )
-      {
-         error = tr( "The staged experiment payload could not be digested" );
+      if ( ! stageExperimentXml( run, source, staged, error ) )
          return false;
+
+      // The RI intensity profile an RI run is reduced with
+      QString ripSource = run.dirPath + "/" + ripName;
+
+      if ( QFile::exists( ripSource ) )
+      {
+         QString ripRel = expDir + "/" + ripName;
+
+         if ( ! copyPayload( ripSource, bundle.stagedPath( ripRel ), error ) )
+            return false;
+
+         entity.attrs.insert( "riProfilePayload", ripRel );
       }
+
+      else if ( runType == "RI" )
+         note( tr( "Run %1 is RI data without an intensity profile" )
+               .arg( run.runID ) );
    }
 
    else
    {
-      entity.filename = run.runID + "." + runType + ".xml";
-      entity.payload  = US_DataPub::payloadDir( US_DataPub::Experiment )
-                        + "/" + entity.filename;
-      finishEntity( entity, QString() );
+      US_Experiment              exper;
+      QVector< US_SimulationParameters::SpeedProfile > speedsteps;
+
+      if ( ! readExperimentDb( run, exper, speedsteps, error ) )  return false;
+
+      if ( ! exper.expGUID.isEmpty()  &&  exper.expGUID != entity.guid )
+      {
+         error = tr( "The experiment record of run %1 has the GUID %2, the"
+                     " catalog %3" ).arg( run.runID ).arg( exper.expGUID )
+                 .arg( entity.guid );
+         return false;
+      }
+
+      if ( QString( exper.opticalSystem ) != runType  &&
+           ! QString( exper.opticalSystem ).isEmpty() )
+         note( tr( "Run %1: the experiment record says optical system %2,"
+                   " the data files %3; the files are followed" )
+               .arg( run.runID ).arg( QString( exper.opticalSystem ) )
+               .arg( runType ) );
+
+      QList< US_Convert::TripleInfo > triples;
+
+      if ( ! buildTriplesFromDb( run, triples, error ) )  return false;
+
+      QString dirPath = QFileInfo( staged ).absolutePath();
+
+      if ( exper.saveToDisk( triples, runType, run.runID, dirPath + "/",
+                             speedsteps ) != US_Convert::OK  ||
+           ! QFile::exists( staged ) )
+      {
+         error = tr( "The experiment XML of run %1 could not be staged" )
+                 .arg( run.runID );
+         return false;
+      }
+
+      if ( exper.expGUID != entity.guid )
+      {
+         error = tr( "The experiment GUID of run %1 is not a valid GUID" )
+                 .arg( run.runID );
+         return false;
+      }
+
+      // The RI intensity profile is part of the experiment record in the
+      // database; it travels as a file of its own, as on disk
+      if ( QString( exper.opticalSystem ) == "RI"  &&
+           ! exper.RIProfile.isEmpty() )
+      {
+         if ( exper.saveRIDisk( run.runID, dirPath ) != US_Convert::OK  ||
+              ! QFile::exists( dirPath + "/" + ripName ) )
+         {
+            error = tr( "The RI intensity profile of run %1 could not be"
+                        " staged" ).arg( run.runID );
+            return false;
+         }
+
+         entity.attrs.insert( "riProfilePayload", expDir + "/" + ripName );
+      }
+
+      else if ( QString( exper.opticalSystem ) == "RI" )
+         note( tr( "Run %1 is RI data without an intensity profile" )
+               .arg( run.runID ) );
    }
 
-   entity.attrs.insert( "runType", runType );
+   if ( ! finishEntity( entity, staged ) )
+   {
+      error = tr( "The staged experiment payload could not be digested" );
+      return false;
+   }
 
    mani.add( entity );
    note( tr( "Experiment: %1" ).arg( run.runID ) );
@@ -720,27 +1208,20 @@ bool US_DataPubExporter::addRawData( const US_DataPubCatalog::Run& run,
    for ( int ii = 0; ii < run.raws.size(); ii++ )
    {
       const US_DataPubCatalog::Raw& raw = run.raws[ ii ];
-      QString channelKey = raw.triple.section( ".", 0, 0 ) + "/"
-                           + raw.triple.section( ".", 1, 1 );
-      QString solGUID;
-
-      if ( catalog.isDb() )
-      {
-         QStringList query;
-         query << "get_rawData" << raw.id;
-         catalog.db()->query( query );
-
-         if ( catalog.db()->next() )
-            solGUID = sol_guids.value( catalog.db()->value( 5 ).toString() );
-      }
-
-      else
-         solGUID = info.tripleSolutionGUIDs.value( channelKey );
+      QString channelKey = channel_key( raw );
+      QString solGUID    = raw_solutions.value( raw.guid );
 
       if ( raw.guid.isEmpty() )
       {
          error = tr( "The raw data file %1 has no GUID and cannot"
                      " be exported" ).arg( raw.filename );
+         return false;
+      }
+
+      if ( solGUID.isEmpty() )
+      {
+         error = tr( "The raw data %1 has no solution in the bundle" )
+                 .arg( raw.filename );
          return false;
       }
 
@@ -763,15 +1244,23 @@ bool US_DataPubExporter::addRawData( const US_DataPubCatalog::Run& run,
       {
          QString staged = bundle.stagedPath( entity.payload );
 
+         if ( staged.isEmpty() )
+         {
+            error = tr( "The raw data %1 cannot be staged" ).arg( raw.filename );
+            return false;
+         }
+
          if ( catalog.isDb() )
          {
-            int status = catalog.db()->readBlobFromDB( staged,
-                         QString( "download_aucData" ), raw.id.toInt() );
+            QString why;
+            int     status = US_ConvertIO::downloadRawDataBlob(
+                             catalog.db(), raw.id.toInt(), staged, why );
 
-            if ( status != US_DB2::OK )
+            if ( status != IUS_DB2::OK )
             {
                error = tr( "The raw data record %1 could not be downloaded"
-                           " (status %2)" ).arg( raw.filename ).arg( status );
+                           " (status %2): %3" ).arg( raw.filename )
+                       .arg( status ).arg( why );
                return false;
             }
          }
@@ -802,96 +1291,66 @@ bool US_DataPubExporter::addRawData( const US_DataPubCatalog::Run& run,
 
 // ---------------------------------------------------------------- time state
 
+/* The time state of a run is a record of its own, with an identity of its
+   own: a GUID derived from the experiment's, so that exporting the run
+   twice gives it the same one.
+*/
 bool US_DataPubExporter::addTimeState( const US_DataPubCatalog::Run& run,
                                       QString& error )
 {
-   if ( ! stage_payloads )
-   {  // A preview only reports whether a time state exists at all
-      bool present = false;
-
-      if ( catalog.isDb() )
-      {
-         int       tmstID = 0;
-         int       expID  = run.id.toInt();
-         QString   fname;
-         QString   xdefs;
-         QString   cksum;
-         QDateTime updated;
-
-         US_TimeState::dbExamine( catalog.db(), &tmstID, &expID, &fname,
-                                  &xdefs, &cksum, &updated );
-         present = ( tmstID > 0 );
-      }
-
-      else
-      {
-         QString dirPath = run.dirPath.isEmpty()
-                           ? US_Settings::resultDir() + "/" + run.runID
-                           : run.dirPath;
-         present = QFile( dirPath + "/" + run.runID
-                          + ".time_state.tmst" ).exists();
-      }
-
-      if ( ! present )  return true;
-
-      US_DataPubEntity entity( US_DataPub::TimeState );
-      entity.id       = run.id;
-      entity.guid     = run.guid;
-      entity.filename = run.runID + ".time_state.tmst";
-      entity.name     = entity.filename;
-      entity.payload  = US_DataPub::payloadDir( US_DataPub::TimeState ) + "/"
-                        + run.runID + "/" + entity.filename;
-      entity.attrs.insert( "runID", run.runID );
-      entity.setDepend( US_DataPub::Experiment, run.guid );
-      finishEntity( entity, QString() );
-      mani.add( entity );
-
-      return true;
-   }
-
-   // Hidden, so pack() leaves it out even if removing it below is missed
-   QString workDir = bundle.stagingPath() + "/.timestate";
+   QString workDir = bundle.workPath() + "/timestate/" + run.runID;
    QString tmstPath;
    QString xdefPath;
+   QString tmstID;
 
-   if ( ! catalog.timeState( run, workDir, tmstPath, xdefPath ) )
+   US_DataPubCatalog::TimeStateStatus status =
+      catalog.timeState( run, workDir, stage_payloads, tmstPath, xdefPath,
+                         tmstID, error );
+
+   if ( status == US_DataPubCatalog::TimeStateNone )
+   {
+      error.clear();
       return true;                 // A run without a time state is normal
+   }
+
+   if ( status == US_DataPubCatalog::TimeStateFailed )  return false;
+
+   QString dir = US_DataPub::payloadDir( US_DataPub::TimeState ) + "/"
+                 + run.runID + "/";
 
    US_DataPubEntity entity( US_DataPub::TimeState );
-   entity.id       = run.id;
-   entity.guid     = run.guid;
+   entity.id       = tmstID;
+   entity.guid     = US_DataPub::derivedGuid( "timeState:" + run.guid );
    entity.filename = QFileInfo( tmstPath ).fileName();
    entity.name     = entity.filename;
-   entity.payload  = US_DataPub::payloadDir( US_DataPub::TimeState ) + "/"
-                     + run.runID + "/" + entity.filename;
+   entity.payload  = dir + entity.filename;
    entity.attrs.insert( "runID", run.runID );
+   entity.attrs.insert( "definitionsPayload",
+                        dir + QFileInfo( xdefPath ).fileName() );
    entity.setDepend( US_DataPub::Experiment, run.guid );
 
-   QString staged = bundle.stagedPath( entity.payload );
-
-   if ( ! copyPayload( tmstPath, staged, error ) )  return false;
-
-   if ( QFile::exists( xdefPath ) )
+   if ( stage_payloads )
    {
-      QString defsRel = US_DataPub::payloadDir( US_DataPub::TimeState ) + "/"
-                        + run.runID + "/" + QFileInfo( xdefPath ).fileName();
-      QString stagedDefs = bundle.stagedPath( defsRel );
+      QString staged = bundle.stagedPath( entity.payload );
 
-      if ( ! copyPayload( xdefPath, stagedDefs, error ) )  return false;
+      if ( ! copyPayload( tmstPath, staged, error ) )  return false;
 
-      entity.attrs.insert( "definitionsPayload", defsRel );
-      entity.attrs.insert( "definitionsSha256",
-                           US_DataPubHash::fileHash( stagedDefs ) );
+      if ( ! copyPayload( xdefPath, bundle.stagedPath(
+                          entity.attrs.value( "definitionsPayload" ) ), error ) )
+         return false;
+
+      if ( ! finishEntity( entity, staged ) )
+      {
+         error = tr( "The staged time state of run %1 could not be digested" )
+                 .arg( run.runID );
+         return false;
+      }
+
+      QDir( workDir ).removeRecursively();
    }
 
-   if ( ! finishEntity( entity, staged ) )
-   {
-      error = tr( "The staged time state of run %1 could not be digested" )
-              .arg( run.runID );
-      return false;
-   }
-
-   QDir( workDir ).removeRecursively();
+   else
+      finishEntity( entity, QString() );
 
    mani.add( entity );
    note( tr( "Time state: %1" ).arg( run.runID ) );
@@ -922,14 +1381,18 @@ bool US_DataPubExporter::addCalibration(
 
    if ( status != US_Rotor::ROTOR_OK )
    {
-      note( tr( "The rotor calibration %1 of run %2 could not be read"
-                " and is left out of the bundle" )
-            .arg( calID ).arg( info.runID ) );
-      return true;
+      error = tr( "The rotor calibration %1 of run %2 could not be read"
+                  " (status %3)" ).arg( calID ).arg( info.runID )
+              .arg( int( status ) );
+      return false;
    }
 
+   // An old calibration without a GUID gets one derived from what
+   // identifies it, the same every time it is exported
    if ( calibration.GUID.isEmpty() )
-      calibration.GUID = info.rotorGUID + QString( "-cal-%1" ).arg( calID );
+      calibration.GUID = US_DataPub::derivedGuid(
+                         "rotorCalibration:" + info.rotorGUID + ":"
+                         + QString::number( calID ) );
 
    cal_guids.insert( info.runID, calibration.GUID );
 
@@ -952,7 +1415,8 @@ bool US_DataPubExporter::addCalibration(
    {
       QString staged = bundle.stagedPath( entity.payload );
 
-      if ( ! US_DataPubRecords::writeCalibration( calibration, staged ) )
+      if ( staged.isEmpty()  ||
+           ! US_DataPubRecords::writeCalibration( calibration, staged ) )
       {
          error = tr( "The rotor calibration %1 could not be staged" )
                  .arg( calibration.GUID );
@@ -978,40 +1442,62 @@ bool US_DataPubExporter::addCalibration(
 
 // -------------------------------------------------------------- centerpieces
 
-bool US_DataPubExporter::addCenterpieces(
-      const US_DataPubCatalog::ExpInfo& info, QString& error )
+/* The centerpieces of the triples that are exported, and of no others.
+   The centerpiece table is read once per export.
+*/
+bool US_DataPubExporter::addCenterpieces( const US_DataPubCatalog::Run& run,
+                                          const US_DataPubCatalog::ExpInfo& info,
+                                          QString& error )
 {
-   if ( info.centerpieceIDs.isEmpty() )  return true;
+   QStringList serials;
 
-   QList< US_AbstractCenterpiece > centerpieces;
-
-   if ( ! US_AbstractCenterpiece::read_centerpieces( catalog.db(),
-                                                     centerpieces ) )
+   for ( int ii = 0; ii < run.raws.size(); ii++ )
    {
-      note( tr( "The centerpiece table could not be read;"
-                " centerpieces are left out of the bundle" ) );
-      return true;
+      QString serial = info.tripleCenterpieceIDs.value(
+                       channel_key( run.raws[ ii ] ) );
+
+      if ( serial.isEmpty()  ||  serial.toInt() < 1 )
+         continue;
+
+      if ( ! serials.contains( serial ) )  serials << serial;
    }
 
-   for ( int ii = 0; ii < info.centerpieceIDs.size(); ii++ )
+   if ( serials.isEmpty() )  return true;
+
+   if ( ! cp_loaded )
    {
-      int serial = info.centerpieceIDs[ ii ].toInt();
+      if ( ! US_AbstractCenterpiece::read_centerpieces( catalog.db(),
+                                                        cp_table ) )
+      {
+         error = tr( "The centerpiece table could not be read, so the"
+                     " centerpieces of run %1 cannot be exported" )
+                 .arg( run.runID );
+         return false;
+      }
+
+      cp_loaded = true;
+   }
+
+   for ( int ii = 0; ii < serials.size(); ii++ )
+   {
+      int serial = serials[ ii ].toInt();
       int found  = -1;
 
-      for ( int jj = 0; jj < centerpieces.size(); jj++ )
-         if ( centerpieces[ jj ].serial_number == serial )  found = jj;
+      for ( int jj = 0; jj < cp_table.size(); jj++ )
+         if ( cp_table[ jj ].serial_number == serial )  found = jj;
 
       if ( found < 0 )
       {
-         note( tr( "Centerpiece %1 of run %2 is not in the centerpiece"
-                   " table and is left out of the bundle" )
-               .arg( serial ).arg( info.runID ) );
-         continue;
+         error = tr( "Centerpiece %1 of run %2 is not in the centerpiece"
+                     " table" ).arg( serial ).arg( run.runID );
+         return false;
       }
 
-      const US_AbstractCenterpiece& centerpiece = centerpieces[ found ];
+      const US_AbstractCenterpiece& centerpiece = cp_table[ found ];
       QString guid = centerpiece.guid.isEmpty()
-                     ? QString( "centerpiece-%1" ).arg( serial )
+                     ? US_DataPub::derivedGuid( "centerpiece:"
+                                                + QString::number( serial ) + ":"
+                                                + centerpiece.name )
                      : centerpiece.guid;
 
       if ( mani.contains( US_DataPub::Centerpiece, guid ) )  continue;
@@ -1029,8 +1515,11 @@ bool US_DataPubExporter::addCenterpieces(
       if ( stage_payloads )
       {
          QString staged = bundle.stagedPath( entity.payload );
+         US_AbstractCenterpiece written = centerpiece;
+         written.guid = guid;
 
-         if ( ! US_DataPubRecords::writeCenterpiece( centerpiece, staged ) )
+         if ( staged.isEmpty()  ||
+              ! US_DataPubRecords::writeCenterpiece( written, staged ) )
          {
             error = tr( "The centerpiece %1 could not be staged" ).arg( serial );
             return false;
@@ -1054,17 +1543,159 @@ bool US_DataPubExporter::addCenterpieces(
 
 // ---------------------------------------------- solutions, buffers, analytes
 
+bool US_DataPubExporter::addBuffer( US_Buffer& buffer, QString& error )
+{
+   if ( buffer.GUID.isEmpty() )
+   {
+      error = tr( "The buffer \"%1\" has no GUID and cannot be exported" )
+              .arg( buffer.description );
+      return false;
+   }
+
+   if ( mani.contains( US_DataPub::Buffer, buffer.GUID ) )  return true;
+
+   if ( buffer.componentIDs.size() != buffer.concentration.size() )
+   {
+      error = tr( "The components of buffer \"%1\" are not readable" )
+              .arg( buffer.description );
+      return false;
+   }
+
+   // The buffer file names its components by ID; what the IDs stand for
+   // is read here, from the database or from the local component table
+   QList< US_BufferComponent > comps;
+
+   for ( int ii = 0; ii < buffer.componentIDs.size(); ii++ )
+   {
+      QString compID = buffer.componentIDs[ ii ];
+      bool    found  = false;
+
+      for ( int jj = 0; jj < buffer.component.size()  &&  ! found; jj++ )
+      {
+         if ( buffer.component[ jj ].componentID != compID )  continue;
+
+         comps << buffer.component[ jj ];
+         found  = true;
+      }
+
+      if ( found )  continue;
+
+      if ( catalog.isDb() )
+      {
+         US_BufferComponent comp;
+         comp.componentID = compID;
+         found            = comp.getInfoFromDB( catalog.db() );
+
+         if ( found )  comps << comp;
+      }
+
+      else
+      {
+         if ( ! hd_comp_loaded )
+         {
+            US_BufferComponent::getAllFromHD( hd_components );
+            hd_comp_loaded = true;
+         }
+
+         found = hd_components.contains( compID );
+
+         if ( found )  comps << hd_components.value( compID );
+      }
+
+      if ( ! found )
+      {
+         error = tr( "Component %1 of buffer \"%2\" is not defined in the %3" )
+                 .arg( compID ).arg( buffer.description )
+                 .arg( catalog.isDb() ? tr( "database" )
+                                      : tr( "local component table" ) );
+         return false;
+      }
+   }
+
+   // writeToDisk() writes one entry per component definition
+   buffer.component = comps;
+
+   US_DataPubEntity entity( US_DataPub::Buffer );
+   entity.id      = buffer.bufferID;
+   entity.guid    = buffer.GUID;
+   entity.name    = buffer.description;
+   entity.payload = US_DataPub::payloadDir( US_DataPub::Buffer ) + "/"
+                    + buffer.GUID + ".xml";
+
+   if ( ! comps.isEmpty() )
+   {
+      entity.attrs.insert( "componentsPayload",
+                           US_DataPub::payloadDir( US_DataPub::Buffer ) + "/"
+                           + buffer.GUID + ".components.xml" );
+      entity.attrs.insert( "components", QString::number( comps.size() ) );
+   }
+
+   if ( stage_payloads )
+   {
+      QString staged = bundle.stagedPath( entity.payload );
+
+      if ( staged.isEmpty()  ||  ! buffer.writeToDisk( staged ) )
+      {
+         error = tr( "The buffer %1 could not be staged" ).arg( buffer.GUID );
+         return false;
+      }
+
+      if ( ! comps.isEmpty()  &&
+           ! US_DataPubRecords::writeBufferComponents( comps,
+                bundle.stagedPath( entity.attrs.value( "componentsPayload" ) ) ) )
+      {
+         error = tr( "The components of buffer %1 could not be staged" )
+                 .arg( buffer.GUID );
+         return false;
+      }
+
+      if ( ! finishEntity( entity, staged ) )
+      {
+         error = tr( "The staged buffer could not be digested" );
+         return false;
+      }
+   }
+
+   else
+      finishEntity( entity, QString() );
+
+   mani.add( entity );
+
+   return true;
+}
+
+/* The solutions in the channels of the triples that are exported, and of
+   no others: from the triple itself in a database, from the run's
+   experiment XML on disk.  A triple whose solution cannot be found or read
+   stops the export -- raw data cannot be imported without it.
+*/
 bool US_DataPubExporter::addSolutions( const US_DataPubCatalog::Run& run,
                                        const US_DataPubCatalog::ExpInfo& info,
                                        QString& error )
 {
-   QStringList refs = catalog.isDb() ? info.solutionIDs : info.solutionGUIDs;
+   QStringList              refs;      // solutionIDs, or GUIDs on disk
+   QMap< QString, QString > rawRefs;   // rawDataGUID -> ref
 
-   if ( refs.isEmpty() )
+   for ( int ii = 0; ii < run.raws.size(); ii++ )
    {
-      note( tr( "Run %1 names no solutions" ).arg( run.runID ) );
-      return true;
+      const US_DataPubCatalog::Raw& raw = run.raws[ ii ];
+      QString ref = catalog.isDb()
+                    ? raw.solutionID
+                    : info.tripleSolutionGUIDs.value( channel_key( raw ) );
+
+      if ( ref.isEmpty()  ||  ( catalog.isDb()  &&  ref.toInt() < 1 ) )
+      {
+         error = tr( "The raw data %1 of run %2 names no solution" )
+                 .arg( raw.filename ).arg( run.runID );
+         return false;
+      }
+
+      rawRefs.insert( raw.guid, ref );
+
+      if ( ! refs.contains( ref ) )  refs << ref;
    }
+
+   QMap< QString, QString > refGUIDs;    // ref -> solutionGUID
 
    for ( int ii = 0; ii < refs.size(); ii++ )
    {
@@ -1080,63 +1711,46 @@ bool US_DataPubExporter::addSolutions( const US_DataPubCatalog::Run& run,
          status       = solution.readFromDisk( guid );
       }
 
-      if ( status != US_DB2::OK  &&  status != US_DB2::NO_ANALYTE  &&
-           status != US_DB2::NO_BUFFER )
+      if ( status != IUS_DB2::OK )
       {
-         error = tr( "The solution %1 of run %2 could not be read"
-                     " (status %3)" ).arg( refs[ ii ] ).arg( run.runID )
-                 .arg( status );
+         error = tr( "The solution %1 of run %2 could not be read: %3" )
+                 .arg( refs[ ii ] ).arg( run.runID )
+                 .arg( US_Solution::readErrorText( status, catalog.isDb()
+                       ? catalog.db()->lastError() : QString() ) );
          return false;
       }
 
       if ( solution.solutionGUID.isEmpty() )
       {
-         note( tr( "A solution of run %1 has no GUID and is left out"
-                   " of the bundle" ).arg( run.runID ) );
-         continue;
+         error = tr( "The solution %1 of run %2 has no GUID and cannot be"
+                     " exported" ).arg( refs[ ii ] ).arg( run.runID );
+         return false;
       }
+
+      refGUIDs.insert( refs[ ii ], solution.solutionGUID );
+
+      if ( mani.contains( US_DataPub::Solution, solution.solutionGUID ) )
+         continue;
 
       // ---- the buffer of the solution ------------------------------------
-      if ( ! solution.buffer.GUID.isEmpty()  &&
-           ! mani.contains( US_DataPub::Buffer, solution.buffer.GUID ) )
-      {
-         US_DataPubEntity entity( US_DataPub::Buffer );
-         entity.id      = solution.buffer.bufferID;
-         entity.guid    = solution.buffer.GUID;
-         entity.name    = solution.buffer.description;
-         entity.payload = US_DataPub::payloadDir( US_DataPub::Buffer ) + "/"
-                          + solution.buffer.GUID + ".xml";
-
-         if ( stage_payloads )
-         {
-            QString staged = bundle.stagedPath( entity.payload );
-
-            if ( ! solution.buffer.writeToDisk( staged ) )
-            {
-               error = tr( "The buffer %1 could not be staged" )
-                       .arg( solution.buffer.GUID );
-               return false;
-            }
-
-            if ( ! finishEntity( entity, staged ) )
-            {
-               error = tr( "The staged buffer could not be digested" );
-               return false;
-            }
-         }
-
-         else
-            finishEntity( entity, QString() );
-
-         mani.add( entity );
-      }
+      if ( ! addBuffer( solution.buffer, error ) )  return false;
 
       // ---- the analytes of the solution ----------------------------------
+      QStringList anaGUIDs;
+
       for ( int jj = 0; jj < solution.analyteInfo.size(); jj++ )
       {
          US_Analyte analyte = solution.analyteInfo[ jj ].analyte;
 
-         if ( analyte.analyteGUID.isEmpty() )          continue;
+         if ( analyte.analyteGUID.isEmpty() )
+         {
+            error = tr( "An analyte of solution \"%1\" has no GUID and"
+                        " cannot be exported" ).arg( solution.solutionDesc );
+            return false;
+         }
+
+         anaGUIDs << analyte.analyteGUID;
+
          if ( mani.contains( US_DataPub::Analyte, analyte.analyteGUID ) )
             continue;
 
@@ -1151,7 +1765,8 @@ bool US_DataPubExporter::addSolutions( const US_DataPubCatalog::Run& run,
          {
             QString staged = bundle.stagedPath( entity.payload );
 
-            if ( analyte.write( false, staged ) != US_DB2::OK )
+            if ( staged.isEmpty()  ||
+                 analyte.write( false, staged ) != IUS_DB2::OK )
             {
                error = tr( "The analyte %1 could not be staged" )
                        .arg( analyte.analyteGUID );
@@ -1172,12 +1787,6 @@ bool US_DataPubExporter::addSolutions( const US_DataPubCatalog::Run& run,
       }
 
       // ---- the solution itself -------------------------------------------
-      sol_guids.insert( QString::number( solution.solutionID ),
-                        solution.solutionGUID );
-
-      if ( mani.contains( US_DataPub::Solution, solution.solutionGUID ) )
-         continue;
-
       US_DataPubEntity entity( US_DataPub::Solution );
       entity.id      = QString::number( solution.solutionID );
       entity.guid    = solution.solutionGUID;
@@ -1187,19 +1796,14 @@ bool US_DataPubExporter::addSolutions( const US_DataPubCatalog::Run& run,
       entity.setDepend( US_DataPub::Buffer, solution.buffer.GUID );
       entity.setDepend( US_DataPub::Experiment, run.guid );
 
-      QStringList anaGUIDs;
-
-      for ( int jj = 0; jj < solution.analyteInfo.size(); jj++ )
-         anaGUIDs << solution.analyteInfo[ jj ].analyte.analyteGUID;
-
-      if ( ! anaGUIDs.isEmpty() )
-         entity.attrs.insert( "analyteGUIDs", anaGUIDs.join( "," ) );
+      for ( int jj = 0; jj < anaGUIDs.size(); jj++ )
+         entity.addDepend( US_DataPub::Analyte, anaGUIDs[ jj ] );
 
       if ( stage_payloads )
       {
          QString staged = bundle.stagedPath( entity.payload );
 
-         if ( ! solution.saveToFile( staged ) )
+         if ( staged.isEmpty()  ||  ! solution.saveToFile( staged ) )
          {
             error = tr( "The solution %1 could not be staged" )
                     .arg( solution.solutionGUID );
@@ -1219,6 +1823,12 @@ bool US_DataPubExporter::addSolutions( const US_DataPubCatalog::Run& run,
       mani.add( entity );
       note( tr( "Solution: %1" ).arg( entity.name ) );
    }
+
+   QList< QString > rawGUIDs = rawRefs.keys();
+
+   for ( int ii = 0; ii < rawGUIDs.size(); ii++ )
+      raw_solutions.insert( rawGUIDs[ ii ],
+                            refGUIDs.value( rawRefs.value( rawGUIDs[ ii ] ) ) );
 
    return true;
 }
@@ -1261,16 +1871,23 @@ bool US_DataPubExporter::addEdits( const US_DataPubCatalog::Run& run,
          {
             QString staged = bundle.stagedPath( entity.payload );
 
+            if ( staged.isEmpty() )
+            {
+               error = tr( "The edit %1 cannot be staged" ).arg( edit.filename );
+               return false;
+            }
+
             if ( catalog.isDb() )
             {
-               int status = catalog.db()->readBlobFromDB( staged,
-                            QString( "download_editData" ), edit.id.toInt() );
+               QString why;
+               int     status = US_ConvertIO::downloadEditedDataBlob(
+                                catalog.db(), edit.id.toInt(), staged, why );
 
-               if ( status != US_DB2::OK )
+               if ( status != IUS_DB2::OK )
                {
                   error = tr( "The edit record %1 could not be downloaded"
-                              " (status %2)" ).arg( edit.filename )
-                          .arg( status );
+                              " (status %2): %3" ).arg( edit.filename )
+                          .arg( status ).arg( why );
                   return false;
                }
             }
@@ -1302,6 +1919,73 @@ bool US_DataPubExporter::addEdits( const US_DataPubCatalog::Run& run,
 
 // -------------------------------------------------------------------- models
 
+/* The models of the selected runs, narrowed to those asked for by GUID.
+
+   A model the catalog's walk of the runs did not list -- one picked by hand
+   in the model loader, say -- is looked up by its GUID and carried just the
+   same; a GUID that matches no model at all fails the export.
+*/
+bool US_DataPubExporter::collectModels(
+      const Selection& selection,
+      const QList< US_DataPubCatalog::Run >& runs,
+      QList< US_DataPubCatalog::Model >& models, QString& error )
+{
+   models.clear();
+
+   QList< US_DataPubCatalog::Model > found = catalog.models( runs, error );
+
+   if ( ! error.isEmpty() )  return false;
+
+   if ( ! selection.modelsExplicit )
+   {
+      models = found;
+      return true;
+   }
+
+   QStringList wanted = unique( selection.modelGUIDs );
+
+   for ( int ii = 0; ii < wanted.size(); ii++ )
+   {
+      bool listed = false;
+
+      for ( int jj = 0; jj < found.size()  &&  ! listed; jj++ )
+      {
+         if ( found[ jj ].guid != wanted[ ii ] )  continue;
+
+         models << found[ jj ];
+         listed  = true;
+      }
+
+      if ( listed )  continue;
+
+      US_Model record;
+      int      status = record.load( catalog.isDb(), wanted[ ii ],
+                                     catalog.db() );
+
+      if ( status != IUS_DB2::OK  ||  record.modelGUID != wanted[ ii ] )
+      {
+         error = tr( "No model with the GUID %1 was found in the %2" )
+                 .arg( wanted[ ii ] )
+                 .arg( catalog.isDb() ? tr( "database" )
+                                      : tr( "local data directory" ) );
+         return false;
+      }
+
+      US_DataPubCatalog::Model model;
+      model.guid        = record.modelGUID;
+      model.description = record.description;
+      model.editGUID    = record.editGUID;
+      models << model;
+
+      note( tr( "Model \"%1\" is not one the selected runs list; it is"
+                " exported as asked" ).arg( model.description ) );
+   }
+
+   error.clear();
+
+   return true;
+}
+
 bool US_DataPubExporter::addModels(
       const QList< US_DataPubCatalog::Model >& models, QString& error )
 {
@@ -1312,12 +1996,13 @@ bool US_DataPubExporter::addModels(
       if ( model.guid.isEmpty() )  continue;
       if ( mani.contains( US_DataPub::Model, model.guid ) )  continue;
 
-      if ( ! model.editGUID.isEmpty()  &&
+      if ( model.editGUID.isEmpty()  ||
            ! mani.contains( US_DataPub::EditedData, model.editGUID ) )
       {
          error = tr( "Model \"%1\" needs edit %2, which is not part of"
                      " this bundle" ).arg( model.description )
-                 .arg( model.editGUID );
+                 .arg( model.editGUID.isEmpty() ? tr( "(none named)" )
+                                                : model.editGUID );
          return false;
       }
 
@@ -1338,20 +2023,24 @@ bool US_DataPubExporter::addModels(
          US_Model record;
          int      status;
 
-         if ( catalog.isDb() )
+         if ( catalog.isDb()  &&  model.id.toInt() > 0 )
             status = record.load( model.id, catalog.db() );
-         else
+         else if ( ! catalog.isDb()  &&  ! model.path.isEmpty() )
+            status = record.load( model.path );
+         else if ( ! catalog.isDb()  &&  ! model.filename.isEmpty() )
             status = record.load( US_Settings::dataDir() + "/models/"
                                   + model.filename );
+         else
+            status = record.load( catalog.isDb(), model.guid, catalog.db() );
 
-         if ( status != US_DB2::OK )
+         if ( status != IUS_DB2::OK  ||  record.modelGUID != model.guid )
          {
             error = tr( "The model \"%1\" could not be read (status %2)" )
                     .arg( model.description ).arg( status );
             return false;
          }
 
-         if ( record.write( staged ) != US_DB2::OK )
+         if ( staged.isEmpty()  ||  record.write( staged ) != IUS_DB2::OK )
          {
             error = tr( "The model \"%1\" could not be staged" )
                     .arg( model.description );
@@ -1378,6 +2067,58 @@ bool US_DataPubExporter::addModels(
 }
 
 // --------------------------------------------------------------------- noise
+
+bool US_DataPubExporter::collectNoises(
+      const Selection& selection,
+      const QList< US_DataPubCatalog::Model >& models,
+      QList< US_DataPubCatalog::Noise >& noises, QString& error )
+{
+   noises.clear();
+
+   QList< US_DataPubCatalog::Noise > found;
+
+   if ( ! models.isEmpty() )
+   {
+      found = catalog.noises( models, error );
+
+      if ( ! error.isEmpty() )  return false;
+   }
+
+   if ( ! selection.noisesExplicit )
+   {
+      noises = found;
+      return true;
+   }
+
+   QStringList wanted = unique( selection.noiseGUIDs );
+   QStringList unknown;
+
+   for ( int ii = 0; ii < wanted.size(); ii++ )
+   {
+      bool listed = false;
+
+      for ( int jj = 0; jj < found.size()  &&  ! listed; jj++ )
+      {
+         if ( found[ jj ].guid != wanted[ ii ] )  continue;
+
+         noises << found[ jj ];
+         listed  = true;
+      }
+
+      if ( ! listed )  unknown << wanted[ ii ];
+   }
+
+   if ( ! unknown.isEmpty() )
+   {
+      error = tr( "No noise record of the exported models has the GUID %1" )
+              .arg( unknown.join( ", " ) );
+      return false;
+   }
+
+   error.clear();
+
+   return true;
+}
 
 bool US_DataPubExporter::addNoises(
       const QList< US_DataPubCatalog::Noise >& noises, QString& error )
@@ -1424,20 +2165,24 @@ bool US_DataPubExporter::addNoises(
          US_Noise record;
          int      status;
 
-         if ( catalog.isDb() )
+         if ( catalog.isDb()  &&  noise.id.toInt() > 0 )
             status = record.load( noise.id, catalog.db() );
-         else
+         else if ( ! catalog.isDb()  &&  ! noise.path.isEmpty() )
+            status = record.load( noise.path );
+         else if ( ! catalog.isDb()  &&  ! noise.filename.isEmpty() )
             status = record.load( US_Settings::dataDir() + "/noises/"
                                   + noise.filename );
+         else
+            status = record.load( catalog.isDb(), noise.guid, catalog.db() );
 
-         if ( status != US_DB2::OK )
+         if ( status != IUS_DB2::OK  ||  record.noiseGUID != noise.guid )
          {
             error = tr( "The noise record %1 could not be read (status %2)" )
                     .arg( noise.guid ).arg( status );
             return false;
          }
 
-         if ( record.write( staged ) != US_DB2::OK )
+         if ( staged.isEmpty()  ||  record.write( staged ) != IUS_DB2::OK )
          {
             error = tr( "The noise record %1 could not be staged" )
                     .arg( noise.guid );

@@ -10,9 +10,10 @@
 
 //! \brief Main program for US_DataPublication
 //!
-//! Without arguments the window opens; with \c --mode, \c --no-ui or
-//! \c --help the command line runs instead, on a console application object
-//! so that the program works on a machine with no display.
+//! Without arguments the window opens; with any long option (\c --mode,
+//! \c --no-ui, \c --help, ...) the command line runs instead, on a console
+//! application object so that the program works on a machine with no
+//! display, and reports arguments it does not understand.
 int main( int argc, char* argv[] )
 {
    QStringList arguments;
@@ -73,4 +74,21 @@ US_DataPublication::US_DataPublication() : US_Widgets()
 void US_DataPublication::set_status( const QString& message )
 {
    lb_status->setText( message );
+}
+
+/* The export runs on this window's thread and keeps it responsive by
+   processing events; closing the window then would destroy the objects the
+   export is still working with.
+*/
+void US_DataPublication::closeEvent( QCloseEvent* event )
+{
+   if ( exportPane->isBusy() )
+   {
+      lb_status->setText( tr( "An export is running; the window closes"
+                              " once it is done." ) );
+      event->ignore();
+      return;
+   }
+
+   US_Widgets::closeEvent( event );
 }

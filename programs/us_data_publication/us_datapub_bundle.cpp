@@ -1,5 +1,6 @@
 //! \file us_datapub_bundle.cpp
 #include "us_datapub_bundle.h"
+#include "us_datapub_defs.h"
 
 #include "us_archive.h"
 #include "us_settings.h"
@@ -32,8 +33,10 @@ bool US_DataPubBundle::removeTree( const QString& path )
 
 void US_DataPubBundle::cleanup( void )
 {
-   removeTree( staging );
+   removeTree( base );
+   base   .clear();
    staging.clear();
+   work   .clear();
    root   .clear();
 }
 
@@ -47,35 +50,53 @@ QString US_DataPubBundle::stagingPath( void ) const
    return staging;
 }
 
+QString US_DataPubBundle::workPath( void ) const
+{
+   return work;
+}
+
 QString US_DataPubBundle::rootPath( void ) const
 {
    return root;
 }
 
+/* The private directory is made by QTemporaryDir, so two exports started in
+   the same millisecond -- or by two processes -- never share one.  It holds
+   the bundle tree and, beside it, the scratch space; nothing that is not
+   meant for the bundle is ever put into the tree.
+*/
 bool US_DataPubBundle::createStaging( QString& error )
 {
    cleanup();
 
-   QString base = US_Settings::tmpDir() + "/us_datapub";
+   QString parent = US_Settings::tmpDir() + "/us_datapub";
 
-   if ( ! QDir().mkpath( base ) )
+   if ( ! QDir().mkpath( parent ) )
    {
-      error = QObject::tr( "Cannot create the work directory %1" ).arg( base );
+      error = QObject::tr( "Cannot create the work directory %1" ).arg( parent );
       return false;
    }
 
-   QString name = QString( "bundle_%1_%2" )
-                  .arg( QCoreApplication::applicationPid() )
-                  .arg( QDateTime::currentDateTime()
-                        .toString( "yyyyMMddhhmmsszzz" ) );
+   QTemporaryDir tdir( parent + "/bundle_XXXXXX" );
 
-   staging = base + "/" + name;
-
-   if ( ! QDir().mkpath( staging ) )
+   if ( ! tdir.isValid() )
    {
-      error   = QObject::tr( "Cannot create the staging directory %1" )
-                .arg( staging );
-      staging.clear();
+      error = QObject::tr( "Cannot create a staging directory in %1: %2" )
+              .arg( parent ).arg( tdir.errorString() );
+      return false;
+   }
+
+   tdir.setAutoRemove( false );    // cleanup() removes it, unless kept
+
+   base    = tdir.path();
+   staging = base + "/bundle";
+   work    = base + "/work";
+
+   if ( ! QDir().mkpath( staging )  ||  ! QDir().mkpath( work ) )
+   {
+      error = QObject::tr( "Cannot create the staging directory %1" )
+              .arg( staging );
+      cleanup();
       return false;
    }
 
@@ -90,12 +111,55 @@ QString US_DataPubBundle::stagedPath( const QString& relativePath )
 {
    if ( staging.isEmpty() )  return QString();
 
+   // Nothing is staged anywhere but inside the tree
+   if ( ! US_DataPub::isSafeRelativePath( relativePath ) )  return QString();
+
    QString  path = staging + "/" + relativePath;
    QFileInfo info( path );
 
    QDir().mkpath( info.absolutePath() );
 
    return path;
+}
+
+bool US_DataPubBundle::listTree( const QString& dir,
+                                 QMap< QString, qint64 >& files,
+                                 QString& error )
+{
+   files.clear();
+
+   QDir         top( dir );
+   QDirIterator it( dir, QDir::AllEntries | QDir::Hidden | QDir::System
+                         | QDir::NoDotAndDotDot,
+                    QDirIterator::Subdirectories );
+
+   while ( it.hasNext() )
+   {
+      it.next();
+
+      QFileInfo info = it.fileInfo();
+      QString   rel  = top.relativeFilePath( info.filePath() );
+
+      if ( info.isSymLink() )
+      {
+         error = QObject::tr( "%1 is a symbolic link" ).arg( rel );
+         return false;
+      }
+
+      if ( info.isDir() )  continue;
+
+      if ( ! info.isFile() )
+      {
+         error = QObject::tr( "%1 is not a regular file" ).arg( rel );
+         return false;
+      }
+
+      files.insert( rel, info.size() );
+   }
+
+   error.clear();
+
+   return true;
 }
 
 bool US_DataPubBundle::pack( const QString& archivePath, QString& error )
@@ -106,71 +170,185 @@ bool US_DataPubBundle::pack( const QString& archivePath, QString& error )
       return false;
    }
 
-   QStringList entries = QDir( staging ).entryList(
-                         QDir::AllEntries | QDir::NoDotAndDotDot, QDir::Name );
+   // ---- what is staged, exactly -------------------------------------------
+   QMap< QString, qint64 > staged;
 
-   if ( entries.isEmpty() )
+   if ( ! listTree( staging, staged, error ) )
+   {
+      error = QObject::tr( "The staged bundle cannot be packed: %1" )
+              .arg( error );
+      return false;
+   }
+
+   if ( staged.isEmpty() )
    {
       error = QObject::tr( "The staged bundle is empty" );
       return false;
    }
 
+   // The archive leaves hidden files out, so one in the tree would vanish
+   // from the bundle without a word.  Nothing hidden is ever staged on
+   // purpose; refuse rather than drop it.
+   QList< QString > relPaths = staged.keys();
+
+   for ( int ii = 0; ii < relPaths.size(); ii++ )
+   {
+      if ( US_DataPub::isSafeRelativePath( relPaths[ ii ] ) )  continue;
+
+      error = QObject::tr( "The staged file %1 cannot be packed into a"
+                           " bundle" ).arg( relPaths[ ii ] );
+      return false;
+   }
+
+   QStringList entries = QDir( staging ).entryList(
+                         QDir::AllEntries | QDir::NoDotAndDotDot, QDir::Name );
    QStringList sources;
 
    for ( int ii = 0; ii < entries.size(); ii++ )
       sources << staging + "/" + entries[ ii ];
 
+   // ---- build the archive in the scratch space ---------------------------
    // US_Archive picks the compression from everything after the first dot
-   // of the file name, so pack under a plain name and move afterwards.
-   QString workDir = staging + "_pack";
+   // of the file name, so pack under a plain name.
+   QString packDir   = work + "/pack";
+   QString verifyDir = work + "/verify";
+   removeTree( packDir );
+   removeTree( verifyDir );
 
-   if ( ! QDir().mkpath( workDir ) )
+   if ( ! QDir().mkpath( packDir ) )
    {
       error = QObject::tr( "Cannot create the packing directory %1" )
-              .arg( workDir );
+              .arg( packDir );
       return false;
    }
 
-   QString    workFile = workDir + "/bundle.tar.gz";
+   QString    workFile = packDir + "/bundle.tar.gz";
    US_Archive archive;
 
-   if ( ! archive.compress( sources, workFile ) )
+   if ( ! archive.compress( sources, workFile )  ||
+        ! QFile::exists( workFile ) )
    {
-      error = archive.getError();
-      removeTree( workDir );
+      error = QObject::tr( "The bundle could not be packed: %1" )
+              .arg( archive.getError() );
+      removeTree( packDir );
       return false;
    }
 
+   // ---- read it back, and compare with what was staged ------------------
+   US_Archive              reader;
+   QMap< QString, qint64 > packed;
+
+   bool readable = reader.extract( workFile, verifyDir )  &&
+                   listTree( verifyDir, packed, error );
+   removeTree( verifyDir );
+
+   if ( ! readable  ||  packed != staged )
+   {
+      QStringList missing;
+
+      for ( int ii = 0; ii < relPaths.size(); ii++ )
+         if ( packed.value( relPaths[ ii ], -1 ) != staged.value( relPaths[ ii ] ) )
+            missing << relPaths[ ii ];
+
+      error = readable
+              ? QObject::tr( "The packed bundle does not hold what was staged"
+                             " (%1)" ).arg( missing.isEmpty()
+                                            ? QObject::tr( "extra entries" )
+                                            : missing.join( ", " ) )
+              : QObject::tr( "The packed bundle cannot be read back: %1" )
+                .arg( reader.getError().isEmpty() ? error
+                                                  : reader.getError() );
+      removeTree( packDir );
+      return false;
+   }
+
+   // ---- put it in place in one step ---------------------------------------
    QFileInfo target( archivePath );
 
    if ( ! QDir().mkpath( target.absolutePath() ) )
    {
       error = QObject::tr( "Cannot create the output directory %1" )
               .arg( target.absolutePath() );
-      removeTree( workDir );
+      removeTree( packDir );
       return false;
    }
 
-   if ( QFile::exists( archivePath )  &&  ! QFile::remove( archivePath ) )
+   QFile     input( workFile );
+   QSaveFile output( archivePath );
+   bool      written = input.open( QIODevice::ReadOnly )  &&
+                       output.open( QIODevice::WriteOnly );
+
+   while ( written  &&  ! input.atEnd() )
    {
-      error = QObject::tr( "Cannot replace the existing file %1" )
-              .arg( archivePath );
-      removeTree( workDir );
+      QByteArray chunk = input.read( 1 << 20 );
+
+      if ( chunk.isEmpty()  &&  input.error() != QFileDevice::NoError )
+         written = false;
+
+      else if ( output.write( chunk ) != chunk.size() )
+         written = false;
+   }
+
+   input.close();
+
+   if ( written )
+      written = output.commit();       // The atomic replace
+   else
+      output.cancelWriting();
+
+   removeTree( packDir );
+
+   if ( ! written )
+   {
+      error = QObject::tr( "Cannot write the bundle to %1: %2" )
+              .arg( archivePath ).arg( output.errorString() );
       return false;
    }
 
-   bool moved = QFile::rename( workFile, archivePath );
+   error.clear();
 
-   if ( ! moved )
-   {  // rename fails across file systems; fall back to a copy
-      moved = QFile::copy( workFile, archivePath );
+   return true;
+}
+
+/* Check what an extraction left behind.
+
+   The archive reader puts every entry where its path says, and a path of
+   "../x" lands beside the bundle tree instead of in it.  The private
+   directory holds nothing but the tree and the scratch space, so anything
+   else in it -- or anything in the tree that is not a plain file or
+   directory -- means the bundle tried to write where it should not.
+*/
+bool US_DataPubBundle::verifyEscapes( QString& error ) const
+{
+   QStringList beside = QDir( base ).entryList(
+                        QDir::AllEntries | QDir::Hidden | QDir::System
+                        | QDir::NoDotAndDotDot );
+   beside.removeAll( "bundle" );
+   beside.removeAll( "work" );
+
+   if ( ! beside.isEmpty() )
+   {
+      error = QObject::tr( "the bundle holds entries outside of its own"
+                           " directory (%1)" ).arg( beside.join( ", " ) );
+      return false;
    }
 
-   removeTree( workDir );
+   QMap< QString, qint64 > files;
 
-   if ( ! moved )
+   if ( ! listTree( staging, files, error ) )  return false;
+
+   QString          canonRoot = QFileInfo( staging ).canonicalFilePath() + "/";
+   QList< QString > rels      = files.keys();
+
+   for ( int ii = 0; ii < rels.size(); ii++ )
    {
-      error = QObject::tr( "Cannot write the bundle to %1" ).arg( archivePath );
+      QString canon = QFileInfo( staging + "/" + rels[ ii ] )
+                      .canonicalFilePath();
+
+      if ( canon.startsWith( canonRoot ) )  continue;
+
+      error = QObject::tr( "the entry %1 lies outside of the bundle" )
+              .arg( rels[ ii ] );
       return false;
    }
 
@@ -194,6 +372,16 @@ bool US_DataPubBundle::unpack( const QString& archivePath, QString& error )
    if ( ! archive.extract( archivePath, staging ) )
    {
       error = archive.getError();
+      return false;
+   }
+
+   QString why;
+
+   if ( ! verifyEscapes( why ) )
+   {
+      error = QObject::tr( "The bundle %1 is refused: %2" )
+              .arg( archivePath ).arg( why );
+      cleanup();
       return false;
    }
 

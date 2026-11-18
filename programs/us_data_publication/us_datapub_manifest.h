@@ -49,10 +49,33 @@ class US_DataPubEntity
       void    setDepend( US_DataPub::EntityType parentType,
                          const QString& parentGUID );
 
+      /*! \brief Record one more dependency on a record of another type
+
+          A solution depends on every one of its analytes.  The first
+          dependency of a type is keyed by the GUID key of that type
+          (\c analyteGUID), the further ones by the key with a suffix
+          (\c analyteGUID_2, \c analyteGUID_3, ...).  A GUID already listed
+          is not added twice.
+          \param parentType The record type of the parent
+          \param parentGUID The GUID of the parent record
+      */
+      void    addDepend( US_DataPub::EntityType parentType,
+                         const QString& parentGUID );
+
       //! \brief The GUID of the parent record of a given type
       //! \param parentType The record type of the parent
       //! \returns An empty string when there is no such dependency
       QString depend   ( US_DataPub::EntityType parentType ) const;
+
+      //! \brief The GUIDs of all parent records of a given type
+      //! \param parentType The record type of the parents
+      QStringList dependsOn( US_DataPub::EntityType parentType ) const;
+
+      //! \brief The record type a \c depends key refers to
+      //!
+      //! The GUID key of a type, optionally followed by \c _ and a number.
+      //! \returns \ref US_DataPub::UnknownType for any other key
+      static US_DataPub::EntityType dependType( const QString& key );
 
       //! \brief Set a manifest field from its key
       //!
@@ -70,8 +93,18 @@ class US_DataPubEntity
       //! \brief All manifest keys of the entity, in output order
       QStringList fieldKeys( void ) const;
 
-      //! \brief True when the entity has a type, a GUID and a payload
+      //! \brief True when the entity has a type and a GUID
       bool    isValid  ( void ) const;
+
+      /*! \brief The manifest keys of every payload file of the entity
+
+          \c payload, when set, and every attribute whose key ends in
+          \c Payload -- the extra files some records carry next to their
+          main payload (a time state's field definitions, an RI intensity
+          profile, a buffer's component definitions).  Each has its digest
+          under US_DataPub::digestKeyOf() of its key.
+      */
+      QStringList payloadKeys( void ) const;
 
       //! \brief A short one-line label for lists and trees
       QString label    ( void ) const;
@@ -80,11 +113,17 @@ class US_DataPubEntity
 /*! \class US_DataPubManifest
     \brief The \c manifest.yaml of a data-publication bundle
 
-    The manifest holds one section per record type, in dependency order.
+    The manifest holds one section per record type, in dependency order:
+    every record depends only on records of sections listed before its own.
     It is written as a small, deliberately restricted subset of YAML: a
     block of scalar header keys, followed by one block sequence per record
     type whose items are flat key/value maps plus a single nested
-    \c depends map.  The reader accepts exactly that subset.
+    \c depends map.  The reader accepts exactly that subset, and rejects a
+    header key or a section that appears twice.
+
+    A section is only written when it was exported: one that was in scope
+    but holds nothing is written as \c [], one that was not exported at all
+    is left out.
 */
 class US_DataPubManifest
 {
@@ -110,7 +149,15 @@ class US_DataPubManifest
       //! \param entity The entity to add
       void    add        ( const US_DataPubEntity& entity );
 
-      //! \brief Replace the contents of one section
+      //! \brief Declare a section exported, even if it stays empty
+      //! \param type The record type of the section
+      void    declareSection( US_DataPub::EntityType type );
+
+      //! \brief True when the section was exported (it may be empty)
+      //! \param type The record type of the section
+      bool    isDeclared ( US_DataPub::EntityType type ) const;
+
+      //! \brief Replace the contents of one section, declaring it
       //! \param type     The record type of the section
       //! \param entities The new contents of the section
       void    setSection ( US_DataPub::EntityType type,
@@ -169,10 +216,29 @@ class US_DataPubManifest
       //! \returns True when the file could be read and parsed
       bool    read       ( const QString& filename, QString& error );
 
-      //! \brief Check that every dependency of every entity is present
-      //! \param error Filled in with a message naming the first gap found
-      //! \returns True when the manifest is self-contained
+      /*! \brief Check that the manifest is self-contained and safe
+
+          Every entity needs a GUID, unique within its section; every
+          dependency has to be in the manifest, in a section listed before
+          the entity's own; and every path the manifest names has to pass
+          checkPaths().
+          \param error Filled in with a message naming the first gap found
+          \returns True when the manifest is self-contained
+      */
       bool    validate   ( QString& error ) const;
+
+      /*! \brief Check every path and run ID the manifest names
+
+          Every payload path (\c payload and each \c ...Payload attribute)
+          must be a safe bundle-relative path, every \c filename a single
+          safe path component, and every run ID -- the name of an
+          experiment, the \c runID of the records of a run -- has to be a
+          usable run ID.  fromYaml() and validate() both apply it, so a
+          manifest naming a path outside the bundle is never acted upon.
+          \param error Filled in with a message naming the first problem
+          \returns True when every path is safe
+      */
+      bool    checkPaths ( QString& error ) const;
 
       //! \brief A multi-line "type: count" summary of the manifest
       QString summary    ( void ) const;

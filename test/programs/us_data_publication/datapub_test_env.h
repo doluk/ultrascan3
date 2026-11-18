@@ -48,6 +48,13 @@ class DataPubTestEnv : public ::testing::Test
       QString  editFile;
       QString  editID;
 
+      // A second triple, in cell 2 with a solution of its own; only there
+      // after addSecondTriple()
+      QString  rawGUID2;
+      QString  rawFile2;
+      QString  solutionGUID2;
+      bool     secondTriple = false;
+
       void SetUp() override
       {
          savedWorkDir = US_Settings::workBaseDir();
@@ -150,10 +157,16 @@ class DataPubTestEnv : public ::testing::Test
 
       void writeSolution()
       {
+         writeSolutionFile( solutionGUID, "Demo solution", "S0000001.xml" );
+      }
+
+      void writeSolutionFile( const QString& guid, const QString& desc,
+                              const QString& fname )
+      {
          US_Solution solution;
          solution.solutionID   = 11;
-         solution.solutionGUID = solutionGUID;
-         solution.solutionDesc = "Demo solution";
+         solution.solutionGUID = guid;
+         solution.solutionDesc = desc;
          solution.commonVbar20 = 0.72;
          solution.storageTemp  = 20.0;
          solution.buffer.GUID        = bufferGUID;
@@ -169,7 +182,19 @@ class DataPubTestEnv : public ::testing::Test
          info.amount              = 1.0;
          solution.analyteInfo << info;
 
-         solution.saveToFile( dataDir( "solutions" ) + "/S0000001.xml" );
+         solution.saveToFile( dataDir( "solutions" ) + "/" + fname );
+      }
+
+      // A second triple, in cell 2, filled with a solution of its own
+      void addSecondTriple()
+      {
+         rawGUID2      = US_Util::new_guid();
+         solutionGUID2 = US_Util::new_guid();
+         secondTriple  = true;
+
+         writeSolutionFile( solutionGUID2, "Second solution", "S0000002.xml" );
+         rawFile2 = writeRawFile( 2, rawGUID2 );
+         writeExperimentXml();
       }
 
       void writeCalibration()
@@ -191,11 +216,16 @@ class DataPubTestEnv : public ::testing::Test
 
       void writeRawData()
       {
+         rawFile = writeRawFile( 1, rawGUID );
+      }
+
+      QString writeRawFile( int cell, const QString& guid )
+      {
          US_DataIO::RawData data;
          data.type[ 0 ] = 'R';
          data.type[ 1 ] = 'A';
-         US_Util::uuid_parse( rawGUID, (unsigned char*)data.rawGUID );
-         data.cell        = 1;
+         US_Util::uuid_parse( guid, (unsigned char*)data.rawGUID );
+         data.cell        = cell;
          data.channel     = 'A';
          data.description = "Demo triple";
 
@@ -222,9 +252,37 @@ class DataPubTestEnv : public ::testing::Test
                                          char( 0 ) );
          data.scanData << scan;
 
-         rawFile = runID + "." + runType + ".1.A.280.auc";
+         QString fname = runID + "." + runType + "." + QString::number( cell )
+                         + ".A.280.auc";
 
-         US_DataIO::writeRawData( runDir() + "/" + rawFile, data );
+         US_DataIO::writeRawData( runDir() + "/" + fname, data );
+
+         return fname;
+      }
+
+      void writeDataset( QXmlStreamWriter& xml, const QString& id,
+                         const QString& guid, const QString& cell,
+                         const QString& centerpiece, const QString& solGUID,
+                         const QString& solDesc )
+      {
+         xml.writeStartElement( "dataset" );
+         xml.writeAttribute( "id",         id );
+         xml.writeAttribute( "guid",       guid );
+         xml.writeAttribute( "cell",       cell );
+         xml.writeAttribute( "channel",    "A" );
+         xml.writeAttribute( "wavelength", "280" );
+
+         xml.writeStartElement( "centerpiece" );
+         xml.writeAttribute( "id", centerpiece );
+         xml.writeEndElement();
+
+         xml.writeStartElement( "solution" );
+         xml.writeAttribute( "id",   "11" );
+         xml.writeAttribute( "guid", solGUID );
+         xml.writeAttribute( "desc", solDesc );
+         xml.writeEndElement();
+
+         xml.writeEndElement();      // dataset
       }
 
       void writeExperimentXml()
@@ -279,24 +337,12 @@ class DataPubTestEnv : public ::testing::Test
          xml.writeAttribute( "date",   "2024-01-01" );
          xml.writeEndElement();
 
-         xml.writeStartElement( "dataset" );
-         xml.writeAttribute( "id",         "41" );
-         xml.writeAttribute( "guid",       rawGUID );
-         xml.writeAttribute( "cell",       "1" );
-         xml.writeAttribute( "channel",    "A" );
-         xml.writeAttribute( "wavelength", "280" );
+         writeDataset( xml, "41", rawGUID, "1", "2", solutionGUID,
+                       "Demo solution" );
 
-         xml.writeStartElement( "centerpiece" );
-         xml.writeAttribute( "id", "2" );
-         xml.writeEndElement();
-
-         xml.writeStartElement( "solution" );
-         xml.writeAttribute( "id",   "11" );
-         xml.writeAttribute( "guid", solutionGUID );
-         xml.writeAttribute( "desc", "Demo solution" );
-         xml.writeEndElement();
-
-         xml.writeEndElement();      // dataset
+         if ( secondTriple )
+            writeDataset( xml, "42", rawGUID2, "2", "3", solutionGUID2,
+                          "Second solution" );
 
          xml.writeStartElement( "runTemp" );
          xml.writeAttribute( "value", "20.0" );

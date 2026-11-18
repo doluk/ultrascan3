@@ -38,10 +38,10 @@ Everything the module does follows one order::
   project -> experiment -> rawData -> rotorCalibration -> centerpiece
           -> buffers -> analytes -> solutions -> edits -> models -> noise
 
-An export always carries a *prefix* of that chain, so that every record in a
-bundle can be re-created from records that appear earlier in the same bundle.
-Asking for the models therefore also brings the edits, the solutions, the raw
-data, the experiment and the project.
+An export always carries a *prefix* of that chain: asking for the models
+therefore also brings the edits, the solutions, the raw data, the experiment
+and the project. The manifest lists the records in the order in which every
+record depends only on records listed before it (see `The bundle`_).
 
 The project record is the one part that is optional. It is often not the
 exporter's to publish, and the receiving installation usually keeps its own
@@ -55,7 +55,10 @@ a scope that reaches the raw data is automatically raised to the solutions. The
 log says so when it happens.
 
 Time state data is not a scope of its own. It travels with the raw data of its
-run, and can be left out with the **Include time state** check box.
+run, and can be left out with the **Include time state** check box. A time
+state is the binary ``.tmst`` together with the ``.xml`` of its field
+definitions; a run whose time state has no definitions can only be exported
+with the check box cleared.
 
 
 Identifiers
@@ -97,6 +100,20 @@ procedures added for it, and against a server that does not have them it
 notices, says so on the status line, and falls back on the procedures UltraScan
 has always had -- one query per record. The bundle is identical; collecting it
 simply takes longer.
+
+An export either is complete or fails, and then writes nothing: it stops when
+there would be nothing in the bundle, when a record selected by GUID matches
+nothing, when a run belongs to a project other than the one asked for, and when
+any record it needs cannot be read -- the experiment, a solution with its
+buffer and analytes, the rotor calibration, a centerpiece missing from the
+centerpiece table, an undefined buffer component, a time state without its
+definitions. A run without raw data is only a warning, unless none of the
+selected runs has any.
+
+Only what the selected triples need goes into the bundle: the solutions and
+centerpieces of their channels, and on disk an experiment XML without the
+datasets of deselected triples. The experiment XML names the run's
+investigator and operator by GUID, as it does in a local store.
 
 The Export tab works from the top down.
 
@@ -155,9 +172,14 @@ The Export tab works from the top down.
   stored in the manifest, and where the bundle is written.
 
 **Summary** and **Details...**
-  The counts of experiments, raw data, edits, models and noise records.
-  **Details...** shows the manifest that would be written, without copying a
-  single byte of experimental data.
+  The counts of projects, experiments, raw data, edits, models and noise
+  records. **Details...** shows the manifest that would be written, without
+  copying a single byte of experimental data.
+
+**Export Bundle**
+  Writes the bundle. While the export runs the tab cannot be changed and the
+  window does not close. An existing file of the same name is replaced only
+  once the new bundle is complete and has been read back.
 
 
 The bundle
@@ -168,29 +190,55 @@ and one directory per record type::
 
   bundle.tar.gz
   |-- manifest.yaml
+  |-- manifest.sha256
   |-- project/<projectGUID>.xml
-  |-- experiment/<runID>.<runType>.xml
-  |-- rawData/<runID>/<runID>.<runType>.<cell>.<channel>.<wl>.auc
-  |-- timeState/<runID>/<runID>.time_state.tmst
   |-- rotorCalibration/<rotorCalibrationGUID>.xml
   |-- centerpiece/centerpiece_<serial>.xml
+  |-- experiment/<runID>.<runType>.xml
+  |-- experiment/<runID>.RIProfile.xml            (RI runs)
+  |-- timeState/<runID>/<runID>.time_state.tmst
+  |-- timeState/<runID>/<runID>.time_state.xml
   |-- buffers/<bufferGUID>.xml
+  |-- buffers/<bufferGUID>.components.xml         (buffers with components)
   |-- analytes/<analyteGUID>.xml
   |-- solutions/<solutionGUID>.xml
+  |-- rawData/<runID>/<runID>.<runType>.<cell>.<channel>.<wl>.auc
   |-- edits/<runID>/<runID>.<editID>.<runType>.<cell>.<channel>.<wl>.xml
   |-- models/<modelGUID>.xml
   `-- noise/<noiseGUID>.xml
 
 Payload files are exactly the files UltraScan-III uses in a local disk store,
-so a bundle can be opened and read with ordinary tools.
+so a bundle can be opened and read with ordinary tools. Two kinds are added
+because a local store keeps that information elsewhere: the definitions of a
+buffer's components (name, unit, density and viscosity coefficients), since a
+buffer file names its components only by an installation's own IDs, and the
+radial intensity profile of an RI run. ``manifest.sha256`` holds the digest of
+the manifest in the format ``sha256sum -c`` checks.
 
-The manifest is a small subset of YAML: a block of scalar header keys
+The manifest is a small subset of YAML in UTF-8: a block of scalar header keys
 (``version``, ``created``, ``generator``, ``source``, ``scope``,
-``bundleGUID``, ``comment``), then one list per record type. Each entry names
-the record's ID, GUID and name, the path of its payload inside the bundle, the
-**SHA-256 digest of that payload file**, and the GUIDs of the records it
-depends on. A section that was in scope but has nothing in it is written as
-``[]``, so a reader can tell "exported and empty" from "not exported at all".
+``bundleGUID``, ``comment``), then one list per record type, in the order::
+
+  project -> rotorCalibration -> centerpiece -> experiment -> timeState
+          -> buffers -> analytes -> solutions -> rawData -> edits
+          -> models -> noise
+
+in which every record depends only on records listed before it. Each entry
+names the record's ID, GUID and name, the path of its payload inside the
+bundle, the **SHA-256 digest of that payload file**, and the GUIDs of the
+records it depends on -- a solution, for instance, on every one of its
+analytes. Extra files (the time state's definitions, the RI profile, the
+buffer components) are named by keys ending in ``Payload`` and have their
+digests under the same key ending in ``Sha256``. A section that was exported
+but has nothing in it is written as ``[]``; one that was not exported is left
+out. A record without a GUID of its own -- a time state, an old rotor
+calibration or centerpiece -- gets a name-based UUID derived from what
+identifies it.
+
+A manifest that gives a key or section twice, has no usable ``version``, names
+a path that could reach outside the bundle (absolute, ``..``, a drive prefix, a
+backslash, ...) or an unusable run ID, or lists a dependency after the record
+that needs it, is refused.
 
 
 Importing
@@ -316,9 +364,9 @@ closing message and on the command line's error output.
 Command line
 ============
 
-Started without arguments the program opens the window. Started with
-``--mode``, ``--no-ui`` or ``--help`` it runs on the command line, without
-needing a display::
+Started without arguments the program opens the window. Started with any long
+option (``--mode``, ``--no-ui``, ``--help``, ...) it runs on the command line,
+without needing a display, and reports arguments it does not understand::
 
   us_data_publication --mode export --bundle <file.tar.gz> [options]
   us_data_publication --mode import --bundle <file.tar.gz> [options]
@@ -333,7 +381,10 @@ Export options
 ``--experiment-id <run>``       Export this run; repeatable. Accepts a runID or an
                                 experiment database ID
 ``--max-scope <scope>``         Export up to and including this record type
-``--include-<scope>``           Raise the scope to this record type
+                                (default: ``noise``, the whole chain)
+``--include-<scope>``           Export up to and including this record type;
+                                the deepest one given counts, and it may not
+                                go beyond ``--max-scope``
 ``--model-guid <guid>``         Export only these models; repeatable
 ``--noise-guid <guid>``         Export only these noise records; repeatable
 ``--no-timestate``              Leave the runs' time state out
@@ -365,9 +416,12 @@ Common options
 
 ==============================  ==========================================================
 ``--no-ui``                     Run without the window (implied by ``--mode``)
-``--db-password <pw>``          Master password for database access. ``US3_DB_PASSWORD``
-                                is used when this is not given; without either, an
-                                interactive run prompts on the terminal
+``--db-password-file <file>``   Read the master password from the first line of a file
+``--db-password <pw>``          The master password itself; visible to other users in
+                                the process list, so prefer the file or
+                                ``US3_DB_PASSWORD``, which is used when neither is
+                                given. Without any of them an interactive run prompts
+                                without echoing; a non-interactive run stops
 ``--dry-run``                   Decide everything, write nothing
 ``--non-interactive``           Never prompt; fail instead of asking
 ``--verbose``                   Report every step
@@ -378,7 +432,10 @@ Common options
 Exit codes are ``0`` on success, ``1`` when the export or import failed (a
 database import is then rolled back, and the error says what was left) and
 ``2`` when the arguments were wrong. An import that substituted hardware exits
-with ``0`` and reports the substitutions on the error output.
+with ``0`` and reports the substitutions on the error output. An export needs
+``--experiment-id``, ``--project-id`` or ``--project-guid``; a ``--dry-run``
+needs no ``--bundle``. An option is never taken as the value of the one before
+it; a value starting with ``--`` is given as ``--comment=--draft``.
 
 Examples
 --------
@@ -393,6 +450,11 @@ solutions::
 
   us_data_publication --mode export --experiment-id Demo_2024_Run3 \
       --max-scope rawData --bundle run3_data.tar.gz
+
+Export a whole project up to the models, without noise::
+
+  us_data_publication --mode export --project-id 7 --include-models \
+      --bundle project7.tar.gz
 
 Import into a folder, to look at before committing to anything::
 

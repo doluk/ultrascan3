@@ -6,7 +6,7 @@
 
 #include "us_datapub_defs.h"
 #include "us_data_catalog.h"
-#include "us_db2.h"
+#include "ius_db2.h"
 
 /*! \class US_DataPubCatalog
     \brief A read-only view of the records available for export
@@ -131,6 +131,17 @@ class US_DataPubCatalog
       //! \returns True when the source is usable
       bool open( bool fromDb, const QString& dbPassword, QString& error );
 
+      /*! \brief Read from a database connection the caller owns
+
+          Only the queries this class makes itself -- the projects, a run's
+          experiment information and its time state -- use the connection;
+          the record chain still needs open().  It lets those queries run
+          against any IUS_DB2, a test double included.  The connection is
+          not taken over: it has to outlive the catalog's use of it.
+          \param db The connection to read from
+      */
+      void attachDb( IUS_DB2* db );
+
       //! \brief True when the catalog reads from the database
       bool isDb( void ) const;
 
@@ -145,7 +156,7 @@ class US_DataPubCatalog
       void setBulkQueries( bool on );
 
       //! \brief The open database connection, or null for a disk catalog
-      US_DB2* db( void );
+      IUS_DB2* db( void );
 
       //! \brief All projects of the current investigator
       //! \param error Filled in with a message when the scan fails
@@ -164,6 +175,9 @@ class US_DataPubCatalog
       bool runByID( const QString& runID, Run& found, QString& error );
 
       //! \brief Fill in the raw-data triples and edits of a run
+      //!
+      //! A run without raw data is not an error here; whether that matters
+      //! depends on what is being exported, which the caller knows.
       //! \param run   The run to complete, with its header already filled in
       //! \param error Filled in with a message when the scan fails
       //! \returns True when the details could be read
@@ -179,17 +193,34 @@ class US_DataPubCatalog
       //! \param error  Filled in with a message when the scan fails
       QList< Noise > noises( const QList< Model >& models, QString& error );
 
-      //! \brief The path of the local time-state file of a run
-      //!
-      //! For a database catalog the file is downloaded into \a workDir
-      //! first; for a disk catalog the file in the run directory is used.
-      //! \param run     The run whose time state is wanted
-      //! \param workDir A directory the file may be downloaded into
-      //! \param tmstPath Filled in with the path of the .tmst file
-      //! \param xdefPath Filled in with the path of its .xml sibling
-      //! \returns True when a time state exists for the run
-      bool timeState( const Run& run, const QString& workDir,
-                      QString& tmstPath, QString& xdefPath );
+      //! \brief What looking for the time state of a run found
+      enum TimeStateStatus
+      {
+         TimeStateNone = 0,   //!< The run has no time state; that is normal
+         TimeStateFound,      //!< The time state and its definitions exist
+         TimeStateFailed      //!< There is one, but it cannot be used
+      };
+
+      /*! \brief Find the time state of a run
+
+          A time state is the binary \c .tmst together with the \c .xml of
+          its field definitions; one without the other cannot be read, so a
+          binary without its definitions is a failure, not a time state.
+          For a database catalog the files are downloaded into \a workDir
+          when \a fetch is set; for a disk catalog the files in the run
+          directory are used.
+          \param run      The run whose time state is wanted
+          \param workDir  A directory the files may be downloaded into
+          \param fetch    Download the files (database only)
+          \param tmstPath Filled in with the path of the .tmst file
+          \param xdefPath Filled in with the path of its .xml sibling
+          \param tmstID   Filled in with the time state's database ID, or -1
+          \param error    Filled in when the result is \ref TimeStateFailed
+      */
+      TimeStateStatus timeState( const Run& run, const QString& workDir,
+                                 bool fetch, QString& tmstPath,
+                                 QString& xdefPath, QString& tmstID,
+                                 QString& error );
 
       /*! \brief The noise a model with none of its own is exported with
 
@@ -237,7 +268,7 @@ class US_DataPubCatalog
 
    private:
       bool            from_db;
-      US_DB2*         dbase;
+      IUS_DB2*        dbase;
       int             inv_id;
       US_DataCatalog* cat;
       QString         listed_project;

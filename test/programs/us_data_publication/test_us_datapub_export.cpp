@@ -7,6 +7,12 @@
 #include "us_datapub_export.h"
 #include "us_datapub_manifest.h"
 #include "us_datapub_hash.h"
+#include "us_datapub_bundle.h"
+#include "us_datapub_records.h"
+#include "us_buffer.h"
+#include "mock_us_db2.h"
+
+#include <gmock/gmock.h>
 
 class DataPubExport : public DataPubTestEnv
 {
@@ -605,4 +611,750 @@ TEST_F( DataPubExport, TheTimeStateCarriesItsDefinitions )
 
    EXPECT_EQ( US_DataPubHash::fileHash( xdef ).toStdString(),
               states[ 0 ].attrs.value( "definitionsSha256" ).toStdString() );
+}
+
+// ------------------------------------------------------------ what is refused
+
+namespace
+{
+   QString read_text( const QString& path )
+   {
+      QFile file( path );
+
+      if ( ! file.open( QIODevice::ReadOnly | QIODevice::Text ) )
+         return QString();
+
+      return QString::fromUtf8( file.readAll() );
+   }
+
+   bool replace_in_file( const QString& path, const QString& from,
+                         const QString& to )
+   {
+      QString text = read_text( path );
+
+      if ( ! text.contains( from ) )  return false;
+
+      text.replace( from, to );
+
+      QFile file( path );
+
+      if ( ! file.open( QIODevice::WriteOnly | QIODevice::Text ) )
+         return false;
+
+      file.write( text.toUtf8() );
+      file.close();
+
+      return true;
+   }
+
+   // The local file of the record with the given GUID
+   QString file_with_guid( const QString& dir, const QString& guid )
+   {
+      QStringList names = QDir( dir ).entryList( QDir::Files );
+
+      for ( int ii = 0; ii < names.size(); ii++ )
+         if ( read_text( dir + "/" + names[ ii ] ).contains( guid ) )
+            return dir + "/" + names[ ii ];
+
+      return QString();
+   }
+}
+
+// A run whose project is unknown, exported at project scope, would make an
+// empty bundle; that is an error, not an empty file and a success
+TEST_F( DataPubExport, AnEmptyBundleIsRefused )
+{
+   QString expXml = runDir() + "/" + runID + "." + runType + ".xml";
+   ASSERT_TRUE( replace_in_file( expXml, projectGUID, QString() ) );
+
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection =
+      baseSelection( US_DataPub::ScopeProject );
+   QString                       bundle = root + "/empty.tar.gz";
+   QString                       error;
+
+   EXPECT_FALSE( exporter.exportBundle( selection, bundle, error ) );
+   EXPECT_TRUE ( error.contains( "nothing to export" ) ) << error.toStdString();
+   EXPECT_FALSE( QFile::exists( bundle ) );
+
+   EXPECT_FALSE( exporter.previewManifest( selection, error ) );
+}
+
+TEST_F( DataPubExport, ASelectionWithoutRawDataIsRefused )
+{
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection =
+      baseSelection( US_DataPub::ScopeRawData );
+   selection.setRaws( QStringList() );
+
+   QString error;
+
+   EXPECT_FALSE( exporter.exportBundle( selection, root + "/none.tar.gz",
+                                        error ) );
+   EXPECT_TRUE ( error.contains( "raw data" ) ) << error.toStdString();
+}
+
+// A failed load of a solution leaves the solution empty, so a solution
+// whose analyte or buffer is missing cannot be exported as if it were fine
+TEST_F( DataPubExport, ASolutionWithoutItsAnalyteFailsTheExport )
+{
+   QString analyte = file_with_guid( dataDir( "analytes" ), analyteGUID );
+   ASSERT_FALSE( analyte.isEmpty() );
+   ASSERT_TRUE ( QFile::remove( analyte ) );
+
+   US_DataPubExporter exporter;
+   QString            error;
+
+   EXPECT_FALSE( exporter.exportBundle( baseSelection( US_DataPub::ScopeRawData ),
+                 root + "/no_analyte.tar.gz", error ) );
+   EXPECT_TRUE ( error.contains( solutionGUID ) ) << error.toStdString();
+   EXPECT_TRUE ( error.contains( "analytes could not be read" ) )
+      << error.toStdString();
+}
+
+TEST_F( DataPubExport, ASolutionWithoutItsBufferFailsTheExport )
+{
+   QString buffer = file_with_guid( dataDir( "buffers" ), bufferGUID );
+   ASSERT_FALSE( buffer.isEmpty() );
+   ASSERT_TRUE ( QFile::remove( buffer ) );
+
+   US_DataPubExporter exporter;
+   QString            error;
+
+   EXPECT_FALSE( exporter.exportBundle( baseSelection( US_DataPub::ScopeRawData ),
+                 root + "/no_buffer.tar.gz", error ) );
+   EXPECT_TRUE ( error.contains( "buffer could not be read" ) )
+      << error.toStdString();
+}
+
+TEST_F( DataPubExport, ARawTripleWithoutASolutionFailsTheExport )
+{
+   QString expXml = runDir() + "/" + runID + "." + runType + ".xml";
+   ASSERT_TRUE( replace_in_file( expXml, "guid=\"" + solutionGUID + "\"",
+                                 "guid=\"\"" ) );
+
+   US_DataPubExporter exporter;
+   QString            error;
+
+   EXPECT_FALSE( exporter.exportBundle( baseSelection( US_DataPub::ScopeRawData ),
+                 root + "/no_solution.tar.gz", error ) );
+   EXPECT_TRUE ( error.contains( "names no solution" ) ) << error.toStdString();
+}
+
+TEST_F( DataPubExport, AModelGuidThatMatchesNothingIsAnError )
+{
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection =
+      baseSelection( US_DataPub::ScopeNoise );
+   QString                       ghost = US_Util::new_guid();
+   selection.setModels( QStringList() << modelGUID << ghost );
+
+   QString error;
+
+   EXPECT_FALSE( exporter.exportBundle( selection, root + "/ghost.tar.gz",
+                                        error ) );
+   EXPECT_TRUE ( error.contains( ghost ) ) << error.toStdString();
+}
+
+TEST_F( DataPubExport, ANoiseGuidThatMatchesNothingIsAnError )
+{
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection =
+      baseSelection( US_DataPub::ScopeNoise );
+   QString                       ghost = US_Util::new_guid();
+   selection.setNoises( QStringList() << ghost );
+
+   QString error;
+
+   EXPECT_FALSE( exporter.previewManifest( selection, error ) );
+   EXPECT_TRUE ( error.contains( ghost ) ) << error.toStdString();
+}
+
+TEST_F( DataPubExport, ARawGuidThatMatchesNothingIsAnError )
+{
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection =
+      baseSelection( US_DataPub::ScopeRawData );
+   QString                       ghost = US_Util::new_guid();
+   selection.setRaws( QStringList() << rawGUID << ghost );
+
+   QString error;
+
+   EXPECT_FALSE( exporter.previewManifest( selection, error ) );
+   EXPECT_TRUE ( error.contains( ghost ) ) << error.toStdString();
+}
+
+TEST_F( DataPubExport, ARunOfAnotherProjectIsRefused )
+{
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection =
+      baseSelection( US_DataPub::ScopeRawData );
+   selection.projectGUID = US_Util::new_guid();
+
+   QString error;
+
+   EXPECT_FALSE( exporter.previewManifest( selection, error ) );
+   EXPECT_TRUE ( error.contains( selection.projectGUID ) )
+      << error.toStdString();
+}
+
+TEST_F( DataPubExport, ARunNamedTwiceIsExportedOnce )
+{
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection =
+      baseSelection( US_DataPub::ScopeRawData );
+   selection.runIDs << runID;
+
+   QString error;
+
+   ASSERT_TRUE( exporter.previewManifest( selection, error ) )
+      << error.toStdString();
+   EXPECT_EQ( exporter.manifest().count( US_DataPub::Experiment ), 1 );
+   EXPECT_EQ( exporter.manifest().count( US_DataPub::RawData ),    1 );
+}
+
+// ------------------------------------------------------- what the bundle holds
+
+TEST_F( DataPubExport, EveryPayloadHasADigestAndTheManifestHasOne )
+{
+   US_DataPubExporter exporter;
+   QString            bundle = root + "/all_digests.tar.gz";
+   QString            error;
+
+   ASSERT_TRUE( exporter.exportBundle( baseSelection( US_DataPub::ScopeNoise ),
+                bundle, error ) ) << error.toStdString();
+
+   US_DataPubBundle unpacked;
+   ASSERT_TRUE( unpacked.unpack( bundle, error ) ) << error.toStdString();
+
+   QList< US_DataPubEntity > entities = exporter.manifest().all();
+   int                       extras   = 0;
+
+   for ( int ii = 0; ii < entities.size(); ii++ )
+   {
+      QStringList keys = entities[ ii ].payloadKeys();
+
+      for ( int jj = 0; jj < keys.size(); jj++ )
+      {
+         QString path   = unpacked.rootPath() + "/"
+                          + entities[ ii ].field( keys[ jj ] );
+         QString digest = entities[ ii ].field(
+                          US_DataPub::digestKeyOf( keys[ jj ] ) );
+
+         ASSERT_FALSE( digest.isEmpty() ) << keys[ jj ].toStdString();
+         EXPECT_EQ   ( US_DataPubHash::fileHash( path ), digest )
+            << path.toStdString();
+
+         if ( keys[ jj ] != "payload" )  extras++;
+      }
+   }
+
+   EXPECT_GE( extras, 1 );         // the time state's definitions at least
+
+   // manifest.sha256 holds the digest of manifest.yaml, as sha256sum has it
+   QString line = read_text( unpacked.rootPath() + "/"
+                             + US_DataPubExporter::manifestDigestName() );
+   QString mdig = US_DataPubHash::fileHash( unpacked.rootPath() + "/"
+                                            + US_DataPubBundle::manifestName() );
+
+   EXPECT_EQ( line, mdig + "  " + US_DataPubBundle::manifestName() + "\n" );
+}
+
+// Sections that were not exported are not in the manifest at all
+TEST_F( DataPubExport, OnlyExportedSectionsAreListed )
+{
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection =
+      baseSelection( US_DataPub::ScopeRawData );
+   selection.includeTimeState = false;
+
+   QString error;
+
+   ASSERT_TRUE( exporter.previewManifest( selection, error ) )
+      << error.toStdString();
+
+   QString yaml = exporter.manifest().toYaml();
+
+   EXPECT_TRUE ( yaml.contains( "\nsolutions:" ) ) << yaml.toStdString();
+   EXPECT_FALSE( yaml.contains( "\nedits:" ) );
+   EXPECT_FALSE( yaml.contains( "\nmodels:" ) );
+   EXPECT_FALSE( yaml.contains( "\ntimeState:" ) );
+}
+
+// The time state of a run is a record of its own
+TEST_F( DataPubExport, TheTimeStateHasAnIdentityOfItsOwn )
+{
+   US_DataPubExporter exporter;
+   QString            error;
+
+   ASSERT_TRUE( exporter.previewManifest(
+                baseSelection( US_DataPub::ScopeRawData ), error ) )
+      << error.toStdString();
+
+   QList< US_DataPubEntity > states =
+      exporter.manifest().section( US_DataPub::TimeState );
+
+   ASSERT_EQ( states.size(), 1 );
+   EXPECT_NE( states[ 0 ].guid, expGUID );
+   EXPECT_EQ( states[ 0 ].guid,
+              US_DataPub::derivedGuid( "timeState:" + expGUID ) );
+   EXPECT_EQ( states[ 0 ].depend( US_DataPub::Experiment ), expGUID );
+}
+
+// A .tmst without the definitions that say how to read it is no time state
+TEST_F( DataPubExport, ATimeStateWithoutDefinitionsFailsTheExport )
+{
+   ASSERT_TRUE( QFile::remove( timeStatePath( "xml" ) ) );
+
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection =
+      baseSelection( US_DataPub::ScopeRawData );
+   QString                       error;
+
+   EXPECT_FALSE( exporter.exportBundle( selection, root + "/no_defs.tar.gz",
+                                        error ) );
+   EXPECT_TRUE ( error.contains( "definitions" ) ) << error.toStdString();
+
+   // ... unless the time state is left out on purpose
+   selection.includeTimeState = false;
+   EXPECT_TRUE ( exporter.exportBundle( selection, root + "/no_ts.tar.gz",
+                                        error ) ) << error.toStdString();
+   EXPECT_EQ   ( exporter.manifest().count( US_DataPub::TimeState ), 0 );
+}
+
+// The RI intensity profile of a run travels with its experiment
+TEST_F( DataPubExport, TheRIProfileTravelsWithTheExperiment )
+{
+   QString ripPath = runDir() + "/" + runID + ".RIProfile.xml";
+   QFile   rip( ripPath );
+   ASSERT_TRUE( rip.open( QIODevice::WriteOnly | QIODevice::Text ) );
+   rip.write( "<?xml version=\"1.0\"?>\n<!DOCTYPE US_RIProfile>\n"
+              "<US_RIProfile version=\"1.0\"><RI value=\"0.5\"/>"
+              "</US_RIProfile>\n" );
+   rip.close();
+
+   US_DataPubExporter exporter;
+   QString            bundle = root + "/ri.tar.gz";
+   QString            error;
+
+   ASSERT_TRUE( exporter.exportBundle( baseSelection( US_DataPub::ScopeRawData ),
+                bundle, error ) ) << error.toStdString();
+
+   US_DataPubEntity exper;
+   ASSERT_TRUE( exporter.manifest().entity( US_DataPub::Experiment, expGUID,
+                                            exper ) );
+
+   QString payload = exper.attrs.value( "riProfilePayload" );
+   EXPECT_EQ( payload, "experiment/" + runID + ".RIProfile.xml" );
+
+   US_DataPubBundle unpacked;
+   ASSERT_TRUE( unpacked.unpack( bundle, error ) ) << error.toStdString();
+   EXPECT_EQ( US_DataPubHash::fileHash( unpacked.rootPath() + "/" + payload ),
+              exper.attrs.value( "riProfileSha256" ) );
+   EXPECT_EQ( US_DataPubHash::fileHash( unpacked.rootPath() + "/" + payload ),
+              US_DataPubHash::fileHash( ripPath ) );
+}
+
+// A buffer names its components by ID only; the bundle carries what those
+// IDs stand for, so that another installation can make sense of them
+TEST_F( DataPubExport, BufferComponentsTravelWithTheBuffer )
+{
+   QMap< QString, US_BufferComponent > table;
+   US_BufferComponent::getAllFromHD( table );
+   ASSERT_TRUE( table.contains( "1" ) ) << "no local buffer component table";
+
+   US_Buffer buffer;
+   buffer.GUID        = bufferGUID;
+   buffer.bufferID    = "3";
+   buffer.description = "Demo buffer";
+   buffer.density     = 1.0;
+   buffer.viscosity   = 1.002;
+   buffer.pH          = 7.0;
+   buffer.component     << table.value( "1" );
+   buffer.componentIDs  << "1";
+   buffer.concentration << 150.0;
+
+   QString bfile = file_with_guid( dataDir( "buffers" ), bufferGUID );
+   ASSERT_FALSE( bfile.isEmpty() );
+   ASSERT_TRUE ( buffer.writeToDisk( bfile ) );
+
+   US_DataPubExporter exporter;
+   QString            bundle = root + "/components.tar.gz";
+   QString            error;
+
+   ASSERT_TRUE( exporter.exportBundle( baseSelection( US_DataPub::ScopeRawData ),
+                bundle, error ) ) << error.toStdString();
+
+   US_DataPubEntity entity;
+   ASSERT_TRUE( exporter.manifest().entity( US_DataPub::Buffer, bufferGUID,
+                                            entity ) );
+   EXPECT_EQ( entity.attrs.value( "components" ), "1" );
+
+   US_DataPubBundle unpacked;
+   ASSERT_TRUE( unpacked.unpack( bundle, error ) ) << error.toStdString();
+
+   // The buffer file still names its component ...
+   US_Buffer staged;
+   ASSERT_TRUE( staged.readFromDisk( unpacked.rootPath() + "/"
+                                     + entity.payload ) );
+   ASSERT_EQ( staged.componentIDs, QStringList() << "1" );
+   EXPECT_DOUBLE_EQ( staged.concentration.value( 0 ), 150.0 );
+
+   // ... and the bundle says what the component is
+   QMap< QString, US_BufferComponent > carried;
+   QString comps = unpacked.rootPath() + "/"
+                   + entity.attrs.value( "componentsPayload" );
+   ASSERT_TRUE( US_DataPubRecords::readBufferComponents( comps, carried ) );
+   ASSERT_TRUE( carried.contains( "1" ) );
+   EXPECT_EQ( carried[ "1" ].name, table[ "1" ].name );
+   EXPECT_EQ( carried[ "1" ].unit, table[ "1" ].unit );
+
+   for ( int ii = 0; ii < 6; ii++ )
+   {
+      EXPECT_DOUBLE_EQ( carried[ "1" ].dens_coeff[ ii ],
+                        table[ "1" ].dens_coeff[ ii ] );
+      EXPECT_DOUBLE_EQ( carried[ "1" ].visc_coeff[ ii ],
+                        table[ "1" ].visc_coeff[ ii ] );
+   }
+
+   EXPECT_EQ( US_DataPubHash::fileHash( comps ),
+              entity.attrs.value( "componentsSha256" ) );
+}
+
+// Every analyte of a solution is a dependency of it, not a remark
+TEST_F( DataPubExport, AnalytesAreDependenciesOfTheirSolution )
+{
+   US_DataPubExporter exporter;
+   QString            error;
+
+   ASSERT_TRUE( exporter.previewManifest(
+                baseSelection( US_DataPub::ScopeRawData ), error ) )
+      << error.toStdString();
+
+   US_DataPubEntity solution;
+   ASSERT_TRUE( exporter.manifest().entity( US_DataPub::Solution,
+                                            solutionGUID, solution ) );
+   EXPECT_EQ( solution.dependsOn( US_DataPub::Analyte ),
+              QStringList() << analyteGUID );
+   EXPECT_EQ( solution.depend( US_DataPub::Buffer ), bufferGUID );
+}
+
+// Only what the selected triples need goes into the bundle: the solution
+// and centerpiece of a deselected triple stay out, and so does its dataset
+// in the run's experiment XML
+TEST_F( DataPubExport, ADeselectedTripleLeavesNoTrace )
+{
+   addSecondTriple();
+
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection =
+      baseSelection( US_DataPub::ScopeRawData );
+   QString                       bundle = root + "/one_of_two.tar.gz";
+   QString                       error;
+
+   // Both triples, to begin with
+   ASSERT_TRUE( exporter.previewManifest( selection, error ) )
+      << error.toStdString();
+   ASSERT_EQ( exporter.manifest().count( US_DataPub::RawData ),     2 );
+   ASSERT_EQ( exporter.manifest().count( US_DataPub::Solution ),    2 );
+   ASSERT_EQ( exporter.manifest().count( US_DataPub::Centerpiece ), 2 );
+
+   selection.setRaws( QStringList() << rawGUID );
+
+   ASSERT_TRUE( exporter.exportBundle( selection, bundle, error ) )
+      << error.toStdString();
+
+   const US_DataPubManifest& mani = exporter.manifest();
+   EXPECT_EQ   ( mani.count( US_DataPub::RawData ),     1 );
+   EXPECT_EQ   ( mani.count( US_DataPub::Solution ),    1 );
+   EXPECT_EQ   ( mani.count( US_DataPub::Centerpiece ), 1 );
+   EXPECT_FALSE( mani.contains( US_DataPub::Solution, solutionGUID2 ) );
+
+   US_DataPubEntity exper;
+   ASSERT_TRUE( mani.entity( US_DataPub::Experiment, expGUID, exper ) );
+
+   US_DataPubBundle unpacked;
+   ASSERT_TRUE( unpacked.unpack( bundle, error ) ) << error.toStdString();
+
+   QString xml = read_text( unpacked.rootPath() + "/" + exper.payload );
+   EXPECT_TRUE ( xml.contains( rawGUID ) );
+   EXPECT_FALSE( xml.contains( rawGUID2 ) );
+   EXPECT_FALSE( xml.contains( solutionGUID2 ) );
+   EXPECT_TRUE ( xml.contains( "Demo experiment label" ) );
+
+   // The trimmed XML is still an experiment record the reader understands
+   US_DataPubCatalog::ExpInfo info;
+   ASSERT_TRUE( info.readFromFile( unpacked.rootPath() + "/" + exper.payload ) );
+   EXPECT_EQ( info.expGUID, expGUID );
+   EXPECT_EQ( info.tripleSolutionGUIDs.value( "1/A" ), solutionGUID );
+}
+
+TEST_F( DataPubExport, CenterpiecesAndCalibrationsHaveValidGuids )
+{
+   US_DataPubExporter exporter;
+   QString            error;
+
+   ASSERT_TRUE( exporter.previewManifest(
+                baseSelection( US_DataPub::ScopeRawData ), error ) )
+      << error.toStdString();
+
+   QList< US_DataPubEntity > found =
+      exporter.manifest().section( US_DataPub::Centerpiece )
+      + exporter.manifest().section( US_DataPub::RotorCalibration );
+
+   ASSERT_GE( found.size(), 2 );
+
+   for ( int ii = 0; ii < found.size(); ii++ )
+      EXPECT_FALSE( QUuid( found[ ii ].guid ).isNull() )
+         << found[ ii ].guid.toStdString();
+}
+
+// A rotor calibration the run names but nobody can read is not silently
+// dropped: the run would arrive without what its data was corrected with
+TEST_F( DataPubExport, AnUnreadableCalibrationFailsTheExport )
+{
+   QString cal = file_with_guid( dataDir( "rotors" ), calGUID );
+   ASSERT_FALSE( cal.isEmpty() );
+   ASSERT_TRUE ( QFile::remove( cal ) );
+
+   US_DataPubExporter exporter;
+   QString            error;
+
+   EXPECT_FALSE( exporter.previewManifest(
+                 baseSelection( US_DataPub::ScopeRawData ), error ) );
+   EXPECT_TRUE ( error.contains( "rotor calibration" ) ) << error.toStdString();
+}
+
+TEST_F( DataPubExport, AnUnknownCenterpieceFailsTheExport )
+{
+   QString expXml = runDir() + "/" + runID + "." + runType + ".xml";
+   ASSERT_TRUE( replace_in_file( expXml, "<centerpiece id=\"2\"/>",
+                                 "<centerpiece id=\"9999\"/>" ) );
+
+   US_DataPubExporter exporter;
+   QString            error;
+
+   EXPECT_FALSE( exporter.previewManifest(
+                 baseSelection( US_DataPub::ScopeRawData ), error ) );
+   EXPECT_TRUE ( error.contains( "9999" ) ) << error.toStdString();
+}
+
+TEST_F( DataPubExport, StepsAreAnnouncedBeforeTheFirstRecord )
+{
+   US_DataPubExporter exporter;
+   QList< int >       events;       // > 0: steps announced, < 0: step done
+
+   QObject::connect( &exporter, &US_DataPubExporter::steps,
+                     [ &events ]( int steps ) { events << steps; } );
+   QObject::connect( &exporter, &US_DataPubExporter::stepDone,
+                     [ &events ]( int step )  { events << -step; } );
+
+   QString error;
+   ASSERT_TRUE( exporter.previewManifest(
+                baseSelection( US_DataPub::ScopeNoise ), error ) )
+      << error.toStdString();
+
+   ASSERT_FALSE( events.isEmpty() );
+   EXPECT_GT( events.first(), 0 );
+   EXPECT_EQ( events.last(), exporter.manifest().total() );
+}
+
+// ------------------------------------------------- database queries, mocked
+
+using ::testing::_;
+using ::testing::An;
+using ::testing::NiceMock;
+using ::testing::Return;
+
+namespace
+{
+   US_DataPubCatalog::Run db_run( void )
+   {
+      US_DataPubCatalog::Run run;
+      run.id    = "31";
+      run.runID = "demo_run";
+      run.guid  = "aaaaaaaa-0000-0000-0000-000000000031";
+      return run;
+   }
+}
+
+class DataPubCatalogDb : public ::testing::Test
+{
+   protected:
+      NiceMock< US_DB2_Mock > db;
+      US_DataPubCatalog       catalog;
+      QTemporaryDir           work;
+
+      void SetUp() override
+      {
+         ASSERT_TRUE( work.isValid() );
+         catalog.attachDb( &db );
+      }
+
+      // One row of get_experiment_timestate: ID, file, definitions, ...
+      void timeStateRow( const QString& fname, const QString& xdefs )
+      {
+         ON_CALL( db, lastErrno() ).WillByDefault( Return( IUS_DB2::OK ) );
+         EXPECT_CALL( db, next() ).WillOnce( Return( true ) );
+         ON_CALL( db, value( 0u ) ).WillByDefault( Return( QVariant( "9" ) ) );
+         ON_CALL( db, value( 1u ) ).WillByDefault( Return( QVariant( fname ) ) );
+         ON_CALL( db, value( 2u ) ).WillByDefault( Return( QVariant( xdefs ) ) );
+      }
+};
+
+// No time state is the normal case; it is told apart from a lookup failure
+TEST_F( DataPubCatalogDb, NoTimeStateIsNotAFailure )
+{
+   ON_CALL( db, lastErrno() ).WillByDefault( Return( IUS_DB2::NOROWS ) );
+
+   QString tmst, xdef, id, error;
+
+   EXPECT_EQ( catalog.timeState( db_run(), work.path(), true, tmst, xdef, id,
+                                 error ),
+              US_DataPubCatalog::TimeStateNone );
+   EXPECT_TRUE( error.isEmpty() );
+}
+
+TEST_F( DataPubCatalogDb, AFailedTimeStateLookupIsAFailure )
+{
+   ON_CALL( db, lastErrno() ).WillByDefault( Return( IUS_DB2::DBERROR ) );
+   ON_CALL( db, lastError() ).WillByDefault( Return( QString( "gone" ) ) );
+
+   QString tmst, xdef, id, error;
+
+   EXPECT_EQ( catalog.timeState( db_run(), work.path(), true, tmst, xdef, id,
+                                 error ),
+              US_DataPubCatalog::TimeStateFailed );
+   EXPECT_TRUE( error.contains( "gone" ) ) << error.toStdString();
+}
+
+TEST_F( DataPubCatalogDb, ATimeStateWithoutDefinitionsIsAFailure )
+{
+   timeStateRow( "demo_run.time_state.tmst", QString() );
+
+   QString tmst, xdef, id, error;
+
+   EXPECT_EQ( catalog.timeState( db_run(), work.path(), true, tmst, xdef, id,
+                                 error ),
+              US_DataPubCatalog::TimeStateFailed );
+   EXPECT_TRUE( error.contains( "definitions" ) ) << error.toStdString();
+}
+
+TEST_F( DataPubCatalogDb, ATimeStateIsFetchedWithItsDefinitions )
+{
+   // The stored file name is not trusted to name a place
+   timeStateRow( "../../elsewhere.tmst", "<TimeState/>" );
+
+   EXPECT_CALL( db, readBlobFromDB( _, QString( "download_timestate" ), 9 ) )
+      .WillOnce( [] ( const QString& path, const QString&, int )
+                 {
+                    QFile file( path );
+                    file.open( QIODevice::WriteOnly );
+                    file.write( "USTS" );
+                    file.close();
+                    return int( IUS_DB2::OK );
+                 } );
+
+   QString tmst, xdef, id, error;
+
+   ASSERT_EQ( catalog.timeState( db_run(), work.path(), true, tmst, xdef, id,
+                                 error ),
+              US_DataPubCatalog::TimeStateFound ) << error.toStdString();
+
+   EXPECT_EQ( id, "9" );
+   EXPECT_EQ( QFileInfo( tmst ).absolutePath(), QDir( work.path() ).absolutePath() );
+   EXPECT_EQ( QFileInfo( tmst ).fileName(), "elsewhere.tmst" );
+   EXPECT_TRUE( QFile::exists( tmst ) );
+
+   QFile defs( xdef );
+   ASSERT_TRUE( defs.open( QIODevice::ReadOnly ) );
+   EXPECT_EQ( defs.readAll(), QByteArray( "<TimeState/>" ) );
+}
+
+TEST_F( DataPubCatalogDb, AFailedTimeStateDownloadIsAFailure )
+{
+   timeStateRow( "demo_run.time_state.tmst", "<TimeState/>" );
+
+   EXPECT_CALL( db, readBlobFromDB( _, _, 9 ) )
+      .WillOnce( Return( int( IUS_DB2::DBERROR ) ) );
+
+   QString tmst, xdef, id, error;
+
+   EXPECT_EQ( catalog.timeState( db_run(), work.path(), true, tmst, xdef, id,
+                                 error ),
+              US_DataPubCatalog::TimeStateFailed );
+   EXPECT_TRUE( error.contains( "downloaded" ) ) << error.toStdString();
+}
+
+// A project list that could not be read is an error, not a shorter list
+TEST_F( DataPubCatalogDb, AProjectThatCannotBeReadIsAnError )
+{
+   EXPECT_CALL( db, lastErrno() )
+      .WillOnce( Return( IUS_DB2::OK ) )           // get_project_desc
+      .WillRepeatedly( Return( IUS_DB2::DBERROR ) );
+   EXPECT_CALL( db, next() )
+      .WillOnce( Return( true ) )
+      .WillRepeatedly( Return( false ) );
+   ON_CALL( db, value( 0u ) ).WillByDefault( Return( QVariant( "5" ) ) );
+
+   QString error;
+   QList< US_DataPubCatalog::Project > list = catalog.projects( error );
+
+   EXPECT_TRUE ( list.isEmpty() );
+   EXPECT_FALSE( error.isEmpty() );
+}
+
+TEST_F( DataPubCatalogDb, AFailedExperimentQueryIsAnError )
+{
+   ON_CALL( db, lastErrno() ).WillByDefault( Return( IUS_DB2::DBERROR ) );
+   ON_CALL( db, lastError() ).WillByDefault( Return( QString( "lost" ) ) );
+
+   US_DataPubCatalog::ExpInfo info;
+   QString                    error;
+
+   EXPECT_FALSE( catalog.expInfo( db_run(), info, error ) );
+   EXPECT_TRUE ( error.contains( "lost" ) ) << error.toStdString();
+}
+
+// The cell table gives channels as an index into the channel letters
+TEST_F( DataPubCatalogDb, CellAssignmentsUseTheChannelLetters )
+{
+   ON_CALL( db, lastErrno() ).WillByDefault( Return( IUS_DB2::OK ) );
+
+   QString current;
+
+   ON_CALL( db, query( An< const QStringList& >() ) )
+      .WillByDefault( [ &current ]( const QStringList& args )
+                      { current = args.value( 0 ); } );
+
+   int rows = 0;
+
+   ON_CALL( db, next() ).WillByDefault( [ &current, &rows ]()
+   {
+      if ( current == "all_cell_experiments" )  return ( rows++ < 1 );
+      return ( current == "get_experiment_info_by_runID" );
+   } );
+
+   ON_CALL( db, value( _ ) ).WillByDefault( [ &current ]( unsigned col )
+   {
+      if ( current == "all_cell_experiments" )
+      {
+         if ( col == 2 )  return QVariant( "3" );    // cell
+         if ( col == 3 )  return QVariant( 2 );      // channel index: B
+         if ( col == 4 )  return QVariant( "4" );    // centerpiece
+      }
+
+      if ( current == "get_experiment_info_by_runID"  &&  col == 7 )
+         return QVariant( "12" );                    // a calibration ID
+
+      return QVariant( "1" );
+   } );
+
+   US_DataPubCatalog::ExpInfo info;
+   QString                    error;
+
+   ASSERT_TRUE( catalog.expInfo( db_run(), info, error ) )
+      << error.toStdString();
+   EXPECT_EQ( info.tripleCenterpieceIDs.value( "3/B" ), "4" );
+   EXPECT_EQ( info.centerpieceIDs, QStringList() << "4" );
 }

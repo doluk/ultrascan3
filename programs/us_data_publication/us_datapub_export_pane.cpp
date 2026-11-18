@@ -13,6 +13,7 @@
 // The roles the tree items carry
 #define ROLE_GUID   ( Qt::UserRole     )
 #define ROLE_KIND   ( Qt::UserRole + 1 )
+#define ROLE_STAMP  ( Qt::UserRole + 2 )
 #define KIND_RUN    "run"
 #define KIND_RAW    "raw"
 #define KIND_EDIT   "edit"
@@ -24,6 +25,7 @@ US_DataPubExportPane::US_DataPubExportPane( QWidget* parent )
 {
    catalog_open = false;
    updating     = false;
+   busy         = false;
 
    setPalette( US_GuiSettings::frameColor() );
 
@@ -221,6 +223,11 @@ US_DataPubExportPane::US_DataPubExportPane( QWidget* parent )
             this,      &US_DataPubExportPane::run_export );
 
    updateSummary();
+}
+
+bool US_DataPubExportPane::isBusy( void ) const
+{
+   return busy;
 }
 
 QString US_DataPubExportPane::password( void )
@@ -479,6 +486,8 @@ void US_DataPubExportPane::buildDataTree( void )
             QTreeWidgetItem* eitem = new QTreeWidgetItem( etext );
             eitem->setData( 0, ROLE_GUID, edit.guid );
             eitem->setData( 0, ROLE_KIND, QString( KIND_EDIT ) );
+            eitem->setData( 0, ROLE_STAMP, edit.editID + "|"
+                                           + edit.lastUpdated );
             eitem->setFlags( eitem->flags() | Qt::ItemIsUserCheckable );
             eitem->setCheckState( 0, Qt::Unchecked );
             witem->addChild( eitem );
@@ -791,6 +800,21 @@ void US_DataPubExportPane::setEditChecks( const QString& mode )
          QTreeWidgetItem* witem = ritem->child( jj );
          int              knt   = witem->childCount();
 
+         // The latest edit is the one with the latest edit time stamp --
+         // the part of its name that says when it was made -- whatever
+         // order the source listed the edits in
+         int latest = -1;
+
+         for ( int kk = 0; kk < knt; kk++ )
+         {
+            QString stamp = witem->child( kk )->data( 0, ROLE_STAMP )
+                            .toString();
+
+            if ( latest < 0  ||  stamp > witem->child( latest )->data(
+                                         0, ROLE_STAMP ).toString() )
+               latest = kk;
+         }
+
          for ( int kk = 0; kk < knt; kk++ )
          {
             QTreeWidgetItem* eitem = witem->child( kk );
@@ -798,7 +822,7 @@ void US_DataPubExportPane::setEditChecks( const QString& mode )
 
             if      ( mode == "all"    )  on = true;
             else if ( mode == "none"   )  on = false;
-            else if ( mode == "latest" )  on = ( kk == knt - 1 );
+            else if ( mode == "latest" )  on = ( kk == latest );
 
             // An edit is only of use when its raw data travels with it
             if ( on  &&  witem->checkState( 0 ) != Qt::Checked )
@@ -1250,10 +1274,23 @@ void US_DataPubExportPane::updateSummary( void )
    int nmods  = checkedModels().size();
    int nnois  = checkedNoises().size();
 
-   le_summary->setText( tr( "%1 project, %2 experiment(s), %3 raw data,"
+   // The projects the bundle would carry: the one picked, and those of the
+   // runs, which may belong to several
+   QStringList projects;
+
+   if ( ! project_guid.isEmpty() )  projects << project_guid;
+
+   for ( int ii = 0; ii < runs.size(); ii++ )
+      if ( ! runs[ ii ].projectGUID.isEmpty()  &&
+           ! projects.contains( runs[ ii ].projectGUID ) )
+         projects << runs[ ii ].projectGUID;
+
+   int nprojs = ck_project->isChecked() ? projects.size() : 0;
+
+   le_summary->setText( tr( "%1 project(s), %2 experiment(s), %3 raw data,"
                             " %4 edit(s), %5 model(s), %6 noise record(s)" )
-                        .arg( ck_project->isChecked() ? tr( "1" )
-                                                      : tr( "no" ) )
+                        .arg( nprojs == 0 ? tr( "no" )
+                                          : QString::number( nprojs ) )
                         .arg( runs.size() ).arg( nraws ).arg( nedits )
                         .arg( nmods ).arg( nnois ) );
 
@@ -1264,16 +1301,21 @@ void US_DataPubExportPane::updateSummary( void )
                        > US_DataPub::ScopeProject )
                      ||  ck_project->isChecked();
 
-   pb_export->setEnabled( haveSource  &&  haveOutput );
+   pb_export->setEnabled( haveSource  &&  haveOutput  &&  ! busy );
 }
 
 void US_DataPubExportPane::show_details( void )
 {
-   US_DataPubExporter exporter;
-   QString            error;
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection sel = selection();
+   QString                       error;
+
+   // The preview reads the same records the export does
+   if ( sel.fromDb )
+      sel.dbPassword = password();
 
    QApplication::setOverrideCursor( QCursor( Qt::WaitCursor ) );
-   bool ok = exporter.previewManifest( selection(), error );
+   bool ok = exporter.previewManifest( sel, error );
    QApplication::restoreOverrideCursor();
 
    if ( ! ok )
@@ -1379,14 +1421,41 @@ void US_DataPubExportPane::run_export( void )
 
    te_status->clear();
    pgb_progress->setValue( 0 );
-   pb_export->setEnabled( false );
+
+   // Events are processed while the export runs, so nothing here may be
+   // touched until it is done; the window refuses to close meanwhile
+   QList< QWidget* > controls = findChildren< QWidget* >();
+   QList< QWidget* > disabled;
+
+   for ( int ii = 0; ii < controls.size(); ii++ )
+   {
+      QWidget* control = controls[ ii ];
+
+      if ( control == te_status  ||  control == pgb_progress  ||
+           ! control->isEnabled()  ||
+           ( qobject_cast< QAbstractButton* >( control ) == nullptr  &&
+             qobject_cast< QLineEdit*       >( control ) == nullptr  &&
+             qobject_cast< QComboBox*       >( control ) == nullptr  &&
+             qobject_cast< QTreeWidget*     >( control ) == nullptr ) )
+         continue;
+
+      control->setEnabled( false );
+      disabled << control;
+   }
+
+   busy = true;
    QApplication::setOverrideCursor( QCursor( Qt::WaitCursor ) );
 
    QString error;
    bool    ok = exporter.exportBundle( sel, path, error );
 
    QApplication::restoreOverrideCursor();
-   pb_export->setEnabled( true );
+   busy = false;
+
+   for ( int ii = 0; ii < disabled.size(); ii++ )
+      disabled[ ii ]->setEnabled( true );
+
+   updateSummary();
 
    if ( ! ok )
    {

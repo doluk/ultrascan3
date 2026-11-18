@@ -7,11 +7,66 @@
 
 #include <iostream>
 
+#if defined( Q_OS_UNIX )
+#include <termios.h>
+#include <unistd.h>
+#elif defined( Q_OS_WIN )
+#include <windows.h>
+#endif
+
+namespace
+{
+   // Read one line from the terminal without showing what is typed
+   std::string read_hidden_line( void )
+   {
+      std::string line;
+
+#if defined( Q_OS_UNIX )
+      termios saved;
+      bool    tty = ( isatty( STDIN_FILENO )  &&
+                      tcgetattr( STDIN_FILENO, &saved ) == 0 );
+
+      if ( tty )
+      {
+         termios quiet = saved;
+         quiet.c_lflag &= ~ECHO;
+         tcsetattr( STDIN_FILENO, TCSAFLUSH, &quiet );
+      }
+
+      std::getline( std::cin, line );
+
+      if ( tty )
+      {
+         tcsetattr( STDIN_FILENO, TCSAFLUSH, &saved );
+         std::cout << std::endl;
+      }
+#elif defined( Q_OS_WIN )
+      HANDLE input = GetStdHandle( STD_INPUT_HANDLE );
+      DWORD  mode  = 0;
+      bool   con   = GetConsoleMode( input, &mode );
+
+      if ( con )
+         SetConsoleMode( input, mode & ~ENABLE_ECHO_INPUT );
+
+      std::getline( std::cin, line );
+
+      if ( con )
+      {
+         SetConsoleMode( input, mode );
+         std::cout << std::endl;
+      }
+#else
+      std::getline( std::cin, line );
+#endif
+
+      return line;
+   }
+}
+
 US_DataPubCLI::Args::Args()
 {
    source         = "disk";
    target         = "db";
-   scope          = "noise";
    conflict       = "reuse";
    timeState      = true;
    project        = true;
@@ -37,9 +92,7 @@ bool US_DataPubCLI::wanted( const QStringList& arguments )
    {
       QString arg = arguments[ ii ];
 
-      if ( arg == "--mode"  ||  arg.startsWith( "--mode=" )  ||
-           arg == "--no-ui" ||  arg == "--help" || arg == "-h" ||
-           arg == "--version" )
+      if ( arg.startsWith( "--" )  ||  arg == "-h" )
          return true;
    }
 
@@ -62,9 +115,14 @@ QString US_DataPubCLI::usage( void )
       "\n"
       "Common options:\n"
       "  --no-ui                 run without the window (implied by --mode)\n"
-      "  --db-password <pw>      master password for database access;\n"
-      "                          the US3_DB_PASSWORD environment variable is\n"
-      "                          used when this is not given\n"
+      "  --db-password-file <f>  read the master password for database\n"
+      "                          access from the first line of a file\n"
+      "  --db-password <pw>      the master password itself; other users can\n"
+      "                          see it in the process list, so prefer the\n"
+      "                          file or the US3_DB_PASSWORD environment\n"
+      "                          variable, which is used when neither is\n"
+      "                          given.  Without any of them an interactive\n"
+      "                          run asks for it\n"
       "  --dry-run               decide everything, write nothing\n"
       "  --non-interactive       never prompt; fail instead of asking\n"
       "  --verbose               report every step\n"
@@ -79,7 +137,10 @@ QString US_DataPubCLI::usage( void )
       "  --experiment-id <run>   export this run; may be repeated.  Accepts a\n"
       "                          runID or an experiment database ID\n"
       "  --max-scope <scope>     export up to and including this record type\n"
-      "  --include-<scope>       raise the scope to this record type\n"
+      "                          (default: noise, the whole chain)\n"
+      "  --include-<scope>       export up to and including this record type;\n"
+      "                          the deepest one given counts, and it may not\n"
+      "                          go beyond --max-scope\n"
       "  --model-guid <guid>     export only these models; may be repeated\n"
       "  --noise-guid <guid>     export only these noise records; repeatable\n"
       "  --no-timestate          leave the runs' time state out\n"
@@ -142,8 +203,11 @@ bool US_DataPubCLI::parse( const QStringList& arguments, QString& error )
 {
    QStringList list = arguments.mid( 1 );
 
-   // Split "--option=value" into two entries so that both spellings work
-   QStringList flat;
+   // Split "--option=value" into two entries so that both spellings work.
+   // A value given that way is taken as it is, even when it starts with
+   // "--"; a separate one that looks like an option is not a value.
+   QStringList   flat;
+   QList< bool > inline_value;
 
    for ( int ii = 0; ii < list.size(); ii++ )
    {
@@ -152,10 +216,12 @@ bool US_DataPubCLI::parse( const QStringList& arguments, QString& error )
       if ( arg.startsWith( "--" )  &&  arg.contains( "=" ) )
       {
          flat << arg.section( "=", 0, 0 ) << arg.section( "=", 1 );
+         inline_value << false << true;
          continue;
       }
 
       flat << arg;
+      inline_value << false;
    }
 
    for ( int ii = 0; ii < flat.size(); ii++ )
@@ -163,6 +229,18 @@ bool US_DataPubCLI::parse( const QStringList& arguments, QString& error )
       QString arg  = flat[ ii ];
       bool    last = ( ii + 1 >= flat.size() );
       QString next = last ? QString() : flat[ ii + 1 ];
+
+      if ( ! last  &&  ! inline_value[ ii + 1 ]  &&  next.startsWith( "--" ) )
+      {  // "--bundle --dry-run": the option has no value of its own
+         last = true;
+         next.clear();
+      }
+
+      if ( inline_value[ ii ] )
+      {
+         error = tr( "Unexpected argument \"%1\"" ).arg( arg );
+         return false;
+      }
 
       if ( arg == "-h"  ||  arg == "--help" )     { args.help    = true; continue; }
       if ( arg == "--version" )                   { args.version = true; continue; }
@@ -187,9 +265,15 @@ bool US_DataPubCLI::parse( const QStringList& arguments, QString& error )
             return false;
          }
 
-         if ( US_DataPub::scopeOfKey( args.scope ) < scope  ||
-              args.scope.isEmpty() )
-            args.scope = key;
+         if ( args.includeScope.isEmpty()  ||
+              US_DataPub::scopeOfKey( args.includeScope ) < scope )
+            args.includeScope = key;
+
+         if ( ! last  &&  inline_value[ ii + 1 ] )
+         {
+            error = tr( "%1 takes no value" ).arg( arg );
+            return false;
+         }
 
          continue;
       }
@@ -198,7 +282,7 @@ bool US_DataPubCLI::parse( const QStringList& arguments, QString& error )
       {
          QString key = arg.mid( 14 );
 
-         if ( last )
+         if ( last  ||  next.isEmpty() )
          {
             error = tr( "%1 needs a policy" ).arg( arg );
             return false;
@@ -221,7 +305,20 @@ bool US_DataPubCLI::parse( const QStringList& arguments, QString& error )
          return false;
       }
 
-      if ( last )
+      static const QStringList withValue = QStringList()
+         << "--mode" << "--bundle" << "--source" << "--target"
+         << "--output-dir" << "--project-id" << "--project-guid"
+         << "--experiment-id" << "--model-guid" << "--noise-guid"
+         << "--max-scope" << "--on-conflict" << "--rename-suffix"
+         << "--comment" << "--db-password" << "--db-password-file";
+
+      if ( ! withValue.contains( arg ) )
+      {
+         error = tr( "Unknown option \"%1\"" ).arg( arg );
+         return false;
+      }
+
+      if ( last  ||  ( next.isEmpty()  &&  arg != "--comment" ) )
       {
          error = tr( "%1 needs a value" ).arg( arg );
          return false;
@@ -242,6 +339,7 @@ bool US_DataPubCLI::parse( const QStringList& arguments, QString& error )
       else if ( arg == "--rename-suffix" )  args.renameSuffix = next;
       else if ( arg == "--comment"       )  args.comment     = next;
       else if ( arg == "--db-password"   )  args.dbPassword  = next;
+      else if ( arg == "--db-password-file" )  args.dbPasswordFile = next;
       else
       {
          error = tr( "Unknown option \"%1\"" ).arg( arg );
@@ -260,19 +358,51 @@ QString US_DataPubCLI::password( bool needed )
 {
    if ( ! needed )  return QString();
 
-   if ( ! args.dbPassword.isEmpty() )  return args.dbPassword;
+   if ( ! args.dbPasswordFile.isEmpty() )
+   {
+      QFile file( args.dbPasswordFile );
+
+      if ( ! file.open( QIODevice::ReadOnly | QIODevice::Text ) )
+      {
+         fail( tr( "The password file %1 cannot be read" )
+               .arg( args.dbPasswordFile ) );
+         return QString();
+      }
+
+      QString line = QString::fromUtf8( file.readLine() );
+      file.close();
+
+      while ( line.endsWith( "\n" )  ||  line.endsWith( "\r" ) )
+         line.chop( 1 );
+
+      return line;
+   }
+
+   if ( ! args.dbPassword.isEmpty() )
+   {
+      err << tr( "Warning: a password given with --db-password can be seen"
+                 " by other users of this machine; prefer --db-password-file"
+                 " or US3_DB_PASSWORD" ) << "\n";
+      err.flush();
+      return args.dbPassword;
+   }
 
    QByteArray fromEnv = qgetenv( "US3_DB_PASSWORD" );
 
    if ( ! fromEnv.isEmpty() )  return QString::fromUtf8( fromEnv );
 
-   if ( args.nonInteractive )  return QString();
+   if ( args.nonInteractive )
+   {
+      fail( tr( "The database needs the master password, and a"
+                " non-interactive run cannot ask for it: give"
+                " --db-password-file, or set US3_DB_PASSWORD" ) );
+      return QString();
+   }
 
    out << tr( "UltraScan master password: " );
    out.flush();
 
-   std::string line;
-   std::getline( std::cin, line );
+   std::string line = read_hidden_line();
 
    return QString::fromStdString( line ).trimmed();
 }
@@ -313,17 +443,38 @@ int US_DataPubCLI::run( const QStringList& arguments )
 
 int US_DataPubCLI::runExport( void )
 {
-   if ( args.bundle.isEmpty() )
+   if ( args.bundle.isEmpty()  &&  ! args.dryRun )
    {
       fail( tr( "--bundle is required for an export" ) );
       return 2;
    }
 
-   US_DataPub::Scope scope = US_DataPub::scopeOfKey( args.scope );
+   // --max-scope caps the export, --include-<scope> asks for a record type;
+   // without either the whole chain is exported
+   QString scopeKey = args.scope;
+
+   if ( ! args.includeScope.isEmpty() )
+   {
+      if ( scopeKey.isEmpty() )
+         scopeKey = args.includeScope;
+
+      else if ( US_DataPub::scopeOfKey( args.includeScope ) >
+                US_DataPub::scopeOfKey( scopeKey ) )
+      {
+         fail( tr( "--include-%1 goes beyond --max-scope %2" )
+               .arg( args.includeScope ).arg( scopeKey ) );
+         return 2;
+      }
+   }
+
+   if ( scopeKey.isEmpty() )
+      scopeKey = US_DataPub::scopeKey( US_DataPub::ScopeNoise );
+
+   US_DataPub::Scope scope = US_DataPub::scopeOfKey( scopeKey );
 
    if ( scope == US_DataPub::ScopeNone )
    {
-      fail( tr( "\"%1\" is not a scope; one of: %2" ).arg( args.scope )
+      fail( tr( "\"%1\" is not a scope; one of: %2" ).arg( scopeKey )
             .arg( US_DataPub::scopeKeys().join( ", " ) ) );
       return 2;
    }
@@ -334,10 +485,25 @@ int US_DataPubCLI::runExport( void )
       return 2;
    }
 
+   if ( args.experiments.isEmpty()  &&  args.projectID.isEmpty()  &&
+        args.projectGUID.isEmpty() )
+   {
+      fail( tr( "Nothing to export: give --experiment-id, --project-id or"
+                " --project-guid" ) );
+      return 2;
+   }
+
    US_DataPubExporter::Selection selection;
    selection.fromDb           = ( args.source == "db" );
    selection.dbPassword       = password( selection.fromDb );
    selection.scope            = scope;
+
+   if ( selection.fromDb  &&  selection.dbPassword.isEmpty() )
+   {
+      fail( tr( "No database password; nothing was exported" ) );
+      return 2;
+   }
+
    selection.projectGUID      = args.projectGUID;
    selection.includeTimeState = args.timeState;
    selection.includeProject   = args.project;
@@ -356,28 +522,53 @@ int US_DataPubCLI::runExport( void )
       return 1;
    }
 
-   if ( ! args.projectID.isEmpty()  &&  selection.projectGUID.isEmpty() )
+   if ( ! args.projectID.isEmpty() )
    {
       QList< US_DataPubCatalog::Project > projects = catalog.projects( error );
+
+      if ( ! error.isEmpty() )
+      {
+         fail( error );
+         return 1;
+      }
+
+      QString guid;
 
       for ( int ii = 0; ii < projects.size(); ii++ )
       {
          if ( projects[ ii ].id != args.projectID )  continue;
 
-         selection.projectGUID = projects[ ii ].guid;
+         guid = projects[ ii ].guid;
          break;
       }
 
-      if ( selection.projectGUID.isEmpty() )
+      if ( guid.isEmpty() )
       {
          fail( tr( "No project with ID %1 was found" ).arg( args.projectID ) );
          return 1;
       }
+
+      if ( ! selection.projectGUID.isEmpty()  &&
+           selection.projectGUID != guid )
+      {
+         fail( tr( "--project-id %1 and --project-guid %2 name different"
+                   " projects" ).arg( args.projectID )
+               .arg( selection.projectGUID ) );
+         return 2;
+      }
+
+      selection.projectGUID = guid;
    }
 
    if ( ! args.experiments.isEmpty() )
    {
       QList< US_DataPubCatalog::Run > runs = catalog.runs( QString(), error );
+
+      if ( ! error.isEmpty() )
+      {
+         fail( error );
+         return 1;
+      }
 
       for ( int ii = 0; ii < args.experiments.size(); ii++ )
       {
@@ -399,7 +590,9 @@ int US_DataPubCLI::runExport( void )
             return 1;
          }
 
-         selection.runIDs << runID;
+         // A run named twice -- by runID and by ID, say -- is one run
+         if ( ! selection.runIDs.contains( runID ) )
+            selection.runIDs << runID;
       }
    }
 
@@ -415,8 +608,11 @@ int US_DataPubCLI::runExport( void )
          return 1;
       }
 
-      print( tr( "Dry run: %1 records would be exported to %2" )
-             .arg( exporter.manifest().total() ).arg( args.bundle ) );
+      print( args.bundle.isEmpty()
+             ? tr( "Dry run: %1 records would be exported" )
+               .arg( exporter.manifest().total() )
+             : tr( "Dry run: %1 records would be exported to %2" )
+               .arg( exporter.manifest().total() ).arg( args.bundle ) );
       print( exporter.manifest().summary() );
 
       if ( verbose )  print( exporter.manifest().toYaml() );

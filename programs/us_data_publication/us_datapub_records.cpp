@@ -396,3 +396,124 @@ bool US_DataPubRecords::setRecordName( const QString& filename,
 
    return true;
 }
+
+// ------------------------------------------------------- buffer components
+
+bool US_DataPubRecords::writeBufferComponents(
+      const QList< US_BufferComponent >& components, const QString& filename )
+{
+   QSaveFile file( filename );
+
+   if ( ! file.open( QIODevice::WriteOnly ) )  return false;
+
+   QXmlStreamWriter xml( &file );
+   xml.setAutoFormatting( true );
+
+   xml.writeStartDocument();
+   xml.writeDTD         ( "<!DOCTYPE US_BufferComponents>" );
+   xml.writeStartElement( "BufferComponents" );
+   xml.writeAttribute   ( "version", "1.0" );
+
+   for ( int ii = 0; ii < components.size(); ii++ )
+   {
+      const US_BufferComponent& comp = components[ ii ];
+
+      xml.writeStartElement( "component" );
+      xml.writeAttribute( "id",    comp.componentID );
+      xml.writeAttribute( "name",  comp.name );
+      xml.writeAttribute( "unit",  comp.unit );
+      xml.writeAttribute( "range", comp.range );
+      xml.writeAttribute( "gradient_forming",
+                          comp.grad_form ? QString( "1" ) : QString( "0" ) );
+
+      xml.writeStartElement( "densityCoefficients" );
+
+      for ( int jj = 0; jj < 6; jj++ )
+         xml.writeAttribute( QString( "c%1" ).arg( jj ),
+                             QString::number( comp.dens_coeff[ jj ], 'g', 17 ) );
+
+      xml.writeEndElement();      // densityCoefficients
+
+      xml.writeStartElement( "viscosityCoefficients" );
+
+      for ( int jj = 0; jj < 6; jj++ )
+         xml.writeAttribute( QString( "c%1" ).arg( jj ),
+                             QString::number( comp.visc_coeff[ jj ], 'g', 17 ) );
+
+      xml.writeEndElement();      // viscosityCoefficients
+      xml.writeEndElement();      // component
+   }
+
+   xml.writeEndElement();         // BufferComponents
+   xml.writeEndDocument();
+
+   if ( xml.hasError() )
+   {
+      file.cancelWriting();
+      return false;
+   }
+
+   return file.commit();
+}
+
+bool US_DataPubRecords::readBufferComponents(
+      const QString& filename, QMap< QString, US_BufferComponent >& components )
+{
+   components.clear();
+
+   QFile file( filename );
+
+   if ( ! file.open( QIODevice::ReadOnly | QIODevice::Text ) )  return false;
+
+   QXmlStreamReader   xml( &file );
+   US_BufferComponent comp;
+   bool               inComp = false;
+
+   while ( ! xml.atEnd() )
+   {
+      xml.readNext();
+
+      QString ename = xml.name().toString();
+
+      if ( xml.isEndElement()  &&  ename == "component"  &&  inComp )
+      {
+         components.insert( comp.componentID, comp );
+         inComp = false;
+         continue;
+      }
+
+      if ( ! xml.isStartElement() )  continue;
+
+      QXmlStreamAttributes attrs = xml.attributes();
+
+      if ( ename == "component" )
+      {
+         comp             = US_BufferComponent();
+         comp.componentID = attrs.value( "id"    ).toString();
+         comp.name        = attrs.value( "name"  ).toString();
+         comp.unit        = attrs.value( "unit"  ).toString();
+         comp.range       = attrs.value( "range" ).toString();
+         QString grad     = attrs.value( "gradient_forming" ).toString();
+         comp.grad_form   = ( grad == "1"  ||  grad.toLower() == "true" );
+         inComp           = true;
+      }
+
+      else if ( inComp  &&  ( ename == "densityCoefficients"  ||
+                              ename == "viscosityCoefficients" ) )
+      {
+         double* coeffs = ( ename == "densityCoefficients" )
+                          ? comp.dens_coeff : comp.visc_coeff;
+
+         for ( int jj = 0; jj < 6; jj++ )
+            coeffs[ jj ] = attrs.value( QString( "c%1" ).arg( jj ) )
+                           .toString().toDouble();
+      }
+   }
+
+   bool failed = xml.hasError();
+   file.close();
+
+   if ( failed )  components.clear();
+
+   return ! failed;
+}
