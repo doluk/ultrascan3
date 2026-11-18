@@ -224,3 +224,103 @@ QString US_DataPub::resolutionText( US_DataPub::Resolution resolution )
       default:                           return QObject::tr( "failed"  );
    }
 }
+
+// ------------------------------------------------------------ path safety
+
+bool US_DataPub::isSafeFileName( const QString& name, QString* why )
+{
+   QString reason;
+
+   if ( name.isEmpty() )
+      reason = QObject::tr( "the name is empty" );
+   else if ( name.contains( '/' )  ||  name.contains( '\\' ) )
+      reason = QObject::tr( "the name has a directory separator in it" );
+   else if ( name == "."  ||  name == ".." )
+      reason = QObject::tr( "the name is a directory reference" );
+   else if ( name.startsWith( '.' ) )
+      reason = QObject::tr( "the name is hidden" );
+   else if ( name.contains( ':' ) )
+      reason = QObject::tr( "the name has a colon in it" );
+   else if ( name.size() > 255 )
+      reason = QObject::tr( "the name is too long" );
+   else
+   {
+      for ( int ii = 0; ii < name.size(); ii++ )
+      {
+         if ( name.at( ii ).unicode() >= 0x20  &&
+              name.at( ii ).unicode() != 0x7f )  continue;
+
+         reason = QObject::tr( "the name has a control character in it" );
+         break;
+      }
+   }
+
+   if ( why != nullptr )  *why = reason;
+
+   return reason.isEmpty();
+}
+
+bool US_DataPub::isSafeRelativePath( const QString& path, QString* why )
+{
+   QString reason;
+
+   if ( path.isEmpty() )
+      reason = QObject::tr( "the path is empty" );
+   else if ( path.contains( '\\' ) )
+      reason = QObject::tr( "the path has a backslash in it" );
+   else if ( path.startsWith( '/' ) )
+      reason = QObject::tr( "the path is absolute" );
+   else if ( path.size() >= 2  &&  path.at( 1 ) == QChar( ':' ) )
+      reason = QObject::tr( "the path has a drive prefix" );
+   else if ( path.size() > 1024 )
+      reason = QObject::tr( "the path is too long" );
+   else
+   {
+      const QStringList parts = path.split( '/' );
+
+      for ( int ii = 0; ii < parts.size(); ii++ )
+      {
+         QString partWhy;
+
+         if ( isSafeFileName( parts[ ii ], &partWhy ) )  continue;
+
+         reason = QObject::tr( "component %1: %2" ).arg( ii + 1 ).arg( partWhy );
+         break;
+      }
+   }
+
+   if ( why != nullptr )  *why = reason;
+
+   return reason.isEmpty();
+}
+
+bool US_DataPub::runIdIsUsable( const QString& runID )
+{
+   static const QRegularExpression rx( "^[A-Za-z0-9_-]{1,80}$" );
+
+   return rx.match( runID ).hasMatch();
+}
+
+QString US_DataPub::derivedGuid( const QString& name )
+{
+   // A fixed namespace for the identities this program makes up
+   static const QUuid ns( "6c1f6f0e-3b2a-5d4e-9c1f-7a2b3c4d5e6f" );
+
+   return QUuid::createUuidV5( ns, name.toUtf8() )
+          .toString( QUuid::WithoutBraces );
+}
+
+bool US_DataPub::isPayloadKey( const QString& key )
+{
+   return ( key == "payload" )  ||
+          ( key.size() > 7  &&  key.endsWith( "Payload" ) );
+}
+
+QString US_DataPub::digestKeyOf( const QString& payloadKey )
+{
+   if ( payloadKey == "payload" )  return QString( "sha256" );
+
+   if ( ! isPayloadKey( payloadKey ) )  return QString();
+
+   return payloadKey.left( payloadKey.size() - 7 ) + "Sha256";
+}

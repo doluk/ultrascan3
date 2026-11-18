@@ -145,4 +145,58 @@ namespace US_DataPub
    //! \brief A human readable description of an import resolution
    QString resolutionText( Resolution );
 }
+//! \brief Safety rules and identity helpers shared by export and import
+namespace US_DataPub
+{
+   /*! \brief Whether a manifest path stays inside the bundle
+
+       A path in a manifest names a file inside the unpacked bundle, and an
+       import opens it.  It is only accepted when it is relative, uses
+       forward slashes only, and has no empty, ".", ".." or hidden ("."
+       first) component, no drive prefix, no colon and no control
+       character -- so that no spelling of it can reach outside the bundle
+       on any platform.
+       \param path The bundle-relative path to check
+       \param why  Filled in with the reason when the path is refused
+   */
+   bool isSafeRelativePath( const QString& path, QString* why = nullptr );
+
+   /*! \brief Whether a manifest file name is a single, safe path component
+       \param name The base name to check
+       \param why  Filled in with the reason when the name is refused
+   */
+   bool isSafeFileName    ( const QString& name, QString* why = nullptr );
+
+   /*! \brief Whether a run ID can name a run directory
+
+       The same rule US_ConvertIO applies to a run it reads: letters, digits,
+       '_' and '-', 1 to 80 characters.
+       \param runID The run ID to check
+   */
+   bool runIdIsUsable     ( const QString& runID );
+
+   /*! \brief A deterministic, name-based (version 5) UUID
+
+       Used where a record has no GUID of its own -- an old rotor
+       calibration, a centerpiece table row, a run's time state -- so that
+       exporting the same record twice gives it the same identity, and that
+       identity is a valid UUID.
+       \param name The text the UUID is derived from
+   */
+   QString derivedGuid    ( const QString& name );
+
+   /*! \brief Whether a manifest key names a payload file
+
+       \c payload itself, and any attribute whose key ends in \c Payload
+       (\c definitionsPayload, \c riProfilePayload, \c componentsPayload)
+   */
+   bool    isPayloadKey   ( const QString& key );
+
+   /*! \brief The manifest key holding the SHA-256 digest of a payload key
+
+       \c payload goes with \c sha256; \c fooPayload goes with
+       \c fooSha256.
+   */
+   QString digestKeyOf    ( const QString& payloadKey );
+}
 #endif

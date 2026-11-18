@@ -21,9 +21,60 @@ void US_DataPubEntity::setDepend( US_DataPub::EntityType parentType,
    depends.insert( US_DataPub::guidKey( parentType ), parentGUID );
 }
 
+void US_DataPubEntity::addDepend( US_DataPub::EntityType parentType,
+                                  const QString& parentGUID )
+{
+   if ( parentGUID.isEmpty() )  return;
+
+   QStringList have = dependsOn( parentType );
+
+   if ( have.contains( parentGUID ) )  return;
+
+   QString key = US_DataPub::guidKey( parentType );
+
+   if ( ! have.isEmpty() )
+   {
+      int index = have.size() + 1;
+
+      while ( depends.contains( key + "_" + QString::number( index ) ) )
+         index++;
+
+      key += "_" + QString::number( index );
+   }
+
+   depends.insert( key, parentGUID );
+}
+
 QString US_DataPubEntity::depend( US_DataPub::EntityType parentType ) const
 {
    return depends.value( US_DataPub::guidKey( parentType ), QString() );
+}
+
+QStringList US_DataPubEntity::dependsOn(
+      US_DataPub::EntityType parentType ) const
+{
+   QStringList      guids;
+   QList< QString > keys = depends.keys();
+
+   for ( int ii = 0; ii < keys.size(); ii++ )
+      if ( dependType( keys[ ii ] ) == parentType )
+         guids << depends.value( keys[ ii ] );
+
+   return guids;
+}
+
+US_DataPub::EntityType US_DataPubEntity::dependType( const QString& key )
+{
+   US_DataPub::EntityType type = US_DataPub::typeOfGuidKey( key );
+
+   if ( type != US_DataPub::UnknownType )  return type;
+
+   static const QRegularExpression rx( "^([A-Za-z]+)_([2-9]|[1-9][0-9]+)$" );
+   QRegularExpressionMatch         match = rx.match( key );
+
+   if ( ! match.hasMatch() )  return US_DataPub::UnknownType;
+
+   return US_DataPub::typeOfGuidKey( match.captured( 1 ) );
 }
 
 void US_DataPubEntity::setField( const QString& key, const QString& value )
@@ -85,6 +136,22 @@ bool US_DataPubEntity::isValid( void ) const
    return ( type != US_DataPub::UnknownType  &&  ! guid.isEmpty() );
 }
 
+QStringList US_DataPubEntity::payloadKeys( void ) const
+{
+   QStringList keys;
+
+   if ( ! payload.isEmpty() )  keys << QString( "payload" );
+
+   QList< QString > akeys = attrs.keys();
+
+   for ( int ii = 0; ii < akeys.size(); ii++ )
+      if ( US_DataPub::isPayloadKey( akeys[ ii ] )  &&
+           ! attrs.value( akeys[ ii ] ).isEmpty() )
+         keys << akeys[ ii ];
+
+   return keys;
+}
+
 QString US_DataPubEntity::label( void ) const
 {
    QString text = US_DataPub::typeText( type );
@@ -119,19 +186,26 @@ void US_DataPubManifest::clear( void )
    sections.clear();
 }
 
+/* The section order of a manifest.  Every record depends only on records
+   of sections listed before its own: an experiment names its project and
+   rotor calibration, a solution its buffer, analytes and experiment, and a
+   raw-data triple its experiment and solution.  This is not the order of
+   the export scopes -- a scope adds what a user asks for, the section order
+   is what a reader needs to resolve the dependencies top to bottom.
+*/
 QList< US_DataPub::EntityType > US_DataPubManifest::orderedTypes( void )
 {
    QList< US_DataPub::EntityType > types;
 
    types << US_DataPub::Project
-         << US_DataPub::Experiment
-         << US_DataPub::RawData
-         << US_DataPub::TimeState
          << US_DataPub::RotorCalibration
          << US_DataPub::Centerpiece
+         << US_DataPub::Experiment
+         << US_DataPub::TimeState
          << US_DataPub::Buffer
          << US_DataPub::Analyte
          << US_DataPub::Solution
+         << US_DataPub::RawData
          << US_DataPub::EditedData
          << US_DataPub::Model
          << US_DataPub::Noise;
@@ -142,6 +216,17 @@ QList< US_DataPub::EntityType > US_DataPubManifest::orderedTypes( void )
 void US_DataPubManifest::add( const US_DataPubEntity& entity )
 {
    sections[ int( entity.type ) ] << entity;
+}
+
+void US_DataPubManifest::declareSection( US_DataPub::EntityType type )
+{
+   if ( ! sections.contains( int( type ) ) )
+      sections.insert( int( type ), QList< US_DataPubEntity >() );
+}
+
+bool US_DataPubManifest::isDeclared( US_DataPub::EntityType type ) const
+{
+   return sections.contains( int( type ) );
 }
 
 void US_DataPubManifest::setSection( US_DataPub::EntityType type,
@@ -261,8 +346,8 @@ QString US_DataPubManifest::toYaml( void ) const
    QTextStream ts( &text, QIODevice::WriteOnly );
 
    ts << "# UltraScan3 data publication bundle manifest\n";
-   ts << "# Records are listed in dependency order; an import replays them"
-         " top to bottom.\n";
+   ts << "# Records are listed in dependency order: each depends only on"
+         " records listed before it.\n";
    ts << "version: "    << QString::number( version ) << "\n";
    ts << "created: "    << escape( created    )       << "\n";
    ts << "generator: "  << escape( generator  )       << "\n";
@@ -278,6 +363,8 @@ QString US_DataPubManifest::toYaml( void ) const
       US_DataPub::EntityType     type     = types[ ii ];
       QList< US_DataPubEntity >  entities = section( type );
       QString                    key      = US_DataPub::typeKey( type );
+
+      if ( ! isDeclared( type ) )  continue;      // Not exported at all
 
       if ( entities.isEmpty() )
       {
@@ -335,6 +422,9 @@ bool US_DataPubManifest::fromYaml( const QString& text, QString& error )
    QString                   nestKey;
    int                       nestInd  = -1;
    bool                      haveSect = false;
+   QStringList               seenKeys;      // Top-level keys read so far
+   QStringList               itemKeys;      // Keys of the current item
+   bool                      haveVers = false;
 
    for ( int ii = 0; ii < lines.size(); ii++ )
    {
@@ -386,7 +476,33 @@ bool US_DataPubManifest::fromYaml( const QString& text, QString& error )
          QString key   = trimmed.left( colon ).trimmed();
          QString value = trimmed.mid( colon + 1 ).trimmed();
 
-         if ( key == "version"    )  { version    = value.toInt();      continue; }
+         if ( seenKeys.contains( key ) )
+         {
+            error = QObject::tr( "manifest line %1: \"%2\" appears more than"
+                                 " once" ).arg( ii + 1 ).arg( key );
+            return false;
+         }
+
+         seenKeys << key;
+
+         if ( key == "version" )
+         {
+            bool ok   = false;
+            int  vers = unescape( value ).toInt( &ok );
+
+            if ( ! ok  ||  vers < 1 )
+            {
+               error = QObject::tr( "manifest line %1: \"%2\" is not a"
+                                    " manifest format version" )
+                       .arg( ii + 1 ).arg( value );
+               return false;
+            }
+
+            version  = vers;
+            haveVers = true;
+            continue;
+         }
+
          if ( key == "created"    )  { created    = unescape( value );  continue; }
          if ( key == "generator"  )  { generator  = unescape( value );  continue; }
          if ( key == "source"     )  { source     = unescape( value );  continue; }
@@ -412,6 +528,13 @@ bool US_DataPubManifest::fromYaml( const QString& text, QString& error )
             haveSect = false;
          }
 
+         else if ( ! value.isEmpty() )
+         {
+            error = QObject::tr( "manifest line %1: section \"%2\" must be a"
+                                 " list" ).arg( ii + 1 ).arg( key );
+            return false;
+         }
+
          continue;
       }
 
@@ -429,6 +552,7 @@ bool US_DataPubManifest::fromYaml( const QString& text, QString& error )
 
          item     = US_DataPubEntity( curType );
          haveItem = true;
+         itemKeys.clear();
          nestKey.clear();
          nestInd  = -1;
          trimmed  = trimmed.mid( 1 ).trimmed();
@@ -458,13 +582,32 @@ bool US_DataPubManifest::fromYaml( const QString& text, QString& error )
       if ( ! nestKey.isEmpty()  &&  indent > nestInd )
       {
          if ( nestKey == "depends" )
+         {
+            if ( item.depends.contains( key ) )
+            {
+               error = QObject::tr( "manifest line %1: dependency \"%2\""
+                                    " appears more than once" )
+                       .arg( ii + 1 ).arg( key );
+               return false;
+            }
+
             item.depends.insert( key, unescape( value ) );
+         }
 
          continue;
       }
 
       nestKey.clear();
       nestInd = -1;
+
+      if ( itemKeys.contains( key ) )
+      {
+         error = QObject::tr( "manifest line %1: \"%2\" appears more than"
+                              " once in one record" ).arg( ii + 1 ).arg( key );
+         return false;
+      }
+
+      itemKeys << key;
 
       if ( value.isEmpty() )
       {
@@ -482,26 +625,40 @@ bool US_DataPubManifest::fromYaml( const QString& text, QString& error )
       setSection( curType, entities );
    }
 
+   if ( ! haveVers )
+   {
+      error = QObject::tr( "the manifest names no format version" );
+      return false;
+   }
+
+   if ( ! checkPaths( error ) )  return false;
+
    error.clear();
 
    return true;
 }
 
+// The manifest is UTF-8 whatever the locale: the bytes are written and
+// read directly rather than through a QTextStream, whose codec on Qt5 is
+// the locale's.
 bool US_DataPubManifest::write( const QString& filename, QString& error ) const
 {
-   QFile file( filename );
+   QSaveFile  file( filename );
+   QByteArray bytes = toYaml().toUtf8();
 
-   if ( ! file.open( QIODevice::WriteOnly | QIODevice::Text ) )
+   if ( ! file.open( QIODevice::WriteOnly ) )
    {
       error = QObject::tr( "Cannot open manifest for writing: %1" )
               .arg( filename );
       return false;
    }
 
-   QTextStream ts( &file );
-   ts << toYaml();
-   ts.flush();
-   file.close();
+   if ( file.write( bytes ) != bytes.size()  ||  ! file.commit() )
+   {
+      error = QObject::tr( "Cannot write the manifest %1: %2" )
+              .arg( filename ).arg( file.errorString() );
+      return false;
+   }
 
    error.clear();
 
@@ -519,16 +676,80 @@ bool US_DataPubManifest::read( const QString& filename, QString& error )
       return false;
    }
 
-   QTextStream ts( &file );
-   QString     text = ts.readAll();
+   QByteArray bytes  = file.readAll();
+   bool       failed = ( file.error() != QFileDevice::NoError );
    file.close();
 
-   return fromYaml( text, error );
+   if ( failed )
+   {
+      error = QObject::tr( "Cannot read the manifest %1" ).arg( filename );
+      return false;
+   }
+
+   return fromYaml( QString::fromUtf8( bytes ), error );
+}
+
+bool US_DataPubManifest::checkPaths( QString& error ) const
+{
+   QList< US_DataPubEntity > entities = all();
+
+   for ( int ii = 0; ii < entities.size(); ii++ )
+   {
+      const US_DataPubEntity& entity = entities[ ii ];
+      QStringList             pkeys  = entity.payloadKeys();
+      QString                 why;
+
+      for ( int jj = 0; jj < pkeys.size(); jj++ )
+      {
+         QString path = entity.field( pkeys[ jj ] );
+
+         if ( US_DataPub::isSafeRelativePath( path, &why ) )  continue;
+
+         error = QObject::tr( "%1: the %2 \"%3\" cannot be used (%4)" )
+                 .arg( entity.label() ).arg( pkeys[ jj ] ).arg( path )
+                 .arg( why );
+         return false;
+      }
+
+      if ( ! entity.filename.isEmpty()  &&
+           ! US_DataPub::isSafeFileName( entity.filename, &why ) )
+      {
+         error = QObject::tr( "%1: the filename \"%2\" cannot be used (%3)" )
+                 .arg( entity.label() ).arg( entity.filename ).arg( why );
+         return false;
+      }
+
+      QStringList runIDs;
+
+      if ( entity.type == US_DataPub::Experiment )
+         runIDs << entity.name;
+
+      if ( entity.attrs.contains( "runID" ) )
+         runIDs << entity.attrs.value( "runID" );
+
+      for ( int jj = 0; jj < runIDs.size(); jj++ )
+      {
+         if ( US_DataPub::runIdIsUsable( runIDs[ jj ] ) )  continue;
+
+         error = QObject::tr( "%1: \"%2\" cannot be a run ID: a run ID may"
+                              " hold only letters, digits, '_' and '-', at"
+                              " most 80 of them" )
+                 .arg( entity.label() ).arg( runIDs[ jj ] );
+         return false;
+      }
+   }
+
+   error.clear();
+
+   return true;
 }
 
 bool US_DataPubManifest::validate( QString& error ) const
 {
-   QList< US_DataPubEntity > entities = all();
+   QList< US_DataPubEntity >       entities = all();
+   QList< US_DataPub::EntityType > order    = orderedTypes();
+
+   if ( ! checkPaths( error ) )  return false;
 
    for ( int ii = 0; ii < entities.size(); ii++ )
    {
@@ -542,13 +763,26 @@ bool US_DataPubManifest::validate( QString& error ) const
          return false;
       }
 
+      QList< US_DataPubEntity > same = section( entity.type );
+      int                       knt  = 0;
+
+      for ( int jj = 0; jj < same.size(); jj++ )
+         if ( same[ jj ].guid == entity.guid )  knt++;
+
+      if ( knt > 1 )
+      {
+         error = QObject::tr( "%1 %2 is listed more than once" )
+                 .arg( US_DataPub::typeText( entity.type ) ).arg( entity.guid );
+         return false;
+      }
+
       QList< QString > dkeys = entity.depends.keys();
 
       for ( int jj = 0; jj < dkeys.size(); jj++ )
       {
          QString                dkey  = dkeys[ jj ];
          QString                dguid = entity.depends.value( dkey );
-         US_DataPub::EntityType dtype = US_DataPub::typeOfGuidKey( dkey );
+         US_DataPub::EntityType dtype = US_DataPubEntity::dependType( dkey );
 
          if ( dtype == US_DataPub::UnknownType )
          {
@@ -559,6 +793,15 @@ bool US_DataPubManifest::validate( QString& error ) const
          }
 
          if ( dguid.isEmpty() )  continue;
+
+         if ( order.indexOf( dtype ) >= order.indexOf( entity.type ) )
+         {
+            error = QObject::tr( "%1 \"%2\" depends on a %3, which is not"
+                                 " listed before it" )
+                    .arg( US_DataPub::typeText( entity.type ) )
+                    .arg( entity.label() ).arg( US_DataPub::typeText( dtype ) );
+            return false;
+         }
 
          if ( ! contains( dtype, dguid ) )
          {
