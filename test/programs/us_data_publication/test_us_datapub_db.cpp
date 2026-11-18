@@ -7,16 +7,16 @@
 // publish its data, so these tests are meant to be run twice: against a
 // database that has the new procedures, and against one that does not.
 //
-//   US3_TEST_DB_HOST=127.0.0.1:3306 US3_TEST_DB_NAME=us3test \
-//   US3_TEST_DB_USER=us3 US3_TEST_DB_PASS=... \
-//   US3_TEST_DB_PERSON_GUID=... US3_TEST_DB_PERSON_PW=... \
+//   US3_TEST_DB_HOST=127.0.0.1:3306 US3_TEST_DB_NAME=us3test
+//   US3_TEST_DB_USER=us3 US3_TEST_DB_PASS=...
+//   US3_TEST_DB_PERSON_GUID=... US3_TEST_DB_PERSON_PW=...
 //   US3_TEST_DB_PERSON_ID=2 ./bin/test_us_datapub
 //
 // The test about a changed investigator needs a second person to switch to,
 // and an administrator login, since only an administrator may read another
 // person's records.  Without these it skips:
 //
-//   US3_TEST_DB_ADMIN_GUID=... US3_TEST_DB_ADMIN_PW=... \
+//   US3_TEST_DB_ADMIN_GUID=... US3_TEST_DB_ADMIN_PW=...
 //   US3_TEST_DB_OTHER_ID=3
 //
 // Without those they skip, so an ordinary build needs no database.
@@ -779,4 +779,415 @@ TEST_F( DataPubDbImport, ATimeStateIsImportedWithItsDefinitions )
    EXPECT_FALSE( xdefs.isEmpty() )
       << "the record holds no field definitions";
    EXPECT_TRUE ( xdefs.contains( "TimeState" ) ) << xdefs.toStdString();
+}
+
+// ------------------------------------------- importing into a mock database
+//
+// These run without a server: the importer is handed an IUS_DB2 that the
+// fake in datapub_fake_db.h answers.  They pin down what the import does to
+// a database -- one transaction, committed once at the end and rolled back
+// on any failure; raw data and edits written through US_ConvertIO; nothing
+// written to the local disk store; a second import of the same bundle
+// writing nothing at all.
+
+#include "datapub_fake_db.h"
+
+class DataPubMockImport : public DataPubTestEnv
+{
+   protected:
+      QString       bundlePath;
+      int           savedInv = 0;
+      DataPubFakeDb fake;
+
+      void SetUp() override
+      {
+         DataPubTestEnv::SetUp();
+
+         savedInv = US_Settings::us_inv_ID();
+         US_Settings::set_us_inv_ID( 2 );
+
+         addSpeedSteps();
+
+         bundlePath = root + "/to_mock.tar.gz";
+
+         US_DataPubExporter            exporter;
+         US_DataPubExporter::Selection selection;
+         selection.fromDb = false;
+         selection.scope  = US_DataPub::ScopeNoise;
+         selection.runIDs << runID;
+
+         QString error;
+         ASSERT_TRUE( exporter.exportBundle( selection, bundlePath, error ) )
+            << error.toStdString();
+
+         fake.addHardware( "DEMO-1" );
+      }
+
+      void TearDown() override
+      {
+         US_Settings::set_us_inv_ID( savedInv );
+         DataPubTestEnv::TearDown();
+      }
+
+      // Two speed steps in the run's experiment XML
+      void addSpeedSteps()
+      {
+         QString path = runDir() + "/" + runID + "." + runType + ".xml";
+         QFile   file( path );
+         ASSERT_TRUE( file.open( QIODevice::ReadOnly ) );
+         QString text = QString::fromUtf8( file.readAll() );
+         file.close();
+
+         QString steps =
+            "<speedstep rotorspeed=\"20000\" duration_hrs=\"1\" scans=\"10\"/>"
+            "<speedstep rotorspeed=\"45000\" duration_hrs=\"5\" scans=\"40\"/>"
+            "<runTemp";
+         text.replace( "<runTemp", steps );
+
+         ASSERT_TRUE( file.open( QIODevice::WriteOnly | QIODevice::Truncate ) );
+         file.write( text.toUtf8() );
+         file.close();
+      }
+
+      US_DataPubImporter::Options dbOptions()
+      {
+         US_DataPubImporter::Options options;
+         options.target       = US_DataPub::TargetDb;
+         options.verifyHashes = true;
+         options.policy       = US_DataPub::PolicyReuse;
+
+         return options;
+      }
+
+      bool importOnce( US_DataPubImporter& importer, QString& error,
+                       const US_DataPubImporter::Options& options )
+      {
+         importer.setDatabase( fake.db() );
+
+         if ( ! importer.inspect( bundlePath, error ) )  return false;
+
+         return importer.runImport( options, error );
+      }
+
+      static int filesUnder( const QString& dir )
+      {
+         int          knt = 0;
+         QDirIterator it( dir, QDir::Files, QDirIterator::Subdirectories );
+
+         while ( it.hasNext() )
+         {
+            it.next();
+            knt++;
+         }
+
+         return knt;
+      }
+
+      US_DataPub::Resolution resolutionOf(
+            const QList< US_DataPubImporter::Result >& results,
+            US_DataPub::EntityType type )
+      {
+         for ( int ii = 0; ii < results.size(); ii++ )
+            if ( results[ ii ].type == type )  return results[ ii ].resolution;
+
+         return US_DataPub::ResolvedFailed;
+      }
+};
+
+TEST_F( DataPubMockImport, TheWholeImportIsOneTransactionCommittedAtTheEnd )
+{
+   int dataFiles   = filesUnder( US_Settings::dataDir() );
+   int resultFiles = filesUnder( US_Settings::resultDir() );
+
+   US_DataPubImporter importer;
+   QString            error;
+
+   ASSERT_TRUE( importOnce( importer, error, dbOptions() ) )
+      << error.toStdString() << "\n"
+      << importer.log().join( "\n" ).toStdString();
+
+   EXPECT_EQ( fake.begins,    1 );
+   EXPECT_EQ( fake.commits,   1 );
+   EXPECT_EQ( fake.rollbacks, 0 );
+
+   // Nothing was written after the commit
+   EXPECT_EQ( fake.commitAt, fake.log.size() );
+
+   // Every record went in: the run, its raw data through US_ConvertIO's
+   // writer (which clears the run's rows first and writes the cell rows),
+   // its edit, time state, model and noise
+   EXPECT_EQ( fake.callsOf( "new_experiment" ).size(), 1 );
+   EXPECT_EQ( fake.callsOf( "new_rawData"    ).size(), 1 );
+   EXPECT_EQ( fake.callsOf( "delete_rawData" ).size(), 1 );
+   EXPECT_EQ( fake.callsOf( "new_cell_experiment"     ).size(), 1 );
+   EXPECT_EQ( fake.callsOf( "new_experiment_solution" ).size(), 1 );
+   EXPECT_EQ( fake.callsOf( "upload_aucData"  ).size(), 1 );
+   EXPECT_EQ( fake.callsOf( "new_editedData"  ).size(), 1 );
+   EXPECT_EQ( fake.callsOf( "upload_editData" ).size(), 1 );
+   EXPECT_EQ( fake.callsOf( "new_timestate"   ).size(), 1 );
+   EXPECT_EQ( fake.callsOf( "upload_timestate" ).size(), 1 );
+   EXPECT_EQ( fake.callsOf( "new_model" ).size(), 1 );
+   EXPECT_EQ( fake.callsOf( "new_noise" ).size(), 1 );
+
+   // The speed profile of the run came along
+   EXPECT_EQ( fake.callsOf( "new_speedstep" ).size(), 2 );
+
+   // The experiment and the raw data carry their own GUIDs, and the
+   // solution its run
+   ASSERT_EQ( fake.callsOf( "new_experiment" ).size(), 1 );
+   EXPECT_EQ( fake.callsOf( "new_experiment" )[ 0 ].value( 1 ), expGUID );
+   EXPECT_EQ( fake.callsOf( "new_rawData" )[ 0 ].value( 1 ), rawGUID );
+
+   QString expID = QString::number(
+                   fake.registry[ "experiment" ].value( expGUID ) );
+   ASSERT_EQ( fake.callsOf( "new_solution" ).size(), 1 );
+   EXPECT_EQ( fake.callsOf( "new_solution" )[ 0 ].value( 6 ), expID );
+
+   // The local disk store was left alone
+   EXPECT_EQ( filesUnder( US_Settings::dataDir()   ), dataFiles   );
+   EXPECT_EQ( filesUnder( US_Settings::resultDir() ), resultFiles );
+   EXPECT_FALSE( fake.log.contains( "get_lab_names" )
+                 &&  QFile::exists( US_Settings::dataDir()
+                                    + "/rotors/labs.xml" ) );
+
+   EXPECT_TRUE( importer.outcome().contains( "written" ) )
+      << importer.outcome().toStdString();
+}
+
+// A failure part way through undoes everything: nothing is committed
+TEST_F( DataPubMockImport, AFailureMidImportRollsBack )
+{
+   fake.failOn = "upload_aucData";
+
+   US_DataPubImporter importer;
+   QString            error;
+
+   EXPECT_FALSE( importOnce( importer, error, dbOptions() ) );
+
+   EXPECT_EQ( fake.begins,    1 );
+   EXPECT_EQ( fake.commits,   0 );
+   EXPECT_EQ( fake.rollbacks, 1 );
+   EXPECT_GT( fake.callsOf( "new_experiment" ).size(), 0 )
+      << "the failure came after the first writes";
+   EXPECT_TRUE( importer.outcome().contains( "rolled back" ) )
+      << importer.outcome().toStdString();
+}
+
+TEST_F( DataPubMockImport, AFailedNoiseWriteRollsBackTheWholeRun )
+{
+   fake.failOn = "new_noise";
+
+   US_DataPubImporter importer;
+   QString            error;
+
+   EXPECT_FALSE( importOnce( importer, error, dbOptions() ) );
+   EXPECT_EQ   ( fake.commits,   0 );
+   EXPECT_EQ   ( fake.rollbacks, 1 );
+}
+
+// A lookup that fails is not taken for "not there": that would create a
+// duplicate of a record the target has
+TEST_F( DataPubMockImport, AFailedLookupFailsTheImport )
+{
+   fake.failOn = "get_bufferID";
+
+   US_DataPubImporter importer;
+   QString            error;
+
+   EXPECT_FALSE( importOnce( importer, error, dbOptions() ) );
+   EXPECT_TRUE ( error.contains( "could not be asked" ) ) << error.toStdString();
+   EXPECT_EQ   ( fake.callsOf( "new_buffer" ).size(), 0 );
+   EXPECT_EQ   ( fake.commits, 0 );
+}
+
+// The same bundle imported twice: the second import recognises every
+// record, the experiment included, and writes nothing
+TEST_F( DataPubMockImport, ASecondImportWritesNothing )
+{
+   QString error;
+
+   {
+      US_DataPubImporter first;
+      ASSERT_TRUE( importOnce( first, error, dbOptions() ) )
+         << error.toStdString();
+   }
+
+   int writes = fake.writes();
+
+   US_DataPubImporter second;
+   ASSERT_TRUE( importOnce( second, error, dbOptions() ) )
+      << error.toStdString();
+
+   EXPECT_EQ( fake.writes(), writes )
+      << fake.log.mid( fake.commitAt ).join( " " ).toStdString();
+
+   QList< US_DataPubImporter::Result > results = second.results();
+   QList< US_DataPub::EntityType > types;
+   types << US_DataPub::Project << US_DataPub::Buffer << US_DataPub::Analyte
+         << US_DataPub::Solution << US_DataPub::Experiment
+         << US_DataPub::RawData << US_DataPub::EditedData
+         << US_DataPub::TimeState << US_DataPub::Model << US_DataPub::Noise;
+
+   for ( int ii = 0; ii < types.size(); ii++ )
+      EXPECT_EQ( resolutionOf( results, types[ ii ] ),
+                 US_DataPub::ResolvedReused )
+         << US_DataPub::typeText( types[ ii ] ).toStdString();
+}
+
+// Hardware the target lacks is stood in for, and said so -- or, when the
+// import is strict about it, the import fails and nothing is kept
+TEST_F( DataPubMockImport, HardwareSubstitutionIsAWarningOrAFailure )
+{
+   QString error;
+
+   {
+      US_DataPubImporter importer;
+      ASSERT_TRUE( importOnce( importer, error, dbOptions() ) )
+         << error.toStdString();
+
+      // The calibration's rotor, the centerpiece and the operator are not
+      // in the target
+      EXPECT_FALSE( importer.warnings().isEmpty() );
+      EXPECT_EQ( resolutionOf( importer.results(),
+                               US_DataPub::RotorCalibration ),
+                 US_DataPub::ResolvedOmitted );
+
+      for ( int ii = 0; ii < importer.results().size(); ii++ )
+      {
+         US_DataPubImporter::Result result = importer.results()[ ii ];
+
+         if ( result.type != US_DataPub::Centerpiece  &&
+              result.type != US_DataPub::RotorCalibration )
+            continue;
+
+         // Hardware is matched or stood in for, never reported as created
+         EXPECT_NE( result.resolution, US_DataPub::ResolvedCreated )
+            << result.name.toStdString();
+      }
+   }
+}
+
+TEST_F( DataPubMockImport, AStrictImportRefusesSubstitutes )
+{
+   US_DataPubImporter          importer;
+   US_DataPubImporter::Options options = dbOptions();
+   options.strictHardware = true;
+   QString                     error;
+
+   EXPECT_FALSE( importOnce( importer, error, options ) );
+   EXPECT_TRUE ( error.contains( "substitutions are not allowed" ) )
+      << error.toStdString();
+   EXPECT_EQ   ( fake.commits, 0 );
+}
+
+// The calibration whose rotor the target has is created under that rotor,
+// and the run records the target's rotor and lab, not the source's
+TEST_F( DataPubMockImport, AKnownRotorTakesTheCalibration )
+{
+   US_DataPubImporter probe;
+   QString            error;
+   ASSERT_TRUE( probe.inspect( bundlePath, error ) );
+
+   QList< US_DataPubEntity > cals =
+         probe.manifest().section( US_DataPub::RotorCalibration );
+   ASSERT_EQ( cals.size(), 1 );
+   fake.registry[ "rotor" ].insert( cals[ 0 ].attrs.value( "rotorGUID" ), 3 );
+
+   US_DataPubImporter importer;
+   ASSERT_TRUE( importOnce( importer, error, dbOptions() ) )
+      << error.toStdString();
+
+   ASSERT_EQ( fake.callsOf( "add_rotor_calibration" ).size(), 1 );
+   EXPECT_EQ( fake.callsOf( "add_rotor_calibration" )[ 0 ].value( 1 ), "3" );
+
+   QStringList exp = fake.callsOf( "new_experiment" ).value( 0 );
+   EXPECT_EQ( exp.value( 4 ), "1" );    // the target's lab
+   EXPECT_EQ( exp.value( 5 ), "5" );    // its instrument, by serial
+   EXPECT_EQ( exp.value( 7 ), "3" );    // its rotor
+   EXPECT_EQ( exp.value( 8 ),
+              QString::number( fake.registry[ "calibration" ]
+                               .value( cals[ 0 ].guid ) ) );
+}
+
+// A chosen project has to be the current investigator's
+TEST_F( DataPubMockImport, AProjectOfAnotherInvestigatorIsRefused )
+{
+   QString theirs = US_Util::new_guid();
+   fake.registry[ "project" ].insert( theirs, 77 );
+   fake.canned.insert( "get_project_desc", QList< QVariantList >()
+                       << ( QVariantList() << 12 << "Mine" ) );
+
+   US_DataPubImporter          importer;
+   US_DataPubImporter::Options options = dbOptions();
+   options.projectGUID = theirs;
+   QString                     error;
+
+   EXPECT_FALSE( importOnce( importer, error, options ) );
+   EXPECT_TRUE ( error.contains( "does not belong" ) ) << error.toStdString();
+   EXPECT_EQ   ( fake.begins, 0 );
+}
+
+// A dry run reads, and neither opens a transaction nor writes
+TEST_F( DataPubMockImport, ADryRunWritesNothing )
+{
+   US_DataPubImporter          importer;
+   US_DataPubImporter::Options options = dbOptions();
+   options.dryRun = true;
+   QString                     error;
+
+   ASSERT_TRUE( importOnce( importer, error, options ) ) << error.toStdString();
+   EXPECT_EQ( fake.begins,   0 );
+   EXPECT_EQ( fake.writes(), 0 );
+}
+
+// A run ID the target already uses for another run: the run is imported
+// under a usable new ID, and its raw data and edit are filed under it
+TEST_F( DataPubMockImport, ARunOfATakenIdIsRenamedWithItsData )
+{
+   fake.experiments.insert( 50, qMakePair( US_Util::new_guid(), runID ) );
+
+   US_DataPubImporter importer;
+   QString            error;
+
+   ASSERT_TRUE( importOnce( importer, error, dbOptions() ) )
+      << error.toStdString();
+
+   QString newRun = runID + "-imported";
+
+   ASSERT_EQ( fake.callsOf( "new_experiment" ).size(), 1 );
+   EXPECT_EQ( fake.callsOf( "new_experiment" )[ 0 ].value( 3 ), newRun );
+
+   ASSERT_EQ( fake.callsOf( "new_rawData" ).size(), 1 );
+   EXPECT_EQ( fake.callsOf( "new_rawData" )[ 0 ].value( 3 ),
+              newRun + rawFile.mid( runID.size() ) );
+
+   ASSERT_EQ( fake.callsOf( "new_editedData" ).size(), 1 );
+   EXPECT_EQ( fake.callsOf( "new_editedData" )[ 0 ].value( 3 ), newRun );
+   EXPECT_EQ( fake.callsOf( "new_editedData" )[ 0 ].value( 4 ),
+              newRun + editFile.mid( runID.size() ) );
+
+   ASSERT_EQ( fake.callsOf( "new_timestate" ).size(), 1 );
+   EXPECT_TRUE( fake.callsOf( "new_timestate" )[ 0 ].value( 2 )
+                .startsWith( newRun + "." ) );
+
+   // and the run that was there is not the one the import used
+   EXPECT_EQ( resolutionOf( importer.results(), US_DataPub::Experiment ),
+              US_DataPub::ResolvedRenamed );
+}
+
+// The same run under the same GUID is recognised although no procedure
+// looks an experiment up by its GUID
+TEST_F( DataPubMockImport, TheSameRunIsRecognisedByItsGuid )
+{
+   fake.experiments.insert( 50, qMakePair( expGUID, QString( "renamed_before" ) ) );
+
+   US_DataPubImporter importer;
+   QString            error;
+
+   // Its raw data is not in this target, and the import does not add data
+   // to a run it did not create
+   EXPECT_FALSE( importOnce( importer, error, dbOptions() ) );
+   EXPECT_TRUE ( error.contains( "did not create" ) ) << error.toStdString();
+   EXPECT_EQ   ( fake.callsOf( "new_experiment" ).size(), 0 );
+   EXPECT_EQ   ( fake.rollbacks, 1 );
 }

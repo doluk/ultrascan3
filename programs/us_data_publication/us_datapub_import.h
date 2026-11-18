@@ -7,8 +7,10 @@
 #include "us_datapub_defs.h"
 #include "us_datapub_manifest.h"
 #include "us_datapub_bundle.h"
-#include "us_db2.h"
+#include "ius_db2.h"
 #include "us_experiment.h"
+#include "us_convertio.h"
+#include "us_project.h"
 
 /*! \class US_DataPubConflictResolver
     \brief Asked what to do when an import runs into a name conflict
@@ -29,7 +31,9 @@ class US_DataPubConflictResolver
           \param name      The name that is already taken in the target
           \param identical True when the two records have the same properties
           \param details   A description of how the records differ
-          \param newName   The suggested new name; may be changed
+          \param newName   The suggested new name; may be changed.  A run ID
+                           has to pass \ref US_DataPubImporter::runIdIsUsable
+                           or the import stops.
           \returns The policy to apply to this one conflict.  Returning
                    \ref US_DataPub::PolicyReuse when \a identical is false is
                    treated as \ref US_DataPub::PolicyRename, because reusing a
@@ -38,6 +42,10 @@ class US_DataPubConflictResolver
       virtual US_DataPub::ConflictPolicy resolve(
             US_DataPub::EntityType type, const QString& name,
             bool identical, const QString& details, QString& newName ) = 0;
+
+      //! \brief True when the last \ref US_DataPub::PolicyFail answer means
+      //!        the user cancelled, rather than chose to fail
+      virtual bool cancelled( void ) const { return false; }
 };
 
 /*! \class US_DataPubImporter
@@ -45,10 +53,23 @@ class US_DataPubConflictResolver
 
     The importer reads the manifest in dependency order and re-creates every
     record it names.  Numeric IDs are never carried over: the database
-    allocates its own, and the GUIDs in the bundle are what ties a record to
+    allocates its own, a disk store gets -1 or the ID of the target record
+    the import resolved, and the GUIDs in the bundle are what ties a record to
     its parents.  When a record has to be pointed at an existing record of a
-    different GUID, the GUID map records the substitution so that everything
-    depending on it follows along.
+    different GUID, the GUID map records the substitution, and every payload
+    that names that record is rewritten to name the target's instead.
+
+    Before anything is written the bundle is checked as a whole: every path
+    in the manifest has to stay inside the bundle, every run ID has to be a
+    usable one, every payload has to parse as its record type and carry the
+    GUID the manifest gives it, and every record a solution, model or noise
+    record names has to be in the bundle or in the target.
+
+    A database import runs in one transaction on one connection: it is
+    committed only when every record is in, and rolled back on any failure.
+    It writes nothing outside the bundle's own staging directory.  A disk
+    import writes files as it goes; on a failure the files already written
+    stay, and \ref outcome lists them.
 */
 class US_DataPubImporter : public QObject
 {
@@ -73,7 +94,9 @@ class US_DataPubImporter : public QObject
                 receiving installation usually has projects of its own, so
                 an import can be told which one to attach the data to.  The
                 bundle's own project record is then reused rather than
-                created.  Empty means the bundle decides, as before.
+                created.  Empty means the bundle decides, as before.  In a
+                database the project has to belong to the current
+                investigator.
             */
             QString projectGUID;
 
@@ -84,8 +107,21 @@ class US_DataPubImporter : public QObject
             QMap< int, US_DataPub::ConflictPolicy > typePolicies;
 
             bool    dryRun;                //!< Decide everything, write nothing
-            bool    verifyHashes;          //!< Check payload digests first
+
+            /*! Check every payload against its digest first.  A payload
+                without a digest fails the check; switching it off is the
+                only way to import such a bundle.
+            */
+            bool    verifyHashes;
+
             QString renameSuffix;          //!< Suffix for auto-renamed records
+
+            /*! Refuse to stand a different target record in for hardware
+                the target does not have (rotor, calibration, centerpiece,
+                instrument, operator), instead of substituting it with a
+                warning.
+            */
+            bool    strictHardware;
 
             //! \brief The policy that applies to one record type
             //! \param type The record type to look up
@@ -118,10 +154,11 @@ class US_DataPubImporter : public QObject
       //! \brief Destroy the importer and its unpacked bundle
       ~US_DataPubImporter();
 
-      /*! \brief Unpack a bundle and read its manifest
+      /*! \brief Unpack a bundle, read its manifest and check its paths
           \param bundlePath The full path of the .tar.gz to read
           \param error      Filled in with a message when the bundle is bad
-          \returns True when the bundle was unpacked and its manifest parsed
+          \returns True when the bundle was unpacked, its manifest parsed
+                   and every path and run ID in it is acceptable
       */
       bool inspect( const QString& bundlePath, QString& error );
 
@@ -132,7 +169,8 @@ class US_DataPubImporter : public QObject
       QString bundleRoot( void ) const;
 
       /*! \brief Check every payload against the digest in the manifest
-          \returns One message per missing or altered payload; empty when
+          \returns One message per missing, undigested or altered payload,
+                   including a time state's field definitions; empty when
                    the bundle is intact
       */
       QStringList verifyPayloads( void ) const;
@@ -140,6 +178,16 @@ class US_DataPubImporter : public QObject
       //! \brief Use this resolver instead of the conflict policy
       //! \param resolver The resolver to ask, or null to use the policy
       void setResolver( US_DataPubConflictResolver* resolver );
+
+      /*! \brief Import into this database connection instead of opening one
+
+          The connection stays the caller's: the importer neither connects
+          nor deletes it, and \ref Options::dbPassword is not used.  The
+          import still runs in a transaction of its own on it, so the
+          connection must not have one open.
+          \param db The connection to use, or null to open one per import
+      */
+      void setDatabase( IUS_DB2* db );
 
       //! \brief Replay the inspected bundle into the target
       //! \param options How the import should behave
@@ -152,6 +200,30 @@ class US_DataPubImporter : public QObject
 
       //! \brief The messages of the last import
       QStringList log( void ) const;
+
+      //! \brief The substitutions and omissions of the last import
+      QStringList warnings( void ) const;
+
+      /*! \brief What the last import left in the target
+
+          After a success, a count of what was written.  After a failure,
+          whether anything was written: a database import says that its
+          transaction was rolled back (or that the rollback failed), a disk
+          import lists the files it had already written.
+      */
+      QString outcome( void ) const;
+
+      /*! \brief True when a run ID can be used as one
+
+          Letters, digits, the underscore and the hyphen, at most 80 of them:
+          the rule US_ConvertIO applies to run directories.  A run ID ends up
+          in directory and file names, so anything else is refused.
+      */
+      static bool runIdIsUsable( const QString& runID );
+
+      //! \brief A human readable description of an import resolution,
+      //!        including the ones this importer adds
+      static QString resolutionText( US_DataPub::Resolution resolution );
 
    signals:
       //! \brief A human readable note about the import's progress
@@ -171,8 +243,15 @@ class US_DataPubImporter : public QObject
       US_DataPubBundle           bundle;
       US_DataPubConflictResolver* resolver;
       Options                    opts;
-      US_DB2*                    dbase;
+      IUS_DB2*                   dbase;
+      IUS_DB2*                   ext_db;     // A connection the caller owns
+      bool                       own_db;     // dbase is ours to delete
+      bool                       in_txn;     // A transaction is open
       QStringList                logtext;
+      QStringList                warnlist;
+      QStringList                disk_written;
+      QString                    outcome_text;
+      QString                    lookup_error;
       QList< Result >            reslist;
       int                        step_count;
 
@@ -200,23 +279,61 @@ class US_DataPubImporter : public QObject
       //! The name indexes read so far, one per record type
       QMap< int, QHash< QString, Named > > held_names;
 
+      //! Database experiments by GUID: GUID -> ( ID, run ID )
+      QHash< QString, QPair< QString, QString > > exp_by_guid;
+      bool                       exp_indexed;
+
+      //! Bundle experiments this import created, as opposed to reused
+      QSet< QString >            created_exps;
+
+      //! Runs staged for a database import: bundle experiment GUID -> run
+      QMap< QString, QSharedPointer< US_ConvertIO::DiskRun > > staged_runs;
+
+      //! Raw data a database import wrote: bundle GUID -> rawData ID
+      QMap< QString, QString >   raw_written;
+
       bool    openTarget ( QString& error );
       void    closeTarget( void );
+
+      bool    beginWrite ( QString& error );
+      bool    commitWrite( QString& error );
+      void    abortWrite ( const QString& error );
 
       //! \brief Look up the project the import was told to use
       //! \param error Filled in when the target does not have it
       bool    findTargetProject( QString& error );
       void    note       ( const QString& );
 
+      //! \brief Record a substitution or omission; fails when strict
+      bool    warn       ( const QString& text, QString& error );
+
+      //! \brief Whether the last database lookup failed outright
+      bool    lookupFailed( const QString& what );
+
+      // ---- checking the bundle -------------------------------------------
+      bool    checkBundle ( QString& error ) const;
+      bool    insideBundle( const QString& relPath, QString& absPath,
+                            QString& error ) const;
+      bool    preflight   ( QString& error );
+      bool    checkPayload( const US_DataPubEntity&, QString& error );
+      bool    availableAs ( US_DataPub::EntityType, const QString& guid,
+                            QString& error );
+
       QString payloadPath( const US_DataPubEntity& ) const;
       QString workCopy   ( const US_DataPubEntity&, QString& error );
+      bool    rewriteWork( const US_DataPubEntity&, const QString& workPath,
+                           QString& error );
 
       bool    importEntity( const US_DataPubEntity&, QString& error );
+      bool    importCenterpiece( const US_DataPubEntity&, QString& error );
 
       bool    findByGuid( US_DataPub::EntityType, const QString& guid,
                           QString& id, QString& name );
       bool    findByName( US_DataPub::EntityType, const QString& name,
                           QString& guid, QString& id );
+
+      //! \brief Read the database's experiments into the GUID index
+      void    indexExperiments( void );
 
       /*! \brief The names of one record type that the target already holds
 
@@ -253,6 +370,10 @@ class US_DataPubImporter : public QObject
                                  const QString& id );
       QString uniqueName( US_DataPub::EntityType, const QString& name );
 
+      //! \brief The name a record goes by in the target before conflicts:
+      //!        a model or noise record named after a renamed run follows it
+      QString targetName( const US_DataPubEntity& ) const;
+
       bool    createRecord( const US_DataPubEntity&, const QString& workPath,
                             const QString& name, QString& newID,
                             QString& error );
@@ -271,6 +392,16 @@ class US_DataPubImporter : public QObject
                             const QString& name, QString& newID,
                             QString& error );
 
+      // ---- database writers ---------------------------------------------
+      bool    createProjectDb   ( US_Project&, QString& error );
+      bool    createExperimentDb( const US_DataPubEntity&, const QString& workPath,
+                                  const QString& name, QString& newID,
+                                  QString& error );
+      bool    createSolutionDb  ( const US_DataPubEntity&, const QString& workPath,
+                                  const QString& name, QString& newID,
+                                  QString& error );
+      bool    writeRunRawData   ( const QString& expGUID, QString& error );
+
       QString diskDir      ( US_DataPub::EntityType, bool create = false ) const;
       QString diskResultDir( const QString& runID, bool create = false ) const;
 
@@ -285,7 +416,8 @@ class US_DataPubImporter : public QObject
       QList< US_DataPub::EntityType > importOrder( void ) const;
       QString runIdFor    ( const US_DataPubEntity& ) const;
       QString renamedFile ( const US_DataPubEntity& ) const;
-      bool    resolveHardware( US_Experiment&, const US_DataPubEntity& );
+      bool    resolveHardware( US_Experiment&, const US_DataPubEntity&,
+                               QString& error );
 
       QString mappedGuid  ( const QString& guid ) const;
       QString mappedId    ( const QString& guid ) const;

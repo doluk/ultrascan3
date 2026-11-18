@@ -52,6 +52,7 @@ target_include_directories(test_us_datapub
         ${datapub_dir}
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_SOURCE_DIR}/test/common
+        ${CMAKE_SOURCE_DIR}/test/utils/mock
         ${CMAKE_SOURCE_DIR}/utils
         ${CMAKE_BINARY_DIR}
         )

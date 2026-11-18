@@ -75,7 +75,9 @@ namespace US_DataPub
       ResolvedReused,       //!< An existing, matching record is used instead
       ResolvedRenamed,      //!< A new record was created under a new name
       ResolvedSkipped,      //!< Nothing was done (dry run)
-      ResolvedFailed        //!< The record could not be imported
+      ResolvedFailed,       //!< The record could not be imported
+      ResolvedSubstituted,  //!< A different record of the target stands in
+      ResolvedOmitted       //!< Not imported; the target lacks what it needs
    };
 
    //! \brief The manifest section name of a record type ("rawData", ...)
