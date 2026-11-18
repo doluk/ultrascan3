@@ -79,6 +79,7 @@ TEST_F( DataPubBundle, UnpackingSomethingElseFails )
 
    EXPECT_FALSE( bundle.unpack( path, error ) );
    EXPECT_FALSE( error.isEmpty() );
+   EXPECT_TRUE ( bundle.stagingPath().isEmpty() );
 }
 
 TEST_F( DataPubBundle, StagingIsRemovedOnCleanup )
@@ -264,5 +265,24 @@ TEST_F( DataPubBundle, ABundleThatWritesOutsideItselfIsRefused )
 
    EXPECT_FALSE( bundle.unpack( path, error ) );
    EXPECT_FALSE( error.isEmpty() );
+   EXPECT_TRUE ( bundle.stagingPath().isEmpty() );
+}
+
+TEST_F( DataPubBundle, AnArchiveWithoutAManifestLeavesNothingBehind )
+{
+   QByteArray tar = tar_entry( "readme.txt", "no manifest here" )
+                    + QByteArray( 1024, '\0' );
+
+   QString path = root + "/nomanifest.tar";
+   QFile   file( path );
+   ASSERT_TRUE( file.open( QIODevice::WriteOnly ) );
+   file.write( tar );
+   file.close();
+
+   US_DataPubBundle bundle;
+   QString          error;
+
+   EXPECT_FALSE( bundle.unpack( path, error ) );
+   EXPECT_TRUE ( error.contains( "holds no" ) ) << error.toStdString();
    EXPECT_TRUE ( bundle.stagingPath().isEmpty() );
 }

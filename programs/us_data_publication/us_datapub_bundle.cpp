@@ -372,6 +372,7 @@ bool US_DataPubBundle::unpack( const QString& archivePath, QString& error )
    if ( ! archive.extract( archivePath, staging ) )
    {
       error = archive.getError();
+      cleanup();     // Leave nothing of a refused or broken bundle behind
       return false;
    }
 
@@ -410,6 +411,7 @@ bool US_DataPubBundle::unpack( const QString& archivePath, QString& error )
 
    error = QObject::tr( "The bundle %1 holds no %2" )
            .arg( archivePath ).arg( manifestName() );
+   cleanup();
 
    return false;
 }
