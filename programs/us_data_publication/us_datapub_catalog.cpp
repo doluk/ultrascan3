@@ -246,7 +246,7 @@ bool US_DataPubCatalog::open( bool fromDb, const QString& dbPassword,
       return false;
    }
 
-   dbase  = cat->db();
+   dbase  = dynamic_cast< US_DB2* >( cat->db() );   // open() made a US_DB2
    inv_id = cat->investigatorID();
 
    error.clear();
