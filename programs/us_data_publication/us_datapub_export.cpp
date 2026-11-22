@@ -934,7 +934,7 @@ bool US_DataPubExporter::readExperimentDb(
       QString& error )
 {
    int status = exper.readFromDB( run.runID, catalog.db(), speedsteps,
-                                  QString(), false );
+                                  QString(), false, false );
 
    if ( status != IUS_DB2::OK )
    {

@@ -1674,6 +1674,36 @@ TEST_F( DataPubExportSteps, TheRIProfileIsNotCachedInTheResultsDirectory )
    EXPECT_TRUE( content.contains( "0.625" ) );
 }
 
+// A database run whose record names no calibration is staged without one:
+// the export does not let the experiment reader take the rotor's first
+TEST_F( DataPubExportSteps, AnUncalibratedRunIsNotGivenTheRotorsFirstCalibration )
+{
+   QVariantList row = experimentRow( "RA", QString() );
+   row[ 7 ] = 0;                                   // rotorCalibrationID
+   sdb.rows.insert( "get_experiment_info_by_runID",
+                    QList< QVariantList >() << row );
+   sdb.rows.insert( "get_rotor_calibration_profiles", QList< QVariantList >()
+                    << ( QVariantList() << 99 << "first calibration" ) );
+
+   US_DataPubCatalog::Run run = dbRun();
+   run.raws.clear();
+
+   QString error;
+   ASSERT_TRUE( US_DataPubExporterTest::addExperiment( exporter, run, error ) )
+      << error.toStdString();
+
+   EXPECT_FALSE( sdb.asked.contains( "get_rotor_calibration_profiles" ) )
+      << sdb.asked.join( ", " ).toStdString();
+
+   US_DataPubEntity exper;
+   ASSERT_TRUE( exporter.manifest().entity( US_DataPub::Experiment, expGUID,
+                                            exper ) );
+   QFile staged( US_DataPubExporterTest::staged( exporter, exper.payload ) );
+   ASSERT_TRUE( staged.open( QIODevice::ReadOnly ) );
+   QByteArray xml = staged.readAll();
+   EXPECT_FALSE( xml.contains( "\"99\"" ) ) << xml.constData();
+}
+
 // An experiment exported without its solutions does not need them
 TEST_F( DataPubExportSteps, AnExperimentAloneNeedsNoSolutions )
 {
