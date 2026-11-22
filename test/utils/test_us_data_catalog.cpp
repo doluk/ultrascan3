@@ -996,3 +996,105 @@ TEST_F( TestUSDataCatalog, DatesAreInTheCatalogsOneForm )
       << run.raws[ 0 ].lastUpdated.toStdString();
    EXPECT_TRUE( form.match( run.raws[ 0 ].edits[ 0 ].models[ 0 ].lastUpdated ).hasMatch() );
 }
+
+// ------------------------------------------------- the second review
+
+// A store with no run in it is still read by loadAll: its edits, models and
+// noise records are all orphans, and loadAll used to return at once
+TEST_F( TestUSDataCatalog, AStoreWithNoRunIsAllOrphans )
+{
+   QDir( runDir( runOne ) ).removeRecursively();
+   QDir( runDir( runTwo ) ).removeRecursively();
+
+   QString bareEdit = US_Util::new_guid();
+   writeEdit( runDir( "Bare_run" ) + "/Bare_run.2401011700.RA.1.A.280.xml",
+              bareEdit, US_Util::new_guid() );
+
+   US_DataCatalog catalog;
+   QString        error;
+   ASSERT_TRUE( catalog.open( US_DataCatalog::Disk, QString(), error ) );
+   ASSERT_TRUE( catalog.loadRuns( error ) );
+   ASSERT_EQ  ( catalog.runCount(), 0 );
+
+   ASSERT_TRUE( catalog.loadAll( error ) ) << error.toStdString();
+
+   const US_DataCatalog::Orphans& orphans = catalog.orphans();
+   ASSERT_EQ( orphans.edits.size(), 1 );
+   EXPECT_EQ( orphans.edits[ 0 ].guid, bareEdit );
+   EXPECT_EQ( orphans.models.size(), 2 );     // the fixture's two models
+   EXPECT_TRUE( orphans.noises.isEmpty() );   // its noise is under its model
+
+   int noises = 0;
+   for ( const US_DataCatalog::Model& mm : orphans.models )
+      noises += mm.noises.size();
+   EXPECT_EQ( noises, 1 );
+
+   // and with nothing in the store at all, there is nothing
+   QDir( US_Settings::dataDir()   ).removeRecursively();
+   QDir( US_Settings::resultDir() ).removeRecursively();
+   QDir().mkpath( US_Settings::resultDir() );
+   ASSERT_TRUE( catalog.loadRuns( error ) );
+   ASSERT_TRUE( catalog.loadAll ( error ) ) << error.toStdString();
+   EXPECT_TRUE( catalog.orphans().isEmpty() );
+}
+
+// Where the file system does not tell "RunA" from "runA" neither does the
+// catalog: the directory is the run's, and the files are found whatever
+// the case of their suffix.  Where it does, the names must match.
+TEST_F( TestUSDataCatalog, FileNamesCompareAsTheFileSystemDoes )
+{
+   const QString runID = "Case_run";
+   QString       dir   = runDir( "case_RUN" );
+   QString       raw   = US_Util::new_guid();
+
+   writeAuc ( dir + "/" + runID + ".RA.1.A.280.AUC", raw, "upper case suffix" );
+   writeEdit( dir + "/" + runID + ".2401011200.RA.1.A.280.XML",
+              US_Util::new_guid(), raw );
+
+   for ( Qt::CaseSensitivity cs : { Qt::CaseInsensitive, Qt::CaseSensitive } )
+   {
+      SCOPED_TRACE( cs == Qt::CaseInsensitive ? "insensitive" : "sensitive" );
+
+      US_DataCatalog catalog;
+      QString        error;
+      catalog.setFileNameCase( cs );
+      EXPECT_EQ( catalog.fileNameCase(), cs );
+      ASSERT_TRUE( catalog.open( US_DataCatalog::Disk, QString(), error ) );
+      ASSERT_TRUE( catalog.loadRuns( error ) );
+
+      int index = catalog.indexOfRun( runID );
+
+      if ( cs == Qt::CaseSensitive )
+      {  // ".AUC" is not ".auc" here, so there is no run in that directory
+         EXPECT_LT( index, 0 );
+         continue;
+      }
+
+      ASSERT_GE  ( index, 0 );
+      EXPECT_TRUE( catalog.run( index ).usable ) << catalog.run( index ).problem.toStdString();
+
+      ASSERT_TRUE( catalog.loadRunDetail( index, error ) ) << error.toStdString();
+      ASSERT_EQ  ( catalog.run( index ).raws.size(), 1 );
+      EXPECT_EQ  ( catalog.run( index ).raws[ 0 ].edits.size(), 1 );
+   }
+
+   // with exact names, a directory that differs from its run only in case
+   // is still not the run's own
+   QString dir2 = runDir( "other_RUN" );
+   writeAuc( dir2 + "/Other_run.RA.1.A.280.auc", US_Util::new_guid(), "x" );
+
+   US_DataCatalog exact;
+   QString        error;
+   exact.setFileNameCase( Qt::CaseSensitive );
+   ASSERT_TRUE( exact.open( US_DataCatalog::Disk, QString(), error ) );
+   ASSERT_TRUE( exact.loadRuns( error ) );
+   ASSERT_GE  ( exact.indexOfRun( "Other_run" ), 0 );
+   EXPECT_FALSE( exact.run( exact.indexOfRun( "Other_run" ) ).usable );
+
+   US_DataCatalog folded;
+   folded.setFileNameCase( Qt::CaseInsensitive );
+   ASSERT_TRUE( folded.open( US_DataCatalog::Disk, QString(), error ) );
+   ASSERT_TRUE( folded.loadRuns( error ) );
+   ASSERT_GE  ( folded.indexOfRun( "Other_run" ), 0 );
+   EXPECT_TRUE( folded.run( folded.indexOfRun( "Other_run" ) ).usable );
+}

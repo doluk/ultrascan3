@@ -149,8 +149,11 @@ void US_DiskScan::run( void )
       switch ( current )
       {
          case JobList:
-            done = cat->open( US_DataCatalog::Disk, QString(), message )
-                   &&  cat->loadRuns( guid, message );
+            // Not open(): that starts the catalog afresh, and a listing that
+            // then fails or is cancelled would leave it empty.  The catalog
+            // reads the local store from the start, and loadRuns() keeps
+            // the last listing when it cannot make a new one.
+            done = cat->loadRuns( guid, message );
             break;
 
          case JobChain:

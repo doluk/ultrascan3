@@ -108,3 +108,100 @@ TEST_F( ExperimentRiCache, AReadOnlyCallerLeavesTheResultsDirectoryAlone )
    EXPECT_FALSE( QFile::exists( profile ) );
    EXPECT_EQ   ( xml.count( "<RI " ), 2 ) << xml.toStdString();
 }
+
+// ------------------------------------------------- the rotor calibration
+
+namespace
+{
+// A server with one experiment of rotor 5 that names no calibration, and a
+// rotor whose first calibration is 44
+class CalibrationServer
+{
+   public:
+      QString     proc;
+      int         row = -1;
+      QStringList calls;
+
+      QList< QVariantList > rows( void ) const
+      {
+         if ( proc == "get_experiment_info_by_runID" )
+         {
+            QVariantList r;
+            while ( r.size() < 17 )  r << QVariant( QString( "0" ) );
+            r[ 1 ]  = 31;           // experimentID
+            r[ 6 ]  = 5;            // rotorID
+            r[ 7 ]  = 0;            // rotorCalibrationID: none recorded
+            r[ 15 ] = "RA";
+            r[ 16 ] = "";
+            return QList< QVariantList >() << r;
+         }
+
+         if ( proc == "get_rotor_calibration_profiles" )
+            return QList< QVariantList >() << ( QVariantList() << 44 );
+
+         if ( proc == "get_rotor_calibration_info" )
+            return QList< QVariantList >() << ( QVariantList() << 44 << "" << "" << ""
+                                                << "1.5e-4" << "2.5e-8" << "" << "2020-01-02 03:04:05" );
+
+         return QList< QVariantList >();
+      }
+
+      void wire( NiceMock<US_DB2_Mock>& db )
+      {
+         ON_CALL( db, isConnected() ).WillByDefault( Return( true ) );
+         ON_CALL( db, lastErrno() ).WillByDefault( Return( IUS_DB2::OK ) );
+         ON_CALL( db, query( An<const QStringList&>() ) )
+            .WillByDefault( Invoke( [ this ]( const QStringList& q )
+            {
+               proc = q.value( 0 );
+               row  = -1;
+               calls << proc;
+            } ) );
+         ON_CALL( db, next() )
+            .WillByDefault( Invoke( [ this ]() { return ++row < rows().size(); } ) );
+         ON_CALL( db, value( _ ) )
+            .WillByDefault( Invoke( [ this ]( unsigned ii ) -> QVariant
+            {
+               QList< QVariantList > all = rows();
+               if ( row < 0  ||  row >= all.size() )  return QVariant();
+               return all[ row ].value( int( ii ) );
+            } ) );
+      }
+};
+}
+
+// Programs that analyse or save a run have always been given the rotor's
+// first calibration when the experiment names none
+TEST( ExperimentCalibration, TheRotorsFirstCalibrationIsTakenByDefault )
+{
+   NiceMock<US_DB2_Mock>    db;
+   CalibrationServer        server;
+   US_Experiment            experiment;
+   QVector<SP_SPEEDPROFILE> speedsteps;
+   server.wire( db );
+
+   ASSERT_EQ( experiment.readFromDB( "Cal_run", &db, speedsteps, "17", false ), IUS_DB2::OK );
+   EXPECT_EQ( experiment.calibrationID, 44 );
+   EXPECT_FLOAT_EQ( experiment.rotorCoeff1, 1.5e-4f );
+   EXPECT_TRUE( server.calls.contains( "get_rotor_calibration_profiles" ) );
+}
+
+// A caller that records what the run used gets no calibration in its place
+TEST( ExperimentCalibration, NoCalibrationIsMadeUpWhenAskedNotTo )
+{
+   NiceMock<US_DB2_Mock>    db;
+   CalibrationServer        server;
+   US_Experiment            experiment;
+   QVector<SP_SPEEDPROFILE> speedsteps;
+   server.wire( db );
+
+   experiment.rotorCoeff1 = 9.0;      // left over from an earlier read
+
+   ASSERT_EQ( experiment.readFromDB( "Cal_run", &db, speedsteps, "17", false, false ),
+              IUS_DB2::OK );
+   EXPECT_EQ   ( experiment.calibrationID, 0 );
+   EXPECT_FLOAT_EQ( experiment.rotorCoeff1, 0.0f );
+   EXPECT_FLOAT_EQ( experiment.rotorCoeff2, 0.0f );
+   EXPECT_FALSE( server.calls.contains( "get_rotor_calibration_profiles" ) );
+   EXPECT_FALSE( server.calls.contains( "get_rotor_calibration_info" ) );
+}

@@ -196,7 +196,7 @@ qDebug() << "Exp:svToDB:  ss count" << speedsteps.count() << "expID" << expID;
 
 // Function to read an experiment from DB
 int US_Experiment::readFromDB( QString runID, IUS_DB2* db, QVector<SP_SPEEDPROFILE>& speedsteps, const QString invid_p,
-                               bool cacheRIProfile )
+                               bool cacheRIProfile, bool defaultCalibration )
 {
    if ( db == nullptr )
    {
@@ -290,8 +290,9 @@ qDebug() << "Exp:rdDB: ExpInfRun: xmlFile size" << xmlFile.size();
       rotorSerial = db->value( 2 ).toString();
    }
 
-   if ( calibrationID == 0 )     // In this case, get the first one
-   {
+   if ( calibrationID == 0  &&  defaultCalibration )
+   {  // None recorded: take the rotor's first one, as programs that go on
+      // to analyse or save the run always have
       q.clear();
       q << QString( "get_rotor_calibration_profiles" )
         << QString::number( rotorID );
@@ -300,12 +301,22 @@ qDebug() << "Exp:rdDB: ExpInfRun: xmlFile size" << xmlFile.size();
          calibrationID = db->value( 0 ).toInt();
    }
 
+   // A caller that records what the run used gets no coefficients where the
+   // experiment names no calibration, not those of one it may not have used
+   if ( calibrationID == 0 )
+   {
+      rotorCoeff1  = 0.0;
+      rotorCoeff2  = 0.0;
+      rotorUpdated = QDate();
+   }
+
    // Now get more calibration info
    q.clear();
    q << QString( "get_rotor_calibration_info" )
      << QString::number( calibrationID );
-   db->query( q );
-   if ( db->next() )
+   if ( calibrationID > 0 )
+      db->query( q );
+   if ( calibrationID > 0  &&  db->next() )
    {
       rotorCoeff1  = db->value( 4 ).toString().toFloat();
       rotorCoeff2  = db->value( 5 ).toString().toFloat();

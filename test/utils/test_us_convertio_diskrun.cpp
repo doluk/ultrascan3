@@ -406,4 +406,18 @@ TEST( US_ConvertIORunId, TheRunIdRuleIsOfferedOnItsOwn )
    EXPECT_FALSE( US_ConvertIO::runIdIsUsable( "dotted.run" ) );
    EXPECT_FALSE( US_ConvertIO::runIdIsUsable( "a b" ) );
    EXPECT_FALSE( US_ConvertIO::runIdIsUsable( "../up" ) );
+
+   // the whole name must match: "$" alone lets a final newline through
+   EXPECT_FALSE( US_ConvertIO::runIdIsUsable( "Run\n" ) );
+   EXPECT_FALSE( US_ConvertIO::runIdIsUsable( "\nRun" ) );
+   EXPECT_FALSE( US_ConvertIO::runIdIsUsable( QString( 80, QChar( 'x' ) ) + "\n" ) );
+
+   // names Windows keeps for devices cannot be directory names there
+   for ( const char* name : { "CON", "con", "Prn", "AUX", "nul", "COM1", "com9",
+                              "LPT1", "lpt9" } )
+      EXPECT_FALSE( US_ConvertIO::runIdIsUsable( name ) ) << name;
+
+   // ... but names that merely start with one are fine
+   for ( const char* name : { "CONSOLE", "NUL_1", "COM10", "COM0", "LPT", "AUX-2" } )
+      EXPECT_TRUE( US_ConvertIO::runIdIsUsable( name ) ) << name;
 }

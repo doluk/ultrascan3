@@ -10,6 +10,7 @@
 #include "qt_test_base.h"
 
 #include <QtCore>
+#include <QSignalSpy>
 
 #include "us_data_catalog.h"
 #include "us_settings.h"
@@ -26,11 +27,16 @@ namespace
    const QString kDate = "2024-03-04 05:06:07";
    const QString kUtc  = "2024-03-04 05:06:07 UTC";
 
-   struct FExp   { QString id, guid, runID, projID, projGUID, projDesc; };
+   // An experiment belongs to one investigator; a description longer than
+   // the server's 80-character column comes back cut from the listings and
+   // whole from the record's XML
+   struct FExp   { QString id, guid, runID, projID, projGUID, projDesc; int inv = kInv; };
    struct FRaw   { QString id, guid, file, expID, comment, solID; };
    struct FEdit  { QString id, guid, rawID, file; };
    struct FModel { QString id, guid, desc, editGUID, editID; };
    struct FNoise { QString id, guid, editID, modelID, modelGUID, type, desc; };
+
+   const int kDescWidth = 80;
 
    // What one procedure call answers
    struct Answer
@@ -56,6 +62,9 @@ namespace
 
          QSet< QString >       missing;   // answer ER_SP_DOES_NOT_EXIST
          QSet< QString >       denied;    // answer ER_PROCACCESS_DENIED
+         QSet< QString >       refused;   // answer NOTPERMITTED, as for a
+                                          //  record of another investigator
+         int                   caller = kInv;   // who is connected
          QMap< QString, int >  failOn;    // fail the n-th call; 0 = every call
          QMap< QString, int >  knt;       // calls so far, by procedure
          QStringList           calls;     // procedure names, in order
@@ -121,6 +130,26 @@ namespace
                return;
             }
 
+            if ( refused.contains( name ) )
+            {
+               current.status = IUS_DB2::NOTPERMITTED;
+               current.error  = "You do not have permission for " + name;
+               return;
+            }
+
+            // An experiment is described only to the investigator it is of
+            if ( name == "get_experiment_info" )
+            {
+               const FExp* ee = expById( q.value( 1 ) );
+
+               if ( ee != nullptr  &&  ee->inv != caller )
+               {
+                  current.status = IUS_DB2::NOTPERMITTED;
+                  current.error  = "not your experiment";
+                  return;
+               }
+            }
+
             current.rows = rowsOf( name, q.mid( 1 ) );
 
             if ( current.rows.isEmpty() )
@@ -171,9 +200,16 @@ namespace
                                   << ( hashed ? "200" : "" );
          }
 
+         // Whether an experiment is of the investigator a listing is for
+         bool mine( const QString& expID, const QString& inv ) const
+         {
+            const FExp* ee = expById( expID );
+            return ee == nullptr  ||  QString::number( ee->inv ) == inv;
+         }
+
          QVariantList modelRow( const FModel& mm ) const
          {
-            return QVariantList() << mm.id << mm.guid << mm.desc << "" << ""
+            return QVariantList() << mm.id << mm.guid << mm.desc.left( kDescWidth ) << "" << ""
                                   << mm.editGUID << mm.editID << kDate
                                   << cksum( mm.guid ) << "300";
          }
@@ -182,7 +218,7 @@ namespace
          {
             return QVariantList() << nn.id << nn.guid << nn.editID << nn.modelID
                                   << nn.type << nn.modelGUID << kDate
-                                  << cksum( nn.guid ) << "400" << nn.desc;
+                                  << cksum( nn.guid ) << "400" << nn.desc.left( kDescWidth );
          }
 
          QList< QVariantList > rowsOf( const QString& name, const QStringList& a ) const
@@ -192,6 +228,8 @@ namespace
             if ( name == "get_experiment_summary" )
                for ( const FExp& ee : exps )
                {
+                  if ( QString::number( ee.inv ) != a.value( 0 ) )  continue;
+
                   int nr = 0, ne = 0, nm = 0, nn = 0;
                   for ( const FRaw& rr : raws )   if ( rr.expID == ee.id )  nr++;
                   for ( const FEdit& ed : edits ) if ( rawById( ed.rawID ) && rawById( ed.rawID )->expID == ee.id ) ne++;
@@ -203,14 +241,32 @@ namespace
                }
 
             else if ( name == "get_experiment_desc" )
+            {  // what an investigator who is not an administrator is given
                for ( const FExp& ee : exps )
-                  rows << ( QVariantList() << ee.id << ee.runID << "velocity" << "RA"
-                                           << ee.runID + " label" << kDate );
+                  if ( QString::number( ee.inv ) == a.value( 0 ) )
+                     rows << ( QVariantList() << ee.id << ee.runID << "velocity" << "RA" );
+            }
+
+            else if ( name == "get_experiment_info" )
+            {
+               if ( const FExp* ee = expById( a.value( 0 ) ) )
+               {
+                  QVariantList row;
+                  row << ee->guid << ee->projID << ee->runID;
+                  while ( row.size() < 17 )  row << QVariant();
+                  row[ 8 ]  = "velocity";
+                  row[ 10 ] = ee->runID + " label";
+                  row[ 13 ] = kDate;
+                  row[ 14 ] = ee->inv;
+                  row[ 15 ] = "RA";
+                  rows << row;
+               }
+            }
 
             else if ( name == "get_experiment_info_by_runID" )
             {
                for ( const FExp& ee : exps )
-                  if ( ee.runID == a.value( 0 ) )
+                  if ( ee.runID == a.value( 0 )  &&  QString::number( ee.inv ) == a.value( 1 ) )
                   {
                      QVariantList row;
                      row << ee.projID << ee.id << ee.guid;
@@ -238,10 +294,45 @@ namespace
             }
 
             else if ( name == "get_rawData_by_person" )
-               for ( const FRaw& rr : raws )  rows << rawRow( rr, false );
+            {
+               for ( const FRaw& rr : raws )
+                  if ( mine( rr.expID, a.value( 0 ) ) )  rows << rawRow( rr, false );
+            }
 
             else if ( name == "get_editedData_by_person" )
-               for ( const FEdit& ed : edits )  rows << editRow( ed, false );
+            {
+               for ( const FEdit& ed : edits )
+                  if ( ! rawById( ed.rawID )  ||  mine( rawById( ed.rawID )->expID, a.value( 0 ) ) )
+                     rows << editRow( ed, false );
+            }
+
+            else if ( name == "get_model_info" )
+            {
+               for ( const FModel& mm : models )
+                  if ( mm.id == a.value( 0 ) )
+                     rows << ( QVariantList() << mm.guid << mm.desc.left( kDescWidth )
+                                              << "<?xml version=\"1.0\"?><ModelData version=\"1.0\">"
+                                                 "<model description=\"" + mm.desc + "\" modelGUID=\""
+                                                 + mm.guid + "\"/></ModelData>" );
+            }
+
+            else if ( name == "get_noise_info" )
+            {
+               for ( const FNoise& nn : noises )
+                  if ( nn.id == a.value( 0 ) )
+                     rows << ( QVariantList() << nn.guid << nn.type << nn.editID << nn.modelID
+                                              << nn.modelGUID
+                                              << "<?xml version=\"1.0\"?><NoiseData version=\"1.0\">"
+                                                 "<noise type=\"ti\" description=\"" + nn.desc
+                                                 + "\"/></NoiseData>" );
+            }
+
+            else if ( name == "get_modelID" )
+            {
+               for ( const FModel& mm : models )
+                  if ( ! mm.guid.isEmpty()  &&  mm.guid == a.value( 0 ) )
+                     rows << ( QVariantList() << mm.id );
+            }
 
             else if ( name == "get_rawData_by_experiment" )
             {
@@ -287,11 +378,14 @@ namespace
             }
 
             else if ( name == "all_rawDataIDs" )
+            {
                for ( const FRaw& rr : raws )
-                  rows << ( QVariantList() << rr.id << "label" << rr.file << rr.expID
-                                           << rr.solID << kDate << cksum( rr.guid ) << "100"
-                                           << kInv << rr.guid << rr.comment
-                                           << ( expById( rr.expID ) ? expById( rr.expID )->guid : "" ) );
+                  if ( mine( rr.expID, a.value( 0 ) ) )
+                     rows << ( QVariantList() << rr.id << "label" << rr.file << rr.expID
+                                              << rr.solID << kDate << cksum( rr.guid ) << "100"
+                                              << kInv << rr.guid << rr.comment
+                                              << ( expById( rr.expID ) ? expById( rr.expID )->guid : "" ) );
+            }
 
             else if ( name == "all_editedDataIDs" )
                for ( const FEdit& ed : edits )
@@ -432,11 +526,13 @@ class TestUSDataCatalogMock : public QtTestBase
                       << FEdit{ "202", "edit-2", "101", "RunA.2401011300.RA.1.A.280.xml" }
                       << FEdit{ "203", "edit-3", "103", "RunB.2401011400.RA.2.B.260.xml" };
 
-         server.models << FModel{ "301", "model-1", "RunA.1A280.e01.2DSA.model", "edit-1", "201" }
-                       << FModel{ "302", "model-2", "RunA.1A280.e02.GA.model",   "edit-2", "202" };
+         server.models << FModel{ "301", "model-1", "RunA.1A280.e2401011200_a2401021300_2DSA_i01.model",
+                                  "edit-1", "201" }
+                       << FModel{ "302", "model-2", "RunA.1A280.e2401011300_a2401021400_GA_i01.model",
+                                  "edit-2", "202" };
 
          server.noises << FNoise{ "401", "noise-1", "201", "301", "model-1", "ti_noise",
-                                  "RunA.1A280.e01.2DSA.ti_noise" };
+                                  "RunA.1A280.e2401011200_a2401021300_2DSA_i01.ti_noise" };
       }
 
       void TearDown() override
@@ -622,7 +718,7 @@ TEST_F( TestUSDataCatalogMock, ColumnsAreMappedToTheRightFields )
    EXPECT_EQ( noise.lastUpdated, kUtc );
    EXPECT_EQ( noise.checksum,    cksum( "noise-1" ) );
    EXPECT_EQ( noise.size,        QString( "400" ) );
-   EXPECT_EQ( noise.description, QString( "RunA.1A280.e01.2DSA.ti_noise" ) );
+   EXPECT_EQ( noise.description, QString( "RunA.1A280.e2401011200_a2401021300_2DSA_i01.ti_noise" ) );
 }
 
 // ------------------------------------------------------- legacy whole store
@@ -864,7 +960,7 @@ TEST_F( TestUSDataCatalogMock, AFailureInTheOldListingKeepsThePreviousOne )
    US_DataCatalog catalog;
    attachAndList( catalog );
 
-   server.failOn[ "get_experiment_info_by_runID" ] = server.knt.value( "get_experiment_info_by_runID" ) + 2;
+   server.failOn[ "get_experiment_info" ] = server.knt.value( "get_experiment_info" ) + 2;
 
    QString error;
    EXPECT_FALSE( catalog.loadRuns( error ) );
@@ -1120,4 +1216,282 @@ TEST( TestUSDataCatalogDates, DatesAreGivenInOneForm )
                  QVariant( QDateTime( QDate( 2024, 3, 4 ), QTime( 5, 6, 7 ), Qt::UTC ) ) ),
               QString( "2024-03-04 05:06:07 UTC" ) );
    EXPECT_TRUE( US_DataCatalog::utcText( QVariant() ).isEmpty() );
+}
+
+// ------------------------------------------------- the second review
+
+// Two experiments of one investigator may share a run ID.  The old listing
+// keeps each one's own ID and GUID -- from get_experiment_desc and
+// get_experiment_info by ID, not by run ID -- so the records of both
+// attach, and nothing of another investigator's is listed.
+TEST_F( TestUSDataCatalogMock, AnOldServerListsExperimentsThatShareARunId )
+{
+   server.missing << "get_experiment_summary";
+
+   FExp twin{ "13", "exp-c", "RunA", "7", "proj-1", "Project one" };
+   FExp theirs{ "14", "exp-d", "RunA", "8", "proj-2", "Their project" };
+   theirs.inv = kInv + 1;
+   server.exps  << twin << theirs;
+   server.raws  << FRaw { "104", "raw-4", "RunA.RA.3.A.280.auc", "13", "", "" }
+                << FRaw { "105", "raw-5", "RunA.RA.4.A.280.auc", "14", "", "" };
+   server.edits << FEdit{ "204", "edit-4", "104", "RunA.2401011500.RA.3.A.280.xml" };
+
+   US_DataCatalog catalog;
+   QString        error;
+   ASSERT_TRUE( catalog.attach( &db, error ) );
+   ASSERT_TRUE( catalog.loadRuns( error ) ) << error.toStdString();
+   ASSERT_EQ  ( catalog.runCount(), 3 );
+
+   QStringList ids, exps;
+   for ( const US_DataCatalog::Run& run : catalog.runs() )
+   {
+      ids  << run.id;
+      exps << run.guid;
+   }
+   EXPECT_EQ( ids,  QStringList() << "11" << "12" << "13" );
+   EXPECT_EQ( exps, QStringList() << "exp-a" << "exp-b" << "exp-c" );
+
+   // label and date are read by ID too: this listing does not give them
+   const US_DataCatalog::Run& twinRun = catalog.run( 2 );
+   EXPECT_EQ( twinRun.runID,       QString( "RunA" ) );
+   EXPECT_EQ( twinRun.label,       QString( "RunA label" ) );
+   EXPECT_EQ( twinRun.date,        kUtc );
+   EXPECT_EQ( twinRun.projectGUID, QString( "proj-1" ) );
+   EXPECT_EQ( server.count( "get_experiment_info_by_runID" ), 0 );
+
+   ASSERT_TRUE( catalog.loadAll( error ) ) << error.toStdString();
+   EXPECT_TRUE( catalog.orphans().raws.isEmpty() )
+      << "the twin's triple was taken for an orphan";
+   ASSERT_EQ( catalog.run( 2 ).raws.size(), 1 );
+   EXPECT_EQ( catalog.run( 2 ).raws[ 0 ].guid, QString( "raw-4" ) );
+   EXPECT_EQ( catalog.run( 2 ).raws[ 0 ].edits.size(), 1 );
+   EXPECT_EQ( catalog.run( 0 ).raws.size(), 2 );
+}
+
+// A project the server will not describe is not a reason to list nothing
+TEST_F( TestUSDataCatalogMock, AnOldListingSurvivesAProjectItMayNotRead )
+{
+   server.missing << "get_experiment_summary";
+   server.refused << "get_project_info";
+
+   US_DataCatalog catalog;
+   QSignalSpy     notes( &catalog, &US_DataCatalog::message );
+   attachAndList( catalog );
+
+   EXPECT_TRUE( catalog.run( 0 ).projectGUID.isEmpty() );
+   EXPECT_EQ  ( catalog.run( 0 ).projectID, QString( "7" ) );
+   EXPECT_EQ  ( catalog.run( 1 ).guid, QString( "exp-b" ) );
+   EXPECT_GE  ( notes.count(), 1 );
+
+   // but a connection that is gone is
+   server.refused.clear();
+   server.failOn[ "get_project_info" ] = 0;
+
+   QString error;
+   EXPECT_FALSE( catalog.loadRuns( error ) );
+   EXPECT_FALSE( error.isEmpty() );
+   EXPECT_EQ   ( catalog.runCount(), 2 );
+}
+
+// With nothing listed the whole store is still read, and all of it is an
+// orphan; loadAll used to return at once
+TEST_F( TestUSDataCatalogMock, AStoreWithNoExperimentIsAllOrphans )
+{
+   server.exps.clear();
+
+   US_DataCatalog catalog;
+   QString        error;
+   ASSERT_TRUE( catalog.attach( &db, error ) );
+   ASSERT_TRUE( catalog.loadRuns( error ) );
+   ASSERT_EQ  ( catalog.runCount(), 0 );
+
+   ASSERT_TRUE( catalog.loadAll( error ) ) << error.toStdString();
+
+   const US_DataCatalog::Orphans& orphans = catalog.orphans();
+   ASSERT_EQ( orphans.raws.size(), 3 );
+   EXPECT_EQ( orphans.raws[ 0 ].guid, QString( "raw-1" ) );
+   ASSERT_EQ( orphans.raws[ 0 ].edits.size(), 2 );
+   EXPECT_EQ( orphans.raws[ 0 ].edits[ 0 ].models.size(), 1 );
+   EXPECT_EQ( orphans.raws[ 0 ].edits[ 0 ].models[ 0 ].noises.size(), 1 );
+}
+
+// An older server cuts descriptions at 80 characters and leaves some noise
+// descriptions empty; every read repairs them, on every tier
+TEST_F( TestUSDataCatalogMock, DescriptionsAreRepairedForEveryReader )
+{
+   const QString longDesc = "RunA.1A280.e2401011200_a2401021300_2DSA_i01_"
+                            + QString( 60, QChar( 'x' ) ) + ".model";
+   const QString longNoise = QString( longDesc ).replace( ".model", ".ti_noise" );
+   ASSERT_GT( longDesc.length(), 80 );
+
+   server.models[ 0 ].desc = longDesc;
+   server.noises[ 0 ].desc = longNoise;
+   server.noises << FNoise{ "402", "noise-2", "202", "302", "model-2", "ri_noise", "" };
+
+   const QString model2   = server.models[ 1 ].desc;
+   const QString noise2   = QString( model2 ).replace( ".model", ".ri_noise" );
+
+   auto check = [ & ]( const US_DataCatalog& catalog )
+   {
+      const US_DataCatalog::Raw& raw = catalog.run( 0 ).raws[ 0 ];
+      ASSERT_EQ( raw.edits.size(), 2 );
+      ASSERT_EQ( raw.edits[ 0 ].models.size(), 1 );
+      EXPECT_EQ( raw.edits[ 0 ].models[ 0 ].description, longDesc );
+      EXPECT_EQ( raw.edits[ 0 ].models[ 0 ].subType, QString( "2DSA" ) );
+      ASSERT_EQ( raw.edits[ 0 ].models[ 0 ].noises.size(), 1 );
+      EXPECT_EQ( raw.edits[ 0 ].models[ 0 ].noises[ 0 ].description, longNoise );
+      ASSERT_EQ( raw.edits[ 1 ].models[ 0 ].noises.size(), 1 );
+      EXPECT_EQ( raw.edits[ 1 ].models[ 0 ].noises[ 0 ].description, noise2 );
+   };
+
+   for ( int tiers : { int( US_DataCatalog::AllTiers ), 0 } )
+   {
+      SCOPED_TRACE( tiers ? "catalog procedures" : "old procedures" );
+      QString error;
+
+      US_DataCatalog whole;
+      whole.setTiers( tiers );
+      attachAndList( whole );
+      ASSERT_TRUE( whole.loadAll( error ) ) << error.toStdString();
+      check( whole );
+
+      US_DataCatalog one;
+      one.setTiers( tiers );
+      attachAndList( one );
+      ASSERT_TRUE( one.loadRunDetail( 0, error ) ) << error.toStdString();
+      check( one );
+
+      QList< US_DataCatalog::Noise > ofModel = one.noisesOfModel( "model-2", error );
+      ASSERT_EQ( ofModel.size(), 1 );
+      EXPECT_EQ( ofModel[ 0 ].description, noise2 );
+
+      QList< US_DataCatalog::Noise > ofEdit = one.noisesOfEdit( "edit-1", "201", error );
+      ASSERT_EQ( ofEdit.size(), 1 );
+      EXPECT_EQ( ofEdit[ 0 ].description, longNoise );
+   }
+}
+
+TEST_F( TestUSDataCatalogMock, TheModelSubTypeIsTheAnalysisType )
+{
+   EXPECT_EQ( US_DataCatalog::modelSubType( "R.1A280.e1_a2_2DSA-MC_i01_mc0001.model" ),
+              QString( "2DSA-MC" ) );
+   EXPECT_EQ( US_DataCatalog::modelSubType( "R.x.1A280.e1_a2_PCSA_i01.model" ),
+              QString( "PCSA" ) );
+   EXPECT_TRUE( US_DataCatalog::modelSubType( "Lost.model" ).isEmpty() );
+}
+
+// Noise read with one experiment that hangs under none of its models is
+// an orphan when its model is nowhere, and another experiment's when its
+// model is there -- the same answer a whole-store read gives -- and the
+// experiment's counts agree either way
+TEST_F( TestUSDataCatalogMock, StrayNoiseIsSortedAsTheWholeStoreReadSortsIt )
+{
+   server.models << FModel{ "303", "model-3", "RunB.2B260.e1_a2_2DSA_i01.model", "edit-3", "203" };
+   server.noises << FNoise{ "411", "noise-s1", "201", "",    "",           "ti_noise", "s1" }
+                 << FNoise{ "412", "noise-s2", "201", "399", "model-gone", "ti_noise", "s2" }
+                 << FNoise{ "413", "noise-s3", "201", "303", "model-3",    "ti_noise", "s3" };
+
+   US_DataCatalog whole;
+   attachAndList( whole );
+   QString error;
+   ASSERT_TRUE( whole.loadAll( error ) ) << error.toStdString();
+   EXPECT_EQ( guids( whole.orphans().noises ), QStringList() << "noise-s1" << "noise-s2" );
+
+   for ( int tiers : { int( US_DataCatalog::AllTiers ), 0 } )
+   {
+      SCOPED_TRACE( tiers ? "catalog procedures" : "old procedures" );
+
+      US_DataCatalog one;
+      one.setTiers( tiers );
+      attachAndList( one );
+      ASSERT_TRUE( one.loadRunDetail( 0, error ) ) << error.toStdString();
+      ASSERT_TRUE( one.loadRunDetail( 1, error ) ) << error.toStdString();
+
+      EXPECT_EQ( guids( one.orphans().noises ), QStringList() << "noise-s1" << "noise-s2" );
+      EXPECT_EQ( one.run( 0 ).noiseCount, whole.run( 0 ).noiseCount );
+      EXPECT_EQ( one.run( 1 ).noiseCount, whole.run( 1 ).noiseCount );
+      EXPECT_EQ( shape( one ), shape( whole ) );
+
+      // reading it again does not list them twice
+      one.clear();
+      ASSERT_TRUE( one.loadRuns( error ) );
+      EXPECT_TRUE( one.orphans().isEmpty() );
+   }
+}
+
+// A read that fails is tried once more, after the rest; a second failure
+// drops it
+TEST_F( TestUSDataCatalogMock, AFailedReadIsRetriedOnce )
+{
+   US_DataCatalog catalog;
+   attachAndList( catalog );
+
+   server.failOn[ "get_rawData_by_experiment" ] = server.knt.value( "get_rawData_by_experiment" ) + 1;
+
+   int     index = -1;
+   QString error;
+   EXPECT_FALSE( catalog.loadNextPending( index, error ) );
+   EXPECT_EQ   ( index, 0 );
+   EXPECT_TRUE ( error.contains( "again" ) ) << error.toStdString();
+   EXPECT_EQ   ( catalog.pendingCount(), 2 );
+
+   EXPECT_TRUE( catalog.loadNextPending( index, error ) ) << error.toStdString();
+   EXPECT_EQ  ( index, 1 );
+   EXPECT_TRUE( catalog.loadNextPending( index, error ) ) << error.toStdString();
+   EXPECT_EQ  ( index, 0 );
+   EXPECT_EQ  ( catalog.pendingCount(), 0 );
+
+   // failing every time, each experiment is tried twice and then dropped
+   ASSERT_TRUE( catalog.loadRuns( error ) );
+   server.failOn[ "get_rawData_by_experiment" ] = 0;
+
+   int failures = 0;
+   while ( catalog.pendingCount() > 0  &&  failures < 10 )
+      if ( ! catalog.loadNextPending( index, error ) )  failures++;
+
+   EXPECT_EQ( failures, 4 );
+   EXPECT_FALSE( catalog.isRunLoaded( 0 ) );
+}
+
+TEST_F( TestUSDataCatalogMock, AFailedVerifyIsRetriedOnce )
+{
+   US_DataCatalog catalog;
+   attachAndList( catalog );
+
+   QString error;
+   ASSERT_TRUE( catalog.loadAll( error ) );
+   catalog.queueVerify( QList< int >() << 0 << 1 );
+
+   server.failOn[ "get_rawData_by_experiment" ] = server.knt.value( "get_rawData_by_experiment" ) + 1;
+
+   int index = -1;
+   EXPECT_FALSE( catalog.verifyNextPending( index, error ) );
+   EXPECT_EQ   ( index, 0 );
+   EXPECT_TRUE ( error.contains( "again" ) ) << error.toStdString();
+   EXPECT_EQ   ( catalog.verifyPendingCount(), 2 );
+
+   EXPECT_TRUE( catalog.verifyNextPending( index, error ) ) << error.toStdString();
+   EXPECT_TRUE( catalog.verifyNextPending( index, error ) ) << error.toStdString();
+   EXPECT_EQ  ( index, 0 );
+   EXPECT_TRUE( catalog.isRunVerified( 0 ) );
+   EXPECT_TRUE( catalog.isRunVerified( 1 ) );
+}
+
+// A model with an empty edit GUID is an orphan of the whole store, and
+// its noise stays with it
+TEST_F( TestUSDataCatalogMock, AModelWithNoEditGuidKeepsItsNoise )
+{
+   server.models << FModel{ "309", "model-9", "Lone.model", "", "" };
+   server.noises << FNoise{ "409", "noise-9", "", "309", "model-9", "ti_noise", "" };
+
+   US_DataCatalog catalog;
+   attachAndList( catalog );
+   QString error;
+   ASSERT_TRUE( catalog.loadAll( error ) );
+
+   ASSERT_EQ( catalog.orphans().models.size(), 1 );
+   ASSERT_EQ( catalog.orphans().models[ 0 ].noises.size(), 1 );
+   // and the empty description was given the model's
+   EXPECT_EQ( catalog.orphans().models[ 0 ].noises[ 0 ].description, QString( "Lone.ti_noise" ) );
+   EXPECT_TRUE( catalog.orphans().noises.isEmpty() );
 }

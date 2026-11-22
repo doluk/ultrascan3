@@ -211,7 +211,13 @@ its own.
 
 Every fall-back is also covered without a server, in
 `test/utils/test_us_data_catalog_mock.cpp`, against the `IUS_DB2` mock
-answering the procedures of servers of each vintage.
+answering the procedures of servers of each vintage.  Its fake server also
+models what a real one does that the catalog has to cope with: experiments
+scoped to the investigator that is connected (another person's are neither
+listed nor described), two experiments sharing a run ID, a
+`get_project_info` that refuses, descriptions cut at the 80-character column
+(whole in the record's XML), noise with an empty description or a model in
+another experiment, and models with an empty edit GUID.
 
 ## Debugging Failed Tests
 
