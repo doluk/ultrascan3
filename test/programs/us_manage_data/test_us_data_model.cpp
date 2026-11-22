@@ -693,14 +693,27 @@ TEST_F( TestUSDataModel, DuplicateGuidsAreFoundOnceOverTheWholeTree )
    EXPECT_EQ( dups[ 0 ].guid.toStdString(), modelGUID.toStdString() );
    EXPECT_EQ( dups[ 0 ].rows.size(), 2 );
 
-   // A record of no experiment with the GUID of a record in an experiment:
-   // a duplicate across experiments
+   // A database row with the GUID of a local row elsewhere is the database
+   // copy of that record -- a record split across two places in the tree,
+   // which is not two records claiming one GUID
    US_DataModel::RunEntry first = model.run_entry( 0 );
    ASSERT_GE( first.firstRow, 0 );
 
    US_DataModel::DataDesc orphan = model.row_datadesc( first.firstRow );
-   orphan.recState = US_DataModel::REC_LO;
+   orphan.recState = US_DataModel::REC_DB;
+   orphan.recordID = 77;
    QVector< US_DataModel::DataDesc > orphans;
+   orphans << orphan;
+   ASSERT_GE( model.add_orphans( orphans,
+                                 QVector< US_DataModel::DataDesc >() ), 0 );
+
+   EXPECT_EQ( model.find_duplicates().size(), 1 );
+
+   // A second local file with the GUID of a local record in an experiment:
+   // a duplicate across experiments
+   orphan.recState = US_DataModel::REC_LO;
+   orphan.recordID = -1;
+   orphans.clear();
    orphans << orphan;
    ASSERT_GE( model.add_orphans( QVector< US_DataModel::DataDesc >(),
                                  orphans ), 0 );
@@ -791,6 +804,13 @@ TEST_F( TestUSDataModel, AReadAskedForDuringAMergeIsOnlyQueued )
       queued    = ( model.next_pending_run() == other );
    } );
 
+   int asked = 0;
+   QList< int > merged;
+   QObject::connect( &model, &US_DataModel::workRequested,
+                     [ & ]() { asked++; } );
+   QObject::connect( &model, &US_DataModel::runMerged,
+                     [ & ]( int index ) { merged << index; } );
+
    ASSERT_TRUE( model.merge_run( 0 ) );
 
    EXPECT_TRUE ( fired );
@@ -799,9 +819,13 @@ TEST_F( TestUSDataModel, AReadAskedForDuringAMergeIsOnlyQueued )
    EXPECT_FALSE( model.run_entry( other ).loaded );
    EXPECT_FALSE( model.is_busy() );
 
-   // and it is read when asked again with nothing in progress
-   EXPECT_TRUE( model.scan_run( other ) );
+   // Whoever runs the event loop was told there is work waiting, and the
+   // pass it makes reads the experiment and reports it as the scan would
+   EXPECT_EQ  ( asked, 1 );
+   EXPECT_TRUE( model.pump_once() );
    EXPECT_TRUE( model.run_entry( other ).loaded );
+   EXPECT_EQ  ( merged, QList< int >() << other );
+   EXPECT_EQ  ( model.pending_runs(), model.runCount() - 2 );
 }
 
 // The window's loop and the layers driven by hand give the same tree
@@ -1051,19 +1075,31 @@ TEST_F( TestUSDataModel, OrphansAreShownAfterTheScan )
    US_DataTree    tree( &model, &tw );
    model.setSiblings( &proc, &tree );
 
-   int added = -1;
+   QList< int > addedList;
    QObject::connect( &model, &US_DataModel::runsListed,
                      [ & ]() { tree.build_dtree(); } );
    QObject::connect( &model, &US_DataModel::runMerged,
                      [ & ]( int index ) { tree.fill_run( index ); } );
    QObject::connect( &model, &US_DataModel::orphansAdded,
-                     [ & ]( int index ) { added = index; tree.add_run( index ); } );
+                     [ & ]( int index ) { addedList << index; tree.add_run( index ); } );
+
+   QStringList prompts;
+   tree.setPrompter( [ & ]( int, const QString&, const QString& text )
+                     { prompts << text; return true; } );
 
    model.scan_data();
 
-   ASSERT_EQ( added, model.runCount() - 1 );
+   // the orphans, then the global models, each under a stand-in of its own
+   ASSERT_EQ( addedList.size(), 2 );
+   int added   = addedList[ 0 ];
+   int globals = addedList[ 1 ];
+   ASSERT_EQ( globals, model.runCount() - 1 );
    US_DataModel::RunEntry entry = model.run_entry( added );
-   EXPECT_TRUE( entry.orphans );
+   EXPECT_TRUE ( entry.orphans );
+   EXPECT_FALSE( entry.globals );
+   EXPECT_TRUE ( model.run_entry( globals ).orphans );
+   EXPECT_TRUE ( model.run_entry( globals ).globals );
+   EXPECT_EQ   ( model.experimentCount(), model.runCount() - 2 );
    EXPECT_EQ  ( tw.topLevelItemCount(), model.runCount() );
    EXPECT_GT  ( tw.topLevelItem( added )->childCount(), 0 );
 
@@ -1082,10 +1118,18 @@ TEST_F( TestUSDataModel, OrphansAreShownAfterTheScan )
          nfill++;
    }
 
-   ASSERT_TRUE( rowOf.contains( orphModel ) );
-   ASSERT_TRUE( rowOf.contains( orphNoise ) );
-   ASSERT_TRUE( rowOf.contains( globModel ) );
-   EXPECT_GT  ( nfill, 0 );
+   ASSERT_TRUE ( rowOf.contains( orphModel ) );
+   ASSERT_TRUE ( rowOf.contains( orphNoise ) );
+   ASSERT_FALSE( rowOf.contains( globModel ) );   // not an orphan
+   EXPECT_GT   ( nfill, 0 );
+
+   int grow = -1;
+
+   for ( int row = 0; row < model.recCount(); row++ )
+      if ( model.row_datadesc( row ).dataGUID == globModel )
+         grow = row;
+
+   EXPECT_EQ( model.run_of_row( grow ), globals );
 
    // the orphan model hangs off a filler edit with its edit's GUID
    int prow = model.parent_row( rowOf[ orphModel ] );
@@ -1106,15 +1150,23 @@ TEST_F( TestUSDataModel, OrphansAreShownAfterTheScan )
    EXPECT_EQ( covered, model.recCount() - model.runCount() );
    EXPECT_TRUE( model.find_duplicates().isEmpty() );
 
-   // a stand-in row's records can be acted on like any other's
+   // a stand-in row's records can be acted on like any other's, once the
+   // user has said yes to removing all of them
    tw.clearSelection();
    tw.topLevelItem( added )->setSelected( true );
    EXPECT_EQ( tree.act_on_selection( "Local disk only", "Local-only remove" ),
               0 ) << proc.lastError().toStdString();
+   ASSERT_EQ( prompts.size(), 1 );
+   EXPECT_TRUE( prompts[ 0 ].contains( "all 2 record(s)" ) )
+      << prompts[ 0 ].toStdString();
    EXPECT_FALSE( QFile::exists( US_Settings::dataDir() + "/models/M0000005.xml" ) );
    EXPECT_FALSE( QFile::exists( US_Settings::dataDir() + "/noises/N0000005.xml" ) );
    EXPECT_TRUE ( QFile::exists( US_Settings::dataDir() + "/models/M0000001.xml" ) );
+
+   // and the global models are not among them
+   EXPECT_TRUE ( QFile::exists( US_Settings::dataDir() + "/models/M0000006.xml" ) );
 }
+
 
 // Narrowed to one run, nothing is an orphan of that run
 TEST_F( TestUSDataModel, ARunFilterShowsNoOrphans )
@@ -1187,4 +1239,165 @@ TEST_F( TestUSDataModel, CatalogDatesAreRead )
 
    EXPECT_EQ( text.toStdString(), "2024-05-06 07:08:09 UTC" );
    EXPECT_EQ( US_DataModel::parse_date( text ), when );
+}
+
+// -------------------------------------------------------- an empty store
+
+// A results directory that is not there is an empty store, not an error,
+// and nothing is created to make it one
+TEST_F( TestUSDataModel, AMissingResultsDirectoryIsAnEmptyStore )
+{
+   ASSERT_TRUE( QDir( US_Settings::resultDir() ).removeRecursively() );
+
+   US_DataModel model;
+   prepare( model );
+   model.scan_data();
+
+   EXPECT_EQ  ( model.experimentCount(), 0 );
+   EXPECT_TRUE( model.scan_errors().isEmpty() )
+      << model.scan_errors().join( "\n" ).toStdString();
+   EXPECT_FALSE( QDir( US_Settings::resultDir() ).exists() );
+}
+
+// Records of no experiment are shown even when no experiment is listed
+TEST_F( TestUSDataModel, OrphansAreShownWhenNoExperimentIsListed )
+{
+   for ( const QString& run : { runOne, runTwo, runThree } )
+      ASSERT_TRUE( QDir( runDir( run ) ).removeRecursively() );
+
+   // Whether the catalog reads the orphans of a store with no experiment
+   // in it is the catalog's to say; this side has to ask it regardless
+   {
+      US_DataCatalog probe;
+      QString        error;
+      ASSERT_TRUE( probe.open( US_DataCatalog::Disk, QString(), error ) );
+      ASSERT_TRUE( probe.loadRuns( error ) );
+      ASSERT_TRUE( probe.loadAll( error ) );
+
+      if ( probe.orphans().isEmpty() )
+         GTEST_SKIP() << "this catalog reads no orphans without an experiment";
+   }
+
+   US_DataModel model;
+   prepare( model );
+
+   int added = -1;
+   QObject::connect( &model, &US_DataModel::orphansAdded,
+                     [ & ]( int index ) { if ( added < 0 ) added = index; } );
+
+   model.scan_data();
+
+   EXPECT_EQ( model.experimentCount(), 0 );
+   ASSERT_GE( added, 0 );
+   EXPECT_TRUE( model.run_entry( added ).orphans );
+}
+
+// -------------------------------------------------------- stopping
+
+// A scan asked to stop -- the window is closing -- stops after the step it
+// is in, and says so
+TEST_F( TestUSDataModel, AScanCanBeStopped )
+{
+   US_DataModel model;
+   prepare( model );
+
+   int merged = 0;
+   int added  = 0;
+   QObject::connect( &model, &US_DataModel::runMerged,
+                     [ & ]( int ) { if ( merged++ == 0 ) model.stop_scan(); } );
+   QObject::connect( &model, &US_DataModel::orphansAdded,
+                     [ & ]( int ) { added++; } );
+
+   model.scan_data();
+
+   EXPECT_EQ   ( merged, 1 );
+   EXPECT_EQ   ( added,  0 );
+   EXPECT_TRUE ( model.scan_stopped() );
+   EXPECT_FALSE( model.scan_active() );
+   EXPECT_EQ   ( model.pending_runs(), 0 );
+   EXPECT_EQ   ( model.pending_verifies(), 0 );
+
+   // stop_scan() outside a scan does nothing, and the next scan runs whole
+   model.stop_scan();
+   model.scan_data();
+   EXPECT_FALSE( model.scan_stopped() );
+
+   for ( int ii = 0; ii < model.experimentCount(); ii++ )
+      EXPECT_TRUE( model.run_entry( ii ).loaded );
+}
+
+// -------------------------------------------------------- the sample tree
+
+// The sample tree shown before a scan is no data anywhere: it carries no
+// record ID that could reach the server, and nothing can be done to it
+TEST_F( TestUSDataModel, TheSampleTreeCannotBeActedOn )
+{
+   US_DataModel   model;
+   QTreeWidget    tw;
+   US_DataProcess proc( &model );
+   US_DataTree    tree( &model, &tw );
+   model.setSiblings( &proc, &tree );
+
+   QStringList prompts;
+   tree.setPrompter( [ & ]( int, const QString&, const QString& text )
+                     { prompts << text; return true; } );
+
+   model.dummy_data();
+   tree.build_dtree();
+
+   EXPECT_TRUE( model.is_demo() );
+
+   for ( int row = 0; row < model.recCount(); row++ )
+   {
+      EXPECT_EQ( model.row_datadesc( row ).recordID, -1 );
+      EXPECT_EQ( model.row_datadesc( row ).parentID, -1 );
+   }
+
+   tw.topLevelItem( 0 )->setSelected( true );
+   EXPECT_EQ( tree.act_on_selection( "Database only", "DB-only remove" ),
+              US_DataTree::ACT_REFUSED );
+   EXPECT_EQ( tree.act_on_selection( "Local disk only", "Local-only remove" ),
+              US_DataTree::ACT_REFUSED );
+   EXPECT_EQ( prompts.size(), 2 );
+
+   // a scan makes it real data
+   prepare( model );
+   model.scan_data();
+   EXPECT_FALSE( model.is_demo() );
+}
+
+// -------------------------------------------------------- counts
+
+// The window adds up what each experiment holds as it is merged; the sum
+// is the count of the whole tree, and the stand-ins are no experiments
+TEST_F( TestUSDataModel, RecordCountsAddUpPerExperiment )
+{
+   US_Model lost;
+   lost.modelGUID   = US_Util::new_guid();
+   lost.editGUID    = US_Util::new_guid();
+   lost.description = runOne + ".1A280.e1_a1_2DSA_i01.model";
+   ASSERT_EQ( lost.write( US_Settings::dataDir() + "/models/M0000005.xml" ),
+              US_DB2::OK );
+
+   US_DataModel model;
+   prepare( model );
+   model.scan_data();
+
+   US_DataModel::Counts sum;
+
+   for ( int ii = 0; ii < model.runCount(); ii++ )
+      sum.add( model.count_records( ii ) );
+
+   US_DataModel::Counts all = model.count_records();
+
+   for ( int kind = US_DataModel::RAW; kind <= US_DataModel::NOISE; kind++ )
+   {
+      EXPECT_EQ( sum.lo[ kind ], all.lo[ kind ] );
+      EXPECT_EQ( sum.db[ kind ], 0 );
+   }
+
+   EXPECT_EQ( all.lo[ US_DataModel::RAW   ], 4 );
+   EXPECT_EQ( all.lo[ US_DataModel::MODEL ], 2 );
+   EXPECT_EQ( model.experimentCount(), 3 );
+   EXPECT_EQ( model.runCount(), 4 );
 }

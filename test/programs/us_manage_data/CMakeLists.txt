@@ -32,8 +32,6 @@ set(MANAGE_SOURCES
         ${manage_dir}/us_data_process.h
         ${manage_dir}/us_data_tree.cpp
         ${manage_dir}/us_data_tree.h
-        ${manage_dir}/us_sync_exper.cpp
-        ${manage_dir}/us_sync_exper.h
         )
 
 file(GLOB MANAGE_TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/test_us_*.cpp")

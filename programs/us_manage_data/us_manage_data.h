@@ -6,7 +6,6 @@
 #include "us_data_model.h"
 #include "us_data_process.h"
 #include "us_data_tree.h"
-#include "us_sync_exper.h"
 #include "us_widgets.h"
 #include "us_db2.h"
 #include "us_model.h"
@@ -70,7 +69,9 @@ class US_ManageData : public US_Widgets
         int                 nlmods;     //!< Number of local model records
         int                 nlnois;     //!< Number of local noise records
         int                 nmerged;    //!< Experiments merged this scan
-        bool                verify_pending; //!< A comparison pass is queued
+        bool                verify_pending; //!< A pass of queued work is due
+        bool                closing;    //!< Closed while a scan was running
+        US_DataModel::Counts counts;    //!< Records merged so far, by kind
         int                 dbg_level;  //!< Debug level
         QStringList         triples;    //!< List of triples
         QStringList         runIDs;     //!< List of run IDs
@@ -102,6 +103,15 @@ class US_ManageData : public US_Widgets
         //! \brief Tell the user about records that share a GUID
         void review_duplicates( void );
 
+    protected:
+        /*! \brief A window closed while a scan runs stops the scan first
+
+            The scan runs inside the slot that started it, so the window
+            asks it to stop and closes when it has: nothing it would have
+            reported afterwards is shown for a window that is going away.
+        */
+        void closeEvent( QCloseEvent* event ) override;
+
     private slots:
         //! \brief Toggle the display of edits
         void toggle_edits( void );
@@ -119,12 +129,14 @@ class US_ManageData : public US_Widgets
         //! \param index The position of the experiment
         void run_merged( int index );
 
-        //! \brief Run the comparisons asked for outside a scan, in turn
+        //! \brief Do the reads and comparisons queued outside a scan, in
+        //!        turn, one per pass of the event loop
         //! \param delay Milliseconds to wait first
         void schedule_verifies( int delay = 0 );
 
-        //! \brief Compare the next experiment asked for outside a scan
+        //! \brief Do the next read or comparison queued outside a scan
         void pump_verifies( void );
+
 
         //! \brief Scan data
         void scan_data( void );

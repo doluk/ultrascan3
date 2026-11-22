@@ -5,7 +5,6 @@
 #include "us_data_model.h"
 #include "us_datafiles.h"
 #include "us_settings.h"
-#include "us_sync_exper.h"
 #include "us_util.h"
 
 // class to process operatations on data:  upload/download/remove
@@ -15,10 +14,6 @@ US_DataProcess::US_DataProcess( US_DataModel* dmodel, QWidget* parent /*=0*/ )
    da_model         = dmodel;
    db               = da_model->dbase();
    dbg_level        = US_Settings::us_debug();
-
-   // Nothing here synchronizes experiments any more (see record_upload),
-   // and building the synchronizer lists every experiment in the database
-   syncExper        = NULL;
 }
 
 // perform a record upload to the database from local disk
@@ -39,17 +34,44 @@ DbgLv(1) << "REC_ULD: row" << row+1;
       return stat;
    }
 
-   // Both sources write UTC date-times; a date that cannot be read is no
-   // reason to refuse
-   QDateTime dtime  = US_DataModel::parse_date( cdesc.lastmodDate );
-   QDateTime ftime  = US_DataModel::parse_date( cdesc.filemodDate );
-
-   if ( ( cdesc.recState & US_DataModel::REC_DB ) != 0  &&
-        dtime.isValid()  &&  ftime.isValid()  &&  ftime < dtime )
-   {  // Cannot replace DB record with older Local record
-      errMsg = tr( "The Local file record is older than the DB record." );
-      stat   = 3061;
+   if ( ! parent_in( row, US_DataModel::REC_DB ) )
+   {  // A record goes to the DB after its parent, never before it
+      errMsg = tr( "Cannot upload %1: its parent record is not in the"
+                   " database.  Upload the parent first." )
+               .arg( cdesc.label );
+      stat   = NO_PARENT;
       return stat;
+   }
+
+   if ( unsafe_run( row ) )
+      return UNSAFE_RUN;
+
+   if ( ( cdesc.recState & US_DataModel::REC_DB ) != 0 )
+   {  // A DB replace: is there anything to replace?
+      int same = same_contents( cdesc );
+
+      if ( same > 0 )
+      {  // The DB holds what the file holds -- it may well have come
+         // from this very file, so its date says nothing
+         errMsg = tr( "%1 is already in sync: nothing to upload." )
+                  .arg( cdesc.label );
+         return IN_SYNC;
+      }
+
+      // The contents differ (or could not be compared):  a local copy that
+      // is older than the DB copy does not replace it.  Both dates are
+      // compared as UTC -- the catalogs read them so -- and a date that
+      // cannot be read is no reason to refuse.
+      QDateTime dtime  = US_DataModel::parse_date( cdesc.lastmodDate );
+      QDateTime ftime  = US_DataModel::parse_date( cdesc.filemodDate );
+
+      if ( dtime.isValid()  &&  ftime.isValid()  &&  ftime < dtime )
+      {
+         errMsg = tr( "The Local file record is older than the DB record,"
+                      " and the two differ." );
+         stat   = 3061;
+         return stat;
+      }
    }
 
    QStringList query;
@@ -66,7 +88,6 @@ DbgLv(1) << "REC_ULD: row" << row+1;
                          .replace( ".", " / " );
 DbgLv(1) << "REC_ULD:RAW: runID" << runID << "  tripl" << tripl;
 
-      //stat = syncExper->synchronize( cdesc );
 DbgLv(1) << "REC_ULD:RAW: parentGUID" << cdesc.parentGUID;
       QString expGUID  = cdesc.parentGUID;
 
@@ -188,6 +209,7 @@ DbgLv(2) << "NOISE: (2) filepath" << filepath;
       cdesc.recState &= ~US_DataModel::HV_DET;
       cdesc.contents  = QString();
       da_model->change_datadesc( cdesc, row );
+      da_model->record_changed ( row );
    }
 
    return stat;
@@ -210,6 +232,18 @@ int US_DataProcess::record_download( int row )
       stat   = 3061;
       return stat;
    }
+
+   if ( ! parent_in( row, US_DataModel::REC_LO ) )
+   {  // A local record with no local parent would be an orphan on disk
+      errMsg = tr( "Cannot download %1: its parent record is not on local"
+                   " disk.  Download the parent first." )
+               .arg( cdesc.label );
+      stat   = NO_PARENT;
+      return stat;
+   }
+
+   if ( unsafe_run( row ) )
+      return UNSAFE_RUN;
 
    int idData       = cdesc.recordID;
    QString dataID   = QString::number( idData );
@@ -346,6 +380,7 @@ int US_DataProcess::record_download( int row )
          cdesc.filename = filepath;
 
       da_model->change_datadesc( cdesc, row );
+      da_model->record_changed ( row );
    }
 
    return stat;
@@ -441,6 +476,7 @@ DbgLv(1) << "NOI_RMV:    lastErr" << db->lastError() << db->lastErrno();
          cdesc.recState  = US_DataModel::NOSTAT;
 
       da_model->change_datadesc( cdesc, row );
+      da_model->record_changed ( row );
    }
 
    return stat;
@@ -490,6 +526,7 @@ int US_DataProcess::record_remove_local( int row )
    if ( stat == 0 )
    {
       da_model->change_datadesc( cdesc, row );
+      da_model->record_changed ( row );
    }
 
    return stat;
@@ -569,7 +606,69 @@ void US_DataProcess::appendError( QString aperrMsg )
    errMsg += aperrMsg;
 }
 
+// True when a record's parent is in the given place.  An edit's parent is
+// its raw record, which raw_ancestor_ok() looks at; a filler is in neither
+// place.  Uploads and downloads go top down, so a parent acted on in the
+// same action is in place by the time its children are reached.
+bool US_DataProcess::parent_in( int row, int place )
+{
+   US_DataModel::DataDesc desc = da_model->row_datadesc( row );
+
+   if ( desc.recType <= US_DataModel::EDIT )   return true;
+
+   int prow = da_model->parent_row( row );
+
+   if ( prow < 0 )   return false;
+
+   return ( ( da_model->row_datadesc( prow ).recState & place ) != 0 );
+}
+
+// True, with the message set, when the record's run must not be written to
+bool US_DataProcess::unsafe_run( int row )
+{
+   US_DataModel::RunEntry entry =
+      da_model->run_entry( da_model->run_of_row( row ) );
+
+   if ( ! entry.unsafe )   return false;
+
+   errMsg = tr( "Run %1 is marked \"(!)\": %2\n"
+                "Nothing is uploaded or downloaded for it until its local"
+                " directory is named after it and is the only one holding"
+                " it." ).arg( entry.runID ).arg( entry.problem );
+   return true;
+}
+
+// Whether the two copies of a record hold the same thing
+int US_DataProcess::same_contents( const US_DataModel::DataDesc& desc )
+{
+   QString dbd;
+   QString lod;
+
+   if ( ( desc.recState & US_DataModel::HV_DET ) != 0 )
+   {  // Compared already
+      dbd = desc.contents.section( " ", 0, 1 ).simplified();
+      lod = desc.contents.section( " ", 2, 3 ).simplified();
+   }
+
+   else
+   {  // Compare them now, this record only
+      QString error;
+
+      if ( ! US_DataModel::db_digest( db, desc, dbd, error ) )
+         dbd.clear();
+
+      lod = US_DataModel::file_digest( desc.filename );
+   }
+
+   if ( dbd.isEmpty()  ||  lod.isEmpty()  ||
+        dbd.startsWith( "-" )  ||  lod.startsWith( "-" ) )
+      return -1;
+
+   return ( dbd == lod ) ? 1 : 0;
+}
+
 // Test for ancestor Raw record in both DB and local
+
 bool US_DataProcess::raw_ancestor_ok( int row )
 {
    bool isOK = false;

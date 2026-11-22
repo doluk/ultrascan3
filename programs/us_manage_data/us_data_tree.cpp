@@ -90,13 +90,23 @@ void US_DataTree::row_look( const US_DataModel::DataDesc& desc,
          rsrc    = "Conflict";
 
          // A model or noise whose bytes differ may differ only in how its
-         // values were written out
+         // values were written out.  Asked once per record and comparison:
+         // it reads the record from both places.
          if ( ( ityp == US_DataModel::MODEL  ||  ityp == US_DataModel::NOISE )
-              &&  da_model->dbase() != NULL
-              &&  ! significant_diffs( desc, da_model->dbase() ) )
+              &&  da_model->dbase() != NULL  &&  desc.recordID >= 0
+              &&  ! da_model->is_demo() )
          {
-            fbru = QBrush( colorGreen );
-            rsrc = "In Sync";
+            QString key = desc.dataGUID + "|" + desc.contents;
+
+            if ( ! sigdiffs.contains( key ) )
+               sigdiffs.insert( key,
+                                significant_diffs( desc, da_model->dbase() ) );
+
+            if ( ! sigdiffs.value( key ) )
+            {
+               fbru = QBrush( colorGreen );
+               rsrc = "In Sync";
+            }
          }
          break;
 
@@ -106,6 +116,100 @@ void US_DataTree::row_look( const US_DataModel::DataDesc& desc,
          rsrc    = "dummy";
          break;
    }
+}
+
+// The look of an experiment row
+//
+// An experiment in both places says what its records say, as the tree shows
+// them: in conflict when one of them is, unverified while one of them is
+// not compared yet, and in sync otherwise.  A stand-in experiment is no
+// record of either place, and looks neutral.
+void US_DataTree::run_look( int runIndex, QBrush& fbru, QString& rtyp,
+                            QString& rsrc )
+{
+   US_DataModel::RunEntry entry = da_model->run_entry( runIndex );
+   US_DataModel::DataDesc desc  = da_model->row_datadesc( entry.row );
+
+   row_look( desc, fbru, rtyp, rsrc );
+
+   if ( entry.orphans )
+   {
+      fbru = QBrush( colorGray );
+      rsrc = "--";
+      return;
+   }
+
+   US_DataModel::SyncState state = US_DataModel::sync_state( desc );
+
+   if ( state != US_DataModel::SYNC_UNVERIFIED  &&
+        state != US_DataModel::SYNC_INSYNC      &&
+        state != US_DataModel::SYNC_CONFLICT )
+      return;                          // in one place only
+
+   if ( ! entry.loaded )               // nothing under it to go by yet
+      return;
+
+   bool unverified = ! entry.verified;
+   bool conflict   = false;
+
+   for ( int row = entry.firstRow; row >= 0  &&  row <= entry.lastRow; row++ )
+   {
+      US_DataModel::DataDesc cdsc = da_model->row_datadesc( row );
+
+      if ( ( cdsc.recState & US_DataModel::REC_DB ) == 0  ||
+           ( cdsc.recState & US_DataModel::REC_LO ) == 0 )
+         continue;
+
+      QBrush  cbru;
+      QString ctyp;
+      QString csrc;
+      row_look( cdsc, cbru, ctyp, csrc );
+
+      if ( csrc == "Conflict"   )   conflict   = true;
+      if ( csrc == "Unverified" )   unverified = true;
+   }
+
+   if ( conflict )
+   {
+      fbru = QBrush( colorRed );
+      rsrc = "Conflict";
+   }
+
+   else if ( unverified )
+   {
+      fbru = QBrush( colorTeal );
+      rsrc = "Unverified";
+   }
+
+   else
+   {
+      fbru = QBrush( colorGreen );
+      rsrc = "In Sync";
+   }
+}
+
+// The prompter that shows message boxes
+bool US_DataTree::ask_user( int kind, const QString& title,
+                            const QString& text )
+{
+   if ( prompter )
+      return prompter( kind, title, text );
+
+   if ( kind == PROMPT_INFORM )
+   {
+      QMessageBox::information( parentw, title, text );
+      return true;
+   }
+
+   return ( QMessageBox::question( parentw, title, text,
+                                   QMessageBox::Yes | QMessageBox::No,
+                                   QMessageBox::No ) == QMessageBox::Yes );
+}
+
+void US_DataTree::setPrompter(
+      std::function< bool( int, const QString&, const QString& ) > func )
+{
+   prompter = func;
 }
 
 // build the first layer of the data tree:  one row per experiment
@@ -121,6 +225,7 @@ void US_DataTree::build_dtree( )
 
    tw_recs->clear();
    runitems.clear();
+   sigdiffs.clear();
 
    int nruns  = da_model->runCount();
 
@@ -142,7 +247,7 @@ void US_DataTree::add_run( int runIndex )
    QBrush  fbru( colorBrown );
    QString rtyp;
    QString rsrc;
-   row_look( desc, fbru, rtyp, rsrc );
+   run_look( runIndex, fbru, rtyp, rsrc );
 
    // A source that could not count the chain yet says so with a question
    // mark rather than a zero that is not true
@@ -179,6 +284,15 @@ void US_DataTree::add_run( int runIndex )
          item->setToolTip( jj, tip );
 
       item->setText( 1, desc.label + " (!)" );
+   }
+
+   else if ( entry.globals )
+   {
+      for ( int jj = 0; jj < ntcols; jj++ )
+         item->setToolTip( jj, tr( "Global models, which belong to no edit"
+                                   " by design, and their noise; the gray"
+                                   " rows stand in for the edit and raw"
+                                   " data they do not have." ) );
    }
 
    else if ( entry.orphans )
@@ -286,6 +400,25 @@ void US_DataTree::fill_run( int runIndex )
    runitem->setText( 4, QString( "%1, %2" ).arg( nchdb ).arg( nchlo ) );
    runitem->setText( 5, QString( "%1, %2" ).arg( entry.dbCount )
                                            .arg( entry.loCount ) );
+
+   refresh_run_item( runIndex );
+}
+
+// Colour an experiment row from what is under it now
+void US_DataTree::refresh_run_item( int runIndex )
+{
+   if ( runIndex < 0  ||  runIndex >= runitems.size() )   return;
+
+   QBrush  fbru( colorBrown );
+   QString rtyp;
+   QString rsrc;
+   run_look( runIndex, fbru, rtyp, rsrc );
+
+   QTreeWidgetItem* item = runitems[ runIndex ];
+   item->setText( 3, rsrc );
+
+   for ( int jj = 0; jj < ntcols; jj++ )
+      item->setForeground( jj, fbru );
 }
 
 /* Colour one experiment's rows again.
@@ -303,7 +436,9 @@ void US_DataTree::refresh_run( int runIndex )
    if ( ! entry.loaded )                                  return;
 
    QList< QTreeWidgetItem* > stack;
-   stack << runitems[ runIndex ];
+
+   for ( int ii = 0; ii < runitems[ runIndex ]->childCount(); ii++ )
+      stack << runitems[ runIndex ]->child( ii );
 
    while ( ! stack.isEmpty() )
    {
@@ -329,7 +464,10 @@ void US_DataTree::refresh_run( int runIndex )
       for ( int jj = 0; jj < ntcols; jj++ )
          item->setForeground( jj, fbru );
    }
+
+   refresh_run_item( runIndex );
 }
+
 
 // make sure an experiment's records are read, outside a scan
 bool US_DataTree::ensure_loaded( int runIndex )
@@ -472,6 +610,16 @@ DbgLv(2) << "    context_menu row" << irow+1;
           & US_DataModel::REC_DB ) == 0 )
       aupload->setEnabled( false );
 
+   // The sample tree is no data anywhere: it can only be looked at
+   if ( da_model->is_demo() )
+   {
+      aupload->setEnabled( false );
+      adnload->setEnabled( false );
+      adbasrm->setEnabled( false );
+      aloclrm->setEnabled( false );
+      abothrm->setEnabled( false );
+   }
+
    // display the context menu and act on selection
    QAction* chosen = cmenu.exec( QCursor::pos() );
 
@@ -522,29 +670,50 @@ void US_DataTree::dtree_help()
       tr( "              or one copy could not be read to compare it.\n")+
       tr( "  Gray   :  This record is a filler for a missing parent.\n" ) +
       tr( "              Records whose parent is missing are shown under\n" ) +
-      tr( "              such fillers, under a last experiment row,\n" ) +
-      tr( "              \"(records of no experiment)\", so they can still\n" ) +
-      tr( "              be removed.  A run marked \"(!)\" has a problem;\n" ) +
-      tr( "              hold the mouse over it to see which.  Run IDs\n" ) +
-      tr( "              with dots are legacy: still shown, no longer\n" ) +
-      tr( "              accepted for new runs.\n\n" ) +
+      tr( "              such fillers, under an experiment row of their\n" ) +
+      tr( "              own, \"(records of no experiment)\", so they can\n" ) +
+      tr( "              still be removed.  Global models, which have no\n" ) +
+      tr( "              edit by design, are under \"(global models)\".\n" ) +
+      tr( "              These two rows are no record themselves, and\n" ) +
+      tr( "              their Source reads \"--\"; removing from one of\n" ) +
+      tr( "              them asks first, saying how many records go.\n" ) +
+      tr( "              A record whose parent is only in the other place\n" ) +
+      tr( "              is shown under that parent, paired with its\n" ) +
+      tr( "              other copy.\n\n" ) +
+      tr( "  An experiment row in both places reads Conflict when any\n" ) +
+      tr( "  record under it does, Unverified while any is not compared,\n" ) +
+      tr( "  and In Sync otherwise.  A run marked \"(!)\" has a problem;\n" ) +
+      tr( "  hold the mouse over it to see which.  Run IDs with dots are\n" ) +
+      tr( "  legacy: still shown, no longer accepted for new runs.  When\n" ) +
+      tr( "  its local directory is not named after it, or is not the only\n" ) +
+      tr( "  one holding it, nothing is uploaded or downloaded for it; its\n" ) +
+      tr( "  records can still be removed.\n\n" ) +
       tr( "Scan Progress --\n\n" ) +
       tr( "  The upper bar counts the steps of the phase that is running\n" ) +
       tr( "  (listing, reading, comparing); the lower bar the work inside\n" ) +
-      tr( "  the experiment being read.  Opening an experiment while a\n" ) +
-      tr( "  scan runs moves it to the front of the queue.\n\n" ) +
+      tr( "  the experiment being read.  The window takes input between\n" ) +
+      tr( "  experiments; a database query holds it up while it runs, and\n" ) +
+      tr( "  while local files are read it is redrawn but takes no input.\n" ) +
+      tr( "  Opening an experiment while a scan runs moves it to the front\n" ) +
+      tr( "  of the queue.  Closing the window stops the scan.\n\n" ) +
       tr( "Tree Entry Processes --\n\n" ) +
       tr( "  A right-mouse-button click on any cell of a row pops up\n" ) +
       tr( "  a context menu with actions to take for the record.\n" ) +
       tr( "  Menu items will only be enabled if the action is\n" ) +
       tr( "  appropriate for the particular record shown in the row.\n" ) +
       tr( "  On an experiment or a raw record, an action applies to\n" ) +
-      tr( "  everything under it.  No action is offered while a scan runs.\n" ) +
+      tr( "  everything under it.  No action is offered while a scan runs,\n" ) +
+      tr( "  nor on the sample tree shown before the first scan.\n" ) +
       tr( "  Possible actions are:\n" ) +
       tr( "    \"upload to DB\"\n" ) +
-      tr( "       -> Upload this local record to the database;\n" ) +
+      tr( "       -> Upload this local record to the database.  A record\n" ) +
+      tr( "          the database holds already is replaced only when the\n" ) +
+      tr( "          two copies differ, and then not by an older copy.\n" ) +
       tr( "    \"download to local\"\n" ) +
-      tr( "       -> Download this DB record to local disk.\n" ) +
+      tr( "       -> Download this DB record to local disk; its parent\n" ) +
+      tr( "          has to be on local disk, or be downloaded with it.\n" ) +
+      tr( "  A record changed by an action is compared again on its own.\n" ) +
+
       tr( "    \"remove from DB\"\n" ) +
       tr( "       -> Remove this record from the database.\n" ) +
       tr( "    \"remove from local\"\n" ) +
@@ -793,8 +962,15 @@ void US_DataTree::action_result( int stat, QString item_act )
    }
 
    else if ( stat == ACT_REFUSED )
-   {  // the GMP guard said no, and has said why
-      text = tr( "\"%1\" refused: GMP data" ).arg( item_act );
+   {  // refused, and the user has been told why
+      text = tr( "\"%1\" refused" ).arg( item_act );
+   }
+
+   else if ( stat == ACT_IN_SYNC )
+   {  // a DB replace found the database holds what the files hold
+      text = tr( "\"%1\": nothing to upload -- already in sync" )
+             .arg( item_act );
+      ask_user( PROMPT_INFORM, item_act, text );
    }
 
    else if ( stat == 0 )
@@ -974,6 +1150,7 @@ int US_DataTree::do_actions( QString item_exs, QString item_act )
 DbgLv(1) << "ITEM do_actions" << narows << item_exs << item_act;
    int naerrs  = 0;
    int nacted  = 0;
+   int nsynced = 0;
    int istat   = 0;
    bool frDB   = item_exs.contains( "Datab" )
               || item_exs.contains( "DB "   );
@@ -992,6 +1169,91 @@ DbgLv(1) << "ITEM do_actions" << narows << item_exs << item_act;
    gmp_models.clear();
    gmp_models_read = false;
 
+   // The sample tree shown before a scan is no data anywhere
+   if ( da_model->is_demo() )
+   {
+      ask_user( PROMPT_INFORM, tr( "Sample Data" ),
+                tr( "This tree is a sample of the states records can be"
+                    " in, not your data.  Click \"Scan Data\" to see your"
+                    " data and act on it." ) );
+      return ACT_REFUSED;
+   }
+
+   // Nothing is written for a run whose directory is not where it should
+   // be: an upload or a download would put its records somewhere else
+   if ( upLoad || dnLoad )
+   {
+      QStringList unsafe;
+
+      for ( int jj = 0; jj < narows; jj++ )
+      {
+         US_DataModel::RunEntry entry =
+            da_model->run_entry( da_model->run_of_row( actrows[ jj ] ) );
+
+         if ( entry.unsafe  &&  ! unsafe.contains( entry.runID ) )
+            unsafe << entry.runID;
+      }
+
+      if ( ! unsafe.isEmpty() )
+      {
+         ask_user( PROMPT_INFORM, tr( "Run Marked \"(!)\"" ),
+            tr( "Nothing is uploaded or downloaded for these runs, since"
+                " their local directories are not named after them or are"
+                " not the only ones holding them:\n\n  %1\n\n"
+                "Hold the mouse over a run marked \"(!)\" to see why.  Its"
+                " records can still be removed." )
+            .arg( unsafe.join( "\n  " ) ) );
+         return ACT_REFUSED;
+      }
+   }
+
+   // Removing from a stand-in experiment removes everything under it, and
+   // that is a whole class of records: it is spelled out and asked again
+   if ( remove )
+   {
+      for ( int ii = 0; ii < selitems.size(); ii++ )
+      {
+         if ( selitems[ ii ]->parent() != NULL )   continue;
+
+         int runIndex = runitems.indexOf( selitems[ ii ] );
+         US_DataModel::RunEntry entry = da_model->run_entry( runIndex );
+
+         if ( ! entry.orphans )                    continue;
+
+         int count = 0;
+
+         for ( int jj = 0; jj < narows; jj++ )
+         {
+            int irow = actrows[ jj ];
+
+            if ( da_model->run_of_row( irow ) != runIndex )   continue;
+
+            int state = da_model->row_datadesc( irow ).recState;
+
+            if ( ( frDB  &&  ( state & US_DataModel::REC_DB ) != 0 )  ||
+                 ( frLoc &&  ( state & US_DataModel::REC_LO ) != 0 ) )
+               count++;
+         }
+
+         if ( count == 0 )                         continue;
+
+         QString where = ( frDB && frLoc ) ? tr( "the database and local disk" )
+                       : frDB ? tr( "the database" ) : tr( "local disk" );
+
+         if ( ! ask_user( PROMPT_CONFIRM, tr( "Remove All of %1" )
+                          .arg( entry.runID ),
+                tr( "This removes all %1 record(s) under \"%2\" from %3.\n\n"
+                    "%4\n\nRemove all %1 of them?" )
+                .arg( count ).arg( entry.runID ).arg( where )
+                .arg( entry.globals
+                      ? tr( "Global models are not broken records: they"
+                            " belong to no edit by design." )
+                      : tr( "These are records whose experiment or parent"
+                            " is missing." ) ) ) )
+            return ACT_CANCELLED;
+      }
+   }
+
    if ( remove && frDB )
    {  // Nothing is removed if any of it is required by the GMP framework
       for ( int jj = 0; jj < narows; jj++ )
@@ -1005,7 +1267,7 @@ DbgLv(1) << "ITEM do_actions" << narows << item_exs << item_act;
 
          if ( check_filename_for_autoflow( runID ) )
          {
-            QMessageBox::information( parentw, tr( "Data Cannot be Deleted" ),
+            ask_user( PROMPT_INFORM, tr( "Data Cannot be Deleted" ),
                tr( "The Data for the Run:\n\n"
                    "\"%1\"\n\n"
                    "can NOT be deleted since it is required by the GMP framework!" )
@@ -1021,7 +1283,7 @@ DbgLv(1) << "ITEM do_actions" << narows << item_exs << item_act;
 
             if ( is_modelIDs_from_autoflow( QString::number( model_idDB ) ) )
             {
-               QMessageBox::information( parentw,
+               ask_user( PROMPT_INFORM,
                   tr( "Selected Model GMP produced!" ),
                   tr( "Selected Model / Noise "
                       "was generated within GMP framework!\n\n"
@@ -1053,7 +1315,9 @@ DbgLv(1) << "ITEM do_actions" << narows << item_exs << item_act;
             if ( ( ddesc.recState & US_DataModel::REC_LO ) == 0 )
                ddesc.recState  = US_DataModel::NOSTAT;
 
+            ddesc.contents  = QString();
             da_model->change_datadesc( ddesc, irow );
+            da_model->record_changed ( irow );
             continue;
          }
 
@@ -1113,8 +1377,15 @@ DbgLv(1) << "RMV_REC: irow stat1" << irow << stat1;
             if ( ddesc.recType != ii )  continue;  // not at current level
             if ( ( ddesc.recState & US_DataModel::REC_LO ) == 0 )  continue;
 
-            nacted++;
             int stat1  = da_process->record_upload( irow );
+
+            if ( stat1 == US_DataProcess::IN_SYNC )
+            {  // nothing to do for this one, and that is no error
+               nsynced++;
+               continue;
+            }
+
+            nacted++;
 
             if ( stat1 != 0 )
             {
@@ -1177,8 +1448,9 @@ DbgLv(1) << "RMV_REC: irow stat1" << irow << stat1;
    for ( int jj = 0; jj < runs.size(); jj++ )
       refresh_run( runs[ jj ] );
 
-   if ( nacted == 0 )
-      return ACT_NOTHING;              // never "Success" for doing nothing
+   if ( nacted == 0 )                  // never "Success" for doing nothing
+      return ( nsynced > 0 ) ? ACT_IN_SYNC : ACT_NOTHING;
+
 
    if ( naerrs > 0  &&  naerrs < nacted )
    {  // Append to error message, explaining partial success

@@ -2,6 +2,7 @@
 
 #include <QApplication>
 #include <QTimer>
+#include <QCloseEvent>
 
 #include "us_manage_data.h"
 #include "us_data_model.h"
@@ -52,6 +53,10 @@ US_ManageData::US_ManageData() : US_Widgets()
    dbg_level     = US_Settings::us_debug();
    nmerged       = 0;
    verify_pending = false;
+   closing       = false;
+   da_model      = NULL;
+   da_tree       = NULL;
+   da_process    = NULL;
 
    // set up the GUI
    setWindowTitle( tr( "Manage US DB/Local Data Sets" ) );
@@ -355,13 +360,13 @@ DbgLv(1) << "GUI setup complete";
    connect( da_model, &US_DataModel::runMerged,
             this,     &US_ManageData::run_merged );
    connect( da_model, &US_DataModel::orphansAdded, this, [ this ]( int index )
-            { da_tree->add_run( index ); reportDataStatus(); } );
+            { da_tree->add_run( index ); run_merged( index ); } );
    connect( da_model, &US_DataModel::runCompared,
             da_tree,  &US_DataTree::refresh_run );
 
-   // A comparison asked for outside a scan is done in the background, one
-   // experiment per turn of the event loop
-   connect( da_model, &US_DataModel::verifyRequested,
+   // A read or a comparison asked for outside a scan is done in the
+   // background, one experiment per turn of the event loop
+   connect( da_model, &US_DataModel::workRequested,
             this,     [ this ]() { schedule_verifies(); } );
 DbgLv(1) << "classes setup complete";
 
@@ -375,12 +380,14 @@ DbgLv(1) << "classes setup complete";
 // Reset the GUI
 void US_ManageData::reset( void )
 {
+   if ( da_model == NULL )             return;   // no database
    if ( da_model->scan_active()  ||  da_model->is_busy() )
       return;                          // never under a running scan
 
    da_model->dummy_data ();
    da_tree ->build_dtree();
 
+   counts = da_model->count_records();
    reportDataStatus();
 
    int src_flg = cb_source->currentIndex();
@@ -546,16 +553,19 @@ void US_ManageData::runs_listed()
 {
    da_tree ->build_dtree();
    fit_tree_columns();
-   reportDataStatus();
+   counts  = US_DataModel::Counts();
    nmerged = 0;
+   reportDataStatus();
 }
 
-// One experiment's records are in:  hang them under its row
+// One experiment's records are in:  hang them under its row, and add them
+// to the totals -- counting only what was just merged, not the whole tree
 void US_ManageData::run_merged( int index )
 {
    da_tree->fill_run( index );
+   counts.add( da_model->count_records( index ) );
 
-   if ( ( ++nmerged % 8 ) == 0 )
+   if ( ( ++nmerged % 8 ) == 0  ||  ! da_model->scan_active() )
       reportDataStatus();
 }
 
@@ -566,6 +576,7 @@ void US_ManageData::set_controls_enabled( bool enabled )
 {
    pb_scanda->setEnabled( enabled );
    pb_reset ->setEnabled( enabled );
+   pb_close ->setEnabled( enabled );   // the window manager's close stops it
    pb_hsedit->setEnabled( enabled );
    pb_hsmodl->setEnabled( enabled );
    pb_hsnois->setEnabled( enabled );
@@ -608,21 +619,49 @@ DbgLv(1) << "ScnDM:  Start          " << nowTime();
    da_model->scan_data();
 DbgLv(1) << "ScnDM:  Scan Done      " << nowTime();
 
+   if ( closing )
+   {  // Closed while it ran: nothing more to show, for a window going away
+      close();
+      return;
+   }
+
    fit_tree_columns();
 
    pgb_step ->setValue( pgb_step->maximum() );
 
    reset_hsbuttons( false, true, true, true );  // hs button labels,tooltips
 
-   // reformat and display report on record counts
+   // reformat and display report on record counts -- counted once more in
+   // full, since the stand-ins and any action meanwhile changed them
+   counts = da_model->count_records();
    reportDataStatus();
 
    set_controls_enabled( true );
 
+   if ( da_model->scan_stopped() )   return;
+
    report_scan_errors();
    report_run_problems();
    review_duplicates();
+
+   // Anything asked for while the last phase ran
+   if ( da_model->pending_runs() > 0  ||  da_model->pending_verifies() > 0 )
+      schedule_verifies();
 DbgLv(1) << "ScnDM:  Scan All Done  " << nowTime();
+}
+
+// Closing while a scan runs stops it; the window closes once it has
+void US_ManageData::closeEvent( QCloseEvent* event )
+{
+   if ( da_model != NULL  &&  da_model->scan_active() )
+   {
+      closing = true;
+      da_model->stop_scan();
+      event->ignore();                 // scan_data() closes it when it returns
+      return;
+   }
+
+   US_Widgets::closeEvent( event );
 }
 
 // Make sure the comparisons asked for outside a scan get done
@@ -634,11 +673,14 @@ void US_ManageData::schedule_verifies( int delay )
    QTimer::singleShot( delay, this, &US_ManageData::pump_verifies );
 }
 
-// Compare the experiments asked for outside a scan, one per event-loop turn
+// Do what was asked for outside a scan, one experiment per event-loop turn
 //
 // Opening an experiment only asks for it to be compared, so opening rows --
 // or "Show All Edits", which opens all of them -- never waits for a
-// comparison; this does them in the background, one at a time.
+// comparison, and a read asked for while another was in progress is not
+// dropped; this does them in the background, one at a time.  The model
+// reports each one as the scan would, so the tree is updated by the same
+// connections (runMerged, runCompared).
 void US_ManageData::pump_verifies()
 {
    verify_pending = false;
@@ -651,17 +693,17 @@ void US_ManageData::pump_verifies()
       return;
    }
 
-   int index = da_model->next_pending_verify();
+   int index = da_model->next_pending_run();
+   index     = ( index >= 0 ) ? index : da_model->next_pending_verify();
 
    if ( index < 0 )   return;
 
-   status_text( tr( "Comparing %1 ..." )
+   status_text( tr( "Reading and comparing %1 ..." )
                 .arg( da_model->run_entry( index ).runID ) );
 
-   if ( da_model->verify_run( index ) )
-      da_tree->refresh_run( index );
+   da_model->pump_once();
 
-   if ( da_model->pending_verifies() > 0 )
+   if ( da_model->pending_runs() > 0  ||  da_model->pending_verifies() > 0 )
       schedule_verifies();
    else
       status_text( tr( "Comparison complete" ) );
@@ -810,6 +852,9 @@ void US_ManageData::fit_tree_columns()
 // Open dialog and get investigator when button clicked
 void US_ManageData::sel_investigator()
 {
+   if ( da_model->scan_active()  ||  da_model->is_busy() )
+      return;                          // never under a running read
+
    US_Investigator* inv_dialog = new US_Investigator( true, personID );
 
    connect( inv_dialog,
@@ -820,13 +865,25 @@ void US_ManageData::sel_investigator()
 }
 
 // Assign an investigator string in proper id:lastname,firstname form
+//
+// Everything shown belongs to the person who was selected: the tree, the
+// catalogs it was read from, the run list and the queued work all go, as on
+// Reset, so nothing of theirs is shown as -- or acted on for -- the new one.
 void US_ManageData::assign_investigator( int invID )
 {
+   if ( da_model->scan_active()  ||  da_model->is_busy() )
+      return;                          // never under a running read
+
+   bool changed = ( invID != personID );
+
    personID   = invID;
    le_invtor->setText( QString::number( personID )
          + ": " + US_Settings::us_inv_name() );
 
    da_model->setDatabase( db );
+
+   if ( changed )
+      reset();
 }
 
 // Handle a mouse press on a row cell
@@ -840,52 +897,21 @@ void US_ManageData::clickedItem( QTreeWidgetItem* item )
 }
 
 // report status of data
+//
+// The counts are kept as the experiments are merged (see run_merged), so
+// this only formats them; walking every row each time made a large scan
+// quadratic.
 void US_ManageData::reportDataStatus()
 {
-   US_DataModel::DataDesc cdesc;
+   ndraws     = counts.db[ US_DataModel::RAW   ];
+   ndedts     = counts.db[ US_DataModel::EDIT  ];
+   ndmods     = counts.db[ US_DataModel::MODEL ];
+   ndnois     = counts.db[ US_DataModel::NOISE ];
+   nlraws     = counts.lo[ US_DataModel::RAW   ];
+   nledts     = counts.lo[ US_DataModel::EDIT  ];
+   nlmods     = counts.lo[ US_DataModel::MODEL ];
+   nlnois     = counts.lo[ US_DataModel::NOISE ];
 
-   // count each type of record
-   ncrecs     = da_model->recCount();
-   ndrecs     = da_model->recCountDB();
-   nlrecs     = da_model->recCountLoc();
-   ncraws     = ncedts = ncmods = ncnois = 0;
-   ndraws     = ndedts = ndmods = ndnois = 0;
-   nlraws     = nledts = nlmods = nlnois = 0;
-
-   for ( int ii = 0; ii < ncrecs; ii++ )
-   {
-      cdesc   = da_model->row_datadesc( ii );
-
-      if ( cdesc.recType == 1 )
-      {
-         ncraws++;
-         ndraws    += ( cdesc.recState & US_DataModel::REC_DB ) != 0 ? 1 : 0;
-         nlraws    += ( cdesc.recState & US_DataModel::REC_LO ) != 0 ? 1 : 0;
-      }
-
-      else if ( cdesc.recType == 2 )
-      {
-         ncedts++;
-         ndedts    += ( cdesc.recState & US_DataModel::REC_DB ) != 0 ? 1 : 0;
-         nledts    += ( cdesc.recState & US_DataModel::REC_LO ) != 0 ? 1 : 0;
-      }
-
-      else if ( cdesc.recType == 3 )
-      {
-         ncmods++;
-         ndmods    += ( cdesc.recState & US_DataModel::REC_DB ) != 0 ? 1 : 0;
-         nlmods    += ( cdesc.recState & US_DataModel::REC_LO ) != 0 ? 1 : 0;
-      }
-
-      else if ( cdesc.recType == 4 )
-      {
-         ncnois++;
-         ndnois    += ( cdesc.recState & US_DataModel::REC_DB ) != 0 ? 1 : 0;
-         nlnois    += ( cdesc.recState & US_DataModel::REC_LO ) != 0 ? 1 : 0;
-      }
-   }
-
-   // In case there was filtering, recompute counts
    ndrecs     = ndraws + ndedts + ndmods + ndnois;
    nlrecs     = nlraws + nledts + nlmods + nlnois;
    ncrecs     = ndrecs + nlrecs;
@@ -896,7 +922,8 @@ void US_ManageData::reportDataStatus()
 
    // Reformat and display report on record counts
    te_status->setText(
-      QString::asprintf( "%5d", da_model->runCount() ) +
+      QString::asprintf( "%5d", da_model->experimentCount() ) +
+
       tr( " Experiments;\n"                    ) +
       QString::asprintf( "%5d", ncrecs ) +
       tr( " Combined Total data sets;\n  "    ) +
