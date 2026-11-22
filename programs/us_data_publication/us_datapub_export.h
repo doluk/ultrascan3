@@ -158,12 +158,21 @@ class US_DataPubExporter : public QObject
       static QString runTypeOf( const US_DataPubCatalog::Run& run );
 
    private:
+      //! Lets the unit tests drive the steps of an export one at a time
+      friend class US_DataPubExporterTest;
+
       US_DataPubManifest mani;
       US_DataPubBundle   bundle;
       US_DataPubCatalog  catalog;
       QStringList        logtext;
       bool               stage_payloads;
       int                step_count;
+
+      //! The scope the current export runs with
+      US_DataPub::Scope  exp_scope;
+
+      //! The noise records that were asked for by GUID
+      QStringList        explicit_noises;
 
       //! runID -> GUID of the rotor calibration the run was made with
       QMap< QString, QString > cal_guids;
@@ -198,6 +207,18 @@ class US_DataPubExporter : public QObject
       bool stageExperimentXml( const US_DataPubCatalog::Run&,
                                const QString& source, const QString& staged,
                                QString& );
+
+      //! False with an empty error when the profile is left out
+      bool stageRiProfile( const US_DataPubCatalog::Run&, const QByteArray&,
+                           const QString& rel, QString& );
+
+      //! Whether a raw data payload carries the GUID it is exported under
+      static bool checkRawGuid  ( const QString& path, const QString& guid,
+                                  QString& error );
+
+      //! Whether an edit payload carries its GUID and its raw data's
+      static bool checkEditGuids( const QString& path, const QString& editGUID,
+                                  const QString& rawGUID, QString& error );
       bool addRawData   ( const US_DataPubCatalog::Run&,
                           const US_DataPubCatalog::ExpInfo&, QString& );
       bool addTimeState ( const US_DataPubCatalog::Run&, QString& );

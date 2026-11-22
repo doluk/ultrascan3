@@ -99,7 +99,9 @@ class US_DataPubCatalog
             QString rotorGUID;     //!< rotorGUID used for the run
             QString rotorSerial;   //!< Serial number of the rotor
             QString rotorName;     //!< Name of the rotor
-            QString calibrationID; //!< rotorCalibrationID used for the run
+            //! rotorCalibrationID used for the run; empty when the record
+            //! names none (the rotor's first calibration is not assumed)
+            QString calibrationID;
 
             QStringList centerpieceIDs; //!< Centerpiece serial numbers used
             QStringList solutionIDs;    //!< solutionIDs used by the triples
@@ -207,8 +209,9 @@ class US_DataPubCatalog
           its field definitions; one without the other cannot be read, so a
           binary without its definitions is a failure, not a time state.
           For a database catalog the files are downloaded into \a workDir
-          when \a fetch is set; for a disk catalog the files in the run
-          directory are used.
+          when \a fetch is set, always as \c <runID>.time_state.tmst and
+          its \c .xml whatever file name the record keeps; for a disk
+          catalog the files in the run directory are used.
           \param run      The run whose time state is wanted
           \param workDir  A directory the files may be downloaded into
           \param fetch    Download the files (database only)

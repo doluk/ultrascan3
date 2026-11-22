@@ -24,6 +24,10 @@ class US_DataPubRecords
 {
    public:
       //! \brief Write a rotor calibration to a specific file
+      //!
+      //! Numbers are written with 17 significant digits, so they read back
+      //! as the same double; the file only replaces an existing one when
+      //! all of it was written.
       //! \param calibration The calibration record to write
       //! \param filename    The full path of the file to write
       //! \returns True when the file was written
@@ -38,6 +42,8 @@ class US_DataPubRecords
                                     US_Rotor::RotorCalibration& calibration );
 
       //! \brief Write an abstract centerpiece to a specific file
+      //!
+      //! As writeCalibration(): full precision, written in one step.
       //! \param centerpiece The centerpiece record to write
       //! \param filename    The full path of the file to write
       //! \returns True when the file was written
@@ -50,6 +56,41 @@ class US_DataPubRecords
       //! \returns True when the file could be read
       static bool readCenterpiece ( const QString& filename,
                                     US_AbstractCenterpiece& centerpiece );
+
+      /*! \brief The GUID a rotor calibration travels under
+
+          Its own GUID; an old calibration without one gets a GUID derived
+          from what it is -- its rotor's GUID, its ID, both coefficients at
+          full precision, the GUID of its calibration experiment and its
+          date -- so exporting it twice gives the same GUID, and two
+          installations only arrive at the same GUID for the same
+          calibration, not for two that happen to share an ID.
+          \param calibration The calibration record
+      */
+      static QString calibrationGuid(
+            const US_Rotor::RotorCalibration& calibration );
+
+      /*! \brief The GUID an abstract centerpiece travels under
+
+          Its own GUID; a table row without one gets a GUID derived from
+          its serial number, name, material, channels, shape, speed limit
+          and the full geometry, for the same reasons as calibrationGuid().
+          \param centerpiece The centerpiece record
+      */
+      static QString centerpieceGuid(
+            const US_AbstractCenterpiece& centerpiece );
+
+      /*! \brief Whether an RI intensity profile can be imported
+
+          The \c US_RIProfile XML that US_Experiment::saveRIDisk() writes:
+          well-formed, with \c US_RIProfile as its root element and at least
+          one \c RI element with a \c value.  An import refuses a bundle
+          whose profile is not, so an export does not carry one.
+          \param xml The content of the profile file
+          \param why Filled in with the reason when it is not usable
+      */
+      static bool riProfileIsUsable( const QByteArray& xml,
+                                     QString* why = nullptr );
 
       //! \brief The name a record type carries inside its payload file
       //! \param filename The full path of the payload file
