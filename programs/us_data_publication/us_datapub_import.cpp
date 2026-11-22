@@ -408,12 +408,13 @@ namespace
       return labs.isEmpty() ? US_Rotor::NOT_FOUND : US_Rotor::ROTOR_OK;
    }
 
-   // A plain file name: no directory part, not "." or ".."
+   // A single file name that is safe on every platform: no directory part,
+   // no control or invisible character, no device name (the rule of
+   // US_DataPub::isSafeFileName(), which every name the import writes --
+   // a renamed run's files included -- has to pass)
    bool plain_name( const QString& name )
    {
-      return ! name.isEmpty()  &&  name != "."  &&  name != ".."  &&
-             ! name.contains( '/' )  &&  ! name.contains( '\\' )  &&
-             ! name.contains( QChar( 0 ) );
+      return US_DataPub::isSafeFileName( name );
    }
 
    // The value of the "value" attribute of the first element of a name
@@ -659,6 +660,15 @@ bool US_DataPubImporter::checkBundle( QString& error ) const
             error = tr( "%1: the file name \"%2\" does not start with its run"
                         " ID %3" ).arg( entity.label() )
                     .arg( entity.filename ).arg( runID );
+            return false;
+         }
+
+         // A time state is always the pair <runID>.time_state.tmst/.xml
+         if ( type == US_DataPub::TimeState  &&
+              entity.filename != runID + ".time_state.tmst" )
+         {
+            error = tr( "%1: the file name \"%2\" is not %3.time_state.tmst" )
+                    .arg( entity.label() ).arg( entity.filename ).arg( runID );
             return false;
          }
       }
@@ -1249,18 +1259,16 @@ bool US_DataPubImporter::checkPayload( const US_DataPubEntity& entity,
          {
             QString    rpath;
             QByteArray rdata;
-            bool       rgood = false;
+            QString    why;
 
             if ( ! insideBundle( rip, rpath, error )  ||
                  ! read_capped( rpath, rdata, error ) )
                return false;
 
-            element_value( rdata, "RI", "value", rgood );
-
-            if ( ! rgood  ||  ! rdata.contains( "<US_RIProfile" ) )
+            if ( ! US_DataPubRecords::riProfileIsUsable( rdata, &why ) )
             {
-               error = tr( "The RI intensity profile of run %1 does not"
-                           " parse" ).arg( entity.name );
+               error = tr( "The RI intensity profile of run %1 cannot be"
+                           " used: %2" ).arg( entity.name ).arg( why );
                return false;
             }
          }
@@ -3982,8 +3990,8 @@ namespace
    name them as the target has them), so there the solutions go first and
    the manifest's solution-to-run dependency is the one edge left out.  The
    types are then sorted so that each comes after everything it needs,
-   keeping the manifest's section order where nothing decides; a cycle
-   refuses the bundle.
+   keeping a fixed order (hardware, chemistry, run, data, fits) where nothing
+   decides; a cycle refuses the bundle.
 */
 QList< US_DataPub::EntityType > US_DataPubImporter::importOrder(
       const US_DataPubManifest& manifest, US_DataPub::Target target,
@@ -3991,7 +3999,16 @@ QList< US_DataPub::EntityType > US_DataPubImporter::importOrder(
 {
    typedef US_DataPub::EntityType Type;
    bool                    db    = ( target == US_DataPub::TargetDb );
-   QList< Type >           types = US_DataPubManifest::orderedTypes();
+   QList< Type >           types;
+
+   // The order where no dependency decides: reference hardware, the
+   // chemistry, the run, its data, then what was fitted to it
+   types << US_DataPub::Project    << US_DataPub::RotorCalibration
+         << US_DataPub::Centerpiece << US_DataPub::Buffer
+         << US_DataPub::Analyte    << US_DataPub::Solution
+         << US_DataPub::Experiment << US_DataPub::RawData
+         << US_DataPub::TimeState  << US_DataPub::EditedData
+         << US_DataPub::Model      << US_DataPub::Noise;
    QMap< int, QSet< int > > needs;          // type -> the types it needs first
 
    auto need = [ &needs ]( Type type, Type parent )
@@ -4057,7 +4074,7 @@ QList< US_DataPub::EntityType > US_DataPubImporter::importOrder(
          if ( ! types.contains( Type( parent ) ) )  types << Type( parent );
    }
 
-   // ---- dependencies first, the manifest's order otherwise ---------------
+   // ---- dependencies first, the fixed order otherwise ------------------
    QList< Type > order;
    QSet< int >   placed;
 

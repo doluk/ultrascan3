@@ -12,6 +12,11 @@
 
 #include <functional>
 
+#if defined( Q_OS_UNIX )
+#include <cstdio>
+#include <unistd.h>
+#endif
+
 class DataPubImport : public DataPubTestEnv
 {
    protected:
@@ -1203,6 +1208,44 @@ TEST_F( DataPubCliImport, ADatabaseImportWithoutAPasswordStopsEarly )
    if ( ! saved.isEmpty() )  qputenv( "US3_DB_PASSWORD", saved );
 }
 
+#if defined( Q_OS_UNIX )
+// The password is settled before the bundle is even unpacked, with one
+// error that recommends the safe ways to give it
+TEST_F( DataPubCliImport, TheDatabasePasswordIsCheckedFirstWithOneError )
+{
+   QByteArray saved = qgetenv( "US3_DB_PASSWORD" );
+   qunsetenv( "US3_DB_PASSWORD" );
+
+   QString capture = root + "/stderr.txt";
+   fflush( stderr );
+   int     keep = dup( fileno( stderr ) );
+   FILE*   file = fopen( capture.toLocal8Bit().constData(), "w" );
+   ASSERT_NE( file, nullptr );
+   dup2( fileno( file ), fileno( stderr ) );
+
+   // A bundle that does not exist would be the error if inspect came first
+   int code = run( QStringList() << "--mode" << "import" << "--bundle"
+                   << root + "/no_such.tar.gz" << "--target" << "db"
+                   << "--non-interactive" );
+
+   fflush( stderr );
+   dup2( keep, fileno( stderr ) );
+   ::close( keep );
+   fclose( file );
+
+   if ( ! saved.isEmpty() )  qputenv( "US3_DB_PASSWORD", saved );
+
+   QFile   out( capture );
+   ASSERT_TRUE( out.open( QIODevice::ReadOnly ) );
+   QString text = QString::fromUtf8( out.readAll() );
+
+   EXPECT_EQ   ( code, 2 ) << text.toStdString();
+   EXPECT_EQ   ( text.count( "Error:" ), 1 ) << text.toStdString();
+   EXPECT_TRUE ( text.contains( "--db-password-file" ) ) << text.toStdString();
+   EXPECT_FALSE( text.contains( "no_such" ) ) << text.toStdString();
+}
+#endif
+
 TEST_F( DataPubCliImport, ADiskImportSucceedsAndAFailedOneSaysSo )
 {
    EXPECT_EQ( run( QStringList() << "--mode" << "import" << "--bundle"
@@ -1620,6 +1663,15 @@ TEST( DataPubImportOrder, TheOrderFollowsTheDependencies )
               indexIn( disk, US_DataPub::Experiment ) );
    EXPECT_LT( indexIn( db,   US_DataPub::Experiment ),
               indexIn( db,   US_DataPub::Solution ) );
+
+   QList< US_DataPub::EntityType > dbOrder;
+   dbOrder << US_DataPub::Project    << US_DataPub::RotorCalibration
+           << US_DataPub::Centerpiece << US_DataPub::Buffer
+           << US_DataPub::Analyte    << US_DataPub::Experiment
+           << US_DataPub::Solution   << US_DataPub::RawData
+           << US_DataPub::TimeState  << US_DataPub::EditedData
+           << US_DataPub::Model      << US_DataPub::Noise;
+   EXPECT_EQ( db, dbOrder );
 
    for ( int pass = 0; pass < 2; pass++ )
    {
