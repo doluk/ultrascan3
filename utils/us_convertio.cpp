@@ -19,12 +19,22 @@ US_ConvertIO::US_ConvertIO( void )
 // reports what is wrong with the run; whether that stops the load is left to
 // the caller.
 
-//! A usable run ID: letters, digits, '_' and '-', at most 80 characters.
+//! A usable run ID: letters, digits, '_' and '-', at most 80 characters,
+//! and not a name Windows reserves for a device.
 bool US_ConvertIO::runIdIsUsable( const QString& runID )
 {
-   static const QRegularExpression rx( "^[A-Za-z0-9_-]{1,80}$" );
+   // Anchored to the whole string: "$" alone would also match before a
+   // final newline, and "Run\n" would pass
+   static const QRegularExpression rx(
+      QRegularExpression::anchoredPattern( "[A-Za-z0-9_-]{1,80}" ) );
 
-   return rx.match( runID ).hasMatch();
+   // A run ID becomes a directory name, and Windows cannot create these
+   // (whatever their case), so a run that has one cannot be carried there
+   static const QRegularExpression device(
+      QRegularExpression::anchoredPattern( "CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9]" ),
+      QRegularExpression::CaseInsensitiveOption );
+
+   return rx.match( runID ).hasMatch()  &&  ! device.match( runID ).hasMatch();
 }
 
 namespace

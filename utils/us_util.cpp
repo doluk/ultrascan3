@@ -73,7 +73,11 @@ QString US_Util::md5sum_file( const QString& filename )
 
       if ( got == 0 )  break;
 
+#if QT_VERSION >= QT_VERSION_CHECK( 6, 0, 0 )
+      hash.addData( QByteArrayView( block.constData(), got ) );
+#else
       hash.addData( block.constData(), int( got ) );
+#endif
       total += got;
    }
 
