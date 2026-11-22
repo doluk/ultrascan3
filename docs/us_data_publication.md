@@ -591,12 +591,21 @@ checked as a whole first, and refused as a whole when any check fails:
 * **Run IDs and file names.** Every run ID — the bundle's, a renamed one, one
   typed into the conflict dialog — has to be a usable run ID: letters, digits,
   `_` and `-`, at most 80 characters (the rule `US_ConvertIO` applies to run
-  directories). Every raw data, edit and time state file name has to be a
-  plain file name that starts with its run ID.
+  directories, checked against the whole text, so not even a trailing newline
+  passes). A run type is one to eight letters and digits, again on the whole
+  text. Every file name the import writes has to be a single name that is safe
+  on every platform (`US_DataPub::isSafeFileName()`), and every raw data, edit
+  and time state file name has to start with its run ID; a time state is always
+  `<runID>.time_state.tmst` with its `.xml` definitions.
+* **GUIDs.** Every GUID the manifest names — a record's own and every one in
+  its `depends` — and every GUID inside a payload (an attribute `guid` or
+  `...GUID`, or the `value` of an element such as `editGUID`) has to be a GUID:
+  hexadecimal digits in groups of 8-4-4-4-12 and nothing else.
 * **Digests.** The manifest has to match `manifest.sha256`, and every payload
   has to match its digest -- the main payload of each record and every extra
   one (a time state's field definitions, an RI intensity profile, a buffer's
-  component definitions). A payload without a digest fails the check too;
+  component definitions); a digest is compared without regard to the case of
+  its hexadecimal digits. A payload without a digest fails the check too;
   `--no-verify` (or unchecking **Verify payload digests**) is the only way to
   import such a bundle.
 * **Contents.** Every payload has to parse as the record type the manifest
@@ -604,8 +613,17 @@ checked as a whole first, and refused as a whole when any check fails:
   `rawGUID` inside an `.auc` file and the `editGUID` and `rawDataGUID` inside an
   edit. The library writers update a record by the GUID inside its payload, so
   a payload naming another record could otherwise overwrite that one.
-* **Dependencies.** Every buffer and analyte a solution names, and the model a
-  noise record names, has to be in the bundle or already in the target.
+* **Dependencies.** Every buffer and analyte a solution names, the model a
+  noise record names, and the edit a model names (whether or not the manifest
+  lists it as a dependency) has to be in the bundle or already in the target.
+* **Buffer components.** A buffer's component definitions are read and checked
+  here, before anything is written (see *Buffer components* below). A bundle
+  of the older format, which carries no `componentsPayload`, is refused when
+  one of its buffers names components: a component ID of the exporting
+  installation means nothing without its definition.
+* **Runs** (database). The bundle's runs are looked up in the target now,
+  before the transaction opens (see *How a record is matched*); a run that
+  another investigator holds stops the import.
 * **The chosen project** (below) has to exist in the target, and in a database
   belong to the current investigator.
 
@@ -615,7 +633,9 @@ A database import runs in a single transaction on one connection. It is
 committed once every record is in, and rolled back on any failure, so a failed
 import leaves the database as it was. That holds within what a MySQL
 transaction can promise: the tables written are InnoDB, and no stored procedure
-commits by itself.
+commits by itself. Every lookup that can be made in advance — the bundle's runs
+among them — is made before the transaction opens, so that it is held open for
+the writes and little else.
 
 Raw data and edits are written the way the rest of UltraScan writes them, with
 `US_ConvertIO`: `writeRawDataToDB()` for a run's raw data rows and blobs, its
@@ -625,10 +645,17 @@ profile is read from its experiment XML and stored with the run.
 
 A database import writes nothing into the local disk store. Several library
 writers keep a local copy of what they store (`US_Project::saveToDB()`,
-`US_Solution::saveToDB()`, `US_Model::write()`, `US_Experiment::saveToDB()`,
-`US_Rotor::readLabsDB()`), so the import writes those records with the same
-stored procedures but without the copy. Its only files are work copies in the
-bundle's own staging directory, removed with it.
+`US_Buffer::saveToDB()`, `US_Analyte::write()`, `US_Solution::saveToDB()`,
+`US_Model::write()`, `US_Experiment::saveToDB()`, `US_Rotor::readLabsDB()`), so
+the import writes those records with the same stored procedures, in the same
+order and with the same arguments, but without the copy. For a buffer that is
+`new_buffer` and one `add_buffer_component` per component; for an analyte
+`new_analyte` and, for DNA and RNA, `set_nucleotide_info`. The extinction
+spectrum of either is stored as its extinction profile (`new_eprofile`, through
+`US_ExtProfile::create_eprofile()`): the library writers store a profile only
+for a spectrum they were told is new, which one read from a file never is. Its
+only files are work copies in the bundle's own staging directory, removed with
+it.
 
 A disk import writes files as it goes. When it fails part way, the files it
 already wrote stay, and the error lists them.
@@ -658,10 +685,19 @@ target does not have it.
 For every record in the manifest, in dependency order:
 
 1. **Same GUID already in the target** → that is the same record. It is reused,
-   and everything that depends on it is pointed at it. This includes a run: the
-   database has no lookup of an experiment by GUID, so the import reads the
-   investigator's experiments once and matches their GUIDs, whatever run ID
-   the run went by.
+   and everything that depends on it is pointed at it. This includes a run.
+   The database has no lookup of an experiment by GUID, and its experiment
+   listings are an investigator's own, so a run is looked up by its run ID
+   first — one query, which settles a run the investigator already holds — and
+   only a run that leaves open is looked for in the investigator's whole
+   experiment list (a run renamed in the target). A run the investigator does
+   not hold, but whose raw data the database has (the raw data lookup is not
+   limited to one investigator), belongs to someone else: the import stops,
+   rather than create a second experiment of that GUID or attach anything to
+   another person's records. (A run of someone else's that has no raw data
+   cannot be seen this way; the database's unique experiment GUID then refuses
+   the second copy, and the import is rolled back.) All of this happens before
+   the transaction opens.
 2. **Name free** → the record is created, keeping its GUID from the bundle. A
    database allocates a fresh ID.
 3. **Name taken by a record with a different GUID** → the properties of the two
@@ -679,9 +715,12 @@ For every record in the manifest, in dependency order:
    - A run of the same ID and another GUID is another run; it is always
      renamed.
 
-A run that is already in the database is not added to: when its raw data is
-not there too, the import stops rather than attach data to a run it did not
-create.
+A run that is already in the database is not added to: when its raw data, a
+solution of it or its time state is not there too, the import stops rather
+than attach anything to a run it did not create — a dry run says so too.
+
+An edit is stored without a comment, as `us_edit` and `us_import_run` store
+one; its file name already names the triple.
 
 Renaming changes the name inside the payload; the GUID is untouched, so the
 record's dependants follow it. Auto-generated names are `<name> (imported)`,
@@ -700,11 +739,25 @@ experiment row, as `US_Experiment::saveToDB()` would.
 
 A buffer names its components by the source installation's IDs, which mean
 nothing in the target, so the bundle carries their definitions. Each
-component is matched in the target's component table by name, unit and
-coefficients, and the buffer is pointed at the target's ID. A component the
-target does not have is added to its table when the buffer is written (the
-database's table, or on disk the installation's `etc/bufferComponents.xml`),
-and the log says so.
+component is matched in the target's component table by name, unit, range,
+gradient forming and coefficients (to the five decimals the tables store), and
+the buffer is pointed at the target's ID. Two buffers that differ only in
+their components are different buffers: the comparison of a buffer with one
+the target has keeps the component IDs, both in terms of the target's table.
+
+* **Database:** a component the database does not have is added to its table
+  inside the import's transaction, and the log says so. A row of the
+  database's table that cannot be parsed (not six coefficients per field) has
+  nothing to do with the bundle; it is skipped with a note.
+* **Disk store:** the components of a disk store are those of the
+  installation's `etc/bufferComponents.xml`, which is where `US_Buffer` looks
+  a component up whatever data directory it reads — `--output-dir` does not
+  change that. An import never writes that table. Every component of a buffer
+  it creates has to be in it already, with the same definition; otherwise the
+  import is refused before anything is written, naming the components. Add
+  them with the buffer editor first, or import into a database, which takes
+  them along. A buffer the disk store already holds by GUID is reused as it
+  is.
 
 ### Pointing records at the target's records
 
@@ -722,7 +775,11 @@ the target's rotor of the same GUID, or none.
 ### Order of replay
 
 The manifest lists records in the declared section order. The import replays
-them in the order the target's own dependencies require:
+them in an order worked out from the dependencies: those the target has (listed
+below) and every dependency the manifest's records name, apart from a
+solution's on its run in a disk store, where it runs the other way. Each record
+type comes after every type it needs; a bundle whose dependencies go round in a
+circle is refused. With the dependencies of a normal bundle the order is:
 
 * **Database:** project, rotor calibration, centerpiece, buffers, analytes,
   experiment, solutions, raw data, time state, edits, models, noise. The
@@ -794,8 +851,11 @@ uploaded to a database.
 5. **Dry run** decides everything and writes nothing. **Verify payload digests**
    checks the bundle before the first write.
 6. **Import Bundle**, then the log and the counts of created, reused, renamed,
-   substituted and not-imported records, with the warnings. While the import
-   runs the tab's controls are disabled and the window does not close.
+   substituted and not-imported records, with the warnings. While an import or
+   an inspection runs — until its closing message has been dismissed — the
+   tab's controls are disabled, the export tab cannot be used and the window
+   does not close. The end of an import leaves the options as they were,
+   the chosen project included: only switching the target clears that.
 
 ### Command line
 
@@ -814,6 +874,10 @@ us_data_publication --mode import --bundle <file.tar.gz> [options]
 | `--no-verify` | Skip the payload digest check; the only way to import a bundle without digests |
 | `--strict-hardware` | Fail rather than stand another rotor, calibration, centerpiece, instrument or operator in for a missing one |
 | `--list` | Print the manifest and stop |
+
+A database import settles the master password first, before the bundle is
+unpacked; without one it stops with a single error that names the ways to
+give it (`--db-password-file`, `US3_DB_PASSWORD`).
 
 The closing line counts the records created, reused, renamed, substituted and
 not imported; warnings go to the error output. A failed import says what it
@@ -919,4 +983,12 @@ payloads without a digest or of another GUID, and tampered time state
 definitions. The database import runs against the `IUS_DB2` gmock mock
 (`datapub_fake_db.h`), which pins down its single transaction, the rollback on
 a failure part way, the speed profile, hardware substitution and a second
-import of the same bundle writing nothing.
+import of the same bundle writing nothing. The fake scopes experiments per
+investigator, keeps an owner per GUID and a unique experiment GUID, forgets
+what a transaction wrote when it is rolled back (or the connection dropped),
+and keeps the bytes of every blob; the tests use it for the run lookups made
+before the transaction, a run of another investigator, the extinction
+profiles, and a local disk store left byte for byte and time for time as it
+was. The disk import tests name a component table of their own
+(`Options::componentTable`) and check that neither it nor the
+installation's table is changed.

@@ -269,29 +269,41 @@ is either pointed at or imported again under a new name.
 
 A bundle is checked as a whole before anything is written, and refused as a
 whole when any check fails: every payload path has to stay inside the bundle;
-every run ID has to hold only letters, digits, ``_`` and ``-`` (at most 80);
-every run file has to be a plain file name starting with its run ID; the
+every run ID has to hold only letters, digits, ``_`` and ``-`` (at most 80,
+checked on the whole text, so not even a trailing newline passes) and every
+run type one to eight letters and digits; every file name has to be safe on
+every platform, and every run file has to start with its run ID; every GUID
+the manifest names, and every GUID inside a payload, has to be a GUID; the
 manifest has to match ``manifest.sha256`` and every payload -- including a
 time state's field definitions, an RI profile and a buffer's component
-definitions -- its digest (a payload without one fails too, unless the check
-is switched off); every
-payload has to parse as its record type and carry the GUID the manifest gives
-it; and every buffer and analyte a solution names has to be in the bundle or
-the target.
+definitions -- its digest, in either case (a payload without one fails too,
+unless the check is switched off); every payload has to parse as its record
+type and carry the GUID the manifest gives it; every buffer and analyte a
+solution names, the model a noise record names and the edit a model names has
+to be in the bundle or the target; and a bundle of the older format, without
+component definitions, is refused when one of its buffers names components.
 
 A database import is one transaction: it is committed when every record is
 in and rolled back on any failure, so a failed import leaves the database as
-it was. Raw data and edits are written through ``US_ConvertIO``, the same
-writer the rest of UltraScan uses, and a run keeps its speed profile. A
-database import writes nothing into the local disk store. A disk import
-writes files as it goes; when it fails, the error lists those it had already
-written.
+it was. Every lookup that can be made in advance -- the bundle's runs among
+them -- is made before the transaction opens. Raw data and edits are written
+through ``US_ConvertIO``, the same writer the rest of UltraScan uses, and a
+run keeps its speed profile. Buffers and analytes are written with the
+procedures the library writers use, together with their extinction spectra,
+but without the copy those writers keep in the local disk store: a database
+import writes nothing there. A disk import writes files as it goes; when it
+fails, the error lists those it had already written.
 
 For every record in the bundle, in dependency order:
 
 * **The same GUID is already in the target.** That is the same record -- a run
   too, whatever run ID it went by. It is reused, and everything that depends
-  on it is pointed at it.
+  on it is pointed at it. A run is looked up by its run ID first and, only
+  when that does not settle it, in the investigator's experiment list. A run
+  that another investigator holds (its raw data is in the database, but it is
+  not among the investigator's runs) stops the import: it is neither copied
+  again nor added to. A run the target already had is not added to either:
+  its raw data, solutions and time state have to be there already.
 * **The name is free.** The record is created, keeping its GUID. A database
   allocates a fresh ID.
 * **The name is taken by a record with a different GUID.** The properties of
@@ -317,8 +329,13 @@ and noise records named after the run.
 
 An RI run's intensity profile is restored beside its experiment XML on disk,
 and stored with the experiment in a database. A buffer's components are
-matched in the target's component table by name, unit and coefficients, and
-added to it when the target lacks one.
+matched in the target's component table by name, unit, range, gradient
+forming and coefficients. A database lacking one gets it added inside the
+import's transaction. A disk store's components are the installation's
+``etc/bufferComponents.xml``, which an import never changes: every component
+of a buffer it creates has to be there already, or the import is refused
+before anything is written. An edit is stored without a comment, as
+``us_edit`` stores one.
 
 A record matched to a target record of another GUID is renamed in every
 payload that names it: a solution's buffer and analytes, a model's edit, a
@@ -330,8 +347,10 @@ With **Ask me each time** set, each conflict opens a dialog that shows whether
 the two records match and offers *Use the Existing Record*, *Import Under a New
 Name* -- with the name to give it -- or *Abort the Import*. The dialog can
 apply its answer to every further conflict of the same record type. Escape
-cancels the import. While an import runs, the tab's controls are disabled and
-the window does not close.
+cancels the import. While an import or an inspection runs -- until its
+closing message is dismissed -- the tab's controls are disabled, the export
+tab cannot be used and the window does not close. Only switching the target
+clears a chosen project; the end of an import does not.
 
 **Dry run** decides everything and writes nothing, not even the target folder.
 **Verify payload digests** checks the whole bundle before the first write; a
