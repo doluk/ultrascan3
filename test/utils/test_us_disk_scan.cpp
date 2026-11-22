@@ -357,25 +357,60 @@ TEST_F( TestUSDiskScan, TearingItDownWhileItWorksIsSafe )
    EXPECT_LT( timer.elapsed(), 20000 );
 }
 
-// A job that is cancelled stops, and says why
+// A job that is cancelled stops, and says why.  The cancel is made from
+// the worker itself, at the catalog's first note -- before it reads the
+// first file -- so the worker cannot finish first.
 TEST_F( TestUSDiskScan, ACancelledJobFailsAndSaysSo )
 {
-   buildManyRuns( 200 );
-
    US_DiskScan scan;
    ASSERT_TRUE( scan.list() );
-   scan.cancel();
    settle( scan );
+   ASSERT_TRUE( scan.ok() ) << scan.error().toStdString();
+   const int listed = scan.catalog()->runCount();
+   ASSERT_EQ( listed, 2 );
 
-   if ( scan.ok() )
-      GTEST_SKIP() << "the worker finished the listing before it was cancelled";
+   QMetaObject::Connection gate = QObject::connect(
+      scan.catalog(), &US_DataCatalog::message, &scan,
+      [ &scan ]( const QString& ) { scan.cancel(); }, Qt::DirectConnection );
 
-   EXPECT_TRUE( scan.error().contains( "cancelled" ) ) << scan.error().toStdString();
+   ASSERT_TRUE( scan.list() );
+   settle( scan );
+   QObject::disconnect( gate );
+
+   EXPECT_FALSE( scan.ok() );
+   EXPECT_TRUE ( scan.error().contains( "cancelled" ) ) << scan.error().toStdString();
+
+   // a stopped read leaves the catalog as it was
+   EXPECT_EQ( scan.catalog()->runCount(), listed );
+   EXPECT_GE( scan.catalog()->indexOfRun( runOne ), 0 );
 
    // and the next job is not cancelled by the last one's request
    ASSERT_TRUE( scan.list() );
    settle( scan );
    EXPECT_TRUE( scan.ok() ) << scan.error().toStdString();
+   EXPECT_EQ  ( scan.catalog()->runCount(), listed );
+}
+
+// A listing that fails keeps the last one: the store going away (a network
+// share dropping, say) does not empty what the window shows
+TEST_F( TestUSDiskScan, AFailedListingKeepsTheLastOne )
+{
+   US_DiskScan scan;
+   ASSERT_TRUE( scan.list() );
+   settle( scan );
+   ASSERT_TRUE( scan.ok() ) << scan.error().toStdString();
+   ASSERT_EQ  ( scan.catalog()->runCount(), 2 );
+
+   US_Settings::set_workBaseDir( root + "/nothing-here" );
+
+   ASSERT_TRUE( scan.list() );
+   settle( scan );
+   US_Settings::set_workBaseDir( root );
+
+   EXPECT_FALSE( scan.ok() );
+   EXPECT_FALSE( scan.error().isEmpty() );
+   EXPECT_EQ   ( scan.catalog()->runCount(), 2 );
+   EXPECT_GE   ( scan.catalog()->indexOfRun( runOne ), 0 );
 }
 
 // The cancel flag, checked by the catalog itself, deterministically

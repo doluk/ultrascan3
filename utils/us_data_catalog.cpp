@@ -1381,6 +1381,15 @@ namespace
 
 bool US_DataCatalog::loadRunsDisk( QList< Run >& runs, QString& error )
 {
+   QString rdir = US_Settings::resultDir();
+
+   if ( ! QDir( rdir ).exists() )
+   {  // Not an empty store: there is no store to list
+      error = tr( "The local results directory does not exist: %1" )
+              .arg( rdir );
+      return false;
+   }
+
    buildDiskIndex();
 
    if ( cancelledError( error ) )  return false;
