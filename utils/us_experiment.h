@@ -116,10 +116,17 @@ class US_UTIL_EXTERN US_Experiment
           \param    invid_p The investigator ID, or empty for the selected one
           \param    cacheRIProfile False to leave the local results directory
                     untouched
+          \param    defaultCalibration When the experiment names no rotor
+                    calibration (calibrationID 0): true, the default, takes
+                    the rotor's first calibration, which programs that go
+                    on to analyse, convert or save the run rely on; false
+                    leaves calibrationID 0 and the rotor coefficients 0,
+                    for a caller that records what the run actually used
+                    (an export, say)
           \returns  One of the IUS_DB2 error codes
       */
       int readFromDB( QString, IUS_DB2*, QVector<SP_SPEEDPROFILE>&, const QString = QString( "" ),
-                      bool cacheRIProfile = true );
+                      bool cacheRIProfile = true, bool defaultCalibration = true );
 
       /*! \brief    Writes an xml file
 
