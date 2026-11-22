@@ -184,6 +184,7 @@ void US_DataPubManifest::clear( void )
    comment    = QString();
 
    sections.clear();
+   index   .clear();
 }
 
 /* The section order of a manifest.  Every record depends only on records
@@ -215,7 +216,13 @@ QList< US_DataPub::EntityType > US_DataPubManifest::orderedTypes( void )
 
 void US_DataPubManifest::add( const US_DataPubEntity& entity )
 {
-   sections[ int( entity.type ) ] << entity;
+   QList< US_DataPubEntity >& list  = sections[ int( entity.type ) ];
+   QHash< QString, int >&     guids = index   [ int( entity.type ) ];
+
+   if ( ! guids.contains( entity.guid ) )
+      guids.insert( entity.guid, list.size() );
+
+   list << entity;
 }
 
 void US_DataPubManifest::declareSection( US_DataPub::EntityType type )
@@ -233,6 +240,13 @@ void US_DataPubManifest::setSection( US_DataPub::EntityType type,
                                      const QList< US_DataPubEntity >& entities )
 {
    sections.insert( int( type ), entities );
+
+   QHash< QString, int >& guids = index[ int( type ) ];
+   guids.clear();
+
+   for ( int ii = 0; ii < entities.size(); ii++ )
+      if ( ! guids.contains( entities[ ii ].guid ) )
+         guids.insert( entities[ ii ].guid, ii );
 }
 
 QList< US_DataPubEntity > US_DataPubManifest::section(
@@ -268,30 +282,26 @@ int US_DataPubManifest::total( void ) const
    return knt;
 }
 
+// A GUID lookup is a hash lookup: the exporter asks before every record
+// it adds and the validation for every dependency, so a scan of the section
+// would make both quadratic in the size of the bundle
 bool US_DataPubManifest::contains( US_DataPub::EntityType type,
                                    const QString& guid ) const
 {
-   US_DataPubEntity found;
-
-   return entity( type, guid, found );
+   return index.value( int( type ) ).contains( guid );
 }
 
 bool US_DataPubManifest::entity( US_DataPub::EntityType type,
                                  const QString& guid,
                                  US_DataPubEntity& found ) const
 {
-   QList< US_DataPubEntity > entities = section( type );
+   int at = index.value( int( type ) ).value( guid, -1 );
 
-   for ( int ii = 0; ii < entities.size(); ii++ )
-   {
-      if ( entities[ ii ].guid == guid )
-      {
-         found = entities[ ii ];
-         return true;
-      }
-   }
+   if ( at < 0 )  return false;
 
-   return false;
+   found = sections[ int( type ) ].at( at );
+
+   return true;
 }
 
 QString US_DataPubManifest::escape( const QString& value )
@@ -581,19 +591,22 @@ bool US_DataPubManifest::fromYaml( const QString& text, QString& error )
 
       if ( ! nestKey.isEmpty()  &&  indent > nestInd )
       {
-         if ( nestKey == "depends" )
+         if ( value.isEmpty() )
          {
-            if ( item.depends.contains( key ) )
-            {
-               error = QObject::tr( "manifest line %1: dependency \"%2\""
-                                    " appears more than once" )
-                       .arg( ii + 1 ).arg( key );
-               return false;
-            }
-
-            item.depends.insert( key, unescape( value ) );
+            error = QObject::tr( "manifest line %1: dependency \"%2\" has"
+                                 " no value" ).arg( ii + 1 ).arg( key );
+            return false;
          }
 
+         if ( item.depends.contains( key ) )
+         {
+            error = QObject::tr( "manifest line %1: dependency \"%2\""
+                                 " appears more than once" )
+                    .arg( ii + 1 ).arg( key );
+            return false;
+         }
+
+         item.depends.insert( key, unescape( value ) );
          continue;
       }
 
@@ -610,7 +623,16 @@ bool US_DataPubManifest::fromYaml( const QString& text, QString& error )
       itemKeys << key;
 
       if ( value.isEmpty() )
-      {
+      {  // Only "depends" is a nested map; anything else would have its
+         // lines dropped without a word
+         if ( key != "depends" )
+         {
+            error = QObject::tr( "manifest line %1: \"%2\" has no value;"
+                                 " only \"depends\" may hold a nested map" )
+                    .arg( ii + 1 ).arg( key );
+            return false;
+         }
+
          nestKey = key;
          nestInd = indent;
          continue;
@@ -669,14 +691,16 @@ bool US_DataPubManifest::read( const QString& filename, QString& error )
 {
    QFile file( filename );
 
-   if ( ! file.open( QIODevice::ReadOnly | QIODevice::Text ) )
+   if ( ! file.open( QIODevice::ReadOnly ) )
    {
       error = QObject::tr( "Cannot open manifest for reading: %1" )
               .arg( filename );
       return false;
    }
 
-   QByteArray bytes  = file.readAll();
+   // A manifest lists records, it does not carry them; one larger than
+   // this is not read into memory at all
+   QByteArray bytes  = file.read( maxManifestBytes + 1 );
    bool       failed = ( file.error() != QFileDevice::NoError );
    file.close();
 
@@ -686,12 +710,24 @@ bool US_DataPubManifest::read( const QString& filename, QString& error )
       return false;
    }
 
+   if ( bytes.size() > maxManifestBytes )
+   {
+      error = QObject::tr( "The manifest %1 is larger than %2 MiB" )
+              .arg( filename ).arg( maxManifestBytes >> 20 );
+      return false;
+   }
+
    return fromYaml( QString::fromUtf8( bytes ), error );
 }
 
 bool US_DataPubManifest::checkPaths( QString& error ) const
 {
    QList< US_DataPubEntity > entities = all();
+
+   // Every payload path, folded to one case: two paths that differ only in
+   // case are one file on Windows and macOS, so one record's payload would
+   // be read as another's
+   QHash< QString, QString > folded;
 
    for ( int ii = 0; ii < entities.size(); ii++ )
    {
@@ -703,12 +739,26 @@ bool US_DataPubManifest::checkPaths( QString& error ) const
       {
          QString path = entity.field( pkeys[ jj ] );
 
-         if ( US_DataPub::isSafeRelativePath( path, &why ) )  continue;
+         if ( ! US_DataPub::isSafeRelativePath( path, &why ) )
+         {
+            error = QObject::tr( "%1: the %2 \"%3\" cannot be used (%4)" )
+                    .arg( entity.label() ).arg( pkeys[ jj ] ).arg( path )
+                    .arg( why );
+            return false;
+         }
 
-         error = QObject::tr( "%1: the %2 \"%3\" cannot be used (%4)" )
-                 .arg( entity.label() ).arg( pkeys[ jj ] ).arg( path )
-                 .arg( why );
-         return false;
+         QString key = path.toCaseFolded();
+
+         if ( folded.contains( key ) )
+         {
+            error = QObject::tr( "%1: the %2 \"%3\" is the same file as"
+                                 " \"%4\" on a system that ignores case" )
+                    .arg( entity.label() ).arg( pkeys[ jj ] ).arg( path )
+                    .arg( folded.value( key ) );
+            return false;
+         }
+
+         folded.insert( key, path );
       }
 
       if ( ! entity.filename.isEmpty()  &&
@@ -751,6 +801,8 @@ bool US_DataPubManifest::validate( QString& error ) const
 
    if ( ! checkPaths( error ) )  return false;
 
+   QHash< int, QSet< QString > > seenGuids;
+
    for ( int ii = 0; ii < entities.size(); ii++ )
    {
       const US_DataPubEntity& entity = entities[ ii ];
@@ -763,18 +815,16 @@ bool US_DataPubManifest::validate( QString& error ) const
          return false;
       }
 
-      QList< US_DataPubEntity > same = section( entity.type );
-      int                       knt  = 0;
+      QSet< QString >& seen = seenGuids[ int( entity.type ) ];
 
-      for ( int jj = 0; jj < same.size(); jj++ )
-         if ( same[ jj ].guid == entity.guid )  knt++;
-
-      if ( knt > 1 )
+      if ( seen.contains( entity.guid ) )
       {
          error = QObject::tr( "%1 %2 is listed more than once" )
                  .arg( US_DataPub::typeText( entity.type ) ).arg( entity.guid );
          return false;
       }
+
+      seen.insert( entity.guid );
 
       QList< QString > dkeys = entity.depends.keys();
 

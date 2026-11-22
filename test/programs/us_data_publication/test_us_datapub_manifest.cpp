@@ -200,6 +200,7 @@ TEST( DataPubManifest, ValidateRejectsTheSameGuidTwice )
    one.guid    = "aaaaaaaa-0000-0000-0000-000000000011";
    one.payload = "models/m.xml";
    mani.add( one );
+   one.payload = "models/m2.xml";
    mani.add( one );
 
    QString error;
@@ -478,6 +479,51 @@ TEST( DataPubDefs, SafePathsAndNames )
    EXPECT_FALSE( US_DataPub::runIdIsUsable( QString( 81, 'a' ) ) );
 }
 
+// A name has to be usable as it is on every platform a bundle is opened on
+TEST( DataPubDefs, NamesWindowsCannotHoldAreRefused )
+{
+   QStringList refused;
+   refused << "CON" << "con.xml" << "Nul.tmst" << "aux" << "PRN.txt"
+           << "COM1" << "com9.auc" << "LPT1.xml" << "lpt9"
+           << "name." << "name " << "a<b" << "a>b" << "a\"b" << "a|b"
+           << "a?b" << "a*b"
+           << QString( "a" ) + QChar( 0x85 ) + "b"        // C1 control
+           << QString( "a" ) + QChar( 0x9f ) + "b"
+           << QString( "a" ) + QChar( 0x202e ) + "lmx.exe" // bidi override
+           << QString( "a" ) + QChar( 0x200b ) + "b"      // zero width space
+           << QString( "a" ) + QChar( 0xfeff ) + "b"      // zero width no-break
+           << QString( 128, QChar( 0x00e9 ) );            // 256 bytes in UTF-8
+
+   for ( int ii = 0; ii < refused.size(); ii++ )
+   {
+      QString why;
+      EXPECT_FALSE( US_DataPub::isSafeFileName( refused[ ii ], &why ) )
+         << refused[ ii ].toStdString();
+      EXPECT_FALSE( why.isEmpty() );
+      EXPECT_FALSE( US_DataPub::isSafeRelativePath( "models/" + refused[ ii ] ) )
+         << refused[ ii ].toStdString();
+   }
+
+   // Only the part before the first dot is a device name
+   EXPECT_TRUE( US_DataPub::isSafeFileName( "CONSOLE.xml" ) );
+   EXPECT_TRUE( US_DataPub::isSafeFileName( "run.CON.xml" ) );
+   EXPECT_TRUE( US_DataPub::isSafeFileName( "COM10.xml" ) );
+   EXPECT_TRUE( US_DataPub::isSafeFileName( QString( 127, QChar( 0x00e9 ) ) ) );
+   EXPECT_TRUE( US_DataPub::isSafeFileName( QString( "Gr" ) + QChar( 0x00fc )
+                                            + "n.xml" ) );
+}
+
+// A run ID with a trailing newline or a device name cannot name a directory
+TEST( DataPubDefs, RunIdsAreCheckedWhole )
+{
+   EXPECT_FALSE( US_DataPub::runIdIsUsable( "run1\n" ) );
+   EXPECT_FALSE( US_DataPub::runIdIsUsable( "\nrun1" ) );
+   EXPECT_FALSE( US_DataPub::runIdIsUsable( "CON" ) );
+   EXPECT_FALSE( US_DataPub::runIdIsUsable( "lpt3" ) );
+   EXPECT_TRUE ( US_DataPub::runIdIsUsable( "run1" ) );
+   EXPECT_TRUE ( US_DataPub::runIdIsUsable( "CONTROL" ) );
+}
+
 // A record without a GUID of its own is given one derived from what
 // identifies it: always the same, and a valid UUID
 TEST( DataPubDefs, DerivedGuidsAreStableUuids )
@@ -489,6 +535,123 @@ TEST( DataPubDefs, DerivedGuidsAreStableUuids )
    EXPECT_FALSE( QUuid( one ).isNull() );
    EXPECT_EQ( QUuid( one ).version(), QUuid::Sha1 );
    EXPECT_EQ( one.size(), 36 );
+}
+
+// Two payloads whose paths differ only in case are one file on Windows
+// and macOS
+TEST( DataPubManifest, PathsThatDifferOnlyInCaseAreRefused )
+{
+   US_DataPubManifest mani;
+
+   US_DataPubEntity one( US_DataPub::Model );
+   one.guid    = "aaaaaaaa-0000-0000-0000-000000000011";
+   one.payload = "models/Model.xml";
+   mani.add( one );
+
+   US_DataPubEntity two( US_DataPub::Model );
+   two.guid    = "aaaaaaaa-0000-0000-0000-000000000012";
+   two.payload = "models/model.XML";
+   mani.add( two );
+
+   QString error;
+   EXPECT_FALSE( mani.validate( error ) );
+   EXPECT_TRUE ( error.contains( "ignores case" ) ) << error.toStdString();
+
+   QString text = mani.toYaml();
+   US_DataPubManifest back;
+   EXPECT_FALSE( back.fromYaml( text, error ) );
+}
+
+// Only "depends" may open a nested map; any other key with no value used
+// to swallow the lines under it without a word
+TEST( DataPubManifest, ParseRejectsANestedMapOtherThanDepends )
+{
+   QString text =
+      "version: 1\n"
+      "models:\n"
+      "  - modelGUID: \"aaaaaaaa-0000-0000-0000-000000000011\"\n"
+      "    payload: \"models/m.xml\"\n"
+      "    extras:\n"
+      "      payload: \"../../etc/passwd\"\n";
+
+   US_DataPubManifest mani;
+   QString            error;
+
+   EXPECT_FALSE( mani.fromYaml( text, error ) );
+   EXPECT_TRUE ( error.contains( "extras" ) ) << error.toStdString();
+
+   // A dependency needs a value too
+   text =
+      "version: 1\n"
+      "models:\n"
+      "  - modelGUID: \"aaaaaaaa-0000-0000-0000-000000000011\"\n"
+      "    depends:\n"
+      "      editedDataGUID:\n";
+
+   EXPECT_FALSE( mani.fromYaml( text, error ) );
+}
+
+TEST( DataPubManifest, AManifestTooLargeIsNotRead )
+{
+   QTemporaryDir dir;
+   ASSERT_TRUE( dir.isValid() );
+
+   QString path = dir.path() + "/manifest.yaml";
+   QFile   file( path );
+   ASSERT_TRUE( file.open( QIODevice::WriteOnly ) );
+
+   QByteArray line( 1023, '#' );
+   line += '\n';
+   QByteArray head( "version: 1\n" );
+   file.write( head );
+
+   for ( qint64 left = US_DataPubManifest::maxManifestBytes; left > 0;
+         left -= line.size() )
+      file.write( line );
+
+   file.close();
+
+   US_DataPubManifest mani;
+   QString            error;
+
+   EXPECT_FALSE( mani.read( path, error ) );
+   EXPECT_TRUE ( error.contains( "larger" ) ) << error.toStdString();
+}
+
+// GUID lookups stay right while the manifest is built and rebuilt
+TEST( DataPubManifest, LookupsFollowTheSections )
+{
+   US_DataPubManifest mani;
+
+   for ( int ii = 0; ii < 2000; ii++ )
+   {
+      US_DataPubEntity entity( US_DataPub::Model );
+      entity.guid    = US_DataPub::derivedGuid( QString::number( ii ) );
+      entity.payload = "models/" + entity.guid + ".xml";
+      entity.name    = QString::number( ii );
+      mani.add( entity );
+   }
+
+   US_DataPubEntity found;
+   ASSERT_TRUE( mani.entity( US_DataPub::Model,
+                             US_DataPub::derivedGuid( "1234" ), found ) );
+   EXPECT_EQ  ( found.name, "1234" );
+   EXPECT_FALSE( mani.contains( US_DataPub::Noise,
+                                US_DataPub::derivedGuid( "1234" ) ) );
+
+   QString error;
+   EXPECT_TRUE( mani.validate( error ) ) << error.toStdString();
+
+   QList< US_DataPubEntity > one = mani.section( US_DataPub::Model ).mid( 5, 1 );
+   mani.setSection( US_DataPub::Model, one );
+   EXPECT_TRUE ( mani.contains( US_DataPub::Model,
+                                US_DataPub::derivedGuid( "5" ) ) );
+   EXPECT_FALSE( mani.contains( US_DataPub::Model,
+                                US_DataPub::derivedGuid( "1234" ) ) );
+
+   mani.clear();
+   EXPECT_FALSE( mani.contains( US_DataPub::Model,
+                                US_DataPub::derivedGuid( "5" ) ) );
 }
 
 TEST( DataPubManifest, ValidateCatchesMissingDependency )

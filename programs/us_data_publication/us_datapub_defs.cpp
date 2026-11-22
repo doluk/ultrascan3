@@ -3,6 +3,8 @@
 
 #include <QtCore>
 
+#include "us_convertio.h"
+
 namespace
 {
    struct TypeInfo
@@ -232,6 +234,16 @@ QString US_DataPub::resolutionText( US_DataPub::Resolution resolution )
 
 // ------------------------------------------------------------ path safety
 
+bool US_DataPub::isReservedDeviceName( const QString& name )
+{
+   // Windows opens a device for these names, whatever extension follows
+   static const QRegularExpression rx(
+         "\\A(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])\\z",
+         QRegularExpression::CaseInsensitiveOption );
+
+   return rx.match( name.section( '.', 0, 0 ).trimmed() ).hasMatch();
+}
+
 bool US_DataPub::isSafeFileName( const QString& name, QString* why )
 {
    QString reason;
@@ -246,17 +258,37 @@ bool US_DataPub::isSafeFileName( const QString& name, QString* why )
       reason = QObject::tr( "the name is hidden" );
    else if ( name.contains( ':' ) )
       reason = QObject::tr( "the name has a colon in it" );
-   else if ( name.size() > 255 )
+   else if ( name.toUtf8().size() > 255 )
       reason = QObject::tr( "the name is too long" );
+   else if ( name.endsWith( '.' )  ||  name.endsWith( ' ' ) )
+      reason = QObject::tr( "the name ends in a dot or a space" );
+   else if ( isReservedDeviceName( name ) )
+      reason = QObject::tr( "the name is reserved for a device on Windows" );
    else
    {
+      static const QString forbidden( "<>\"|?*" );
+
       for ( int ii = 0; ii < name.size(); ii++ )
       {
-         if ( name.at( ii ).unicode() >= 0x20  &&
-              name.at( ii ).unicode() != 0x7f )  continue;
+         QChar chr  = name.at( ii );
+         uint  code = chr.unicode();
 
-         reason = QObject::tr( "the name has a control character in it" );
-         break;
+         if ( chr.isHighSurrogate()  &&  ii + 1 < name.size()  &&
+              name.at( ii + 1 ).isLowSurrogate() )
+            code = QChar::surrogateToUcs4( chr, name.at( ++ii ) );
+
+         if ( code < 0x20  ||  ( code >= 0x7f  &&  code <= 0x9f ) )
+            reason = QObject::tr( "the name has a control character in it" );
+
+         else if ( forbidden.contains( chr ) )
+            reason = QObject::tr( "the name has one of the characters"
+                                  " < > \" | ? * in it" );
+
+         else if ( QChar::category( code ) == QChar::Other_Format )
+            reason = QObject::tr( "the name has an invisible formatting"
+                                  " character in it" );
+
+         if ( ! reason.isEmpty() )  break;
       }
    }
 
@@ -301,9 +333,14 @@ bool US_DataPub::isSafeRelativePath( const QString& path, QString* why )
 
 bool US_DataPub::runIdIsUsable( const QString& runID )
 {
-   static const QRegularExpression rx( "^[A-Za-z0-9_-]{1,80}$" );
+   // The rule of the reader the run is handed to, and an anchored check of
+   // its own on top: "$" also matches before a final newline, and a device
+   // name cannot be a directory on Windows
+   static const QRegularExpression rx( "\\A[A-Za-z0-9_-]{1,80}\\z" );
 
-   return rx.match( runID ).hasMatch();
+   return US_ConvertIO::runIdIsUsable( runID )  &&
+          rx.match( runID ).hasMatch()  &&
+          ! isReservedDeviceName( runID );
 }
 
 QString US_DataPub::derivedGuid( const QString& name )

@@ -1444,6 +1444,7 @@ void US_DataPubExportPane::run_export( void )
    }
 
    busy = true;
+   emit busyChanged( true );
    QApplication::setOverrideCursor( QCursor( Qt::WaitCursor ) );
 
    QString error;
@@ -1457,11 +1458,14 @@ void US_DataPubExportPane::run_export( void )
 
    updateSummary();
 
+   // The other tab is unlocked -- and a close asked for meanwhile carried
+   // out -- only once the result has been shown
    if ( ! ok )
    {
       te_status->append( tr( "Export failed: " ) + error );
       QMessageBox::critical( this, tr( "Export Failed" ), error );
       emit status( tr( "Export failed" ) );
+      emit busyChanged( false );
       return;
    }
 
@@ -1473,6 +1477,8 @@ void US_DataPubExportPane::run_export( void )
       tr( "%1 records were written to\n%2\n\n%3" )
       .arg( exporter.manifest().total() ).arg( path )
       .arg( exporter.manifest().summary() ) );
+
+   emit busyChanged( false );
 }
 
 void US_DataPubExportPane::reset( void )

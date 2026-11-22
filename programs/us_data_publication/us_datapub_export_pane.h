@@ -42,6 +42,13 @@ class US_DataPubExportPane : public US_Widgets
       //! \param message The note
       void status( const QString& message );
 
+      /*! \brief An export started (true) or ended (false)
+
+          The window locks its other tab meanwhile: the export processes
+          events, so anything started there would run nested in it.
+      */
+      void busyChanged( bool busy );
+
    private:
       US_Disk_DB_Controls* dkdb_cntrls;
 

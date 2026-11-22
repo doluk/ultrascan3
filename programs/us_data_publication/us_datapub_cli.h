@@ -43,6 +43,26 @@ class US_DataPubCLI : public QObject
       //! \brief The usage text
       static QString usage( void );
 
+      /*! \brief A password as given, without the line end that ends it
+
+          One trailing "\n", "\r\n" or "\r" is removed and nothing else:
+          spaces are part of a password.  The same rule holds for a password
+          file, the US3_DB_PASSWORD environment variable and the prompt.
+          \param text The line read
+      */
+      static QString chopLineEnd( const QString& text );
+
+      /*! \brief Read the master password from the first line of a file
+          \param path     The password file
+          \param password Filled in with the password
+          \param warning  Filled in when the file can be read by other users
+                          (Unix: group or world readable)
+          \param error    Filled in when the file cannot be read
+          \returns True when the file could be read
+      */
+      static bool readPasswordFile( const QString& path, QString& password,
+                                    QString& warning, QString& error );
+
    private slots:
       void onMessage( const QString& );
 
@@ -80,6 +100,9 @@ class US_DataPubCLI : public QObject
             bool                     strictHardware;
             bool                     help;
             bool                     version;
+
+            //! Every long option given, as it was spelt
+            QStringList              given;
       };
 
       Args        args;
@@ -95,9 +118,11 @@ class US_DataPubCLI : public QObject
 
           From --db-password-file, --db-password (with a warning: it is
           visible to other users in the process list), the US3_DB_PASSWORD
-          environment variable or, last, an interactive prompt that does
-          not echo what is typed.  A non-interactive run that has none of
-          them gets an empty string and a message saying how to give one.
+          environment variable or, last, an interactive prompt on the error
+          output that does not echo what is typed (and puts the terminal
+          back when interrupted).  A non-interactive run that has none of
+          them, or a Windows run whose input is not a console, gets an
+          empty string and a message saying how to give one.
       */
       QString password( bool needed );
       void    print( const QString& );
