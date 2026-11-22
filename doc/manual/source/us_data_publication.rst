@@ -108,12 +108,19 @@ any record it needs cannot be read -- the experiment, a solution with its
 buffer and analytes, the rotor calibration, a centerpiece missing from the
 centerpiece table, an undefined buffer component, a time state without its
 definitions. A run without raw data is only a warning, unless none of the
-selected runs has any.
+selected runs has any. A raw data record or an edit read from the database
+whose GUIDs are not the ones the catalog listed stops the export too, as does
+a noise record selected by GUID whose model is not in the bundle. A missing
+project file on disk is reported with the hint to leave the project out.
 
 Only what the selected triples need goes into the bundle: the solutions and
 centerpieces of their channels, and on disk an experiment XML without the
-datasets of deselected triples. The experiment XML names the run's
-investigator and operator by GUID, as it does in a local store.
+datasets of deselected triples or of triples whose ``.auc`` file is gone. An
+RI intensity profile that is empty or does not parse is left out with a
+warning, since an import would refuse it. A run whose database record names
+no rotor calibration travels without one; the rotor's first calibration is
+not assumed. The experiment XML names the run's investigator and operator by
+GUID, as it does in a local store.
 
 The Export tab works from the top down.
 
@@ -177,9 +184,12 @@ The Export tab works from the top down.
   copying a single byte of experimental data.
 
 **Export Bundle**
-  Writes the bundle. While the export runs the tab cannot be changed and the
-  window does not close. An existing file of the same name is replaced only
-  once the new bundle is complete and has been read back.
+  Writes the bundle. While the export runs the tab cannot be changed, the
+  Import tab cannot be opened, and a request to close the window is carried
+  out once the export is done. An existing file of the same name is replaced
+  only once the new bundle is complete and has been read back and compared,
+  file by file, with what was staged. The UltraScan ``tmp`` directory needs
+  room for about twice the data plus the bundle while this happens.
 
 
 The bundle
@@ -233,12 +243,18 @@ digests under the same key ending in ``Sha256``. A section that was exported
 but has nothing in it is written as ``[]``; one that was not exported is left
 out. A record without a GUID of its own -- a time state, an old rotor
 calibration or centerpiece -- gets a name-based UUID derived from what
-identifies it.
+identifies it; for a calibration and a centerpiece that includes what the
+record holds (coefficients, date, geometry), so two installations do not give
+the same GUID to different records.
 
-A manifest that gives a key or section twice, has no usable ``version``, names
-a path that could reach outside the bundle (absolute, ``..``, a drive prefix, a
-backslash, ...) or an unusable run ID, or lists a dependency after the record
-that needs it, is refused.
+A manifest that is larger than 64 MiB, gives a key or section twice, has no
+usable ``version``, nests a map under a key other than ``depends``, names a
+path that could reach outside the bundle (absolute, ``..``, a drive prefix, a
+backslash, ...), a file name Windows cannot hold (``CON``, ``aux.xml``, a
+trailing dot or space, ``< > " | ? *``, control or invisible formatting
+characters, more than 255 bytes), two paths that differ only in case, or an
+unusable run ID, or lists a dependency after the record that needs it, is
+refused.
 
 
 Importing
@@ -423,12 +439,15 @@ Common options
 
 ==============================  ==========================================================
 ``--no-ui``                     Run without the window (implied by ``--mode``)
-``--db-password-file <file>``   Read the master password from the first line of a file
+``--db-password-file <file>``   Read the master password from the first line of a
+                                file; on Unix a file others can read is warned about
 ``--db-password <pw>``          The master password itself; visible to other users in
                                 the process list, so prefer the file or
                                 ``US3_DB_PASSWORD``, which is used when neither is
                                 given. Without any of them an interactive run prompts
-                                without echoing; a non-interactive run stops
+                                on the error output without echoing; a
+                                non-interactive run stops, and so does a Windows run
+                                whose input is not a console
 ``--dry-run``                   Decide everything, write nothing
 ``--non-interactive``           Never prompt; fail instead of asking
 ``--verbose``                   Report every step
@@ -442,7 +461,10 @@ database import is then rolled back, and the error says what was left) and
 with ``0`` and reports the substitutions on the error output. An export needs
 ``--experiment-id``, ``--project-id`` or ``--project-guid``; a ``--dry-run``
 needs no ``--bundle``. An option is never taken as the value of the one before
-it; a value starting with ``--`` is given as ``--comment=--draft``.
+it; a value starting with ``--`` is given as ``--comment=--draft``. An option
+of the other mode -- ``--target`` with an export, ``--model-guid`` with an
+import -- is refused with ``2``. Only the line end is taken off a password
+read from a file, the environment or the prompt; spaces are part of it.
 
 Examples
 --------
