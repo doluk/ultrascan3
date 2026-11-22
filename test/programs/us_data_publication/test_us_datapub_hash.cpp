@@ -163,3 +163,56 @@ TEST( DataPubHash, BinaryPayloadsFallBackToTheFileDigest )
 
    QFile::remove( path );
 }
+
+// A buffer's component element holds only an ID and a concentration, so the
+// ID is what tells 150 mM NaCl from 150 mM KCl.  The importer puts both
+// buffers in terms of the target's component table before it compares.
+TEST( DataPubHash, BuffersOfDifferentComponentsDiffer )
+{
+   QByteArray nacl =
+      "<BufferData><buffer id=\"3\" guid=\"11111111-1111-1111-1111-111111111111\""
+      " description=\"Salt buffer\" density=\"1.0\">"
+      "<component id=\"12\" concentration=\"150.00000\"/>"
+      "</buffer></BufferData>";
+   QByteArray kcl =
+      "<BufferData><buffer id=\"4\" guid=\"22222222-2222-2222-2222-222222222222\""
+      " description=\"Salt buffer\" density=\"1.0\">"
+      "<component id=\"17\" concentration=\"150.00000\"/>"
+      "</buffer></BufferData>";
+   QByteArray same =
+      "<BufferData><buffer id=\"9\" guid=\"33333333-3333-3333-3333-333333333333\""
+      " description=\"Salt buffer\" density=\"1.0\">"
+      "<component id=\"12\" concentration=\"150.00000\"/>"
+      "</buffer></BufferData>";
+
+   EXPECT_NE( US_DataPubHash::xmlFingerprint( nacl, "buffer", "guid" ),
+              US_DataPubHash::xmlFingerprint( kcl,  "buffer", "guid" ) );
+
+   // The buffer's own ID and GUID still do not count
+   EXPECT_EQ( US_DataPubHash::xmlFingerprint( nacl, "buffer", "guid" ),
+              US_DataPubHash::xmlFingerprint( same, "buffer", "guid" ) );
+
+   EXPECT_FALSE( US_DataPubHash::isVolatileOn( "component", "id" ) );
+   EXPECT_TRUE ( US_DataPubHash::isVolatileOn( "buffer",    "id" ) );
+}
+
+// A value that holds a quote, or text that holds markup, cannot pass for
+// other attributes or elements in the canonical form
+TEST( DataPubHash, CraftedValuesCannotFoldTwoRecordsTogether )
+{
+   QByteArray quoted = "<r><e a=\"1&quot; b=&quot;2\"/></r>";
+   QByteArray split  = "<r><e a=\"1\" b=\"2\"/></r>";
+
+   EXPECT_NE( US_DataPubHash::canonicalXml( quoted ),
+              US_DataPubHash::canonicalXml( split ) );
+   EXPECT_NE( US_DataPubHash::xmlFingerprint( quoted ),
+              US_DataPubHash::xmlFingerprint( split ) );
+
+   QByteArray marked = "<r><a>x&lt;/a&gt;&lt;a&gt;y</a></r>";
+   QByteArray two    = "<r><a>x</a><a>y</a></r>";
+
+   EXPECT_NE( US_DataPubHash::canonicalXml( marked ),
+              US_DataPubHash::canonicalXml( two ) );
+   EXPECT_NE( US_DataPubHash::xmlFingerprint( marked ),
+              US_DataPubHash::xmlFingerprint( two ) );
+}
