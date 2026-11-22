@@ -97,6 +97,13 @@ class US_DataPubImportPane : public US_Widgets,
       //! \param message The note
       void status( const QString& message );
 
+      /*! \brief An import or an inspection started (true), or ended and
+                 its result dialogs were closed (false).  The window keeps
+                 the other tab and itself from being used meanwhile.
+          \param busy True while the tab works
+      */
+      void busyChanged( bool busy );
+
    private:
       US_Disk_DB_Controls* dkdb_cntrls;
 
@@ -126,22 +133,31 @@ class US_DataPubImportPane : public US_Widgets,
       US_Help       showHelp;
 
       US_DataPubImporter importer;
-      bool               inspected;
-      bool               importing;
       bool               was_cancelled;
 
-      //! The project of the target the runs are attached to; empty means
-      //! the bundle decides
-      QString            project_guid;
-      QString            project_desc;
+      //! The target, the inspection, whether the tab works, and the project
+      //! of the target the runs are attached to (empty: the bundle decides)
+      US_DataPubImportState state;
 
       QMap< int, US_DataPub::ConflictPolicy > sticky;
 
       void buildTree    ( void );
       void updateSummary( void );
 
-      //! \brief Enable or disable every control while an import runs
+      //! \brief Enable or disable every control while an import or an
+      //!        inspection runs, and say so with busyChanged()
       void setBusy      ( bool );
+
+      //! \brief Set what the controls allow from the state, and nothing else
+      void refreshControls( void );
+
+      //! \brief Show the result of an import: the log, the status line and
+      //!        a dialog
+      void report_import( bool ok, const QString& error, bool dryRun );
+
+      //! \brief Inspect the bundle; the work of inspect(), without the
+      //!        busy state around it
+      void inspectBundle( void );
 
    private slots:
       void target_changed( bool );
