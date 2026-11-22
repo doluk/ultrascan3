@@ -11,6 +11,8 @@
 #include "us_help.h"
 #include "us_dataIO.h"
 
+#include <functional>
+
 //! \class US_DataTree
 //! \brief Class to manage the data tree, including building, expanding, and handling context menus.
 class US_DataTree : public QObject
@@ -21,7 +23,8 @@ class US_DataTree : public QObject
         //! \brief Statuses of an action that are not an error
         enum ActStatus
         {
-            ACT_REFUSED   = 997,  //!< Refused by the GMP guard
+            ACT_IN_SYNC   = 996,  //!< A DB replace found nothing to replace
+            ACT_REFUSED   = 997,  //!< Refused, and the user was told why
             ACT_NOTHING   = 998,  //!< No selected record could take it
             ACT_CANCELLED = 999   //!< The user cancelled
         };
@@ -75,6 +78,25 @@ class US_DataTree : public QObject
         */
         int act_on_selection( QString item_exs, QString item_act );
 
+        //! \brief What a prompt is for
+        enum PromptKind
+        {
+            PROMPT_INFORM  = 0,   //!< A message; the answer is ignored
+            PROMPT_CONFIRM = 1    //!< A yes/no question; true for yes
+        };
+
+        /*! \brief Replace the message boxes an action shows
+
+            By default an action tells the user why it refused, and asks
+            before it removes everything under a stand-in experiment, with
+            message boxes.  A caller that runs actions without a user -- a
+            test -- answers them here instead.
+            \param func Called with the kind, the title and the text; its
+                        result is the answer to a PROMPT_CONFIRM
+        */
+        void setPrompter(
+            std::function< bool( int, const QString&, const QString& ) > func );
+
         //! \brief The rows the selection acts on
         //!
         //! The selected records and every descendant of them, in tree
@@ -116,6 +138,13 @@ class US_DataTree : public QObject
         QStringList    gmp_models;     //!< Model IDs produced by autoflow
         bool           gmp_models_read; //!< True once gmp_models is read
 
+        //! Whether a model or noise conflict is more than formatting, by
+        //! GUID and compared contents: significant_diffs() reads both copies
+        QHash< QString, bool > sigdiffs;
+
+        //! Answers prompts instead of message boxes, when set
+        std::function< bool( int, const QString&, const QString& ) > prompter;
+
         int ntcols;                    //!< Number of tree columns
         int dbg_level;                 //!< Debug level
 
@@ -128,7 +157,21 @@ class US_DataTree : public QObject
         void row_look( const US_DataModel::DataDesc& desc, QBrush& fbru,
                        QString& rtyp, QString& rsrc );
 
+        //! \brief The color, type name and source text of an experiment
+        //!
+        //! An experiment in both places reads as what its records read as;
+        //! a stand-in experiment reads as neither place.
+        void run_look( int runIndex, QBrush& fbru, QString& rtyp,
+                       QString& rsrc );
+
+        //! \brief Colour an experiment row from what is under it now
+        void refresh_run_item( int runIndex );
+
+        //! \brief Show a message, or ask a question; see \ref setPrompter
+        bool ask_user( int kind, const QString& title, const QString& text );
+
         //! \brief Make sure an experiment's records are read
+
         //! \param runIndex The position of the experiment
         //! \returns True when the experiment has its records
         bool ensure_loaded( int runIndex );

@@ -6,6 +6,8 @@
 #include "us_model.h"
 #include "us_noise.h"
 
+#include <QCryptographicHash>
+
 #include <algorithm>
 #include <functional>
 
@@ -41,6 +43,10 @@ US_DataModel::US_DataModel( QWidget* parwidg /*=0*/ )
    use_lo     = false;
    db_failed  = false;
    scanning   = false;
+   stop_req   = false;
+   stopped    = false;
+   demo       = false;
+   orph_indexed = false;
    busy       = 0;
    progress   = NULL;
    lb_status  = NULL;
@@ -370,14 +376,18 @@ bool US_DataModel::must_queue( void ) const
 /* Scan the database and local disk for R/E/M/N data sets.
 
    This is the loop the window runs.  It processes events between
-   experiments so the window stays usable, and anything the window asks of
-   the model meanwhile is only queued -- see must_queue().
+   experiments so the window can take input there, and anything the window
+   asks of the model meanwhile is only queued -- see must_queue().  The
+   queries themselves block, and while the local store is read the window
+   repaints but takes no input -- see await_disk().
 */
 void US_DataModel::scan_data()
 {
    if ( must_queue() )   return;
 
    scanning = true;
+   stop_req = false;
+   stopped  = false;
 
 DbgLv(1) << "ScnD: start scan   " << nowTime();
    emit scanPhase( tr( "Listing experiments..." ), 1 );
@@ -390,19 +400,27 @@ DbgLv(1) << "ScnD: start scan   " << nowTime();
 DbgLv(1) << "ScnD: runs listed  " << nowTime();
 
    int  nruns = runents.size();
+   bool rfilt = ( ! filt_run.isEmpty()  &&  filt_run != "ALL" );
    bool bulk  = false;
 
    if ( nruns > 0 )
-   {
       emit scanPhase( tr( "Reading %1 experiment(s)..." ).arg( nruns ), nruns );
+
+   // A run filter reads only that run, one experiment at a time: reading
+   // the whole store to show one run is what the filter is there to avoid.
+   // Without one the whole store is read even when no experiment is
+   // listed, since it may still hold records of no experiment.
+   if ( ! rfilt  &&  ! stop_req )
       bulk = scan_all();
-   }
+
+   else if ( cat_db != NULL )
+      cat_db->setChecksums( false );   // compared later, if in both places
 DbgLv(1) << "ScnD: bulk read" << bulk << nowTime();
 
    int done  = 0;
    int index = -1;
 
-   while ( ( index = next_pending_run() ) >= 0 )
+   while ( ! stop_req  &&  ( index = next_pending_run() ) >= 0 )
    {  // Second layer:  merge one experiment at a time
       note( tr( "Reading %1 ..." ).arg( runents.at( index ).runID ) );
 
@@ -417,21 +435,21 @@ DbgLv(1) << "ScnD: bulk read" << bulk << nowTime();
    }
 DbgLv(1) << "ScnD: chain read   " << nowTime();
 
-   // What attaches to no experiment, under a stand-in experiment of its own
-   int orphx = collect_orphans();
+   // What attaches to no experiment, under stand-in experiments of its own
+   int orphx = stop_req ? -1 : collect_orphans();
 
-   if ( orphx >= 0 )
-      emit orphansAdded( orphx );
+   for ( int ii = orphx; ii >= 0  &&  ii < runents.size(); ii++ )
+      emit orphansAdded( ii );
 
    // Third layer:  compare the experiments that are in both places
-   int nver = queue_verifies();
+   int nver = stop_req ? 0 : queue_verifies();
    done     = 0;
 
    if ( nver > 0 )
       emit scanPhase( tr( "Comparing %1 experiment(s) held in both places..." )
                       .arg( nver ), nver );
 
-   while ( ( index = next_pending_verify() ) >= 0 )
+   while ( ! stop_req  &&  ( index = next_pending_verify() ) >= 0 )
    {
       note( tr( "Comparing %1 ..." ).arg( runents.at( index ).runID ) );
 
@@ -444,12 +462,44 @@ DbgLv(1) << "ScnD: chain read   " << nowTime();
       qApp->processEvents();
    }
 
+   stopped  = stop_req;
+   stop_req = false;
    scanning = false;
+
+   if ( stopped )
+   {  // Whatever was not reached is left for the next scan
+      run_queue.clear();
+      ver_queue.clear();
+      note( tr( "Data scan stopped" ) );
+DbgLv(1) << "ScnD: scan stopped " << nowTime();
+      return;
+   }
 
    note( errors.isEmpty() ? tr( "Data scan complete" )
                           : tr( "Data scan complete, with %1 error(s)" )
                             .arg( errors.size() ) );
 DbgLv(1) << "ScnD: scan done    " << nowTime();
+}
+
+// Ask the running scan to stop after the step it is in
+void US_DataModel::stop_scan( void )
+{
+   if ( ! scanning )   return;
+
+   stop_req = true;
+
+   if ( scanner != NULL )
+      scanner->cancel();               // a read of the local store stops too
+}
+
+bool US_DataModel::scan_stopped( void ) const
+{
+   return stopped;
+}
+
+bool US_DataModel::is_demo( void ) const
+{
+   return demo;
 }
 
 // Get data description object at specified row
@@ -521,8 +571,12 @@ US_DataModel::RunEntry::RunEntry()
    loCount  = 0;
    loaded   = false;
    verified = false;
+   catVerified = false;
    orphans  = false;
+   globals  = false;
+   unsafe   = false;
 }
+
 
 bool US_DataModel::RunEntry::inBoth( void ) const
 {
@@ -662,10 +716,21 @@ void US_DataModel::scan_runs( )
    runents  .clear();
    run_queue.clear();
    ver_queue.clear();
+   touched  .clear();
    errors   .clear();
    db_failed  = false;
+   demo       = false;
    kdb_recs   = 0;
    klo_recs   = 0;
+
+   for ( int side = 0; side < 2; side++ )
+   {
+      orph_by_parent[ side ].clear();
+      orph_branches [ side ].clear();
+      orph_adopted  [ side ].clear();
+   }
+
+   orph_indexed = false;
 
    open_catalogs();
 
@@ -724,9 +789,18 @@ void US_DataModel::scan_runs( )
 
    await_disk();                  // the worker has finished its listing
 
-   if ( use_lo  &&  scanner != NULL  &&  ! scanner->ok() )
+   // A results directory that is not there is an empty store, as on a new
+   // installation: nothing is created, and it is not an error
+   if ( use_lo  &&  scanner != NULL  &&  ! scanner->ok()  &&
+        QDir( US_Settings::resultDir() ).exists() )
       scan_error( tr( "The local results could not be listed: %1" )
                   .arg( scanner->error() ) );
+
+   // How many local directories hold each run
+   QHash< QString, int > lodirs;
+
+   for ( int ii = 0; cat_lo != NULL  &&  ii < cat_lo->runCount(); ii++ )
+      lodirs[ cat_lo->run( ii ).runID ]++;
 
    if ( use_lo  &&  cat_lo != NULL )
    {
@@ -760,6 +834,13 @@ void US_DataModel::scan_runs( )
 
          entries[ match ].loIndex = ii;
          entries[ match ].loCount = run_record_count( run );
+
+         // A directory not named after its run, or one of two holding the
+         // same run: what an upload or a download writes would not go
+         // where the run is
+         if ( QDir( run.dirPath ).dirName() != run.runID  ||
+              lodirs.value( run.runID ) > 1 )
+            entries[ match ].unsafe = true;
 
          if ( ! run.usable )
          {
@@ -804,10 +885,68 @@ void US_DataModel::scan_runs( )
 DbgLv(1) << "ScnR: experiments" << runents.size() << nowTime();
 }
 
-// Number of experiments the first layer found
+// Number of experiments the first layer found, and the stand-ins
 int US_DataModel::runCount( ) const
 {
    return runents.size();
+}
+
+// Number of real experiments
+int US_DataModel::experimentCount( ) const
+{
+   int count = 0;
+
+   for ( int ii = 0; ii < runents.size(); ii++ )
+      count += runents.at( ii ).orphans ? 0 : 1;
+
+   return count;
+}
+
+US_DataModel::Counts::Counts()
+{
+   for ( int ii = 0; ii < 5; ii++ )
+   {
+      db[ ii ] = 0;
+      lo[ ii ] = 0;
+   }
+}
+
+void US_DataModel::Counts::add( const Counts& other )
+{
+   for ( int ii = 0; ii < 5; ii++ )
+   {
+      db[ ii ] += other.db[ ii ];
+      lo[ ii ] += other.lo[ ii ];
+   }
+}
+
+// Count the records of one experiment's row range, or of every row
+US_DataModel::Counts US_DataModel::count_records( int index ) const
+{
+   Counts counts;
+   int    first = 0;
+   int    last  = adescs.size() - 1;
+
+   if ( index >= 0 )
+   {
+      if ( index >= runents.size() )   return counts;
+
+      first = runents.at( index ).firstRow;
+      last  = runents.at( index ).lastRow;
+   }
+
+   for ( int row = first; row >= 0  &&  row <= last; row++ )
+   {
+      const DataDesc& desc = adescs.at( row );
+      int ityp = desc.recType;
+
+      if ( ityp < RAW  ||  ityp > NOISE )   continue;
+
+      counts.db[ ityp ] += ( ( desc.recState & REC_DB ) != 0 ) ? 1 : 0;
+      counts.lo[ ityp ] += ( ( desc.recState & REC_LO ) != 0 ) ? 1 : 0;
+   }
+
+   return counts;
 }
 
 // One experiment entry, by position
@@ -942,7 +1081,11 @@ void US_DataModel::request_run( int index )
 
    run_queue.removeAll( index );
    run_queue.prepend  ( index );
+
+   if ( ! scanning )
+      emit workRequested();            // nobody else will get to it
 }
+
 
 // The next experiment waiting to be read
 int US_DataModel::next_pending_run( ) const
@@ -1010,6 +1153,9 @@ bool US_DataModel::scan_all( void )
    BusyGuard guard( busy );
    QString   error;
 
+   // The orphans are what this read finds, so they are indexed afresh
+   orph_indexed = false;
+
    // Again the local store is walked on the worker thread while the
    // database is queried here
    if ( scanner != NULL )
@@ -1020,7 +1166,8 @@ bool US_DataModel::scan_all( void )
    // An older server is read with the whole-store procedures it has, so a
    // failure here is a real one; the scan then reads one experiment at a
    // time, which may still get some of them
-   if ( cat_db != NULL  &&  ! cat_db->loadAll( error ) )
+   // Not when the listing failed: every record would read as an orphan
+   if ( cat_db != NULL  &&  ! db_failed  &&  ! cat_db->loadAll( error ) )
    {
       scan_error( tr( "The database records could not be read in one pass: "
                       "%1" ).arg( error ) );
@@ -1029,11 +1176,13 @@ bool US_DataModel::scan_all( void )
 
    await_disk();
 
-   if ( scanner != NULL  &&  ! scanner->ok() )
+   if ( scanner != NULL  &&  ! scanner->ok()  &&
+        QDir( US_Settings::resultDir() ).exists() )
       scan_error( tr( "The local records could not be read: %1" )
                   .arg( scanner->error() ) );
 
    return ok;
+
 }
 
 /* Merge one experiment's records into the tree.
@@ -1083,6 +1232,22 @@ bool US_DataModel::do_merge_run( int index )
    if ( entry.loIndex >= 0  &&  cat_lo != NULL )
       catalog_descs( cat_lo, entry.loIndex, REC_LO, ldescs );
 
+   // A record whose parent only the other source has in this experiment is
+   // an orphan of its own source -- a model downloaded while its edit was
+   // not, say.  It belongs here, where its other copy and its parent are,
+   // not under the stand-in.
+   index_orphans();
+
+   for ( int pass = 0; pass < 3; pass++ )
+   {
+      int before = ddescs.size() + ldescs.size();
+
+      adopt_orphans( 0, ldescs, ddescs );
+      adopt_orphans( 1, ddescs, ldescs );
+
+      if ( ddescs.size() + ldescs.size() == before )   break;
+   }
+
    kdb_recs      += ddescs.size();
    klo_recs      += ldescs.size();
 
@@ -1130,6 +1295,8 @@ bool US_DataModel::do_merge_run( int index )
         cat_lo->run( entry.loIndex ).verified )
       apply_digests( index );
 
+   update_run_row( index );
+
    if ( progress != NULL )
       progress->setValue( 1 );
 
@@ -1145,34 +1312,70 @@ bool US_DataModel::run_verified( int index ) const
    return runents.at( index ).verified;
 }
 
+// Queue every experiment worth comparing.  What was asked for already --
+// an experiment the user opened while the chain was read -- stays in front.
 int US_DataModel::queue_verifies( void )
 {
-   ver_queue.clear();
+   QList< int > queue;
+
+   for ( int ii = 0; ii < ver_queue.size(); ii++ )
+   {
+      int index = ver_queue.at( ii );
+
+      if ( needs_verify( index )  &&  ! queue.contains( index ) )
+         queue << index;
+   }
 
    for ( int ii = 0; ii < runents.size(); ii++ )
    {
-      const RunEntry& entry = runents.at( ii );
-
-      // Only a run that is in both places can be out of step with itself
-      if ( ! entry.inBoth()  ||  entry.verified )   continue;
-
-      ver_queue << ii;
+      if ( needs_verify( ii )  &&  ! queue.contains( ii ) )
+         queue << ii;
    }
+
+   ver_queue = queue;
 
    return ver_queue.size();
 }
 
+// Whether an experiment holds records in both places not compared yet
+bool US_DataModel::needs_verify( int index ) const
+{
+   if ( index < 0  ||  index >= runents.size() )   return false;
+
+   const RunEntry& entry = runents.at( index );
+
+   if ( entry.verified )                            return false;
+
+   // One not read yet can be asked for -- it is read first -- when it is
+   // in both places
+   if ( ! entry.loaded )                            return entry.inBoth();
+
+   // An experiment in both places is compared as a whole
+   if ( entry.inBoth()  &&  ! entry.catVerified )   return true;
+
+   // Otherwise the records that are in both and not compared: a stand-in's,
+   // a record adopted from the other source, or one an action changed
+   for ( int row = entry.firstRow; row >= 0  &&  row <= entry.lastRow; row++ )
+   {
+      int state = adescs.at( row ).recState;
+
+      if ( ( state & REC_DB ) != 0  &&  ( state & REC_LO ) != 0  &&
+           ( state & HV_DET ) == 0 )
+         return true;
+   }
+
+   return false;
+}
+
 void US_DataModel::request_verify( int index )
 {
-   if ( index < 0  ||  index >= runents.size() )   return;
-   if ( runents.at( index ).verified )             return;
-   if ( ! runents.at( index ).inBoth() )           return;
+   if ( ! needs_verify( index ) )                   return;
 
    ver_queue.removeAll( index );
    ver_queue.prepend  ( index );
 
    if ( ! scanning )
-      emit verifyRequested();
+      emit workRequested();
 }
 
 int US_DataModel::next_pending_verify( void ) const
@@ -1185,9 +1388,145 @@ int US_DataModel::pending_verifies( void ) const
    return ver_queue.size();
 }
 
+// Do the first piece of the work queued outside a scan
+bool US_DataModel::pump_once( void )
+{
+   if ( must_queue() )   return false;
+
+   int index = next_pending_run();
+
+   if ( index >= 0 )
+   {
+      bool was = runents.at( index ).loaded;
+      bool ok  = do_scan_run( index );
+
+      run_queue.removeAll( index );
+
+      if ( ok  &&  ! was )
+         emit runMerged( index );
+
+      return true;
+   }
+
+   index = next_pending_verify();
+
+   if ( index >= 0 )
+   {
+      if ( do_verify_run( index ) )
+         emit runCompared( index );
+
+      ver_queue.removeAll( index );
+      return true;
+   }
+
+   return false;
+}
+
+// A record was uploaded, downloaded or removed
+void US_DataModel::record_changed( int row )
+{
+   int index = run_of_row( row );
+
+   if ( index < 0 )   return;
+
+   const DataDesc& desc = adescs.at( row );
+
+   if ( ( desc.recState & REC_DB ) != 0  &&
+        ( desc.recState & REC_LO ) != 0 )
+   {  // Two copies that were not compared with each other
+      adescs[ row ].recState &= ~HV_DET;
+      adescs[ row ].contents  = QString();
+      touched.insert( row );
+      runents[ index ].verified = false;
+   }
+
+   else
+      touched.remove( row );
+
+   update_run_row( index );
+   request_verify( index );
+}
+
+// The checksum of one local file
+QString US_DataModel::file_digest( const QString& path )
+{
+   if ( path.isEmpty()  ||  ! QFileInfo( path ).isFile() )
+      return QString();
+
+   // "0 0" is what md5sum_file() gives for a file it could not read
+   QString digest = US_Util::md5sum_file( path );
+
+   return ( digest == "0 0" ) ? QString() : digest;
+}
+
+// The checksum of one database record, read on its own
+bool US_DataModel::db_digest( IUS_DB2* dbP, const DataDesc& desc,
+                              QString& digest, QString& error )
+{
+   digest.clear();
+   error .clear();
+
+   if ( dbP == NULL  ||  desc.recordID < 0 )
+   {
+      error = QObject::tr( "no database record to read" );
+      return false;
+   }
+
+   QStringList query;
+   QString     recID = QString::number( desc.recordID );
+   int         xcol  = -1;       // the column of a record's XML, if hashed here
+   int         ccol  = -1;       // the column of the server's checksum
+
+   switch ( desc.recType )
+   {
+      case RAW:    query << "get_rawData"     << recID;  ccol = 8;  break;
+      case EDIT:   query << "get_editedData"  << recID;  ccol = 6;  break;
+      case MODEL:  query << "get_model_info"  << recID;  xcol = 2;  break;
+      case NOISE:  query << "get_noise_info"  << recID;  xcol = 5;  break;
+      default:
+         error = QObject::tr( "no checksum for a record of type %1" )
+                 .arg( desc.recType );
+         return false;
+   }
+
+   dbP->query( query );
+
+   if ( dbP->lastErrno() != IUS_DB2::OK  ||  ! dbP->next() )
+   {
+      error = QObject::tr( "%1 %2: %3" ).arg( query[ 0 ] ).arg( recID )
+              .arg( dbP->lastError() );
+      return false;
+   }
+
+   if ( ccol >= 0 )
+   {
+      QString cksum = dbP->value( ccol     ).toString();
+      QString size  = dbP->value( ccol + 1 ).toString();
+
+      if ( cksum.isEmpty() )
+      {
+         error = QObject::tr( "%1 %2 gave no checksum" ).arg( query[ 0 ] )
+                 .arg( recID );
+         return false;
+      }
+
+      digest = cksum + " " + size;
+      return true;
+   }
+
+   // The server hashes the same XML when it lists these, as MD5 over its
+   // bytes, so the hash of what it returns is the one it would give
+   QByteArray xml = dbP->value( xcol ).toString().toUtf8();
+   digest = QString( QCryptographicHash::hash( xml, QCryptographicHash::Md5 )
+                     .toHex() ) + " " + QString::number( xml.size() );
+
+   return true;
+}
+
 // The checksum of every record of one catalog run, by GUID
 QMap< QString, QString > US_DataModel::run_digests( US_DataCatalog* catalog,
-                                                    int index )
+                                                    int index,
+                                                    QSet< QString >* present )
 {
    QMap< QString, QString > digests;
 
@@ -1195,36 +1534,42 @@ QMap< QString, QString > US_DataModel::run_digests( US_DataCatalog* catalog,
 
    const US_DataCatalog::Run& run = catalog->run( index );
 
+   // The rows carry their GUIDs simplified, so the keys are too
+   auto add = [ & ]( const QString& guid, const QString& checksum,
+                     const QString& size )
+   {
+      QString key = guid.simplified();
+
+      if ( present != NULL )
+         present->insert( key );
+
+      if ( ! checksum.isEmpty() )
+         digests.insert( key, checksum + " " + size );
+   };
+
    for ( int ii = 0; ii < run.raws.size(); ii++ )
    {
       const US_DataCatalog::Raw& raw = run.raws.at( ii );
 
-      if ( ! raw.checksum.isEmpty() )
-         digests.insert( raw.guid, raw.checksum + " " + raw.size );
+      add( raw.guid, raw.checksum, raw.size );
 
       for ( int jj = 0; jj < raw.edits.size(); jj++ )
       {
          const US_DataCatalog::Edit& edit = raw.edits.at( jj );
 
-         if ( ! edit.checksum.isEmpty() )
-            digests.insert( edit.guid, edit.checksum + " " + edit.size );
+         add( edit.guid, edit.checksum, edit.size );
 
          for ( int kk = 0; kk < edit.models.size(); kk++ )
          {
             const US_DataCatalog::Model& model = edit.models.at( kk );
 
-            if ( ! model.checksum.isEmpty() )
-               digests.insert( model.guid,
-                               model.checksum + " " + model.size );
+            add( model.guid, model.checksum, model.size );
 
             for ( int mm = 0; mm < model.noises.size(); mm++ )
             {
                const US_DataCatalog::Noise& noise = model.noises.at( mm );
 
-               if ( noise.checksum.isEmpty() )  continue;
-
-               digests.insert( noise.guid,
-                               noise.checksum + " " + noise.size );
+               add( noise.guid, noise.checksum, noise.size );
             }
          }
       }
@@ -1261,53 +1606,70 @@ bool US_DataModel::do_verify_run( int index )
 
    if ( entry.verified  ||  ! entry.loaded )       return false;
 
-   QString error;
-   bool    dbOk = true;
-   bool    loOk = true;
-
-   // The local files are hashed on the worker thread while the database
-   // hashes its blobs, so the two halves of the comparison overlap
-   bool loJob = ( entry.loIndex >= 0  &&  scanner != NULL  &&
-                  start_disk( [ & ]() { return scanner->verify( entry.loIndex ); } ) );
-
-   if ( entry.dbIndex >= 0  &&  cat_db != NULL  &&
-        ! cat_db->verifyRun( entry.dbIndex, error ) )
+   // An experiment in both places is hashed as a whole, once: the local
+   // files are hashed on the worker thread while the database hashes its
+   // blobs, so the two halves of the comparison overlap
+   if ( entry.inBoth()  &&  ! entry.catVerified  &&  ! entry.orphans )
    {
-      dbOk = false;
-      scan_error( tr( "%1: the database copies could not be compared: %2" )
-                  .arg( entry.runID ).arg( error ) );
+      QString error;
+      bool    dbOk = true;
+      bool    loOk = true;
+
+      bool loJob = ( entry.loIndex >= 0  &&  scanner != NULL  &&
+                     start_disk( [ & ]() { return scanner->verify( entry.loIndex ); } ) );
+
+      if ( entry.dbIndex >= 0  &&  cat_db != NULL  &&
+           ! cat_db->verifyRun( entry.dbIndex, error ) )
+      {
+         dbOk = false;
+         scan_error( tr( "%1: the database copies could not be compared: %2" )
+                     .arg( entry.runID ).arg( error ) );
+      }
+
+      await_disk();
+
+      if ( entry.loIndex >= 0  &&  ( ! loJob  ||  ! scanner->ok() ) )
+      {
+         loOk = false;
+         scan_error( tr( "%1: the local copies could not be compared: %2" )
+                     .arg( entry.runID )
+                     .arg( loJob ? scanner->error() : tr( "no local reader" ) ) );
+      }
+
+      if ( ! dbOk  ||  ! loOk )
+         return false;               // the rows stay unverified
+
+      apply_digests( index );
    }
 
-   await_disk();
+   // What is left -- a stand-in's records, records adopted from the other
+   // source, records an action changed -- is compared record by record
+   bool ok = verify_rows( index );
 
-   if ( entry.loIndex >= 0  &&  ( ! loJob  ||  ! scanner->ok() ) )
-   {
-      loOk = false;
-      scan_error( tr( "%1: the local copies could not be compared: %2" )
-                  .arg( entry.runID )
-                  .arg( loJob ? scanner->error() : tr( "no local reader" ) ) );
-   }
+   runents[ index ].verified = ok;
+   update_run_row( index );
 
-   if ( ! dbOk  ||  ! loOk )
-      return false;                  // the rows stay unverified
-
-   apply_digests( index );
-
-   return true;
+   return ok;
 }
 
 /* Compare the checksums both catalogs hold for one experiment.
 
    A side without a checksum is a side that could not be read, and that is
-   not the same thing as the two being equal: the record is a conflict.
+   not the same thing as the two being equal: the record is a conflict.  A
+   record one catalog does not hold at all -- adopted from the other
+   source's orphans, or written by an action since the scan -- is left for
+   verify_rows(), which reads it on its own.
 */
 void US_DataModel::apply_digests( int index )
 {
    RunEntry entry = runents.at( index );
 
-   QMap< QString, QString > dbDigests = run_digests( cat_db, entry.dbIndex );
-   QMap< QString, QString > loDigests = run_digests( cat_lo, entry.loIndex );
-   bool anyConflict = false;
+   QSet< QString > dbHeld;
+   QSet< QString > loHeld;
+   QMap< QString, QString > dbDigests = run_digests( cat_db, entry.dbIndex,
+                                                     &dbHeld );
+   QMap< QString, QString > loDigests = run_digests( cat_lo, entry.loIndex,
+                                                     &loHeld );
 
    for ( int row = entry.firstRow; row >= 0  &&  row <= entry.lastRow; row++ )
    {
@@ -1318,6 +1680,11 @@ void US_DataModel::apply_digests( int index )
 
       if ( ! isDba  ||  ! isLoc )   continue;   // nothing to compare
 
+      if ( touched.contains( row )  ||
+           ! dbHeld.contains( desc.dataGUID )  ||
+           ! loHeld.contains( desc.dataGUID ) )
+         continue;                              // read on its own
+
       QString dbc = dbDigests.value( desc.dataGUID );
       QString loc = loDigests.value( desc.dataGUID );
 
@@ -1325,21 +1692,113 @@ void US_DataModel::apply_digests( int index )
                      + ( loc.isEmpty() ? QString( "- -" ) : loc );
       desc.recState |= HV_DET;
 
-      if ( sync_state( desc ) == SYNC_CONFLICT )
-         anyConflict = true;
-
       adescs[ row ] = desc;
    }
 
-   // The experiment row says whether anything under it differs
-   DataDesc edesc  = adescs.at( entry.row );
-   edesc.recState |= HV_DET;
-   edesc.contents  = anyConflict ? QString( "differ 1 - -" ) : QString();
-   adescs[ entry.row ] = edesc;
+   // Verified when nothing is left to read record by record
+   runents[ index ].catVerified = true;
+   runents[ index ].verified    = false;
+   runents[ index ].verified    = ! needs_verify( index );
 
-   entry.verified   = true;
-   ver_queue.removeAll( index );
-   runents[ index ] = entry;
+   if ( runents[ index ].verified )
+      ver_queue.removeAll( index );
+
+   update_run_row( index );
+}
+
+// Compare record by record the rows in both places not compared yet
+bool US_DataModel::verify_rows( int index )
+{
+   const RunEntry entry = runents.at( index );
+   bool  ok             = true;
+
+   for ( int row = entry.firstRow; row >= 0  &&  row <= entry.lastRow; row++ )
+   {
+      DataDesc desc = adescs.at( row );
+
+      if ( ( desc.recState & REC_DB ) == 0  ||
+           ( desc.recState & REC_LO ) == 0  ||
+           ( desc.recState & HV_DET ) != 0 )
+         continue;
+
+      QString dbc;
+      QString error;
+
+      if ( ! db_digest( db, desc, dbc, error ) )
+      {
+         ok = false;
+         scan_error( tr( "%1: the database copy of %2 could not be read: %3" )
+                     .arg( entry.runID ).arg( desc.label ).arg( error ) );
+         continue;                   // the row stays unverified
+      }
+
+      QString loc = file_digest( desc.filename );
+
+      if ( loc.isEmpty() )
+      {
+         ok = false;
+         scan_error( tr( "%1: the local copy of %2 could not be read: %3" )
+                     .arg( entry.runID ).arg( desc.label )
+                     .arg( desc.filename ) );
+         continue;
+      }
+
+      desc.contents  = dbc + " " + loc;
+      desc.recState |= HV_DET;
+      adescs[ row ]  = desc;
+      touched.remove( row );
+   }
+
+   return ok;
+}
+
+// Set the experiment row's state from its records
+//
+// The row reads as compared once every record under it in both places has
+// been, and as differing when any of them does.  A stand-in experiment is
+// not a record in either place and is left as it is.
+void US_DataModel::update_run_row( int index )
+{
+   if ( index < 0  ||  index >= runents.size() )   return;
+
+   const RunEntry& entry = runents.at( index );
+
+   if ( entry.orphans  ||  entry.row < 0 )         return;
+
+   DataDesc& edesc = adescs[ entry.row ];
+
+   if ( ( edesc.recState & REC_DB ) == 0  ||
+        ( edesc.recState & REC_LO ) == 0 )
+      return;                          // in one place only: nothing to say
+
+   bool unverified = ! entry.verified;
+   bool conflict   = false;
+
+   for ( int row = entry.firstRow; row >= 0  &&  row <= entry.lastRow; row++ )
+   {
+      const DataDesc& desc = adescs.at( row );
+
+      if ( ( desc.recState & REC_DB ) == 0  ||
+           ( desc.recState & REC_LO ) == 0 )
+         continue;
+
+      SyncState state = sync_state( desc );
+
+      if ( state == SYNC_UNVERIFIED )   unverified = true;
+      if ( state == SYNC_CONFLICT   )   conflict   = true;
+   }
+
+   if ( unverified )
+   {
+      edesc.recState &= ~HV_DET;
+      edesc.contents  = QString();
+   }
+
+   else
+   {
+      edesc.recState |= HV_DET;
+      edesc.contents  = conflict ? QString( "differ 1 - -" ) : QString();
+   }
 }
 
 // Start a job of the disk worker, waiting for the one before it to finish
@@ -1667,9 +2126,10 @@ void US_DataModel::append_noise( const US_DataCatalog::Noise& noise,
 //
 // Each one keeps the parent GUID it points at, which merge_descs() turns
 // into a gray filler parent -- one per missing parent, shared by all of
-// its orphans.
+// its orphans.  Each orphan is a branch of its own: it and what hangs off
+// it, so it can be put somewhere as a whole.
 void US_DataModel::orphan_descs( US_DataCatalog* catalog, int state,
-                                 QVector< DataDesc >& descs )
+                                 QVector< Branch >& branches )
 {
    if ( catalog == NULL )   return;
 
@@ -1683,7 +2143,9 @@ void US_DataModel::orphan_descs( US_DataCatalog* catalog, int state,
                          raw.filename.section( "/", -1, -1 ), false )
                     : raw.runID;
 
-      append_raw( raw, runID, QString(), raw.experimentID, state, descs );
+      Branch branch;
+      append_raw( raw, runID, QString(), raw.experimentID, state, branch );
+      branches << branch;
    }
 
    for ( int ii = 0; ii < orph.edits.size(); ii++ )
@@ -1694,51 +2156,131 @@ void US_DataModel::orphan_descs( US_DataCatalog* catalog, int state,
                          edit.filename.section( "/", -1, -1 ), true )
                     : edit.runID;
 
-      append_edit( edit, runID, edit.rawGUID, QString(), state, descs );
+      Branch branch;
+      append_edit( edit, runID, edit.rawGUID, QString(), state, branch );
+      branches << branch;
    }
 
    for ( int ii = 0; ii < orph.models.size(); ii++ )
    {
       const US_DataCatalog::Model& model = orph.models.at( ii );
 
-      append_model( model, model.editGUID, model.editID, state, descs );
+      Branch branch;
+      append_model( model, model.editGUID, model.editID, state, branch );
+      branches << branch;
    }
 
    for ( int ii = 0; ii < orph.noises.size(); ii++ )
    {
       const US_DataCatalog::Noise& noise = orph.noises.at( ii );
 
-      append_noise( noise, noise.modelGUID, QString(), state, descs );
+      Branch branch;
+      append_noise( noise, noise.modelGUID, QString(), state, branch );
+      branches << branch;
    }
 }
 
-// Put the records of no experiment under a stand-in experiment
+// The key a branch is adopted by
+QString US_DataModel::adopt_key( const DataDesc& head )
+{
+   if ( head.recType == RAW )          // its experiment is not a record here
+      return QString::number( RAW ) + ":" + head.dataGUID;
+
+   if ( head.recType <= RAW  ||  head.parentGUID.length() != 36  ||
+        head.parentGUID == dmyGUID )
+      return QString();                // a global model, or a broken link
+
+   return QString::number( head.recType - 1 ) + ":" + head.parentGUID;
+}
+
+// The orphans of both catalogs, as branches indexed by their parent
+void US_DataModel::index_orphans( void )
+{
+   if ( orph_indexed )   return;
+
+   orph_indexed = true;
+
+   for ( int side = 0; side < 2; side++ )
+   {
+      orph_branches [ side ].clear();
+      orph_by_parent[ side ].clear();
+      orph_adopted  [ side ].clear();
+   }
+
+   if ( use_db  &&  cat_db != NULL )
+   {
+      orphan_descs( cat_db, REC_DB, orph_branches[ 0 ] );
+
+      for ( int ii = 0; ii < orph_branches[ 0 ].size(); ii++ )
+         repair_descriptions( orph_branches[ 0 ][ ii ], db );
+   }
+
+   if ( use_lo )
+   {
+      await_disk();
+      orphan_descs( cat_lo, REC_LO, orph_branches[ 1 ] );
+   }
+
+   for ( int side = 0; side < 2; side++ )
+   {
+      orph_adopted[ side ].fill( false, orph_branches[ side ].size() );
+
+      for ( int ii = 0; ii < orph_branches[ side ].size(); ii++ )
+      {
+         QString key = adopt_key( orph_branches[ side ][ ii ].first() );
+
+         if ( ! key.isEmpty() )
+            orph_by_parent[ side ][ key ] << ii;
+      }
+   }
+}
+
+// Add the orphans of one source that attach to the other source's chain
+void US_DataModel::adopt_orphans( int side, const QVector< DataDesc >& chain,
+                                  QVector< DataDesc >& descs )
+{
+   if ( orph_by_parent[ side ].isEmpty() )   return;
+
+   for ( int ii = 0; ii < chain.size(); ii++ )
+   {
+      const DataDesc& desc = chain.at( ii );
+      QString key = QString::number( desc.recType ) + ":" + desc.dataGUID;
+      const QList< int > found = orph_by_parent[ side ].value( key );
+
+      for ( int jj = 0; jj < found.size(); jj++ )
+      {
+         int bx = found.at( jj );
+
+         if ( orph_adopted[ side ][ bx ] )   continue;
+
+         orph_adopted[ side ][ bx ] = true;
+         descs << orph_branches[ side ][ bx ];
+      }
+   }
+}
+
+// Put the records of no experiment under stand-in experiments
 //
 // Only a whole-store read can tell an orphan from a record whose parent was
 // not read, so there are none after a read one experiment at a time, and
-// none when the tree is narrowed to one run or triple.
+// none when the tree is narrowed to one run or triple.  An orphan adopted
+// by an experiment (see do_merge_run) is not one any more.
 int US_DataModel::collect_orphans( void )
 {
    if ( ! filt_run.isEmpty()     &&  filt_run    != "ALL" )   return -1;
    if ( ! filt_triple.isEmpty()  &&  filt_triple != "ALL" )   return -1;
 
    BusyGuard           guard( busy );
-   QVector< DataDesc > dbo;
-   QVector< DataDesc > loo;
+   QVector< DataDesc > orph[ 2 ];
 
-   if ( use_db )
-   {
-      orphan_descs( cat_db, REC_DB, dbo );
-      repair_descriptions( dbo, db );
-   }
+   index_orphans();
 
-   if ( use_lo )
-   {
-      await_disk();
-      orphan_descs( cat_lo, REC_LO, loo );
-   }
+   for ( int side = 0; side < 2; side++ )
+      for ( int ii = 0; ii < orph_branches[ side ].size(); ii++ )
+         if ( ! orph_adopted[ side ][ ii ] )
+            orph[ side ] << orph_branches[ side ][ ii ];
 
-   return add_orphans( dbo, loo );
+   return add_orphans( orph[ 0 ], orph[ 1 ] );
 }
 
 /* Repair the model and noise descriptions of older servers.
@@ -2053,36 +2595,89 @@ QVector< US_DataModel::DataDesc > US_DataModel::merge_descs(
 
 // ------------------------------------------------------------ orphans
 
-/* Show records that attach to no experiment, under a stand-in experiment.
+/* Show records that attach to no experiment, under stand-in experiments.
 
-   The stand-in is appended after everything else, like any experiment that
-   is read: its row and its records' rows are its own range.
+   A stand-in is appended after everything else, like any experiment that
+   is read: its row and its records' rows are its own range.  Global models
+   -- a model with no edit at all is one by design, not a broken link --
+   and their noise go under a stand-in of their own, so that removing "the
+   orphans" never sweeps them up.
 */
 int US_DataModel::add_orphans( const QVector< DataDesc >& dbOrphans,
                                const QVector< DataDesc >& loOrphans )
 {
-   if ( dbOrphans.isEmpty()  &&  loOrphans.isEmpty() )   return -1;
+   QVector< DataDesc > orph[ 2 ];
+   QVector< DataDesc > glob[ 2 ];
+
+   for ( int side = 0; side < 2; side++ )
+   {
+      const QVector< DataDesc >& descs = ( side == 0 ) ? dbOrphans : loOrphans;
+      QSet< QString > globals;         // GUIDs of the global models
+
+      for ( int ii = 0; ii < descs.size(); ii++ )
+      {
+         const DataDesc& desc = descs.at( ii );
+         bool global = false;
+
+         if ( desc.recType == MODEL )
+            global = ( desc.parentGUID.length() != 36  ||
+                       desc.parentGUID == dmyGUID );
+
+         else if ( desc.recType == NOISE )
+            global = globals.contains( desc.parentGUID );
+
+         if ( global  &&  desc.recType == MODEL )
+            globals.insert( desc.dataGUID );
+
+         if ( global )  glob[ side ] << desc;
+         else           orph[ side ] << desc;
+      }
+   }
+
+   int first = add_stand_in( tr( "(records of no experiment)" ),
+                             tr( "Records whose experiment or parent is"
+                                 " missing" ),
+                             false, orph[ 0 ], orph[ 1 ] );
+
+   int second = add_stand_in( tr( "(global models)" ),
+                              tr( "Global models, which belong to no edit,"
+                                  " and their noise" ),
+                              true, glob[ 0 ], glob[ 1 ] );
+
+   return ( first >= 0 ) ? first : second;
+}
+
+// Append one stand-in experiment and its records
+int US_DataModel::add_stand_in( const QString& label,
+                                const QString& description, bool globals,
+                                const QVector< DataDesc >& dbs,
+                                const QVector< DataDesc >& los )
+{
+   if ( dbs.isEmpty()  &&  los.isEmpty() )   return -1;
 
    RunEntry entry;
-   entry.runID   = tr( "(records of no experiment)" );
+   entry.runID   = label;
    entry.orphans = true;
+   entry.globals = globals;
    entry.loaded  = true;
 
+   // Where the records under it are, so the context menu offers what can
+   // be done to them; the tree does not show it as a record of either place
    DataDesc edesc;
    edesc.recordID    = -1;
    edesc.recType     = EXPERIMENT;
    edesc.parentID    = -1;
-   edesc.recState    = ( dbOrphans.isEmpty() ? 0 : REC_DB )
-                     | ( loOrphans.isEmpty() ? 0 : REC_LO );
+   edesc.recState    = ( dbs.isEmpty() ? 0 : REC_DB )
+                     | ( los.isEmpty() ? 0 : REC_LO );
    edesc.subType     = "";
    edesc.dataGUID    = dmyGUID;
    edesc.parentGUID  = "";
    edesc.filename    = "";
    edesc.contents    = "";
    edesc.label       = entry.runID;
-   edesc.description = tr( "Records whose experiment or parent is missing" );
+   edesc.description = description;
 
-   QVector< DataDesc > mdescs = merge_descs( dbOrphans, loOrphans );
+   QVector< DataDesc > mdescs = merge_descs( dbs, los );
 
    entry.row = adescs.size();
    adescs << edesc;
@@ -2094,7 +2689,7 @@ int US_DataModel::add_orphans( const QVector< DataDesc >& dbOrphans,
    {
       const DataDesc& desc = mdescs.at( ii );
 
-      if ( desc.recType == RAW )
+      if ( desc.recType == RAW  ||  ( globals  &&  desc.recType == MODEL ) )
          exctr = excluded_tree( desc.recState );
 
       if ( exctr )   continue;
@@ -2109,21 +2704,28 @@ int US_DataModel::add_orphans( const QVector< DataDesc >& dbOrphans,
    entry.firstRow = any ? base : -1;
    entry.lastRow  = any ? adescs.size() - 1 : -1;
 
-   kdb_recs      += dbOrphans.size();
-   klo_recs      += loOrphans.size();
+   kdb_recs      += dbs.size();
+   klo_recs      += los.size();
 
    runents << entry;
 
-   return runents.size() - 1;
+   int index = runents.size() - 1;
+
+   // Records that are in both places are compared like any others
+   runents[ index ].verified = ! needs_verify( index );
+
+   return index;
 }
 
 // ------------------------------------------------------------ duplicates
 
 /* Rows that share a GUID, across the whole tree.
 
-   A record in both places is one row, so two rows of one kind with one GUID
-   are two records that claim to be the same one -- whichever experiments
-   they are in.
+   A record in both places is one row.  A database row and a local row that
+   share a GUID without being paired -- each under its own parent -- are
+   still two copies of one record, which the tree shows as two rows; but
+   two database rows, or two local files, that claim one GUID are two
+   records that claim to be the same one, whichever experiments they are in.
 */
 QList< US_DataModel::Duplicate > US_DataModel::find_duplicates( void ) const
 {
@@ -2152,6 +2754,18 @@ QList< US_DataModel::Duplicate > US_DataModel::find_duplicates( void ) const
 
       if ( rows.size() < 2 )   continue;
 
+      int ndb = 0;
+      int nlo = 0;
+
+      for ( int jj = 0; jj < rows.size(); jj++ )
+      {
+         int state = adescs.at( rows[ jj ] ).recState;
+         ndb += ( ( state & REC_DB ) != 0 ) ? 1 : 0;
+         nlo += ( ( state & REC_LO ) != 0 ) ? 1 : 0;
+      }
+
+      if ( ndb < 2  &&  nlo < 2 )   continue;   // one copy in each place
+
       Duplicate dup;
       dup.recType = keys[ ii ].section( ":", 0, 0 ).toInt();
       dup.guid    = keys[ ii ].section( ":", 1 );
@@ -2175,13 +2789,25 @@ void US_DataModel::dummy_data()
    runents  .clear();
    run_queue.clear();
    ver_queue.clear();
+   touched  .clear();
    errors   .clear();
    db_failed  = false;
+   stopped    = false;
    kdb_recs   = 0;
    klo_recs   = 0;
 
+   for ( int side = 0; side < 2; side++ )
+   {
+      orph_by_parent[ side ].clear();
+      orph_branches [ side ].clear();
+      orph_adopted  [ side ].clear();
+   }
+
+   orph_indexed = false;
+
    RunEntry entry;
    entry.runID          = "demo1_veloc";
+
    entry.row            = 0;
    entry.firstRow       = 1;
    entry.loaded         = true;
@@ -2278,10 +2904,21 @@ void US_DataModel::dummy_data()
    entry.lastRow        = adescs.size() - 1;
    entry.dbCount        = 4;
    entry.loCount        = 3;
+   entry.catVerified    = true;
    runents << entry;
+
+   // The sample shows the states a record can be in, so its rows keep
+   // their DB and Local flags; but none of them is a record anywhere, and
+   // no ID of a real one may reach an action or a database read
+   for ( int row = 0; row < adescs.size(); row++ )
+   {
+      adescs[ row ].recordID = -1;
+      adescs[ row ].parentID = -1;
+   }
 
    kdb_recs   = ddescs.size();
    klo_recs   = ldescs.size();
+   demo       = true;
 }
 
 // What is wrong with the experiments that should not be acted on as they are

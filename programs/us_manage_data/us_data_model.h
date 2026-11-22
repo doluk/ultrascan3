@@ -113,9 +113,27 @@ class US_DataModel : public QObject
                 //! only has nothing to be compared against.
                 bool      verified;
 
-                //! True for the stand-in experiment that holds the records
-                //! that attach to no experiment's chain
+                //! True once the two catalogs' checksums of this
+                //! experiment have been compared (apply_digests).  A record
+                //! changed by an action after that is compared on its own,
+                //! so the experiment is not hashed again.
+                bool      catVerified;
+
+                //! True for a stand-in experiment: the one that holds the
+                //! records that attach to no experiment's chain, or the
+                //! one that holds the global models
                 bool      orphans;
+
+                //! True for the stand-in experiment of the global models,
+                //! which have no edit by design
+                bool      globals;
+
+                //! True when an upload or a download for this run would
+                //! write somewhere else than where the run already is: its
+                //! local directory is not named after it, holds more than
+                //! one run, or is not the only directory holding it.  Both
+                //! actions are refused for such a run.
+                bool      unsafe;
 
                 //! What is wrong with the run, when either source says it
                 //! should not be acted on as it is (US_DataCatalog::Run::
@@ -231,8 +249,15 @@ class US_DataModel : public QObject
             scanStep, \ref runsListed, \ref runMerged and \ref runCompared.
             While it runs \ref scan_active is true, and a request to read or
             compare an experiment that arrives from the window meanwhile is
-            only queued (see \ref scan_run).  The window stays responsive
-            between experiments.
+            only queued (see \ref scan_run).  The window takes input between
+            experiments only: a database query blocks it while it runs, and
+            while the local store is being read it repaints but ignores
+            input.
+
+            With a run filter only that run's records are read, one run at
+            a time; the whole-store read (\ref scan_all) is for an unfiltered
+            scan, and it is made even when no experiment is listed, since
+            the store may still hold records of no experiment.
         */
         void scan_data( void );
 
@@ -252,8 +277,35 @@ class US_DataModel : public QObject
         //! many records hang off each, without reading the chain.
         void scan_runs( void );
 
-        //! \brief The number of experiments the first layer found
+        //! \brief The number of experiments the first layer found, plus
+        //!        the stand-in experiments added after the chain is read
         int  runCount( void ) const;
+
+        //! \brief The number of real experiments: \ref runCount without
+        //!        the stand-ins
+        int  experimentCount( void ) const;
+
+        //! \class Counts
+        //! \brief Records by kind and by where they are
+        class Counts
+        {
+            public:
+                Counts();
+
+                int db[ 5 ];      //!< Database records, [ RAW .. NOISE ]
+                int lo[ 5 ];      //!< Local records, [ RAW .. NOISE ]
+
+                //! \brief Add another count to this one
+                void add( const Counts& other );
+        };
+
+        /*! \brief Count the records of one experiment, or of the tree
+
+            The window keeps a running total from this as the experiments
+            are merged, rather than counting the whole tree again each time.
+            \param index The position of the experiment, or -1 for all
+        */
+        Counts count_records( int index = -1 ) const;
 
         //! \brief One experiment entry, by position
         //! \param index The position of the experiment
@@ -332,10 +384,68 @@ class US_DataModel : public QObject
 
         //! \brief Ask for an experiment to be verified before the others
         //!
-        //! Outside a scan this emits \ref verifyRequested, so whoever runs
+        //! Outside a scan this emits \ref workRequested, so whoever runs
         //! the comparisons knows there is one waiting.
         //! \param index The position of the experiment
         void request_verify( int index );
+
+        //! \brief True when an experiment has records in both places that
+        //!        are not compared yet: a real experiment in both sources,
+        //!        or a stand-in holding a record found in both
+        //! \param index The position of the experiment
+        bool needs_verify( int index ) const;
+
+        /*! \brief Do one piece of the work queued outside a scan
+
+            A read asked for while the model was busy, and a comparison
+            asked for when an experiment was opened or a record changed,
+            are queued; this does the first of them -- a read before a
+            comparison -- and emits \ref runMerged or \ref runCompared, as
+            the scan would.  Whoever owns the event loop calls it once per
+            turn after \ref workRequested, while it returns true.
+            \returns True when something was done; false when nothing is
+                     waiting, or the model is busy or scanning
+        */
+        bool pump_once( void );
+
+        /*! \brief A record was uploaded or downloaded: compare it again
+
+            Its two copies are not the ones compared before, so the record
+            and its experiment read as unverified, and the experiment is
+            queued to be compared again -- only the records changed since,
+            not the whole experiment.
+            \param row The row of the record
+        */
+        void record_changed( int row );
+
+        //! \brief Ask the scan that is running to stop after the step it
+        //!        is in, as a window that is closing does
+        void stop_scan( void );
+
+        //! \brief True when the last scan was stopped by \ref stop_scan
+        bool scan_stopped( void ) const;
+
+        //! \brief True while the tree is the sample shown before a scan
+        //!
+        //! Its records are made up, so no action may be taken on them.
+        bool is_demo( void ) const;
+
+        /*! \brief The checksum of one database record, read on its own
+
+            "md5 length", as the catalogs give it: the server hashes a raw
+            or edit blob; a model or noise record's XML is read and hashed
+            here.
+            \param dbP    The database connection
+            \param desc   The record; its recordID is the database ID
+            \param digest Filled in with "md5 length"
+            \param error  Filled in with a message when the read fails
+        */
+        static bool db_digest( IUS_DB2* dbP, const DataDesc& desc,
+                               QString& digest, QString& error );
+
+        //! \brief The checksum of a local file, "md5 length", or empty
+        //!        when it cannot be read
+        static QString file_digest( const QString& path );
 
         //! \brief The next experiment waiting to be verified, or -1
         int  next_pending_verify( void ) const;
@@ -371,11 +481,13 @@ class US_DataModel : public QObject
             The records are put under a stand-in experiment, each under
             gray filler parents for the links of its chain that are
             missing, so a record whose edit or raw data is gone can still
-            be seen and removed.
+            be seen and removed.  Global models -- models with no edit, by
+            design -- and their noise go under a stand-in of their own,
+            "(global models)", which is added after the first.
             \param dbOrphans Orphan records read from the database
             \param loOrphans Orphan records read from local disk
-            \returns The position of the stand-in experiment, or -1 when
-                     there were no orphans
+            \returns The position of the first stand-in experiment added,
+                     or -1 when there were no orphans
         */
         int  add_orphans( const QVector< DataDesc >& dbOrphans,
                           const QVector< DataDesc >& loOrphans );
@@ -409,7 +521,10 @@ class US_DataModel : public QObject
 
         //! \brief Rows that share a GUID, over the whole tree
         //!
-        //! Detected once, after the scan, across every experiment.
+        //! Detected once, after the scan, across every experiment.  Rows
+        //! are duplicates when one source holds the GUID more than once; a
+        //! database row and a local row with the same GUID are two copies
+        //! of one record, not two records.
         QList< Duplicate > find_duplicates( void ) const;
 
         //! \brief The sync state of a record
@@ -502,8 +617,9 @@ class US_DataModel : public QObject
         //! \param index The position of the experiment
         void runCompared( int index );
 
-        //! \brief A comparison was asked for while no scan was running
-        void verifyRequested( void );
+        //! \brief A read or a comparison was queued while no scan was
+        //!        running; see \ref pump_once
+        void workRequested( void );
 
         //! \brief The records of no experiment were put under a stand-in
         //! \param index The position of the stand-in experiment
@@ -523,6 +639,9 @@ class US_DataModel : public QObject
         bool          use_lo;           //!< True when the local disk is scanned
         bool          db_failed;        //!< The database could not be listed
         bool          scanning;         //!< True while scan_data runs
+        bool          stop_req;         //!< stop_scan() was called
+        bool          stopped;          //!< The last scan was stopped
+        bool          demo;             //!< The tree is the sample tree
         int           busy;             //!< Depth of reads in progress
         QProgressBar* progress;         //!< Progress bar on main window
         QLabel*       lb_status;        //!< Status label on main window
@@ -535,6 +654,8 @@ class US_DataModel : public QObject
         QVector< RunEntry > runents;    //!< Experiment entries of the scan
         QList< int >        run_queue;  //!< Experiments still to be read
         QList< int >        ver_queue;  //!< Experiments still to be verified
+        QSet< int >         touched;    //!< Rows an action changed since
+                                        //!< their experiment was compared
         QStringList         errors;     //!< Errors of the last scan
         int                 kdb_recs;   //!< Database records merged so far
         int                 klo_recs;   //!< Local records merged so far
@@ -598,6 +719,51 @@ class US_DataModel : public QObject
         //! \brief Compare the checksums both catalogs hold for one experiment
         void apply_digests( int index );
 
+        //! \brief Compare, record by record, the rows of one experiment
+        //!        that are in both places and not compared yet
+        //! \returns False when a record could not be read
+        bool verify_rows( int index );
+
+        //! \brief Set the experiment row's state from its records
+        void update_run_row( int index );
+
+        //! \brief One orphan and what hangs off it, as tree records
+        typedef QVector< DataDesc > Branch;
+
+        /*! \brief The orphans of both catalogs, as branches
+
+            Read once per scan.  A branch whose parent the other source has
+            in an experiment's chain is merged into that experiment instead
+            of being shown as an orphan (see adopt_orphans), so a local copy
+            of a database record pairs with it.
+        */
+        void index_orphans( void );
+
+        //! Orphan branches of one source, by the key of the parent they
+        //! point at ("level:GUID"; a raw record by its own GUID)
+        QHash< QString, QList< int > > orph_by_parent[ 2 ];
+        QVector< Branch >  orph_branches[ 2 ];  //!< [0] database, [1] local
+        QVector< bool >    orph_adopted [ 2 ];  //!< Merged into a run
+        bool               orph_indexed;        //!< index_orphans() ran
+
+        //! \brief The key a branch is adopted by: its parent's level and
+        //!        GUID, or for a raw record its own GUID
+        static QString adopt_key( const DataDesc& head );
+
+        //! \brief Add to \a descs the orphans of one source that attach to
+        //!        a record of \a chain, the other source's experiment chain
+        //! \param side  The source of the orphans: 0 database, 1 local
+        //! \param chain The other source's records of the experiment
+        //! \param descs The records of the orphans' source, added to
+        void adopt_orphans( int side, const QVector< DataDesc >& chain,
+                            QVector< DataDesc >& descs );
+
+        //! \brief Append one stand-in experiment and its records
+        //! \returns Its position, or -1 when it holds nothing
+        int  add_stand_in( const QString& label, const QString& description,
+                           bool globals, const QVector< DataDesc >& dbs,
+                           const QVector< DataDesc >& los );
+
         //! \brief Start a disk worker job, after the one before it is done
         //! \param job Starts the job; false when the worker was busy
         bool start_disk( const std::function< bool() >& job );
@@ -606,9 +772,10 @@ class US_DataModel : public QObject
         //! \returns The position of the stand-in, or -1 when there is none
         int  collect_orphans( void );
 
-        //! \brief Turn a catalog's orphan records into tree records
+        //! \brief Turn a catalog's orphan records into tree records, one
+        //!        branch per orphan, its descendants after it
         void orphan_descs( US_DataCatalog* catalog, int state,
-                           QVector< DataDesc >& descs );
+                           QVector< Branch >& branches );
 
         //! \brief One raw record and everything under it, as tree records
         void append_raw( const US_DataCatalog::Raw& raw, const QString& runID,
@@ -653,9 +820,13 @@ class US_DataModel : public QObject
         //! \brief The checksum of every record of one catalog run
         //! \param catalog The catalog the run was read from
         //! \param index   The position of the run in that catalog
-        //! \returns GUID -> "checksum length", for records that have one
+        //! \param present Filled in with the GUID of every record of the
+        //!                run, with a checksum or not, when not null
+        //! \returns GUID -> "checksum length", for records that have one;
+        //!          the GUIDs are simplified, as the rows' are
         QMap< QString, QString > run_digests( US_DataCatalog* catalog,
-                                              int index );
+                                              int index,
+                                              QSet< QString >* present = NULL );
 
         //! \brief Whether the source filter excludes this tree
         //! \param state The record state flags of the head of the tree
