@@ -50,10 +50,14 @@ class US_DataPubBundle
       /*! \brief Pack the staging directory into an archive
 
           The archive is built in the work directory, read back and
-          compared with the staged files -- every file, with its size --
-          and only then written to \a archivePath through a QSaveFile, so
-          that an existing file of that name is replaced atomically and a
-          failed pack leaves it untouched.  A staged hidden file or
+          compared with the staged files -- every file, by name, size and
+          SHA-256 digest of its content -- and only then written to
+          \a archivePath through a QSaveFile, so that an existing file of
+          that name is replaced atomically and a failed pack leaves it
+          untouched.  The work directory, in the UltraScan tmp directory,
+          therefore needs room for the staged tree, the archive and the
+          unpacked copy at once: about twice the size of the data plus the
+          archive.  A staged hidden file or
           symbolic link is refused rather than silently left out.
           \param archivePath The full path of the .tar.gz to write
           \param error       Filled in with a message when packing fails

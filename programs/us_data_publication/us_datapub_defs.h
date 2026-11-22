@@ -164,15 +164,33 @@ namespace US_DataPub
    bool isSafeRelativePath( const QString& path, QString* why = nullptr );
 
    /*! \brief Whether a manifest file name is a single, safe path component
+
+       A name has to be usable as it is on Linux, macOS and Windows: no
+       separator, colon, "." or ".." or hidden name; none of the characters
+       < > " | ? *; no control character (C0, DEL or C1) and no invisible
+       Unicode formatting character (bidirectional overrides, zero-width
+       characters); no trailing dot or space, which Windows drops; not a
+       Windows device name (\ref isReservedDeviceName); and at most 255
+       bytes in UTF-8.
        \param name The base name to check
        \param why  Filled in with the reason when the name is refused
    */
    bool isSafeFileName    ( const QString& name, QString* why = nullptr );
 
+   /*! \brief Whether a name is a Windows device name
+
+       CON, PRN, AUX, NUL, COM1 to COM9 and LPT1 to LPT9, in any case, are
+       devices on Windows whatever extension follows them, so only the part
+       before the first dot is compared.
+       \param name The file name or run ID to check
+   */
+   bool isReservedDeviceName( const QString& name );
+
    /*! \brief Whether a run ID can name a run directory
 
-       The same rule US_ConvertIO applies to a run it reads: letters, digits,
-       '_' and '-', 1 to 80 characters.
+       The rule US_ConvertIO::runIdIsUsable() applies to a run it reads --
+       letters, digits, '_' and '-', 1 to 80 characters -- checked against
+       the whole string (no trailing newline), and not a Windows device name.
        \param runID The run ID to check
    */
    bool runIdIsUsable     ( const QString& runID );

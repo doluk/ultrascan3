@@ -1,6 +1,7 @@
 //! \file us_datapub_bundle.cpp
 #include "us_datapub_bundle.h"
 #include "us_datapub_defs.h"
+#include "us_datapub_hash.h"
 
 #include "us_archive.h"
 #include "us_settings.h"
@@ -240,15 +241,28 @@ bool US_DataPubBundle::pack( const QString& archivePath, QString& error )
 
    bool readable = reader.extract( workFile, verifyDir )  &&
                    listTree( verifyDir, packed, error );
+
+   // Names and sizes first, then the content of every file: a file that
+   // came back the right size but not the same is caught as well
+   QStringList missing;
+
+   if ( readable )
+   {
+      for ( int ii = 0; ii < relPaths.size(); ii++ )
+      {
+         QString rel = relPaths[ ii ];
+
+         if ( packed.value( rel, -1 ) != staged.value( rel )  ||
+              US_DataPubHash::fileHash( verifyDir + "/" + rel ) !=
+              US_DataPubHash::fileHash( staging + "/" + rel ) )
+            missing << rel;
+      }
+   }
+
    removeTree( verifyDir );
 
-   if ( ! readable  ||  packed != staged )
+   if ( ! readable  ||  packed != staged  ||  ! missing.isEmpty() )
    {
-      QStringList missing;
-
-      for ( int ii = 0; ii < relPaths.size(); ii++ )
-         if ( packed.value( relPaths[ ii ], -1 ) != staged.value( relPaths[ ii ] ) )
-            missing << relPaths[ ii ];
 
       error = readable
               ? QObject::tr( "The packed bundle does not hold what was staged"

@@ -212,3 +212,110 @@ TEST_F( DataPubCli, ANonInteractiveRunWithoutAPasswordStops )
                                  << root + "/no_such_file"
                                  << "--dry-run" ), 2 );
 }
+
+// An option of the other mode would be ignored without a word
+TEST_F( DataPubCli, OptionsOfTheOtherModeAreRefused )
+{
+   EXPECT_EQ( run( QStringList() << "--mode" << "export" << "--experiment-id"
+                                 << runID << "--target" << "disk"
+                                 << "--dry-run" ), 2 );
+   EXPECT_EQ( run( QStringList() << "--mode" << "export" << "--experiment-id"
+                                 << runID << "--on-conflict-solutions"
+                                 << "rename" << "--dry-run" ), 2 );
+   EXPECT_EQ( run( QStringList() << "--mode" << "export" << "--experiment-id"
+                                 << runID << "--strict-hardware"
+                                 << "--dry-run" ), 2 );
+
+   QString bundle = root + "/no_such_bundle.tar.gz";
+
+   EXPECT_EQ( run( QStringList() << "--mode" << "import" << "--bundle"
+                                 << bundle << "--model-guid"
+                                 << US_Util::new_guid() ), 2 );
+   EXPECT_EQ( run( QStringList() << "--mode" << "import" << "--bundle"
+                                 << bundle << "--include-models" ), 2 );
+   EXPECT_EQ( run( QStringList() << "--mode" << "import" << "--bundle"
+                                 << bundle << "--source" << "db" ), 2 );
+
+   // What both modes take is taken by both
+   EXPECT_EQ( run( QStringList() << "--mode" << "export" << "--experiment-id"
+                                 << runID << "--project-guid" << projectGUID
+                                 << "--max-scope" << "rawData"
+                                 << "--dry-run" ), 0 );
+   EXPECT_EQ( run( QStringList() << "--mode" << "import" << "--bundle"
+                                 << bundle << "--target" << "disk" ), 1 );
+}
+
+// Only the line end is taken off a password; spaces belong to it
+TEST_F( DataPubCli, APasswordKeepsEverythingButItsLineEnd )
+{
+   EXPECT_EQ( US_DataPubCLI::chopLineEnd( "secret\n" ),     "secret" );
+   EXPECT_EQ( US_DataPubCLI::chopLineEnd( "secret\r\n" ),   "secret" );
+   EXPECT_EQ( US_DataPubCLI::chopLineEnd( " secret \n" ),   " secret " );
+   EXPECT_EQ( US_DataPubCLI::chopLineEnd( "secret\n\n" ),   "secret\n" );
+   EXPECT_EQ( US_DataPubCLI::chopLineEnd( "secret" ),       "secret" );
+
+   QString path = root + "/pw.txt";
+   QFile   file( path );
+   ASSERT_TRUE( file.open( QIODevice::WriteOnly ) );
+   file.write( " pass word \r\nsecond line\n" );
+   file.close();
+   ASSERT_TRUE( QFile::setPermissions( path, QFileDevice::ReadOwner |
+                                             QFileDevice::WriteOwner ) );
+
+   QString pw, warning, error;
+   ASSERT_TRUE( US_DataPubCLI::readPasswordFile( path, pw, warning, error ) )
+      << error.toStdString();
+   EXPECT_EQ  ( pw, " pass word " );
+   EXPECT_TRUE( warning.isEmpty() ) << warning.toStdString();
+
+   EXPECT_FALSE( US_DataPubCLI::readPasswordFile( root + "/none", pw, warning,
+                                                  error ) );
+   EXPECT_FALSE( error.isEmpty() );
+}
+
+#if defined( Q_OS_UNIX )
+TEST_F( DataPubCli, APasswordFileOthersCanReadIsWarnedAbout )
+{
+   QString path = root + "/pw_open.txt";
+   QFile   file( path );
+   ASSERT_TRUE( file.open( QIODevice::WriteOnly ) );
+   file.write( "secret\n" );
+   file.close();
+   ASSERT_TRUE( QFile::setPermissions( path, QFileDevice::ReadOwner |
+                                             QFileDevice::WriteOwner |
+                                             QFileDevice::ReadGroup |
+                                             QFileDevice::ReadOther ) );
+
+   QString pw, warning, error;
+   ASSERT_TRUE( US_DataPubCLI::readPasswordFile( path, pw, warning, error ) );
+   EXPECT_EQ  ( pw, "secret" );
+   EXPECT_TRUE( warning.contains( "other users" ) ) << warning.toStdString();
+}
+#endif
+
+// A password from the file or the environment is taken: the run goes on to
+// the database (and fails there, with no server) rather than stopping for
+// want of a password
+TEST_F( DataPubCli, APasswordFromAFileOrTheEnvironmentIsTaken )
+{
+   QString path = root + "/pw_ok.txt";
+   QFile   file( path );
+   ASSERT_TRUE( file.open( QIODevice::WriteOnly ) );
+   file.write( "secret\n" );
+   file.close();
+   QFile::setPermissions( path, QFileDevice::ReadOwner |
+                                QFileDevice::WriteOwner );
+
+   EXPECT_EQ( run( QStringList() << "--mode" << "export" << "--source" << "db"
+                                 << "--experiment-id" << runID
+                                 << "--db-password-file" << path
+                                 << "--non-interactive" << "--dry-run" ), 1 );
+
+   qputenv( "US3_DB_PASSWORD", "secret\n" );
+   int code = run( QStringList() << "--mode" << "export" << "--source" << "db"
+                                 << "--experiment-id" << runID
+                                 << "--non-interactive" << "--dry-run" );
+   qunsetenv( "US3_DB_PASSWORD" );
+
+   EXPECT_EQ( code, 1 );
+}

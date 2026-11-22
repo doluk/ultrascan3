@@ -25,17 +25,8 @@ if(MSVC)
     set(GTEST_LIBRARIES gmock)
 endif()
 
-set(DATAPUB_SOURCES
-        ${datapub_dir}/us_datapub_defs.cpp
-        ${datapub_dir}/us_datapub_manifest.cpp
-        ${datapub_dir}/us_datapub_hash.cpp
-        ${datapub_dir}/us_datapub_bundle.cpp
-        ${datapub_dir}/us_datapub_records.cpp
-        ${datapub_dir}/us_datapub_catalog.cpp
-        ${datapub_dir}/us_datapub_export.cpp
-        ${datapub_dir}/us_datapub_import.cpp
-        ${datapub_dir}/us_datapub_cli.cpp
-        )
+# The very list the program is built from
+include(${datapub_dir}/us_datapub_sources.cmake)
 
 file(GLOB DATAPUB_TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/test_us_datapub_*.cpp")
 list(REMOVE_ITEM DATAPUB_TEST_SOURCES
@@ -44,7 +35,7 @@ list(REMOVE_ITEM DATAPUB_TEST_SOURCES
 add_executable(test_us_datapub
         ${CMAKE_CURRENT_SOURCE_DIR}/test_us_datapub_main.cpp
         ${DATAPUB_TEST_SOURCES}
-        ${DATAPUB_SOURCES}
+        ${US_DATAPUB_CORE_SOURCES}
         )
 
 target_include_directories(test_us_datapub

@@ -1242,7 +1242,7 @@ TEST_F( DataPubCatalogDb, ATimeStateWithoutDefinitionsIsAFailure )
 
 TEST_F( DataPubCatalogDb, ATimeStateIsFetchedWithItsDefinitions )
 {
-   // The stored file name is not trusted to name a place
+   // The stored file name is not trusted to name a place, nor the file
    timeStateRow( "../../elsewhere.tmst", "<TimeState/>" );
 
    EXPECT_CALL( db, readBlobFromDB( _, QString( "download_timestate" ), 9 ) )
@@ -1263,12 +1263,37 @@ TEST_F( DataPubCatalogDb, ATimeStateIsFetchedWithItsDefinitions )
 
    EXPECT_EQ( id, "9" );
    EXPECT_EQ( QFileInfo( tmst ).absolutePath(), QDir( work.path() ).absolutePath() );
-   EXPECT_EQ( QFileInfo( tmst ).fileName(), "elsewhere.tmst" );
+   EXPECT_EQ( QFileInfo( tmst ).fileName(), "demo_run.time_state.tmst" );
+   EXPECT_EQ( QFileInfo( xdef ).fileName(), "demo_run.time_state.xml" );
    EXPECT_TRUE( QFile::exists( tmst ) );
 
    QFile defs( xdef );
    ASSERT_TRUE( defs.open( QIODevice::ReadOnly ) );
    EXPECT_EQ( defs.readAll(), QByteArray( "<TimeState/>" ) );
+}
+
+// An import only takes a run's file whose name starts with "<runID>.", so
+// a time state the database keeps under another name -- another run's, a
+// plain one -- is exported under the run's own
+TEST_F( DataPubCatalogDb, ATimeStateIsNamedAfterItsRun )
+{
+   QStringList stored;
+   stored << "other_run.time_state.tmst" << "timestate.tmst"
+          << "demo_run.time_state.tmst";
+
+   for ( int ii = 0; ii < stored.size(); ii++ )
+   {
+      ::testing::Mock::VerifyAndClearExpectations( &db );
+      timeStateRow( stored[ ii ], "<TimeState/>" );
+
+      QString tmst, xdef, id, error;
+
+      ASSERT_EQ( catalog.timeState( db_run(), work.path(), false, tmst, xdef,
+                                    id, error ),
+                 US_DataPubCatalog::TimeStateFound ) << error.toStdString();
+      EXPECT_EQ( QFileInfo( tmst ).fileName(), "demo_run.time_state.tmst" )
+         << stored[ ii ].toStdString();
+   }
 }
 
 TEST_F( DataPubCatalogDb, AFailedTimeStateDownloadIsAFailure )
@@ -1357,4 +1382,481 @@ TEST_F( DataPubCatalogDb, CellAssignmentsUseTheChannelLetters )
       << error.toStdString();
    EXPECT_EQ( info.tripleCenterpieceIDs.value( "3/B" ), "4" );
    EXPECT_EQ( info.centerpieceIDs, QStringList() << "4" );
+   EXPECT_EQ( info.calibrationID, "12" );
+}
+
+// A run whose record names no calibration is not given the rotor's first
+TEST_F( DataPubCatalogDb, ACalibrationIsNotAssumed )
+{
+   ON_CALL( db, lastErrno() ).WillByDefault( Return( IUS_DB2::OK ) );
+
+   QString     current;
+   QStringList asked;
+
+   ON_CALL( db, query( An< const QStringList& >() ) )
+      .WillByDefault( [ &current, &asked ]( const QStringList& args )
+                      { current = args.value( 0 );  asked << current; } );
+
+   ON_CALL( db, next() ).WillByDefault( [ &current ]()
+   {
+      return ( current == "get_experiment_info_by_runID"  ||
+               current == "get_rotor_calibration_profiles" );
+   } );
+
+   ON_CALL( db, value( _ ) ).WillByDefault( [ &current ]( unsigned col )
+   {
+      if ( current == "get_experiment_info_by_runID"  &&  col == 7 )
+         return QVariant( "0" );                     // no calibration
+      if ( current == "get_rotor_calibration_profiles" )
+         return QVariant( "44" );                    // the rotor's first
+      return QVariant( "1" );
+   } );
+
+   US_DataPubCatalog::ExpInfo info;
+   QString                    error;
+
+   ASSERT_TRUE( catalog.expInfo( db_run(), info, error ) )
+      << error.toStdString();
+   EXPECT_TRUE ( info.calibrationID.isEmpty() )
+      << info.calibrationID.toStdString();
+   EXPECT_FALSE( asked.contains( "get_rotor_calibration_profiles" ) );
+}
+
+// ------------------------------------------- export steps, one at a time
+
+/**
+ * Drives the steps of an export directly, so that a database export can be
+ * run against the mock without scripting the whole record chain.
+ */
+class US_DataPubExporterTest
+{
+   public:
+      static void attach( US_DataPubExporter& ex, IUS_DB2* db )
+      {
+         ex.catalog.attachDb( db );
+      }
+
+      static bool stage( US_DataPubExporter& ex, QString& error )
+      {
+         ex.stage_payloads = true;
+         return ex.bundle.createStaging( error );
+      }
+
+      static void setScope( US_DataPubExporter& ex, US_DataPub::Scope scope )
+      {
+         ex.exp_scope = scope;
+      }
+
+      static void askForNoises( US_DataPubExporter& ex, const QStringList& g )
+      {
+         ex.explicit_noises = g;
+      }
+
+      static void setSolution( US_DataPubExporter& ex, const QString& raw,
+                               const QString& solution )
+      {
+         ex.raw_solutions.insert( raw, solution );
+      }
+
+      static void add( US_DataPubExporter& ex, const US_DataPubEntity& e )
+      {
+         ex.mani.add( e );
+      }
+
+      static bool addExperiment( US_DataPubExporter& ex,
+                                 const US_DataPubCatalog::Run& run,
+                                 QString& error )
+      {
+         return ex.addExperiment( run, US_DataPubCatalog::ExpInfo(), error );
+      }
+
+      static bool addRawData( US_DataPubExporter& ex,
+                              const US_DataPubCatalog::Run& run,
+                              QString& error )
+      {
+         return ex.addRawData( run, US_DataPubCatalog::ExpInfo(), error );
+      }
+
+      static bool addEdits( US_DataPubExporter& ex,
+                            const US_DataPubCatalog::Run& run, QString& error )
+      {
+         return ex.addEdits( run, error );
+      }
+
+      static bool addNoises( US_DataPubExporter& ex,
+                             const QList< US_DataPubCatalog::Noise >& noises,
+                             QString& error )
+      {
+         return ex.addNoises( noises, error );
+      }
+
+      static QString staged( US_DataPubExporter& ex, const QString& rel )
+      {
+         return ex.bundle.stagingPath() + "/" + rel;
+      }
+};
+
+/**
+ * A database that answers each procedure with the rows set up for it,
+ * and downloads blobs from the files set up for each record ID.
+ */
+class ScriptedDb
+{
+   public:
+      NiceMock< US_DB2_Mock >               mock;
+      QMap< QString, QList< QVariantList > > rows;
+      QMap< int, QString >                  blobs;
+      QStringList                           asked;
+
+      ScriptedDb()
+      {
+         ON_CALL( mock, isConnected() ).WillByDefault( Return( true ) );
+
+         ON_CALL( mock, query( An< const QStringList& >() ) )
+            .WillByDefault( [ this ]( const QStringList& q )
+            {
+               current = q.value( 0 );
+               asked << current;
+               cursor  = 0;
+            } );
+
+         ON_CALL( mock, lastErrno() ).WillByDefault( [ this ]()
+         {
+            return rows.value( current ).isEmpty() ? int( IUS_DB2::NOROWS )
+                                                   : int( IUS_DB2::OK );
+         } );
+
+         ON_CALL( mock, next() ).WillByDefault( [ this ]()
+         {
+            return ++cursor <= rows.value( current ).size();
+         } );
+
+         ON_CALL( mock, value( _ ) ).WillByDefault( [ this ]( unsigned col )
+         {
+            QList< QVariantList > list = rows.value( current );
+
+            if ( cursor < 1  ||  cursor > list.size() )  return QVariant();
+
+            return list[ cursor - 1 ].value( int( col ) );
+         } );
+
+         ON_CALL( mock, readBlobFromDB( _, _, _ ) )
+            .WillByDefault( [ this ]( const QString& path, const QString&,
+                                      int id )
+            {
+               QFile::remove( path );
+
+               return ( blobs.contains( id )  &&
+                        QFile::copy( blobs.value( id ), path ) )
+                      ? int( IUS_DB2::OK ) : int( IUS_DB2::DBERROR );
+            } );
+      }
+
+      IUS_DB2* db() { return &mock; }
+
+   private:
+      QString current;
+      int     cursor = 0;
+};
+
+class DataPubExportSteps : public DataPubTestEnv
+{
+   protected:
+      ScriptedDb         sdb;
+      US_DataPubExporter exporter;
+
+      void SetUp() override
+      {
+         DataPubTestEnv::SetUp();
+
+         US_DataPubExporterTest::attach( exporter, sdb.db() );
+
+         QString error;
+         ASSERT_TRUE( US_DataPubExporterTest::stage( exporter, error ) )
+            << error.toStdString();
+      }
+
+      // One raw triple of the scratch run, as the database catalog lists it
+      US_DataPubCatalog::Run dbRun( void )
+      {
+         US_DataPubCatalog::Run run;
+         run.id      = "31";
+         run.runID   = runID;
+         run.guid    = expGUID;
+         run.runType = runType;
+
+         US_DataPubCatalog::Raw raw;
+         raw.id         = "5";
+         raw.guid       = rawGUID;
+         raw.filename   = rawFile;
+         raw.triple     = "1.A.280";
+         raw.dataType   = runType;
+         raw.solutionID = "11";
+
+         US_DataPubCatalog::Edit edit;
+         edit.id       = "6";
+         edit.guid     = editGUID;
+         edit.filename = editFile;
+         edit.editID   = editID;
+         edit.triple   = "1.A.280";
+         raw.edits << edit;
+
+         run.raws << raw;
+
+         return run;
+      }
+
+      // A row of get_experiment_info_by_runID
+      QVariantList experimentRow( const QString& optics, const QString& rip )
+      {
+         QVariantList row;
+         row << 7 << 31 << expGUID << 1 << 1 << 1 << 2 << 21 << "velocity"
+             << "20.0" << "label" << "" << "" << "2024-01-01" << 1
+             << optics << rip;
+         return row;
+      }
+};
+
+// A database export reads the RI intensity profile from the record and
+// stages it; it does not leave a copy in the user's results directory, or
+// touch the one that is there
+TEST_F( DataPubExportSteps, TheRIProfileIsNotCachedInTheResultsDirectory )
+{
+   QByteArray rip( "<?xml version=\"1.0\"?>\n<US_RIProfile version=\"1.0\">"
+                   "<RI value=\"0.5\"/><RI value=\"0.625\"/>"
+                   "</US_RIProfile>\n" );
+
+   sdb.rows.insert( "get_experiment_info_by_runID", QList< QVariantList >()
+                    << experimentRow( "RI", QString::fromLatin1( rip ) ) );
+
+   US_DataPubCatalog::Run run = dbRun();
+   run.runType = "RI";
+   run.raws.clear();
+
+   // An empty local copy, from long ago: an interactive read would fill it
+   QString   cached = runDir() + "/" + runID + ".RIProfile.xml";
+   QFile     cfile( cached );
+   ASSERT_TRUE( cfile.open( QIODevice::WriteOnly ) );
+   cfile.close();
+   QDateTime past = QDateTime::currentDateTimeUtc().addDays( -30 );
+   ASSERT_TRUE( cfile.open( QIODevice::ReadWrite ) );
+   ASSERT_TRUE( cfile.setFileTime( past, QFileDevice::FileModificationTime ) );
+   cfile.close();
+
+   QString error;
+   ASSERT_TRUE( US_DataPubExporterTest::addExperiment( exporter, run, error ) )
+      << error.toStdString();
+
+   QFileInfo after( cached );
+   EXPECT_EQ( after.size(), 0 );
+   EXPECT_LT( qAbs( after.lastModified().toUTC().secsTo( past ) ), 2 );
+
+   // ... and with none there, none is made
+   ASSERT_TRUE( QFile::remove( cached ) );
+   US_DataPubExporter again;
+   US_DataPubExporterTest::attach( again, sdb.db() );
+   ASSERT_TRUE( US_DataPubExporterTest::stage( again, error ) );
+   ASSERT_TRUE( US_DataPubExporterTest::addExperiment( again, run, error ) )
+      << error.toStdString();
+   EXPECT_FALSE( QFile::exists( cached ) );
+
+   // The profile travels in the bundle
+   US_DataPubEntity exper;
+   ASSERT_TRUE( again.manifest().entity( US_DataPub::Experiment, expGUID,
+                                         exper ) );
+   QString rel = exper.attrs.value( "riProfilePayload" );
+   ASSERT_EQ( rel, "experiment/" + runID + ".RIProfile.xml" );
+
+   QFile staged( US_DataPubExporterTest::staged( again, rel ) );
+   ASSERT_TRUE( staged.open( QIODevice::ReadOnly ) );
+   QByteArray content = staged.readAll();
+   EXPECT_TRUE( US_DataPubRecords::riProfileIsUsable( content ) );
+   EXPECT_TRUE( content.contains( "0.625" ) );
+}
+
+// An experiment exported without its solutions does not need them
+TEST_F( DataPubExportSteps, AnExperimentAloneNeedsNoSolutions )
+{
+   sdb.rows.insert( "get_experiment_info_by_runID", QList< QVariantList >()
+                    << experimentRow( "RA", QString() ) );
+
+   US_DataPubCatalog::Run run = dbRun();
+   run.raws[ 0 ].solutionID = "0";
+
+   US_DataPubExporterTest::setScope( exporter, US_DataPub::ScopeExperiment );
+
+   QString error;
+   EXPECT_TRUE( US_DataPubExporterTest::addExperiment( exporter, run, error ) )
+      << error.toStdString();
+
+   // ... but one that carries them does
+   US_DataPubExporter full;
+   US_DataPubExporterTest::attach( full, sdb.db() );
+   ASSERT_TRUE( US_DataPubExporterTest::stage( full, error ) );
+   US_DataPubExporterTest::setScope( full, US_DataPub::ScopeSolutions );
+
+   EXPECT_FALSE( US_DataPubExporterTest::addExperiment( full, run, error ) );
+   EXPECT_TRUE ( error.contains( "names no solution" ) ) << error.toStdString();
+}
+
+// A downloaded raw data record has to be the one the catalog listed: an
+// import refuses a payload whose GUID is not its manifest entry's
+TEST_F( DataPubExportSteps, ARawRecordWithAnotherGuidFailsTheExport )
+{
+   US_DataPubCatalog::Run run = dbRun();
+   US_DataPubExporterTest::setSolution( exporter, rawGUID, solutionGUID );
+
+   sdb.blobs.insert( 5, runDir() + "/" + writeRawFile( 3, US_Util::new_guid() ) );
+
+   QString error;
+   EXPECT_FALSE( US_DataPubExporterTest::addRawData( exporter, run, error ) );
+   EXPECT_TRUE ( error.contains( rawGUID ) ) << error.toStdString();
+   EXPECT_EQ   ( exporter.manifest().count( US_DataPub::RawData ), 0 );
+
+   // The right record goes through
+   sdb.blobs.insert( 5, runDir() + "/" + rawFile );
+
+   EXPECT_TRUE( US_DataPubExporterTest::addRawData( exporter, run, error ) )
+      << error.toStdString();
+   EXPECT_EQ  ( exporter.manifest().count( US_DataPub::RawData ), 1 );
+}
+
+TEST_F( DataPubExportSteps, AnEditRecordWithOtherGuidsFailsTheExport )
+{
+   US_DataPubCatalog::Run run = dbRun();
+   QString source = runDir() + "/" + editFile;
+   QString other  = root + "/other_edit.xml";
+
+   // Another edit of the same triple
+   ASSERT_TRUE( QFile::copy( source, other ) );
+   ASSERT_TRUE( replace_in_file( other, editGUID, US_Util::new_guid() ) );
+   sdb.blobs.insert( 6, other );
+
+   QString error;
+   EXPECT_FALSE( US_DataPubExporterTest::addEdits( exporter, run, error ) );
+   EXPECT_TRUE ( error.contains( editGUID ) ) << error.toStdString();
+
+   // The edit, but of another triple
+   ASSERT_TRUE( QFile::remove( other ) );
+   ASSERT_TRUE( QFile::copy( source, other ) );
+   ASSERT_TRUE( replace_in_file( other, rawGUID, US_Util::new_guid() ) );
+
+   EXPECT_FALSE( US_DataPubExporterTest::addEdits( exporter, run, error ) );
+   EXPECT_TRUE ( error.contains( rawGUID ) ) << error.toStdString();
+
+   sdb.blobs.insert( 6, source );
+
+   EXPECT_TRUE( US_DataPubExporterTest::addEdits( exporter, run, error ) )
+      << error.toStdString();
+   EXPECT_EQ  ( exporter.manifest().count( US_DataPub::EditedData ), 1 );
+}
+
+// Noise asked for by GUID is not dropped because its model is not there
+TEST_F( DataPubExportSteps, NoiseAskedForWithoutItsModelFailsTheExport )
+{
+   US_DataPubCatalog::Noise noise;
+   noise.guid      = noiseGUID;
+   noise.modelGUID = US_Util::new_guid();
+
+   QList< US_DataPubCatalog::Noise > noises;
+   noises << noise;
+
+   QString error;
+   EXPECT_TRUE( US_DataPubExporterTest::addNoises( exporter, noises, error ) )
+      << error.toStdString();
+   EXPECT_EQ  ( exporter.manifest().count( US_DataPub::Noise ), 0 );
+
+   US_DataPubExporterTest::askForNoises( exporter, QStringList() << noiseGUID );
+
+   EXPECT_FALSE( US_DataPubExporterTest::addNoises( exporter, noises, error ) );
+   EXPECT_TRUE ( error.contains( noiseGUID ) ) << error.toStdString();
+}
+
+// A record without a GUID is reported, not passed over in silence
+TEST_F( DataPubExportSteps, ANoiseRecordWithoutAGuidIsReported )
+{
+   US_DataPubCatalog::Noise noise;
+   noise.description = "nameless noise";
+
+   QString error;
+   EXPECT_TRUE( US_DataPubExporterTest::addNoises( exporter,
+                QList< US_DataPubCatalog::Noise >() << noise, error ) );
+   EXPECT_TRUE( exporter.log().join( "\n" ).contains( "nameless noise" ) );
+}
+
+// ------------------------------------------------- disk store edge cases
+
+// An import refuses a bundle whose RI profile does not parse, so an empty
+// or broken one is left out of it, with a warning
+TEST_F( DataPubExport, AnUnusableRIProfileIsLeftOut )
+{
+   QStringList contents;
+   contents << QString() << "<US_RIProfile><RI value=\"0.5\"/>"
+            << "<US_RIProfile version=\"1.0\"/>";
+
+   for ( int ii = 0; ii < contents.size(); ii++ )
+   {
+      QString ripPath = runDir() + "/" + runID + ".RIProfile.xml";
+      QFile   rip( ripPath );
+      ASSERT_TRUE( rip.open( QIODevice::WriteOnly | QIODevice::Truncate ) );
+      rip.write( contents[ ii ].toUtf8() );
+      rip.close();
+
+      US_DataPubExporter exporter;
+      QString            error;
+
+      ASSERT_TRUE( exporter.exportBundle(
+                   baseSelection( US_DataPub::ScopeRawData ),
+                   root + "/ri_bad.tar.gz", error ) ) << error.toStdString();
+
+      US_DataPubEntity exper;
+      ASSERT_TRUE( exporter.manifest().entity( US_DataPub::Experiment, expGUID,
+                                               exper ) );
+      EXPECT_FALSE( exper.attrs.contains( "riProfilePayload" ) ) << ii;
+      EXPECT_TRUE ( exporter.log().join( "\n" ).contains( "RI intensity" ) );
+   }
+}
+
+// A dataset of the experiment XML whose raw data file is gone names a
+// triple -- and a solution -- the bundle does not carry; it is left out
+TEST_F( DataPubExport, ADatasetWithoutItsRawDataIsLeftOut )
+{
+   addSecondTriple();
+   ASSERT_TRUE( QFile::remove( runDir() + "/" + rawFile2 ) );
+
+   US_DataPubExporter exporter;
+   QString            bundle = root + "/missing_auc.tar.gz";
+   QString            error;
+
+   ASSERT_TRUE( exporter.exportBundle( baseSelection( US_DataPub::ScopeRawData ),
+                bundle, error ) ) << error.toStdString();
+
+   const US_DataPubManifest& mani = exporter.manifest();
+   EXPECT_EQ   ( mani.count( US_DataPub::RawData ), 1 );
+   EXPECT_FALSE( mani.contains( US_DataPub::Solution, solutionGUID2 ) );
+
+   US_DataPubEntity exper;
+   ASSERT_TRUE( mani.entity( US_DataPub::Experiment, expGUID, exper ) );
+
+   US_DataPubBundle unpacked;
+   ASSERT_TRUE( unpacked.unpack( bundle, error ) ) << error.toStdString();
+
+   QString xml = read_text( unpacked.rootPath() + "/" + exper.payload );
+   EXPECT_TRUE ( xml.contains( rawGUID ) );
+   EXPECT_FALSE( xml.contains( rawGUID2 ) );
+   EXPECT_FALSE( xml.contains( solutionGUID2 ) );
+   EXPECT_TRUE ( exporter.log().join( "\n" ).contains( "no raw data file" ) );
+}
+
+// When the project file is gone, the message says how to go on without it
+TEST_F( DataPubExport, AMissingProjectFileSuggestsLeavingItOut )
+{
+   ASSERT_TRUE( QFile::remove( dataDir( "projects" ) + "/P0000001.xml" ) );
+
+   US_DataPubExporter exporter;
+   QString            error;
+
+   EXPECT_FALSE( exporter.previewManifest(
+                 baseSelection( US_DataPub::ScopeRawData ), error ) );
+   EXPECT_TRUE ( error.contains( "--no-project" ) ) << error.toStdString();
 }

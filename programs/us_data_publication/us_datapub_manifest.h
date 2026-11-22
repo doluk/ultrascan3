@@ -119,7 +119,8 @@ class US_DataPubEntity
     block of scalar header keys, followed by one block sequence per record
     type whose items are flat key/value maps plus a single nested
     \c depends map.  The reader accepts exactly that subset, and rejects a
-    header key or a section that appears twice.
+    header key or a section that appears twice, and a record key other than
+    \c depends that opens a nested map.
 
     A section is only written when it was exported: one that was in scope
     but holds nothing is written as \c [], one that was not exported at all
@@ -211,6 +212,8 @@ class US_DataPubManifest
       bool    write      ( const QString& filename, QString& error ) const;
 
       //! \brief Read the manifest from a file
+      //!
+      //! A file larger than \ref maxManifestBytes is refused unread.
       //! \param filename The full path of the file to read
       //! \param error    Filled in with a message when reading fails
       //! \returns True when the file could be read and parsed
@@ -233,8 +236,10 @@ class US_DataPubManifest
           must be a safe bundle-relative path, every \c filename a single
           safe path component, and every run ID -- the name of an
           experiment, the \c runID of the records of a run -- has to be a
-          usable run ID.  fromYaml() and validate() both apply it, so a
-          manifest naming a path outside the bundle is never acted upon.
+          usable run ID.  No two payload paths may name the same file on a
+          file system that ignores case.  fromYaml() and validate() both
+          apply it, so a manifest naming a path outside the bundle is never
+          acted upon.
           \param error Filled in with a message naming the first problem
           \returns True when every path is safe
       */
@@ -243,8 +248,14 @@ class US_DataPubManifest
       //! \brief A multi-line "type: count" summary of the manifest
       QString summary    ( void ) const;
 
+      //! \brief The largest manifest file read() accepts, in bytes
+      static const int maxManifestBytes = 64 << 20;
+
    private:
       QMap< int, QList< US_DataPubEntity > > sections;
+
+      //! type -> GUID -> position of its first entity in the section
+      QHash< int, QHash< QString, int > >   index;
 
       static QString escape  ( const QString& );
       static QString unescape( const QString& );

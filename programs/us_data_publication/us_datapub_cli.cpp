@@ -5,9 +5,11 @@
 #include "us_settings.h"
 #include "us_defines.h"
 
+#include <cstring>
 #include <iostream>
 
 #if defined( Q_OS_UNIX )
+#include <csignal>
 #include <termios.h>
 #include <unistd.h>
 #elif defined( Q_OS_WIN )
@@ -16,50 +18,154 @@
 
 namespace
 {
-   // Read one line from the terminal without showing what is typed
-   std::string read_hidden_line( void )
-   {
-      std::string line;
-
 #if defined( Q_OS_UNIX )
-      termios saved;
-      bool    tty = ( isatty( STDIN_FILENO )  &&
-                      tcgetattr( STDIN_FILENO, &saved ) == 0 );
+   // The terminal settings to go back to, also from a signal handler
+   termios               saved_tty;
+   volatile sig_atomic_t tty_quiet = 0;
 
-      if ( tty )
-      {
-         termios quiet = saved;
-         quiet.c_lflag &= ~ECHO;
-         tcsetattr( STDIN_FILENO, TCSAFLUSH, &quiet );
-      }
+   const int             guarded[] = { SIGINT, SIGTERM, SIGHUP, SIGQUIT };
+   const int             nguarded  = int( sizeof( guarded ) / sizeof( int ) );
+   struct sigaction      old_actions[ sizeof( guarded ) / sizeof( int ) ];
 
-      std::getline( std::cin, line );
+   // Ctrl-C at the prompt must not leave the terminal without echo: put it
+   // back, restore what the signal did before and deliver it again
+   void restore_tty_and_reraise( int sig )
+   {
+      if ( tty_quiet )
+         tcsetattr( STDIN_FILENO, TCSANOW, &saved_tty );
 
-      if ( tty )
-      {
-         tcsetattr( STDIN_FILENO, TCSAFLUSH, &saved );
-         std::cout << std::endl;
-      }
+      tty_quiet = 0;
+
+      for ( int ii = 0; ii < nguarded; ii++ )
+         if ( guarded[ ii ] == sig )
+            sigaction( sig, &old_actions[ ii ], nullptr );
+
+      raise( sig );
+   }
 #elif defined( Q_OS_WIN )
-      HANDLE input = GetStdHandle( STD_INPUT_HANDLE );
-      DWORD  mode  = 0;
-      bool   con   = GetConsoleMode( input, &mode );
+   HANDLE         console_in   = INVALID_HANDLE_VALUE;
+   DWORD          console_mode = 0;
+   volatile LONG  console_quiet = 0;
 
-      if ( con )
-         SetConsoleMode( input, mode & ~ENABLE_ECHO_INPUT );
+   BOOL WINAPI restore_console( DWORD )
+   {
+      if ( console_quiet )
+         SetConsoleMode( console_in, console_mode );
 
-      std::getline( std::cin, line );
+      console_quiet = 0;
 
-      if ( con )
-      {
-         SetConsoleMode( input, mode );
-         std::cout << std::endl;
-      }
-#else
-      std::getline( std::cin, line );
+      return FALSE;                   // Let the default handler go on
+   }
 #endif
 
-      return line;
+   /* Read one line from the terminal without showing what is typed.
+
+      Returns false, with a reason, when there is no way to read it
+      without echoing it.  The line comes back without its line end.
+   */
+   bool read_hidden_line( QString& line, QString& error )
+   {
+      line.clear();
+      error.clear();
+
+#if defined( Q_OS_UNIX )
+      bool tty = ( isatty( STDIN_FILENO )  &&
+                   tcgetattr( STDIN_FILENO, &saved_tty ) == 0 );
+
+      if ( tty )
+      {
+         struct sigaction guard;
+         memset( &guard, 0, sizeof( guard ) );
+         guard.sa_handler = restore_tty_and_reraise;
+         sigemptyset( &guard.sa_mask );
+
+         for ( int ii = 0; ii < nguarded; ii++ )
+            sigaction( guarded[ ii ], &guard, &old_actions[ ii ] );
+
+         termios quiet = saved_tty;
+         quiet.c_lflag &= ~ECHO;
+         tty_quiet = 1;
+         tcsetattr( STDIN_FILENO, TCSANOW, &quiet );
+      }
+
+      std::string bytes;
+      std::getline( std::cin, bytes );
+
+      if ( tty )
+      {
+         tcsetattr( STDIN_FILENO, TCSANOW, &saved_tty );
+         tty_quiet = 0;
+
+         for ( int ii = 0; ii < nguarded; ii++ )
+            sigaction( guarded[ ii ], &old_actions[ ii ], nullptr );
+
+         std::cerr << std::endl;
+      }
+
+      line = QString::fromLocal8Bit( bytes.data(), int( bytes.size() ) );
+#elif defined( Q_OS_WIN )
+      console_in = GetStdHandle( STD_INPUT_HANDLE );
+
+      if ( ! GetConsoleMode( console_in, &console_mode ) )
+      {
+         error = QObject::tr( "the input is not a console, so the password"
+                              " cannot be asked for without showing it" );
+         return false;
+      }
+
+      SetConsoleCtrlHandler( restore_console, TRUE );
+      console_quiet = 1;
+      SetConsoleMode( console_in, ( console_mode & ~ENABLE_ECHO_INPUT )
+                                  | ENABLE_LINE_INPUT );
+
+      // Read as UTF-16, whatever the console's code page
+      std::wstring text;
+      wchar_t      buffer[ 256 ];
+      DWORD        nread = 0;
+
+      while ( ReadConsoleW( console_in, buffer, 256, &nread, nullptr )  &&
+              nread > 0 )
+      {
+         text.append( buffer, nread );
+
+         if ( text.find( L'\n' ) != std::wstring::npos )  break;
+      }
+
+      SetConsoleMode( console_in, console_mode );
+      console_quiet = 0;
+      SetConsoleCtrlHandler( restore_console, FALSE );
+      std::cerr << std::endl;
+
+      line = QString::fromStdWString( text );
+#else
+      error = QObject::tr( "this platform cannot read a password without"
+                           " showing it" );
+      return false;
+#endif
+
+      line = US_DataPubCLI::chopLineEnd( line );
+
+      return true;
+   }
+
+   // The options that belong to one mode only
+   const QStringList& export_options( void )
+   {
+      static const QStringList keys = QStringList()
+         << "--source" << "--project-id" << "--experiment-id"
+         << "--model-guid" << "--noise-guid" << "--max-scope"
+         << "--include-<scope>" << "--no-timestate" << "--no-project"
+         << "--comment";
+      return keys;
+   }
+
+   const QStringList& import_options( void )
+   {
+      static const QStringList keys = QStringList()
+         << "--target" << "--output-dir" << "--on-conflict"
+         << "--on-conflict-<type>" << "--rename-suffix" << "--no-verify"
+         << "--strict-hardware" << "--list";
+      return keys;
    }
 }
 
@@ -116,7 +222,9 @@ QString US_DataPubCLI::usage( void )
       "Common options:\n"
       "  --no-ui                 run without the window (implied by --mode)\n"
       "  --db-password-file <f>  read the master password for database\n"
-      "                          access from the first line of a file\n"
+      "                          access from the first line of a file; only\n"
+      "                          the line end is removed, and a file other\n"
+      "                          users can read is warned about\n"
       "  --db-password <pw>      the master password itself; other users can\n"
       "                          see it in the process list, so prefer the\n"
       "                          file or the US3_DB_PASSWORD environment\n"
@@ -167,6 +275,9 @@ QString US_DataPubCLI::usage( void )
       "                          calibration, centerpiece, instrument or\n"
       "                          operator of the target in for a missing one\n"
       "  --list                  print the manifest and stop\n"
+      "\n"
+      "An option of the other mode (--target with an export, --model-guid\n"
+      "with an import, ...) is refused as a usage error.\n"
       "\n"
       "An import exits with 0 when every record was imported, 1 when it\n"
       "failed (a database import is then rolled back) and 2 on a usage\n"
@@ -241,6 +352,10 @@ bool US_DataPubCLI::parse( const QStringList& arguments, QString& error )
          error = tr( "Unexpected argument \"%1\"" ).arg( arg );
          return false;
       }
+
+      // What was given, so that options of the other mode can be refused
+      if ( arg.startsWith( "--" ) )
+         args.given << arg;
 
       if ( arg == "-h"  ||  arg == "--help" )     { args.help    = true; continue; }
       if ( arg == "--version" )                   { args.version = true; continue; }
@@ -354,28 +469,70 @@ bool US_DataPubCLI::parse( const QStringList& arguments, QString& error )
    return true;
 }
 
+QString US_DataPubCLI::chopLineEnd( const QString& text )
+{
+   if ( text.endsWith( "\r\n" ) )  return text.left( text.size() - 2 );
+
+   if ( text.endsWith( "\n" )  ||  text.endsWith( "\r" ) )
+      return text.left( text.size() - 1 );
+
+   return text;
+}
+
+bool US_DataPubCLI::readPasswordFile( const QString& path, QString& password,
+                                      QString& warning, QString& error )
+{
+   password.clear();
+   warning .clear();
+   error   .clear();
+
+   QFile file( path );
+
+   if ( ! file.open( QIODevice::ReadOnly ) )
+   {
+      error = tr( "The password file %1 cannot be read" ).arg( path );
+      return false;
+   }
+
+   QByteArray line = file.readLine( 64 * 1024 );
+   file.close();
+
+   password = chopLineEnd( QString::fromUtf8( line ) );
+
+#if defined( Q_OS_UNIX )
+   QFileDevice::Permissions perms = QFile::permissions( path );
+
+   if ( perms & ( QFileDevice::ReadGroup | QFileDevice::ReadOther ) )
+      warning = tr( "the password file %1 can be read by other users;"
+                    " restrict it with \"chmod 600 %1\"" ).arg( path );
+#endif
+
+   return true;
+}
+
 QString US_DataPubCLI::password( bool needed )
 {
    if ( ! needed )  return QString();
 
    if ( ! args.dbPasswordFile.isEmpty() )
    {
-      QFile file( args.dbPasswordFile );
+      QString pw;
+      QString warning;
+      QString error;
 
-      if ( ! file.open( QIODevice::ReadOnly | QIODevice::Text ) )
+      if ( ! readPasswordFile( args.dbPasswordFile, pw, warning, error ) )
       {
-         fail( tr( "The password file %1 cannot be read" )
-               .arg( args.dbPasswordFile ) );
+         fail( error );
          return QString();
       }
 
-      QString line = QString::fromUtf8( file.readLine() );
-      file.close();
+      if ( ! warning.isEmpty() )
+      {
+         err << tr( "Warning: " ) << warning << "\n";
+         err.flush();
+      }
 
-      while ( line.endsWith( "\n" )  ||  line.endsWith( "\r" ) )
-         line.chop( 1 );
-
-      return line;
+      return pw;
    }
 
    if ( ! args.dbPassword.isEmpty() )
@@ -389,7 +546,8 @@ QString US_DataPubCLI::password( bool needed )
 
    QByteArray fromEnv = qgetenv( "US3_DB_PASSWORD" );
 
-   if ( ! fromEnv.isEmpty() )  return QString::fromUtf8( fromEnv );
+   if ( ! fromEnv.isEmpty() )
+      return chopLineEnd( QString::fromUtf8( fromEnv ) );
 
    if ( args.nonInteractive )
    {
@@ -399,12 +557,23 @@ QString US_DataPubCLI::password( bool needed )
       return QString();
    }
 
-   out << tr( "UltraScan master password: " );
-   out.flush();
+   // The prompt goes to the error output, so that it is seen even when
+   // the regular output is redirected
+   err << tr( "UltraScan master password: " );
+   err.flush();
 
-   std::string line = read_hidden_line();
+   QString line;
+   QString error;
 
-   return QString::fromStdString( line ).trimmed();
+   if ( ! read_hidden_line( line, error ) )
+   {
+      err << "\n";
+      fail( tr( "The password cannot be asked for: %1; give"
+                " --db-password-file, or set US3_DB_PASSWORD" ).arg( error ) );
+      return QString();
+   }
+
+   return line;
 }
 
 int US_DataPubCLI::run( const QStringList& arguments )
@@ -432,8 +601,36 @@ int US_DataPubCLI::run( const QStringList& arguments )
       return 0;
    }
 
-   if ( args.mode == "export" )  return runExport();
-   if ( args.mode == "import" )  return runImport();
+   if ( args.mode == "export"  ||  args.mode == "import" )
+   {
+      // An option of the other mode would be ignored; say so instead
+      const QStringList& other = ( args.mode == "export" ) ? import_options()
+                                                          : export_options();
+      QStringList        wrong;
+
+      for ( int ii = 0; ii < args.given.size(); ii++ )
+      {
+         QString given  = args.given[ ii ];
+         QString family = given;
+
+         if ( given.startsWith( "--include-" ) )
+            family = "--include-<scope>";
+         else if ( given.startsWith( "--on-conflict-" ) )
+            family = "--on-conflict-<type>";
+
+         if ( other.contains( family )  &&  ! wrong.contains( given ) )
+            wrong << given;
+      }
+
+      if ( ! wrong.isEmpty() )
+      {
+         fail( tr( "%1 cannot be used with --mode %2" )
+               .arg( wrong.join( ", " ) ).arg( args.mode ) );
+         return 2;
+      }
+
+      return ( args.mode == "export" ) ? runExport() : runImport();
+   }
 
    fail( tr( "--mode must be \"export\" or \"import\"" ) );
    print( usage() );
@@ -712,7 +909,7 @@ int US_DataPubCLI::runImport( void )
       if ( options.dbPassword.isEmpty() )
       {
          fail( tr( "A database import needs the master password: give"
-                   " --db-password or set US3_DB_PASSWORD" ) );
+                   " --db-password-file, or set US3_DB_PASSWORD" ) );
          return 2;
       }
    }

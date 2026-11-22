@@ -1,10 +1,32 @@
 //! \file us_datapub_records.cpp
 #include "us_datapub_records.h"
 
+namespace
+{
+   // A number written so that reading it back gives the same double
+   QString exact( double value )
+   {
+      return QString::number( value, 'g', 17 );
+   }
+
+   // Finish an XML payload: the writer and the file both have to be clean
+   // before the file replaces whatever was there
+   bool finish_xml( QXmlStreamWriter& xml, QSaveFile& file )
+   {
+      if ( xml.hasError()  ||  file.error() != QFileDevice::NoError )
+      {
+         file.cancelWriting();
+         return false;
+      }
+
+      return file.commit();
+   }
+}
+
 bool US_DataPubRecords::writeCalibration(
       const US_Rotor::RotorCalibration& calibration, const QString& filename )
 {
-   QFile file( filename );
+   QSaveFile file( filename );
 
    if ( ! file.open( QIODevice::WriteOnly | QIODevice::Text ) )  return false;
 
@@ -25,11 +47,11 @@ bool US_DataPubRecords::writeCalibration(
    xml.writeAttribute   ( "calExpID",
                           QString::number( calibration.calibrationExperimentID ) );
    xml.writeAttribute   ( "calExpGUID", calibration.calibrationExperimentGUID );
-   xml.writeAttribute   ( "coeff1",     QString::number( calibration.coeff1 ) );
-   xml.writeAttribute   ( "coeff2",     QString::number( calibration.coeff2 ) );
+   xml.writeAttribute   ( "coeff1",     exact( calibration.coeff1 ) );
+   xml.writeAttribute   ( "coeff2",     exact( calibration.coeff2 ) );
    xml.writeAttribute   ( "lastUpdated",
                           calibration.lastUpdated.toString( "yyyy-MM-dd" ) );
-   xml.writeAttribute   ( "omega2t",    QString::number( calibration.omega2t ) );
+   xml.writeAttribute   ( "omega2t",    exact( calibration.omega2t ) );
    xml.writeAttribute   ( "label",      calibration.label );
    xml.writeTextElement ( "report",     calibration.report );
    xml.writeEndElement  ();          // Calibration
@@ -37,9 +59,102 @@ bool US_DataPubRecords::writeCalibration(
    xml.writeEndElement  ();          // RotorCalibrationData
    xml.writeEndDocument ();
 
-   file.close();
+   return finish_xml( xml, file );
+}
 
-   return true;
+QString US_DataPubRecords::calibrationGuid(
+      const US_Rotor::RotorCalibration& calibration )
+{
+   if ( ! calibration.GUID.isEmpty() )  return calibration.GUID;
+
+   // The ID and the rotor GUID alone are not unique across installations:
+   // calibration 3 of a rotor is a different record in every database that
+   // has one.  What was measured is part of the name, so two installations
+   // only agree on the identity when they hold the same calibration.
+   return US_DataPub::derivedGuid(
+            "rotorCalibration:" + calibration.rotorGUID
+          + ":" + QString::number( calibration.ID )
+          + ":" + exact( calibration.coeff1 )
+          + ":" + exact( calibration.coeff2 )
+          + ":" + calibration.calibrationExperimentGUID
+          + ":" + calibration.lastUpdated.toString( "yyyy-MM-dd" ) );
+}
+
+QString US_DataPubRecords::centerpieceGuid(
+      const US_AbstractCenterpiece& centerpiece )
+{
+   if ( ! centerpiece.guid.isEmpty() )  return centerpiece.guid;
+
+   // A serial number and a name are local choices; the geometry is what
+   // makes two table rows the same centerpiece
+   QStringList parts;
+   parts << "centerpiece"
+         << QString::number( centerpiece.serial_number )
+         << centerpiece.name
+         << centerpiece.material
+         << QString::number( centerpiece.channels )
+         << centerpiece.shape
+         << exact( centerpiece.maxRPM )
+         << exact( centerpiece.angle )
+         << exact( centerpiece.width );
+
+   int rows = qMin( centerpiece.path_length.size(),
+                    centerpiece.bottom_position.size() );
+
+   for ( int ii = 0; ii < rows; ii++ )
+      parts << exact( centerpiece.path_length[ ii ] )
+            << exact( centerpiece.bottom_position[ ii ] );
+
+   return US_DataPub::derivedGuid( parts.join( ":" ) );
+}
+
+bool US_DataPubRecords::riProfileIsUsable( const QByteArray& xml,
+                                           QString* why )
+{
+   QString          reason;
+   QXmlStreamReader reader( xml );
+   bool             root   = false;
+   int              values = 0;
+
+   while ( ! reader.atEnd() )
+   {
+      reader.readNext();
+
+      if ( ! reader.isStartElement() )  continue;
+
+      if ( ! root )
+      {
+         if ( reader.name().toString() != "US_RIProfile" )
+         {
+            reason = QObject::tr( "it is not a US_RIProfile document" );
+            break;
+         }
+
+         root = true;
+         continue;
+      }
+
+      if ( reader.name().toString() == "RI"  &&
+           reader.attributes().hasAttribute( "value" ) )
+         values++;
+   }
+
+   if ( reason.isEmpty() )
+   {
+      if ( xml.trimmed().isEmpty() )
+         reason = QObject::tr( "it is empty" );
+      else if ( reader.hasError() )
+         reason = QObject::tr( "it is not well-formed XML: %1" )
+                  .arg( reader.errorString() );
+      else if ( ! root )
+         reason = QObject::tr( "it is not a US_RIProfile document" );
+      else if ( values < 1 )
+         reason = QObject::tr( "it holds no RI values" );
+   }
+
+   if ( why != nullptr )  *why = reason;
+
+   return reason.isEmpty();
 }
 
 bool US_DataPubRecords::readCalibration(
@@ -102,7 +217,7 @@ bool US_DataPubRecords::readCalibration(
 bool US_DataPubRecords::writeCenterpiece(
       const US_AbstractCenterpiece& centerpiece, const QString& filename )
 {
-   QFile file( filename );
+   QSaveFile file( filename );
 
    if ( ! file.open( QIODevice::WriteOnly | QIODevice::Text ) )  return false;
 
@@ -121,9 +236,9 @@ bool US_DataPubRecords::writeCenterpiece(
    xml.writeAttribute   ( "materialName", centerpiece.material );
    xml.writeAttribute   ( "channels", QString::number( centerpiece.channels ) );
    xml.writeAttribute   ( "shape",  centerpiece.shape );
-   xml.writeAttribute   ( "maxRPM", QString::number( centerpiece.maxRPM ) );
-   xml.writeAttribute   ( "angle",  QString::number( centerpiece.angle  ) );
-   xml.writeAttribute   ( "width",  QString::number( centerpiece.width  ) );
+   xml.writeAttribute   ( "maxRPM", exact( centerpiece.maxRPM ) );
+   xml.writeAttribute   ( "angle",  exact( centerpiece.angle  ) );
+   xml.writeAttribute   ( "width",  exact( centerpiece.width  ) );
 
    int rows = qMin( centerpiece.path_length.size(),
                     centerpiece.bottom_position.size() );
@@ -131,10 +246,9 @@ bool US_DataPubRecords::writeCenterpiece(
    for ( int ii = 0; ii < rows; ii++ )
    {
       xml.writeStartElement( "row" );
-      xml.writeAttribute   ( "pathlen",
-                             QString::number( centerpiece.path_length[ ii ] ) );
+      xml.writeAttribute   ( "pathlen", exact( centerpiece.path_length[ ii ] ) );
       xml.writeAttribute   ( "bottom",
-                             QString::number( centerpiece.bottom_position[ ii ] ) );
+                             exact( centerpiece.bottom_position[ ii ] ) );
       xml.writeEndElement  ();
    }
 
@@ -142,9 +256,7 @@ bool US_DataPubRecords::writeCenterpiece(
    xml.writeEndElement  ();          // abstractCenterpieces
    xml.writeEndDocument ();
 
-   file.close();
-
-   return true;
+   return finish_xml( xml, file );
 }
 
 bool US_DataPubRecords::readCenterpiece( const QString& filename,

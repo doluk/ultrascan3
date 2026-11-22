@@ -725,17 +725,12 @@ bool US_DataPubCatalog::expInfo( const Run& run, ExpInfo& info,
       info.rotorSerial = dbase->value( 2 ).toString();
    }
 
-   if ( info.calibrationID == "0"  ||  info.calibrationID.isEmpty() )
-   {  // Older records do not name a calibration; take the rotor's first
-      query.clear();
-      query << "get_rotor_calibration_profiles" << info.rotorID;
-      dbase->query( query );
-
-      if ( failed( QObject::tr( "rotor calibration" ) ) )  return false;
-
-      if ( dbase->next() )
-         info.calibrationID = dbase->value( 0 ).toString();
-   }
+   // Older records do not name a calibration.  The rotor's first one is
+   // not assumed in its place: a rotor is recalibrated over the years, and
+   // a bundle should not state which calibration a run was made with when
+   // the record does not say.  The run then travels without one.
+   if ( info.calibrationID.toInt() < 1 )
+      info.calibrationID.clear();
 
    query.clear();
    query << "all_cell_experiments" << info.expID;
@@ -849,14 +844,11 @@ US_DataPubCatalog::TimeStateStatus US_DataPubCatalog::timeState(
       return TimeStateFailed;
    }
 
-   // The record keeps its own file name, but nothing in a bundle may name
-   // a path; only the base name of a usable one is kept
-   fname = QFileInfo( fname ).fileName();
-
-   if ( ! US_DataPub::isSafeFileName( fname )  ||  ! fname.endsWith( ".tmst" ) )
-      fname = base;
-
-   tmstPath = workDir + "/" + fname;
+   // The record keeps a file name of its own, but a bundle names a time
+   // state after its run, as the disk store does: an import refuses a run's
+   // file whose name does not start with "<runID>.", and the record's name
+   // may be a path, another run's name or anything else
+   tmstPath = workDir + "/" + base;
    xdefPath = US_DataPub::timeStateDefs( tmstPath );
 
    if ( ! fetch )  return TimeStateFound;

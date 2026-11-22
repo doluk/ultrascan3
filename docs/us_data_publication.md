@@ -104,13 +104,20 @@ and a record written to a local disk store carries `-1` (see
 
 A few records have no GUID of their own. Those get a **name-based UUID**
 (version 5) derived from what identifies them, so that exporting the same
-record twice gives it the same identity:
+record twice gives it the same identity. Local numbers alone would not do:
+calibration 3 of a rotor, or centerpiece 2, is a different record in every
+installation that has one, so what the record holds is part of the name, and
+two installations only arrive at the same GUID for the same record:
 
 | Record                                | Derived from                                   |
 |---------------------------------------|------------------------------------------------|
 | time state                            | `timeState:<experimentGUID>`                   |
-| rotor calibration without a GUID      | `rotorCalibration:<rotorGUID>:<calibrationID>` |
-| centerpiece without a GUID            | `centerpiece:<serial>:<name>`                  |
+| rotor calibration without a GUID      | `rotorCalibration:<rotorGUID>:<calibrationID>:<coeff1>:<coeff2>:<calExpGUID>:<yyyy-MM-dd>` (coefficients with 17 significant digits) |
+| centerpiece without a GUID            | `centerpiece:<serial>:<name>:<material>:<channels>:<shape>:<maxRPM>:<angle>:<width>` followed by `:<pathlen>:<bottom>` for each row (numbers with 17 significant digits) |
+
+Bundles written before this rule derived these two from the first two or
+three fields only; an import of an older bundle therefore does not recognise
+the same calibration or centerpiece of a newer one by its GUID.
 
 The time state therefore has a `timeStateGUID` of its own; it depends on its
 experiment through `depends: experimentGUID`, and its `timeStateID` is the
@@ -162,7 +169,11 @@ added because a local store keeps that information elsewhere:
 * `experiment/<runID>.RIProfile.xml` — the radial intensity profile an RI
   (pseudo-absorbance) run is reduced with, in the format of the local
   `<runID>.RIProfile.xml`. On disk it is the file in the run directory; from
-  the database it is the profile stored with the experiment record.
+  the database it is the profile stored with the experiment record, read
+  without leaving a copy in the local results directory. Only a profile an
+  import can read travels: well-formed XML with a `<US_RIProfile>` root and at
+  least one `<RI value=...>`. An empty or broken one is left out with a
+  warning, and the run is exported without it.
 
 `manifest.sha256` holds the SHA-256 digest of `manifest.yaml` in the format
 `sha256sum` writes (`<hex>  manifest.yaml`), so `sha256sum -c manifest.sha256`
@@ -170,9 +181,13 @@ checks it. Like the payload digests it guards against a damaged or truncated
 bundle, not against someone who rewrites both files.
 
 The archive is built in a private work directory, read back and compared file
-by file with what was staged, and only then put in place, in one step: an
-existing file of the same name is either left as it was or replaced by a
-complete bundle, never by a partial one.
+by file with what was staged — every name, size and SHA-256 digest of the
+content — and only then put in place, in one step: an existing file of the
+same name is either left as it was or replaced by a complete bundle, never by
+a partial one. The work directory is under the UltraScan `tmp` directory and
+holds the staged files, the archive and the unpacked copy at the same time,
+so it needs free space of about twice the size of the data plus the size of
+the bundle.
 
 Two exports of the same records are not byte-identical: `bundleGUID` and
 `created` differ, the gzip header carries a time stamp, and a database export
@@ -184,7 +199,7 @@ themselves do not change.
 The manifest is a deliberately small subset of YAML: a block of scalar header
 keys, then one block sequence per record type whose items are flat key/value
 maps plus a single nested `depends` map. Every value is quoted, and the file
-is UTF-8.
+is UTF-8. A manifest is at most 64 MiB.
 
 The sections are listed in an order in which **every record depends only on
 records of sections listed before its own**:
@@ -329,16 +344,33 @@ when the time state is.)
 
 The reader is strict. It refuses a manifest that
 
+* is larger than 64 MiB;
 * names no `version`, or one that is not a positive whole number;
 * gives a header key or a section twice, or a key twice in one record;
+* has a record key other than `depends` with no value (a nested map), or a
+  dependency with no value;
 * names a payload path (`payload` or any `...Payload`) that is not a plain
   bundle-relative path — absolute, with a drive prefix, a backslash, a colon,
-  an empty, `.`, `..` or hidden (dot-first) component, or a control character;
-* names a `filename` that is not a single such component;
+  an empty, `.`, `..` or hidden (dot-first) component, or a component that is
+  not a safe file name (below);
+* names two payload paths that differ only in case, which are one file on
+  Windows and macOS;
+* names a `filename` that is not a single safe file name;
 * names a run ID (an experiment's `runID`, the `runID` of the records of a
-  run) that is not letters, digits, `_` and `-`, at most 80 of them;
+  run) that is not letters, digits, `_` and `-`, at most 80 of them, all of
+  the value (a trailing newline is not ignored), and not a Windows device
+  name;
 * lists the same GUID twice in a section, a dependency that is not in the
   bundle, or a dependency on a section that is listed after the record's own.
+
+A **safe file name** is one that can be created as it is on Linux, macOS and
+Windows: no `/`, `\` or `:`; not `.`, `..` or hidden (dot-first); none of
+`< > " | ? *`; no control character (C0, DEL, or C1 `U+0080`–`U+009F`) and no
+invisible Unicode formatting character (bidirectional overrides, zero-width
+characters); no trailing dot or space; not a Windows device name — `CON`,
+`PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9` in any case, compared on the
+part before the first dot, so `con.xml` is refused too; and at most 255 bytes
+in UTF-8.
 
 An unpacked bundle is also refused when it holds a symbolic link or anything
 that ended up outside the bundle's own directory.
@@ -366,16 +398,39 @@ command line exits with `1`, when
 * none of the selected runs has raw data, at a scope that reaches the raw data
   (a single run without raw data is only a warning);
 * a record it needs cannot be read: the experiment, a solution together with
-  its buffer and analytes, a raw triple's solution, the rotor calibration the
-  run names, a centerpiece that is not in the centerpiece table, a buffer
-  component that is not defined, a time state whose definitions are missing,
-  or any payload.
+  its buffer and analytes, a raw triple's solution (only when the solutions
+  are exported — an export of the experiment alone names what it can), the
+  rotor calibration the run names, a centerpiece that is not in the
+  centerpiece table, a buffer component that is not defined, a time state
+  whose definitions are missing, or any payload; on disk a missing project
+  file says to leave the project out with `--no-project`;
+* a raw data record or an edit downloaded from the database is not the record
+  the catalog listed: the GUID in the `.auc` header, or the `editGUID` and
+  `rawDataGUID` of the edit, differ from the ones it is exported under (an
+  import would refuse the bundle for it);
+* a noise record asked for with `--noise-guid` (or ticked in the window)
+  belongs to a model that is not in the bundle.
+
+Records the export cannot carry and was not asked for by name are left out
+with a warning: a model or noise record without a GUID, a noise record whose
+model is not in the bundle, an RI profile that does not parse.
+
+A run whose database record names no rotor calibration is exported without
+one; the rotor's first calibration is not assumed in its place, since a rotor
+is recalibrated over the years. (The experiment XML that `US_Experiment`
+writes still names the calibration it reads for such a run.)
+
+A time state from the database is always staged as
+`<runID>.time_state.tmst` with its `<runID>.time_state.xml`, whatever file
+name the record keeps, because an import takes only a run's files whose names
+start with `<runID>.`.
 
 **Only what the selected triples need is exported**: the solutions and
 centerpieces of their channels, not every one the experiment ever had. On disk
-the run's experiment XML is copied as it is when all its triples are
-exported; when some were deselected, the `<dataset>` entries of those are
-left out of the copy. A database export writes the experiment XML afresh from
+the run's experiment XML keeps the `<dataset>` entries of the triples the
+bundle carries and no others: those of deselected triples, and those whose
+`.auc` file is no longer there, are left out of the copy (the latter with a
+warning). When nothing has to go it is copied as it is. A database export writes the experiment XML afresh from
 the selected triples. Either way the experiment XML names the investigator and
 operator of the run by GUID, as it does in a local store; a bundle that is to
 be published should be checked for that.
@@ -456,8 +511,9 @@ The Export tab works top to bottom:
    and noise records; **Details…** shows the manifest that would be written,
    without copying a single byte of experimental data. **Latest Edit** ticks
    the edit with the latest edit time stamp of each triple.
-10. **Export Bundle**. While the export runs the tab cannot be changed and the
-    window does not close.
+10. **Export Bundle**. While the export runs the tab cannot be changed, the
+    Import tab cannot be opened, and closing the window waits: it closes once
+    the export is done. The same holds the other way round during an import.
 
 ### Command line
 
@@ -478,6 +534,11 @@ us_data_publication --mode export --bundle <file.tar.gz> [options]
 | `--no-timestate` | Leave the runs' time state out |
 | `--no-project` | Leave the project record out; the runs still name it |
 | `--comment <text>` | Store a comment in the manifest |
+
+An import option (`--target`, `--output-dir`, `--on-conflict…`,
+`--rename-suffix`, `--no-verify`, `--strict-hardware`, `--list`) given with
+`--mode export` is refused with exit code `2`, as is an export option with
+`--mode import`; `--project-guid` and the common options are taken by both.
 
 Without `--experiment-id`, a `--project-id` or `--project-guid` exports every
 run of that project. With both, every run named has to belong to that project.
@@ -791,8 +852,11 @@ us_data_publication --mode import --bundle project7.tar.gz --list
 | Option | Meaning |
 |---|---|
 | `--no-ui` | Run without the window (implied by `--mode`) |
-| `--db-password-file <file>` | Read the master password for database access from the first line of a file |
-| `--db-password <pw>` | The master password itself. Other users of the machine can see it in the process list, so the program warns; prefer the file or `US3_DB_PASSWORD`, which is used when neither option is given. Without any of them an interactive run prompts on the terminal, without echoing; a `--non-interactive` run stops with exit code `2` |
+| `--db-password-file <file>` | Read the master password for database access from the first line of a file. On Unix a file that its group or other users can read is warned about (`chmod 600` it) |
+| `--db-password <pw>` | The master password itself. Other users of the machine can see it in the process list, so the program warns; prefer the file or `US3_DB_PASSWORD`, which is used when neither option is given. Without any of them an interactive run prompts on the error output, without echoing (an interrupted prompt puts the terminal back); a `--non-interactive` run stops with exit code `2`, and so does a Windows run whose input is not a console, since the password could not be read there without showing it |
+
+From a file, the environment and the prompt alike only the line end that ends
+the password — one `\n`, `\r\n` or `\r` — is removed; spaces are part of it.
 | `--dry-run` | Decide everything, write nothing |
 | `--non-interactive` | Never prompt; fail instead of asking |
 | `--verbose` | Report every step |

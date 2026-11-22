@@ -8,20 +8,8 @@
 
 set(src_dir ${CMAKE_CURRENT_SOURCE_DIR})
 
-# Sources that do not depend on the GUI library.  Kept in a variable so the
-# test tree can compile exactly the same list.
-set(US_DATAPUB_CORE_SOURCES
-    ${src_dir}/us_datapub_defs.cpp
-    ${src_dir}/us_datapub_manifest.cpp
-    ${src_dir}/us_datapub_hash.cpp
-    ${src_dir}/us_datapub_bundle.cpp
-    ${src_dir}/us_datapub_records.cpp
-    ${src_dir}/us_datapub_catalog.cpp
-    ${src_dir}/us_datapub_export.cpp
-    ${src_dir}/us_datapub_import.cpp
-    ${src_dir}/us_datapub_cli.cpp
-    CACHE INTERNAL "us_data_publication sources without a GUI dependency"
-)
+# Sources that do not depend on the GUI library, shared with the tests
+include(${src_dir}/us_datapub_sources.cmake)
 
 add_executable(us_data_publication
     ${src_dir}/us_data_publication.cpp
