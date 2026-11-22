@@ -114,6 +114,34 @@ namespace
    {
       return filename.section( ".", -5, -2 );
    }
+
+   // The attributes of the first element of a name in an XML text
+   QString peek_xml_attribute( const QString& text, const QString& element,
+                               const QString& attribute )
+   {
+      QXmlStreamReader xml( text );
+
+      while ( ! xml.atEnd() )
+      {
+         xml.readNext();
+
+         if ( xml.isStartElement()  &&  xml.name().toString() == element )
+            return xml.attributes().value( attribute ).toString();
+      }
+
+      return QString();
+   }
+
+   // How the platform compares file names: a run directory "runA" holding
+   // RunA.*.auc is the right directory where "RunA" and "runA" are one name
+   Qt::CaseSensitivity platform_file_case( void )
+   {
+#if defined( Q_OS_WIN ) || defined( Q_OS_MACOS )
+      return Qt::CaseInsensitive;
+#else
+      return Qt::CaseSensitive;
+#endif
+   }
 }
 
 // ------------------------------------------------------------- disk index
@@ -407,7 +435,7 @@ namespace
       model.lastUpdated = US_DataCatalog::utcText( db->value( 7 ) );
       model.checksum    = db->value( 8 ).toString();
       model.size        = db->value( 9 ).toString();
-      model.subType     = model.description.section( ".", -2, -2 );
+      model.subType     = US_DataCatalog::modelSubType( model.description );
       return model;
    }
 
@@ -479,6 +507,7 @@ US_DataCatalog::US_DataCatalog( QObject* parent ) : QObject( parent )
    do_checksums = true;
    noise_cached = false;
    cancel_flag  = nullptr;
+   file_case    = platform_file_case();
 }
 
 US_DataCatalog::~US_DataCatalog()
@@ -574,6 +603,9 @@ void US_DataCatalog::clear( void )
    run_list    .clear();
    pending     .clear();
    verify_queue.clear();
+   load_tries  .clear();
+   verify_tries.clear();
+   foreign_noise.clear();
    orphan_list .clear();
    noise_cache .clear();
    noise_cached = false;
@@ -662,7 +694,7 @@ bool US_DataCatalog::cacheNoise( QString& error )
 
    if ( ! queryOk( query, error ) )  return false;
 
-   QHash< QString, QList< Noise > > cache;
+   QList< Noise > noises;
 
    while ( dbase->next() )
    {
@@ -670,8 +702,16 @@ bool US_DataCatalog::cacheNoise( QString& error )
 
       if ( noise.modelGUID.isEmpty() )  continue;
 
-      cache[ noise.modelGUID ] << noise;
+      noises << noise;
    }
+
+   QList< Model > known = knownModels();
+   repairDescriptions( known, noises );
+
+   QHash< QString, QList< Noise > > cache;
+
+   for ( const Noise& noise : noises )
+      cache[ noise.modelGUID ] << noise;
 
    noise_cache  = cache;
    noise_cached = true;
@@ -731,6 +771,9 @@ QList< US_DataCatalog::Noise > US_DataCatalog::noisesOfEdit(
 
       list << noise;
    }
+
+   QList< Model > known = knownModels();
+   repairDescriptions( known, list );
 
    return list;
 }
@@ -912,7 +955,21 @@ bool US_DataCatalog::loadNextPending( int& index, QString& error )
 
       index = next;
 
-      return loadRunDetail( next, error );
+      if ( loadRunDetail( next, error ) )  return true;
+
+      // A read can fail for a reason that passes -- a dropped connection,
+      // a file being written -- so it is tried once more, after the rest
+      if ( load_tries.value( next ) < 1 )
+      {
+         load_tries[ next ]++;
+         pending.removeAll( next );
+         pending << next;
+         error += " " + tr( "(%1 will be read again later)" )
+                        .arg( run_list[ next ].runID );
+      }
+
+      emit message( error );
+      return false;
    }
 
    error.clear();
@@ -1047,6 +1104,9 @@ bool US_DataCatalog::loadRuns( const QString& projectGUID, QString& error )
    run_list = fresh;
    pending     .clear();
    verify_queue.clear();
+   load_tries  .clear();
+   verify_tries.clear();
+   foreign_noise.clear();
    orphan_list .clear();
    noise_cache .clear();
    noise_cached = false;
@@ -1125,6 +1185,21 @@ bool US_DataCatalog::loadRunsDbBulk( QList< Run >& runs, QString& error )
    return true;
 }
 
+/* The listing from the procedures UltraScan has always had.
+
+   get_experiment_desc names each experiment by its experimentID, and that ID
+   is what identifies it from here on: two experiments of one investigator
+   can share a run ID, so looking one up by run ID would give both the first
+   one's ID and GUID, and the records of the other would then belong to no
+   experiment.  The rest comes from get_experiment_info, by ID:
+
+   get_experiment_desc: experimentID, runID, type, runType, and for an
+                        administrator also label, lastUpdated
+   get_experiment_info: experimentGUID, projectID, runID, labID,
+                        instrumentID, operatorID, rotorID, rotorCalibrationID,
+                        type, runTemp, label, comment, centrifugeProtocol,
+                        lastUpdated, personID, runType, RIProfile
+*/
 bool US_DataCatalog::loadRunsDbLegacy( QList< Run >& runs, QString& error )
 {
    QString     invID = QString::number( inv_id );
@@ -1158,19 +1233,25 @@ bool US_DataCatalog::loadRunsDbLegacy( QList< Run >& runs, QString& error )
       Run run = headers[ ii ];
 
       query.clear();
-      query << "get_experiment_info_by_runID" << run.runID << invID;
+      query << "get_experiment_info" << run.id;
 
       if ( ! queryOk( query, error ) )  return false;
 
       if ( dbase->next() )
       {
-         run.projectID = dbase->value(  0 ).toString();
-         run.id        = dbase->value(  1 ).toString();
-         run.guid      = dbase->value(  2 ).toString();
-         run.expType   = dbase->value(  8 ).toString();
-         run.label     = dbase->value( 10 ).toString();
-         run.date      = utcText( dbase->value( 13 ) );
+         QString type  = dbase->value(  8 ).toString();
+         QString label = dbase->value( 10 ).toString();
+         QString date  = utcText( dbase->value( 13 ) );
+
+         run.guid      = dbase->value(  0 ).toString();
+         run.projectID = dbase->value(  1 ).toString();
+
+         if ( ! type .isEmpty() )  run.expType = type;
+         if ( ! label.isEmpty() )  run.label   = label;
+         if ( ! date .isEmpty() )  run.date    = date;
       }
+
+      if ( run.projectID.isEmpty() )  run.projectID = "-1";
 
       if ( ! projGUIDs.contains( run.projectID ) )
       {
@@ -1182,12 +1263,26 @@ bool US_DataCatalog::loadRunsDbLegacy( QList< Run >& runs, QString& error )
             query.clear();
             query << "get_project_info" << run.projectID;
 
-            if ( ! queryOk( query, error ) )  return false;
-
-            if ( dbase->next() )
+            if ( queryOk( query, error ) )
             {
-               pguid = dbase->value(  1 ).toString();
-               pdesc = dbase->value( 10 ).toString();
+               if ( dbase->next() )
+               {
+                  pguid = dbase->value(  1 ).toString();
+                  pdesc = dbase->value( 10 ).toString();
+               }
+            }
+
+            else if ( connectionLost() )
+               return false;
+
+            else
+            {  // A project the server will not describe -- not this
+               // person's, or gone -- leaves its experiments unattributed,
+               // not the whole listing unread
+               emit message( tr( "Project %1 could not be read (%2); its"
+                                 " experiments are listed without it" )
+                             .arg( run.projectID, error ) );
+               error.clear();
             }
          }
 
@@ -1211,6 +1306,18 @@ bool US_DataCatalog::loadRunsDbLegacy( QList< Run >& runs, QString& error )
    }
 
    return true;
+}
+
+bool US_DataCatalog::connectionLost( void )
+{
+   if ( dbase == nullptr  ||  ! dbase->isConnected() )   return true;
+   if ( dbase->lastErrno() == IUS_DB2::NOT_CONNECTED )   return true;
+
+   // The MySQL client's own errors -- server gone, connection lost -- are
+   // numbered from 2000; the server's are below that
+   int code = dbase->lastServerErrno();
+
+   return code >= 2000  &&  code < 3000;
 }
 
 void US_DataCatalog::buildDiskIndex( void )
@@ -1242,9 +1349,9 @@ void US_DataCatalog::buildDiskIndex( void )
       {
          QString name = files[ jj ];
 
-         if      ( name.endsWith( ".auc"  ) )  rf.aucFiles << name;
-         else if ( name.endsWith( ".tmst" ) )  rf.tmstFile =  name;
-         else if ( name.endsWith( ".xml"  ) )  xmls        << name;
+         if      ( name.endsWith( ".auc",  file_case ) )  rf.aucFiles << name;
+         else if ( name.endsWith( ".tmst", file_case ) )  rf.tmstFile =  name;
+         else if ( name.endsWith( ".xml",  file_case ) )  xmls        << name;
       }
 
       if ( rf.aucFiles.isEmpty() )
@@ -1272,13 +1379,14 @@ void US_DataCatalog::buildDiskIndex( void )
       {
          QString name = xmls[ jj ];
 
-         if ( ! rf.aucFiles.isEmpty()  &&  name == expName )
+         if ( ! rf.aucFiles.isEmpty()  &&
+              name.compare( expName, file_case ) == 0 )
          {
             rf.expXml = name;
             continue;
          }
 
-         if ( ! name.startsWith( prefix ) )  continue;
+         if ( ! name.startsWith( prefix, file_case ) )  continue;
 
          if ( name.mid( prefix.length() ).count( "." ) == 5 )
             rf.editFiles << name;
@@ -1465,7 +1573,7 @@ bool US_DataCatalog::loadRunsDisk( QList< Run >& runs, QString& error )
          problems << tr( "The run ID %1 is not one UltraScan accepts" )
                      .arg( rf.runID );
 
-      if ( rf.runID != rf.dirName )
+      if ( rf.runID.compare( rf.dirName, file_case ) != 0 )
          problems << tr( "The directory %1 holds the files of run %2" )
                      .arg( rf.dirName, rf.runID );
 
@@ -1527,19 +1635,40 @@ bool US_DataCatalog::loadRunDetail( int index, QString& error )
    }
 
    // Read aside, so a failure leaves the experiment as it was
-   QList< Raw > raws;
-   bool ok = isDb() ? loadDetailDb  ( run_list[ index ], raws, error )
+   QList< Raw >   raws;
+   QList< Noise > lost;
+   QList< Noise > foreign;
+   bool ok = isDb() ? loadDetailDb  ( run_list[ index ], raws, lost, foreign,
+                                      error )
                     : loadDetailDisk( run_list[ index ], raws, error );
 
    if ( ! ok )  return false;
+
+   addOrphanNoises( lost );
 
    dropChecksums( raws );
 
    Run& run     = run_list[ index ];
    run.raws     = raws;
    run.verified = do_checksums;
-   finishRun( run );
    pending.removeAll( index );
+
+   // Noise an experiment read earlier found to be of a model here, and
+   // noise this one read that is of a model elsewhere
+   placeForeignNoise( run, QList< Noise >() );
+   finishRun( run );
+
+   for ( int ii = 0; ii < run_list.size(); ii++ )
+      if ( ii != index  &&  run_list[ ii ].isLoaded() )
+      {
+         int before = foreign.size();
+         foreign    = placeForeignNoise( run_list[ ii ], foreign );
+
+         if ( foreign.size() != before )  finishRun( run_list[ ii ] );
+      }
+
+   for ( const Noise& noise : foreign )
+      foreign_noise[ noise.modelGUID ] << noise;
 
    error.clear();
 
@@ -1582,13 +1711,8 @@ void US_DataCatalog::finishRun( Run& run )
 
 bool US_DataCatalog::loadAll( QString& error )
 {
-   if ( run_list.isEmpty() )
-   {
-      orphan_list.clear();
-      error.clear();
-      return true;
-   }
-
+   // Even with no experiment listed the store is read: what is in it then
+   // is all orphans, and a program that cleans up has to see them
    QList< Run > fresh = run_list;
    Orphans      orphans;
 
@@ -1616,6 +1740,9 @@ bool US_DataCatalog::loadAll( QString& error )
       orphan_list = orphans;
    else
       orphan_list.clear();
+
+   // The whole store placed every noise record by its model
+   foreign_noise.clear();
 
    for ( int ii = 0; ii < loaded.size(); ii++ )
       emit runLoaded( loaded[ ii ] );
@@ -1687,14 +1814,13 @@ bool US_DataCatalog::loadAllDb( QList< Run >& runs, Orphans& orphans,
    QHash< QString, QList< Noise > > cache;
 
    while ( dbase->next() )
-   {
-      Noise noise = noise_row( dbase );
+      flat.noises << noise_row( dbase );
 
-      flat.noises << noise;
+   repairDescriptions( flat.models, flat.noises );
 
+   for ( const Noise& noise : flat.noises )
       if ( ! noise.modelGUID.isEmpty() )
          cache[ noise.modelGUID ] << noise;
-   }
 
    // ---- attach them ------------------------------------------------------
    flat.assemble( &orphans );
@@ -1950,7 +2076,7 @@ bool US_DataCatalog::loadAllDisk( QList< Run >& runs, Orphans& orphans,
       model.description = mf.description;
       model.filename    = mf.base;
       model.path        = mf.path;
-      model.subType     = mf.description.section( ".", -2, -2 );
+      model.subType     = modelSubType( mf.description );
       model.lastUpdated = utc_of_file( mf.path );
       fileDigest( mf.path, model.checksum, model.size );
 
@@ -2030,7 +2156,21 @@ bool US_DataCatalog::verifyNextPending( int& index, QString& error )
            ! run_list.at( next ).verified )
       {
          index = next;
-         return verifyRun( next, error );
+
+         if ( verifyRun( next, error ) )  return true;
+
+         // Tried once more, after the rest; see loadNextPending
+         if ( verify_tries.value( next ) < 1 )
+         {
+            verify_tries[ next ]++;
+            verify_queue.removeAll( next );
+            verify_queue << next;
+            error += " " + tr( "(%1 will be verified again later)" )
+                           .arg( run_list[ next ].runID );
+         }
+
+         emit message( error );
+         return false;
       }
 
       verify_queue.removeFirst();
@@ -2268,7 +2408,8 @@ bool US_DataCatalog::verifyRunDisk( Run& run, QString& error )
 // ------------------------------------------------- one experiment, database
 
 bool US_DataCatalog::loadDetailDb( const Run& run, QList< Raw >& raws,
-                                   QString& error )
+                                   QList< Noise >& lost,
+                                   QList< Noise >& foreign, QString& error )
 {
    if ( dbase == nullptr )
    {
@@ -2276,16 +2417,136 @@ bool US_DataCatalog::loadDetailDb( const Run& run, QList< Raw >& raws,
       return false;
    }
 
+   QList< Noise > stray;
+
    if ( ( tiers() & ExperimentTier ) != 0 )
    {
-      if ( loadDetailDbBulk( run, raws, error ) )  return true;
+      if ( loadDetailDbBulk( run, raws, stray, error ) )
+         return sortStrayNoise( run, stray, lost, foreign, error );
 
       if ( ( tiers() & ExperimentTier ) != 0 )  return false;  // real error
 
-      raws.clear();
+      raws .clear();
+      stray.clear();
    }
 
-   return loadDetailDbLegacy( run, raws, error );
+   if ( ! loadDetailDbLegacy( run, raws, stray, error ) )  return false;
+
+   return sortStrayNoise( run, stray, lost, foreign, error );
+}
+
+/* Noise read with an experiment -- recorded against one of its edits --
+   that hangs under none of its models.
+
+   A whole-store read attaches noise to its model by GUID, wherever that
+   model is, and calls it an orphan only when there is no such model.  One
+   experiment at a time does the same: a noise record with no model GUID,
+   or with the GUID of a model the server does not have, is an orphan and
+   is reported as one; one whose model is in another experiment is that
+   experiment's, and goes to it in \a foreign.
+*/
+bool US_DataCatalog::sortStrayNoise( const Run& run, const QList< Noise >& stray,
+                                     QList< Noise >& lost,
+                                     QList< Noise >& foreign, QString& error )
+{
+   lost   .clear();
+   foreign.clear();
+
+   for ( const Noise& noise : stray )
+   {
+      if ( noise.modelGUID.isEmpty() )
+      {
+         lost << noise;
+         continue;
+      }
+
+      QStringList query;
+      query << "get_modelID" << noise.modelGUID;
+
+      dbase->query( query );
+
+      int status = dbase->lastErrno();
+
+      if ( status == IUS_DB2::NOROWS  ||
+           ( status == IUS_DB2::OK  &&  ! dbase->next() ) )
+         lost << noise;
+
+      else if ( status == IUS_DB2::OK )
+         foreign << noise;
+
+      else if ( connectionLost() )
+      {
+         error = dbase->lastError();
+         return false;
+      }
+
+      else
+         emit message( tr( "Whether model %1 of noise %2, read with %3, exists"
+                           " could not be read: %4" )
+                       .arg( noise.modelGUID, noise.guid, run.runID,
+                             dbase->lastError() ) );
+   }
+
+   error.clear();
+
+   return true;
+}
+
+/* Hang noise under the models of one experiment.
+
+   The noise is \a noises and whatever earlier reads left in foreign_noise
+   for one of this experiment's models.  A record already there is not
+   added twice.  Returns what of \a noises found no model here.
+*/
+QList< US_DataCatalog::Noise > US_DataCatalog::placeForeignNoise(
+      Run& run, const QList< Noise >& noises )
+{
+   QList< Noise > left = noises;
+
+   for ( int ii = 0; ii < run.raws.size(); ii++ )
+      for ( int jj = 0; jj < run.raws[ ii ].edits.size(); jj++ )
+         for ( int kk = 0; kk < run.raws[ ii ].edits[ jj ].models.size(); kk++ )
+         {
+            Model& model = run.raws[ ii ].edits[ jj ].models[ kk ];
+
+            if ( model.guid.isEmpty() )  continue;
+
+            QList< Noise > mine = foreign_noise.take( model.guid );
+
+            for ( int nn = left.size() - 1; nn >= 0; nn-- )
+               if ( left[ nn ].modelGUID == model.guid )
+                  mine << left.takeAt( nn );
+
+            for ( Noise noise : mine )
+            {
+               bool known = false;
+
+               for ( const Noise& have : model.noises )
+                  if ( have.id == noise.id  &&  have.guid == noise.guid )
+                     known = true;
+
+               if ( known )  continue;
+
+               noise.editGUID = model.editGUID;
+               model.noises << noise;
+            }
+         }
+
+   return left;
+}
+
+void US_DataCatalog::addOrphanNoises( const QList< Noise >& noises )
+{
+   for ( const Noise& noise : noises )
+   {
+      bool known = false;
+
+      for ( const Noise& have : orphan_list.noises )
+         if ( have.id == noise.id  &&  have.guid == noise.guid )
+            known = true;
+
+      if ( ! known )  orphan_list.noises << noise;
+   }
 }
 
 /* One experiment in four queries.  Any one of them may turn out to be
@@ -2293,7 +2554,7 @@ bool US_DataCatalog::loadDetailDb( const Run& run, QList< Raw >& raws,
    old way instead -- this one and every one after it.
 */
 bool US_DataCatalog::loadDetailDbBulk( const Run& run, QList< Raw >& raws,
-                                       QString& error )
+                                       QList< Noise >& stray, QString& error )
 {
    QString     invID = QString::number( inv_id );
    QStringList query;
@@ -2350,9 +2611,15 @@ bool US_DataCatalog::loadDetailDbBulk( const Run& run, QList< Raw >& raws,
    while ( dbase->next() )
       flat.noises << noise_row( dbase );
 
+   repairDescriptions( flat.models, flat.noises );
+
    // A record whose parent is not in this experiment is not this
-   // experiment's; only a whole-store read can call it an orphan
-   flat.assemble( nullptr );
+   // experiment's; only a whole-store read can call it an orphan.  Noise is
+   // the exception: it was read because it was recorded against one of
+   // this experiment's edits, so where it belongs is sorted out after
+   attach_models( flat.models, flat.noises, &stray );
+   attach_edits ( flat.edits,  flat.models, nullptr );
+   attach_raws  ( flat.raws,   flat.edits,  nullptr );
 
    for ( int ii = 0; ii < flat.raws.size(); ii++ )
    {
@@ -2369,7 +2636,7 @@ bool US_DataCatalog::loadDetailDbBulk( const Run& run, QList< Raw >& raws,
 
 // One experiment the way UltraScan always read it: a query per record
 bool US_DataCatalog::loadDetailDbLegacy( const Run& run, QList< Raw >& raws,
-                                         QString& error )
+                                         QList< Noise >& stray, QString& error )
 {
    QString     invID = QString::number( inv_id );
    QStringList query;
@@ -2387,6 +2654,13 @@ bool US_DataCatalog::loadDetailDbLegacy( const Run& run, QList< Raw >& raws,
    }
 
    QList< Raw > list;
+
+   // The models and noise of the whole experiment, and where each model was
+   // read: noise is matched to its model across the experiment, as the
+   // per-experiment procedures do, not only within one edit
+   QList< Model >          models;
+   QList< QPair< int, int > > placeOf;   // (raw, edit) each model was read under
+   QList< Noise >          noises;
 
    for ( int ii = 0; ii < rawIDs.size(); ii++ )
    {
@@ -2443,8 +2717,6 @@ bool US_DataCatalog::loadDetailDbLegacy( const Run& run, QList< Raw >& raws,
          edit_names( edit );
          edit.runID       = run.runID;
 
-         QList< Model > models;
-
          query.clear();
          query << "get_model_desc_by_editID" << invID << edit.id;
 
@@ -2456,7 +2728,8 @@ bool US_DataCatalog::loadDetailDbLegacy( const Run& run, QList< Raw >& raws,
 
             if ( model.editGUID.isEmpty() )  model.editGUID = edit.guid;
 
-            models << model;
+            models  << model;
+            placeOf << qMakePair( list.size(), raw.edits.size() );
          }
 
          query.clear();
@@ -2464,28 +2737,132 @@ bool US_DataCatalog::loadDetailDbLegacy( const Run& run, QList< Raw >& raws,
 
          if ( ! queryOk( query, error ) )  return false;
 
-         QList< Noise > noises;
-
          while ( dbase->next() )
-         {
-            Noise noise    = noise_row( dbase );
-            noise.editGUID = edit.guid;
+            noises << noise_row( dbase );
 
-            noises << noise;
-         }
-
-         attach_models( models, noises, nullptr );
-
-         edit.models = models;
-         raw.edits  << edit;
+         raw.edits << edit;
       }
 
       list << raw;
    }
 
+   repairDescriptions( models, noises );
+   attach_models( models, noises, &stray );
+
+   for ( int ii = 0; ii < models.size(); ii++ )
+      list[ placeOf[ ii ].first ].edits[ placeOf[ ii ].second ].models
+         << models[ ii ];
+
    raws = list;
 
    return true;
+}
+
+// Every model the catalog has read, for a noise record that needs its
+// model's description
+QList< US_DataCatalog::Model > US_DataCatalog::knownModels( void ) const
+{
+   QList< Model > list;
+
+   for ( const Run& run : run_list )
+      for ( const Raw& raw : run.raws )
+         for ( const Edit& edit : raw.edits )
+            list << edit.models;
+
+   list << orphan_list.models;
+
+   return list;
+}
+
+/* Repair the descriptions an older server gives.
+
+   The description column is 80 characters wide, and a description longer
+   than that comes back cut; the record's XML holds it in full, so a model
+   or noise record whose description is exactly that long is read again.
+   A noise record written with no description takes its model's, with the
+   noise type in place of ".model" -- the name UltraScan gives it.  These are
+   a handful of records on an old store and none on a new one.  A record
+   that cannot be read again keeps what the listing gave.
+*/
+void US_DataCatalog::repairDescriptions( QList< Model >& models,
+                                         QList< Noise >& noises )
+{
+   const int width = 80;
+
+   for ( int ii = 0; ii < models.size(); ii++ )
+   {
+      Model& model = models[ ii ];
+
+      if ( model.description.length() != width  ||  model.id.toInt() < 1 )
+         continue;
+
+      QStringList query;
+      query << "get_model_info" << model.id;
+      dbase->query( query );
+
+      if ( dbase->lastErrno() != IUS_DB2::OK  ||  ! dbase->next() )  continue;
+
+      QString full = peek_xml_attribute( dbase->value( 2 ).toString(),
+                                         "model", "description" );
+
+      if ( full.length() > model.description.length() )
+      {
+         model.description = full;
+         model.subType     = modelSubType( full );
+      }
+   }
+
+   QHash< QString, QString > modelDescs;
+
+   for ( const Model& model : models )
+      if ( ! model.guid.isEmpty() )
+         modelDescs.insert( model.guid, model.description );
+
+   for ( int ii = 0; ii < noises.size(); ii++ )
+   {
+      Noise& noise = noises[ ii ];
+
+      if ( noise.description.length() == width  &&  noise.id.toInt() > 0 )
+      {
+         QStringList query;
+         query << "get_noise_info" << noise.id;
+         dbase->query( query );
+
+         if ( dbase->lastErrno() == IUS_DB2::OK  &&  dbase->next() )
+         {
+            QString full = peek_xml_attribute( dbase->value( 5 ).toString(),
+                                               "noise", "description" );
+
+            if ( full.length() > noise.description.length() )
+               noise.description = full;
+         }
+      }
+
+      if ( noise.description.isEmpty() )
+      {
+         QString mdesc = modelDescs.value( noise.modelGUID );
+         QString ntype = ( noise.noiseType == "ri" ) ? "ri_noise" : "ti_noise";
+
+         if ( ! mdesc.isEmpty() )
+            noise.description = QString( mdesc ).replace( ".model", "." + ntype );
+      }
+   }
+}
+
+QString US_DataCatalog::modelSubType( const QString& description )
+{
+   // runID.triple.e<editID>_a<analysisID>_<TYPE>_<...>.model
+   return description.section( ".", -2, -2 ).section( "_", 2, 2 );
+}
+
+void US_DataCatalog::setFileNameCase( Qt::CaseSensitivity sensitivity )
+{
+   file_case = sensitivity;
+}
+
+Qt::CaseSensitivity US_DataCatalog::fileNameCase( void ) const
+{
+   return file_case;
 }
 
 // ------------------------------------------------- one experiment, disk
@@ -2582,7 +2959,7 @@ bool US_DataCatalog::loadDetailDisk( const Run& run, QList< Raw >& raws,
             model.description = mf.description;
             model.filename    = mf.base;
             model.path        = mf.path;
-            model.subType     = mf.description.section( ".", -2, -2 );
+            model.subType     = modelSubType( mf.description );
 
             fileDigest( mf.path, model.checksum, model.size );
             model.lastUpdated = utc_of_file( mf.path );

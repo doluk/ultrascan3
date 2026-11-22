@@ -160,7 +160,13 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
             QString size;         //!< Length of the model XML
             QString lastUpdated;  //!< Last-updated date-time, as
                                   //!< "yyyy-MM-dd hh:mm:ss UTC"
-            QString subType;      //!< Analysis type, from the description
+            //! The analysis type the description names, as
+            //! \ref modelSubType gives it: "2DSA" for
+            //! "run.1A280.e1234_a5678_2DSA_i01.model", empty for a
+            //! description not in that form.  us_manage_data shows more
+            //! (CUSTOMGRID, MANUAL), which it works out from this and the
+            //! model's size.
+            QString subType;
 
             QList< Noise > noises; //!< Noise records of this model
       };
@@ -257,7 +263,12 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
             int     modelCount;   //!< Number of models
             int     noiseCount;   //!< Number of noise records
 
-            Detail  detail;       //!< How much of this experiment was read
+            //! How much of this experiment was read.  Once it is
+            //! \ref Loaded the four counts above are what hangs under the
+            //! experiment in the chain, which may differ from what the
+            //! listing said: the server counts noise by the edit it was
+            //! recorded against, the chain by the model it belongs to.
+            Detail  detail;
 
             //! True once the raw-data and edit checksums of this
             //! experiment's records are filled in; see
@@ -293,10 +304,21 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
           - \a noises: noise records whose model (Noise::modelGUID) is not
                        in the store.
 
-          Only \ref loadAll fills this, since only a whole-store read can
-          tell a missing parent from one not yet read, and only when no
-          project filter is in effect: a parent outside the filter cannot
-          be told apart from a missing one.  Any other load empties it.
+          \ref loadAll fills this, since only a whole-store read can tell
+          a missing parent from one not yet read, and only when no project
+          filter is in effect: a parent outside the filter cannot be told
+          apart from a missing one.  It reads the store even when no
+          experiment is listed, and then everything in it is here.
+
+          A database read of one experiment (\ref loadRunDetail) adds to
+          \a noises the noise records it read -- they were recorded against
+          one of the experiment's edits -- that have no model GUID or the
+          GUID of a model the server does not have: loadAll would call them
+          orphans too.  Noise whose model is in another experiment is hung
+          under that model, as loadAll hangs it -- at once if that
+          experiment is read already, else when it is -- so an experiment
+          read alone has the noise and the counts a whole-store read gives
+          it.  \ref loadRuns empties the list.
       */
       class Orphans
       {
@@ -416,7 +438,8 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
           \ref loadRunDetail would make anyway.
 
           Experiments already loaded are kept as they are.  This also fills
-          \ref orphans.
+          \ref orphans -- and reads the store even when no experiment is
+          listed, when everything in it is an orphan.
           \param error Filled in with a message when the scan fails
           \returns True when every experiment now has its records; on false
                    nothing has changed
@@ -449,6 +472,8 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
       //! \brief Verify the next experiment that is still waiting
       //! \param index Filled in with the position that was read, or -1
       //! \param error Filled in with a message when the read fails
+      //! A verify that fails is put back at the end of the queue once, as
+      //! \ref loadNextPending does.
       //! \returns True when an experiment was verified; false when none is
       //!          left or the read failed -- \a error says which
       bool verifyNextPending( int& index, QString& error );
@@ -519,6 +544,9 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
       //! \brief Read the next experiment that is still waiting
       //! \param index Filled in with the position that was read, or -1
       //! \param error Filled in with a message when the scan fails
+      //! A read that fails puts the experiment back at the end of the
+      //! queue, once, since what made it fail may pass; \a error says so.
+      //! A second failure drops it from the queue.
       //! \returns True when an experiment was read; false when none is left
       //!          or the scan failed -- \a error says which
       bool loadNextPending( int& index, QString& error );
@@ -603,6 +631,28 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
       //!        US_ConvertIO::runIdIsUsable(), the rule readDiskRun applies.
       static bool runIdIsUsable( const QString& runID );
 
+      //! \brief The analysis type a model description names: the third
+      //!        '_' field of its second-to-last '.' part, as UltraScan has
+      //!        always read it ("2DSA" from
+      //!        "run.1A280.e1234_a5678_2DSA_i01.model")
+      //! \param description The model description
+      static QString modelSubType( const QString& description );
+
+      /*! \brief How the local store compares file names
+
+          A run directory is named after its run, and its files are found
+          by suffix.  Where the file system does not tell "RunA" from
+          "runA" -- Windows, and macOS as installed -- neither does the
+          catalog; elsewhere names must match exactly.  The platform
+          decides by default; this is for a store on a file system that is
+          not like the platform's, and for tests.
+          \param sensitivity Qt::CaseInsensitive to compare without case
+      */
+      void setFileNameCase( Qt::CaseSensitivity sensitivity );
+
+      //! \brief How the local store compares file names
+      Qt::CaseSensitivity fileNameCase( void ) const;
+
       //! \brief A database date-time in the form the catalog uses for every
       //!        date, "yyyy-MM-dd hh:mm:ss UTC" -- the form us_manage_data
       //!        has always shown, and the one local files are given
@@ -648,6 +698,13 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
 
       bool         do_checksums;
 
+      //! How file names of the local store compare; see setFileNameCase()
+      Qt::CaseSensitivity file_case;
+
+      //! Failed reads and verifies so far, by position; each is retried once
+      QHash< int, int > load_tries;
+      QHash< int, int > verify_tries;
+
       //! Set by another thread to stop a read of the local store
       const QAtomicInt* cancel_flag;
 
@@ -680,9 +737,39 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
       bool loadRunsDbBulk  ( QList< Run >&, QString& );
       bool loadRunsDbLegacy( QList< Run >&, QString& );
       bool loadRunsDisk    ( QList< Run >&, QString& );
-      bool loadDetailDb      ( const Run&, QList< Raw >&, QString& );
-      bool loadDetailDbBulk  ( const Run&, QList< Raw >&, QString& );
-      bool loadDetailDbLegacy( const Run&, QList< Raw >&, QString& );
+      bool loadDetailDb      ( const Run&, QList< Raw >&, QList< Noise >&,
+                               QList< Noise >&, QString& );
+      bool loadDetailDbBulk  ( const Run&, QList< Raw >&, QList< Noise >&,
+                               QString& );
+      bool loadDetailDbLegacy( const Run&, QList< Raw >&, QList< Noise >&,
+                               QString& );
+
+      //! \brief Of the noise one experiment read that hangs under none of
+      //!        its models, pick out the orphans
+      bool sortStrayNoise( const Run& run, const QList< Noise >& stray,
+                           QList< Noise >& lost, QList< Noise >& foreign,
+                           QString& error );
+
+      //! \brief Hang noise under the models of one experiment
+      QList< Noise > placeForeignNoise( Run& run, const QList< Noise >& noises );
+
+      //! Noise read with one experiment whose model is in another not yet
+      //! read, by modelGUID; it is hung under that model when it is read
+      QHash< QString, QList< Noise > > foreign_noise;
+
+      //! \brief Add noise records to the orphans, once each
+      void addOrphanNoises( const QList< Noise >& noises );
+
+      //! \brief Every model the catalog has read
+      QList< Model > knownModels( void ) const;
+
+      //! \brief Read in full the descriptions an older server cut at 80
+      //!        characters, and give noise with none its model's
+      void repairDescriptions( QList< Model >& models, QList< Noise >& noises );
+
+      //! \brief True when the last query failed because the connection to
+      //!        the server is gone, not because of what it asked
+      bool connectionLost( void );
       bool loadDetailDisk    ( const Run&, QList< Raw >&, QString& );
 
       //! \brief Run one query and say whether it may be read
