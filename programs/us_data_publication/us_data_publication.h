@@ -25,7 +25,11 @@ class US_DataPublication : public US_Widgets
       US_DataPublication();
 
    protected:
-      //! \brief Refuse to close while an export is running
+      /*! \brief Wait for a running export or import before closing
+
+          The window does not close while either tab is at work; it
+          remembers that it was asked to and closes once the work is done.
+      */
       void closeEvent( QCloseEvent* event ) override;
 
    private:
@@ -34,10 +38,16 @@ class US_DataPublication : public US_Widgets
       US_DataPubImportPane*   importPane;
       QLabel*                 lb_status;
 
+      bool                    close_pending;   //!< Close when work ends
+      bool                    import_signals;  //!< Import tab has busyChanged
+
       US_Help                 showHelp;
 
    private slots:
       void set_status( const QString& );
+
+      //! \brief Lock the other tab while one is at work
+      void pane_busy ( bool );
       void help      ( void )
       { showHelp.show_help( "us_data_publication.html" ); };
 };

@@ -14,14 +14,20 @@
 //! \c --no-ui, \c --help, ...) the command line runs instead, on a console
 //! application object so that the program works on a machine with no
 //! display, and reports arguments it does not understand.
+//!
+//! Which of the two it is only needs the ASCII "--" in front of an
+//! argument, so it is decided from the raw arguments; the arguments the
+//! command line works with are the application's, which Qt decodes
+//! correctly on every platform (the command line of a Windows process is
+//! UTF-16, which the local 8-bit code page cannot hold).
 int main( int argc, char* argv[] )
 {
-   QStringList arguments;
+   QStringList raw;
 
    for ( int ii = 0; ii < argc; ii++ )
-      arguments << QString::fromLocal8Bit( argv[ ii ] );
+      raw << QString::fromLatin1( argv[ ii ] );
 
-   if ( US_DataPubCLI::wanted( arguments ) )
+   if ( US_DataPubCLI::wanted( raw ) )
    {
       QCoreApplication console( argc, argv );
       QCoreApplication::setOrganizationName( "UltraScan" );
@@ -29,7 +35,7 @@ int main( int argc, char* argv[] )
 
       US_DataPubCLI cli;
 
-      return cli.run( arguments );
+      return cli.run( QCoreApplication::arguments() );
    }
 
    QApplication application( argc, argv );
@@ -68,12 +74,47 @@ US_DataPublication::US_DataPublication() : US_Widgets()
    connect( importPane, &US_DataPubImportPane::status,
             this,       &US_DataPublication::set_status );
 
+   // While one tab works, events are processed to keep the window alive;
+   // nothing in the other tab -- and no switch to it -- may start then
+   connect( exportPane, &US_DataPubExportPane::busyChanged,
+            this,       &US_DataPublication::pane_busy );
+
+   // The import tab announces the same; looked up by name, so that a build
+   // whose import tab does not have the signal still closes cleanly (it
+   // then only refuses to close while an import runs)
+   import_signals = ( importPane->metaObject()->indexOfSignal(
+                      "busyChanged(bool)" ) >= 0 );
+
+   if ( import_signals )
+      connect( importPane, SIGNAL( busyChanged( bool ) ),
+               this,       SLOT  ( pane_busy  ( bool ) ) );
+
+   close_pending = false;
+
    resize( 1100, 800 );
 }
 
 void US_DataPublication::set_status( const QString& message )
 {
    lb_status->setText( message );
+}
+
+void US_DataPublication::pane_busy( bool )
+{
+   bool exporting = exportPane->isBusy();
+   bool importing = importPane->isBusy();
+   bool working   = exporting  ||  importing;
+
+   tabs->tabBar()->setEnabled( ! working );
+   exportPane->setEnabled( ! importing );
+   importPane->setEnabled( ! exporting );
+
+   // A close that was asked for while the work ran happens now
+   if ( ! working  &&  close_pending )
+   {
+      close_pending = false;
+      QTimer::singleShot( 0, this, &QWidget::close );
+   }
 }
 
 /* The export runs on this window's thread and keeps it responsive by
@@ -84,6 +125,7 @@ void US_DataPublication::closeEvent( QCloseEvent* event )
 {
    if ( exportPane->isBusy() )
    {
+      close_pending = true;
       lb_status->setText( tr( "An export is running; the window closes"
                               " once it is done." ) );
       event->ignore();
@@ -92,8 +134,12 @@ void US_DataPublication::closeEvent( QCloseEvent* event )
 
    if ( importPane->isBusy() )
    {
-      lb_status->setText( tr( "An import is running; the window closes"
-                              " once it is done." ) );
+      // Without the signal the end of the import is not seen here
+      close_pending = import_signals;
+      lb_status->setText( import_signals
+         ? tr( "An import is running; the window closes once it is done." )
+         : tr( "An import is running; close the window once it is"
+               " done." ) );
       event->ignore();
       return;
    }

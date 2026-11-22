@@ -3,6 +3,10 @@ include( ../../gui.pri )
 TARGET        = us_data_publication
 QT           += xml
 
+# The command line writes to the console it was started from (CMake builds
+# a console program too)
+CONFIG       += console
+
 HEADERS       = us_data_publication.h \
                 us_datapub_defs.h \
                 us_datapub_manifest.h \
