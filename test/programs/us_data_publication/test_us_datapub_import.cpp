@@ -12,6 +12,11 @@
 
 #include <functional>
 
+#if defined( Q_OS_UNIX )
+#include <cstdio>
+#include <unistd.h>
+#endif
+
 class DataPubImport : public DataPubTestEnv
 {
    protected:
@@ -1203,6 +1208,44 @@ TEST_F( DataPubCliImport, ADatabaseImportWithoutAPasswordStopsEarly )
    if ( ! saved.isEmpty() )  qputenv( "US3_DB_PASSWORD", saved );
 }
 
+#if defined( Q_OS_UNIX )
+// The password is settled before the bundle is even unpacked, with one
+// error that recommends the safe ways to give it
+TEST_F( DataPubCliImport, TheDatabasePasswordIsCheckedFirstWithOneError )
+{
+   QByteArray saved = qgetenv( "US3_DB_PASSWORD" );
+   qunsetenv( "US3_DB_PASSWORD" );
+
+   QString capture = root + "/stderr.txt";
+   fflush( stderr );
+   int     keep = dup( fileno( stderr ) );
+   FILE*   file = fopen( capture.toLocal8Bit().constData(), "w" );
+   ASSERT_NE( file, nullptr );
+   dup2( fileno( file ), fileno( stderr ) );
+
+   // A bundle that does not exist would be the error if inspect came first
+   int code = run( QStringList() << "--mode" << "import" << "--bundle"
+                   << root + "/no_such.tar.gz" << "--target" << "db"
+                   << "--non-interactive" );
+
+   fflush( stderr );
+   dup2( keep, fileno( stderr ) );
+   ::close( keep );
+   fclose( file );
+
+   if ( ! saved.isEmpty() )  qputenv( "US3_DB_PASSWORD", saved );
+
+   QFile   out( capture );
+   ASSERT_TRUE( out.open( QIODevice::ReadOnly ) );
+   QString text = QString::fromUtf8( out.readAll() );
+
+   EXPECT_EQ   ( code, 2 ) << text.toStdString();
+   EXPECT_EQ   ( text.count( "Error:" ), 1 ) << text.toStdString();
+   EXPECT_TRUE ( text.contains( "--db-password-file" ) ) << text.toStdString();
+   EXPECT_FALSE( text.contains( "no_such" ) ) << text.toStdString();
+}
+#endif
+
 TEST_F( DataPubCliImport, ADiskImportSucceedsAndAFailedOneSaysSo )
 {
    EXPECT_EQ( run( QStringList() << "--mode" << "import" << "--bundle"
@@ -1362,4 +1405,345 @@ TEST_F( DataPubCrafted, AnExtraPayloadWithoutADigestIsNotIntact )
       editEntity( m, US_DataPub::TimeState, []( US_DataPubEntity& e )
       { e.attrs.remove( "definitionsSha256" ); } );
    } ), "carries no digest" );
+}
+
+// ------------------------------------------- buffer components on disk
+
+class DataPubComponents : public DataPubCrafted
+{
+   protected:
+      US_BufferComponent salt;     // The component the fixture's buffer has
+      QString            table;    // A component table of this test's own
+
+      void SetUp() override
+      {
+         DataPubCrafted::SetUp();
+
+         // A component the exporter can describe; it reads the
+         // installation's table, and nothing here writes to that
+         QMap< QString, US_BufferComponent > installed;
+         US_BufferComponent::getAllFromHD( installed );
+         ASSERT_TRUE( installed.contains( "1" ) )
+            << "no local buffer component table";
+         salt = installed.value( "1" );
+
+         US_Buffer buffer;
+         QString   bpath = US_Settings::dataDir() + "/buffers/B0000001.xml";
+         ASSERT_TRUE( buffer.readFromDisk( bpath ) );
+         buffer.component     << salt;
+         buffer.componentIDs  << "1";
+         buffer.concentration << 150.0;
+         ASSERT_TRUE( buffer.writeToDisk( bpath ) );
+
+         US_DataPubExporter            exporter;
+         US_DataPubExporter::Selection selection;
+         selection.fromDb = false;
+         selection.scope  = US_DataPub::ScopeNoise;
+         selection.runIDs << runID;
+
+         QString error;
+         ASSERT_TRUE( exporter.exportBundle( selection, bundlePath, error ) )
+            << error.toStdString();
+
+         QDir().mkpath( root + "/etc" );
+         table = root + "/etc/bufferComponents.xml";
+      }
+
+      void writeTable( const QList< US_BufferComponent >& comps )
+      {
+         ASSERT_TRUE( US_DataPubRecords::writeBufferComponents( comps, table ) );
+      }
+
+      US_DataPubImporter::Options tableOptions()
+      {
+         US_DataPubImporter::Options options = diskOptions();
+         options.componentTable = table;
+         return options;
+      }
+
+      static QString installedTable()
+      {
+         return US_Settings::appBaseDir() + "/etc/bufferComponents.xml";
+      }
+};
+
+// A component the table has under another ID is named by that ID, and the
+// table is only read
+TEST_F( DataPubComponents, AComponentIsMappedToTheTablesOwnId )
+{
+   US_BufferComponent other = salt;
+   other.componentID = "3";
+   other.name        = salt.name + " (other)";
+   US_BufferComponent same = salt;
+   same.componentID  = "7";
+   writeTable( QList< US_BufferComponent >() << other << same );
+
+   QString tableHash     = US_DataPubHash::fileHash( table );
+   QString installedHash = US_DataPubHash::fileHash( installedTable() );
+
+   US_DataPubImporter importer;
+   QString            error;
+   ASSERT_TRUE( importer.inspect  ( bundlePath, error ) ) << error.toStdString();
+   ASSERT_TRUE( importer.runImport( tableOptions(), error ) )
+      << error.toStdString();
+
+   QStringList bufs = QDir( targetDir + "/data/buffers" ).entryList(
+                      QStringList( "B*.xml" ), QDir::Files );
+   ASSERT_EQ( bufs.size(), 1 );
+
+   US_Buffer imported;
+   ASSERT_TRUE( imported.readFromDisk( targetDir + "/data/buffers/"
+                                       + bufs[ 0 ] ) );
+   EXPECT_EQ( imported.componentIDs, QStringList() << "7" );
+
+   EXPECT_EQ( US_DataPubHash::fileHash( table ), tableHash );
+   EXPECT_EQ( US_DataPubHash::fileHash( installedTable() ), installedHash );
+}
+
+// A component the table lacks -- or has with another range or gradient
+// forming -- fails the import before anything is written, and the table is
+// not changed to make room for it
+TEST_F( DataPubComponents, AMissingComponentFailsTheImportUpFront )
+{
+   US_BufferComponent ranged = salt;
+   ranged.range = salt.range + " (other range)";
+   US_BufferComponent forming = salt;
+   forming.grad_form = ! salt.grad_form;
+   forming.componentID = "2";
+
+   QList< QList< US_BufferComponent > > tables;
+   tables << QList< US_BufferComponent >()
+          << ( QList< US_BufferComponent >() << ranged )
+          << ( QList< US_BufferComponent >() << forming );
+
+   QString installedHash = US_DataPubHash::fileHash( installedTable() );
+
+   for ( int ii = 0; ii < tables.size(); ii++ )
+   {
+      writeTable( tables[ ii ] );
+      QString tableHash = US_DataPubHash::fileHash( table );
+
+      US_DataPubImporter importer;
+      QString            error;
+      ASSERT_TRUE ( importer.inspect  ( bundlePath, error ) );
+      EXPECT_FALSE( importer.runImport( tableOptions(), error ) ) << ii;
+      EXPECT_TRUE ( error.contains( salt.name ) ) << error.toStdString();
+      EXPECT_TRUE ( error.contains( "does not change" ) ) << error.toStdString();
+      EXPECT_EQ   ( filesIn( targetDir ), 0 ) << ii;
+      EXPECT_EQ   ( US_DataPubHash::fileHash( table ), tableHash ) << ii;
+   }
+
+   EXPECT_EQ( US_DataPubHash::fileHash( installedTable() ), installedHash );
+}
+
+// A bundle of the older format names components by the exporter's IDs
+// alone; a buffer with components is refused before anything is written
+TEST_F( DataPubComponents, AnOldBundleWithComponentsIsRefusedUpFront )
+{
+   writeTable( QList< US_BufferComponent >() << salt );
+
+   expectImportFails( craft( "oldformat", [ & ]( US_DataPubManifest& m,
+                                                 const QString& )
+   {
+      editEntity( m, US_DataPub::Buffer, []( US_DataPubEntity& e )
+      {
+         e.attrs.remove( "componentsPayload" );
+         e.attrs.remove( "componentsSha256" );
+         e.attrs.remove( "components" );
+      } );
+   } ), "older bundle format" );
+}
+
+// ------------------------------------------- what a manifest may name
+
+// A GUID is a GUID: not any text, and not one with a newline after it
+TEST_F( DataPubCrafted, AManifestGuidMustBeAGuid )
+{
+   // Nothing depends on a noise record, so only the GUID check can see it
+   expectRefused( craft( "badguid", [ & ]( US_DataPubManifest& m,
+                                           const QString& )
+   {
+      editEntity( m, US_DataPub::Noise, []( US_DataPubEntity& e )
+      { e.guid = "not-a-guid"; } );
+   } ), "is not a GUID" );
+
+   expectRefused( craft( "nlguid", [ & ]( US_DataPubManifest& m,
+                                          const QString& )
+   {
+      editEntity( m, US_DataPub::Noise, [ & ]( US_DataPubEntity& e )
+      { e.guid = noiseGUID + "\n"; } );
+   } ), "is not a GUID" );
+}
+
+// ... and so is every GUID a payload names
+TEST_F( DataPubCrafted, APayloadGuidMustBeAGuid )
+{
+   expectImportFails( craft( "payloadguid", [ & ]( US_DataPubManifest& m,
+                                                   const QString& stage )
+   {
+      editPayload( m, stage, US_DataPub::Noise, modelGUID,
+                   QString( "model; drop table" ) );
+   } ), "not a GUID" );
+}
+
+// A run type is a few letters and digits, and nothing after them
+TEST_F( DataPubCrafted, ARunTypeWithATrailingNewlineIsRefused )
+{
+   expectRefused( craft( "runtype", [ & ]( US_DataPubManifest& m,
+                                           const QString& )
+   {
+      editEntity( m, US_DataPub::Experiment, []( US_DataPubEntity& e )
+      { e.attrs.insert( "runType", "RA\n" ); } );
+   } ), "unusable run type" );
+}
+
+// A digest is hexadecimal; its case means nothing
+TEST_F( DataPubCrafted, ADigestInCapitalsStillMatches )
+{
+   QString path = craft( "upper", [ & ]( US_DataPubManifest& m,
+                                         const QString& )
+   {
+      editEntity( m, US_DataPub::Buffer, []( US_DataPubEntity& e )
+      { e.sha256 = e.sha256.toUpper(); } );
+   } );
+   ASSERT_FALSE( path.isEmpty() );
+
+   US_DataPubImporter importer;
+   QString            error;
+   ASSERT_TRUE( importer.inspect( path, error ) ) << error.toStdString();
+   EXPECT_EQ  ( importer.verifyPayloads(), QStringList() );
+   EXPECT_TRUE( importer.runImport( diskOptions(), error ) )
+      << error.toStdString();
+}
+
+// A model names its edit; when the manifest does not tie it to one, the
+// edit still has to be in the bundle or the target
+TEST_F( DataPubCrafted, AModelsEditMustBeThereEvenWithoutADependency )
+{
+   QString nowhere = US_Util::new_guid();
+
+   expectImportFails( craft( "noedit", [ & ]( US_DataPubManifest& m,
+                                              const QString& stage )
+   {
+      editPayload( m, stage, US_DataPub::Model, editGUID, nowhere );
+      editEntity( m, US_DataPub::Model, []( US_DataPubEntity& e )
+      {
+         QList< QString > keys = e.depends.keys();
+
+         for ( int ii = 0; ii < keys.size(); ii++ )
+            if ( US_DataPubEntity::dependType( keys[ ii ] )
+                 == US_DataPub::EditedData )
+               e.depends.remove( keys[ ii ] );
+      } );
+   } ), nowhere );
+}
+
+// ------------------------------------------- the order of the records
+
+static int indexIn( const QList< US_DataPub::EntityType >& order,
+                    US_DataPub::EntityType type )
+{
+   return order.indexOf( type );
+}
+
+// The order follows the dependencies of the target and of the records
+TEST( DataPubImportOrder, TheOrderFollowsTheDependencies )
+{
+   US_DataPubManifest mani;
+   QString            error;
+
+   QList< US_DataPub::EntityType > disk =
+         US_DataPubImporter::importOrder( mani, US_DataPub::TargetDisk, error );
+   QList< US_DataPub::EntityType > db =
+         US_DataPubImporter::importOrder( mani, US_DataPub::TargetDb, error );
+
+   // A disk store's run XML names its solutions; a database's solution is
+   // created with its run's ID
+   EXPECT_LT( indexIn( disk, US_DataPub::Solution ),
+              indexIn( disk, US_DataPub::Experiment ) );
+   EXPECT_LT( indexIn( db,   US_DataPub::Experiment ),
+              indexIn( db,   US_DataPub::Solution ) );
+
+   QList< US_DataPub::EntityType > dbOrder;
+   dbOrder << US_DataPub::Project    << US_DataPub::RotorCalibration
+           << US_DataPub::Centerpiece << US_DataPub::Buffer
+           << US_DataPub::Analyte    << US_DataPub::Experiment
+           << US_DataPub::Solution   << US_DataPub::RawData
+           << US_DataPub::TimeState  << US_DataPub::EditedData
+           << US_DataPub::Model      << US_DataPub::Noise;
+   EXPECT_EQ( db, dbOrder );
+
+   for ( int pass = 0; pass < 2; pass++ )
+   {
+      const QList< US_DataPub::EntityType >& order = pass ? db : disk;
+
+      EXPECT_LT( indexIn( order, US_DataPub::Buffer ),
+                 indexIn( order, US_DataPub::Solution ) );
+      EXPECT_LT( indexIn( order, US_DataPub::RawData ),
+                 indexIn( order, US_DataPub::EditedData ) );
+      EXPECT_LT( indexIn( order, US_DataPub::EditedData ),
+                 indexIn( order, US_DataPub::Model ) );
+      EXPECT_LT( indexIn( order, US_DataPub::Model ),
+                 indexIn( order, US_DataPub::Noise ) );
+   }
+
+   // A dependency only the records name is followed too: here a project
+   // that names a buffer, which no fixed list would put first
+   US_DataPubEntity buffer( US_DataPub::Buffer );
+   buffer.guid = US_Util::new_guid();
+   US_DataPubEntity project( US_DataPub::Project );
+   project.guid = US_Util::new_guid();
+   project.setDepend( US_DataPub::Buffer, buffer.guid );
+   mani.add( buffer );
+   mani.add( project );
+
+   disk = US_DataPubImporter::importOrder( mani, US_DataPub::TargetDisk,
+                                           error );
+   EXPECT_LT( indexIn( disk, US_DataPub::Buffer ),
+              indexIn( disk, US_DataPub::Project ) ) << error.toStdString();
+
+   // ... and one that goes round in a circle has no order at all
+   US_DataPubEntity circle( US_DataPub::Buffer );
+   circle.guid = US_Util::new_guid();
+   circle.setDepend( US_DataPub::Project, project.guid );
+   mani.add( circle );
+
+   EXPECT_TRUE( US_DataPubImporter::importOrder( mani, US_DataPub::TargetDb,
+                                                 error ).isEmpty() );
+   EXPECT_TRUE( error.contains( "circle" ) ) << error.toStdString();
+}
+
+// ------------------------------------------- the import tab's rules
+
+// The end of an import or an inspection leaves the chosen project alone;
+// only a real change of target clears it
+TEST( DataPubImportState, OnlyAChangeOfTargetClearsTheProject )
+{
+   US_DataPubImportState state( true );
+   QString               guid = US_Util::new_guid();
+
+   state.setProject( guid, "Mine" );
+   state.setInspected( true );
+
+   state.setBusy( true );
+   EXPECT_FALSE( state.controlsEnabled() );
+   EXPECT_FALSE( state.importEnabled() );
+   EXPECT_FALSE( state.outputDirEnabled() );
+
+   state.setBusy( false );
+   EXPECT_EQ  ( state.projectGUID(), guid );
+   EXPECT_TRUE( state.controlsEnabled() );
+   EXPECT_TRUE( state.importEnabled() );
+
+   EXPECT_FALSE( state.setTarget( true ) );      // the same target
+   EXPECT_EQ   ( state.projectGUID(), guid );
+   EXPECT_FALSE( state.outputDirEnabled() );
+
+   EXPECT_TRUE ( state.setTarget( false ) );     // the other target
+   EXPECT_TRUE ( state.projectGUID().isEmpty() );
+   EXPECT_TRUE ( state.outputDirEnabled() );
+
+   EXPECT_FALSE( state.setTarget( true ) );      // nothing left to clear
+   state.setInspected( false );
+   EXPECT_FALSE( state.importEnabled() );
 }

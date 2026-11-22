@@ -30,6 +30,7 @@
 #include "us_datapub_export.h"
 #include "us_datapub_import.h"
 #include "us_datapub_manifest.h"
+#include "us_datapub_hash.h"
 #include "us_db2.h"
 #include "us_crypto.h"
 #include "us_settings.h"
@@ -879,6 +880,77 @@ class DataPubMockImport : public DataPubTestEnv
          return knt;
       }
 
+      /* Every file under a directory, with its digest and modification
+         time.  The times are first set back to a fixed moment, so that a
+         file written again -- even with the same content, even within the
+         same second -- shows up as changed.
+      */
+      static QMap< QString, QString > snapshot( const QString& dir )
+      {
+         static const QDateTime past( QDate( 2001, 2, 3 ), QTime( 4, 5, 6 ),
+                                      Qt::UTC );
+         QMap< QString, QString > files;
+         QDirIterator it( dir, QDir::Files, QDirIterator::Subdirectories );
+
+         while ( it.hasNext() )
+         {
+            QString path = it.next();
+            QFile   file( path );
+
+            if ( file.open( QIODevice::ReadWrite ) )
+            {
+               file.setFileTime( past, QFileDevice::FileModificationTime );
+               file.close();
+            }
+
+            files.insert( QDir( dir ).relativeFilePath( path ),
+                          state( path ) );
+         }
+
+         return files;
+      }
+
+      // The digest and modification time of every file, as they are now
+      static QMap< QString, QString > current( const QString& dir )
+      {
+         QMap< QString, QString > files;
+         QDirIterator it( dir, QDir::Files, QDirIterator::Subdirectories );
+
+         while ( it.hasNext() )
+         {
+            QString path = it.next();
+            files.insert( QDir( dir ).relativeFilePath( path ), state( path ) );
+         }
+
+         return files;
+      }
+
+      static QString state( const QString& path )
+      {
+         return US_DataPubHash::fileHash( path ) + " "
+                + QString::number( QFileInfo( path ).lastModified()
+                                   .toMSecsSinceEpoch() );
+      }
+
+      // The files of the local disk store that an import changed or added
+      static QStringList changedFiles( const QMap< QString, QString >& before,
+                                       const QMap< QString, QString >& after )
+      {
+         QStringList changed;
+         QList< QString > keys = after.keys();
+
+         for ( int ii = 0; ii < keys.size(); ii++ )
+            if ( before.value( keys[ ii ] ) != after.value( keys[ ii ] ) )
+               changed << keys[ ii ];
+
+         keys = before.keys();
+
+         for ( int ii = 0; ii < keys.size(); ii++ )
+            if ( ! after.contains( keys[ ii ] ) )  changed << keys[ ii ];
+
+         return changed;
+      }
+
       US_DataPub::Resolution resolutionOf(
             const QList< US_DataPubImporter::Result >& results,
             US_DataPub::EntityType type )
@@ -892,8 +964,9 @@ class DataPubMockImport : public DataPubTestEnv
 
 TEST_F( DataPubMockImport, TheWholeImportIsOneTransactionCommittedAtTheEnd )
 {
-   int dataFiles   = filesUnder( US_Settings::dataDir() );
-   int resultFiles = filesUnder( US_Settings::resultDir() );
+   // Every file of the local disk store, by content and time
+   QMap< QString, QString > dataBefore   = snapshot( US_Settings::dataDir() );
+   QMap< QString, QString > resultBefore = snapshot( US_Settings::resultDir() );
 
    US_DataPubImporter importer;
    QString            error;
@@ -925,6 +998,14 @@ TEST_F( DataPubMockImport, TheWholeImportIsOneTransactionCommittedAtTheEnd )
    EXPECT_EQ( fake.callsOf( "new_model" ).size(), 1 );
    EXPECT_EQ( fake.callsOf( "new_noise" ).size(), 1 );
 
+   // The buffer and the analyte went in through their procedures
+   EXPECT_EQ( fake.callsOf( "new_buffer"  ).size(), 1 );
+   EXPECT_EQ( fake.callsOf( "new_analyte" ).size(), 1 );
+
+   // An edit is stored as us_edit and us_import_run store one: no comment
+   ASSERT_EQ( fake.callsOf( "new_editedData" ).size(), 1 );
+   EXPECT_EQ( fake.callsOf( "new_editedData" )[ 0 ].value( 5 ), QString() );
+
    // The speed profile of the run came along
    EXPECT_EQ( fake.callsOf( "new_speedstep" ).size(), 2 );
 
@@ -939,9 +1020,13 @@ TEST_F( DataPubMockImport, TheWholeImportIsOneTransactionCommittedAtTheEnd )
    ASSERT_EQ( fake.callsOf( "new_solution" ).size(), 1 );
    EXPECT_EQ( fake.callsOf( "new_solution" )[ 0 ].value( 6 ), expID );
 
-   // The local disk store was left alone
-   EXPECT_EQ( filesUnder( US_Settings::dataDir()   ), dataFiles   );
-   EXPECT_EQ( filesUnder( US_Settings::resultDir() ), resultFiles );
+   // The local disk store was left alone: no file was added, removed or
+   // written again, not even with the same content
+   EXPECT_EQ( changedFiles( dataBefore, current( US_Settings::dataDir() ) ),
+              QStringList() );
+   EXPECT_EQ( changedFiles( resultBefore,
+                            current( US_Settings::resultDir() ) ),
+              QStringList() );
    EXPECT_FALSE( fake.log.contains( "get_lab_names" )
                  &&  QFile::exists( US_Settings::dataDir()
                                     + "/rotors/labs.xml" ) );
@@ -1140,7 +1225,7 @@ TEST_F( DataPubMockImport, ADryRunWritesNothing )
 // under a usable new ID, and its raw data and edit are filed under it
 TEST_F( DataPubMockImport, ARunOfATakenIdIsRenamedWithItsData )
 {
-   fake.experiments.insert( 50, qMakePair( US_Util::new_guid(), runID ) );
+   fake.addExperiment( 50, US_Util::new_guid(), runID );
 
    US_DataPubImporter importer;
    QString            error;
@@ -1175,7 +1260,7 @@ TEST_F( DataPubMockImport, ARunOfATakenIdIsRenamedWithItsData )
 // looks an experiment up by its GUID
 TEST_F( DataPubMockImport, TheSameRunIsRecognisedByItsGuid )
 {
-   fake.experiments.insert( 50, qMakePair( expGUID, QString( "renamed_before" ) ) );
+   fake.addExperiment( 50, expGUID, QString( "renamed_before" ) );
 
    US_DataPubImporter importer;
    QString            error;
@@ -1314,4 +1399,254 @@ TEST_F( DataPubMockExtras, AnRiProfileIsStoredWithTheRun )
    QString stored = fake.callsOf( "new_experiment" )[ 0 ].value( 11 );
    EXPECT_TRUE( stored.contains( "<RI value=\"1.5\"" ) ) << stored.toStdString();
    EXPECT_TRUE( stored.contains( "<RI value=\"1.25\"" ) ) << stored.toStdString();
+}
+
+// A row of the target's component table that does not parse has nothing to
+// do with this bundle's buffers: it is skipped, not taken for a failure
+TEST_F( DataPubMockExtras, AnUnparseableComponentRowIsSkipped )
+{
+   exportWithComponent();
+
+   QVariantList bad = componentRow( component );
+   bad[ 2 ] = QString( "1.0 2.0 3.0 4.0 5.0" );    // five viscosity terms
+
+   fake.canned.insert( "get_buffer_component_desc", QList< QVariantList >()
+                       << ( QVariantList() << 41 ) << ( QVariantList() << 42 ) );
+   fake.cannedFor.insert( "get_buffer_component_info:41",
+                          QList< QVariantList >() << bad );
+   fake.cannedFor.insert( "get_buffer_component_info:42",
+                          QList< QVariantList >() << componentRow( component ) );
+
+   US_DataPubImporter importer;
+   QString            error;
+   ASSERT_TRUE( importOnce( importer, error, dbOptions() ) )
+      << error.toStdString();
+
+   EXPECT_EQ( fake.callsOf( "create_buffer_component" ).size(), 0 );
+   ASSERT_EQ( fake.callsOf( "add_buffer_component" ).size(), 1 );
+   EXPECT_EQ( fake.callsOf( "add_buffer_component" )[ 0 ].value( 2 ), "42" );
+   EXPECT_TRUE( importer.log().join( "\n" ).contains( "component 41" ) )
+      << importer.log().join( "\n" ).toStdString();
+}
+
+// The extinction spectra of a buffer and an analyte go in with them.  The
+// library writers store a spectrum only when told it is new, which one read
+// from a file is not, so the import writes the profiles itself.
+TEST_F( DataPubMockExtras, ExtinctionSpectraGoInWithTheirRecords )
+{
+   US_Buffer buffer;
+   QString   bpath = US_Settings::dataDir() + "/buffers/B0000001.xml";
+   ASSERT_TRUE( buffer.readFromDisk( bpath ) );
+   buffer.extinction[ 280.0 ] = 0.25;
+   buffer.extinction[ 230.0 ] = 1.5;
+   ASSERT_TRUE( buffer.writeToDisk( bpath ) );
+
+   US_Analyte analyte;
+   QString    apath = US_Settings::dataDir() + "/analytes/A0000001.xml";
+   ASSERT_EQ( analyte.readFromFile( apath ), IUS_DB2::OK );
+   analyte.extinction[ 280.0 ] = 43824.0;
+   ASSERT_EQ( analyte.write( false, apath ), IUS_DB2::OK );
+
+   reexport();
+
+   US_DataPubImporter importer;
+   QString            error;
+   ASSERT_TRUE( importOnce( importer, error, dbOptions() ) )
+      << error.toStdString();
+
+   QString bufID = QString::number( fake.registry[ "buffer"  ].value( bufferGUID ) );
+   QString anaID = QString::number( fake.registry[ "analyte" ].value( analyteGUID ) );
+   QList< QStringList > profiles = fake.callsOf( "new_eprofile" );
+
+   ASSERT_EQ( profiles.size(), 2 );
+
+   QMap< QString, QStringList > byType;
+
+   for ( int ii = 0; ii < profiles.size(); ii++ )
+      byType.insert( profiles[ ii ].value( 2 ), profiles[ ii ] );
+
+   ASSERT_TRUE( byType.contains( "Buffer"  ) );
+   ASSERT_TRUE( byType.contains( "Analyte" ) );
+   EXPECT_EQ  ( byType[ "Buffer"  ].value( 1 ), bufID );
+   EXPECT_EQ  ( byType[ "Analyte" ].value( 1 ), anaID );
+   EXPECT_TRUE( byType[ "Buffer"  ].value( 4 ).contains( "230" ) )
+      << byType[ "Buffer" ].value( 4 ).toStdString();
+   EXPECT_TRUE( byType[ "Analyte" ].value( 4 ).contains( "280" ) )
+      << byType[ "Analyte" ].value( 4 ).toStdString();
+
+   // ... inside the one transaction
+   EXPECT_EQ( fake.commits, 1 );
+   EXPECT_EQ( fake.callsInTransaction( "new_eprofile" ), 2 );
+}
+
+// The runs are looked up before the transaction opens: by run ID first,
+// and the investigator's whole experiment list only for a run that leaves
+// open -- never one query per experiment inside the transaction
+TEST_F( DataPubMockImport, TheRunsAreLookedUpBeforeTheTransaction )
+{
+   // Some runs of the investigator's own, and one of someone else's
+   for ( int ii = 0; ii < 5; ii++ )
+      fake.addExperiment( 60 + ii, US_Util::new_guid(),
+                          QString( "other_run_%1" ).arg( ii ) );
+   fake.addExperiment( 70, US_Util::new_guid(), "foreign_run", 9 );
+
+   QStringList lookups;
+   lookups << "get_experiment_desc" << "get_experiment_info"
+           << "get_experiment_info_by_runID";
+
+   US_DataPubImporter first;
+   QString            error;
+   ASSERT_TRUE( importOnce( first, error, dbOptions() ) )
+      << error.toStdString();
+
+   for ( int ii = 0; ii < lookups.size(); ii++ )
+      EXPECT_EQ( fake.callsInTransaction( lookups[ ii ] ), 0 )
+         << lookups[ ii ].toStdString();
+
+   // A new run is not in the list: it was read once, before the writes
+   EXPECT_EQ( fake.callsOf( "get_experiment_desc" ).size(), 1 );
+   EXPECT_EQ( fake.callsOf( "get_experiment_info" ).size(), 5 );
+
+   // The second time the run ID finds the run: no listing at all
+   int start = fake.log.size();
+
+   US_DataPubImporter second;
+   ASSERT_TRUE( importOnce( second, error, dbOptions() ) )
+      << error.toStdString();
+
+   QStringList after = fake.log.mid( start );
+   EXPECT_EQ( after.count( "get_experiment_info_by_runID" ), 1 );
+   EXPECT_EQ( after.count( "get_experiment_desc" ), 0 );
+   EXPECT_EQ( after.count( "get_experiment_info" ), 0 );
+
+   for ( int ii = 0; ii < lookups.size(); ii++ )
+      EXPECT_EQ( fake.callsInTransaction( lookups[ ii ] ), 0 )
+         << lookups[ ii ].toStdString();
+
+   EXPECT_EQ( resolutionOf( second.results(), US_DataPub::Experiment ),
+              US_DataPub::ResolvedReused );
+}
+
+// A run that another investigator holds is not imported again beside it,
+// and nothing is attached to their records
+TEST_F( DataPubMockImport, ARunOfAnotherInvestigatorIsRefused )
+{
+   fake.addExperiment( 50, expGUID, runID, 9 );
+   fake.addRecord( "rawData", rawGUID, 51, 9 );
+
+   US_DataPubImporter importer;
+   QString            error;
+
+   EXPECT_FALSE( importOnce( importer, error, dbOptions() ) );
+   EXPECT_TRUE ( error.contains( "another investigator" ) )
+      << error.toStdString();
+   EXPECT_EQ   ( fake.begins, 0 );
+   EXPECT_EQ   ( fake.callsOf( "new_experiment" ).size(), 0 );
+   EXPECT_EQ   ( fake.writes(), 0 );
+}
+
+// One the import cannot see at all still never gets a second experiment of
+// its GUID: the database refuses it and the whole import is rolled back
+TEST_F( DataPubMockImport, AnotherInvestigatorsRunIsNeverDuplicated )
+{
+   fake.addExperiment( 50, expGUID, "their_name", 9 );
+
+   US_DataPubImporter importer;
+   QString            error;
+
+   EXPECT_FALSE( importOnce( importer, error, dbOptions() ) );
+   EXPECT_EQ   ( fake.rollbacks, 1 );
+   EXPECT_EQ   ( fake.state.experiments.size(), 1 );
+   EXPECT_EQ   ( fake.state.experiments.value( 50 ).owner, 9 );
+   EXPECT_FALSE( fake.registry[ "buffer" ].contains( bufferGUID ) )
+      << "the rollback left a buffer behind";
+}
+
+// A run the target already has is not added to: not even a solution
+TEST_F( DataPubMockImport, ASolutionIsNotAddedToARunTheTargetHad )
+{
+   fake.addExperiment( 50, expGUID, runID );
+
+   US_DataPubImporter importer;
+   QString            error;
+
+   EXPECT_FALSE( importOnce( importer, error, dbOptions() ) );
+   EXPECT_TRUE ( error.contains( "does not add a solution" ) )
+      << error.toStdString();
+   EXPECT_EQ   ( fake.callsOf( "new_solution" ).size(), 0 );
+   EXPECT_EQ   ( fake.commits, 0 );
+
+   // ... and a dry run says so too, rather than promise a solution
+   US_DataPubImporter          dry;
+   US_DataPubImporter::Options options = dbOptions();
+   options.dryRun = true;
+
+   EXPECT_FALSE( importOnce( dry, error, options ) );
+   EXPECT_TRUE ( error.contains( "does not add a solution" ) )
+      << error.toStdString();
+}
+
+// A listing that fails is a failed lookup, never an empty one
+TEST_F( DataPubMockImport, AFailedHardwareListingFailsTheImport )
+{
+   QStringList procs;
+   procs << "get_rotor_calibration_profiles" << "get_rotor_names"
+         << "get_abstractCenterpiece_names" << "get_abstractCenterpiece_info"
+         << "get_instrument_names";
+
+   for ( int ii = 0; ii < procs.size(); ii++ )
+   {
+      DataPubFakeDb broken;
+      broken.addHardware( "DEMO-1" );
+      broken.failOn = procs[ ii ];
+
+      US_DataPubImporter importer;
+      importer.setDatabase( broken.db() );
+      QString            error;
+
+      ASSERT_TRUE ( importer.inspect( bundlePath, error ) );
+      EXPECT_FALSE( importer.runImport( dbOptions(), error ) )
+         << procs[ ii ].toStdString();
+      EXPECT_TRUE ( error.contains( "could not be asked" ) )
+         << procs[ ii ].toStdString() << ": " << error.toStdString();
+      EXPECT_EQ   ( broken.commits, 0 ) << procs[ ii ].toStdString();
+   }
+}
+
+// A failed import leaves nothing in the database, and what was uploaded in
+// a successful one is the bytes of the bundle's files
+TEST_F( DataPubMockImport, TheDatabaseHoldsWhatWasCommittedAndNothingElse )
+{
+   {
+      DataPubFakeDb broken;
+      broken.addHardware( "DEMO-1" );
+      broken.failOn = "new_noise";
+
+      US_DataPubImporter importer;
+      importer.setDatabase( broken.db() );
+      QString            error;
+
+      ASSERT_TRUE ( importer.inspect( bundlePath, error ) );
+      EXPECT_FALSE( importer.runImport( dbOptions(), error ) );
+      EXPECT_GT   ( broken.callsOf( "new_buffer" ).size(), 0 );
+      EXPECT_TRUE ( broken.registry.value( "buffer" ).isEmpty() );
+      EXPECT_TRUE ( broken.registry.value( "rawData" ).isEmpty() );
+      EXPECT_TRUE ( broken.state.experiments.isEmpty() );
+      EXPECT_TRUE ( broken.state.blobs.isEmpty() );
+   }
+
+   US_DataPubImporter importer;
+   QString            error;
+   ASSERT_TRUE( importOnce( importer, error, dbOptions() ) )
+      << error.toStdString();
+
+   QFile raw( runDir() + "/" + rawFile );
+   ASSERT_TRUE( raw.open( QIODevice::ReadOnly ) );
+   QByteArray bytes = raw.readAll();
+   raw.close();
+
+   QString key = "upload_aucData:" + QString::number(
+                 fake.registry[ "rawData" ].value( rawGUID ) );
+   ASSERT_TRUE( fake.state.blobs.contains( key ) ) << key.toStdString();
+   EXPECT_EQ  ( fake.state.blobs.value( key ), bytes );
 }

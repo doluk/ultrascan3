@@ -12,6 +12,68 @@
 #include "us_convertio.h"
 #include "us_project.h"
 #include "us_buffer.h"
+#include "us_rotor.h"
+#include "us_hardware.h"
+
+/*! \class US_DataPubImportState
+    \brief What the import tab lets the user do, apart from the widgets
+
+    The tab's controls follow a little state: the target (database or disk),
+    whether a bundle has been inspected, whether an import or an inspection
+    is running, and the project the runs are to be attached to.  It is kept
+    here, without a widget in sight, so that the rules can be tested: a
+    project is chosen from one target's list and means nothing in the
+    other, so switching the target clears it -- but nothing else does, and
+    in particular not the end of an import or an inspection.
+*/
+class US_DataPubImportState
+{
+   public:
+      //! \brief A state for the given target, idle, with nothing inspected
+      //! \param db True for the database, false for a disk store
+      explicit US_DataPubImportState( bool db = true );
+
+      /*! \brief The user picked a target
+          \param db True for the database, false for a disk store
+          \returns True when this cleared a chosen project, which happens
+                   only when the target really changed
+      */
+      bool    setTarget  ( bool db );
+
+      //! \brief An import or an inspection started (true) or ended (false)
+      void    setBusy    ( bool busy );
+
+      //! \brief A bundle was inspected (true) or is no longer (false)
+      void    setInspected( bool inspected );
+
+      //! \brief The project the runs are attached to
+      void    setProject ( const QString& guid, const QString& desc );
+
+      //! \brief Let the bundle decide the project again
+      void    clearProject( void );
+
+      bool    db         ( void ) const;   //!< The database is the target
+      bool    busy       ( void ) const;   //!< Something is running
+      bool    inspected  ( void ) const;   //!< A bundle has been inspected
+      QString projectGUID( void ) const;   //!< The chosen project, or empty
+      QString projectDesc( void ) const;   //!< Its description, or empty
+
+      //! \brief The controls that change the bundle, target or options
+      bool    controlsEnabled ( void ) const;
+
+      //! \brief The import button
+      bool    importEnabled   ( void ) const;
+
+      //! \brief The disk target folder, which a database import has not
+      bool    outputDirEnabled( void ) const;
+
+   private:
+      bool    is_db;
+      bool    is_busy;
+      bool    is_inspected;
+      QString proj_guid;
+      QString proj_desc;
+};
 
 /*! \class US_DataPubConflictResolver
     \brief Asked what to do when an import runs into a name conflict
@@ -68,9 +130,14 @@ class US_DataPubConflictResolver
 
     A database import runs in one transaction on one connection: it is
     committed only when every record is in, and rolled back on any failure.
-    It writes nothing outside the bundle's own staging directory.  A disk
-    import writes files as it goes; on a failure the files already written
-    stay, and \ref outcome lists them.
+    Every target lookup that can be made in advance -- the bundle's runs
+    among them -- is made before the transaction opens.  The import writes
+    the records with the procedures the library writers use, but never the
+    copy in the local disk store some of those writers make, so it writes
+    nothing outside the bundle's own staging directory.  A disk import
+    writes files as it goes; on a failure the files already written stay,
+    and \ref outcome lists them.  It never changes the installation's
+    buffer component table: a buffer's components have to be in it already.
 */
 class US_DataPubImporter : public QObject
 {
@@ -123,6 +190,15 @@ class US_DataPubImporter : public QObject
                 warning.
             */
             bool    strictHardware;
+
+            /*! The buffer component table a disk import maps components
+                to; empty for the installation's own
+                etc/bufferComponents.xml, which is where US_Buffer looks a
+                component up whatever data directory it reads.  The import
+                only reads it: a component it lacks fails the import before
+                anything is written.
+            */
+            QString componentTable;
 
             //! \brief The policy that applies to one record type
             //! \param type The record type to look up
@@ -226,6 +302,29 @@ class US_DataPubImporter : public QObject
       //!        including the ones this importer adds
       static QString resolutionText( US_DataPub::Resolution resolution );
 
+      /*! \brief The order the record types of a bundle are replayed in
+
+          A type comes after every type it depends on in the target.  The
+          dependencies are those of the target -- in a database a solution
+          is created with the ID of its run, so the run goes first; in a disk
+          store the run's experiment XML names its solutions, so they go
+          first -- together with every dependency the manifest's records
+          name, apart from a solution's on its run in a disk store.
+          \param manifest The manifest of the bundle
+          \param target   Where the bundle is imported to
+          \param error    Filled in when the dependencies form a cycle
+          \returns Every record type, dependencies first; empty on a cycle
+      */
+      static QList< US_DataPub::EntityType > importOrder(
+            const US_DataPubManifest& manifest, US_DataPub::Target target,
+            QString& error );
+
+      /*! \brief True when a text is a GUID: 36 characters, hexadecimal
+          digits in groups of 8-4-4-4-12 and nothing else, not even a
+          trailing newline
+      */
+      static bool guidIsUsable( const QString& guid );
+
    signals:
       //! \brief A human readable note about the import's progress
       //! \param message The note
@@ -297,7 +396,46 @@ class US_DataPubImporter : public QObject
       QMap< QString, US_BufferComponent > tcomps;
       bool                       tcomps_read;
 
+      //! The component definitions each bundle buffer carries, read in the
+      //! preflight: buffer GUID -> component ID -> definition
+      QMap< QString, QMap< QString, US_BufferComponent > > comp_defs;
+
+      //! True once the bundle's experiments were looked up in the target
+      bool                       exp_resolved;
+
+      //! What the target's run ID lookup said: run ID -> ( ID, GUID ) of the
+      //! investigator's run of that ID, both empty when there is none
+      QHash< QString, QPair< QString, QString > > run_lookup;
+
       bool    targetComponents( QString& error );
+
+      //! \brief Read and check the component definitions of a buffer, and on
+      //!        a disk target that the installation has every one of them
+      bool    checkComponents ( const US_DataPubEntity&,
+                                const US_Buffer& buffer, QString& error );
+
+      /*! \brief Look the bundle's experiments up in the target database
+
+          By run ID first, which is one query per run and settles a run the
+          investigator already has; then, only for a run that settles
+          nothing, in the investigator's whole experiment list.  A run the
+          investigator does not have but whose raw data the database holds
+          belongs to someone else, and is refused.  Done before the
+          transaction opens, so no lookup runs inside it.
+      */
+      bool    resolveExperiments( QString& error );
+
+      //! \brief Every rotor calibration of the target database; false, with
+      //!        the lookup error set, when any of the listings fails
+      bool    readCalibrationsDb( QVector< US_Rotor::RotorCalibration >& );
+
+      //! \brief The target's centerpieces; false, with the lookup error set,
+      //!        when they cannot be read.  A database's are read from the
+      //!        database alone, never from the local fallback file.
+      bool    readCenterpieces( QList< US_AbstractCenterpiece >& );
+
+      //! \brief Record that a lookup failed, whatever the last status says
+      void    failLookup( const QString& what );
       bool    mapComponents   ( const US_DataPubEntity&, const QString& workPath,
                                 bool create, QString& error );
 
@@ -422,7 +560,6 @@ class US_DataPubImporter : public QObject
       bool    diskFilePresent( const US_DataPubEntity& entity, QString& path,
                                bool& identical );
 
-      QList< US_DataPub::EntityType > importOrder( void ) const;
       QString runIdFor    ( const US_DataPubEntity& ) const;
       QString renamedFile ( const US_DataPubEntity& ) const;
       bool    resolveHardware( US_Experiment&, const US_DataPubEntity&,

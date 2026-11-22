@@ -113,8 +113,6 @@ void US_DataPubConflictDialog::chose_cancel( void )
 US_DataPubImportPane::US_DataPubImportPane( QWidget* parent )
    : US_Widgets( true, parent )
 {
-   inspected     = false;
-   importing     = false;
    was_cancelled = false;
 
    setPalette( US_GuiSettings::frameColor() );
@@ -125,6 +123,7 @@ US_DataPubImportPane::US_DataPubImportPane( QWidget* parent )
 
    dkdb_cntrls = new US_Disk_DB_Controls(
                  US_Settings::default_data_location() );
+   state       = US_DataPubImportState( dkdb_cntrls->db() );
    connect( dkdb_cntrls, &US_Disk_DB_Controls::changed,
             this,        &US_DataPubImportPane::target_changed );
    main->addWidget( us_banner( tr( "Import data into" ) ) );
@@ -254,37 +253,37 @@ US_DataPubImportPane::US_DataPubImportPane( QWidget* parent )
             this,      &US_DataPubImportPane::importer_step );
 
    importer.setResolver( this );
+   refreshControls();
 }
 
 void US_DataPubImportPane::target_changed( bool db )
 {
-   pb_outdir->setEnabled( ! db );
-   le_outdir->setEnabled( ! db );
-
    // A project was chosen from the other target's list; it means nothing in
-   // this one
-   if ( ! project_guid.isEmpty() )
+   // this one.  Only a real change of target clears it.
+   if ( state.setTarget( db ) )
    {
-      clear_project();
+      le_project->clear();
       te_status->append( tr( "The chosen project belongs to the other target"
                              " and was cleared" ) );
    }
+
+   refreshControls();
 }
 
 // A bundle path typed after an inspection is not the bundle inspected
 void US_DataPubImportPane::bundle_edited( const QString& )
 {
-   if ( ! inspected )  return;
+   if ( ! state.inspected() )  return;
 
-   inspected = false;
-   pb_import->setEnabled( false );
+   state.setInspected( false );
+   refreshControls();
    tw_bundle->clear();
    le_summary->setText( tr( "No bundle inspected" ) );
 }
 
 bool US_DataPubImportPane::isBusy( void ) const
 {
-   return importing;
+   return state.busy();
 }
 
 bool US_DataPubImportPane::cancelled( void ) const
@@ -299,13 +298,27 @@ bool US_DataPubImportPane::cancelled( void ) const
 */
 void US_DataPubImportPane::setBusy( bool on )
 {
-   importing = on;
+   if ( on == state.busy() )  return;
+
+   state.setBusy( on );
+   refreshControls();
+
+   emit busyChanged( on );
+}
+
+/* What the controls allow, from the state alone.  This is all the end of
+   an import or an inspection does: it does not go through target_changed(),
+   which would take the end of every import for a change of target and
+   clear the chosen project.
+*/
+void US_DataPubImportPane::refreshControls( void )
+{
+   bool idle = state.controlsEnabled();
 
    QList< QWidget* > widgets;
-   widgets << pb_browse << pb_inspect << pb_outdir << pb_project
-           << pb_clearproj << pb_details << pb_reset << pb_import
-           << le_bundle << le_outdir << cb_policy << ck_dryrun << ck_verify
-           << ck_prompt << tw_bundle;
+   widgets << pb_browse << pb_inspect << pb_project << pb_clearproj
+           << pb_details << pb_reset << le_bundle << cb_policy << ck_dryrun
+           << ck_verify << ck_prompt << tw_bundle;
 
    for ( int ii = 0; ii < dkdb_cntrls->count(); ii++ )
    {
@@ -315,14 +328,11 @@ void US_DataPubImportPane::setBusy( bool on )
    }
 
    for ( int ii = 0; ii < widgets.size(); ii++ )
-      widgets[ ii ]->setEnabled( ! on );
+      widgets[ ii ]->setEnabled( idle );
 
-   if ( ! on )
-   {
-      target_changed( dkdb_cntrls->db() );
-      pb_import->setEnabled( inspected );
-   }
-
+   pb_outdir->setEnabled( state.outputDirEnabled() );
+   le_outdir->setEnabled( state.outputDirEnabled() );
+   pb_import->setEnabled( state.importEnabled() );
 }
 
 void US_DataPubImportPane::browse_bundle( void )
@@ -347,11 +357,11 @@ void US_DataPubImportPane::browse_bundle( void )
 */
 void US_DataPubImportPane::select_project( void )
 {
-   if ( importing )  return;
+   if ( state.busy() )  return;
 
-   int state = dkdb_cntrls->db() ? US_Disk_DB_Controls::DB
+   int where = dkdb_cntrls->db() ? US_Disk_DB_Controls::DB
                                  : US_Disk_DB_Controls::Disk;
-   US_ProjectGui* dialog = new US_ProjectGui( true, state );
+   US_ProjectGui* dialog = new US_ProjectGui( true, where );
 
    connect( dialog, &US_ProjectGui::updateProjectGuiSelection,
             this,   &US_DataPubImportPane::project_chosen );
@@ -364,20 +374,18 @@ void US_DataPubImportPane::select_project( void )
 
 void US_DataPubImportPane::project_chosen( US_Project& project )
 {
-   project_guid = project.projectGUID;
-   project_desc = project.projectDesc;
+   state.setProject( project.projectGUID, project.projectDesc );
 
-   le_project->setText( QString( "%1  [%2]" ).arg( project_desc )
-                        .arg( project_guid ) );
+   le_project->setText( QString( "%1  [%2]" ).arg( state.projectDesc() )
+                        .arg( state.projectGUID() ) );
 
    emit status( tr( "The imported runs will be attached to \"%1\"" )
-                .arg( project_desc ) );
+                .arg( state.projectDesc() ) );
 }
 
 void US_DataPubImportPane::clear_project( void )
 {
-   project_guid.clear();
-   project_desc.clear();
+   state.clearProject();
    le_project->clear();
 }
 
@@ -393,17 +401,28 @@ void US_DataPubImportPane::browse_outdir( void )
    le_outdir->setText( path );
 }
 
+/* An inspection unpacks and reads a bundle, and the notes it makes hand
+   control to the event loop; like an import it is busy meanwhile, so that
+   it cannot be started again, or an import started, while it runs.
+*/
 void US_DataPubImportPane::inspect( void )
 {
-   if ( importing )  return;
+   if ( state.busy() )  return;
 
-   QString path = le_bundle->text().trimmed();
-
-   if ( path.isEmpty() )
+   if ( le_bundle->text().trimmed().isEmpty() )
    {
       browse_bundle();
       return;
    }
+
+   setBusy( true );
+   inspectBundle();
+   setBusy( false );
+}
+
+void US_DataPubImportPane::inspectBundle( void )
+{
+   QString path = le_bundle->text().trimmed();
 
    te_status->clear();
    QApplication::setOverrideCursor( QCursor( Qt::WaitCursor ) );
@@ -413,8 +432,7 @@ void US_DataPubImportPane::inspect( void )
 
    QApplication::restoreOverrideCursor();
 
-   inspected = ok;
-   pb_import->setEnabled( ok );
+   state.setInspected( ok );
 
    if ( ! ok )
    {
@@ -486,9 +504,9 @@ void US_DataPubImportPane::updateSummary( void )
 
 void US_DataPubImportPane::show_details( void )
 {
-   if ( importing )  return;
+   if ( state.busy() )  return;
 
-   if ( ! inspected )
+   if ( ! state.inspected() )
    {
       QMessageBox::information( this, tr( "No Bundle" ),
          tr( "Inspect a bundle first." ) );
@@ -558,20 +576,20 @@ void US_DataPubImportPane::importer_step( int step )
 
 void US_DataPubImportPane::run_import( void )
 {
-   if ( importing )  return;
+   if ( state.busy() )  return;
 
-   if ( ! inspected )
+   if ( ! state.inspected() )
    {
       inspect();
 
-      if ( ! inspected )  return;
+      if ( ! state.inspected() )  return;
    }
 
    US_DataPubImporter::Options options;
    options.target       = dkdb_cntrls->db() ? US_DataPub::TargetDb
                                             : US_DataPub::TargetDisk;
    options.outputDir    = le_outdir->text().trimmed();
-   options.projectGUID  = project_guid;
+   options.projectGUID  = state.projectGUID();
    options.dryRun       = ck_dryrun->isChecked();
    options.verifyHashes = ck_verify->isChecked();
    options.policy       = US_DataPub::ConflictPolicy(
@@ -602,8 +620,16 @@ void US_DataPubImportPane::run_import( void )
    bool    ok = importer.runImport( options, error );
 
    QApplication::restoreOverrideCursor();
-   setBusy( false );
 
+   // The tab stays busy until the result has been seen: the window and the
+   // other tab come back only when the dialogs below are closed
+   report_import( ok, error, options.dryRun );
+   setBusy( false );
+}
+
+void US_DataPubImportPane::report_import( bool ok, const QString& error,
+                                          bool dryRun )
+{
    QStringList warnings = importer.warnings();
 
    if ( ! ok )
@@ -640,7 +666,7 @@ void US_DataPubImportPane::run_import( void )
                    .arg( counts[ US_DataPub::ResolvedRenamed     ] )
                    .arg( counts[ US_DataPub::ResolvedSubstituted ] )
                    .arg( counts[ US_DataPub::ResolvedOmitted     ] );
-   QString summary = options.dryRun
+   QString summary = dryRun
       ? tr( "Dry run, nothing was written: %1 records would be %2" )
         .arg( results.size() ).arg( tally )
       : tr( "%1 records: %2" ).arg( results.size() ).arg( tally );
@@ -659,10 +685,10 @@ void US_DataPubImportPane::run_import( void )
 
 void US_DataPubImportPane::reset( void )
 {
-   if ( importing )  return;
+   if ( state.busy() )  return;
 
    clear_project();
-   inspected = false;
+   state.setInspected( false );
    sticky.clear();
    tw_bundle->clear();
    te_status->clear();
@@ -670,7 +696,7 @@ void US_DataPubImportPane::reset( void )
    le_outdir->clear();
    le_summary->setText( tr( "No bundle inspected" ) );
    pgb_progress->setValue( 0 );
-   pb_import->setEnabled( false );
+   refreshControls();
    ck_dryrun->setChecked( false );
    ck_verify->setChecked( true );
    ck_prompt->setChecked( true );

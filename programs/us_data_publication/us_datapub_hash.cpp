@@ -67,6 +67,46 @@ bool US_DataPubHash::isVolatileKey( const QString& name )
    return keys.contains( name );
 }
 
+/* Whether an attribute is left out on one element.
+
+   The volatile keys are left out everywhere but in one place: the "id" of a
+   buffer's <component>.  A component element carries nothing but that ID
+   and a concentration, so dropping the ID made a buffer of 150 mM NaCl the
+   same as one of 150 mM KCl.  The ID is installation specific, so a caller
+   comparing two buffers has to put both in terms of the same component
+   table first -- which the importer does, as it does for parent GUIDs.
+*/
+bool US_DataPubHash::isVolatileOn( const QString& element, const QString& name )
+{
+   if ( element == "component"  &&  name == "id" )  return false;
+
+   return isVolatileKey( name );
+}
+
+namespace
+{
+   // Markup characters escaped, so that no attribute value or text can
+   // close its own quote or element and fold two records onto one form
+   QByteArray escaped( const QString& text, bool attribute )
+   {
+      QString out;
+      out.reserve( text.size() );
+
+      for ( int ii = 0; ii < text.size(); ii++ )
+      {
+         QChar ch = text[ ii ];
+
+         if      ( ch == '&' )                 out += "&amp;";
+         else if ( ch == '<' )                 out += "&lt;";
+         else if ( ch == '>' )                 out += "&gt;";
+         else if ( ch == '"'  &&  attribute )  out += "&quot;";
+         else                                  out += ch;
+      }
+
+      return out.toUtf8();
+   }
+}
+
 QByteArray US_DataPubHash::canonicalXml( const QByteArray& xml,
                                          const QString& ownElement,
                                          const QString& ownAttr )
@@ -104,11 +144,12 @@ QByteArray US_DataPubHash::canonicalXml( const QByteArray& xml,
          {
             QString aname = names[ ii ];
 
-            if ( isVolatileKey( aname ) )        continue;
+            if ( isVolatileOn( ename, aname ) )  continue;
             if ( isOwn  &&  aname == ownAttr )   continue;
 
             out += " " + aname.toUtf8() + "=\""
-                   + attrs.value( aname ).toString().trimmed().toUtf8() + "\"";
+                   + escaped( attrs.value( aname ).toString().trimmed(), true )
+                   + "\"";
          }
 
          out += ">";
@@ -124,7 +165,7 @@ QByteArray US_DataPubHash::canonicalXml( const QByteArray& xml,
          QString text = reader.text().toString().simplified();
 
          if ( ! text.isEmpty() )
-            out += text.toUtf8();
+            out += escaped( text, false );
       }
    }
 

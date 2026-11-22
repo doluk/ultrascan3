@@ -14,10 +14,23 @@
  * A full import runs a few hundred procedure calls, so scripting them one
  * expectation at a time would test the script rather than the importer.
  * This fake answers them instead: every "new_..." call registers the first
- * GUID it is given under the record family of the procedure, and every
- * GUID lookup ("get_bufferID", "get_rawDataID_from_GUID", ...) finds what
- * was registered.  Listings are canned per procedure.  Transactions are
- * counted, and the log of calls says what happened in which order.
+ * GUID it is given under the record family of the procedure, owned by the
+ * person the connection is logged in as, and every GUID lookup
+ * ("get_bufferID", "get_rawDataID_from_GUID", ...) finds what was
+ * registered, whoever owns it -- as the real procedures do.  Listings are
+ * canned per procedure.  The log of calls says what happened in which order.
+ *
+ * Experiments are scoped as the server scopes them: the listing
+ * (get_experiment_desc) and the run ID lookup (get_experiment_info_by_runID)
+ * are an investigator's, and get_experiment_info answers only for the
+ * logged-in person's own runs.  An experiment GUID is unique: a second
+ * new_experiment of the same GUID fails.
+ *
+ * Transactions behave as InnoDB's do: what is written inside one is gone
+ * after a rollback, and also when the connection is dropped without a
+ * commit (dropConnection()) -- nothing is ever committed implicitly.  Writes
+ * outside a transaction are kept at once.  Blobs keep their bytes, so a test
+ * can look at what was uploaded.
  *
  * A failure can be injected for one procedure (or blob procedure); the call
  * then reports DBERROR, as US_DB2 does for any MySQL error.
@@ -32,20 +45,48 @@ class DataPubFakeDb
       int  begins    = 0;
       int  commits   = 0;
       int  rollbacks = 0;
+      int  beginAt   = -1;       // The log size when the transaction began
       int  commitAt  = -1;       // The log size when the commit came
       bool inTxn     = false;
 
+      int  person    = 2;        // The investigator the connection is
+
       QString failOn;            // A procedure that fails with DBERROR
 
-      // family -> GUID -> ID
-      QMap< QString, QMap< QString, int > > registry;
+      // The stored state: what a commit keeps and a rollback restores
+      class State
+      {
+         public:
+            // family -> GUID -> ID, and family -> GUID -> owner
+            QMap< QString, QMap< QString, int > > registry;
+            QMap< QString, QMap< QString, int > > owners;
 
-      // experiment ID -> ( GUID, run ID ); timestate by experiment ID
-      QMap< int, QPair< QString, QString > > experiments;
-      QMap< int, int >           timestates;
+            // experiment ID -> its row; time state by experiment ID
+            class Experiment
+            {
+               public:
+                  QString guid;
+                  QString runID;
+                  int     owner = 2;
+            };
+
+            QMap< int, Experiment > experiments;
+            QMap< int, int >        timestates;
+
+            // "procedure:id" -> the bytes uploaded
+            QMap< QString, QByteArray > blobs;
+      };
+
+      State state;
+
+      // The registry of the stored state, as the tests used it before
+      QMap< QString, QMap< QString, int > >& registry = state.registry;
 
       // procedure -> rows, for the listings a test sets up
       QMap< QString, QList< QVariantList > > canned;
+
+      // "procedure:first argument" -> rows, which win over canned
+      QMap< QString, QList< QVariantList > > cannedFor;
 
       DataPubFakeDb()
       {
@@ -85,8 +126,18 @@ class DataPubFakeDb
                log   << proc;
                calls << ( QStringList() << proc << file
                                         << QString::number( id ) );
-               status = ( proc == failOn  ||  ! QFile::exists( file ) )
-                        ? int( IUS_DB2::DBERROR ) : int( IUS_DB2::OK );
+               QFile blob( file );
+
+               if ( proc == failOn  ||  ! blob.open( QIODevice::ReadOnly ) )
+               {
+                  status = IUS_DB2::DBERROR;
+                  return status;
+               }
+
+               state.blobs.insert( proc + ":" + QString::number( id ),
+                                   blob.readAll() );
+               blob.close();
+               status = IUS_DB2::OK;
                return status;
             } ) );
          ON_CALL( mock, beginTransaction( _ ) )
@@ -95,7 +146,9 @@ class DataPubFakeDb
                error.clear();
                if ( inTxn )  return false;
                begins++;
-               inTxn = true;
+               beginAt = log.size();
+               saved   = state;
+               inTxn   = true;
                return true;
             } ) );
          ON_CALL( mock, commitTransaction( _ ) )
@@ -114,12 +167,44 @@ class DataPubFakeDb
                error.clear();
                if ( ! inTxn )  return false;
                rollbacks++;
+               state = saved;
                inTxn = false;
                return true;
             } ) );
       }
 
       IUS_DB2* db() { return &mock; }
+
+      // The connection goes away: an open transaction is rolled back by the
+      // server, never committed
+      void dropConnection()
+      {
+         if ( ! inTxn )  return;
+
+         state = saved;
+         inTxn = false;
+      }
+
+      // An experiment already in the database, of the given owner
+      void addExperiment( int id, const QString& guid, const QString& runID,
+                          int owner = 2 )
+      {
+         State::Experiment exp;
+         exp.guid  = guid;
+         exp.runID = runID;
+         exp.owner = owner;
+         state.experiments.insert( id, exp );
+         state.registry[ "experiment" ].insert( guid, id );
+         state.owners  [ "experiment" ].insert( guid, owner );
+      }
+
+      // A record already in the database, of the given owner
+      void addRecord( const QString& family, const QString& guid, int id,
+                      int owner = 2 )
+      {
+         state.registry[ family ].insert( guid, id );
+         state.owners  [ family ].insert( guid, owner );
+      }
 
       // The calls of one procedure
       QList< QStringList > callsOf( const QString& proc ) const
@@ -130,6 +215,17 @@ class DataPubFakeDb
             if ( calls[ ii ][ 0 ] == proc )  found << calls[ ii ];
 
          return found;
+      }
+
+      // How many calls of a procedure came after the transaction began
+      int callsInTransaction( const QString& proc ) const
+      {
+         int knt = 0;
+
+         for ( int ii = qMax( 0, beginAt ); ii < log.size(); ii++ )
+            if ( beginAt >= 0  &&  log[ ii ] == proc )  knt++;
+
+         return knt;
       }
 
       // How many writes ("new_", "add_", "update_", "delete_", blobs) ran
@@ -146,7 +242,7 @@ class DataPubFakeDb
       static bool isWrite( const QString& proc )
       {
          return proc.startsWith( "new_" )    ||  proc.startsWith( "add_" )  ||
-                proc.startsWith( "create_" ) ||
+                proc.startsWith( "create_" ) ||  proc.startsWith( "set_" )  ||
                 proc.startsWith( "update_" ) ||  proc.startsWith( "delete_" ) ||
                 proc.startsWith( "upload_" );
       }
@@ -199,6 +295,7 @@ class DataPubFakeDb
       QString targetCpGUID    = US_Util::new_guid();
 
    private:
+      State                 saved;
       QList< QVariantList > rows;
       int                   cursor   = 0;
       int                   status   = IUS_DB2::OK;
@@ -272,9 +369,9 @@ class DataPubFakeDb
          {
             QString guid = q.value( 1 );
 
-            if ( registry.value( family ).contains( guid ) )
+            if ( state.registry.value( family ).contains( guid ) )
             {
-               rows << ( QVariantList() << registry[ family ][ guid ] );
+               rows << ( QVariantList() << state.registry[ family ][ guid ] );
                status = IUS_DB2::OK;
             }
             else
@@ -285,64 +382,90 @@ class DataPubFakeDb
 
          if ( isWrite( proc ) )
          {
+            family   = familyOfWrite( proc );
+
+            // An experiment GUID is unique
+            if ( proc == "new_experiment"  &&
+                 state.registry.value( "experiment" ).contains( q.value( 1 ) ) )
+            {
+               status = IUS_DB2::DBERROR;
+               return;
+            }
+
             insertID = nextID++;
             status   = IUS_DB2::OK;
-            family   = familyOfWrite( proc );
 
             for ( int ii = 1; ii < q.size()  &&  ! family.isEmpty(); ii++ )
             {
                if ( ! isGuid( q[ ii ] ) )  continue;
 
-               registry[ family ].insert( q[ ii ], insertID );
+               state.registry[ family ].insert( q[ ii ], insertID );
+               state.owners  [ family ].insert( q[ ii ], person );
                break;
             }
 
             if ( proc == "new_experiment" )
-               experiments.insert( insertID, qMakePair( q.value( 1 ),
-                                                        q.value( 3 ) ) );
+            {
+               State::Experiment exp;
+               exp.guid  = q.value( 1 );
+               exp.runID = q.value( 3 );
+               exp.owner = person;
+               state.experiments.insert( insertID, exp );
+            }
 
             if ( proc == "new_timestate" )
-               timestates.insert( q.value( 1 ).toInt(), insertID );
+               state.timestates.insert( q.value( 1 ).toInt(), insertID );
 
             return;
          }
 
          if ( proc == "get_experiment_desc" )
          {
-            QList< int > ids = experiments.keys();
+            int        inv = q.value( 1 ).toInt();
+            QList< int > ids = state.experiments.keys();
 
             for ( int ii = 0; ii < ids.size(); ii++ )
-               rows << ( QVariantList() << ids[ ii ]
-                                        << experiments[ ids[ ii ] ].second );
+               if ( state.experiments[ ids[ ii ] ].owner == inv )
+                  rows << ( QVariantList() << ids[ ii ]
+                                           << state.experiments[ ids[ ii ] ].runID );
          }
 
          else if ( proc == "get_experiment_info" )
          {
+            // Only the logged-in person's own runs
             int id = q.value( 1 ).toInt();
 
-            if ( experiments.contains( id ) )
-               rows << ( QVariantList() << experiments[ id ].first << 1
-                                        << experiments[ id ].second );
+            if ( state.experiments.contains( id )  &&
+                 state.experiments[ id ].owner == person )
+               rows << ( QVariantList() << state.experiments[ id ].guid << 1
+                                        << state.experiments[ id ].runID );
          }
 
          else if ( proc == "get_experiment_info_by_runID" )
          {
-            QList< int > ids = experiments.keys();
+            int          inv = q.value( 2 ).toInt();
+            QList< int > ids = state.experiments.keys();
 
             for ( int ii = 0; ii < ids.size(); ii++ )
-               if ( experiments[ ids[ ii ] ].second == q.value( 1 ) )
-                  rows << ( QVariantList() << 1 << ids[ ii ]
-                                           << experiments[ ids[ ii ] ].first );
+            {
+               const State::Experiment& exp = state.experiments[ ids[ ii ] ];
+
+               if ( exp.runID == q.value( 1 )  &&  exp.owner == inv )
+                  rows << ( QVariantList() << inv << ids[ ii ] << exp.guid );
+            }
          }
 
          else if ( proc == "get_experiment_timestate" )
          {
             int id = q.value( 1 ).toInt();
 
-            if ( timestates.contains( id ) )
-               rows << ( QVariantList() << timestates[ id ] << id << "f"
+            if ( state.timestates.contains( id ) )
+               rows << ( QVariantList() << state.timestates[ id ] << id << "f"
                                         << "<TimeState/>" << "x" << "y" );
          }
+
+         else if ( cannedFor.contains( proc + ":" + q.value( 1 ) ) )
+            rows = cannedFor.value( proc + ":" + q.value( 1 ) );
 
          else if ( canned.contains( proc ) )
             rows = canned.value( proc );

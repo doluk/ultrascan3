@@ -299,8 +299,16 @@ void US_DataPubCLI::print( const QString& text )
    out.flush();
 }
 
+namespace
+{
+   // How many errors this process has reported, so that a caller can tell
+   // whether a step it called already said why it failed
+   int errors_reported = 0;
+}
+
 void US_DataPubCLI::fail( const QString& text )
 {
+   errors_reported++;
    err << QObject::tr( "Error: " ) << text << "\n";
    err.flush();
 }
@@ -873,6 +881,22 @@ int US_DataPubCLI::runImport( void )
       options.typePolicies.insert( int( type ), policy );
    }
 
+   // The password comes first: a database import that cannot have it
+   // stops before the bundle is unpacked, with one error saying why
+   if ( ! args.listOnly  &&  args.target == "db" )
+   {
+      int before = errors_reported;
+      options.dbPassword = password( true );
+
+      if ( options.dbPassword.isEmpty() )
+      {
+         if ( errors_reported == before )
+            fail( tr( "A database import needs the master password: give"
+                      " --db-password-file, or set US3_DB_PASSWORD" ) );
+         return 2;
+      }
+   }
+
    US_DataPubImporter importer;
    connect( &importer, &US_DataPubImporter::message,
             this,      &US_DataPubCLI::onMessage );
@@ -901,18 +925,6 @@ int US_DataPubCLI::runImport( void )
 
    if ( ! args.renameSuffix.isEmpty() )
       options.renameSuffix = args.renameSuffix;
-
-   if ( options.target == US_DataPub::TargetDb )
-   {
-      options.dbPassword = password( true );
-
-      if ( options.dbPassword.isEmpty() )
-      {
-         fail( tr( "A database import needs the master password: give"
-                   " --db-password-file, or set US3_DB_PASSWORD" ) );
-         return 2;
-      }
-   }
 
    bool imported = importer.runImport( options, error );
 

@@ -70,12 +70,15 @@ class US_DataPubHash
       /*! \brief A canonical rendering of XML with volatile keys dropped
 
           Elements are emitted in document order, attributes in sorted order
-          and text whitespace-collapsed.  Left out are the attributes named by
-          \ref isVolatileKey (numeric record IDs and time stamps, from an
-          explicit list) and the record's own identity attribute \a ownAttr
-          on the first \a ownElement.  Nothing else is dropped: an attribute
-          such as \c solid or \c liquid, or the GUID of a parent record, is
-          part of what the record means.
+          and text whitespace-collapsed; attribute values and text have their
+          markup characters escaped, so that no value can close its own quote
+          or element and two different records cannot share a rendering.
+          Left out are the attributes \ref isVolatileOn names (numeric record
+          IDs and time stamps, from an explicit list) and the record's own
+          identity attribute \a ownAttr on the first \a ownElement.  Nothing
+          else is dropped: an attribute such as \c solid or \c liquid, the
+          GUID of a parent record, or the ID of a buffer's component, is part
+          of what the record means.
           \param xml        The XML text to render
           \param ownElement As for \ref fingerprint
           \param ownAttr    As for \ref fingerprint
@@ -90,6 +93,20 @@ class US_DataPubHash
       //!        time stamp, from an explicit list
       //! \param name The attribute name to test
       static bool    isVolatileKey( const QString& name );
+
+      /*! \brief True when an attribute is left out on a given element
+
+          \ref isVolatileKey everywhere except the \c id of a buffer's
+          \c component element, which names the component: a component
+          element carries nothing else but its concentration, so leaving the
+          ID out would make two buffers of different salts the same.  The ID
+          is that of an installation's component table, so a caller has to
+          put both records in terms of the same table before it compares.
+          \param element The name of the element carrying the attribute
+          \param name    The attribute name to test
+      */
+      static bool    isVolatileOn( const QString& element,
+                                   const QString& name );
 
       //! \brief True when the file name looks like an XML payload
       //! \param filename The file name to test
