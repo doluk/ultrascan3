@@ -4,7 +4,6 @@
 
 #include "us_extern.h"
 #include "us_data_model.h"
-#include "us_sync_exper.h"
 #include "us_dataIO.h"
 #include "us_db2.h"
 
@@ -103,7 +102,6 @@ class US_DataProcess : public QObject
         IUS_DB2*                db;         //!< Pointer to database connection
         US_DataModel*           da_model;   //!< Data model object
         US_DataModel::DataDesc  cdesc;      //!< Current record description
-        US_SyncExperiment*      syncExper;  //!< Experiment synchronizer
         int                     dbg_level;  //!< Debug level
 
     private slots:

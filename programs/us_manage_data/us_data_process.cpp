@@ -5,7 +5,6 @@
 #include "us_data_model.h"
 #include "us_datafiles.h"
 #include "us_settings.h"
-#include "us_sync_exper.h"
 #include "us_util.h"
 
 // class to process operatations on data:  upload/download/remove
@@ -15,10 +14,6 @@ US_DataProcess::US_DataProcess( US_DataModel* dmodel, QWidget* parent /*=0*/ )
    da_model         = dmodel;
    db               = da_model->dbase();
    dbg_level        = US_Settings::us_debug();
-
-   // Nothing here synchronizes experiments any more (see record_upload),
-   // and building the synchronizer lists every experiment in the database
-   syncExper        = NULL;
 }
 
 // perform a record upload to the database from local disk
@@ -93,7 +88,6 @@ DbgLv(1) << "REC_ULD: row" << row+1;
                          .replace( ".", " / " );
 DbgLv(1) << "REC_ULD:RAW: runID" << runID << "  tripl" << tripl;
 
-      //stat = syncExper->synchronize( cdesc );
 DbgLv(1) << "REC_ULD:RAW: parentGUID" << cdesc.parentGUID;
       QString expGUID  = cdesc.parentGUID;
 

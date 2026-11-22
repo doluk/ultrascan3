@@ -1103,3 +1103,39 @@ TEST_F( TestUSDataDb, AChildIsNotDownloadedWithoutItsParent )
    EXPECT_EQ( win.proc.record_download( row ), (int)US_DataProcess::NO_PARENT );
    EXPECT_EQ( server.count( "get_model_info" ), 0 );
 }
+
+// ------------------------------------------------------------ descriptions
+
+// An older server cuts model descriptions at 80 characters and leaves
+// noise descriptions empty; the catalog repairs them, and the tree shows
+// what it repaired
+TEST_F( TestUSDataDb, DescriptionsAnOlderServerCutAreShownInFull )
+{
+   QString full = runA + ".1A280.e2401011200_a2401011300_2DSA-FM-IT_"
+                  "with_a_description_long_enough_to_be_cut_i01.model";
+   ASSERT_GT( full.length(), 80 );
+
+   QString cutG  = US_Util::new_guid();
+   QString cutN  = US_Util::new_guid();
+   QString mpath = root + "/cut.xml";
+   writeModel( mpath, cutG, editG, full );
+
+   server.models << FModel{ "36", cutG, full.left( 80 ), editG, "21",
+                            textOf( mpath ) };
+   server.noises << FNoise{ "46", cutN, "21", "36", cutG, "ri_noise", "", "" };
+
+   US_DataModel model;
+   prepare( model );
+   model.scan_data();
+
+   int mrow = rowOf( model, cutG );
+   int nrow = rowOf( model, cutN );
+   ASSERT_GE( mrow, 0 );
+   ASSERT_GE( nrow, 0 );
+
+   EXPECT_EQ( model.row_datadesc( mrow ).description.toStdString(),
+              full.toStdString() );
+   EXPECT_LE( model.row_datadesc( mrow ).label.length(), 40 );
+   EXPECT_EQ( model.row_datadesc( nrow ).description.toStdString(),
+              QString( full ).replace( ".model", ".ri_noise" ).toStdString() );
+}

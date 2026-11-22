@@ -506,19 +506,6 @@ class US_DataModel : public QObject
         QVector< DataDesc > merge_descs( const QVector< DataDesc >& dbs,
                                          const QVector< DataDesc >& los );
 
-        /*! \brief Repair database model and noise descriptions
-
-            Older servers cut model descriptions to 80 characters and leave
-            noise descriptions empty.  A cut model description is read in
-            full from its model record; an empty noise description is made
-            from its model's, and a cut one is read in full from its noise
-            record.
-            \param descs The database records of one experiment
-            \param dbP   The database connection, or null to skip the reads
-        */
-        static void repair_descriptions( QVector< DataDesc >& descs,
-                                         IUS_DB2* dbP );
-
         //! \brief Rows that share a GUID, over the whole tree
         //!
         //! Detected once, after the scan, across every experiment.  Rows

@@ -6,7 +6,6 @@
 #include "us_data_model.h"
 #include "us_data_process.h"
 #include "us_data_tree.h"
-#include "us_sync_exper.h"
 #include "us_widgets.h"
 #include "us_db2.h"
 #include "us_model.h"

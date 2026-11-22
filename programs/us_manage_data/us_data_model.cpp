@@ -1223,11 +1223,9 @@ bool US_DataModel::do_merge_run( int index )
    ddescs.clear();
    ldescs.clear();
 
+   // The catalog has repaired the descriptions an older server cut short
    if ( entry.dbIndex >= 0  &&  cat_db != NULL )
-   {
       catalog_descs( cat_db, entry.dbIndex, REC_DB, ddescs );
-      repair_descriptions( ddescs, db );
-   }
 
    if ( entry.loIndex >= 0  &&  cat_lo != NULL )
       catalog_descs( cat_lo, entry.loIndex, REC_LO, ldescs );
@@ -2208,12 +2206,8 @@ void US_DataModel::index_orphans( void )
    }
 
    if ( use_db  &&  cat_db != NULL )
-   {
       orphan_descs( cat_db, REC_DB, orph_branches[ 0 ] );
 
-      for ( int ii = 0; ii < orph_branches[ 0 ].size(); ii++ )
-         repair_descriptions( orph_branches[ 0 ][ ii ], db );
-   }
 
    if ( use_lo )
    {
@@ -2281,81 +2275,6 @@ int US_DataModel::collect_orphans( void )
             orph[ side ] << orph_branches[ side ][ ii ];
 
    return add_orphans( orph[ 0 ], orph[ 1 ] );
-}
-
-/* Repair the model and noise descriptions of older servers.
-
-   A model description the database cut at 80 characters is read in full
-   from the model record, and a noise record with an empty description takes
-   its model's.  These are a handful of records on an old store and none on
-   a new one, so reading them one at a time costs nothing that matters.
-*/
-void US_DataModel::repair_descriptions( QVector< DataDesc >& descs,
-                                        IUS_DB2* dbP )
-{
-   QHash< QString, QString > modelDescs;     // model GUID -> description
-
-   for ( int ii = 0; ii < descs.size(); ii++ )
-   {
-      DataDesc& desc = descs[ ii ];
-
-      if ( desc.recType != MODEL )   continue;
-
-      if ( desc.description.length() == 80  &&  dbP != NULL  &&
-           desc.recordID >= 0 )
-      {
-         US_Model model;
-
-         if ( model.load( QString::number( desc.recordID ), dbP )
-                 == IUS_DB2::OK  &&
-              ! model.description.isEmpty() )
-         {
-            desc.description = model.description;
-            desc.label       = short_label( desc.description );
-         }
-      }
-
-      modelDescs.insert( desc.dataGUID, desc.description );
-   }
-
-   for ( int ii = 0; ii < descs.size(); ii++ )
-   {
-      DataDesc& desc = descs[ ii ];
-
-      if ( desc.recType != NOISE )   continue;
-
-      bool cut   = ( desc.description.length() == 80 );
-      bool empty = desc.description.isEmpty();
-
-      if ( ! cut  &&  ! empty )      continue;
-
-      bool read  = false;
-
-      if ( cut  &&  dbP != NULL  &&  desc.recordID >= 0 )
-      {
-         US_Noise noise;
-
-         if ( noise.load( QString::number( desc.recordID ), dbP )
-                 == IUS_DB2::OK  &&
-              ! noise.description.isEmpty() )
-         {
-            desc.description = noise.description;
-            read             = true;
-         }
-      }
-
-      if ( ! read  &&  empty )
-      {  // An empty description is its model's, with the noise type
-         QString mdesc  = modelDescs.value( desc.parentGUID );
-         QString ntype  = ( desc.subType == "RI" ) ? "ri_noise" : "ti_noise";
-
-         if ( ! mdesc.isEmpty() )
-            desc.description = QString( mdesc ).replace( ".model",
-                                                         "." + ntype );
-      }
-
-      desc.label = short_label( desc.description );
-   }
 }
 
 /* Merge the database and local records of one experiment.
