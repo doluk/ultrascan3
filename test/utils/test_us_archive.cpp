@@ -5,6 +5,12 @@
 #include "qt_test_base.h"
 
 #include <QtCore>
+#include <QSignalSpy>
+
+#ifdef Q_OS_LINUX
+#include <csignal>
+#include <sys/resource.h>
+#endif
 
 #include "archive.h"
 #include "archive_entry.h"
@@ -321,4 +327,146 @@ TEST_F( TestUSArchive, ATruncatedArchiveIsAnError )
 
    EXPECT_FALSE( archive.extract( tgz, root + "/out" ) );
    EXPECT_FALSE( archive.getError().isEmpty() );
+}
+
+// Two entries that would be written to one file are refused: the same name
+// twice, or names a case-insensitive file system does not tell apart
+TEST_F( TestUSArchive, DuplicateAndCaseCollidingNamesAreRefused )
+{
+   expectRefused( QList< Entry >() << file( "a.txt", "x" ) << file( "a.txt", "y" ),
+                  "the same name twice" );
+   expectRefused( QList< Entry >() << file( "a.txt", "x" ) << file( "./a.txt", "y" ),
+                  "the same name spelled two ways" );
+   expectRefused( QList< Entry >() << file( "A.txt", "x" ) << file( "a.txt", "y" ),
+                  "names that differ only in case" );
+   expectRefused( QList< Entry >() << file( "Run/x.auc", "x" ) << file( "run/y.auc", "y" ),
+                  "directories that differ only in case" );
+   expectRefused( QList< Entry >() << file( "a", "x" ) << file( "a/b", "y" ),
+                  "a file that is also a directory" );
+
+   // a directory listed again, and files below it, are fine
+   Entry dir;
+   dir.name = "run";
+   dir.type = AE_IFDIR;
+   QString tar = makeTar( "dirs.tar", QList< Entry >() << dir << dir
+                          << file( "run/a.auc", "a" ) << file( "run/b.auc", "b" ) );
+   US_Archive archive;
+   EXPECT_TRUE( archive.extract( tar, root + "/fine" ) ) << archive.getError().toStdString();
+}
+
+// Names Windows cannot hold are refused, so an archive extracts the same
+// everywhere
+TEST_F( TestUSArchive, NamesWindowsCannotHoldAreRefused )
+{
+   expectRefused( QList< Entry >() << file( "a:b.txt", "x" ), "a colon" );
+   expectRefused( QList< Entry >() << file( "dir./a.txt", "x" ), "a trailing dot" );
+   expectRefused( QList< Entry >() << file( "dir /a.txt", "x" ), "a trailing space" );
+   expectRefused( QList< Entry >() << file( "CON", "x" ), "a device name" );
+   expectRefused( QList< Entry >() << file( "sub/nul.txt", "x" ),
+                  "a device name with an extension" );
+   expectRefused( QList< Entry >() << file( "com1/a.auc", "x" ), "a device directory" );
+
+   EXPECT_FALSE( US_Archive::safeEntryName( "Lpt9" ) );
+   EXPECT_FALSE( US_Archive::safeEntryName( "aux .txt" ) );
+   EXPECT_FALSE( US_Archive::safeEntryName( "./" ) );
+   EXPECT_TRUE ( US_Archive::safeEntryName( "CONSOLE.txt" ) );
+   EXPECT_TRUE ( US_Archive::safeEntryName( "COM10/a.auc" ) );
+   EXPECT_TRUE ( US_Archive::safeEntryName( "run/.hidden" ) );
+}
+
+// A link already in the destination is not written through
+TEST_F( TestUSArchive, ALinkInTheDestinationIsNotFollowed )
+{
+#ifdef Q_OS_UNIX
+   QString outside = root + "/outside";
+   QString dest    = root + "/out";
+   QDir().mkpath( outside );
+   QDir().mkpath( dest );
+
+   // a directory of the archive is a link out of the destination
+   ASSERT_TRUE( QFile::link( outside, dest + "/run" ) );
+
+   QString    tar = makeTar( "via-dir.tar", QList< Entry >() << file( "run/evil.txt", "x" ) );
+   US_Archive archive;
+   EXPECT_FALSE( archive.extract( tar, dest ) );
+   EXPECT_TRUE ( archive.getError().contains( "link" ) ) << archive.getError().toStdString();
+   EXPECT_FALSE( QFile::exists( outside + "/evil.txt" ) );
+
+   // a file of the archive is a link to a file outside
+   QFile::remove( dest + "/run" );
+   ASSERT_TRUE( QFile::link( outside + "/target.txt", dest + "/a.txt" ) );
+
+   tar = makeTar( "via-file.tar", QList< Entry >() << file( "a.txt", "x" ) );
+   EXPECT_FALSE( archive.extract( tar, dest ) );
+   EXPECT_FALSE( QFile::exists( outside + "/target.txt" ) );
+#else
+   GTEST_SKIP() << "needs symbolic links";
+#endif
+}
+
+// Programs that always passed over links can still do so, and are told
+TEST_F( TestUSArchive, LinksCanBeSkippedWithANote )
+{
+   Entry symlink;
+   symlink.name   = "link";
+   symlink.type   = AE_IFLNK;
+   symlink.linkTo = root + "/evil.txt";
+
+   Entry fifo;
+   fifo.name = "pipe";
+   fifo.type = AE_IFIFO;
+
+   QString tar = makeTar( "links.tar", QList< Entry >()
+                          << file( "a.txt", "alpha" ) << symlink << fifo );
+
+   US_Archive archive;
+   EXPECT_FALSE( archive.skipLinks() );
+   archive.setSkipLinks( true );
+
+   QSignalSpy  spy( &archive, &US_Archive::itemSkipped );
+   QStringList files;
+
+   ASSERT_TRUE( archive.extract( tar, root + "/out", &files ) )
+      << archive.getError().toStdString();
+   EXPECT_EQ( files.size(), 1 );
+   EXPECT_EQ( contentsOf( root + "/out" ), QStringList() << "a.txt" );
+   EXPECT_EQ( spy.count(), 2 );
+   ASSERT_EQ( archive.skippedEntries().size(), 2 );
+   EXPECT_TRUE( archive.skippedEntries()[ 0 ].startsWith( "link: " ) );
+   EXPECT_TRUE( archive.skippedEntries()[ 1 ].startsWith( "pipe: " ) );
+
+   // every other check still applies
+   tar = makeTar( "links2.tar", QList< Entry >() << symlink << file( "../evil.txt", "x" ) );
+   EXPECT_FALSE( archive.extract( tar, root + "/out2" ) );
+   EXPECT_FALSE( QFile::exists( root + "/evil.txt" ) );
+}
+
+// A file that cannot be written in full is removed, as one that cannot be
+// read in full is.  Past the file size limit every write fails.
+TEST_F( TestUSArchive, AFailedWriteRemovesThePartlyWrittenFile )
+{
+#ifdef Q_OS_LINUX
+   QString tar = makeTar( "big.tar", QList< Entry >()
+                          << file( "big.bin", QByteArray( 256 * 1024, 'z' ) ) );
+
+   struct rlimit saved;
+   ASSERT_EQ( getrlimit( RLIMIT_FSIZE, &saved ), 0 );
+   auto oldHandler = signal( SIGXFSZ, SIG_IGN );
+
+   struct rlimit small = saved;
+   small.rlim_cur      = 64 * 1024;
+   ASSERT_EQ( setrlimit( RLIMIT_FSIZE, &small ), 0 );
+
+   US_Archive archive;
+   const bool ok = archive.extract( tar, root + "/out" );
+
+   setrlimit( RLIMIT_FSIZE, &saved );
+   signal( SIGXFSZ, oldHandler );
+
+   EXPECT_FALSE( ok );
+   EXPECT_FALSE( archive.getError().isEmpty() );
+   EXPECT_FALSE( QFile::exists( root + "/out/big.bin" ) );
+#else
+   GTEST_SKIP() << "needs RLIMIT_FSIZE";
+#endif
 }

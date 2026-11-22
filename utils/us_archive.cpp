@@ -3,6 +3,8 @@
 #include "archive_entry.h"
 #include "archive.h"
 
+#include <QRegularExpression>
+
 namespace
 {
 // The entry name, or an empty string when the archive gives none
@@ -53,12 +55,55 @@ bool unsafe_type( struct archive_entry* entry )
            archive_entry_symlink ( entry ) != nullptr;
 }
 
+// What kind of link or special entry this is, for a note
+QString special_kind( struct archive_entry* entry )
+{
+    if ( archive_entry_hardlink( entry ) != nullptr )  return QObject::tr( "a hard link" );
+    if ( archive_entry_symlink ( entry ) != nullptr )  return QObject::tr( "a symbolic link" );
+
+    switch ( archive_entry_filetype( entry ) )
+    {
+        case AE_IFLNK:  return QObject::tr( "a symbolic link" );
+        case AE_IFCHR:
+        case AE_IFBLK:  return QObject::tr( "a device" );
+        case AE_IFIFO:  return QObject::tr( "a FIFO" );
+        case AE_IFSOCK: return QObject::tr( "a socket" );
+        default:        return QObject::tr( "a special entry" );
+    }
+}
+
 // True when a cleaned target path is the destination or below it
 bool inside( const QString& root, const QString& target )
 {
     const QString clean = QDir::cleanPath( target );
 
     return clean == root  ||  clean.startsWith( root + "/" );
+}
+
+// The components of an entry name, whichever separator, without empty and
+// "." components: "./a//b/" is a/b
+QStringList name_parts( const QString& name )
+{
+    QStringList parts = QString( name ).replace( "\\", "/" ).split( "/" );
+    parts.removeAll( QString() );
+    parts.removeAll( QString( "." ) );
+    return parts;
+}
+
+// True when Windows keeps a component's name for a device: CON, PRN, AUX,
+// NUL, COM1-9 and LPT1-9, in any case, with or without an extension
+bool device_name( const QString& part )
+{
+    static const QRegularExpression rx(
+        QRegularExpression::anchoredPattern( "CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9]" ),
+        QRegularExpression::CaseInsensitiveOption );
+
+    QString base = part.section( ".", 0, 0 );
+
+    while ( base.endsWith( ' ' ) )
+        base.chop( 1 );
+
+    return rx.match( base ).hasMatch();
 }
 }
 
@@ -77,18 +122,73 @@ bool US_Archive::safeEntryName( const QString& name )
     if ( name.startsWith( "/" )  ||  name.startsWith( "\\" ) )
         return false;
 
-    if ( name.size() >= 2  &&  name.at( 1 ) == ':' )
+    // A drive letter, or an NTFS stream, anywhere
+    if ( name.contains( ':' ) )
         return false;
 
-    const QStringList parts = QString( name ).replace( "\\", "/" ).split( "/" );
+    const QStringList parts = name_parts( name );
+
+    if ( parts.isEmpty() )
+        return false;
 
     for ( const QString& part : parts )
     {
         if ( part == ".." )
             return false;
+
+        // Windows drops a trailing dot or space, so "a." and "a" are one file
+        if ( part.endsWith( '.' )  ||  part.endsWith( ' ' ) )
+            return false;
+
+        if ( device_name( part ) )
+            return false;
     }
 
     return true;
+}
+
+bool US_Archive::unsafe_on_disk( const QString& root, const QString& target,
+                                 const QString& name )
+{
+    // Every component below the destination that is already there -- the
+    // target itself included -- must not be a link: writing through one
+    // would put the file wherever it points
+    const QString     rel     = QDir( root ).relativeFilePath( target );
+    const QStringList parts   = rel.split( "/", Qt::SkipEmptyParts );
+    QString           path    = root;
+    QString           deepest = root;
+
+    for ( const QString& part : parts )
+    {
+        path += "/" + part;
+        QFileInfo info( path );
+
+        if ( info.isSymLink() )
+        {
+            error = QObject::tr( "US_Archive: Error: refusing \"%1\": %2 is a"
+                                 " link in the destination" ).arg( name, path );
+            return true;
+        }
+
+        if ( ! info.exists() )
+            break;
+
+        deepest = path;
+    }
+
+    // And what is there must resolve to a place below the destination, which
+    // also catches links a file system does not report as such
+    const QString croot = QFileInfo( root ).canonicalFilePath();
+    const QString cdeep = QFileInfo( deepest ).canonicalFilePath();
+
+    if ( ! croot.isEmpty()  &&  ! cdeep.isEmpty()  &&  ! inside( croot, cdeep ) )
+    {
+        error = QObject::tr( "US_Archive: Error: refusing \"%1\": %2 is not"
+                             " inside the destination" ).arg( name, deepest );
+        return true;
+    }
+
+    return false;
 }
 
 bool US_Archive::check_entries( const QString& filename, const QDir& dir )
@@ -103,6 +203,10 @@ bool US_Archive::check_entries( const QString& filename, const QDir& dir )
     int           result;
     struct archive_entry* entry;
 
+    // Every path the archive writes, directories above its entries included,
+    // case-folded: the path as first given, and whether it is a directory
+    QHash< QString, QPair< QString, bool > > seen;
+
     while ( ( result = archive_read_next_header( archive, &entry ) ) == ARCHIVE_OK )
     {
         const QString name = entry_name( entry );
@@ -110,15 +214,67 @@ bool US_Archive::check_entries( const QString& filename, const QDir& dir )
         if ( ! safeEntryName( name )  ||  ! inside( root, root + "/" + name ) )
         {
             error = QObject::tr( "US_Archive: Error: refusing an entry outside the"
-                                 " destination: \"%1\"" ).arg( name );
+                                 " destination, or one Windows cannot hold: \"%1\"" )
+                    .arg( name );
             close_reader( archive );
             return false;
         }
 
         if ( unsafe_type( entry ) )
         {
+            if ( skip_links )
+            {   // Not written, so there is nothing more to check
+                archive_read_data_skip( archive );
+                continue;
+            }
+
             error = QObject::tr( "US_Archive: Error: refusing \"%1\": only regular"
                                  " files and directories are extracted" ).arg( name );
+            close_reader( archive );
+            return false;
+        }
+
+        // Two entries that land on one file -- the same name twice, or names
+        // a case-insensitive file system does not tell apart -- would have
+        // the second overwrite the first, or write into what the first made
+        const QStringList parts = name_parts( name );
+        const bool        isDir = ( archive_entry_filetype( entry ) == AE_IFDIR );
+        QString           path;
+
+        for ( int ii = 0; ii < parts.size(); ii++ )
+        {
+            path += ( ii == 0 ? QString() : QString( "/" ) ) + parts[ ii ];
+
+            const bool    dirHere = isDir  ||  ii < parts.size() - 1;
+            const QString folded  = path.toCaseFolded();
+
+            if ( ! seen.contains( folded ) )
+            {
+                seen.insert( folded, qMakePair( path, dirHere ) );
+                continue;
+            }
+
+            const QPair< QString, bool > prior = seen.value( folded );
+
+            if ( prior.first != path )
+                error = QObject::tr( "US_Archive: Error: refusing \"%1\": it differs"
+                                     " from \"%2\" only in case" )
+                        .arg( name, prior.first );
+
+            else if ( ! prior.second  ||  ! dirHere )
+                error = QObject::tr( "US_Archive: Error: refusing \"%1\": the"
+                                     " archive holds \"%2\" more than once" )
+                        .arg( name, path );
+
+            if ( ! error.isEmpty() )
+            {
+                close_reader( archive );
+                return false;
+            }
+        }
+
+        if ( unsafe_on_disk( root, root + "/" + parts.join( "/" ), name ) )
+        {
             close_reader( archive );
             return false;
         }
@@ -169,6 +325,7 @@ bool US_Archive::extract(const QString& filename, const QString& path, QStringLi
         file_list->clear();
     }
     error.clear();
+    skipped.clear();
     QStringList file_list_in;
     QDir dir;
     QFileInfo fino(filename);
@@ -216,8 +373,22 @@ bool US_Archive::extract(const QString& filename, const QString& path, QStringLi
         // trust that it is the archive the first pass saw
         if ( ! safeEntryName( entry_path )  ||
              ! inside( dir.path(), target.absoluteFilePath() )  ||
-             unsafe_type( entry ) ) {
+             ( unsafe_type( entry )  &&  ! skip_links ) ) {
             error = QObject::tr( "US_Archive: Error: refusing \"%1\"" ).arg( entry_path );
+            close_reader( archive );
+            return false;
+        }
+
+        if ( unsafe_type( entry ) ) {
+            const QString why = special_kind( entry );
+            skipped << entry_path + ": " + why;
+            emit itemSkipped( entry_path, why );
+            archive_read_data_skip( archive );
+            continue;
+        }
+
+        // A link may have appeared in the destination since the first pass
+        if ( unsafe_on_disk( dir.path(), target.absoluteFilePath(), entry_path ) ) {
             close_reader( archive );
             return false;
         }
@@ -271,6 +442,7 @@ bool US_Archive::extract(const QString& filename, const QString& path, QStringLi
                 if ( offset != file.pos()  &&  ! file.seek( offset ) ) {
                     error = "US_Archive: Error: Failed to write data blocks: " + target.absolutePath();
                     file.close();
+                    file.remove();
                     close_reader( archive );
                     return false;
                 }
@@ -280,6 +452,7 @@ bool US_Archive::extract(const QString& filename, const QString& path, QStringLi
                 if (size_o != static_cast<qint64>(size)) {
                     error = "US_Archive: Error: Failed to write data blocks: " + target.absolutePath();
                     file.close();
+                    file.remove();
                     close_reader( archive );
                     return false;
                 }
@@ -303,6 +476,16 @@ bool US_Archive::extract(const QString& filename, const QString& path, QStringLi
                  ! file.resize( archive_entry_size( entry ) ) ) {
                 error = "US_Archive: Error: Failed to write data blocks: " + target.absolutePath();
                 file.close();
+                file.remove();
+                close_reader( archive );
+                return false;
+            }
+
+            // What is still buffered can fail to reach the disk too
+            if ( ! file.flush() ) {
+                error = "US_Archive: Error: Failed to write data blocks: " + target.absolutePath();
+                file.close();
+                file.remove();
                 close_reader( archive );
                 return false;
             }
