@@ -997,8 +997,10 @@ bool US_DataPubExporter::stageExperimentXml(
 {
    QSet< QString > kept;
 
+   // GUIDs are compared without regard to case: the XML and the raw data
+   // files are written by different programs
    for ( int ii = 0; ii < run.raws.size(); ii++ )
-      kept.insert( run.raws[ ii ].guid );
+      kept.insert( run.raws[ ii ].guid.toLower() );
 
    QStringList dropped = dropped_raws.value( run.runID );
 
@@ -1028,7 +1030,7 @@ bool US_DataPubExporter::stageExperimentXml(
 
          if ( guid.isEmpty() )
             noGuid++;
-         else if ( ! kept.contains( guid ) )
+         else if ( ! kept.contains( guid.toLower() ) )
             leave.insert( guid );
       }
 
@@ -1119,7 +1121,7 @@ bool US_DataPubExporter::stageExperimentXml(
    int missing = 0;
 
    for ( auto it = leave.constBegin(); it != leave.constEnd(); ++it )
-      if ( ! dropped.contains( *it ) )  missing++;
+      if ( ! dropped.contains( *it, Qt::CaseInsensitive ) )  missing++;
 
    if ( leave.size() > missing )
       note( tr( "Run %1: %2 deselected triple(s) left out of the experiment"
