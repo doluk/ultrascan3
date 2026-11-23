@@ -366,3 +366,116 @@ QString US_DataPub::digestKeyOf( const QString& payloadKey )
 
    return payloadKey.left( payloadKey.size() - 7 ) + "Sha256";
 }
+
+// --------------------------------------------------------- acceptance rules
+
+bool US_DataPub::guidIsUsable( const QString& guid )
+{
+   // Anchored on the whole text: "$" would let a trailing newline through
+   static const QRegularExpression rx( QRegularExpression::anchoredPattern(
+      "[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}"
+      "-[0-9A-Fa-f]{12}" ) );
+
+   return rx.match( guid ).hasMatch();
+}
+
+bool US_DataPub::isGuidAttribute( const QString& element,
+                                  const QString& attribute )
+{
+   return attribute == "guid"  ||  attribute.endsWith( "GUID" )  ||
+          ( attribute == "value"  &&  element.endsWith( "GUID" ) );
+}
+
+QString US_DataPub::unusableGuidInXml( const QByteArray& xml )
+{
+   QXmlStreamReader reader( xml );
+
+   while ( ! reader.atEnd() )
+   {
+      reader.readNext();
+
+      if ( ! reader.isStartElement() )  continue;
+
+      QString              ename = reader.name().toString();
+      QXmlStreamAttributes attrs = reader.attributes();
+
+      for ( int ii = 0; ii < attrs.size(); ii++ )
+      {
+         QString aname = attrs.at( ii ).name().toString();
+         QString value = attrs.at( ii ).value().toString();
+
+         if ( isGuidAttribute( ename, aname )  &&  ! value.isEmpty()  &&
+              ! guidIsUsable( value ) )
+            return value;
+      }
+   }
+
+   return QString();
+}
+
+bool US_DataPub::runTypeIsUsable( const QString& runType )
+{
+   // Anchored on the whole text: "^...$" would take "RA\n" for "RA"
+   static const QRegularExpression rx(
+      QRegularExpression::anchoredPattern( "[A-Za-z0-9]{1,8}" ) );
+
+   return rx.match( runType ).hasMatch();
+}
+
+bool US_DataPub::runFileNameIsUsable( const QString& fileName,
+                                      const QString& runID )
+{
+   return ! runID.isEmpty()  &&  isSafeFileName( fileName )  &&
+          fileName.startsWith( runID + "." );
+}
+
+QString US_DataPub::timeStateFileName( const QString& runID )
+{
+   return runID + ".time_state.tmst";
+}
+
+bool US_DataPub::fileSha256( const QString& path, QString& digest,
+                             QString* why )
+{
+   digest.clear();
+
+   QFile   file( path );
+   QString reason;
+
+   if ( ! file.open( QIODevice::ReadOnly ) )
+      reason = QObject::tr( "%1 cannot be opened: %2" ).arg( path )
+               .arg( file.errorString() );
+
+   else
+   {
+      QCryptographicHash hash( QCryptographicHash::Sha256 );
+      qint64             total = 0;
+
+      // Read until nothing comes back, rather than until the size says it
+      // is done: a failing read has to be seen, not skipped
+      while ( true )
+      {
+         QByteArray block = file.read( 1024 * 256 );
+
+         if ( block.isEmpty() )  break;
+
+         total += block.size();
+         hash.addData( block );
+      }
+
+      // A short read -- an I/O error, a file that shrank meanwhile -- is
+      // not the digest of the file
+      if ( file.error() != QFileDevice::NoError  ||
+           ( file.size() > 0  &&  total != file.size() ) )
+         reason = QObject::tr( "%1 could not be read to its end: %2" )
+                  .arg( path ).arg( file.errorString() );
+      else
+         digest = QString( hash.result().toHex() );
+
+      file.close();
+   }
+
+   if ( why != nullptr )  *why = reason;
+
+   return reason.isEmpty();
+}

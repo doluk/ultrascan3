@@ -112,12 +112,24 @@ two installations only arrive at the same GUID for the same record:
 | Record                                | Derived from                                   |
 |---------------------------------------|------------------------------------------------|
 | time state                            | `timeState:<experimentGUID>`                   |
-| rotor calibration without a GUID      | `rotorCalibration:<rotorGUID>:<calibrationID>:<coeff1>:<coeff2>:<calExpGUID>:<yyyy-MM-dd>` (coefficients with 17 significant digits) |
+| rotor calibration without a GUID      | `rotorCalibration:<rotorGUID>:<calibrationID>:<coeff1>:<coeff2>:<yyyy-MM-dd>` (coefficients with six significant digits, `'e'`, 5) |
 | centerpiece without a GUID            | `centerpiece:<serial>:<name>:<material>:<channels>:<shape>:<maxRPM>:<angle>:<width>` followed by `:<pathlen>:<bottom>` for each row (numbers with 17 significant digits) |
 
-Bundles written before this rule derived these two from the first two or
-three fields only; an import of an older bundle therefore does not recognise
-the same calibration or centerpiece of a newer one by its GUID.
+"Without a GUID" includes a GUID column that holds something other than a
+GUID. A calibration's identity only uses what its database record and its
+local copy agree on, so that it is the same whichever the export reads: the
+local file keeps six digits of each coefficient (and both are read as floats),
+and the database does not return the calibration experiment's GUID, which is
+therefore not part of it. The date is written with ASCII digits whatever the
+locale (Qt 5 formats dates with the system locale). For example the
+calibration 3 of rotor `44444444-4444-4444-4444-444444444444` with
+coefficients `1.25e-5` and `3.5e-10`, dated 2024-01-01, is always
+`fb9d594e-cff1-5bab-9ed1-1e961d368e16`.
+
+Bundles written before these rules derived the two from other fields; an
+import of an older bundle therefore does not recognise the same calibration
+or centerpiece of a newer one by its GUID (it still matches a centerpiece by
+name and content).
 
 The time state therefore has a `timeStateGUID` of its own; it depends on its
 experiment through `depends: experimentGUID`, and its `timeStateID` is the
@@ -143,8 +155,11 @@ bundle.tar.gz
 ├── timeState/<runID>/<runID>.time_state.xml
 ├── buffers/<bufferGUID>.xml
 ├── buffers/<bufferGUID>.components.xml               (buffers with components)
+├── buffers/<bufferGUID>.spectra.xml                  (buffers with spectra)
 ├── analytes/<analyteGUID>.xml
+├── analytes/<analyteGUID>.spectra.xml                (analytes with spectra)
 ├── solutions/<solutionGUID>.xml
+├── solutions/<solutionGUID>.spectra.xml              (solutions with an extinction profile)
 ├── rawData/<runID>/<runID>.<runType>.<cell>.<channel>.<wl>.auc
 ├── edits/<runID>/<runID>.<editID>.<runType>.<cell>.<channel>.<wl>.xml
 ├── models/<modelGUID>.xml
@@ -153,8 +168,8 @@ bundle.tar.gz
 
 Payload files are exactly the files UltraScan3 uses in a local disk store, so a
 bundle can be opened and read with ordinary tools, and a payload can be dropped
-into a data directory by hand if it ever has to be. Two kinds of file are
-added because a local store keeps that information elsewhere:
+into a data directory by hand if it ever has to be. Three kinds of file are
+added because a local store keeps that information elsewhere, or rounds it:
 
 * `buffers/<bufferGUID>.components.xml` — what the buffer's components are. A
   buffer file names its components by ID and concentration only, and those IDs
@@ -165,12 +180,44 @@ added because a local store keeps that information elsewhere:
   and `<viscosityCoefficients c0..c5>`), with the coefficients written at full
   precision. The definitions are read from the database, or on disk from the
   local component table; a component that is not defined there stops the
-  export.
+  export. Each `<component>` also carries `concentration`: the buffer's
+  concentration of it at full precision (`'g'`, 17 significant digits), in
+  the order of the buffer's components. The buffer file keeps it to five
+  decimals, which makes 5 µM 0.00001 mM; an import takes the value from here
+  (`US_DataPubRecords::readBufferConcentrations()`). A bundle written before
+  this has no `concentration` attributes, and the buffer file's value is all
+  there is.
+* `buffers/`, `analytes/`, `solutions/<GUID>.spectra.xml` — the record's
+  spectra at full precision. The buffer file writes a wavelength to 0.1 nm and
+  a value to five significant digits (two points closer than 0.05 nm fall onto
+  one), the analyte file a value to six, and the solution file has no place
+  for the solution's own extinction profile at all. The file is
+
+  ```xml
+  <!DOCTYPE US_DataPubSpectra>
+  <US_DataPubSpectra version="1.0">
+    <spectrum type="extinction">
+      <point wavelength="280" value="43824.123456789003"/>
+    </spectrum>
+  </US_DataPubSpectra>
+  ```
+
+  with one `<spectrum>` per kind that has points — `extinction`,
+  `refraction` and `fluorescence` for buffers and analytes, `extinction`
+  (the molar extinction profile) for solutions — and both numbers written
+  so that they read back as the same double. It is
+  `US_DataPubRecords::writeSpectra()` / `readSpectra()`; the reader refuses
+  another root, an unknown or repeated spectrum, a point that is not a pair
+  of finite numbers and a wavelength listed twice. A record without spectra
+  has no such file. The main payload keeps its own, rounded, copy, so a
+  bundle still reads as a local store.
 * `experiment/<runID>.RIProfile.xml` — the radial intensity profile an RI
   (pseudo-absorbance) run is reduced with, in the format of the local
   `<runID>.RIProfile.xml`. On disk it is the file in the run directory; from
-  the database it is the profile stored with the experiment record, read
-  without leaving a copy in the local results directory. Only a profile an
+  the database it is the profile stored with the experiment record, copied
+  byte for byte (only a stored profile that does not parse is written afresh
+  from the values read), and read without leaving a copy in the local results
+  directory. Only a profile an
   import can read travels: well-formed XML with a `<US_RIProfile>` root and at
   least one `<RI value=...>`. An empty or broken one is left out with a
   warning, and the run is exported without it.
@@ -326,7 +373,8 @@ whose key ends in `Payload`, and its digest is under the same key with
 |--------------|----------------------|---------------------|----------------------------------------------|
 | `timeState`  | `definitionsPayload` | `definitionsSha256` | the field definitions XML of the `.tmst`     |
 | `experiment` | `riProfilePayload`   | `riProfileSha256`   | the RI intensity profile (RI runs that have one) |
-| `buffers`    | `componentsPayload`  | `componentsSha256`  | the definitions of the buffer's components   |
+| `buffers`    | `componentsPayload`  | `componentsSha256`  | the definitions of the buffer's components, with its concentrations |
+| `buffers`, `analytes`, `solutions` | `spectraPayload` | `spectraSha256` | the record's spectra at full precision |
 
 Every payload, extra ones included, always has its digest; a buffer with
 components also says how many in `components`.
@@ -334,7 +382,17 @@ components also says how many in `components`.
 **A record can depend on several records of one type.** The first dependency
 of a type is keyed by that type's GUID key, the further ones by the key with
 `_2`, `_3`, ... appended. A solution depends on every one of its analytes this
-way (`analyteGUID`, `analyteGUID_2`, ...).
+way (`analyteGUID`, `analyteGUID_2`, ...), and on the experiment of every
+exported run whose channels it fills (`experimentGUID`, `experimentGUID_2`,
+...).
+
+Every value is written as a double-quoted YAML scalar. `\`, `"`, newline,
+carriage return and tab are escaped as `\\`, `\"`, `\n`, `\r` and `\t`; every
+other control character (C0, DEL, C1) and the Unicode line and paragraph
+separators as `\uXXXX`. A description of any kind — non-ASCII, quoted, over
+several lines, with a NUL in it — therefore reads back as it was written; an
+export reads the manifest it wrote back and refuses to pack one that does
+not.
 
 A section that was exported but has nothing in it is written as `[]`; a
 section that was not exported at all is not written. A reader can therefore
@@ -409,7 +467,37 @@ command line exits with `1`, when
   `rawDataGUID` of the edit, differ from the ones it is exported under (an
   import would refuse the bundle for it);
 * a noise record asked for with `--noise-guid` (or ticked in the window)
-  belongs to a model that is not in the bundle.
+  belongs to a model that is not in the bundle;
+* the bundle would be refused on import. The export applies the import's
+  acceptance rules — the same functions of `US_DataPub`, so the two cannot
+  drift apart — before it packs anything:
+  * every record's GUID, and every GUID it depends on, is a GUID: 8-4-4-4-12
+    hexadecimal digits, the whole value (`US_DataPub::guidIsUsable()`);
+  * inside every XML payload, every attribute that names a record by GUID —
+    `guid`, anything ending in `GUID`, the `value` of an element ending in
+    `GUID` — is empty or a GUID (`US_DataPub::unusableGuidInXml()`). A legacy
+    record with, say, an operator GUID of `7` stops the export with the value
+    named;
+  * a run type is one to eight letters or digits
+    (`US_DataPub::runTypeIsUsable()`);
+  * raw data, edits and the time state are named `<runID>.…` after the run
+    they depend on (`US_DataPub::runFileNameIsUsable()`), and the time state
+    is `<runID>.time_state.tmst` with its definitions.
+
+  `US_DataPubManifest::checkAcceptance()` applies them to the manifest, a
+  preview included;
+* just before packing, the staged tree is not exactly `manifest.yaml`,
+  `manifest.sha256` and the payloads the manifest names, or a payload no
+  longer matches its digest. A payload that cannot be read to its end gets
+  no digest at all (`US_DataPub::fileSha256()`), so a short read stops the
+  export rather than carrying the digest of half a file.
+
+**A run of a project export that breaks a rule is left out** rather than
+failing the whole export: a project with a run whose run ID, run type, or the
+GUID or file name of one of its triples or edits cannot be exported goes
+without that run, with a warning naming it. A run named on its own
+(`--experiment-id`, or picked in the window) is refused instead. When no run
+of the project is left, the export fails.
 
 Records the export cannot carry and was not asked for by name are left out
 with a warning: a model or noise record without a GUID, a noise record whose
@@ -508,7 +596,10 @@ The Export tab works top to bottom:
    `fittedToModelGUID`.
 8. **Export up to**, **Include time state**, **Comment**, **Bundle file**.
 9. **Summary** — the counts of projects, experiments, raw data, edits, models
-   and noise records; **Details…** shows the manifest that would be written,
+   and noise records. With only a project picked and no run selected, there
+   is no tree to narrow anything down: every run of the project goes, with
+   everything it holds up to the scope, as `--project-guid` does on the
+   command line, and the summary says so. **Details…** shows the manifest that would be written,
    without copying a single byte of experimental data. **Latest Edit** ticks
    the edit with the latest edit time stamp of each triple.
 10. **Export Bundle**. While the export runs the tab cannot be changed, the
@@ -526,9 +617,9 @@ us_data_publication --mode export --bundle <file.tar.gz> [options]
 | `--source db\|disk` | Where the records are read from (default: `disk`) |
 | `--project-id <id>` | Export this project, by database ID |
 | `--project-guid <guid>` | Export this project, by GUID |
-| `--experiment-id <run>` | Export this run; repeatable. Accepts a runID or an experiment database ID |
+| `--experiment-id <run>` | Export this run; repeatable. Accepts a runID or an experiment database ID. A run ID that matches exactly always wins — a run ID made only of digits is not taken for another run's database ID (that is warned about) — and a database ID is only taken when exactly one run has it |
 | `--max-scope <scope>` | Export up to and including this record type (default: `noise`, the whole chain) |
-| `--include-<scope>` | Export up to and including this record type; with several, the deepest counts. It may not go beyond `--max-scope` |
+| `--include-<scope>` | Export up to and including this record type; with several, the deepest counts. It may not go beyond `--max-scope`; within it, it is what is exported (`--max-scope noise --include-solutions` exports up to the solutions) |
 | `--model-guid <guid>` | Export only these models; repeatable |
 | `--noise-guid <guid>` | Export only these noise records; repeatable |
 | `--no-timestate` | Leave the runs' time state out |
@@ -920,7 +1011,13 @@ us_data_publication --mode import --bundle project7.tar.gz --list
 | `--db-password <pw>` | The master password itself. Other users of the machine can see it in the process list, so the program warns; prefer the file or `US3_DB_PASSWORD`, which is used when neither option is given. Without any of them an interactive run prompts on the error output, without echoing (an interrupted prompt puts the terminal back); a `--non-interactive` run stops with exit code `2`, and so does a Windows run whose input is not a console, since the password could not be read there without showing it |
 
 From a file, the environment and the prompt alike only the line end that ends
-the password — one `\n`, `\r\n` or `\r` — is removed; spaces are part of it.
+the password — one `\n`, `\r\n` or `\r` — is removed; spaces are part of it,
+and all three are read as UTF-8 (the environment variable as the text the
+system holds, so a non-ASCII password survives on Windows too). A password
+file that cannot be read is reported once and an export exits with `1`; no
+password at all is a usage error (`2`). The prompt keeps the terminal quiet
+across Ctrl-Z: a stopped and continued prompt goes on reading without echo,
+and a signal that does not end the program does not leave it echoing either.
 | `--dry-run` | Decide everything, write nothing |
 | `--non-interactive` | Never prompt; fail instead of asking |
 | `--verbose` | Report every step |

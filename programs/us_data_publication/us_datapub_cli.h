@@ -63,6 +63,22 @@ class US_DataPubCLI : public QObject
       static bool readPasswordFile( const QString& path, QString& password,
                                     QString& warning, QString& error );
 
+      /*! \brief The run an \c --experiment-id value names
+
+          A run ID that matches exactly always wins: a run ID made only of
+          digits ("12345") is not taken for the database ID of some other
+          run.  Only when no run has that run ID is the value taken as a
+          database ID, and then only when exactly one run has it -- local
+          copies of runs can carry the same placeholder ID.
+          \param runs   The runs of the source
+          \param wanted The value given
+          \param why    On failure, why; on success, a warning when the
+                        value is also the database ID of another run
+          \returns The run ID of the run, or an empty string
+      */
+      static QString resolveRun( const QList< US_DataPubCatalog::Run >& runs,
+                                 const QString& wanted, QString& why );
+
    private slots:
       void onMessage( const QString& );
 
@@ -107,6 +123,9 @@ class US_DataPubCLI : public QObject
 
       Args        args;
       bool        verbose;
+      //! Set by password() when a password file or the terminal could not
+      //! be read -- an I/O failure, not a usage error
+      bool        password_failed;
       QTextStream out;
       QTextStream err;
 
