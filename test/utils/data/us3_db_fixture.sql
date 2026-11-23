@@ -82,14 +82,17 @@ INSERT INTO cell (cellID, cellType, abstractCenterpieceID, experimentID, cellGUI
                   holeNumber, dateUpdated)
 VALUES (60, 'sample', 2, 10, 'aaaaaaaa-0000-4000-8000-000000000060', '1', 1, NOW());
 
--- The buffer: 150 mM sodium chloride and 10 mM Tris (component IDs of the
--- hardware data's component table), with an extinction profile
+-- The buffer: 150 mM sodium chloride and a trace of Tris, 0.525 uM (component
+-- IDs of the hardware data's component table), with an extinction profile.
+-- The trace is 0.000525 mM: bufferLink.concentration is a FLOAT, which holds
+-- it, while a buffer file that keeps five decimals rounds it to 0.00053, so
+-- an export that went through such a file is caught.
 INSERT INTO buffer (bufferID, bufferGUID, description, compressibility, pH, viscosity,
                     density, manual)
 VALUES (20, 'aaaaaaaa-0000-4000-8000-000000000020', 'Demo buffer', 4.6e-10, 7.4, 1.0185, 1.0057, 0);
 INSERT INTO bufferPerson (bufferID, personID, private) VALUES (20, 2, 0);
 INSERT INTO bufferLink (bufferID, bufferComponentID, concentration)
-VALUES (20, 70, 150.0), (20, 92, 10.0);
+VALUES (20, 70, 150.0), (20, 92, 0.000525);
 INSERT INTO extinctionProfile (profileID, componentID, componentType, valueType, xml)
 VALUES (1, 20, 'Buffer', 'molarExtinction', '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE US_EProfile>\n<EProfileData version="1.0"><extinctionProfile componentID="20" componentType="Buffer" valueType="molarExtinction"><extinction wavelength="260" value="0.0123456789"/><extinction wavelength="280" value="0.00987654321"/></extinctionProfile></EProfileData>\n');
 
@@ -207,8 +210,12 @@ VALUES (210,110,'aaaaaaaa-0000-4000-8000-000000000210','Other_run','<?xml versio
 -- A time state for the first experiment.  It is a pair: the binary readings
 -- in "data" and the field definitions that say what is in them, which
 -- US_TimeState needs to make sense of the binary.  An export has to carry
--- both, so there is one here to export.
+-- both, so there is one here to export.  Both are what US_TimeState wrote
+-- (open_write_data(), set_keys(), set_value(), flush_record(),
+-- close_write_data(), write_defs(); see writeTimeStateFiles() in
+-- test/programs/us_data_publication/datapub_test_env.h): five records, one
+-- a second, of the fields an import writes.
 INSERT INTO timestate (timestateID, experimentID, filename, definitions, data)
 VALUES (500, 10, 'MWL_demo_run.time_state.tmst',
-        '<?xml version="1.0"?>\n<!DOCTYPE US_TimeState>\n<TimeState version="2.1" import_type="XLA">\n <file time_count="1" constant_incr="1" time_increment="1.0" first_time="0.0" ss_reso="100">\n  <value key="testkey" format="I4"/>\n </file>\n</TimeState>\n',
-        'USTS2.1TMSTBYTES');
+        '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE US_TimeState>\n<TimeState version="2.2" import_type="XLA" type="0">\n    <file time_count="5" constant_incr="1" time_increment="1" first_time="0" ss_reso="100">\n        <value key="Time" format="I4"/>\n        <value key="RawSpeed" format="F4"/>\n        <value key="SetSpeed" format="I4"/>\n        <value key="Omega2T" format="F4"/>\n        <value key="Temperature" format="F4"/>\n        <value key="Step" format="I2"/>\n        <value key="Scan" format="I2"/>\n    </file>\n</TimeState>\n',
+        X'55535453323200000001472FC8000000AFC84BA96C4941A000000001000000000002472FC5000000AFC84C29696541A0147B0001000000000003472FC2000000AFC84C7E19C141A028F60001000100000004472FBF000000AFC84CA9639C41A03D710001000000000005472FBC000000AFC84CD3B8E641A051EC00010000');

@@ -614,6 +614,10 @@ TEST_F( DataPubExport, TheTimeStateCarriesItsDefinitions )
 
    EXPECT_EQ( US_DataPubHash::fileHash( xdef ).toStdString(),
               states[ 0 ].attrs.value( "definitionsSha256" ).toStdString() );
+
+   // ... and what lands is a time state US_TimeState reads, record by record
+   QString why;
+   EXPECT_TRUE( isTheTimeState( tmst, why ) ) << why.toStdString();
 }
 
 // ------------------------------------------------------------ what is refused
@@ -1585,6 +1589,14 @@ class US_DataPubExporterTest
       {
          return ex.run_fault;
       }
+
+      static bool addSolutions( US_DataPubExporter& ex,
+                                const US_DataPubCatalog::Run& run,
+                                QString& error )
+      {
+         ex.run_fault = false;
+         return ex.addSolutions( run, US_DataPubCatalog::ExpInfo(), error );
+      }
 };
 
 /**
@@ -1598,6 +1610,7 @@ class ScriptedDb
       QMap< QString, QList< QVariantList > > rows;
       QMap< int, QString >                  blobs;
       QStringList                           asked;
+      QSet< QString >                       failing;   // answer DBERROR
 
       ScriptedDb()
       {
@@ -1613,6 +1626,8 @@ class ScriptedDb
 
          ON_CALL( mock, lastErrno() ).WillByDefault( [ this ]()
          {
+            if ( failing.contains( current ) )  return int( IUS_DB2::DBERROR );
+
             return rows.value( current ).isEmpty() ? int( IUS_DB2::NOROWS )
                                                    : int( IUS_DB2::OK );
          } );
@@ -2660,12 +2675,12 @@ TEST_F( DataPubExportTwoRuns, AProjectExportSkipsARunThatFailsToStage )
 
       QString original = read_text( xml2 );
 
-      if ( pass == 0 )
-         ASSERT_TRUE( replace_in_file( xml2, "runID=\"" + runID2 + "\"",
-                                       "runID=\"old_name\"" ) );
-      else
-         ASSERT_TRUE( replace_in_file( xml2, solutionGUID,
-                                       US_Util::new_guid() ) );
+      bool changed = ( pass == 0 )
+                     ? replace_in_file( xml2, "runID=\"" + runID2 + "\"",
+                                        "runID=\"old_name\"" )
+                     : replace_in_file( xml2, solutionGUID,
+                                        US_Util::new_guid() );
+      ASSERT_TRUE( changed );
 
          US_DataPubExporter            exporter;
       US_DataPubExporter::Selection selection;
@@ -2865,4 +2880,29 @@ TEST_F( DataPubExportSteps, NonFiniteSpectraAndConcentrationsAreRefused )
    QString error;
    EXPECT_TRUE( US_DataPubExporterTest::addSolution( exporter, solution,
                 expGUID, error ) ) << error.toStdString();
+}
+
+// A solution the database does not have is the run's problem, which a
+// project export passes over; a database that fails to answer is not, and
+// fails any export
+TEST_F( DataPubExportSteps, AMissingSolutionIsTheRunsFaultAFailingDatabaseIsNot )
+{
+   US_DataPubCatalog::Run run = dbRun();
+   QString                error;
+
+   EXPECT_FALSE( US_DataPubExporterTest::addSolutions( exporter, run, error ) );
+   EXPECT_TRUE ( error.contains( "not found" ) ) << error.toStdString();
+   EXPECT_TRUE ( US_DataPubExporterTest::runFault( exporter ) );
+
+   sdb.failing.insert( "get_solution" );
+
+   EXPECT_FALSE( US_DataPubExporterTest::addSolutions( exporter, run, error ) );
+   EXPECT_FALSE( US_DataPubExporterTest::runFault( exporter ) )
+      << error.toStdString();
+
+   // A raw triple that names no solution at all is the run's
+   sdb.failing.clear();
+   run.raws[ 0 ].solutionID = "0";
+   EXPECT_FALSE( US_DataPubExporterTest::addSolutions( exporter, run, error ) );
+   EXPECT_TRUE ( US_DataPubExporterTest::runFault( exporter ) );
 }
