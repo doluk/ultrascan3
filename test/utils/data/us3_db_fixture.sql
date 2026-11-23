@@ -3,7 +3,8 @@
 -- Load it into a scratch database that already has the UltraScan3 schema,
 -- stored procedures and hardware data (us3_sql: us3.sql, us3_procedures.sql,
 -- us3_hardware_data.sql, us3_buffer_components.sql), then point the tests at
--- it:
+-- it.  test/README ("Database Integration Tests") has every step from an
+-- empty server, for MySQL 8 and MariaDB alike:
 --
 --   mysql -u root us3test < test/utils/data/us3_db_fixture.sql
 --
