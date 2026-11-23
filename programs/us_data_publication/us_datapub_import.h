@@ -3,6 +3,7 @@
 #define US_DATAPUB_IMPORT_H
 
 #include <QtCore>
+#include <QLockFile>
 
 #include "us_datapub_defs.h"
 #include "us_datapub_manifest.h"
@@ -321,6 +322,48 @@ class US_DataPubImporter : public QObject
       //!        including the ones this importer adds
       static QString resolutionText( US_DataPub::Resolution resolution );
 
+      /*! \brief Remove the staging directories that importers which are no
+                 longer running left behind
+
+          An importer unpacks a bundle into a private directory under
+          US_Settings::tmpDir() and holds a lock file in it while it lives.
+          A process that was killed (SIGKILL, a crash, a power cut) cannot
+          remove its directory, so the next \ref inspect sweeps every one
+          whose lock is stale -- its process is gone -- and every one
+          without a lock that has not changed for two days.  A directory of
+          a running importer or exporter is never touched.
+          \returns The number of directories removed
+      */
+      static int sweepStaleStaging( void );
+
+      /*! \brief Remove this process's staging directories when it is told
+                 to stop
+
+          Installs handlers for SIGTERM and SIGINT (and SIGHUP where there is
+          one) that remove the staging directory of every importer of this
+          process that is still alive, then let the signal take its usual
+          course.  The removal is made with nothing but async-signal-safe
+          calls.  A database import's transaction needs nothing: the server
+          rolls back a transaction whose connection goes away.  For the
+          command line; a program with an event loop of its own may call it
+          too.
+      */
+      static void installSignalCleanup( void );
+
+      /*! \brief A sequence as the record holds it, from the text US_Analyte
+                 reads out of an analyte file
+
+          US_Analyte writes a sequence as a newline, the sequence in lines of
+          80 characters and a newline, and reads back all of that, so a
+          sequence grows two newlines -- an empty one becomes "\n\n" -- each
+          time it goes through a file.  This takes off the newlines around
+          it, however many round trips added them, and joins lines no
+          longer than 80 characters; a sequence with longer lines keeps its
+          line breaks.  Leading and trailing white space is never part of a
+          sequence.
+      */
+      static QString storedSequence( const QString& fileText );
+
       /*! \brief The order the record types of a bundle are replayed in
 
           A type comes after every type it depends on in the target.  The
@@ -470,6 +513,93 @@ class US_DataPubImporter : public QObject
 
       //! Runs whose raw data a dry run has checked
       QSet< QString >            raw_checked;
+
+      //! Every component ID the target's component table listed, parsed or
+      //! not: a component this import creates is the row that is not here
+      QSet< QString >            tcomp_ids;
+
+      //! The user level of the person logged in to the target database,
+      //! once read (-1 before)
+      int                        user_level;
+
+      /*! Buffers and analytes of the bundle the target holds under their
+          GUID for someone else, where the import may not use them: bundle
+          GUID -> the GUID of the copy the import makes instead
+      */
+      QMap< QString, QString >   fresh_guids;
+
+      //! Rotor calibrations the person logged in may not create (the
+      //! procedure needs an administrator), decided in the preflight
+      QSet< QString >            cal_refused;
+
+      //! Whether a buffer or analyte of the target may be used, by
+      //! "type:GUID", once asked
+      QHash< QString, bool >     shared_ok;
+
+      //! Projects a dry run would create from what a run names
+      QSet< QString >            implicit_projs;
+
+      //! The lock an importer holds on its staging directory while it lives
+      QLockFile*                 stage_lock;
+
+      //! \brief Read the user level of the person logged in
+      bool    readUserLevel( QString& error );
+
+      //! \brief The person logged in is an administrator (level 3)
+      bool    isAdmin( void ) const;
+
+      /*! \brief Whether a buffer or analyte the target holds may be named by
+                 the investigator's records
+
+          A buffer may when it is the investigator's own or public; an
+          analyte when it is the investigator's own (analytePerson), or the
+          person logged in is an administrator -- the rule new_solutionAnalyte
+          applies.  False with \a error empty when it may not; false with
+          \a error set when the target could not be asked.
+      */
+      bool    sharedUsable( US_DataPub::EntityType, const QString& guid,
+                            const QString& id, QString& error );
+
+      /*! \brief Check, before anything is written, the rules the server
+                 enforces only when the writes are made
+
+          Which calibrations the person may create (administrators only),
+          whether the person may add buffer components (level 2), whether
+          the target has the channel row the raw data writers name, and
+          whether every noise record will have an edit to be filed under.
+      */
+      bool    checkServerRules( QString& error );
+
+      //! \brief Add a buffer component to the database and find its row
+      bool    createComponentDb( const US_BufferComponent& want,
+                                 QString& newID, QString& error );
+
+      //! \brief The GUID a bundle record is written under in the target
+      QString targetGuidOf( const US_DataPubEntity& ) const;
+
+      //! \brief The note a record the import copies under a GUID of its own
+      //!        is reported with; empty for any other
+      QString copyNote( const US_DataPubEntity& ) const;
+
+      //! \brief The fingerprint of the record the import would write, in
+      //!        the terms \ref targetFingerprint writes the target's in
+      QString ourFingerprint( const US_DataPubEntity&, const QString& workPath,
+                              QString& error );
+
+      //! \brief The edit a noise record is filed under; empty when there
+      //!        is none.  \a pending is set for an edit this import creates.
+      bool    noiseEditOf( const US_DataPubEntity&, const QString& workPath,
+                           QString& editID, bool& pending, QString& error );
+
+      //! \brief Report a project the import creates from what a run names,
+      //!        which no record of the bundle stands for
+      void    recordImplicitProject( const QString& guid, const QString& desc,
+                                     const QString& id, const QString& run );
+
+      //! \brief Take a lock on the staging directory and register it for
+      //!        removal on a signal
+      void    holdStaging( void );
+      void    releaseStaging( void );
 
       //! \brief Read the target database's hardware into the caches
       bool    readHardwareDb( void );

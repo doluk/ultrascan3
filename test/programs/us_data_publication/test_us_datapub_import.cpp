@@ -1871,7 +1871,52 @@ TEST_F( DataPubDiskAgain, AnRiProfileIsNotTakenForTheExperiment )
    EXPECT_EQ( countOf( second.results(), US_DataPub::ResolvedRenamed ), 0 );
 
    for ( int ii = 0; ii < second.results().size(); ii++ )
+   {
       if ( second.results()[ ii ].type == US_DataPub::Experiment )
+      {
          EXPECT_EQ( second.results()[ ii ].resolution,
                     US_DataPub::ResolvedReused );
+      }
+   }
+}
+
+// A sequence comes out of an analyte file framed in the newlines
+// US_Analyte's writer adds (one before, one after, one every 80
+// characters), and grows two of them each time it goes through a file.
+// What the record holds is the sequence without them.
+TEST( DataPubImportUnit, ASequenceLosesTheLineBreaksItsFileAdded )
+{
+   QString seq = QString( "MKWVTFISLL" ).repeated( 17 );        // 170 letters
+
+   US_Analyte analyte;
+   analyte.type        = US_Analyte::PROTEIN;
+   analyte.vbar20      = 0.72;
+   analyte.analyteGUID = US_Util::new_guid();
+   analyte.sequence    = seq;
+
+   QTemporaryDir dir;
+   ASSERT_TRUE( dir.isValid() );
+   QString path = dir.path() + "/A.xml";
+
+   // Three round trips through a file, as the library makes them
+   for ( int ii = 0; ii < 3; ii++ )
+   {
+      QFile::remove( path );
+      ASSERT_EQ( analyte.write( false, path ), IUS_DB2::OK );
+
+      US_Analyte again;
+      ASSERT_EQ( again.readFromFile( path ), IUS_DB2::OK );
+      EXPECT_EQ( US_DataPubImporter::storedSequence( again.sequence ), seq )
+         << "round trip " << ii;
+
+      analyte.sequence = again.sequence;
+   }
+
+   EXPECT_EQ( US_DataPubImporter::storedSequence( "\n\n" ),     QString() );
+   EXPECT_EQ( US_DataPubImporter::storedSequence( "\n\n\n\n" ), QString() );
+   EXPECT_EQ( US_DataPubImporter::storedSequence( "ACGT" ),     QString( "ACGT" ) );
+
+   // A line longer than the writer's keeps the sequence's own breaks
+   QString longLines = QString( "A" ).repeated( 90 ) + "\n" + "CC";
+   EXPECT_EQ( US_DataPubImporter::storedSequence( longLines ), longLines );
 }

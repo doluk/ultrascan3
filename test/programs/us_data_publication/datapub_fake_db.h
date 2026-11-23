@@ -38,6 +38,32 @@
  *   or for any run when the person is an admin.
  * - An experiment GUID is unique (experiment.experimentGUID is UNIQUE in
  *   us3.sql): a second new_experiment of the same GUID fails.
+ * - get_user_info answers with the person's user level: 3 for an admin,
+ *   userLevel (2, as a plain investigator has) otherwise.
+ * - add_rotor_calibration takes an admin (NOTPERMITTED otherwise) and an
+ *   experiment that exists, or -1 for none (NO_EXPERIMENT otherwise: 0 is
+ *   an ID it looks for).
+ * - new_solutionAnalyte refuses an analyte that is not there (NO_ANALYTE)
+ *   and, unless the person is an admin, one that is not theirs
+ *   (verify_analyte_permission: NOTPERMITTED).
+ * - get_buffer_info answers for the person's own buffers, public ones and
+ *   anyone's for an admin, with the owner and the private flag in columns
+ *   7 and 8; someone else's private buffer is NOTPERMITTED.  A buffer the
+ *   import writes is private, as new_buffer is told.
+ * - The raw data and solution rows name channel 1 (fk_rawData_channelID,
+ *   fk_experimentSolutionChannel_channelID): without channelRow1 they fail,
+ *   and the import's check of the channel table answers NOROWS.
+ * - get_operator_names lists the operators with a permit for the
+ *   instrument (the person logged in, once addHardware() ran), and
+ *   new_experiment refuses any other operator (BADOPERATOR).
+ * - new_noise of an edit that is not there falls back on edit 1, which
+ *   this database does not have: the write fails.
+ * - create_buffer_component takes level 2 and inserts with the ID of the
+ *   row count plus one -- failing when that ID is taken -- and leaves the
+ *   connection's last insert ID as it was, as the unpatched procedure does
+ *   (LAST_INSERT_ID() is not set by an explicit ID).  The components are
+ *   listed and read (get_buffer_component_desc/_info) from the table,
+ *   unless a test canned those listings.
  *
  * Transactions behave as InnoDB's do: what is written inside one is gone
  * after a rollback, and also when the connection is dropped without a
@@ -69,6 +95,12 @@ class DataPubFakeDb
 
       int  person    = 2;        // The person the connection is logged in as
       bool admin     = false;    // That person is an admin
+      int  userLevel = 2;        // Their user level, when not an admin
+
+      // The people with a permit for the instrument (get_operator_names);
+      // new_experiment refuses any other operator (BADOPERATOR)
+      QList< int > operators;
+      bool channelRow1 = true;   // The channel table has channel 1
 
       QString failOn;            // A procedure that fails with DBERROR
       QString implicitCommitOn;  // A procedure that commits implicitly
@@ -102,6 +134,15 @@ class DataPubFakeDb
             QMap< int, Experiment > experiments;
             QMap< int, int >        timestates;
 
+            // Buffers that are public (private = 0), by GUID; any other is
+            // private
+            QSet< QString >         publicBuffers;
+
+            // The buffer component table: ID -> the row of
+            // get_buffer_component_info (unit, name, viscosity, density,
+            // range, gradient forming)
+            QMap< int, QVariantList > components;
+
             // "procedure:id" -> the bytes uploaded
             QMap< QString, QByteArray > blobs;
       };
@@ -130,6 +171,9 @@ class DataPubFakeDb
          ON_CALL( mock, statusQuery( An< const QStringList& >() ) )
             .WillByDefault( Invoke( [ this ]( const QStringList& q )
                                     { handle( q ); return status; } ) );
+         ON_CALL( mock, statusQuery( An< const QString& >() ) )
+            .WillByDefault( Invoke( [ this ]( const QString& sql )
+                                    { return handleSql( sql ); } ) );
          ON_CALL( mock, next() )
             .WillByDefault( Invoke( [ this ]()
                                     { return ++cursor <= rows.size(); } ) );
@@ -272,6 +316,16 @@ class DataPubFakeDb
          if ( ! name.isEmpty() )  state.names[ family ].insert( guid, name );
       }
 
+      // A buffer component in the table, under the given ID
+      void addComponent( int id, const QString& name, const QString& unit,
+                         const QString& range, const QString& density,
+                         const QString& viscosity )
+      {
+         state.components.insert( id, QVariantList() << unit << name
+                                      << viscosity << density << range
+                                      << "0" );
+      }
+
       // The calls of one procedure
       QList< QStringList > callsOf( const QString& proc ) const
       {
@@ -366,6 +420,7 @@ class DataPubFakeDb
                         << ( QVariantList() << 5 ) );
          canned.insert( "get_instrument_info_new", QList< QVariantList >()
                         << inst );
+         operators << person;
          canned.insert( "get_rotor_names", QList< QVariantList >()
                         << ( QVariantList() << 3 ) );
          canned.insert( "get_rotor_info", QList< QVariantList >() << rotor );
@@ -513,6 +568,132 @@ class DataPubFakeDb
          return US_Util::UUID_REGEX.match( text ).hasMatch();
       }
 
+      int level() const
+      {
+         return admin ? 3 : userLevel;
+      }
+
+      // A raw SQL statement: only the import's look at the channel table
+      int handleSql( const QString& sql )
+      {
+         log   << "sql";
+         calls << ( QStringList() << "sql" << sql );
+         rows.clear();
+         cursor = 0;
+
+         if ( failOn == "sql" )  return status = IUS_DB2::DBERROR;
+
+         if ( sql.contains( "FROM channel" ) )
+            status = channelRow1 ? int( IUS_DB2::OK )
+                                 : int( IUS_DB2::NOROWS );
+         else
+            status = IUS_DB2::DBERROR;
+
+         return status;
+      }
+
+      // What the server's own checks refuse among the writes; true when the
+      // write was refused, with the status set
+      bool refuses( const QString& proc, const QStringList& q )
+      {
+         if ( proc == "add_rotor_calibration" )
+         {
+            if ( level() < 3 )
+            {
+               status = IUS_DB2::NOTPERMITTED;
+               return true;
+            }
+
+            int expID = q.value( 7 ).toInt();
+
+            if ( expID != -1  &&  ! state.experiments.contains( expID ) )
+            {
+               status = IUS_DB2::NO_EXPERIMENT;
+               return true;
+            }
+         }
+
+         if ( proc == "new_experiment"  &&
+              ! operators.contains( q.value( 6 ).toInt() ) )
+         {
+            status = IUS_DB2::BADOPERATOR;
+            return true;
+         }
+
+         if ( proc == "new_solutionAnalyte" )
+         {
+            QString guid = q.value( 3 );
+
+            if ( ! state.registry.value( "analyte" ).contains( guid ) )
+            {
+               status = IUS_DB2::NO_ANALYTE;
+               return true;
+            }
+
+            if ( ! admin  &&
+                 state.owners.value( "analyte" ).value( guid, person )
+                 != person )
+            {
+               status = IUS_DB2::NOTPERMITTED;
+               return true;
+            }
+         }
+
+         // An edit the person may not use (or that is not there) makes
+         // new_noise fall back on edit 1, the "unassigned" record, which a
+         // database that does not have it refuses on its foreign key
+         if ( proc == "new_noise" )
+         {
+            int  editID = q.value( 2 ).toInt();
+            bool known  = false;
+
+            for ( int id : state.registry.value( "edit" ) )
+               if ( id == editID )  known = true;
+
+            if ( ! known )
+            {
+               status = IUS_DB2::DBERROR;
+               return true;
+            }
+         }
+
+         if ( ! channelRow1  &&
+              ( proc == "new_rawData"  ||  proc == "new_solution"  ||
+                proc == "new_experiment_solution" ) )
+         {
+            status = IUS_DB2::DBERROR;      // A foreign key constraint fails
+            return true;
+         }
+
+         return false;
+      }
+
+      // create_buffer_component, as the unpatched procedure does it
+      void createComponent( const QStringList& q )
+      {
+         if ( level() < 2 )
+         {
+            status = IUS_DB2::NOTPERMITTED;
+            return;
+         }
+
+         int id = state.components.size() + 1;
+
+         if ( state.components.contains( id ) )
+         {
+            status = IUS_DB2::DBERROR;      // Duplicate entry for the key
+            return;
+         }
+
+         // q: proc, componentGUID, name, unit, range, grad_form, density,
+         // viscosity; insertID is left as the last insert made it
+         state.components.insert( id, QVariantList() << q.value( 3 )
+                                      << q.value( 2 ) << q.value( 7 )
+                                      << q.value( 6 ) << q.value( 4 )
+                                      << q.value( 5 ) );
+         status = IUS_DB2::OK;
+      }
+
       void handle( const QStringList& q )
       {
          QString proc = q.value( 0 );
@@ -524,6 +705,96 @@ class DataPubFakeDb
          if ( proc == failOn )
          {
             status = IUS_DB2::DBERROR;
+            return;
+         }
+
+         if ( proc == "get_user_info" )
+         {
+            rows << ( QVariantList() << person << "Test" << "Person" << ""
+                                     << "" << level() );
+            status = IUS_DB2::OK;
+            return;
+         }
+
+         if ( proc == "create_buffer_component" )
+         {
+            createComponent( q );
+            return;
+         }
+
+         if ( proc == "get_operator_names"  &&  ! canned.contains( proc ) )
+         {
+            for ( int ii = 0; ii < operators.size(); ii++ )
+               rows << ( QVariantList() << operators[ ii ]
+                         << QString( "aaaaaaaa-0000-4000-8000-%1" )
+                            .arg( operators[ ii ], 12, 10, QChar( '0' ) )
+                         << "Operator" << QString::number( operators[ ii ] ) );
+
+            status = rows.isEmpty() ? int( IUS_DB2::NOROWS )
+                                    : int( IUS_DB2::OK );
+            return;
+         }
+
+         if ( proc == "get_buffer_component_desc"  &&
+              ! canned.contains( proc )  &&
+              ! cannedFor.contains( proc + ":" + q.value( 1 ) ) )
+         {
+            QList< int > ids = state.components.keys();
+
+            for ( int ii = 0; ii < ids.size(); ii++ )
+               rows << ( QVariantList() << ids[ ii ]
+                                        << state.components[ ids[ ii ] ]
+                                           .value( 1 ) );
+
+            status = rows.isEmpty() ? int( IUS_DB2::NOROWS )
+                                    : int( IUS_DB2::OK );
+            return;
+         }
+
+         if ( proc == "get_buffer_component_info"  &&
+              ! canned.contains( proc )  &&
+              ! cannedFor.contains( proc + ":" + q.value( 1 ) ) )
+         {
+            int id = q.value( 1 ).toInt();
+
+            if ( state.components.contains( id ) )
+               rows << state.components.value( id );
+
+            status = rows.isEmpty() ? int( IUS_DB2::NOROWS )
+                                    : int( IUS_DB2::OK );
+            return;
+         }
+
+         if ( proc == "get_buffer_info"  &&  ! canned.contains( proc )  &&
+              ! cannedFor.contains( proc + ":" + q.value( 1 ) ) )
+         {
+            QMap< QString, int > ids = state.registry.value( "buffer" );
+            QString              guid;
+
+            for ( auto it = ids.constBegin(); it != ids.constEnd(); ++it )
+               if ( QString::number( it.value() ) == q.value( 1 ) )
+                  guid = it.key();
+
+            if ( guid.isEmpty() )
+            {
+               status = IUS_DB2::NOROWS;
+               return;
+            }
+
+            int  owner = state.owners.value( "buffer" ).value( guid, person );
+            bool priv  = ! state.publicBuffers.contains( guid );
+
+            if ( ! admin  &&  owner != person  &&  priv )
+            {
+               status = IUS_DB2::NOTPERMITTED;
+               return;
+            }
+
+            rows << ( QVariantList() << guid
+                      << state.names.value( "buffer" ).value( guid )
+                      << "0" << "7" << "1.002" << "1.0" << "0" << owner
+                      << ( priv ? "1" : "0" ) );
+            status = IUS_DB2::OK;
             return;
          }
 
@@ -556,6 +827,8 @@ class DataPubFakeDb
          if ( isWrite( proc ) )
          {
             family   = familyOfWrite( proc );
+
+            if ( refuses( proc, q ) )  return;
 
             // An experiment GUID is unique
             if ( proc == "new_experiment"  &&

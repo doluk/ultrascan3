@@ -1011,6 +1011,11 @@ int US_DataPubCLI::runImport( void )
       }
    }
 
+   // A command line import told to stop (SIGTERM, Ctrl-C) leaves no staging
+   // directory behind; a database import's open transaction is rolled back
+   // by the server when the connection goes
+   US_DataPubImporter::installSignalCleanup();
+
    US_DataPubImporter importer;
    connect( &importer, &US_DataPubImporter::message,
             this,      &US_DataPubCLI::onMessage );
