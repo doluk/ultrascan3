@@ -121,6 +121,7 @@ class CalibrationServer
       QString     proc;
       int         row = -1;
       QStringList calls;
+      bool        noCalibrationRow = false;   //!< get_rotor_calibration_info finds nothing
 
       QList< QVariantList > rows( void ) const
       {
@@ -139,7 +140,7 @@ class CalibrationServer
          if ( proc == "get_rotor_calibration_profiles" )
             return QList< QVariantList >() << ( QVariantList() << 44 );
 
-         if ( proc == "get_rotor_calibration_info" )
+         if ( proc == "get_rotor_calibration_info"  &&  ! noCalibrationRow )
             return QList< QVariantList >() << ( QVariantList() << 44 << "" << "" << ""
                                                 << "1.5e-4" << "2.5e-8" << "" << "2020-01-02 03:04:05" );
 
@@ -204,4 +205,28 @@ TEST( ExperimentCalibration, NoCalibrationIsMadeUpWhenAskedNotTo )
    EXPECT_FLOAT_EQ( experiment.rotorCoeff2, 0.0f );
    EXPECT_FALSE( server.calls.contains( "get_rotor_calibration_profiles" ) );
    EXPECT_FALSE( server.calls.contains( "get_rotor_calibration_info" ) );
+}
+
+// A calibration the experiment names but the server no longer has leaves no
+// coefficients from an earlier read, and a missing rotor no name
+TEST( ExperimentCalibration, AMissingCalibrationRowLeavesNoStaleCoefficients )
+{
+   NiceMock<US_DB2_Mock>    db;
+   CalibrationServer        server;
+   US_Experiment            experiment;
+   QVector<SP_SPEEDPROFILE> speedsteps;
+   server.wire( db );
+   server.noCalibrationRow = true;
+
+   experiment.rotorCoeff1  = 9.0;      // left over from an earlier read
+   experiment.rotorCoeff2  = 8.0;
+   experiment.rotorName    = "old rotor";
+   experiment.rotorUpdated = QDate( 2001, 2, 3 );
+
+   ASSERT_EQ( experiment.readFromDB( "Cal_run", &db, speedsteps, "17", false ), IUS_DB2::OK );
+   EXPECT_EQ( experiment.calibrationID, 44 );
+   EXPECT_FLOAT_EQ( experiment.rotorCoeff1, 0.0f );
+   EXPECT_FLOAT_EQ( experiment.rotorCoeff2, 0.0f );
+   EXPECT_FALSE( experiment.rotorUpdated.isValid() );
+   EXPECT_TRUE( experiment.rotorName.isEmpty() );
 }

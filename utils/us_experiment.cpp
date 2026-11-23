@@ -281,8 +281,9 @@ qDebug() << "Exp:rdDB: ExpInfRun: xmlFile size" << xmlFile.size();
       return rowStatus == IUS_DB2::OK || rowStatus == IUS_DB2::NOROWS ? IUS_DB2::NO_EXPERIMENT : rowStatus;
    }
 
-   // Get the rest of the info we need.  Each lookup that finds no row leaves
-   // its fields as they are; a database error ends the read with its status.
+   // Get the rest of the info we need.  A hardware lookup that finds no row
+   // leaves its fields empty (or the rotor coefficients 0), not as an earlier
+   // read left them; a database error ends the read with its status.
    bool found  = false;
    int  status = lookup_row( db, QStringList{ "get_person_info", QString::number( invID ) }, found );
    if ( status != IUS_DB2::OK )
@@ -323,8 +324,10 @@ qDebug() << "Exp:rdDB: ExpInfRun: xmlFile size" << xmlFile.size();
       instrumentSerial = db->value( 1 ).toString();
    }
 
-   rotorGUID = QString( "" );
-   status    = lookup_row( db, QStringList{ "get_rotor_info", QString::number( rotorID ) }, found );
+   rotorGUID   = QString( "" );
+   rotorName   = QString( "" );
+   rotorSerial = QString( "" );
+   status      = lookup_row( db, QStringList{ "get_rotor_info", QString::number( rotorID ) }, found );
    if ( status != IUS_DB2::OK )
    {
       return status;
@@ -350,14 +353,13 @@ qDebug() << "Exp:rdDB: ExpInfRun: xmlFile size" << xmlFile.size();
       }
    }
 
-   // A caller that records what the run used gets no coefficients where the
-   // experiment names no calibration, not those of one it may not have used
-   if ( calibrationID == 0 )
-   {
-      rotorCoeff1  = 0.0;
-      rotorCoeff2  = 0.0;
-      rotorUpdated = QDate();
-   }
+   // No coefficients are left over from an earlier read: where the
+   // experiment names no calibration a caller that records what the run used
+   // gets none, not those of one it may not have used, and where the
+   // calibration it names has no row the coefficients are unknown
+   rotorCoeff1  = 0.0;
+   rotorCoeff2  = 0.0;
+   rotorUpdated = QDate();
 
    // Now get more calibration info
    found = false;
