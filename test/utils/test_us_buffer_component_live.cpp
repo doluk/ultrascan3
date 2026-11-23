@@ -244,5 +244,154 @@ TEST_F( BufferComponentScratchDb, UnreadableComponentsAndAFailedListAreReported 
       EXPECT_TRUE( components.contains( "sentinel" ) );
    }
 }
+
+/* US_BufferComponent::saveToDB against the real create_buffer_component.
+
+   The procedure servers run inserts with an explicit ID of COUNT(*) + 1 and
+   reports LAST_INSERT_ID(), which that insert does not set: it answers what
+   the connection inserted last.  These cases set that to an existing
+   component first, as an earlier insert on the connection would, and the
+   save must still name the row it made.  They need the US3 schema and an
+   investigator of userlevel 2 or more:
+     US3_TEST_DB_HOST, US3_TEST_DB_NAME, US3_TEST_DB_USER, US3_TEST_DB_PASSWORD,
+     US3_TEST_DB_PERSON_GUID, US3_TEST_DB_PERSON_PW
+   They add rows to bufferComponent and remove them again.
+*/
+class BufferComponentUs3Db : public ::testing::Test
+{
+   protected:
+      void SetUp() override
+      {
+         const QString host       = qEnvironmentVariable( "US3_TEST_DB_HOST" );
+         const QString name       = qEnvironmentVariable( "US3_TEST_DB_NAME" );
+         const QString user       = qEnvironmentVariable( "US3_TEST_DB_USER" );
+         const QString password   = qEnvironmentVariable( "US3_TEST_DB_PASSWORD" );
+         const QString personGuid = qEnvironmentVariable( "US3_TEST_DB_PERSON_GUID" );
+         const QString personPw   = qEnvironmentVariable( "US3_TEST_DB_PERSON_PW" );
+         if ( host.isEmpty() || name.isEmpty() || user.isEmpty() || personGuid.isEmpty() )
+         {
+            GTEST_SKIP() << "US3_TEST_DB_HOST, US3_TEST_DB_NAME, US3_TEST_DB_USER and US3_TEST_DB_PERSON_GUID not set";
+         }
+
+         QString error;
+         ASSERT_TRUE( admin.connect( host, name, user, password, error ) ) << error.toStdString();
+         admin.rawQuery( "SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = DATABASE() "
+                         "AND ROUTINE_NAME IN ( 'create_buffer_component', 'get_buffer_component_desc', "
+                         "'get_buffer_component_info' )" );
+         ASSERT_TRUE( admin.next() );
+         if ( admin.value( 0 ).toInt() != 3 )
+         {
+            GTEST_SKIP() << "the US3 buffer component procedures are not in " << name.toStdString();
+         }
+         ASSERT_TRUE( person.connectAuthenticated( host, name, user, password, personGuid, personPw, error ) )
+            << error.toStdString();
+         removeTestRows();
+
+         component.name  = kName;
+         component.unit  = "mM";
+         component.range = "0-100 mM";
+         for ( int i = 0; i < 6; ++i )
+         {
+            component.dens_coeff[i] = 0.5 + i;
+            component.visc_coeff[i] = 1.25 * i;
+         }
+      }
+
+      void TearDown() override
+      {
+         if ( admin.isConnected() )
+         {
+            removeTestRows();
+         }
+      }
+
+      void removeTestRows()
+      {
+         admin.rawQuery( "DELETE FROM bufferComponent WHERE description IN ( '" + kName + "', '" + kFiller + "' )" );
+      }
+
+      //! The description of a component, or "" when there is none
+      QString descriptionOf( int id )
+      {
+         admin.rawQuery( "SELECT description FROM bufferComponent WHERE bufferComponentID = " + QString::number( id ) );
+         return admin.next() ? admin.value( 0 ).toString() : QString();
+      }
+
+      //! What COUNT(*) + 1 is now
+      int nextByCount()
+      {
+         admin.rawQuery( "SELECT COUNT(*) + 1 FROM bufferComponent" );
+         return admin.next() ? admin.value( 0 ).toInt() : -1;
+      }
+
+      bool idTaken( int id ) { return !descriptionOf( id ).isEmpty(); }
+
+      const QString      kName   = "us3 test component (saveToDB)";
+      const QString      kFiller = "us3 test component (gap filler)";
+      US_DB2             admin;
+      US_DB2             person;
+      US_BufferComponent component;
+};
+
+TEST_F( BufferComponentUs3Db, TheSaveNamesTheRowItMadeWhateverTheConnectionInsertedBefore )
+{
+   if ( idTaken( nextByCount() ) )
+   {
+      GTEST_SKIP() << "bufferComponent has a gap in its IDs; the old procedure cannot insert there";
+   }
+
+   // An earlier insert on this connection: component 1 is somebody else's
+   person.rawQuery( "SELECT LAST_INSERT_ID( 1 )" );
+   ASSERT_TRUE( person.lastError().isEmpty() ) << person.lastError().toStdString();
+   const QString other = descriptionOf( 1 );
+   ASSERT_FALSE( other.isEmpty() );
+
+   QString   error;
+   const int id = component.saveToDB( &person, &error );
+   ASSERT_GT( id, 0 ) << error.toStdString();
+   EXPECT_NE( 1, id );
+   EXPECT_EQ( QString::number( id ), component.componentID );
+   EXPECT_EQ( kName, descriptionOf( id ) );
+   EXPECT_EQ( other, descriptionOf( 1 ) );
+
+   US_BufferComponent stored;
+   stored.componentID = component.componentID;
+   ASSERT_TRUE( stored.getInfoFromDB( &person ) );
+   EXPECT_TRUE( stored.sameDefinition( component ) );
+}
+
+// A gap makes the old procedure's COUNT(*) + 1 an ID that is taken.  The
+// save must then fail and say so, or -- on a server whose procedure picks a
+// free ID -- name its own row; never the row in the way.
+TEST_F( BufferComponentUs3Db, AGapInTheIdsIsReportedNotLinkedToTheRowInTheWay )
+{
+   admin.rawQuery( "SELECT MAX( bufferComponentID ) + 1, COUNT(*) FROM bufferComponent" );
+   ASSERT_TRUE( admin.next() );
+   const int gap   = admin.value( 0 ).toInt();
+   const int count = admin.value( 1 ).toInt();
+   // One row past the gap is where COUNT(*) + 1 lands after the filler
+   const int blocker = ( count + 2 > gap ) ? count + 2 : gap;
+   admin.rawQuery( QString( "INSERT INTO bufferComponent ( bufferComponentID, units, description, viscosity, "
+                            "density, c_range, gradientForming ) VALUES ( %1, 'mM', '%2', '1 0 0 0 0 0', "
+                            "'1 0 0 0 0 0', '', 0 )" )
+                      .arg( blocker )
+                      .arg( kFiller ) );
+   ASSERT_TRUE( admin.lastError().isEmpty() ) << admin.lastError().toStdString();
+   person.rawQuery( QString( "SELECT LAST_INSERT_ID( %1 )" ).arg( blocker ) );
+
+   QString   error;
+   const int id = component.saveToDB( &person, &error );
+   EXPECT_NE( blocker, id );
+   EXPECT_EQ( kFiller, descriptionOf( blocker ) );
+   if ( id > 0 )
+   {
+      EXPECT_EQ( kName, descriptionOf( id ) );
+   }
+   else
+   {
+      EXPECT_FALSE( error.isEmpty() );
+      EXPECT_TRUE( component.componentID.isEmpty() );
+   }
+}
 #endif
 } // namespace

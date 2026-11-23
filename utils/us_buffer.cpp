@@ -280,37 +280,137 @@ void US_BufferComponent::putAllToHD(
    file.close();
 }
 
-int US_BufferComponent::saveToDB(IUS_DB2 * db) {
-   QStringList q;
-   // construct density and viscosity
+namespace
+{
+// A coefficient as create_buffer_component is given it, and so as it is stored
+QString stored_coefficient( double value )
+{
+   return QString::number( value, 'f', 5 );
+}
+}
+
+bool US_BufferComponent::sameDefinition( const US_BufferComponent& other ) const
+{
+   if ( name != other.name || unit != other.unit || range != other.range || grad_form != other.grad_form )
+   {
+      return false;
+   }
+
+   for ( int i = 0; i < 6; i++ )
+   {
+      if ( stored_coefficient( dens_coeff[i] ) != stored_coefficient( other.dens_coeff[i] ) ||
+           stored_coefficient( visc_coeff[i] ) != stored_coefficient( other.visc_coeff[i] ) )
+      {
+         return false;
+      }
+   }
+   return true;
+}
+
+bool US_BufferComponent::listIDs( IUS_DB2* db, QStringList& ids, QString* error )
+{
+   ids.clear();
+   db->query( QStringList( "get_buffer_component_desc" ) );
+   const int status = db->lastErrno();
+   // An empty table answers NOROWS
+   if ( status == IUS_DB2::NOROWS )
+   {
+      return true;
+   }
+   if ( status != IUS_DB2::OK )
+   {
+      if ( error != nullptr )
+      {
+         *error = QObject::tr( "The buffer components could not be listed: %1" ).arg( db->lastError() );
+      }
+      return false;
+   }
+
+   while ( db->next() )
+   {
+      ids << db->value( 0 ).toString();
+   }
+   return true;
+}
+
+int US_BufferComponent::saveToDB( IUS_DB2* db, QString* error )
+{
    // Six space-separated coefficients per field, as getInfoFromDB reads them.
    QStringList density;
    QStringList viscosity;
    for ( int i = 0; i < 6; i++ )
    {
-      density << QString::number( dens_coeff[i], 'f', 5 );
-      viscosity << QString::number( visc_coeff[i], 'f', 5 );
+      density << stored_coefficient( dens_coeff[i] );
+      viscosity << stored_coefficient( visc_coeff[i] );
+   }
+
+   // What is there already, so the new row can be told from the others
+   QStringList before;
+   if ( !listIDs( db, before, error ) )
+   {
+      return -1;
    }
 
    // The procedure takes a component GUID before the name; the query layer adds the
    // person GUID and password in front of these arguments.
-   q.clear();
+   QStringList q;
    q << "create_buffer_component" << US_Util::new_guid() << name << unit << range << US_Util::bool_string( grad_form )
      << density.join( " " ) << viscosity.join( " " );
 
-   db->statusQuery(q);
+   db->statusQuery( q );
 
-   if (db->lastErrno() != IUS_DB2::OK) {
-      qDebug() << "create_buffer_component error=" << db->lastErrno();
+   if ( db->lastErrno() != IUS_DB2::OK )
+   {
+      if ( error != nullptr )
+      {
+         *error = QObject::tr( "The buffer component \"%1\" could not be created: %2" ).arg( name, db->lastError() );
+      }
       return -1;
    }
 
-   int idBufferComponent = db->lastInsertID();
+   // Not lastInsertID(): see the header
+   QStringList after;
+   QString     listError;
+   if ( !listIDs( db, after, &listError ) )
+   {
+      if ( error != nullptr )
+      {
+         *error = QObject::tr( "The buffer component \"%1\" was created, but which row it is could not be read "
+                               "back: %2" )
+                     .arg( name, listError );
+      }
+      return -1;
+   }
 
-   qDebug() << "buffer_component_ID for new buffer component: " << idBufferComponent;
-   componentID = QString::number(idBufferComponent);
+   int found = -1;
+   for ( const QString& id : after )
+   {
+      if ( before.contains( id ) || id.toInt() <= found )
+      {
+         continue;
+      }
 
-   return idBufferComponent;
+      US_BufferComponent created;
+      created.componentID = id;
+      if ( created.getInfoFromDB( db ) && created.sameDefinition( *this ) )
+      {
+         found = id.toInt();
+      }
+   }
+
+   if ( found < 1 )
+   {
+      if ( error != nullptr )
+      {
+         *error = QObject::tr( "The buffer component \"%1\" was created, but no new component in the database has "
+                               "its definition, so which one it is cannot be told" )
+                     .arg( name );
+      }
+      return -1;
+   }
+
+   componentID = QString::number( found );
+   return found;
 }
 
 //-------------  US_Buffer

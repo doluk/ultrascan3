@@ -1502,12 +1502,15 @@ void US_BufferGuiNew::create_new_buffer_component() {
    {
       return;
    }
-   if ( bc.saveToDB( &db ) < 0 )
+   // saveToDB finds the new row by its definition: the ID create_buffer_component
+   // reports can be another row's
+   QString saveError;
+   if ( bc.saveToDB( &db, &saveError ) < 0 )
    {
       QMessageBox::warning(
          this,
          tr( "Buffer Component Not Saved" ),
-         tr( "The buffer component \"%1\" could not be saved to the database:\n%2" ).arg( bc.name, db.lastError() ) );
+         tr( "The buffer component \"%1\" could not be saved to the database:\n%2" ).arg( bc.name, saveError ) );
       return;
    }
 
