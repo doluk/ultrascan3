@@ -154,21 +154,74 @@ TEST_F( DataPubRecords, DerivedGuidsFollowTheContent )
    EXPECT_FALSE( QUuid( one ).isNull() );
 
    US_Rotor::RotorCalibration other = cal;
-   other.coeff1 = 1.2500000000001e-5;
+   other.coeff1 = 1.26e-5;
    EXPECT_NE( one, US_DataPubRecords::calibrationGuid( other ) );
 
    other = cal;
    other.lastUpdated = QDate( 2025, 1, 1 );
    EXPECT_NE( one, US_DataPubRecords::calibrationGuid( other ) );
 
-   other = cal;
-   other.calibrationExperimentGUID = "66666666-6666-6666-6666-666666666666";
-   EXPECT_NE( one, US_DataPubRecords::calibrationGuid( other ) );
-
-   // A record's own GUID always wins
+   // A record's own GUID always wins ...
    other.GUID = "77777777-7777-7777-7777-777777777777";
    EXPECT_EQ( US_DataPubRecords::calibrationGuid( other ), other.GUID );
 
+   // ... when it is one: a legacy value that is not stands for none
+   other = cal;
+   other.GUID = "legacy-7";
+   EXPECT_EQ( US_DataPubRecords::calibrationGuid( other ), one );
+}
+
+// The same calibration has the same identity whether it is read from the
+// database or from its local copy: the database reads the coefficients as
+// floats and returns no calibration experiment GUID, the local file keeps
+// six digits of each coefficient
+TEST_F( DataPubRecords, ACalibrationGuidIsTheSameFromTheDatabaseAndFromDisk )
+{
+   US_Rotor::RotorCalibration fromDb;
+   fromDb.ID          = 3;
+   fromDb.rotorGUID   = "44444444-4444-4444-4444-444444444444";
+   fromDb.coeff1      = QString( "1.23456789e-05" ).toFloat();
+   fromDb.coeff2      = QString( "3.45678912e-10" ).toFloat();
+   fromDb.lastUpdated = QDate( 2024, 1, 1 );
+
+   US_Rotor::RotorCalibration fromDisk = fromDb;
+   fromDisk.coeff1 = QString::number( fromDb.coeff1 ).toFloat();
+   fromDisk.coeff2 = QString::number( fromDb.coeff2 ).toFloat();
+   fromDisk.calibrationExperimentGUID = "66666666-6666-6666-6666-666666666666";
+
+   ASSERT_NE( fromDb.coeff1, fromDisk.coeff1 );
+   EXPECT_EQ( US_DataPubRecords::calibrationGuid( fromDb ),
+              US_DataPubRecords::calibrationGuid( fromDisk ) );
+}
+
+// A derived identity must not change between builds or installations: a
+// known input gives a known UUID (version 5, RFC 4122 variant)
+TEST_F( DataPubRecords, DerivedGuidsAreKnownValues )
+{
+   QString guid = US_DataPub::derivedGuid( "timeState:"
+                                           "11111111-1111-1111-1111-111111111111" );
+   QUuid   uuid( guid );
+
+   EXPECT_EQ( uuid.version(), QUuid::Sha1 );
+   EXPECT_EQ( uuid.variant(), QUuid::DCE );
+   // Worked out with Python's uuid.uuid5() from the namespace UUID
+   EXPECT_EQ( guid, QString( "0bf44af6-71ae-54e2-a5e8-ce490b1c52ee" ) );
+
+   US_Rotor::RotorCalibration cal;
+   cal.ID          = 3;
+   cal.rotorGUID   = "44444444-4444-4444-4444-444444444444";
+   cal.coeff1      = 1.25e-5;
+   cal.coeff2      = 3.5e-10;
+   cal.lastUpdated = QDate( 2024, 1, 1 );
+
+   // uuid5( ns, "rotorCalibration:<rotorGUID>:3:1.25000e-05:3.50000e-10:"
+   //            "2024-01-01" )
+   EXPECT_EQ( US_DataPubRecords::calibrationGuid( cal ),
+              QString( "fb9d594e-cff1-5bab-9ed1-1e961d368e16" ) );
+}
+
+TEST_F( DataPubRecords, CenterpieceGuidsFollowTheContent )
+{
    US_AbstractCenterpiece cp;
    cp.serial_number = 2;
    cp.name          = "Epon";
@@ -185,6 +238,154 @@ TEST_F( DataPubRecords, DerivedGuidsFollowTheContent )
    cpOther = cp;
    cpOther.channels = cp.channels + 1;
    EXPECT_NE( cpOne, US_DataPubRecords::centerpieceGuid( cpOther ) );
+
+   // A GUID column holding something else is no identity
+   cpOther = cp;
+   cpOther.guid = "{not-a-guid}";
+   EXPECT_EQ( US_DataPubRecords::centerpieceGuid( cpOther ), cpOne );
+}
+
+// Spectra go into the bundle as the doubles they are: no rounding of the
+// value, and no merging of wavelengths closer than 0.05 nm
+TEST_F( DataPubRecords, SpectraRoundTripAtFullPrecision )
+{
+   US_DataPubRecords::Spectra written;
+   written[ "extinction" ].insert( 280.0,  1.2345678901234567 );
+   written[ "extinction" ].insert( 280.02, 1.0e-7 / 3.0 );
+   written[ "refraction" ].insert( 589.3,  1.3329987654321 );
+   written[ "fluorescence" ];                   // empty: left out
+
+   QString path = dir + "/spectra.xml";
+   ASSERT_TRUE( US_DataPubRecords::writeSpectra( written, path ) );
+
+   US_DataPubRecords::Spectra read;
+   QString                    why;
+   ASSERT_TRUE( US_DataPubRecords::readSpectra( path, read, &why ) )
+      << why.toStdString();
+
+   EXPECT_FALSE( read.contains( "fluorescence" ) );
+   ASSERT_EQ( read.value( "extinction" ).size(), 2 );
+   EXPECT_EQ( read[ "extinction" ].value( 280.0  ), 1.2345678901234567 );
+   EXPECT_EQ( read[ "extinction" ].value( 280.02 ), 1.0e-7 / 3.0 );
+   EXPECT_EQ( read[ "refraction" ].value( 589.3  ), 1.3329987654321 );
+
+   // What the library writer would have made of it
+   EXPECT_NE( QString::number( 1.0e-7 / 3.0, 'e', 4 ).toDouble(),
+              1.0e-7 / 3.0 );
+
+   // Only the known spectra are written
+   US_DataPubRecords::Spectra odd;
+   odd[ "absorbance" ].insert( 280.0, 1.0 );
+   EXPECT_FALSE( US_DataPubRecords::writeSpectra( odd, dir + "/odd.xml" ) );
+}
+
+TEST_F( DataPubRecords, BrokenSpectraAreRefused )
+{
+   auto refused = [ this ]( const QByteArray& xml )
+   {
+      QFile file( dir + "/bad.xml" );
+      file.open( QIODevice::WriteOnly | QIODevice::Truncate );
+      file.write( xml );
+      file.close();
+
+      US_DataPubRecords::Spectra spectra;
+      QString                    why;
+      bool ok = US_DataPubRecords::readSpectra( dir + "/bad.xml", spectra,
+                                                &why );
+      return ! ok  &&  ! why.isEmpty()  &&  spectra.isEmpty();
+   };
+
+   EXPECT_TRUE( refused( "<buffer/>" ) );
+   EXPECT_TRUE( refused( "<US_DataPubSpectra><spectrum type=\"absorbance\"/>"
+                         "</US_DataPubSpectra>" ) );
+   EXPECT_TRUE( refused( "<US_DataPubSpectra><spectrum type=\"extinction\">"
+                         "<point wavelength=\"280\" value=\"x\"/></spectrum>"
+                         "</US_DataPubSpectra>" ) );
+   EXPECT_TRUE( refused( "<US_DataPubSpectra><spectrum type=\"extinction\">"
+                         "<point wavelength=\"280\" value=\"inf\"/></spectrum>"
+                         "</US_DataPubSpectra>" ) );
+   EXPECT_TRUE( refused( "<US_DataPubSpectra><spectrum type=\"extinction\">"
+                         "<point wavelength=\"280\" value=\"1\"/>"
+                         "<point wavelength=\"280\" value=\"2\"/></spectrum>"
+                         "</US_DataPubSpectra>" ) );
+   EXPECT_TRUE( refused( "<US_DataPubSpectra><spectrum type=\"extinction\"/>"
+                         "<spectrum type=\"extinction\"/></US_DataPubSpectra>" ) );
+   EXPECT_TRUE( refused( "<US_DataPubSpectra><spectrum type=\"extinction\">" ) );
+}
+
+// The concentrations travel with the component definitions, in buffer
+// order, at full precision; 5 uM is not 0.00001 mM
+TEST_F( DataPubRecords, BufferConcentrationsRoundTripAtFullPrecision )
+{
+   US_BufferComponent salt;
+   salt.componentID = "12";
+   salt.name        = "sodium chloride";
+   US_BufferComponent tris;
+   tris.componentID = "7";
+   tris.name        = "Tris";
+
+   QList< US_BufferComponent > comps;
+   comps << salt << tris;
+   QList< double > concs;
+   concs << 0.005 << 1.0 / 3.0;
+
+   QString path = dir + "/components.xml";
+   ASSERT_TRUE( US_DataPubRecords::writeBufferComponents( comps, concs, path ) );
+
+   QStringList     ids;
+   QList< double > read;
+   QString         why;
+   ASSERT_TRUE( US_DataPubRecords::readBufferConcentrations( path, ids, read,
+                                                             &why ) )
+      << why.toStdString();
+   EXPECT_EQ( ids, QStringList() << "12" << "7" );
+   ASSERT_EQ( read.size(), 2 );
+   EXPECT_EQ( read[ 0 ], 0.005 );
+   EXPECT_EQ( read[ 1 ], 1.0 / 3.0 );
+   EXPECT_NE( QString::number( 1.0 / 3.0, 'f', 5 ).toDouble(), 1.0 / 3.0 );
+
+   // The definitions are still read as before
+   QMap< QString, US_BufferComponent > defs;
+   ASSERT_TRUE( US_DataPubRecords::readBufferComponents( path, defs ) );
+   EXPECT_EQ( defs.value( "12" ).name, QString( "sodium chloride" ) );
+
+   // A list that does not match the components is refused
+   EXPECT_FALSE( US_DataPubRecords::writeBufferComponents( comps,
+                 QList< double >() << 1.0, dir + "/short.xml" ) );
+
+   // A file of an older bundle carries none: no concentrations, no error
+   ASSERT_TRUE( US_DataPubRecords::writeBufferComponents( comps,
+                dir + "/old.xml" ) );
+   EXPECT_FALSE( US_DataPubRecords::readBufferConcentrations( dir + "/old.xml",
+                 ids, read, &why ) );
+   EXPECT_TRUE( ids.isEmpty() );
+   EXPECT_TRUE( why.isEmpty() ) << why.toStdString();
+}
+
+// A date is written as "yyyy-MM-dd" in ASCII digits.  (Qt 5 formats a
+// date with the system locale, which a test cannot change once the process
+// runs, so this pins the format rather than reproducing a foreign locale.)
+TEST_F( DataPubRecords, DatesAreWrittenWithAsciiDigits )
+{
+   EXPECT_EQ( US_DataPubRecords::isoDate( QDate( 2024, 3, 5 ) ),
+              QString( "2024-03-05" ) );
+   EXPECT_TRUE( US_DataPubRecords::isoDate( QDate() ).isEmpty() );
+
+   US_Rotor::RotorCalibration written;
+   written.ID          = 1;
+   written.GUID        = "11111111-2222-3333-4444-555555555555";
+   written.lastUpdated = QDate( 2024, 3, 5 );
+   ASSERT_TRUE( US_DataPubRecords::writeCalibration( written,
+                dir + "/C.xml" ) );
+
+   QFile file( dir + "/C.xml" );
+   ASSERT_TRUE( file.open( QIODevice::ReadOnly ) );
+   EXPECT_TRUE( file.readAll().contains( "lastUpdated=\"2024-03-05\"" ) );
+   file.close();
+
+   US_Rotor::RotorCalibration read;
+   ASSERT_TRUE( US_DataPubRecords::readCalibration( dir + "/C.xml", read ) );
+   EXPECT_EQ( read.lastUpdated, QDate( 2024, 3, 5 ) );
 }
 
 TEST_F( DataPubRecords, OnlyAReadableRiProfileIsUsable )

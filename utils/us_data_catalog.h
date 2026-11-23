@@ -65,6 +65,11 @@
     Run::verified is true exactly when the raw-data and edit checksums of
     the experiment's records are filled in.
 
+    A local file whose checksum is wanted and that cannot be read -- gone
+    since the store was indexed, say -- fails the read or the verify that
+    wanted it, with an error naming the file; it is never given a checksum
+    of its own making.
+
     \section catalog_sources Sources
 
     One catalog reads from one source.  A program that compares the
@@ -133,6 +138,11 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
             QString description;  //!< Noise description
             QString noiseType;    //!< "ti" or "ri"
             QString modelGUID;    //!< GUID of the model it belongs to
+            //! modelID of the model it belongs to, when read from the
+            //! database; "-1" on disk.  It is what the server joins the
+            //! noise to its model by, so the catalog attaches database
+            //! noise by it first, and by modelGUID only when it is not set.
+            QString modelID;
             QString editGUID;     //!< GUID of the edit its model was fitted
                                   //!< to, when that edit is known
             QString filename;     //!< Base name of the local file, if any
@@ -185,6 +195,7 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
             QString triple;       //!< cell.channel.wavelength
             QString runID;        //!< The run this edit belongs to
             QString rawGUID;      //!< GUID of the raw-data triple
+            QString rawID;        //!< rawDataID, when read from the database
             QString label;        //!< A label for lists and trees
             QString checksum;     //!< MD5 of the edit contents
             QString size;         //!< Length of the edit contents
@@ -283,12 +294,15 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
 
       /*! \brief The records of a store that do not attach to the chain
 
-          A record attaches to its parent by the parent's GUID (a database
-          edit attaches to its triple by rawDataID when the procedure gives
-          no GUID).  One whose parent is not in the store -- deleted, never
-          uploaded, or written with an empty or broken GUID -- is listed
-          here, so that a program can still show it and offer to clean it
-          up.  Each list holds the top-most record of a broken branch, and
+          A record attaches to its parent by the parent's GUID.  A database
+          record whose parent GUID is empty attaches by the parent's
+          database ID instead -- an edit by rawDataID, a model by
+          editedDataID -- on every tier, so the whole-store and the
+          per-experiment reads agree; database noise attaches by modelID
+          first, the column the server itself joins it by.  One whose
+          parent is not in the store -- deleted, never uploaded, or written
+          with an empty or broken GUID -- is listed here, so that a program
+          can still show it and offer to clean it up.  Each list holds the top-most record of a broken branch, and
           that record carries whatever was found below it: a model whose
           edit is missing is in \a models, with its own noise records in
           Model::noises.
@@ -302,7 +316,12 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
           - \a models: models whose edit (Model::editGUID) is not in the
                        store, including those with no editGUID at all.
           - \a noises: noise records whose model (Noise::modelGUID) is not
-                       in the store.
+                       in the store.  Local store only: noise.modelID is
+                       NOT NULL in the database and every procedure that
+                       lists noise joins modelPerson on it, so a database
+                       noise record is only ever listed together with a
+                       model of the investigator, which the model listings
+                       return too.
 
           \ref loadAll fills this, since only a whole-store read can tell
           a missing parent from one not yet read, and only when no project
@@ -310,15 +329,12 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
           apart from a missing one.  It reads the store even when no
           experiment is listed, and then everything in it is here.
 
-          A database read of one experiment (\ref loadRunDetail) adds to
-          \a noises the noise records it read -- they were recorded against
-          one of the experiment's edits -- that have no model GUID or the
-          GUID of a model the server does not have: loadAll would call them
-          orphans too.  Noise whose model is in another experiment is hung
-          under that model, as loadAll hangs it -- at once if that
-          experiment is read already, else when it is -- so an experiment
-          read alone has the noise and the counts a whole-store read gives
-          it.  \ref loadRuns empties the list.
+          A database read of one experiment (\ref loadRunDetail) reads the
+          noise recorded against the experiment's edits.  Noise of a model
+          in another experiment is hung under that model, as loadAll hangs
+          it -- at once if that experiment is read already, else when it is
+          -- so an experiment read alone has the noise and the counts a
+          whole-store read gives it.  \ref loadRuns empties the list.
       */
       class Orphans
       {
@@ -423,6 +439,11 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
       const Run& run( int index ) const;
 
       //! \brief The position of an experiment, by run identifier
+      //!
+      //! An exact match wins.  Failing one, the run ID is compared the way
+      //! the source compares it: without case on the database, whose
+      //! runID column does not tell "RunA" from "runA", and on disk as
+      //! \ref fileNameCase says.
       //! \param runID The run identifier to look for
       //! \returns -1 when there is no such experiment; the first one when a
       //!          local store holds the run ID in more than one directory
@@ -437,9 +458,17 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
           always had, which do hash them.  On disk it is the one pass
           \ref loadRunDetail would make anyway.
 
-          Experiments already loaded are kept as they are.  This also fills
-          \ref orphans -- and reads the store even when no experiment is
-          listed, when everything in it is an orphan.
+          Experiments already loaded are kept as they are, and gain the
+          noise records this read found under their models that they did
+          not have yet -- noise recorded against an edit of an experiment
+          that was not read then; \ref runChanged says which.  This also
+          fills \ref orphans -- and reads the store even when no experiment
+          is listed, when everything in it is an orphan.
+
+          It needs a listing: before \ref loadRuns has succeeded (or after
+          \ref clear, or a change of investigator) nothing is known to be
+          listed, every record would look like an orphan, and the read is
+          refused.
           \param error Filled in with a message when the scan fails
           \returns True when every experiment now has its records; on false
                    nothing has changed
@@ -656,6 +685,12 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
       //! \brief A database date-time in the form the catalog uses for every
       //!        date, "yyyy-MM-dd hh:mm:ss UTC" -- the form us_manage_data
       //!        has always shown, and the one local files are given
+      //!
+      //! The procedures give dates through timestamp2UTC, which converts
+      //! them to UTC on the server, as "yyyy-MM-dd hh:mm:ss".  The value is
+      //! taken as that UTC date and time as it stands; it is never read as
+      //! a local time, which could shift it (a time in the client's
+      //! spring-forward gap does not exist locally).
       //! \param value A date-time the server gave, already in UTC
       static QString utcText( const QVariant& value );
 
@@ -671,6 +706,12 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
       //! \brief The checksums of one experiment have been read
       //! \param index The position of the experiment
       void runVerified ( int index );
+
+      //! \brief An experiment that was loaded already gained records:
+      //!        noise read with another experiment, or by \ref loadAll,
+      //!        was hung under one of its models and its counts changed
+      //! \param index The position of the experiment
+      void runChanged  ( int index );
 
       //! \brief A human readable note about what the catalog is doing
       //! \param message The note
@@ -689,6 +730,9 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
       bool         owns_db;
       QString      proj_guid;
       Orphans      orphan_list;
+
+      //! True once loadRuns() has succeeded, until the listing is dropped
+      bool         listed;
 
       //! The tiers of procedures the server has not been found to lack,
       //! reset by open() and attach(); see \ref catalog_procedures
@@ -724,7 +768,15 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
       bool verifyRunDisk    ( Run&, QString& );
 
       //! \brief The checksum and length of a local file, when wanted
-      void fileDigest( const QString& path, QString& checksum, QString& size );
+      //! \returns False, with \a error filled in, when the file could not
+      //!          be read; true when it was, or checksums are not wanted
+      bool fileDigest( const QString& path, QString& checksum, QString& size,
+                       QString& error );
+
+      //! \brief Build the local index, and say when it could not be built
+      //! \returns False, with \a error filled in, when the build was
+      //!          cancelled and the index is not there to be read
+      bool diskIndexReady( QString& error );
 
       //! \brief Recompute an experiment's counts from the chain just read
       //! \param run The experiment to finish
@@ -738,34 +790,46 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
       bool loadRunsDbLegacy( QList< Run >&, QString& );
       bool loadRunsDisk    ( QList< Run >&, QString& );
       bool loadDetailDb      ( const Run&, QList< Raw >&, QList< Noise >&,
-                               QList< Noise >&, QString& );
+                               QString& );
       bool loadDetailDbBulk  ( const Run&, QList< Raw >&, QList< Noise >&,
                                QString& );
       bool loadDetailDbLegacy( const Run&, QList< Raw >&, QList< Noise >&,
                                QString& );
 
-      //! \brief Of the noise one experiment read that hangs under none of
-      //!        its models, pick out the orphans
-      bool sortStrayNoise( const Run& run, const QList< Noise >& stray,
-                           QList< Noise >& lost, QList< Noise >& foreign,
-                           QString& error );
-
       //! \brief Hang noise under the models of one experiment
-      QList< Noise > placeForeignNoise( Run& run, const QList< Noise >& noises );
+      //! \param run    The experiment
+      //! \param noises The noise to place; what is placed is taken out
+      //! \returns True when a record was added to the experiment
+      bool placeForeignNoise( Run& run, QList< Noise >& noises );
 
       //! Noise read with one experiment whose model is in another not yet
-      //! read, by modelGUID; it is hung under that model when it is read
-      QHash< QString, QList< Noise > > foreign_noise;
+      //! read; it is hung under that model when that one is read
+      QList< Noise > foreign_noise;
 
-      //! \brief Add noise records to the orphans, once each
-      void addOrphanNoises( const QList< Noise >& noises );
+      //! \brief The description of every model the catalog has read, by
+      //!        modelGUID and by "id:" plus modelID, and each model's GUID
+      //!        by "guid-of:" plus modelID
+      QHash< QString, QString > knownModelDescriptions( void ) const;
 
-      //! \brief Every model the catalog has read
-      QList< Model > knownModels( void ) const;
+      //! \brief Read in full the model descriptions the server cut at the
+      //!        width of its description column
+      void repairModels( QList< Model >& models );
 
-      //! \brief Read in full the descriptions an older server cut at 80
-      //!        characters, and give noise with none its model's
+      //! \brief The same for noise, and give noise with no description
+      //!        its model's
+      //! \param noises     The noise records to repair
+      //! \param modelDescs Model descriptions, as knownModelDescriptions()
+      //!        gives them
+      void repairNoises( QList< Noise >& noises,
+                         const QHash< QString, QString >& modelDescs );
+
+      //! \brief repairModels(), then repairNoises() with those models
       void repairDescriptions( QList< Model >& models, QList< Noise >& noises );
+
+      //! The full description read for a record whose listed one may have
+      //! been cut, by "model:" or "noise:" plus its ID.  Each record is
+      //! read once, whatever that read gave, until the listing is redone.
+      QHash< QString, QString > desc_tried;
 
       //! \brief True when the last query failed because the connection to
       //!        the server is gone, not because of what it asked

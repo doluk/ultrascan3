@@ -70,7 +70,9 @@ class US_ManageData : public US_Widgets
         int                 nlnois;     //!< Number of local noise records
         int                 nmerged;    //!< Experiments merged this scan
         bool                verify_pending; //!< A pass of queued work is due
-        bool                closing;    //!< Closed while a scan was running
+        bool                closing;    //!< Closed while a scan, or a read
+                                        //!< outside one, was running
+        int                 errs_seen;  //!< Scan errors already reported
         US_DataModel::Counts counts;    //!< Records merged so far, by kind
         int                 dbg_level;  //!< Debug level
         QStringList         triples;    //!< List of triples

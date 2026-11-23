@@ -37,7 +37,13 @@ class US_DataProcess : public QObject
             copies differ: when they hold the same thing this returns
             \ref IN_SYNC and nothing is written, and when they differ a
             local copy older than the database copy (both dates read as
-            UTC) is refused.
+            UTC) is refused.  The local file is hashed again for this: a
+            comparison made before the file changed says nothing about it.
+
+            A model or a noise record is read from its local file, and is
+            not written when that file cannot be read.  Its row then holds
+            the database ID of the record the write created or updated,
+            looked up by its GUID: a replace keeps the ID the row had.
             \param recordID The row of the record to be uploaded
             \return 0, \ref IN_SYNC, or an error status
         */
@@ -54,9 +60,18 @@ class US_DataProcess : public QObject
         */
         int record_download( int recordID );
 
-        //! \brief Remove a record from the database
-        //! \param recordID ID of the record to be removed
-        //! \return Status code of the operation
+        /*! \brief Remove a record from the database
+
+            The database removes what hangs off the record with it.  It
+            does not remove the noise recorded against an edit whose model
+            belongs to another edit, and that noise would stop the edit
+            from being removed at all (fk_noise_editDataID), so it is
+            removed first -- it was computed from the edit that goes -- and
+            its rows read as gone from the database.  A removal the server
+            refuses says so, with its message.
+            \param recordID The row of the record to be removed
+            \return Status code of the operation
+        */
         int record_remove_db( int recordID );
 
         //! \brief Remove a record from local storage
@@ -92,11 +107,32 @@ class US_DataProcess : public QObject
         bool unsafe_run( int row );
 
         //! \brief Whether the two copies of a record hold the same thing
+        //!
+        //! The local file is always hashed again; the database copy's
+        //! checksum is the one the last comparison read, when there is one.
         //! \returns 1 when they do, 0 when they differ, -1 when one of
         //!          them could not be read
         int  same_contents( const US_DataModel::DataDesc& desc );
 
+        //! \brief Mark a row as no longer in the database, as a removal or
+        //!        a removal's cascade leaves it
+        //! \param row The row
+        void mark_removed_from_db( int row );
+
+        //! \brief The noise recorded against an edit whose model belongs
+        //!        to another edit: noiseID -> noiseGUID
+        //! \param editID The editedDataID
+        //! \param noise  Filled in
+        //! \returns False, with the message set, when it cannot be listed
+        bool foreign_noise_of_edit( int editID, QMap< int, QString >& noise );
+
     private:
+        //! \brief The row's record ID after a model or noise write
+        //! \param proc "get_modelID" or "get_noiseID"
+        //! \param guid The GUID the record was written with
+        //! \returns 0, or an error status with the message set
+        int  written_record_id( const QString& proc, const QString& guid );
+
         QString                 errMsg;     //!< Message from the last error
         QWidget*                parentw;    //!< Parent widget
         IUS_DB2*                db;         //!< Pointer to database connection

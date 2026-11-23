@@ -56,11 +56,20 @@ class US_DataTree : public QObject
         //! \param runIndex The position of the experiment
         void fill_run( int runIndex );
 
-        //! \brief Colour one experiment's rows again
+        //! \brief Show an experiment's records again, from its new rows
+        //!
+        //! What US_DataModel::runReloaded calls for: the items of the rows
+        //! it left behind go, and the new rows are shown.
+        //! \param runIndex The position of the experiment
+        void refill_run( int runIndex );
+
+        //! \brief Colour one experiment's rows again, and count again
+        //!        what is under each of them
         //!
         //! A scan compares the records of an experiment after its rows are
         //! already in the tree, so this is how a row that turns out to be a
-        //! conflict stops reading as unverified.
+        //! conflict stops reading as unverified; and an action changes
+        //! where records are, which the counts columns show.
         //! \param runIndex The position of the experiment
         void refresh_run( int runIndex );
 
@@ -163,8 +172,16 @@ class US_DataTree : public QObject
         void run_look( int runIndex, QBrush& fbru, QString& rtyp,
                        QString& rsrc );
 
-        //! \brief Colour an experiment row from what is under it now
+        //! \brief Colour an experiment row from what is under it now, and
+        //!        show its counts
         void refresh_run_item( int runIndex );
+
+        //! \brief The "Children" and "Descendants" texts of a record row
+        //! \param row     The row of the record
+        //! \param lastRow The last row of its experiment
+        //! \param anch    Filled in with the children counts
+        //! \param ande    Filled in with the descendants counts
+        void row_counts( int row, int lastRow, QString& anch, QString& ande );
 
         //! \brief Show a message, or ask a question; see \ref setPrompter
         bool ask_user( int kind, const QString& title, const QString& text );
@@ -198,6 +215,21 @@ class US_DataTree : public QObject
         void items_details( void );
 
     private:
+        //! \brief A batch of record changes (US_DataModel::begin_changes),
+        //!        ended by \ref end or when it goes out of scope
+        class ChangeBatch
+        {
+            public:
+                explicit ChangeBatch( US_DataModel* model );
+                ~ChangeBatch();
+
+                //! \brief End the batch now; later calls do nothing
+                void end( void );
+
+            private:
+                US_DataModel* da_model;
+        };
+
         //! \brief Ask for, then perform, one context menu action
         //! \param item_exs Where the records exist
         //! \param item_act The action

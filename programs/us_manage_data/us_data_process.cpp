@@ -9,6 +9,7 @@
 
 // class to process operatations on data:  upload/download/remove
 US_DataProcess::US_DataProcess( US_DataModel* dmodel, QWidget* parent /*=0*/ )
+   : QObject( parent )
 {
    parentw          = parent;
    da_model         = dmodel;
@@ -170,31 +171,54 @@ DbgLv(1) << "REC_ULD:RAW: parentGUID" << cdesc.parentGUID;
    }
 
    else if ( cdesc.recType == 3 )
-   {  // upload a Model record
+   {  // upload a Model record, from the file the row was read from
       US_Model model;
-      filepath = get_model_filename( cdesc.dataGUID );
+      int      lstat = filepath.isEmpty() ? US_DB2::NO_MODEL
+                                          : model.load( filepath );
 
-      model.load( filepath );         // load model from local disk
-      model.update_coefficients();    // fill in any missing coefficients
-      stat   = model.write( db );     // store model to database
-      errMsg = tr( "model write to DB stat %1" ).arg( stat );
-      stat   = ( stat == 0 ) ? 0 : 3043;
-      cdesc.recordID = db->lastInsertID();
+      if ( lstat != US_DB2::OK )
+      {  // an empty model is not written in its place
+         errMsg = tr( "The local model file could not be read (status %1),"
+                      " so nothing was uploaded:\n " ).arg( lstat )
+                  + filepath;
+         stat   = 3046;
+      }
+
+      else
+      {
+         model.update_coefficients();    // fill in any missing coefficients
+         stat   = model.write( db );     // store model to database
+         errMsg = tr( "model write to DB status %1: %2" ).arg( stat )
+                  .arg( model.message );
+         stat   = ( stat == 0 )
+                ? written_record_id( "get_modelID", model.modelGUID ) : 3043;
+      }
 DbgLv(1) << errMsg;
    }
 
    else if ( cdesc.recType == 4 )
-   {  // upload a Noise record
+   {  // upload a Noise record, from the file the row was read from
       US_Noise noise;
-DbgLv(2) << "NOISE: (1) filepath" << filepath;
-      filepath = get_noise_filename( cdesc.dataGUID );
-DbgLv(2) << "NOISE: (2) filepath" << filepath;
+DbgLv(2) << "NOISE: filepath" << filepath;
+      int      lstat = filepath.isEmpty() ? US_DB2::NO_NOISE
+                                          : noise.load( filepath );
 
-      noise.load( filepath );
-      stat   = noise.write( db );
-      errMsg = tr( "noise write to DB stat %1" ).arg( stat );
-      stat   = ( stat == 0 ) ? 0 : 3044;
-      cdesc.recordID = db->lastInsertID();
+      if ( lstat != US_DB2::OK )
+      {
+         errMsg = tr( "The local noise file could not be read (status %1),"
+                      " so nothing was uploaded:\n " ).arg( lstat )
+                  + filepath;
+         stat   = 3048;
+      }
+
+      else
+      {
+         stat   = noise.write( db );
+         errMsg = tr( "noise write to DB status %1: %2" ).arg( stat )
+                  .arg( noise.message );
+         stat   = ( stat == 0 )
+                ? written_record_id( "get_noiseID", noise.noiseGUID ) : 3044;
+      }
    }
 
    else
@@ -305,16 +329,21 @@ int US_DataProcess::record_download( int row )
       query << "get_model_info" << dataID;
       db->query( query );
       stat       = db->lastErrno();
+
+      if ( stat == US_DB2::OK  &&  ! db->next() )
+         stat       = US_DB2::NOROWS;
+
       if ( stat == US_DB2::OK )
       {
-         db->next();
 //qDebug() << "DwnLd:   model time2" << timer3.elapsed();
-         QString contents = db->value( 2 ).toString();
+         // The model XML is UTF-8, whatever the locale, and is written as
+         // the server holds it, so the two copies compare as equal
+         QByteArray contents = db->value( 2 ).toString().toUtf8();
          QFile fileo( filepath );
-         if ( fileo.open( QIODevice::WriteOnly | QIODevice::Text ) )
+         if ( fileo.open( QIODevice::WriteOnly )  &&
+              fileo.write( contents ) == contents.size()  &&
+              fileo.flush() )
          {
-            QTextStream tso( &fileo );
-            tso << contents;
             fileo.close();
             cdesc.filename = filepath;
 //qDebug() << "DwnLd:   model time3" << timer3.elapsed();
@@ -410,15 +439,62 @@ DbgLv(1) << "REC_RMV: exp ID" << cdesc.parentID;
          irecID = -1;
    }
 
+   else if ( cdesc.recType != US_DataModel::RAW  &&  irecID < 0 )
+   {  // no database ID to remove by: nothing else may be removed instead
+      errMsg = tr( "%1 has no database ID to remove it by; scan again." )
+               .arg( cdesc.label );
+      stat   = 2016;
+   }
+
    else if ( cdesc.recType == 2 )
    {  // remove an EditedData record
+      // The noise of another edit's model recorded against this edit is
+      // not removed with it, and the edit cannot go while it is there
+      QMap< int, QString > foreign;
+
+      if ( ! foreign_noise_of_edit( irecID, foreign ) )
+         return 2017;
+
+      for ( auto it = foreign.constBegin(); it != foreign.constEnd(); ++it )
+      {
+         query.clear();
+         query << "delete_noise" << QString::number( it.key() );
+
+         if ( ( stat = db->statusQuery( query ) ) != 0 )
+         {
+            errMsg = tr( "%1 could not be removed: noise %2 of another edit's"
+                         " model was computed from it and could not be"
+                         " removed first (delete_noise status %3: %4)" )
+                     .arg( cdesc.label ).arg( it.value() ).arg( stat )
+                     .arg( db->lastError() );
+            return 2018;
+         }
+
+         // Its rows -- under that other model -- are gone from the database
+         for ( int nrow = 0; nrow < da_model->recCount(); nrow++ )
+         {
+            US_DataModel::DataDesc ndesc = da_model->row_datadesc( nrow );
+
+            if ( ndesc.recType == US_DataModel::NOISE  &&
+                 ndesc.recordID == it.key()  &&
+                 ( ndesc.recState & US_DataModel::REC_DB ) != 0 )
+               mark_removed_from_db( nrow );
+         }
+      }
+
+      cdesc = da_model->row_datadesc( row );   // as it is now
       query.clear();
       query << "delete_editedData" << dataID;
 DbgLv(1) << "EDT_RMV:" << query;
 
       if ( ( stat = db->statusQuery( query ) ) != 0 )
       {
-         errMsg = tr( "delete_editedData status=%1" ).arg( stat );
+         errMsg = tr( "delete_editedData status=%1: %2" ).arg( stat )
+                  .arg( db->lastError() )
+                  + tr( "\nNoise of a model of another investigator, or of a"
+                        " model this window does not list, may have been"
+                        " computed from this edit; the database keeps the"
+                        " edit while such noise refers to it." );
 DbgLv(1) << "EDT_RMV:   stat" << stat << db->lastError() << db->lastErrno();
 DbgLv(1) << "EDT_RMV:   dataID" << dataID << "errMsg:" << errMsg;
          stat   = 2012;
@@ -435,7 +511,8 @@ DbgLv(1) << "EDT_RMV:    stat" << stat;
 
       if ( ( stat = db->statusQuery( query ) ) != 0 )
       {
-         errMsg = tr( "delete_model status=%1" ).arg( stat );
+         errMsg = tr( "delete_model status=%1: %2" ).arg( stat )
+                  .arg( db->lastError() );
 DbgLv(1) << "MOD_RMV:   dataID" << dataID << "errMsg:" << errMsg;
 DbgLv(1) << "MOD_RMV:    lastErr" << db->lastError() << db->lastErrno();
          stat   = 2013;
@@ -451,7 +528,8 @@ DbgLv(1) << "MOD_RMV:    lastErr" << db->lastError() << db->lastErrno();
 
       if ( ( stat = db->statusQuery( query ) ) != 0 )
       {
-         errMsg = tr( "delete_noise status=%1" ).arg( stat );
+         errMsg = tr( "delete_noise status=%1: %2" ).arg( stat )
+                  .arg( db->lastError() );
 DbgLv(1) << "NOI_RMV:   dataID" << dataID << "errMsg:" << errMsg;
 DbgLv(1) << "NOI_RMV:    lastErr" << db->lastError() << db->lastErrno();
          stat   = 2014;
@@ -468,18 +546,121 @@ DbgLv(1) << "NOI_RMV:    lastErr" << db->lastError() << db->lastErrno();
 
    if ( stat == 0 )
    {  // Gone from the DB:  local only now, or gone altogether
-      cdesc.recordID  = irecID;
-      cdesc.recState &= ~( US_DataModel::REC_DB | US_DataModel::HV_DET );
-      cdesc.contents  = QString();
-
-      if ( ( cdesc.recState & US_DataModel::REC_LO ) == 0 )
-         cdesc.recState  = US_DataModel::NOSTAT;
-
-      da_model->change_datadesc( cdesc, row );
-      da_model->record_changed ( row );
+      mark_removed_from_db( row );
    }
 
    return stat;
+}
+
+// Mark a row as gone from the database: local only now, or gone altogether
+void US_DataProcess::mark_removed_from_db( int row )
+{
+   US_DataModel::DataDesc desc = da_model->row_datadesc( row );
+
+   desc.recordID  = -1;
+   desc.recState &= ~( US_DataModel::REC_DB | US_DataModel::HV_DET );
+   desc.contents  = QString();
+
+   if ( ( desc.recState & US_DataModel::REC_LO ) == 0 )
+      desc.recState  = US_DataModel::NOSTAT;
+
+   da_model->change_datadesc( desc, row );
+   da_model->record_changed ( row );
+}
+
+/* The noise recorded against an edit whose model belongs to another edit.
+
+   delete_editedData removes the edit's models and their noise, wherever
+   that noise was recorded; it does not remove noise recorded against the
+   edit for a model of another edit (a global fit, say), and while such
+   noise is there the edit cannot be removed.  These are the investigator's
+   records, as the listings give them.
+*/
+bool US_DataProcess::foreign_noise_of_edit( int editID,
+                                            QMap< int, QString >& noise )
+{
+   noise.clear();
+
+   QString     invID = QString::number( US_Settings::us_inv_ID() );
+   QString     edtID = QString::number( editID );
+   QStringList query;
+   QSet< int > models;
+
+   query << "get_model_desc_by_editID" << invID << edtID;
+   db->query( query );
+   int status = db->lastErrno();
+
+   if ( status != IUS_DB2::OK  &&  status != IUS_DB2::NOROWS )
+   {
+      errMsg = tr( "The models of edit %1 could not be listed: %2" )
+               .arg( editID ).arg( db->lastError() );
+      return false;
+   }
+
+   while ( status == IUS_DB2::OK  &&  db->next() )
+      models.insert( db->value( 0 ).toInt() );
+
+   query.clear();
+   query << "get_noise_desc_by_editID" << invID << edtID;
+   db->query( query );
+   status = db->lastErrno();
+
+   if ( status != IUS_DB2::OK  &&  status != IUS_DB2::NOROWS )
+   {
+      errMsg = tr( "The noise of edit %1 could not be listed: %2" )
+               .arg( editID ).arg( db->lastError() );
+      return false;
+   }
+
+   // noiseID, noiseGUID, editedDataID, modelID, ...
+   while ( status == IUS_DB2::OK  &&  db->next() )
+   {
+      if ( db->value( 2 ).toInt() != editID )             continue;
+      if ( models.contains( db->value( 3 ).toInt() ) )    continue;
+
+      noise.insert( db->value( 0 ).toInt(), db->value( 1 ).toString() );
+   }
+
+   return true;
+}
+
+// The database ID a model or noise row holds after its record is written.
+//
+// The write looked the record up by its GUID and updated it, or created one
+// when there was none.  A replace keeps the row's ID -- the GUID is unique,
+// so the row already names the record that was updated; a create asks for
+// the ID by GUID.  lastInsertID() says nothing after an update, and is not
+// asked.
+int US_DataProcess::written_record_id( const QString& proc,
+                                       const QString& guid )
+{
+   if ( ( cdesc.recState & US_DataModel::REC_DB ) != 0  &&
+        cdesc.recordID >= 0  &&
+        guid.compare( cdesc.dataGUID, Qt::CaseInsensitive ) == 0 )
+      return 0;
+
+   QStringList query;
+   query << proc << guid;
+   db->query( query );
+
+   int status = db->lastErrno();
+
+   if ( status == IUS_DB2::OK  &&  db->next() )
+   {
+      int id = db->value( 0 ).toInt();
+
+      if ( id > 0 )
+      {
+         cdesc.recordID = id;
+         cdesc.dataGUID = guid;
+         return 0;
+      }
+   }
+
+   errMsg = tr( "%1 was written to the database, but its database ID could"
+                " not be read (%2: %3); scan again before acting on it." )
+            .arg( cdesc.label ).arg( proc ).arg( db->lastError() );
+   return 3047;
 }
 
 // perform a record remove from local disk
@@ -645,9 +826,8 @@ int US_DataProcess::same_contents( const US_DataModel::DataDesc& desc )
    QString lod;
 
    if ( ( desc.recState & US_DataModel::HV_DET ) != 0 )
-   {  // Compared already
+   {  // Compared already: the database copy is the one compared then
       dbd = desc.contents.section( " ", 0, 1 ).simplified();
-      lod = desc.contents.section( " ", 2, 3 ).simplified();
    }
 
    else
@@ -656,9 +836,11 @@ int US_DataProcess::same_contents( const US_DataModel::DataDesc& desc )
 
       if ( ! US_DataModel::db_digest( db, desc, dbd, error ) )
          dbd.clear();
-
-      lod = US_DataModel::file_digest( desc.filename );
    }
+
+   // The file may have changed since the comparison: it is what would be
+   // uploaded, so it is what is hashed
+   lod = US_DataModel::file_digest( desc.filename );
 
    if ( dbd.isEmpty()  ||  lod.isEmpty()  ||
         dbd.startsWith( "-" )  ||  lod.startsWith( "-" ) )

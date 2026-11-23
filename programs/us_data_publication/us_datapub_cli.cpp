@@ -5,6 +5,7 @@
 #include "us_settings.h"
 #include "us_defines.h"
 
+#include <cerrno>
 #include <cstring>
 #include <iostream>
 
@@ -19,28 +20,67 @@
 namespace
 {
 #if defined( Q_OS_UNIX )
-   // The terminal settings to go back to, also from a signal handler
+   // The terminal settings to go back to, and the quiet ones the prompt
+   // reads with, also from a signal handler
    termios               saved_tty;
+   termios               quiet_tty;
    volatile sig_atomic_t tty_quiet = 0;
 
-   const int             guarded[] = { SIGINT, SIGTERM, SIGHUP, SIGQUIT };
+   // SIGTSTP too: Ctrl-Z at the prompt stops the process, and the shell
+   // the user returns to must echo
+   const int             guarded[] = { SIGINT, SIGTERM, SIGHUP, SIGQUIT,
+                                       SIGTSTP };
    const int             nguarded  = int( sizeof( guarded ) / sizeof( int ) );
    struct sigaction      old_actions[ sizeof( guarded ) / sizeof( int ) ];
 
-   // Ctrl-C at the prompt must not leave the terminal without echo: put it
-   // back, restore what the signal did before and deliver it again
+   /* A signal at the prompt must not leave the terminal without echo: put
+      it back, restore what the signal did before and deliver it again.
+
+      When that returns -- the signal was ignored or handled elsewhere, or
+      (SIGTSTP) the process was stopped and has been continued -- the
+      prompt is still reading, so this handler goes back in place and the
+      terminal goes quiet again; the guard is installed with SA_RESTART, so
+      the read itself carries on rather than failing.
+   */
    void restore_tty_and_reraise( int sig )
    {
-      if ( tty_quiet )
+      int  saved_errno = errno;
+      bool was_quiet   = ( tty_quiet != 0 );
+      int  index       = -1;
+
+      if ( was_quiet )
          tcsetattr( STDIN_FILENO, TCSANOW, &saved_tty );
 
       tty_quiet = 0;
 
       for ( int ii = 0; ii < nguarded; ii++ )
-         if ( guarded[ ii ] == sig )
-            sigaction( sig, &old_actions[ ii ], nullptr );
+         if ( guarded[ ii ] == sig )  index = ii;
+
+      struct sigaction mine;
+      memset( &mine, 0, sizeof( mine ) );
+
+      if ( index >= 0 )
+         sigaction( sig, &old_actions[ index ], &mine );
+
+      // The signal is blocked while its handler runs; let it through now
+      sigset_t unblock;
+      sigemptyset( &unblock );
+      sigaddset  ( &unblock, sig );
+      sigprocmask( SIG_UNBLOCK, &unblock, nullptr );
 
       raise( sig );
+
+      // Still reading: back to the guard, and to no echo
+      if ( index >= 0 )
+         sigaction( sig, &mine, nullptr );
+
+      if ( was_quiet )
+      {
+         tcsetattr( STDIN_FILENO, TCSANOW, &quiet_tty );
+         tty_quiet = 1;
+      }
+
+      errno = saved_errno;
    }
 #elif defined( Q_OS_WIN )
    HANDLE         console_in   = INVALID_HANDLE_VALUE;
@@ -77,15 +117,17 @@ namespace
          struct sigaction guard;
          memset( &guard, 0, sizeof( guard ) );
          guard.sa_handler = restore_tty_and_reraise;
+         guard.sa_flags   = SA_RESTART;
          sigemptyset( &guard.sa_mask );
+
+         quiet_tty = saved_tty;
+         quiet_tty.c_lflag &= ~ECHO;
 
          for ( int ii = 0; ii < nguarded; ii++ )
             sigaction( guarded[ ii ], &guard, &old_actions[ ii ] );
 
-         termios quiet = saved_tty;
-         quiet.c_lflag &= ~ECHO;
          tty_quiet = 1;
-         tcsetattr( STDIN_FILENO, TCSANOW, &quiet );
+         tcsetattr( STDIN_FILENO, TCSANOW, &quiet_tty );
       }
 
       std::string bytes;
@@ -102,7 +144,9 @@ namespace
          std::cerr << std::endl;
       }
 
-      line = QString::fromLocal8Bit( bytes.data(), int( bytes.size() ) );
+      // UTF-8, as a password file and US3_DB_PASSWORD are: one password
+      // has to give the same bytes whichever way it is given
+      line = QString::fromUtf8( bytes.data(), int( bytes.size() ) );
 #elif defined( Q_OS_WIN )
       console_in = GetStdHandle( STD_INPUT_HANDLE );
 
@@ -189,7 +233,8 @@ US_DataPubCLI::Args::Args()
 US_DataPubCLI::US_DataPubCLI( QObject* parent )
    : QObject( parent ), out( stdout ), err( stderr )
 {
-   verbose = false;
+   verbose         = false;
+   password_failed = false;
 }
 
 bool US_DataPubCLI::wanted( const QStringList& arguments )
@@ -502,8 +547,16 @@ bool US_DataPubCLI::readPasswordFile( const QString& path, QString& password,
       return false;
    }
 
-   QByteArray line = file.readLine( 64 * 1024 );
+   QByteArray line   = file.readLine( 64 * 1024 );
+   bool       failed = ( file.error() != QFileDevice::NoError );
    file.close();
+
+   if ( failed )
+   {
+      error = tr( "The password file %1 cannot be read: %2" ).arg( path )
+              .arg( file.errorString() );
+      return false;
+   }
 
    password = chopLineEnd( QString::fromUtf8( line ) );
 
@@ -518,8 +571,47 @@ bool US_DataPubCLI::readPasswordFile( const QString& path, QString& password,
    return true;
 }
 
+QString US_DataPubCLI::resolveRun( const QList< US_DataPubCatalog::Run >& runs,
+                                   const QString& wanted, QString& why )
+{
+   why.clear();
+
+   QStringList byID;
+
+   for ( int ii = 0; ii < runs.size(); ii++ )
+      if ( runs[ ii ].id == wanted  &&  ! byID.contains( runs[ ii ].runID ) )
+         byID << runs[ ii ].runID;
+
+   for ( int ii = 0; ii < runs.size(); ii++ )
+   {
+      if ( runs[ ii ].runID != wanted )  continue;
+
+      byID.removeAll( wanted );
+
+      if ( ! byID.isEmpty() )
+         why = tr( "\"%1\" is taken as the run ID %1; it is also the database"
+                   " ID of run %2, which is not exported" )
+               .arg( wanted ).arg( byID.join( ", " ) );
+
+      return runs[ ii ].runID;
+   }
+
+   if ( byID.size() == 1 )  return byID[ 0 ];
+
+   if ( byID.size() > 1 )
+      why = tr( "\"%1\" is the ID of %2 runs (%3); name the run by its run"
+                " ID" ).arg( wanted ).arg( byID.size() )
+            .arg( byID.join( ", " ) );
+   else
+      why = tr( "No run \"%1\" was found" ).arg( wanted );
+
+   return QString();
+}
+
 QString US_DataPubCLI::password( bool needed )
 {
+   password_failed = false;
+
    if ( ! needed )  return QString();
 
    if ( ! args.dbPasswordFile.isEmpty() )
@@ -531,6 +623,7 @@ QString US_DataPubCLI::password( bool needed )
       if ( ! readPasswordFile( args.dbPasswordFile, pw, warning, error ) )
       {
          fail( error );
+         password_failed = true;
          return QString();
       }
 
@@ -552,10 +645,12 @@ QString US_DataPubCLI::password( bool needed )
       return args.dbPassword;
    }
 
-   QByteArray fromEnv = qgetenv( "US3_DB_PASSWORD" );
+   // qEnvironmentVariable(), not qgetenv(): on Windows the environment is
+   // UTF-16, and the 8-bit copy loses what the code page cannot hold
+   QString fromEnv = qEnvironmentVariable( "US3_DB_PASSWORD" );
 
    if ( ! fromEnv.isEmpty() )
-      return chopLineEnd( QString::fromUtf8( fromEnv ) );
+      return chopLineEnd( fromEnv );
 
    if ( args.nonInteractive )
    {
@@ -578,6 +673,7 @@ QString US_DataPubCLI::password( bool needed )
       err << "\n";
       fail( tr( "The password cannot be asked for: %1; give"
                 " --db-password-file, or set US3_DB_PASSWORD" ).arg( error ) );
+      password_failed = true;
       return QString();
    }
 
@@ -658,18 +754,27 @@ int US_DataPubCLI::runExport( void )
    // without either the whole chain is exported
    QString scopeKey = args.scope;
 
+   if ( ! scopeKey.isEmpty()  &&
+        US_DataPub::scopeOfKey( scopeKey ) == US_DataPub::ScopeNone )
+   {
+      fail( tr( "\"%1\" is not a scope; one of: %2" ).arg( scopeKey )
+            .arg( US_DataPub::scopeKeys().join( ", " ) ) );
+      return 2;
+   }
+
    if ( ! args.includeScope.isEmpty() )
    {
-      if ( scopeKey.isEmpty() )
-         scopeKey = args.includeScope;
-
-      else if ( US_DataPub::scopeOfKey( args.includeScope ) >
-                US_DataPub::scopeOfKey( scopeKey ) )
+      if ( ! scopeKey.isEmpty()  &&
+           US_DataPub::scopeOfKey( args.includeScope ) >
+           US_DataPub::scopeOfKey( scopeKey ) )
       {
          fail( tr( "--include-%1 goes beyond --max-scope %2" )
                .arg( args.includeScope ).arg( scopeKey ) );
          return 2;
       }
+
+      // Within the cap, what was asked for is what is exported
+      scopeKey = args.includeScope;
    }
 
    if ( scopeKey.isEmpty() )
@@ -700,13 +805,19 @@ int US_DataPubCLI::runExport( void )
 
    US_DataPubExporter::Selection selection;
    selection.fromDb           = ( args.source == "db" );
+   int before                 = errors_reported;
    selection.dbPassword       = password( selection.fromDb );
    selection.scope            = scope;
 
+   // One error for one problem: password() has said what went wrong when
+   // it could.  A file or terminal that could not be read is a failure
+   // (1); no password given at all is a usage error (2).
    if ( selection.fromDb  &&  selection.dbPassword.isEmpty() )
    {
-      fail( tr( "No database password; nothing was exported" ) );
-      return 2;
+      if ( errors_reported == before )
+         fail( tr( "No database password; nothing was exported" ) );
+
+      return password_failed ? 1 : 2;
    }
 
    selection.projectGUID      = args.projectGUID;
@@ -778,21 +889,19 @@ int US_DataPubCLI::runExport( void )
       for ( int ii = 0; ii < args.experiments.size(); ii++ )
       {
          QString wanted = args.experiments[ ii ];
-         QString runID;
-
-         for ( int jj = 0; jj < runs.size(); jj++ )
-         {
-            if ( runs[ jj ].runID != wanted  &&  runs[ jj ].id != wanted )
-               continue;
-
-            runID = runs[ jj ].runID;
-            break;
-         }
+         QString why;
+         QString runID  = resolveRun( runs, wanted, why );
 
          if ( runID.isEmpty() )
          {
-            fail( tr( "No run \"%1\" was found" ).arg( wanted ) );
+            fail( why );
             return 1;
+         }
+
+         if ( ! why.isEmpty() )
+         {
+            err << tr( "Warning: " ) << why << "\n";
+            err.flush();
          }
 
          // A run named twice -- by runID and by ID, say -- is one run

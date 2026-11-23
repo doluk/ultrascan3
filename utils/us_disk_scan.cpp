@@ -81,7 +81,10 @@ bool US_DiskScan::verify( int index )
 
 void US_DiskScan::cancel( void )
 {
-   abort_flag.storeRelease( 1 );
+   // Only a running job is stopped: with none running there is nothing to
+   // stop, and a flag left set would stop the caller's own next read
+   if ( idle.loadAcquire() == 0 )
+      abort_flag.storeRelease( 1 );
 }
 
 bool US_DiskScan::busy( void ) const
@@ -114,8 +117,22 @@ bool US_DiskScan::ok( void ) const
 
 // The owning thread takes the result: idle first, so whoever jobDone
 // reaches finds the catalog readable
+//
+// The cancel request belongs to the job that just finished.  Left set, it
+// would stop whatever reads the catalog next -- the next job is cleared by
+// request(), but a caller that reads the idle catalog directly, as
+// catalog()->loadRunDetail() does, would be told it was cancelled.  It is
+// cleared here, before the scanner goes idle, unless the scanner is being
+// torn down.
 void US_DiskScan::finished( int a_job, int index )
 {
+   {
+      QMutexLocker lock( &mutex );
+
+      if ( ! stopping )
+         abort_flag.storeRelease( 0 );
+   }
+
    idle.storeRelease( 1 );
 
    emit jobDone( a_job, index );

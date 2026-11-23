@@ -54,6 +54,7 @@ US_ManageData::US_ManageData() : US_Widgets()
    nmerged       = 0;
    verify_pending = false;
    closing       = false;
+   errs_seen     = 0;
    da_model      = NULL;
    da_tree       = NULL;
    da_process    = NULL;
@@ -328,7 +329,8 @@ DbgLv(1) << "db passwd complete";
             this,       &US_ManageData::sel_investigator );
 DbgLv(1) << "GUI setup complete";
 
-   // Create an object to handle the data itself
+   // Create an object to handle the data itself.  The window owns the
+   // three, so they -- and the model's disk worker thread -- go with it.
    da_model       = new US_DataModel(                      this );
 
    // Set needed pointers for class interaction in model object
@@ -364,6 +366,16 @@ DbgLv(1) << "GUI setup complete";
    connect( da_model, &US_DataModel::runCompared,
             da_tree,  &US_DataTree::refresh_run );
 
+   // Noise read with a later experiment can belong to a model of an
+   // experiment shown already: that experiment is shown again, and the
+   // totals counted again
+   connect( da_model, &US_DataModel::runReloaded, this, [ this ]( int index )
+            {
+               da_tree->refill_run( index );
+               counts = da_model->count_records();
+               reportDataStatus();
+            } );
+
    // A read or a comparison asked for outside a scan is done in the
    // background, one experiment per turn of the event loop
    connect( da_model, &US_DataModel::workRequested,
@@ -387,7 +399,8 @@ void US_ManageData::reset( void )
    da_model->dummy_data ();
    da_tree ->build_dtree();
 
-   counts = da_model->count_records();
+   counts    = da_model->count_records();
+   errs_seen = 0;
    reportDataStatus();
 
    int src_flg = cb_source->currentIndex();
@@ -616,6 +629,7 @@ DbgLv(1) << "ScnDM:  Start          " << nowTime();
 
    set_controls_enabled( false );
 
+   errs_seen = 0;
    da_model->scan_data();
 DbgLv(1) << "ScnDM:  Scan Done      " << nowTime();
 
@@ -641,6 +655,7 @@ DbgLv(1) << "ScnDM:  Scan Done      " << nowTime();
    if ( da_model->scan_stopped() )   return;
 
    report_scan_errors();
+   errs_seen = da_model->scan_errors().size();
    report_run_problems();
    review_duplicates();
 
@@ -650,14 +665,21 @@ DbgLv(1) << "ScnDM:  Scan Done      " << nowTime();
 DbgLv(1) << "ScnDM:  Scan All Done  " << nowTime();
 }
 
-// Closing while a scan runs stops it; the window closes once it has
+// Closing while a scan runs stops it; the window closes once it has.  So
+// does closing while a read or a comparison runs outside a scan: the disk
+// worker is stopped, and the window closes when that work returns.
 void US_ManageData::closeEvent( QCloseEvent* event )
 {
-   if ( da_model != NULL  &&  da_model->scan_active() )
+   if ( da_model != NULL  &&
+        ( da_model->scan_active()  ||  da_model->is_busy() ) )
    {
       closing = true;
       da_model->stop_scan();
-      event->ignore();                 // scan_data() closes it when it returns
+      event->ignore();                 // closed again once the work returns
+
+      if ( ! da_model->scan_active() )
+         schedule_verifies( 50 );      // scan_data() closes it otherwise
+
       return;
    }
 
@@ -685,6 +707,16 @@ void US_ManageData::pump_verifies()
 {
    verify_pending = false;
 
+   if ( closing )
+   {  // closed while something was being read: it is done now
+      if ( ! da_model->scan_active()  &&  ! da_model->is_busy() )
+         close();
+      else
+         schedule_verifies( 50 );
+
+      return;
+   }
+
    if ( da_model->scan_active() )   return;   // the scan does its own queue
 
    if ( da_model->is_busy() )
@@ -703,10 +735,41 @@ void US_ManageData::pump_verifies()
 
    da_model->pump_once();
 
+   if ( closing )
+   {  // closed while it ran
+      close();
+      return;
+   }
+
    if ( da_model->pending_runs() > 0  ||  da_model->pending_verifies() > 0 )
+   {
       schedule_verifies();
-   else
+      return;
+   }
+
+   // What went wrong in the background is said, as a scan's errors are
+   QStringList errors = da_model->scan_errors();
+
+   if ( errors.size() <= errs_seen )
+   {
       status_text( tr( "Comparison complete" ) );
+      return;
+   }
+
+   QStringList fresh = errors.mid( errs_seen );
+   errs_seen         = errors.size();
+   int     nshow     = qMin( fresh.size(), 12 );
+   QString text      = QStringList( fresh.mid( 0, nshow ) ).join( "\n" );
+
+   if ( nshow < fresh.size() )
+      text += tr( "\n... and %1 more" ).arg( fresh.size() - nshow );
+
+   status_text( tr( "Comparison complete, with %1 error(s)" )
+                .arg( fresh.size() ) );
+   QMessageBox::warning( this, tr( "Comparison Errors" ),
+      tr( "Reading or comparing in the background ran into %1 error(s);"
+          " the records concerned may be missing, or read as not yet"
+          " compared:\n\n" ).arg( fresh.size() ) + text );
 }
 
 // Say what went wrong in a scan, rather than leaving it in the debug log
@@ -892,8 +955,16 @@ void US_ManageData::clickedItem( QTreeWidgetItem* item )
    // Only a right-button press does anything: it brings up the context
    // menu.  Selecting a row reads and compares nothing -- opening an
    // experiment does that (US_DataTree::item_opened).
-   if ( QApplication::mouseButtons() == Qt::RightButton )
-      da_tree->row_context_menu( item );
+   if ( QApplication::mouseButtons() != Qt::RightButton )   return;
+
+   da_tree->row_context_menu( item );
+
+   // An action changed where records are: the totals say so too
+   if ( ! da_model->scan_active() )
+   {
+      counts = da_model->count_records();
+      reportDataStatus();
+   }
 }
 
 // report status of data

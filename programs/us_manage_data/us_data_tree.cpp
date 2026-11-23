@@ -20,7 +20,7 @@ const QColor colorWhite( 255, 255, 240 );
 
 // class to manage a tree widget, underlying data, and processing
 US_DataTree::US_DataTree( US_DataModel* dmodel, QTreeWidget* treewidg,
-      QWidget* parent /*=0*/ )
+      QWidget* parent /*=0*/ ) : QObject( parent )
 {
    da_model   = dmodel;
    tw_recs    = treewidg;
@@ -332,9 +332,6 @@ void US_DataTree::fill_run( int runIndex )
    pitems[ 3 ] = runitem;
    pitems[ 4 ] = runitem;
 
-   int nchdb  = 0;
-   int nchlo  = 0;
-
    for ( int row = entry.firstRow; row >= 0  &&  row <= entry.lastRow; row++ )
    {
       US_DataModel::DataDesc desc = da_model->row_datadesc( row );
@@ -348,37 +345,9 @@ void US_DataTree::fill_run( int runIndex )
       row_look( desc, fbru, rtyp, rsrc );
 
       // count the children and the descendants of this record
-      int kchdb = 0;
-      int kchlo = 0;
-      int kdedb = 0;
-      int kdelo = 0;
-
-      for ( int jj = row + 1; jj <= entry.lastRow; jj++ )
-      {
-         US_DataModel::DataDesc ddesc = da_model->row_datadesc( jj );
-
-         if ( ddesc.recType <= ityp )   break;
-
-         bool isDba = ( ( ddesc.recState & US_DataModel::REC_DB ) != 0 );
-         bool isLoc = ( ( ddesc.recState & US_DataModel::REC_LO ) != 0 );
-         bool child = ( ( ddesc.recType - ityp ) == 1 );
-
-         kdedb   += ( isDba          ) ? 1 : 0;
-         kchdb   += ( isDba && child ) ? 1 : 0;
-         kdelo   += ( isLoc          ) ? 1 : 0;
-         kchlo   += ( isLoc && child ) ? 1 : 0;
-      }
-
-      if ( ityp == US_DataModel::RAW )
-      {  // the raws are the children of the experiment
-         nchdb  += ( ( desc.recState & US_DataModel::REC_DB ) != 0 ) ? 1 : 0;
-         nchlo  += ( ( desc.recState & US_DataModel::REC_LO ) != 0 ) ? 1 : 0;
-      }
-
-      QString anch = ( ityp < 4 ) ?
-         QString( "%1, %2" ).arg( kchdb ).arg( kchlo ) : "";
-      QString ande = ( ityp < 3 ) ?
-         QString( "%1, %2" ).arg( kdedb ).arg( kdelo ) : "";
+      QString anch;
+      QString ande;
+      row_counts( row, entry.lastRow, anch, ande );
 
       QStringList cvals;
       cvals << rtyp << desc.label << desc.subType << rsrc << anch << ande;
@@ -395,16 +364,59 @@ void US_DataTree::fill_run( int runIndex )
       }
    }
 
-   // the counts on the experiment row are now what is really under it --
-   // the model counted them the same way when it merged the experiment
-   runitem->setText( 4, QString( "%1, %2" ).arg( nchdb ).arg( nchlo ) );
-   runitem->setText( 5, QString( "%1, %2" ).arg( entry.dbCount )
-                                           .arg( entry.loCount ) );
-
    refresh_run_item( runIndex );
 }
 
-// Colour an experiment row from what is under it now
+// The "Children" and "Descendants" texts of one record row
+void US_DataTree::row_counts( int row, int lastRow, QString& anch,
+                              QString& ande )
+{
+   int ityp  = da_model->row_datadesc( row ).recType;
+   int kchdb = 0;
+   int kchlo = 0;
+   int kdedb = 0;
+   int kdelo = 0;
+
+   for ( int jj = row + 1; jj <= lastRow; jj++ )
+   {
+      US_DataModel::DataDesc ddesc = da_model->row_datadesc( jj );
+
+      if ( ddesc.recType <= ityp )   break;
+
+      bool isDba = ( ( ddesc.recState & US_DataModel::REC_DB ) != 0 );
+      bool isLoc = ( ( ddesc.recState & US_DataModel::REC_LO ) != 0 );
+      bool child = ( ( ddesc.recType - ityp ) == 1 );
+
+      kdedb   += ( isDba          ) ? 1 : 0;
+      kchdb   += ( isDba && child ) ? 1 : 0;
+      kdelo   += ( isLoc          ) ? 1 : 0;
+      kchlo   += ( isLoc && child ) ? 1 : 0;
+   }
+
+   anch = ( ityp < 4 ) ? QString( "%1, %2" ).arg( kchdb ).arg( kchlo ) : "";
+   ande = ( ityp < 3 ) ? QString( "%1, %2" ).arg( kdedb ).arg( kdelo ) : "";
+}
+
+// Show an experiment's records again, from the rows it was merged into anew
+void US_DataTree::refill_run( int runIndex )
+{
+   if ( runIndex < 0  ||  runIndex >= runitems.size() )   return;
+
+   QTreeWidgetItem* runitem = runitems[ runIndex ];
+
+   // The selection may hold items about to go
+   selitems.clear();
+   tw_item = NULL;
+
+   qDeleteAll( runitem->takeChildren() );
+
+   if ( da_model->run_entry( runIndex ).loaded )
+      fill_run( runIndex );
+   else
+      refresh_run_item( runIndex );
+}
+
+// Colour an experiment row from what is under it now, and show its counts
 void US_DataTree::refresh_run_item( int runIndex )
 {
    if ( runIndex < 0  ||  runIndex >= runitems.size() )   return;
@@ -419,6 +431,29 @@ void US_DataTree::refresh_run_item( int runIndex )
 
    for ( int jj = 0; jj < ntcols; jj++ )
       item->setForeground( jj, fbru );
+
+   US_DataModel::RunEntry entry = da_model->run_entry( runIndex );
+
+   if ( ! entry.loaded )   return;           // the listing's counts stand
+
+   // the counts on the experiment row are what is really under it -- the
+   // model counted the descendants the same way; the raws are its children
+   int nchdb = 0;
+   int nchlo = 0;
+
+   for ( int row = entry.firstRow; row >= 0  &&  row <= entry.lastRow; row++ )
+   {
+      US_DataModel::DataDesc desc = da_model->row_datadesc( row );
+
+      if ( desc.recType != US_DataModel::RAW )   continue;
+
+      nchdb  += ( ( desc.recState & US_DataModel::REC_DB ) != 0 ) ? 1 : 0;
+      nchlo  += ( ( desc.recState & US_DataModel::REC_LO ) != 0 ) ? 1 : 0;
+   }
+
+   item->setText( 4, QString( "%1, %2" ).arg( nchdb ).arg( nchlo ) );
+   item->setText( 5, QString( "%1, %2" ).arg( entry.dbCount )
+                                        .arg( entry.loCount ) );
 }
 
 /* Colour one experiment's rows again.
@@ -456,10 +491,15 @@ void US_DataTree::refresh_run( int runIndex )
       QBrush  fbru( colorBrown );
       QString rtyp;
       QString rsrc;
+      QString anch;
+      QString ande;
 
-      row_look( desc, fbru, rtyp, rsrc );
+      row_look  ( desc, fbru, rtyp, rsrc );
+      row_counts( row, entry.lastRow, anch, ande );
 
       item->setText( 3, rsrc );
+      item->setText( 4, anch );
+      item->setText( 5, ande );
 
       for ( int jj = 0; jj < ntcols; jj++ )
          item->setForeground( jj, fbru );
@@ -672,8 +712,11 @@ void US_DataTree::dtree_help()
       tr( "              Records whose parent is missing are shown under\n" ) +
       tr( "              such fillers, under an experiment row of their\n" ) +
       tr( "              own, \"(records of no experiment)\", so they can\n" ) +
-      tr( "              still be removed.  Global models, which have no\n" ) +
-      tr( "              edit by design, are under \"(global models)\".\n" ) +
+      tr( "              still be removed -- all but raw data, which the\n" ) +
+      tr( "              database removes only with its experiment, and\n" ) +
+      tr( "              whose experiment is missing or not yours.  Global\n" ) +
+      tr( "              models, which have no edit by design, are under\n" ) +
+      tr( "              \"(global models)\".\n" ) +
       tr( "              These two rows are no record themselves, and\n" ) +
       tr( "              their Source reads \"--\"; removing from one of\n" ) +
       tr( "              them asks first, saying how many records go.\n" ) +
@@ -692,8 +735,10 @@ void US_DataTree::dtree_help()
       tr( "  The upper bar counts the steps of the phase that is running\n" ) +
       tr( "  (listing, reading, comparing); the lower bar the work inside\n" ) +
       tr( "  the experiment being read.  The window takes input between\n" ) +
-      tr( "  experiments; a database query holds it up while it runs, and\n" ) +
-      tr( "  while local files are read it is redrawn but takes no input.\n" ) +
+      tr( "  experiments; a database query holds it up while it runs.\n" ) +
+      tr( "  While the whole local store is read it is redrawn but takes\n" ) +
+      tr( "  no input; with a run selected, that run's local files are\n" ) +
+      tr( "  read in the window itself, which is not redrawn until then.\n" ) +
       tr( "  Opening an experiment while a scan runs moves it to the front\n" ) +
       tr( "  of the queue.  Closing the window stops the scan.\n\n" ) +
       tr( "Tree Entry Processes --\n\n" ) +
@@ -715,7 +760,10 @@ void US_DataTree::dtree_help()
       tr( "  A record changed by an action is compared again on its own.\n" ) +
 
       tr( "    \"remove from DB\"\n" ) +
-      tr( "       -> Remove this record from the database.\n" ) +
+      tr( "       -> Remove this record from the database.  Removing an\n" ) +
+      tr( "          edit first removes noise of another edit's model\n" ) +
+      tr( "          that was computed from it; the database would not\n" ) +
+      tr( "          remove the edit while that noise refers to it.\n" ) +
       tr( "    \"remove from local\"\n" ) +
       tr( "       -> Remove this record from local disk.\n" ) +
       tr( "    \"remove both\"\n" ) +
@@ -1119,6 +1167,25 @@ DbgLv(1) << "check_filename_for_autoflow: runID isRequired" << runID << isRequir
    return isRequired;
 }
 
+// A batch of record changes, ended when it goes out of scope at the latest
+US_DataTree::ChangeBatch::ChangeBatch( US_DataModel* model ) : da_model( model )
+{
+   da_model->begin_changes();
+}
+
+US_DataTree::ChangeBatch::~ChangeBatch()
+{
+   end();
+}
+
+void US_DataTree::ChangeBatch::end( void )
+{
+   if ( da_model == NULL )   return;
+
+   da_model->end_changes();
+   da_model = NULL;
+}
+
 // Act on the selection the tree has now
 int US_DataTree::act_on_selection( QString item_exs, QString item_act )
 {
@@ -1294,6 +1361,10 @@ DbgLv(1) << "ITEM do_actions" << narows << item_exs << item_act;
       }
    }
 
+   // What the actions change is brought up to date once per experiment,
+   // when they are all done, not once per record
+   ChangeBatch batch( da_model );
+
    if ( remove && frDB )
    {                                  // REMOVE from DB
       // The database removes the descendants of a record with it, so a
@@ -1309,15 +1380,7 @@ DbgLv(1) << "ITEM do_actions" << narows << item_exs << item_act;
 
          if ( cascaded.contains( irow ) )
          {
-            ddesc.recordID  = -1;
-            ddesc.recState &= ~( US_DataModel::REC_DB | US_DataModel::HV_DET );
-
-            if ( ( ddesc.recState & US_DataModel::REC_LO ) == 0 )
-               ddesc.recState  = US_DataModel::NOSTAT;
-
-            ddesc.contents  = QString();
-            da_model->change_datadesc( ddesc, irow );
-            da_model->record_changed ( irow );
+            da_process->mark_removed_from_db( irow );
             continue;
          }
 
@@ -1433,6 +1496,8 @@ DbgLv(1) << "RMV_REC: irow stat1" << irow << stat1;
          }
       }
    }
+
+   batch.end();
 
    // The rows acted on show where their records are now
    QList< int > runs;

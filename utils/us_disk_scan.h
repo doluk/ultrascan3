@@ -46,9 +46,12 @@
     \section diskscan_cancel Stopping
 
     \ref cancel stops the job that is running at the next file it would
-    read, and the job then finishes as failed.  Destroying the scanner
-    cancels whatever it is doing first, so closing a window does not wait
-    for a whole store to be indexed.
+    read, and the job then finishes as failed.  The request ends with that
+    job: once the scanner is idle again, reading its catalog directly
+    (\ref catalog, then US_DataCatalog::loadRunDetail, say) is not
+    cancelled, and \ref cancel while no job runs does nothing.  Destroying
+    the scanner cancels whatever it is doing first, so closing a window does
+    not wait for a whole store to be indexed.
 */
 class US_UTIL_EXTERN US_DiskScan : public QThread
 {
@@ -86,7 +89,8 @@ class US_UTIL_EXTERN US_DiskScan : public QThread
       //! \returns False, and nothing is done, while a job is running
       bool verify   ( int index );
 
-      //! \brief Stop the job that is running, if any; it finishes as failed
+      //! \brief Stop the job that is running, if any; it finishes as
+      //!        failed.  With no job running this does nothing.
       void cancel   ( void );
 
       //! \brief True from a request until the owning thread has seen the

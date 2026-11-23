@@ -245,6 +245,37 @@ class US_DataPubManifest
       */
       bool    checkPaths ( QString& error ) const;
 
+      /*! \brief Check the records against the rules an import applies
+
+          On top of checkPaths(): every record's GUID, and every GUID it
+          depends on, is a GUID (US_DataPub::guidIsUsable()); every run type
+          passes US_DataPub::runTypeIsUsable(); the raw data, edits and time
+          state of a run are named after their run
+          (US_DataPub::runFileNameIsUsable()), name the run ID of the
+          experiment they depend on, and a time state is
+          US_DataPub::timeStateFileName(); and a time state carries its
+          \c definitionsPayload.  An export applies it before it packs a
+          bundle, so that it never writes one an import refuses.
+          \param error Filled in with a message naming the first problem
+          \returns True when every record passes
+      */
+      bool    checkAcceptance( QString& error ) const;
+
+      /*! \brief Record one more dependency of an entity already listed
+
+          A solution that fills channels of several runs depends on every
+          one of their experiments, which only become known one run at a
+          time.
+          \param type       The record type of the entity
+          \param guid       The GUID of the entity
+          \param parentType The record type of the parent
+          \param parentGUID The GUID of the parent
+          \returns False when the manifest holds no such entity
+      */
+      bool    addDependency( US_DataPub::EntityType type, const QString& guid,
+                             US_DataPub::EntityType parentType,
+                             const QString& parentGUID );
+
       //! \brief A multi-line "type: count" summary of the manifest
       QString summary    ( void ) const;
 

@@ -130,9 +130,14 @@ class US_DataModel : public QObject
 
                 //! True when an upload or a download for this run would
                 //! write somewhere else than where the run already is: its
-                //! local directory is not named after it, holds more than
-                //! one run, or is not the only directory holding it.  Both
-                //! actions are refused for such a run.
+                //! local directory is not named after it, or is not the only
+                //! directory holding it.  Names are compared as the local
+                //! catalog compares them (US_DataCatalog::fileNameCase).  A
+                //! directory that also holds files of another run is safe
+                //! for the run it is named after -- what is written for that
+                //! run goes there -- and unsafe for the other, whose name it
+                //! does not have.  Both actions are refused for such a run,
+                //! and \ref problem then always says why.
                 bool      unsafe;
 
                 //! What is wrong with the run, when either source says it
@@ -159,6 +164,15 @@ class US_DataModel : public QObject
         //! \brief Set the database connection
         //! \param db Database connection pointer
         void setDatabase( IUS_DB2* db );
+
+        //! \brief How the local store compares file names
+        //!
+        //! The platform decides by default (see
+        //! US_DataCatalog::setFileNameCase); this is for a store on a file
+        //! system unlike the platform's, and for tests.  It applies from
+        //! the next scan.
+        //! \param sensitivity Qt::CaseInsensitive to compare without case
+        void setFileNameCase( Qt::CaseSensitivity sensitivity );
 
         //! \brief Set the progress bar and status label
         //! \param progress Progress bar of the work inside one experiment
@@ -250,9 +264,12 @@ class US_DataModel : public QObject
             While it runs \ref scan_active is true, and a request to read or
             compare an experiment that arrives from the window meanwhile is
             only queued (see \ref scan_run).  The window takes input between
-            experiments only: a database query blocks it while it runs, and
-            while the local store is being read it repaints but ignores
-            input.
+            experiments only: a database query blocks it while it runs.
+            The whole-store read of the local store runs on the disk
+            worker, and the window is repainted, though it ignores input,
+            while it waits for it; with a run filter the run is read on the
+            window's own thread, and the window is not repainted until that
+            read is done.
 
             With a run filter only that run's records are read, one run at
             a time; the whole-store read (\ref scan_all) is for an unfiltered
@@ -418,8 +435,22 @@ class US_DataModel : public QObject
         */
         void record_changed( int row );
 
-        //! \brief Ask the scan that is running to stop after the step it
-        //!        is in, as a window that is closing does
+        /*! \brief Start a batch of record changes
+
+            Until the matching \ref end_changes, \ref record_changed only
+            notes which experiments changed; each of them is then brought
+            up to date -- its row, its counts and its comparison request --
+            once, however many of its records the batch changed.  Batches
+            nest; the outermost one does the work.
+        */
+        void begin_changes( void );
+
+        //! \brief End a batch of record changes; see \ref begin_changes
+        void end_changes( void );
+
+        //! \brief Ask the scan that is running, or the read or comparison
+        //!        in progress outside a scan, to stop after the step it is
+        //!        in, as a window that is closing does
         void stop_scan( void );
 
         //! \brief True when the last scan was stopped by \ref stop_scan
@@ -491,6 +522,17 @@ class US_DataModel : public QObject
         */
         int  add_orphans( const QVector< DataDesc >& dbOrphans,
                           const QVector< DataDesc >& loOrphans );
+
+        /*! \brief The records of a merged list the source filter keeps
+
+            A tree goes or stays as a whole, judged by its head: a raw
+            record, or the first real record under gray fillers -- an
+            orphan model under the fillers of its missing edit and raw, say.
+            A filler stays while anything under it does.
+            \param mdescs Records in tree order, as \ref merge_descs gives
+                          them
+        */
+        QVector< DataDesc > kept_records( const QVector< DataDesc >& mdescs ) const;
 
         /*! \brief Merge the database and local records of one experiment
 
@@ -612,6 +654,14 @@ class US_DataModel : public QObject
         //! \param index The position of the stand-in experiment
         void orphansAdded( int index );
 
+        //! \brief An experiment merged already was merged again, since the
+        //!        database catalog hung more records under it
+        //!
+        //! Its rows are new: whoever shows them drops what it showed for
+        //! the experiment and shows its rows again.
+        //! \param index The position of the experiment
+        void runReloaded( int index );
+
     private:
         IUS_DB2*      db;               //!< Pointer to opened DB connection
         US_DataCatalog* cat_db;         //!< Catalog of the database records
@@ -652,6 +702,24 @@ class US_DataModel : public QObject
 
         int           dbg_level;        //!< Debug level
 
+        //! The experiment of each row, by row: what \ref run_of_row reads,
+        //! kept as the rows are appended
+        QVector< int >      row_run;
+
+        //! The parent row of each record below the raw level, by row, or
+        //! -1: what \ref parent_row reads, found as the rows are appended
+        QVector< int >      row_parent;
+        int                 batch_depth;  //!< Nesting of begin_changes()
+        QList< int >        stale_runs;   //!< Merged, then changed by the
+                                          //!< catalog: to be merged again
+        bool                remerging;    //!< merge_stale_runs() is running
+        int                 merging_run;  //!< Experiment adopting orphans
+        //! The orphan branches each experiment took: (side, branch_key)
+        QHash< int, QList< QPair< int, QString > > > run_taken;
+        QList< int >        batch_runs;   //!< Experiments a batch changed
+        bool                case_set;     //!< setFileNameCase() was called
+        Qt::CaseSensitivity file_case;    //!< What setFileNameCase() set
+
         QString       filt_run;         //!< Filter run
         QString       filt_triple;      //!< Filter triple
         QString       filt_source;      //!< Filter source
@@ -670,6 +738,10 @@ class US_DataModel : public QObject
         //! \brief Put a note from a catalog on the status line
         //! \param note The note
         void scanner_note( const QString& note );
+
+        //! \brief The database catalog changed an experiment it had read
+        //! \param dbIndex The experiment's position in that catalog
+        void catalog_run_changed( int dbIndex );
 
     private:
         //! \brief Put a note on the status line, cut to what it can show
@@ -714,6 +786,35 @@ class US_DataModel : public QObject
         //! \brief Set the experiment row's state from its records
         void update_run_row( int index );
 
+        //! \brief Count again the records under an experiment
+        void recount_run( int index );
+
+        //! \brief Merge again the experiments noted by catalog_run_changed
+        void merge_stale_runs( void );
+
+        //! \brief Merge one experiment again; its old rows are left
+        //!        behind, belonging to no experiment
+        bool remerge_run( int index );
+
+        //! \brief Bring an experiment up to date after its records changed
+        void run_changed( int index );
+
+        //! \brief Append a row of an experiment
+        void append_row( const DataDesc& desc, int runIndex );
+
+        //! \brief Clear the rows and everything kept about them
+        void clear_rows( void );
+
+        /*! \brief Make sure both sources have read an experiment's chain
+
+            A side whose read fails is read once more, since what made it
+            fail may pass.  A side that still cannot be read is reported,
+            and the experiment is left unread: merging what the other side
+            holds would show its records as in that place only.
+            \returns False when a side could not be read
+        */
+        bool load_sides( int index );
+
         //! \brief One orphan and what hangs off it, as tree records
         typedef QVector< DataDesc > Branch;
 
@@ -732,6 +833,21 @@ class US_DataModel : public QObject
         QVector< Branch >  orph_branches[ 2 ];  //!< [0] database, [1] local
         QVector< bool >    orph_adopted [ 2 ];  //!< Merged into a run
         bool               orph_indexed;        //!< index_orphans() ran
+
+        //! The branches of each source adopted so far, by \ref branch_key:
+        //! an index made again (orphans read since) keeps what was adopted
+        QSet< QString >    orph_taken   [ 2 ];
+
+        //! How many orphans each catalog held when they were indexed.  A
+        //! read of one experiment at a time adds the stray noise it finds,
+        //! so the index is made again when this changes.
+        int                orph_size    [ 2 ];
+
+        //! \brief How many orphans a catalog holds now
+        static int orphan_size( US_DataCatalog* catalog );
+
+        //! \brief What tells one orphan branch from another, across indexes
+        static QString branch_key( const DataDesc& head );
 
         //! \brief The key a branch is adopted by: its parent's level and
         //!        GUID, or for a raw record its own GUID

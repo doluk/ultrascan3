@@ -8,6 +8,18 @@
 #include "us_util.h"
 #include <limits>
 
+// A value as the shortest text that reads back as exactly the same double.
+// Disk records are read back with QString::toDouble, which takes this form
+// and every form older files were written in.
+static QString exact_number( double value )
+{
+#if QT_VERSION >= QT_VERSION_CHECK( 5, 7, 0 )
+   return QString::number( value, 'g', QLocale::FloatingPointShortest );
+#else
+   return QString::number( value, 'g', 17 );
+#endif
+}
+
 namespace
 {
 // QXmlStreamReader treats a device read error like end-of-input, which can
@@ -726,7 +738,7 @@ int US_Analyte::write_xml( QIODevice& device )
          }
 
          xml.writeAttribute( "type",  "PROTEIN" );
-         xml.writeAttribute( "vbar20", QString::number( vbar20 ) );
+         xml.writeAttribute( "vbar20", exact_number( vbar20 ) );
       }
          break;
 
@@ -745,24 +757,24 @@ int US_Analyte::write_xml( QIODevice& device )
          xml.writeAttribute( "FivePrimeHydroxyl",
                                      US_Util::bool_string( _5prime ) );
 
-         xml.writeAttribute( "sodium",    QString::number( sodium    ) );
-         xml.writeAttribute( "potassium", QString::number( potassium ) );
-         xml.writeAttribute( "lithium",   QString::number( lithium   ) );
-         xml.writeAttribute( "magnesium", QString::number( magnesium ) );
-         xml.writeAttribute( "calcium",   QString::number( calcium   ) );
-         xml.writeAttribute( "vbar20",    QString::number( vbar20    ) );
+         xml.writeAttribute( "sodium",    exact_number( sodium    ) );
+         xml.writeAttribute( "potassium", exact_number( potassium ) );
+         xml.writeAttribute( "lithium",   exact_number( lithium   ) );
+         xml.writeAttribute( "magnesium", exact_number( magnesium ) );
+         xml.writeAttribute( "calcium",   exact_number( calcium   ) );
+         xml.writeAttribute( "vbar20",    exact_number( vbar20    ) );
          break;
 
       case US_Analyte::CARBOHYDRATE:
          xml.writeAttribute( "type",      "CARBOHYDRATE" );
-         xml.writeAttribute( "vbar20",    QString::number( vbar20 ) );
+         xml.writeAttribute( "vbar20",    exact_number( vbar20 ) );
          xml.writeAttribute( "gradient_forming",
                                           US_Util::bool_string( grad_form ) );
          break;
    }
 
    if ( mw > 0.0 )
-      xml.writeAttribute( "mw",     QString::number( mw ) );
+      xml.writeAttribute( "mw",     exact_number( mw ) );
 
    xml.writeAttribute( "description", description );
    xml.writeAttribute( "analyteGUID", analyteGUID );
@@ -790,8 +802,8 @@ int US_Analyte::write_xml( QIODevice& device )
       value = extinction[ keys[ i ] ];
 
       xml.writeStartElement( "extinction" );
-      xml.writeAttribute( "frequency", QString::number( freq, 'g', std::numeric_limits<double>::max_digits10 ) );
-      xml.writeAttribute( "value",      QString::number( value ) );
+      xml.writeAttribute( "frequency", exact_number( freq ) );
+      xml.writeAttribute( "value",      exact_number( value ) );
       xml.writeEndElement(); // extinction
    }
 
@@ -804,8 +816,8 @@ int US_Analyte::write_xml( QIODevice& device )
       value = refraction[ keys[ i ] ];
 
       xml.writeStartElement( "refraction" );
-      xml.writeAttribute( "frequency", QString::number( freq, 'g', std::numeric_limits<double>::max_digits10 ) );
-      xml.writeAttribute( "value",      QString::number( value ) );
+      xml.writeAttribute( "frequency", exact_number( freq ) );
+      xml.writeAttribute( "value",      exact_number( value ) );
       xml.writeEndElement(); // refraction
    }
 
@@ -818,8 +830,8 @@ int US_Analyte::write_xml( QIODevice& device )
       value = fluorescence[ keys[ i ] ];
 
       xml.writeStartElement( "fluorescence" );
-      xml.writeAttribute( "frequency", QString::number( freq, 'g', std::numeric_limits<double>::max_digits10 ) );
-      xml.writeAttribute( "value",      QString::number( value ) );
+      xml.writeAttribute( "frequency", exact_number( freq ) );
+      xml.writeAttribute( "value",      exact_number( value ) );
       xml.writeEndElement(); // fluorescence
    }
 
