@@ -4,6 +4,8 @@
 #include "us_util.h"
 #include "us_project.h"
 
+#include <QSaveFile>
+
 // The constructor clears out the data structure
 US_Project::US_Project()
 {
@@ -229,7 +231,9 @@ void US_Project::saveToDisk( void )
 
 bool US_Project::saveToFile( const QString& filename ) const
 {
-   QFile file( filename );
+   // Written aside and put in place only once complete, so a write that
+   // fails -- a full disk, say -- leaves the file that was there as it was
+   QSaveFile file( filename );
    if ( !file.open( QIODevice::WriteOnly | QIODevice::Text) )
    {
       qDebug() << "Error: can't open file for writing"
@@ -266,7 +270,11 @@ bool US_Project::saveToFile( const QString& filename ) const
    xml.writeEndElement  ();        // project
    xml.writeEndDocument ();
 
-   file.close();
+   if ( xml.hasError()  ||  ! file.commit() )
+   {
+      qDebug() << "Error: could not write" << filename << file.errorString();
+      return false;
+   }
 
    return true;
 }

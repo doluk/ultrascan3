@@ -7,6 +7,12 @@
 #include <QFileInfo>
 #include <QRegularExpression>
 #include <QXmlStreamWriter>
+#include <QTemporaryDir>
+
+#ifdef Q_OS_LINUX
+#include <csignal>
+#include <sys/resource.h>
+#endif
 
 using ::testing::_;
 using ::testing::DoAll;
@@ -382,4 +388,45 @@ TEST_F( US_ProjectTest, AFileWithoutAProjectIsAnErrorAndChangesNothing )
    writeIntoProjectsDir( createTestProjectXml( "fresh-guid", 7 ), "P0000009.xml", &good );
    EXPECT_EQ( project->readFromFile( good ), IUS_DB2::OK );
    EXPECT_EQ( project->projectGUID, QString( "fresh-guid" ) );
+}
+
+// A write that fails is reported, and leaves the file that was there; it
+// used to be reported as written, with the file cut short.  Past the file
+// size limit every write fails.
+TEST_F( US_ProjectTest, AFailedWriteIsReportedAndKeepsTheOldFile )
+{
+#ifdef Q_OS_LINUX
+   QTemporaryDir dir;
+   ASSERT_TRUE( dir.isValid() );
+   const QString path = dir.filePath( "P0000001.xml" );
+   project->projectGUID = "aaaaaaaa-0000-4000-8000-000000000005";
+   project->projectDesc = "first";
+   ASSERT_TRUE( project->saveToFile( path ) );
+   QFile before( path );
+   ASSERT_TRUE( before.open( QIODevice::ReadOnly ) );
+   const QByteArray saved = before.readAll();
+   before.close();
+
+   project->notes = QString( 256 * 1024, QChar( 'n' ) );
+
+   struct rlimit limit;
+   ASSERT_EQ( getrlimit( RLIMIT_FSIZE, &limit ), 0 );
+   auto          oldHandler = signal( SIGXFSZ, SIG_IGN );
+   struct rlimit small      = limit;
+   small.rlim_cur           = 64 * 1024;
+   ASSERT_EQ( setrlimit( RLIMIT_FSIZE, &small ), 0 );
+
+   const bool written = project->saveToFile( path );
+
+   setrlimit( RLIMIT_FSIZE, &limit );
+   signal( SIGXFSZ, oldHandler );
+
+   EXPECT_FALSE( written );
+   QFile after( path );
+   ASSERT_TRUE( after.open( QIODevice::ReadOnly ) );
+   EXPECT_EQ( after.readAll(), saved );
+   EXPECT_EQ( QDir( dir.path() ).entryList( QDir::Files ), QStringList() << "P0000001.xml" );
+#else
+   GTEST_SKIP() << "needs RLIMIT_FSIZE";
+#endif
 }
