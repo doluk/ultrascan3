@@ -216,3 +216,43 @@ TEST( DataPubHash, CraftedValuesCannotFoldTwoRecordsTogether )
    EXPECT_NE( US_DataPubHash::xmlFingerprint( marked ),
               US_DataPubHash::xmlFingerprint( two ) );
 }
+
+// The same buffer written with the library's old number format (fixed
+// decimals, 'e' notation) and its new one (shortest round trip) is the same
+// buffer; a buffer of another value still is not
+TEST( DataPubHash, NumbersCompareByValueNotByDigits )
+{
+   QByteArray before( "<buffer guid=\"g\" description=\"PBS\" ph=\"7.00000\""
+                      " density=\"1.002000\" compressibility=\"4.6000e-04\">"
+                      "<component id=\"3\" concentration=\"150.00000\"/>"
+                      "<extinction wavelength=\"280.0\" value=\"1.0000e-01\"/>"
+                      "</buffer>" );
+   QByteArray now   ( "<buffer guid=\"g\" description=\"PBS\" ph=\"7\""
+                      " density=\"1.002\" compressibility=\"0.00046\">"
+                      "<component id=\"3\" concentration=\"150\"/>"
+                      "<extinction wavelength=\"280\" value=\"0.1\"/>"
+                      "</buffer>" );
+   QByteArray other ( "<buffer guid=\"g\" description=\"PBS\" ph=\"7.5\""
+                      " density=\"1.002\" compressibility=\"0.00046\">"
+                      "<component id=\"3\" concentration=\"150\"/>"
+                      "<extinction wavelength=\"280\" value=\"0.1\"/>"
+                      "</buffer>" );
+
+   EXPECT_EQ( US_DataPubHash::xmlFingerprint( before, "buffer", "guid" ),
+              US_DataPubHash::xmlFingerprint( now,    "buffer", "guid" ) );
+   EXPECT_NE( US_DataPubHash::xmlFingerprint( now,    "buffer", "guid" ),
+              US_DataPubHash::xmlFingerprint( other,  "buffer", "guid" ) );
+
+   // Only a value that is a number as a whole: text with a number in it
+   // keeps its digits
+   QByteArray named ( "<buffer guid=\"g\" description=\"007\"/>" );
+   QByteArray seven ( "<buffer guid=\"g\" description=\"7\"/>" );
+   QByteArray mixed ( "<buffer guid=\"g\" description=\"7.0 mM PBS\"/>" );
+   QByteArray mixed2( "<buffer guid=\"g\" description=\"7 mM PBS\"/>" );
+
+   EXPECT_NE( US_DataPubHash::canonicalXml( mixed ),
+              US_DataPubHash::canonicalXml( mixed2 ) );
+   EXPECT_EQ( US_DataPubHash::canonicalXml( named ),
+              US_DataPubHash::canonicalXml( seven ) )
+      << "a value that is a number is compared as one";
+}

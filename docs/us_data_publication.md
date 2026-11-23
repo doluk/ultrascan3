@@ -787,12 +787,20 @@ noise record that happens to have the GUID). `US_Buffer::saveToDB()` and
 copy out, but they still update a record of the same GUID whoever owns it,
 where the import only creates.
 
-The extinction spectrum of a buffer or analyte is stored as its extinction
-profile (`new_eprofile`, through `US_ExtProfile::create_eprofile()`), made of
-the `<extinction>` values its payload holds and nothing else.
-`US_Analyte`'s reader adds the extinction at 280 nm that it computes from a
-protein's sequence; that value is not part of the record, so a protein without
-a spectrum gets no profile, and a measured spectrum keeps the points it has.
+The extinction spectrum of a buffer, analyte or solution is stored as its
+extinction profile (`new_eprofile`, through
+`US_ExtProfile::create_eprofile()`; a solution's under the component type
+`Sample`, as `US_Solution::saveToDB()` stores it), made of the values the
+bundle carries and nothing else: those of its `spectraPayload`, at full
+precision, or, in an older bundle without one, the `<extinction>` elements of
+the record's own XML. `US_Analyte`'s reader adds the extinction at 280 nm that
+it computes from a protein's sequence; that value is not part of the record,
+so a protein without a spectrum gets no profile, and a measured spectrum keeps
+the points it has. A buffer's component concentrations are taken at full
+precision from the `concentration` of each component in its
+`componentsPayload` (an older bundle has only the buffer file's five
+decimals); the database column is a `FLOAT`. A disk store has no place for a
+solution's profile, so a disk import leaves it out and says so.
 The library writers store a profile only for a spectrum they were told is new,
 which one read from a file never is. The import's only files are work copies
 in the bundle's own staging directory, removed with it.
@@ -1087,9 +1095,7 @@ and a signal that does not end the program does not leave it echoing either.
 | `--version` | Program version |
 
 Exit codes: `0` success, `1` the export or import failed (a database import
-is then rolled back), `2` the arguments were wrong. An import whose
-`--db-password-file` cannot be read exits with `1`, as for any other input it
-cannot read. An import that substituted
+is then rolled back), `2` the arguments were wrong. An import that substituted
 hardware still exits with `0`, and says so on the error output. An option is
 never taken as the value of the option before it: `--bundle --dry-run` is an
 error. A value that starts with `--` can be given as `--comment=--draft`.

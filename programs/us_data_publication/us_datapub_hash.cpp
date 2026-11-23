@@ -1,38 +1,20 @@
 //! \file us_datapub_hash.cpp
 #include "us_datapub_hash.h"
+#include "us_datapub_defs.h"
 
 #include <QCryptographicHash>
+#include <QRegularExpression>
 #include <QXmlStreamReader>
 
 QString US_DataPubHash::fileHash( const QString& filename )
 {
-   QFile file( filename );
+   // The digest the export writes into the manifest: one that fails on any
+   // read error rather than digest the part read before it
+   QString digest;
 
-   if ( ! file.open( QIODevice::ReadOnly ) )  return QString();
+   if ( ! US_DataPub::fileSha256( filename, digest ) )  return QString();
 
-   QCryptographicHash hash( QCryptographicHash::Sha256 );
-
-   while ( ! file.atEnd() )
-   {
-      QByteArray block = file.read( 1024 * 256 );
-
-      // Nothing read before the end is a read error: the digest of the
-      // part read so far would pass for the file's
-      if ( block.isEmpty() )
-      {
-         file.close();
-         return QString();
-      }
-
-      hash.addData( block );
-   }
-
-   bool failed = ( file.error() != QFileDevice::NoError );
-   file.close();
-
-   if ( failed )  return QString();
-
-   return QString( hash.result().toHex() );
+   return digest;
 }
 
 QString US_DataPubHash::dataHash( const QByteArray& data )
@@ -114,6 +96,30 @@ namespace
 
       return out.toUtf8();
    }
+
+   /* A number in one form.  The library's writers have changed how they
+      write numbers -- "7.00000" (a fixed number of decimals) then, "7" (the
+      shortest form that reads back as the same double) now -- so the same
+      record written before and after that change differs in its text only.
+      A value that is a decimal number is put in the shortest form; anything
+      else (a GUID, a name, "inf") is kept as it is.
+   */
+   QString canonical_value( const QString& value )
+   {
+      static const QRegularExpression number( QRegularExpression::anchoredPattern(
+         "[+-]?([0-9]+\\.?[0-9]*|\\.[0-9]+)([eE][+-]?[0-9]+)?" ) );
+
+      if ( ! number.match( value ).hasMatch() )  return value;
+
+      bool   ok = false;
+      double dv = QLocale::c().toDouble( value, &ok );
+
+      if ( ! ok  ||  ! qIsFinite( dv ) )  return value;
+
+      if ( dv == 0.0 )  dv = 0.0;         // -0 is 0
+
+      return QLocale::c().toString( dv, 'g', QLocale::FloatingPointShortest );
+   }
 }
 
 QByteArray US_DataPubHash::canonicalXml( const QByteArray& xml,
@@ -157,7 +163,8 @@ QByteArray US_DataPubHash::canonicalXml( const QByteArray& xml,
             if ( isOwn  &&  aname == ownAttr )   continue;
 
             out += " " + aname.toUtf8() + "=\""
-                   + escaped( attrs.value( aname ).toString().trimmed(), true )
+                   + escaped( canonical_value(
+                              attrs.value( aname ).toString().trimmed() ), true )
                    + "\"";
          }
 

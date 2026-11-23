@@ -216,12 +216,8 @@ bool US_DataPubImporter::runIdIsUsable( const QString& runID )
 
 bool US_DataPubImporter::guidIsUsable( const QString& guid )
 {
-   // Anchored on the whole text: "$" would let a trailing newline through
-   static const QRegularExpression rx( QRegularExpression::anchoredPattern(
-      "[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}"
-      "-[0-9A-Fa-f]{12}" ) );
-
-   return rx.match( guid ).hasMatch();
+   // The rule the export checks its records against too
+   return US_DataPub::guidIsUsable( guid );
 }
 
 QString US_DataPubImporter::resolutionText( US_DataPub::Resolution resolution )
@@ -560,17 +556,40 @@ bool US_DataPubImporter::insideBundle( const QString& relPath,
 bool US_DataPubImporter::checkBundle( QString& error ) const
 {
    QList< US_DataPubEntity > entities = mani.all();
-   QMap< QString, QString >  expRuns;          // experiment GUID -> run ID
 
-   QList< US_DataPubEntity > exps = mani.section( US_DataPub::Experiment );
+   // Every run ID has to be one a run directory can be called; said first,
+   // and in these words, since it is the most likely thing to be wrong
+   for ( int ii = 0; ii < entities.size(); ii++ )
+   {
+      const US_DataPubEntity& entity = entities[ ii ];
+      US_DataPub::EntityType  type   = entity.type;
 
-   for ( int ii = 0; ii < exps.size(); ii++ )
-      expRuns.insert( exps[ ii ].guid, exps[ ii ].name );
+      if ( type == US_DataPub::Experiment  &&  ! runIdIsUsable( entity.name ) )
+      {
+         error = tr( "The run ID \"%1\" in the bundle is not usable: a run"
+                     " ID may hold only letters, digits, the underscore"
+                     " and the hyphen, and at most 80 of them" )
+                 .arg( entity.name );
+         return false;
+      }
 
-   // Anchored on the whole text: "^...$" would take "RA\n" for "RA"
-   static const QRegularExpression runTypeRx(
-      QRegularExpression::anchoredPattern( "[A-Za-z0-9]{1,8}" ) );
+      if ( ( type == US_DataPub::RawData  ||  type == US_DataPub::EditedData  ||
+             type == US_DataPub::TimeState )  &&
+           ! runIdIsUsable( entity.attrs.value( "runID" ) ) )
+      {
+         error = tr( "%1 names the unusable run ID \"%2\"" )
+                 .arg( entity.label() ).arg( entity.attrs.value( "runID" ) );
+         return false;
+      }
+   }
 
+   // The rules an export applies before it packs a bundle (GUIDs, run
+   // types, the file names of a run's files, a time state's definitions):
+   // one implementation, so that what an export writes an import accepts
+   if ( ! mani.checkAcceptance( error ) )  return false;
+
+   // ... and, on top, where every path really leads: a path that reads
+   // well can still be a symbolic link out of the bundle
    for ( int ii = 0; ii < entities.size(); ii++ )
    {
       const US_DataPubEntity& entity = entities[ ii ];
@@ -589,94 +608,9 @@ bool US_DataPubImporter::checkBundle( QString& error ) const
          return false;
       }
 
-      US_DataPub::EntityType type = entity.type;
-
-      // A GUID ends up in procedure arguments, file contents and lookups;
-      // the manifest's own and every one it names have to be real GUIDs
-      if ( ! guidIsUsable( entity.guid ) )
-      {
-         error = tr( "%1: \"%2\" is not a GUID" ).arg( entity.label() )
-                 .arg( entity.guid );
-         return false;
-      }
-
-      QList< QString > dkeys = entity.depends.keys();
-
-      for ( int jj = 0; jj < dkeys.size(); jj++ )
-      {
-         QString dguid = entity.depends.value( dkeys[ jj ] );
-
-         if ( guidIsUsable( dguid ) )  continue;
-
-         error = tr( "%1: the %2 it depends on, \"%3\", is not a GUID" )
-                 .arg( entity.label() ).arg( dkeys[ jj ] ).arg( dguid );
-         return false;
-      }
-
-      if ( type == US_DataPub::Experiment )
-      {
-         if ( ! runIdIsUsable( entity.name ) )
-         {
-            error = tr( "The run ID \"%1\" in the bundle is not usable: a run"
-                        " ID may hold only letters, digits, the underscore"
-                        " and the hyphen, and at most 80 of them" )
-                    .arg( entity.name );
-            return false;
-         }
-
-         QString runType = entity.attrs.value( "runType", "RA" );
-
-         if ( ! runTypeRx.match( runType ).hasMatch() )
-         {
-            error = tr( "Run %1 has the unusable run type \"%2\"" )
-                    .arg( entity.name ).arg( runType );
-            return false;
-         }
-      }
-
-      if ( type == US_DataPub::RawData  ||  type == US_DataPub::EditedData  ||
-           type == US_DataPub::TimeState )
-      {
-         QString runID = entity.attrs.value( "runID" );
-
-         if ( ! runIdIsUsable( runID ) )
-         {
-            error = tr( "%1 names the unusable run ID \"%2\"" )
-                    .arg( entity.label() ).arg( runID );
-            return false;
-         }
-
-         QString expGUID = entity.depend( US_DataPub::Experiment );
-
-         if ( expRuns.contains( expGUID )  &&  expRuns.value( expGUID ) != runID )
-         {
-            error = tr( "%1 names run %2, but its experiment is run %3" )
-                    .arg( entity.label() ).arg( runID )
-                    .arg( expRuns.value( expGUID ) );
-            return false;
-         }
-
-         if ( ! plain_name( entity.filename )  ||
-              ! entity.filename.startsWith( runID + "." ) )
-         {
-            error = tr( "%1: the file name \"%2\" does not start with its run"
-                        " ID %3" ).arg( entity.label() )
-                    .arg( entity.filename ).arg( runID );
-            return false;
-         }
-
-         // A time state is always the pair <runID>.time_state.tmst/.xml
-         if ( type == US_DataPub::TimeState  &&
-              entity.filename != runID + ".time_state.tmst" )
-         {
-            error = tr( "%1: the file name \"%2\" is not %3.time_state.tmst" )
-                    .arg( entity.label() ).arg( entity.filename ).arg( runID );
-            return false;
-         }
-      }
-
       // Every extra payload -- a time state's definitions, an RI profile,
-      // a buffer's components -- is a path into the bundle as well
+      // a buffer's components, a record's spectra -- is a path into the
+      // bundle as well
       QStringList keys = entity.payloadKeys();
 
       for ( int jj = 0; jj < keys.size(); jj++ )
@@ -688,13 +622,6 @@ bool US_DataPubImporter::checkBundle( QString& error ) const
             error = tr( "%1: %2" ).arg( entity.label() ).arg( error );
             return false;
          }
-      }
-
-      if ( type == US_DataPub::TimeState  &&
-           entity.attrs.value( "definitionsPayload" ).isEmpty() )
-      {
-         error = tr( "%1 carries no field definitions" ).arg( entity.label() );
-         return false;
       }
    }
 
@@ -836,38 +763,6 @@ bool US_DataPubImporter::preflight( QString& error )
 
 namespace
 {
-   // The first GUID of an XML payload that is not one: an attribute named
-   // "guid" or "...GUID", or the "value" of an element named "...GUID" (the
-   // way an edit names itself and its raw data).  Empty values are left to
-   // the record's own checks; an empty result means every GUID is usable.
-   QString bad_guid_in( const QByteArray& xml )
-   {
-      QXmlStreamReader reader( xml );
-
-      while ( ! reader.atEnd() )
-      {
-         reader.readNext();
-
-         if ( ! reader.isStartElement() )  continue;
-
-         QString              ename = reader.name().toString();
-         QXmlStreamAttributes attrs = reader.attributes();
-
-         for ( int ii = 0; ii < attrs.size(); ii++ )
-         {
-            QString aname = attrs.at( ii ).name().toString();
-            QString value = attrs.at( ii ).value().toString();
-            bool    isRef = ( aname == "guid"  ||  aname.endsWith( "GUID" )  ||
-                              ( aname == "value"  &&  ename.endsWith( "GUID" ) ) );
-
-            if ( isRef  &&  ! value.isEmpty()  &&
-                 ! US_DataPubImporter::guidIsUsable( value ) )
-               return value;
-         }
-      }
-
-      return QString();
-   }
 
    // A GUID of all zeros names no record
    bool null_guid( const QString& guid )
@@ -1529,13 +1424,18 @@ bool US_DataPubImporter::lookUpInAdvance( QString& error )
    return true;
 }
 
-/* The extinction spectrum of a buffer or analyte payload.
+/* The extinction spectrum of a buffer, analyte or solution of the bundle.
 
-   It is read from the <extinction> elements the payload actually holds.
-   US_Analyte's reader cannot be used for this: for a protein it adds the
-   extinction at 280 nm that it computes from the sequence, so a protein
-   without a spectrum would gain a profile of that one point, and a
-   measured spectrum a computed point it never had.
+   A bundle of this version carries the spectra of a record in a payload of
+   their own (spectraPayload), at full precision: the library writers round
+   a buffer's wavelengths to 0.1 nm and its values to five digits, an
+   analyte's values to six.  That payload is read when it is there; a record
+   without spectra has none.  An older bundle has only the record's own XML,
+   whose <extinction> elements are read instead -- never US_Analyte's
+   reader, which adds the extinction at 280 nm it computes from a protein's
+   sequence: a protein without a spectrum would gain a profile of that one
+   point, and a measured spectrum a point it never had.  A solution's own
+   profile travels only in the spectra payload.
 */
 bool US_DataPubImporter::payloadSpectrum( const US_DataPubEntity& entity,
                                           const QString& workPath,
@@ -1543,6 +1443,27 @@ bool US_DataPubImporter::payloadSpectrum( const US_DataPubEntity& entity,
                                           QString& error ) const
 {
    spectrum.clear();
+
+   QString rel = entity.attrs.value( "spectraPayload" );
+
+   if ( ! rel.isEmpty() )
+   {
+      QString                     path;
+      QString                     why;
+      US_DataPubRecords::Spectra  spectra;
+
+      if ( ! insideBundle( rel, path, error ) )  return false;
+
+      if ( ! US_DataPubRecords::readSpectra( path, spectra, &why ) )
+      {
+         error = tr( "The spectra of %1 cannot be read: %2" )
+                 .arg( entity.label() ).arg( why );
+         return false;
+      }
+
+      spectrum = spectra.value( "extinction" );
+      return true;
+   }
 
    QString owner;                  // The record's own element
    QString lambda;                 // The attribute holding the wavelength
@@ -1649,20 +1570,33 @@ bool US_DataPubImporter::checkPayload( const US_DataPubEntity& entity,
       return false;
    }
 
-   // Every GUID a payload names -- its own and its parents' -- goes into a
-   // lookup or a procedure; one that is not a GUID refuses the bundle
-   if ( US_DataPubHash::isXmlFile( path ) )
+   // A GUID ends up in procedure arguments, file contents and lookups;
+   // every one a payload names -- the main one and every extra XML one --
+   // has to be a real GUID
+   QStringList pkeys = entity.payloadKeys();
+
+   for ( int jj = 0; jj < pkeys.size(); jj++ )
    {
+      QString xpath = path;
+
+      if ( pkeys[ jj ] != "payload"  &&
+           ! insideBundle( entity.attrs.value( pkeys[ jj ] ), xpath, error ) )
+         return false;
+
+      if ( ! US_DataPubHash::isXmlFile( xpath )  ||  ! QFile::exists( xpath ) )
+         continue;
+
       QByteArray data;
 
-      if ( ! read_capped( path, data, error ) )  return false;
+      if ( ! read_capped( xpath, data, error ) )  return false;
 
-      QString bad = bad_guid_in( data );
+      QString bad = US_DataPub::unusableGuidInXml( data );
 
       if ( ! bad.isEmpty() )
       {
-         error = tr( "The payload of %1 names \"%2\", which is not a GUID;"
-                     " the bundle is refused" ).arg( label ).arg( bad );
+         error = tr( "The payload %1 of %2 names \"%3\", which is not a"
+                     " GUID; the bundle is refused" )
+                 .arg( QFileInfo( xpath ).fileName() ).arg( label ).arg( bad );
          return false;
       }
    }
@@ -1980,6 +1914,14 @@ bool US_DataPubImporter::checkPayload( const US_DataPubEntity& entity,
       error = tr( "The payload of %1 does not parse as %2" )
               .arg( label ).arg( what );
       return false;
+   }
+
+   // The spectra a record carries beside it have to be readable too
+   if ( ! entity.attrs.value( "spectraPayload" ).isEmpty() )
+   {
+      QMap< double, double > spectrum;
+
+      if ( ! payloadSpectrum( entity, path, spectrum, error ) )  return false;
    }
 
    if ( found != entity.guid )
@@ -3755,9 +3697,6 @@ namespace
    {
       if ( ! US_DataPubImporter::runIdIsUsable( runID ) )  return QString();
 
-      static const QRegularExpression runTypeRx(
-         QRegularExpression::anchoredPattern( "[A-Za-z0-9]{1,8}" ) );
-
       QStringList xmls = dir.entryList( QStringList( runID + ".*.xml" ),
                                         QDir::Files, QDir::Name );
 
@@ -3766,7 +3705,7 @@ namespace
          QStringList parts = xmls[ ii ].split( '.' );
 
          if ( parts.size() != 3  ||  parts[ 0 ] != runID )  continue;
-         if ( ! runTypeRx.match( parts[ 1 ] ).hasMatch() )  continue;
+         if ( ! US_DataPub::runTypeIsUsable( parts[ 1 ] ) )  continue;
 
          return dir.absoluteFilePath( xmls[ ii ] );
       }
@@ -4515,6 +4454,11 @@ QString US_DataPubImporter::targetFingerprint( US_DataPub::EntityType type,
    // record happened to come first
    if ( guid.isEmpty() )  return QString();
 
+   // Read once: the preflight reads the records a conflict compares with
+   QString key = US_DataPub::typeKey( type ) + ":" + guid;
+
+   if ( print_cache.contains( key ) )  return print_cache.value( key );
+
    QString ownElem;
    QString ownAttr;
    own_identity( type, ownElem, ownAttr );
@@ -4553,6 +4497,14 @@ QString US_DataPubImporter::targetFingerprint( US_DataPub::EntityType type,
 
    if ( dbase == nullptr )  return QString();
 
+   // The target's record, written out the way the bundle's payloads are, to
+   // be compared in the same terms.  A record that cannot be read is not
+   // the same as the bundle's (it has no fingerprint); one that was read
+   // but cannot be written out cannot be compared at all, which is a
+   // failure, not a difference -- US_Buffer::writeToDisk(), for one,
+   // refuses a buffer whose component has no concentration.
+   bool written = false;
+
    switch ( type )
    {
       case US_DataPub::Project:
@@ -4562,7 +4514,7 @@ QString US_DataPubImporter::targetFingerprint( US_DataPub::EntityType type,
          if ( project.readFromDB( id.toInt(), dbase ) != IUS_DB2::OK )
             return QString();
 
-         project.saveToFile( path );
+         written = project.saveToFile( path );
          break;
       }
 
@@ -4572,7 +4524,7 @@ QString US_DataPubImporter::targetFingerprint( US_DataPub::EntityType type,
 
          if ( ! buffer.readFromDB( dbase, id ) )  return QString();
 
-         buffer.writeToDisk( path );
+         written = buffer.writeToDisk( path );
          break;
       }
 
@@ -4583,7 +4535,7 @@ QString US_DataPubImporter::targetFingerprint( US_DataPub::EntityType type,
          if ( analyte.load( true, guid, dbase ) != IUS_DB2::OK )
             return QString();
 
-         analyte.write( false, path );
+         written = ( analyte.write( false, path ) == IUS_DB2::OK );
          break;
       }
 
@@ -4594,7 +4546,7 @@ QString US_DataPubImporter::targetFingerprint( US_DataPub::EntityType type,
          if ( solution.readFromDB( id.toInt(), dbase ) != IUS_DB2::OK )
             return QString();
 
-         solution.saveToFile( path );
+         written = solution.saveToFile( path );
          break;
       }
 
@@ -4604,7 +4556,7 @@ QString US_DataPubImporter::targetFingerprint( US_DataPub::EntityType type,
 
          if ( model.load( id, dbase ) != IUS_DB2::OK )  return QString();
 
-         model.write( path );
+         written = ( model.write( path ) == IUS_DB2::OK );
          break;
       }
 
@@ -4614,7 +4566,7 @@ QString US_DataPubImporter::targetFingerprint( US_DataPub::EntityType type,
 
          if ( noise.load( id, dbase ) != IUS_DB2::OK )  return QString();
 
-         noise.write( path );
+         written = ( noise.write( path ) == IUS_DB2::OK );
          break;
       }
 
@@ -4625,7 +4577,7 @@ QString US_DataPubImporter::targetFingerprint( US_DataPub::EntityType type,
          if ( calibration.readDB( id.toInt(), dbase ) != US_Rotor::ROTOR_OK )
             return QString();
 
-         US_DataPubRecords::writeCalibration( calibration, path );
+         written = US_DataPubRecords::writeCalibration( calibration, path );
          break;
       }
 
@@ -4635,7 +4587,20 @@ QString US_DataPubImporter::targetFingerprint( US_DataPub::EntityType type,
          return QString();
    }
 
-   return US_DataPubHash::fingerprint( path, ownElem, ownAttr );
+   if ( ! written )
+   {
+      if ( lookup_error.isEmpty() )
+         lookup_error = tr( "The target's %1 \"%2\" (ID %3) could not be"
+                            " written out to be compared with the bundle's" )
+                        .arg( US_DataPub::typeText( type ) ).arg( guid )
+                        .arg( id );
+      return QString();
+   }
+
+   QString print = US_DataPubHash::fingerprint( path, ownElem, ownAttr );
+   print_cache.insert( key, print );
+
+   return print;
 }
 
 QString US_DataPubImporter::uniqueName( US_DataPub::EntityType type,
@@ -5176,6 +5141,22 @@ bool US_DataPubImporter::createDisk( const US_DataPubEntity& entity,
    if ( type == US_DataPub::Buffer  &&
         ! mapComponents( entity, workPath, true, error ) )
       return false;
+
+   // A disk store keeps a solution's extinction profile nowhere: the
+   // solution file has no place for it, and the database is where
+   // US_Solution keeps one
+   if ( type == US_DataPub::Solution  &&
+        ! entity.attrs.value( "spectraPayload" ).isEmpty() )
+   {
+      QMap< double, double > spectrum;
+
+      if ( payloadSpectrum( entity, workPath, spectrum, error )  &&
+           ! spectrum.isEmpty() )
+         note( tr( "The extinction profile of solution \"%1\" is not kept:"
+                   " a disk store has no place for it" ).arg( name ) );
+
+      error.clear();
+   }
 
    QString dir = diskDir( type, true );
    QString prefix;
@@ -5994,6 +5975,26 @@ bool US_DataPubImporter::createSolutionDb( const US_DataPubEntity& entity,
       }
    }
 
+   // The solution's own extinction profile, under the component type
+   // US_Solution::saveToDB() stores it with
+   QMap< double, double > spectrum;
+
+   if ( ! payloadSpectrum( entity, workPath, spectrum, error ) )  return false;
+
+   if ( ! spectrum.isEmpty() )
+   {
+      QString compType( "Sample" );
+      QString valType ( "molarExtinction" );
+
+      if ( US_ExtProfile::create_eprofile( dbase, solID, compType, valType,
+                                           spectrum ) < 1 )
+      {
+         error = tr( "The extinction profile of solution \"%1\" could not be"
+                     " written: %2" ).arg( name ).arg( dbase->lastError() );
+         return false;
+      }
+   }
+
    newID = sSolID;
 
    return true;
@@ -6468,14 +6469,59 @@ bool US_DataPubImporter::createDb( const US_DataPubEntity& entity,
 
          QString sBufID = QString::number( bufID );
 
+         // The concentrations at full precision, from the component
+         // definitions a bundle of this version carries (the buffer file
+         // rounds them to five decimals, which turns 5 uM into 0.00001 mM);
+         // an older bundle has only the buffer file's
+         QList< double > concs = buffer.concentration;
+         QString         crel  = entity.attrs.value( "componentsPayload" );
+
+         if ( ! crel.isEmpty()  &&  ! buffer.componentIDs.isEmpty() )
+         {
+            QString         cpath;
+            QString         why;
+            QStringList     ids;
+            QList< double > full;
+
+            if ( ! insideBundle( crel, cpath, error ) )  return false;
+
+            if ( US_DataPubRecords::readBufferConcentrations( cpath, ids, full,
+                                                              &why ) )
+            {
+               if ( full.size() != buffer.componentIDs.size() )
+               {
+                  error = tr( "The component definitions of buffer \"%1\""
+                              " give %2 concentrations for its %3"
+                              " components" ).arg( name ).arg( full.size() )
+                          .arg( buffer.componentIDs.size() );
+                  return false;
+               }
+
+               concs = full;
+            }
+
+            else if ( ! why.isEmpty() )
+            {
+               error = tr( "The component concentrations of buffer \"%1\""
+                           " cannot be read: %2" ).arg( name ).arg( why );
+               return false;
+            }
+         }
+
          for ( int ii = 0; ii < buffer.componentIDs.size(); ii++ )
          {
-            double conc = ( ii < buffer.concentration.size() )
-                          ? buffer.concentration[ ii ] : 0.0;
+            if ( ii >= concs.size() )
+            {
+               error = tr( "Component %1 of buffer \"%2\" has no"
+                           " concentration" ).arg( buffer.componentIDs[ ii ] )
+                       .arg( name );
+               return false;
+            }
+
             query.clear();
             query << "add_buffer_component" << sBufID
                   << buffer.componentIDs[ ii ]
-                  << QString::number( conc, 'f', 5 );
+                  << QString::number( concs[ ii ], 'g', 17 );
             status = dbase->statusQuery( query );
 
             if ( status != IUS_DB2::OK )
