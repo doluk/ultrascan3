@@ -2264,7 +2264,9 @@ TEST_F( TestUSDataDb, AModelIsDownloadedAsUtf8 )
 // ------------------------------------------------------------ reads
 
 // A side that cannot read an experiment is not merged as if it held
-// nothing: the local records would read as local only
+// nothing: the local records would read as local only.  A lost connection
+// is not tried again -- US_DB2 does not connect again -- and the message
+// says what will
 TEST_F( TestUSDataDb, AnExperimentADatabaseReadFailedOnIsNotShownAsLocal )
 {
    server.failing << "get_rawData_by_experiment";
@@ -2276,8 +2278,10 @@ TEST_F( TestUSDataDb, AnExperimentADatabaseReadFailedOnIsNotShownAsLocal )
    ASSERT_EQ( model.runCount(), 1 );
    EXPECT_FALSE( model.run_entry( 0 ).loaded );
    EXPECT_EQ( rowOf( model, editG ), -1 );
-   EXPECT_FALSE( model.scan_errors().isEmpty() );
-   EXPECT_EQ( server.count( "get_rawData_by_experiment" ), 2 );   // tried again
+   ASSERT_FALSE( model.scan_errors().isEmpty() );
+   EXPECT_TRUE( model.scan_errors().join( "\n" ).contains( "connection to the database was lost" ) )
+      << model.scan_errors().join( "\n" ).toStdString();
+   EXPECT_EQ( server.count( "get_rawData_by_experiment" ), 1 );   // not again
 
    // opening it later tries again
    server.failing.clear();
@@ -2287,10 +2291,11 @@ TEST_F( TestUSDataDb, AnExperimentADatabaseReadFailedOnIsNotShownAsLocal )
               US_DataModel::REC_DB | US_DataModel::REC_LO );
 }
 
-// A read that fails once is tried again before anything is given up
+// A read that fails once, on something that passes -- a lock the server
+// waited on too long -- is tried again before anything is given up
 TEST_F( TestUSDataDb, AReadThatFailsOnceIsTriedAgain )
 {
-   server.failTimes[ "get_rawData_by_experiment" ] = 1;
+   server.transient[ "get_rawData_by_experiment" ] = 1;
 
    US_DataModel model;
    prepare( model, runA );
@@ -2661,6 +2666,67 @@ TEST_F( TestUSDataDbRemerge, AContextMenuTakesTheItemsAReadLeft )
    QVector< int > rows = win.tree.action_row_list();
    EXPECT_TRUE( rows.contains( crow ) );
    EXPECT_FALSE( rows.contains( nrow ) );
+}
+
+// ------------------------------------------------------------ line ends
+
+// A model file with CRLF line ends -- as written on Windows -- holds what the
+// database holds, with LF ones: it is in sync, and nothing is uploaded
+TEST_F( TestUSDataDb, AModelFileWithCrlfLineEndsIsInSync )
+{
+   QByteArray bytes = textOf( modelPath ).toUtf8();
+   ASSERT_FALSE( bytes.contains( '\r' ) );
+   bytes.replace( "\n", "\r\n" );
+   QFile file( modelPath );
+   ASSERT_TRUE( file.open( QIODevice::WriteOnly ) );
+   file.write( bytes );
+   file.close();
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+
+   int row = rowOf( model, modelG );
+   ASSERT_GE( row, 0 );
+   EXPECT_EQ( US_DataModel::sync_state( model.row_datadesc( row ) ),
+              US_DataModel::SYNC_INSYNC ) << model.row_datadesc( row ).contents.toStdString();
+
+   Desc desc = model.row_datadesc( row );       // not compared since
+   desc.recState &= ~US_DataModel::HV_DET;
+   desc.contents  = QString();
+   model.change_datadesc( desc, row );
+   EXPECT_EQ( win.proc.record_upload( row ), (int)US_DataProcess::IN_SYNC );
+   EXPECT_EQ( server.count( "update_model" ), 0 );
+}
+
+// ------------------------------------------------------------ record IDs
+
+// A model written whose ID cannot be read back is in the database all the
+// same: its row says so, with no ID to act on it by until a new scan
+TEST_F( TestUSDataDb, AWrittenModelWithoutAnIdIsInTheDatabase )
+{
+   QString newM = US_Util::new_guid();
+   writeModel( US_Settings::dataDir() + "/models/M0000002.xml", newM, editG,
+               runA + ".1A280.e2401011200_a2_2DSA_i01.model" );
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+
+   int row = rowOf( model, newM );
+   ASSERT_GE( row, 0 );
+
+   server.failAfter[ "get_modelID" ] = server.count( "get_modelID" ) + 1;
+   EXPECT_EQ( win.proc.record_upload( row ), 3047 );
+   EXPECT_TRUE( win.proc.lastError().contains( "scan again" ) )
+      << win.proc.lastError().toStdString();
+
+   Desc desc = model.row_datadesc( row );
+   EXPECT_NE( desc.recState & US_DataModel::REC_DB, 0 );
+   EXPECT_LT( desc.recordID, 0 );
+   EXPECT_EQ( win.proc.record_remove_db( row ), 2016 );   // nothing to go by
 }
 
 // A patched server lists noise with the experiment of its model: noise

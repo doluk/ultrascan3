@@ -1212,6 +1212,13 @@ int US_DataModel::pending_runs( ) const
    return run_queue.size();
 }
 
+// Whether a client error number says the connection to the server is gone:
+// CR_SERVER_GONE_ERROR (2006) or CR_SERVER_LOST (2013)
+bool US_DataModel::connection_lost( int serverErrno )
+{
+   return ( serverErrno == 2006  ||  serverErrno == 2013 );
+}
+
 // Read the second layer of one experiment and merge it into the whole
 bool US_DataModel::scan_run( int index )
 {
@@ -1247,8 +1254,13 @@ bool US_DataModel::do_scan_run( int index )
    nothing: merging the other side alone would show every record as in that
    place only, and a download would then overwrite the local copies, or
    write model and noise files that duplicate the GUIDs of the ones there.
-   So the read is tried once more, and when it still fails the experiment
-   is reported and left unread -- opening it later tries again.
+   So the read is tried once more, which helps when what made it fail
+   passes -- a lock the server waited on too long, a file being written --
+   and when it still fails the experiment is reported and left unread:
+   opening it later tries again.  A lost database connection is not tried
+   again: the connection is not made anew (US_DB2 does not reconnect), so
+   every read after it fails too, and the message says to open the window
+   again.
 */
 bool US_DataModel::load_sides( int index )
 {
@@ -1274,18 +1286,29 @@ bool US_DataModel::load_sides( int index )
 
       if ( catalog->loadRunDetail( cx, error ) )   continue;
 
-      DbgLv(1) << "LoadSides: retry" << entry.runID << side << error;
+      bool lost = ( side == 0  &&  db != NULL  &&
+                    connection_lost( db->lastServerErrno() ) );
 
-      if ( catalog->loadRunDetail( cx, error ) )   continue;
+      DbgLv(1) << "LoadSides: retry" << entry.runID << side << lost << error;
+
+      if ( ! lost  &&  catalog->loadRunDetail( cx, error ) )   continue;
 
       ok = false;
-      scan_error( ( side == 0 )
-         ? tr( "%1: the database records could not be read, so the"
-               " experiment is not shown; open it to try again: %2" )
-           .arg( entry.runID ).arg( error )
-         : tr( "%1: the local records could not be read, so the"
-               " experiment is not shown; open it to try again: %2" )
-           .arg( entry.runID ).arg( error ) );
+
+      if ( lost )
+         scan_error( tr( "%1: the connection to the database was lost, so"
+                         " the experiment is not shown.  This window does"
+                         " not connect again: close it and open it again."
+                         "  (%2)" ).arg( entry.runID ).arg( error ) );
+
+      else
+         scan_error( ( side == 0 )
+            ? tr( "%1: the database records could not be read, so the"
+                  " experiment is not shown; open it to try again: %2" )
+              .arg( entry.runID ).arg( error )
+            : tr( "%1: the local records could not be read, so the"
+                  " experiment is not shown; open it to try again: %2" )
+              .arg( entry.runID ).arg( error ) );
    }
 
    return ok;
@@ -1805,6 +1828,35 @@ QString US_DataModel::file_digest( const QString& path )
    return ( digest == "0 0" ) ? QString() : digest;
 }
 
+/* The checksum of a record's local file, as it compares with the database.
+
+   A model or noise file is XML, which the database holds with LF line
+   ends: written on Windows (US_Model::write rewrites the file a model is
+   uploaded from) it has CRLF ones, and would never compare equal.  Its
+   line ends are made LF before it is hashed.  Raw and edit files are
+   compared byte for byte, as the server hashes their blobs.
+*/
+QString US_DataModel::local_digest( const DataDesc& desc )
+{
+   if ( desc.recType != MODEL  &&  desc.recType != NOISE )
+      return file_digest( desc.filename );
+
+   QFile file( desc.filename );
+
+   if ( desc.filename.isEmpty()  ||  ! file.open( QIODevice::ReadOnly ) )
+      return QString();
+
+   QByteArray bytes = file.readAll();
+
+   if ( file.error() != QFileDevice::NoError )
+      return QString();
+
+   bytes.replace( "\r\n", "\n" );
+
+   return QString( QCryptographicHash::hash( bytes, QCryptographicHash::Md5 )
+                   .toHex() ) + " " + QString::number( bytes.size() );
+}
+
 // The checksum of one database record, read on its own
 bool US_DataModel::db_digest( IUS_DB2* dbP, const DataDesc& desc,
                               QString& digest, QString& error )
@@ -2034,6 +2086,12 @@ void US_DataModel::apply_digests( int index )
       QString dbc = dbDigests.value( desc.dataGUID );
       QString loc = loDigests.value( desc.dataGUID );
 
+      // A model or noise file whose bytes differ may differ only in its
+      // line ends: it is compared on its own (local_digest)
+      if ( ( desc.recType == MODEL  ||  desc.recType == NOISE )  &&
+           ! dbc.isEmpty()  &&  ! loc.isEmpty()  &&  dbc != loc )
+         continue;
+
       desc.contents  = ( dbc.isEmpty() ? QString( "- -" ) : dbc ) + " "
                      + ( loc.isEmpty() ? QString( "- -" ) : loc );
       desc.recState |= HV_DET;
@@ -2067,6 +2125,11 @@ bool US_DataModel::verify_rows( int index )
            ( desc.recState & HV_DET ) != 0 )
          continue;
 
+      // Written under an ID that could not be read back (see
+      // US_DataProcess::record_upload): a new scan reads it
+      if ( desc.recordID < 0 )
+         continue;
+
       QString dbc;
       QString error;
 
@@ -2078,7 +2141,7 @@ bool US_DataModel::verify_rows( int index )
          continue;                   // the row stays unverified
       }
 
-      QString loc = file_digest( desc.filename );
+      QString loc = local_digest( desc );
 
       if ( loc.isEmpty() )
       {

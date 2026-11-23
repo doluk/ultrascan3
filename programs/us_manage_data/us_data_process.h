@@ -44,6 +44,9 @@ class US_DataProcess : public QObject
             not written when that file cannot be read.  Its row then holds
             the database ID of the record the write created or updated,
             looked up by its GUID: a replace keeps the ID the row had.
+            When that ID cannot be read (3047), the row still says the
+            record is in the database, with no ID to act on it by (-1)
+            until a new scan reads it.
             \param recordID The row of the record to be uploaded
             \return 0, \ref IN_SYNC, or an error status
         */

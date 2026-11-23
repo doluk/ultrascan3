@@ -227,6 +227,17 @@ DbgLv(2) << "NOISE: filepath" << filepath;
       stat   = 3045;
    }
 
+   if ( stat == 3047 )
+   {  // Written, but under an ID that could not be read: the row says it
+      // is in the database, with no ID to act on it by until a new scan
+      cdesc.recordID  = -1;
+      cdesc.recState |= US_DataModel::REC_DB;
+      cdesc.recState &= ~US_DataModel::HV_DET;
+      cdesc.contents  = QString();
+      da_model->change_datadesc( cdesc, row );
+      da_model->record_changed ( row );
+   }
+
    if ( stat == 0 )
    {  // The record is in the DB now; the two copies are not compared yet
       cdesc.recState |= US_DataModel::REC_DB;
@@ -1056,7 +1067,7 @@ int US_DataProcess::same_contents( const US_DataModel::DataDesc& desc )
 
    // The file may have changed since the comparison: it is what would be
    // uploaded, so it is what is hashed
-   lod = US_DataModel::file_digest( desc.filename );
+   lod = US_DataModel::local_digest( desc );
 
    if ( dbd.isEmpty()  ||  lod.isEmpty()  ||
         dbd.startsWith( "-" )  ||  lod.startsWith( "-" ) )

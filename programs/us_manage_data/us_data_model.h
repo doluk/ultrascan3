@@ -482,6 +482,16 @@ class US_DataModel : public QObject
         //!        when it cannot be read
         static QString file_digest( const QString& path );
 
+        //! \brief The checksum of a record's local file, "md5 length", as
+        //!        it compares with the database copy, or empty when it
+        //!        cannot be read
+        //!
+        //! A model or noise file is hashed with its line ends made LF, as
+        //! the database holds the XML; a file written on Windows has CRLF
+        //! ones, and is the same record all the same.  Other files are
+        //! hashed as they are (\ref file_digest).
+        static QString local_digest( const DataDesc& desc );
+
         //! \brief The next experiment waiting to be verified, or -1
         int  next_pending_verify( void ) const;
 
@@ -826,12 +836,18 @@ class US_DataModel : public QObject
         /*! \brief Make sure both sources have read an experiment's chain
 
             A side whose read fails is read once more, since what made it
-            fail may pass.  A side that still cannot be read is reported,
-            and the experiment is left unread: merging what the other side
-            holds would show its records as in that place only.
+            fail may pass -- a lock wait on the server, say; not after the
+            database connection was lost, since US_DB2 does not connect
+            again.  A side that still cannot be read is reported, and the
+            experiment is left unread: merging what the other side holds
+            would show its records as in that place only.
             \returns False when a side could not be read
         */
         bool load_sides( int index );
+
+        //! \brief Whether a client error number says the connection to
+        //!        the database server is gone (2006, 2013)
+        static bool connection_lost( int serverErrno );
 
         //! \brief One orphan and what hangs off it, as tree records
         typedef QVector< DataDesc > Branch;

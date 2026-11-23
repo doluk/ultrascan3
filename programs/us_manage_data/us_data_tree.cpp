@@ -854,7 +854,10 @@ void US_DataTree::dtree_help()
       tr( "  no input; with a run selected, that run's local files are\n" ) +
       tr( "  read in the window itself, which is not redrawn until then.\n" ) +
       tr( "  Opening an experiment while a scan runs moves it to the front\n" ) +
-      tr( "  of the queue.  Closing the window stops the scan.\n\n" ) +
+      tr( "  of the queue.  Closing the window stops the scan.  A read\n" ) +
+      tr( "  that fails is tried once more; after a lost database\n" ) +
+      tr( "  connection it is not, since the window does not connect\n" ) +
+      tr( "  again: close it and open it again.\n\n" ) +
       tr( "Tree Entry Processes --\n\n" ) +
       tr( "  A right-mouse-button click on any cell of a row pops up\n" ) +
       tr( "  a context menu with actions to take for the record.\n" ) +
