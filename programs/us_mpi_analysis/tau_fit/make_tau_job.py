@@ -57,6 +57,14 @@ def job_parameters(a):
         p.update(radial_scan_time=a.radial_scan_time)
     if a.scan_start > 0.0:
         p["scan_start"] = a.scan_start
+    if a.channel_b_after_a:
+        p["channel_b_after_a"] = 1
+        if a.channel_a_points > 0.0:
+            p["channel_a_points"] = a.channel_a_points
+        if a.channel_offset_time > 0.0:
+            p["channel_offset_time"] = a.channel_offset_time
+    if a.scan_offset_points > 0.0:
+        p["scan_offset_points"] = a.scan_offset_points
     return p
 
 
@@ -147,6 +155,15 @@ def main():
     t.add_argument("--scan-start", type=float, default=0.0,
                    help="radius (cm) where each scan starts; 0: first raw radius in scan direction")
     t.add_argument("--scan-direction", default="outward", choices=["outward", "inward"])
+    t.add_argument("--channel-b-after-a", action="store_true",
+                   help="channel B is scanned after channel A and both carry A's scan time: "
+                        "channel B data are delayed by the channel A scan")
+    t.add_argument("--channel-a-points", type=float, default=0.0,
+                   help="radial points of the channel A scan; 0: the raw point count of the dataset")
+    t.add_argument("--channel-offset-time", type=float, default=0.0,
+                   help="extra fixed delay (s) of the channel B scan, e.g. repositioning")
+    t.add_argument("--scan-offset-points", type=float, default=0.0,
+                   help="radial points recorded before each scan start (all datasets)")
     ap.add_argument("--request-id", type=int, default=1)
     ap.add_argument("-o", "--output", required=True, help="job archive to write (.tar)")
     a = ap.parse_args()

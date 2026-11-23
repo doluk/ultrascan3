@@ -496,13 +496,17 @@ void US_MPI_Analysis::load_data( void )
       const bool scan_timing = job_config.params.radial_scan_time > 0.0 || job_config.params.tau_points > 1;
       double     rad_first   = dset->run_data.radius( 0 );
       double     rad_last    = dset->run_data.radius( dset->run_data.pointCount() - 1 );
-      if ( scan_timing && job_config.params.scan_start <= 0.0 && error.isEmpty() )
+      int        raw_count   = dset->run_data.pointCount();
+      const bool need_raw    = ( scan_timing && job_config.params.scan_start <= 0.0 ) ||
+                            ( job_config.params.channel_b_after_a && job_config.params.channel_a_points <= 0.0 );
+      if ( need_raw && error.isEmpty() )
       {
          US_DataIO::RawData raw;
          if ( US_DataIO::readRawData( dset->auc_file, raw ) == US_DataIO::OK && raw.pointCount() > 0 )
          {
             rad_first = raw.radius( 0 );
             rad_last  = raw.radius( raw.pointCount() - 1 );
+            raw_count = raw.pointCount();
          }
          else if ( my_rank == 0 )
          {
@@ -511,6 +515,7 @@ void US_MPI_Analysis::load_data( void )
       }
       raw_radius_first << rad_first;
       raw_radius_last << rad_last;
+      raw_point_count << raw_count;
    }
 
    if ( dbg_timing )
@@ -774,14 +779,25 @@ void US_MPI_Analysis::apply_scan_timing( void )
          start = outward ? raw_radius_first[ee] : raw_radius_last[ee];
       }
 
-      ds->simparams.radial_scan_time = tau;
-      ds->simparams.scan_outward     = outward;
-      ds->simparams.scan_start       = start;
-
-      if ( my_rank == 0 && ( tau > 0.0 || fit_tau ) )
+      // Points recorded before this scan's start: a general offset, plus
+      //  for channel B the channel A scan when both carry A's scan time
+      const bool is_b     = job_config.params.channel_b_after_a && ds->run_data.channel.trimmed().toUpper() == "B";
+      double     a_points = job_config.params.channel_a_points;
+      if ( a_points <= 0.0 && ee < raw_point_count.size() )
       {
-         DbgLv( 0 ) << "TAU: dataset" << ee << "scan" << ( outward ? "outward" : "inward" ) << "from" << start << "cm; tau"
-                    << ( fit_tau ? QString( "fitted" ) : QString::number( tau ) ) << "s/pt";
+         a_points = raw_point_count[ee];
+      }
+      ds->simparams.radial_scan_time   = tau;
+      ds->simparams.scan_outward       = outward;
+      ds->simparams.scan_start         = start;
+      ds->simparams.scan_offset_points = job_config.params.scan_offset_points + ( is_b ? a_points : 0.0 );
+      ds->simparams.scan_time_offset   = is_b ? job_config.params.channel_offset_time : 0.0;
+
+      if ( my_rank == 0 && ( tau > 0.0 || fit_tau || ds->simparams.scan_start_delay() > 0.0 ) )
+      {
+         DbgLv( 0 ) << "TAU: dataset" << ee << "channel" << ds->run_data.channel << "scan" << ( outward ? "outward" : "inward" )
+                    << "from" << start << "cm; tau" << ( fit_tau ? QString( "fitted" ) : QString::number( tau ) ) << "s/pt; offset"
+                    << ds->simparams.scan_offset_points << "points +" << ds->simparams.scan_time_offset << "s";
       }
    }
 }

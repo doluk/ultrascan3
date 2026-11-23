@@ -227,6 +227,28 @@ TEST_F( US_AstfemMathTest, InterpolateScantimeScanStartRadius )
    }
 }
 
+TEST_F( US_AstfemMathTest, InterpolateScantimeStartDelay )
+{
+   // A delay of the scan start (e.g. channel A scanned before channel B)
+   //  shifts every point by t_offset, also with tau = 0
+   const double tau = 0.1, dr = 0.025, toff = 7.5;
+   for ( double tt_pt : { tau, 0.0 } )
+   {
+      US_AstfemMath::MfemData sim, exp;
+      fill_scantime_data( sim, exp, { 10.0, 40.0 } );
+      ASSERT_EQ( US_AstfemMath::interpolate_scantime( exp, sim, tt_pt, true, 5.9, toff ), 0 );
+      for ( int es = 0; es < exp.scan.size(); es++ )
+      {
+         for ( int ii = 0; ii < exp.radius.size(); ii++ )
+         {
+            double tt = exp.scan[es].time + toff + qMax( 0.0, exp.radius[ii] - 5.9 ) / dr * tt_pt;
+            EXPECT_NEAR( exp.scan[es].conc[ii], exp.radius[ii] + 10.0 * tt, 1e-9 )
+               << "tau=" << tt_pt << " scan=" << es << " point=" << ii;
+         }
+      }
+   }
+}
+
 TEST_F( US_AstfemMathTest, ScantimeSpan )
 {
    QVector<double> rad;
@@ -238,6 +260,8 @@ TEST_F( US_AstfemMathTest, ScantimeSpan )
    EXPECT_NEAR( US_AstfemMath::scantime_span( rad, 0.5, true, 5.8 ), 65.0, 1e-9 );
    EXPECT_NEAR( US_AstfemMath::scantime_span( rad, 0.5, false, 7.25 ), 57.5, 1e-9 );
    EXPECT_EQ( US_AstfemMath::scantime_span( rad, 0.0, true, 5.8 ), 0.0 );
+   EXPECT_NEAR( US_AstfemMath::scantime_span( rad, 0.5, true, 5.8, 20.0 ), 85.0, 1e-9 );
+   EXPECT_NEAR( US_AstfemMath::scantime_span( rad, 0.0, true, 5.8, 20.0 ), 20.0, 1e-9 );
 }
 
 TEST_F( US_AstfemMathTest, InterpolateScantimeZeroMatchesInterpolate )

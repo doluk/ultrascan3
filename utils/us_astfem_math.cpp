@@ -1387,20 +1387,30 @@ static void scan_geometry( const QVector<double>& radius, bool outward, double r
    }
 }
 
-double US_AstfemMath::scantime_span( const QVector<double>& radius, double pt_time, bool outward, double r_start )
+double US_AstfemMath::scantime_span( const QVector<double>& radius, double pt_time, bool outward, double r_start, double t_offset )
 {
-   if ( pt_time <= 0.0 || radius.isEmpty() )
+   t_offset = qMax( 0.0, t_offset );
+   if ( ( pt_time <= 0.0 && t_offset <= 0.0 ) || radius.isEmpty() )
    {
       return 0.0;
    }
    double rs, dr;
    scan_geometry( radius, outward, r_start, rs, dr );
-   return qMax( scan_delay( radius.first(), rs, dr, pt_time, outward ), scan_delay( radius.last(), rs, dr, pt_time, outward ) );
+   pt_time = qMax( 0.0, pt_time );
+   return t_offset +
+          qMax( scan_delay( radius.first(), rs, dr, pt_time, outward ), scan_delay( radius.last(), rs, dr, pt_time, outward ) );
 }
 
-int US_AstfemMath::interpolate_scantime( MfemData& expdata, MfemData& simdata, double pt_time, bool outward, double r_start )
+int US_AstfemMath::interpolate_scantime( MfemData& expdata,
+                                         MfemData& simdata,
+                                         double    pt_time,
+                                         bool      outward,
+                                         double    r_start,
+                                         double    t_offset )
 {
-   if ( pt_time <= 0.0 )
+   pt_time  = qMax( 0.0, pt_time );
+   t_offset = qMax( 0.0, t_offset );
+   if ( pt_time <= 0.0 && t_offset <= 0.0 )
    {
       return interpolate( expdata, simdata, true );
    }
@@ -1479,7 +1489,7 @@ int US_AstfemMath::interpolate_scantime( MfemData& expdata, MfemData& simdata, d
 
       for ( int ii = 0; ii < neconc; ii++ )
       {
-         const double tt = qMin( t0 + scan_delay( expdata.radius[ii], rs, dr_e, pt_time, outward ), s_last );
+         const double tt = qMin( t0 + t_offset + scan_delay( expdata.radius[ii], rs, dr_e, pt_time, outward ), s_last );
 
          if ( nsscan < 2 )
          {

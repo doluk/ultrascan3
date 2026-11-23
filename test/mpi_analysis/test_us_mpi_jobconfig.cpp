@@ -741,3 +741,24 @@ TEST( US_MPI_JobConfig, RadialScanTimeValidation )
    ASSERT_EQ( ga.size(), 1 );
    EXPECT_TRUE( ga[0].contains( "needs a 2DSA analysis" ) );
 }
+
+TEST( US_MPI_JobConfig, ChannelOffsetParameters )
+{
+   Config config = validated( GRID_2DSA + "<channel_b_after_a value=\"1\"/><channel_a_points value=\"1200\"/>"
+                                          "<channel_offset_time value=\"2.5\"/><scan_offset_points value=\"10\"/>" );
+   EXPECT_TRUE( config.errors.isEmpty() ) << all_of( config );
+   EXPECT_TRUE( config.warnings.isEmpty() ) << all_of( config );
+   EXPECT_TRUE( config.params.channel_b_after_a );
+   EXPECT_DOUBLE_EQ( config.params.channel_a_points, 1200.0 );
+   EXPECT_DOUBLE_EQ( config.params.channel_offset_time, 2.5 );
+   EXPECT_DOUBLE_EQ( config.params.scan_offset_points, 10.0 );
+
+   Config defaults = validated( GRID_2DSA );
+   EXPECT_FALSE( defaults.params.channel_b_after_a );
+   EXPECT_EQ( defaults.params.channel_a_points, 0.0 );
+
+   EXPECT_EQ( validated( GRID_2DSA + "<channel_offset_time value=\"-1\"/>" ).errors,
+              QStringList( "channel_offset_time \"-1\": must be at least 0" ) );
+   EXPECT_EQ( validated( GRID_2DSA + "<channel_b_after_a value=\"yes\"/>" ).errors,
+              QStringList( "channel_b_after_a \"yes\": not 0 or 1" ) );
+}

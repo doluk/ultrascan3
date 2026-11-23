@@ -182,7 +182,7 @@ class US_UTIL_EXTERN US_AstfemMath
       //! The scan starts at radius r_start at the stored scan time t_scan and
       //! records one point per radial increment dr (the spacing of expdata's
       //! radii) every pt_time seconds, so the point at radius r is taken at
-      //! t_scan + |r - r_start| / dr * pt_time. Concentrations are
+      //! t_scan + t_offset + |r - r_start| / dr * pt_time. Concentrations are
       //! interpolated linearly in time and radius from the simulation grid
       //! and added to expdata (as in interpolate()). Only scans whose start
       //! time lies within the simulated time range are updated; point times
@@ -193,16 +193,19 @@ class US_UTIL_EXTERN US_AstfemMath
       //! \param outward  True: scan proceeds towards larger radii
       //! \param r_start  Radius (cm) at which the scan starts; a value <= 0
       //!                 selects the first data point in scan direction
+      //! \param t_offset Delay (s) of the scan start after the stored scan
+      //!                 time, e.g. the scan of another channel recorded first
       //! \returns Success flag: 0 -> success
-      static int         interpolate_scantime( MfemData&, MfemData&, double, bool, double = 0.0 );
+      static int         interpolate_scantime( MfemData&, MfemData&, double, bool, double = 0.0, double = 0.0 );
 
       //! \brief Longest delay of a data point after the scan time
       //! \param radius   Radii of the data points (equally spaced)
       //! \param pt_time  Seconds needed to record one radial point
       //! \param outward  True: scan proceeds towards larger radii
       //! \param r_start  Scan start radius; <= 0 selects the first data point
+      //! \param t_offset Delay (s) of the scan start after the scan time
       //! \returns Seconds from the scan time to the last recorded data point
-      static double      scantime_span( const QVector<double>&, double, bool, double = 0.0 );
+      static double      scantime_span( const QVector<double>&, double, bool, double = 0.0, double = 0.0 );
 
       //! \brief Solve Quad-diagonal system
       //! \param ai   The initial a vector

@@ -4,10 +4,14 @@ Absorbance scanners record the radial points of a scan one after another.
 The stored scan time is the time of the first recorded point; the point at
 radius *r* is recorded
 
-    t(r) = t_scan + |r − r_start| / Δr · τ
+    t(r) = t_scan + t_offset + (n_offset + |r − r_start| / Δr) · τ
 
 later, with τ the time per radial point (s/point), Δr the mean radial spacing
-of the data and r_start the radius where the scan starts. A τ > 0 that the
+of the data and r_start the radius where the scan starts. n_offset counts
+points recorded before the scan starts and t_offset is a fixed delay: the
+Optima, for example, scans channel A and then channel B of a cell but stores
+one scan time (that of channel A) for both, so every point of channel B is
+recorded about one channel-A scan (n_offset = its point count) later. A τ > 0 that the
 model ignores biases the fit, most of all D, f/f0 and MW, and a scan start
 outside the meniscus adds a constant delay that shifts the fitted meniscus
 (see the simulations in the commit history of this branch).
@@ -27,6 +31,10 @@ outside the meniscus adds a constant delay that shifts the fitted meniscus
 | `scan_direction` | `outward` | `outward` (towards the bottom) or `inward`. |
 | `tau_points` | 0 | Number of τ values; > 1 fits τ (2DSA only). |
 | `tau_min`, `tau_max` | 0 | Range of the fitted τ values (s/point); `tau_max` is required with `tau_points` > 1. |
+| `channel_b_after_a` | 0 | 1: channel B is scanned after channel A and stamped with A's scan time. Channel-B datasets get n_offset = `channel_a_points` (scaled with τ, also in the τ fit). |
+| `channel_a_points` | 0 | Radial points of the channel-A scan; 0: the raw point count of the dataset's `.auc` (A scanned over the same range as B). |
+| `channel_offset_time` | 0 | Extra fixed delay (s) of channel B, e.g. moving between the channels. |
+| `scan_offset_points` | 0 | n_offset for every dataset (in addition to the channel-B offset). |
 
 The fit runs one 2DSA per grid point: `meniscus_points × tau_points` (times
 `bottom_points` for a meniscus + bottom fit). The meniscus/bottom points vary
@@ -72,6 +80,12 @@ the file name and description, e.g. `...2DSA-FM_000001_i03-m59000t04000.model`
      after the other with the same grid.
    * Choose the τ range from the instrument: τ ≈ scan duration / number of
      radial points. Include τ = 0 as control.
+   * Optima channel B: add `--channel-b-after-a` (and if known
+     `--channel-a-points`, `--channel-offset-time`). Without it the channel-A
+     scan delay is a large constant time offset that the meniscus and τ
+     can only imitate: a long diagonal valley with an unphysical τ and a
+     shifted meniscus. Fit channel A without the option as a control: both
+     channels should give the same τ.
 
 3. **Run** it, e.g. with Slurm:
 

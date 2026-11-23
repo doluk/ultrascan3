@@ -199,6 +199,18 @@ class US_UTIL_EXTERN US_SimulationParameters
    double                  scan_start;        //!< Radius (cm) where each scan starts, e.g.
                                               //!< 5.8 for an outward scan of the whole
                                               //!< column; <= 0 = first data point
+   double                  scan_offset_points; //!< Radial points recorded before this
+                                               //!< scan's start after the scan time (e.g.
+                                               //!< channel A scanned before channel B):
+                                               //!< adds scan_offset_points * radial_scan_time
+   double                  scan_time_offset;   //!< Fixed delay (s) of the scan start after
+                                               //!< the stored scan time
+
+   //! \brief Delay (s) of the scan start after the stored scan time
+   double                  scan_start_delay( void ) const
+   {
+      return scan_time_offset + scan_offset_points * radial_scan_time;
+   }
    bool      band_forming;      //!< True for band-forming centerpieces
    double    band_volume;       //!< Loading volume (of lamella) in a 
                                 //!< Band-forming centerpiece

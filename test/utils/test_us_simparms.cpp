@@ -147,6 +147,9 @@ TEST_F(US_SimulationParametersTest, Constructor_InitializesCorrectly) {
     EXPECT_EQ( simparms->radial_scan_time, 0.0 );
     EXPECT_TRUE( simparms->scan_outward );
     EXPECT_EQ( simparms->scan_start, 0.0 );
+    EXPECT_EQ( simparms->scan_offset_points, 0.0 );
+    EXPECT_EQ( simparms->scan_time_offset, 0.0 );
+    EXPECT_EQ( simparms->scan_start_delay(), 0.0 );
 }
 
 // SpeedProfile Constructor Tests
@@ -290,10 +293,12 @@ TEST_F(US_SimulationParametersTest, SaveSimparms_ValidParameters_SavesCorrectly)
 // Radial scan time round trip
 TEST_F( US_SimulationParametersTest, SaveSimparms_RadialScanTime_RoundTrips )
 {
-   simparms->radial_scan_time = 0.045;
-   simparms->scan_outward     = false;
-   simparms->scan_start       = 7.25;
-   QString filename           = tempDir->path() + "/test_scantime.xml";
+   simparms->radial_scan_time   = 0.045;
+   simparms->scan_outward       = false;
+   simparms->scan_start         = 7.25;
+   simparms->scan_offset_points = 1100.0;
+   simparms->scan_time_offset   = 3.5;
+   QString filename             = tempDir->path() + "/test_scantime.xml";
    ASSERT_EQ( simparms->save_simparms( filename ), 0 );
 
    US_SimulationParameters loadedParams;
@@ -301,6 +306,9 @@ TEST_F( US_SimulationParametersTest, SaveSimparms_RadialScanTime_RoundTrips )
    EXPECT_DOUBLE_EQ( loadedParams.radial_scan_time, 0.045 );
    EXPECT_FALSE( loadedParams.scan_outward );
    EXPECT_DOUBLE_EQ( loadedParams.scan_start, 7.25 );
+   EXPECT_DOUBLE_EQ( loadedParams.scan_offset_points, 1100.0 );
+   EXPECT_DOUBLE_EQ( loadedParams.scan_time_offset, 3.5 );
+   EXPECT_DOUBLE_EQ( loadedParams.scan_start_delay(), 3.5 + 1100.0 * 0.045 );
 }
 
 // Files without the attributes keep instantaneous, outward scans

@@ -113,9 +113,13 @@ void US_MPI_JobConfig::read_parameters( void )
    {
       pp.scan_direction = "outward";
    }
-   pp.tau_points       = integer( "tau_points" );
-   pp.tau_min          = number( "tau_min" );
-   pp.tau_max          = number( "tau_max" );
+   pp.tau_points          = integer( "tau_points" );
+   pp.tau_min             = number( "tau_min" );
+   pp.tau_max             = number( "tau_max" );
+   pp.scan_offset_points  = number( "scan_offset_points" );
+   pp.channel_b_after_a   = p.value( "channel_b_after_a" ) == "1" || p.value( "channel_b_after_a" ) == "T";
+   pp.channel_a_points    = number( "channel_a_points" );
+   pp.channel_offset_time = number( "channel_offset_time" );
    pp.tinoise_option   = integer( "tinoise_option" );
    pp.rinoise_option   = integer( "rinoise_option" );
    pp.global_fit       = p.value( "global_fit" ) == "1" || p.value( "global_fit" ) == "T";
@@ -750,6 +754,12 @@ const ParamSpec PARAMS[] = {
    { "tau_points", Kind::Int, M_2DSA, 0, 0, NOLIM, nullptr },
    { "tau_min", Kind::Double, M_2DSA, 0, 0, NOLIM, nullptr },
    { "tau_max", Kind::Double, M_2DSA, 0, 0, NOLIM, nullptr },
+   // Scan start delays: points recorded before the scan start (all datasets),
+   //  and channel B scanned after channel A with A's scan time
+   { "scan_offset_points", Kind::Double, M_ANY, 0, 0, NOLIM, nullptr },
+   { "channel_b_after_a", Kind::Flag, M_ANY, 0, 0, 0, nullptr },
+   { "channel_a_points", Kind::Double, M_ANY, 0, 0, NOLIM, nullptr },
+   { "channel_offset_time", Kind::Double, M_ANY, 0, 0, NOLIM, nullptr },
    { "global_fit", Kind::Flag, M_ANY, 0, 0, 0, nullptr },
    { "seed", Kind::Int, M_ANY, 0, 0, 4294967295.0, nullptr },
    { "debug_level", Kind::Int, M_ANY, 0, 0, NOLIM, nullptr },

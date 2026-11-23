@@ -54,6 +54,9 @@ DS_NOBOTTOM = ("regA", 1, 11, 1.0, {"nobottom": True})
 # Sequential radial scanning:  0.3 s per point of 0.006 cm (50 s/cm), the
 #  scan starting outward at the first raw radius
 DS_TAU = ("regA", 1, 11, 1.0, {"tau": 0.3})
+# Channel B scanned after channel A (201 raw points), both stamped with the
+#  start of channel A:  every point of B is 201 * 0.3 s later
+DS_TAU_B = ("regA", 1, 11, 1.0, {"tau": 0.3, "channel": "B", "offset": 201})
 
 GRID_2DSA = {
     "s_min": "1.0", "s_max": "10.0",
@@ -182,6 +185,13 @@ CASES = {
         "params": dict(GRID_2DSA, meniscus_points="3", meniscus_range="0.04",
                        fit_mb_select="1", tau_points="3", tau_min="0.0",
                        tau_max="0.6"),
+    },
+    "2dsa_tau_channel_b": {
+        # Channel B with the channel A scan before it:  tau fit with the
+        #  offset of channel_b_after_a (A's raw point count)
+        "method": "2DSA", "datasets": [DS_TAU_B], "np": 2,
+        "params": dict(GRID_2DSA, tau_points="3", tau_min="0.0", tau_max="0.6",
+                       channel_b_after_a="1"),
     },
     "2dsa_timestate": {
         # Timestate file given (as in every LIMS job), at 1-second intervals
@@ -659,8 +669,9 @@ def job_xml(name, case):
     for (xmin, xmax, ymin, ymax) in case.get("buckets", []):
         sub(params, "bucket", s_min=xmin, s_max=xmax, ff0_min=ymin, ff0_max=ymax)
 
-    for (run_id, cell, _seed, scale, *_opts) in case["datasets"]:
-        triple = "RI.%d.A.260" % cell
+    for (run_id, cell, _seed, scale, *opts) in case["datasets"]:
+        channel = opts[0].get("channel", "A") if opts else "A"
+        triple = "RI.%d.%s.260" % (cell, channel)
         dset = sub(root, "dataset")
         files = sub(dset, "files")
         sub(files, "auc", filename="%s.%s.auc" % (run_id, triple))
@@ -698,6 +709,8 @@ def build_archive(name, case, testdata, casedir):
         extra += ["tmst"] if case.get("timestate") == "given" else []
         extra += ["noise=%g" % opts["noise"]] if "noise" in opts else []
         extra += ["tau=%g" % opts["tau"]] if "tau" in opts else []
+        extra += ["offset=%g" % opts["offset"]] if "offset" in opts else []
+        extra += ["channel=%s" % opts["channel"]] if "channel" in opts else []
         if "species" in opts:
             extra += ["species=" + ",".join("%g:%g:%g" % sp
                                             for sp in opts["species"])]

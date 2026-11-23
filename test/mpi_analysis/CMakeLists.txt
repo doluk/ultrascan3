@@ -75,6 +75,7 @@ set(US_MPI_CASES
     2dsa_tau_fixed
     2dsa_tau
     2dsa_meniscus_tau
+    2dsa_tau_channel_b
     2dsa_timestate
     2dsa_composite_timestate
     2dsa_customgrid

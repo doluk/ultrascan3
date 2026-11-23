@@ -117,6 +117,7 @@ class US_MPI_Analysis : public QObject
         QVector<double>   tau_values;      //!< Radial scan time values (tau fit)
         QVector<double>   raw_radius_first; //!< First raw (.auc) radius of each dataset
         QVector<double>   raw_radius_last;  //!< Last raw (.auc) radius of each dataset
+        QVector<int>      raw_point_count;  //!< Raw (.auc) point count of each dataset
 
         QVector< double > concentrations;  //!< Concentrations
         QVector< double > maxods;          //!< Maximum OD values

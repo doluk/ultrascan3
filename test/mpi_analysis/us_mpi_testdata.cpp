@@ -13,8 +13,8 @@
 //!   us_mpi_testdata cgrid  <outdir> <filename>
 //!   us_mpi_testdata dmga   <outdir> <filename>
 //!
-//! "data" writes <runID>.RI.<cell>.A.260.auc and the edit file
-//! <runID>.e1.RI.<cell>.A.260.xml.  "cgrid" writes a custom-grid model file.
+//! "data" writes <runID>.RI.<cell>.<channel>.260.auc and the edit file
+//! <runID>.e1.RI.<cell>.<channel>.260.xml (channel A unless channel=<A-H>).  "cgrid" writes a custom-grid model file.
 //! "dmga" writes a DMGA constraints model for the three simulated species.
 //! Options of "data":  scans=<n> (default 30), nobottom (an edit file
 //! without <bottom>, as older edit files lack the element; us_edit always
@@ -22,7 +22,9 @@
 //! timestate file set <runID>.time_state.tmst/.xml the data were simulated
 //! with), noise=<sigma> (default 0.004), tau=<s/point> (sequential radial
 //! scanning:  each point recorded tau seconds after the previous one, the
-//! scan starting outward at the first raw radius) and
+//! scan starting outward at the first raw radius), offset=<points> (points
+//! recorded before each scan start, e.g. the channel A scan before channel
+//! B: offset * tau seconds), channel=<A-H> and
 //! species=<s>:<f/f0>:<c>[,...]
 //! (s in Svedberg at 20,W; replaces the default three-species sample, before
 //! <scale> is applied).
@@ -60,6 +62,9 @@ const double kRadiusLo   = 5.95;
 const double kRadiusHi   = 7.15;
 const double kRadiusStep = 0.006;
 
+// Channel of the written dataset (option channel=<letter>)
+char         gChannel = 'A';
+
 QString      raw_guid( int cell, uint64_t seed )
 {
    return QString( "00000000-0000-4000-8000-%1" ).arg( seed * 100 + cell, 12, 10, QChar( '0' ) );
@@ -70,7 +75,7 @@ US_DataIO::RawData skeleton( const QString& runID, int cell, uint64_t seed, int 
    US_DataIO::RawData raw;
    memcpy( raw.type, "RI", 2 );
    raw.cell        = cell;
-   raw.channel     = 'A';
+   raw.channel     = gChannel;
    raw.description = "us_mpi_analysis regression data " + runID;
 
    // Fixed GUID per dataset so the files do not change between runs
@@ -120,7 +125,7 @@ bool write_edit( const QString& path, const QString& runID, const US_DataIO::Raw
    ev.expType    = "Velocity";
    ev.runID      = runID;
    ev.cell       = QString::number( cell );
-   ev.channel    = "A";
+   ev.channel    = QString( QChar( gChannel ) );
    ev.wavelength = "260";
    ev.editGUID   = QString( "00000000-0000-4000-8000-0000000000%1" ).arg( 10 + cell );
    ev.dataGUID   = US_Util::uuid_unparse( (uchar*) raw.rawGUID );
@@ -221,9 +226,10 @@ int write_data( const QString&          outdir,
                 bool                    with_tmst,
                 const QVector<Species>& species,
                 double                  sigma,
-                double                  tau )
+                double                  tau,
+                double                  offset_points )
 {
-   QString            triple   = QString( "RI.%1.A.260" ).arg( cell );
+   QString            triple   = QString( "RI.%1.%2.260" ).arg( cell ).arg( QChar( gChannel ) );
    QString            aucname  = runID + "." + triple + ".auc";
    QString            editname = runID + ".e1." + triple + ".xml";
 
@@ -254,9 +260,11 @@ int write_data( const QString&          outdir,
    simparams.bottom          = ( edata.bottom > 0.0 ) ? edata.bottom : stretched_bottom();
    simparams.band_forming    = false;
    // Sequential radial scanning from the first raw radius outward
-   simparams.radial_scan_time = tau;
-   simparams.scan_outward     = true;
-   simparams.scan_start       = raw.radius( 0 );
+   simparams.radial_scan_time   = tau;
+   simparams.scan_outward       = true;
+   simparams.scan_start         = raw.radius( 0 );
+   // Points recorded before the scan start (e.g. channel A before B)
+   simparams.scan_offset_points = offset_points;
 
    QTemporaryDir      tmpdir;
    QString            tmst = tmpdir.path() + "/sim.time_state.tmst";
@@ -427,6 +435,7 @@ int main( int argc, char* argv[] )
       bool             argsok    = true;
       double           sigma     = kNoiseSigma;
       double           tau       = 0.0;
+      double           offset    = 0.0;
       QVector<Species> species   = kSample;
 
       for ( int ii = 7; ii < args.size(); ii++ )
@@ -448,6 +457,17 @@ int main( int argc, char* argv[] )
          {
             sigma  = args[ii].mid( 6 ).toDouble( &argsok );
             argsok = argsok && sigma >= 0.0;
+         }
+         else if ( args[ii].startsWith( "offset=" ) )
+         {
+            offset = args[ii].mid( 7 ).toDouble( &argsok );
+            argsok = argsok && offset >= 0.0;
+         }
+         else if ( args[ii].startsWith( "channel=" ) )
+         {
+            const QString ch = args[ii].mid( 8 ).toUpper();
+            argsok           = ch.size() == 1 && ch[0] >= 'A' && ch[0] <= 'H';
+            gChannel         = argsok ? ch[0].toLatin1() : 'A';
          }
          else if ( args[ii].startsWith( "tau=" ) )
          {
@@ -480,7 +500,8 @@ int main( int argc, char* argv[] )
                          with_tmst,
                          species,
                          sigma,
-                         tau );
+                         tau,
+                         offset );
    }
 
    if ( args.size() == 4 && args[1] == "cgrid" )
@@ -495,7 +516,8 @@ int main( int argc, char* argv[] )
 
    fprintf( stderr,
             "usage: %s data <outdir> <runID> <cell> <seed> <scale> [scans=<n>] [nobottom] [tmst]\n"
-            "                [noise=<sigma>] [tau=<s/point>] [species=<s>:<f/f0>:<c>[,...]]\n"
+            "                [noise=<sigma>] [tau=<s/point>] [offset=<points>]\n"
+            "                [channel=<A-H>] [species=<s>:<f/f0>:<c>[,...]]\n"
             "       %s cgrid <outdir> <filename>\n"
             "       %s dmga  <outdir> <filename>\n",
             argv[0],
