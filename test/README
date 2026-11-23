@@ -179,7 +179,13 @@ client certificate, key and CA it presents are read from
 `<build>/etc/mysql/{server-cert.pem,server-key.pem,ca-cert.pem}`.
 
 `test_us_datapub` takes the same variables and runs its own `DataPubDb` cases
-against the database.
+against the database.  Its `DataPubDbImport` cases import into a scratch
+database named by `US3_TEST_DB_IMPORT_NAME`, which needs the schema, the
+procedures, the person of `US3_TEST_DB_PERSON_ID` with a permit, a lab with an
+instrument, a rotor with a calibration, the centerpiece table and one
+`channel` row (`channelID` 1, which `US_ConvertIO` writes raw data under).
+The instrument procedures call `DECODE()`, which MySQL 8 no longer has, so
+those cases need MariaDB (or a MySQL 5.7) to pass.
 
 ### Testing the fall-back
 

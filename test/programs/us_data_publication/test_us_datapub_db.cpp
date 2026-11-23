@@ -778,6 +778,73 @@ TEST_F( DataPubDbImport, ATimeStateIsImportedWithItsDefinitions )
    EXPECT_TRUE ( xdefs.contains( "TimeState" ) ) << xdefs.toStdString();
 }
 
+
+/* Against a real server: a dry run decides what the import then does, and
+   a second import of the same bundle finds every record -- which takes the
+   investigator's listings the import checks owners against
+   (get_project_desc, all_solutionIDs, all_rawDataIDs, all_editedDataIDs,
+   get_model_desc, get_noise_desc) in the columns the procedures return.
+*/
+TEST_F( DataPubDbImport, ADryRunAndASecondImportAgreeWithTheImport )
+{
+   QString bundle = root + "/twice.tar.gz";
+   QString error;
+
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection;
+   selection.fromDb = false;
+   selection.scope  = US_DataPub::ScopeNoise;
+   selection.runIDs << runID;
+
+   ASSERT_TRUE( exporter.exportBundle( selection, bundle, error ) )
+      << error.toStdString();
+
+   US_DataPubImporter::Options options;
+   options.target       = US_DataPub::TargetDb;
+   options.dbPassword   = master;
+   options.verifyHashes = true;
+   options.policy       = US_DataPub::PolicyRename;
+
+   US_DataPubImporter dry;
+   options.dryRun = true;
+   ASSERT_TRUE( dry.inspect( bundle, error ) ) << error.toStdString();
+   ASSERT_TRUE( dry.runImport( options, error ) )
+      << error.toStdString() << "\n" << dry.log().join( "\n" ).toStdString();
+
+   US_DataPubImporter first;
+   options.dryRun = false;
+   ASSERT_TRUE( first.inspect( bundle, error ) ) << error.toStdString();
+   ASSERT_TRUE( first.runImport( options, error ) )
+      << error.toStdString() << "\n" << first.log().join( "\n" ).toStdString();
+
+   QList< US_DataPubImporter::Result > would = dry.results();
+   QList< US_DataPubImporter::Result > did   = first.results();
+   ASSERT_EQ( would.size(), did.size() );
+
+   for ( int ii = 0; ii < would.size(); ii++ )
+      EXPECT_EQ( would[ ii ].resolution, did[ ii ].resolution )
+         << US_DataPub::typeText( would[ ii ].type ).toStdString();
+
+   US_DataPubImporter second;
+   ASSERT_TRUE( second.inspect( bundle, error ) ) << error.toStdString();
+   ASSERT_TRUE( second.runImport( options, error ) )
+      << error.toStdString() << "\n" << second.log().join( "\n" ).toStdString();
+
+   QList< US_DataPubImporter::Result > again = second.results();
+
+   for ( int ii = 0; ii < again.size(); ii++ )
+   {
+      // Hardware the target lacks is stood in for or left out each time
+      if ( again[ ii ].type == US_DataPub::Centerpiece  ||
+           again[ ii ].type == US_DataPub::RotorCalibration )
+         continue;
+
+      EXPECT_EQ( again[ ii ].resolution, US_DataPub::ResolvedReused )
+         << US_DataPub::typeText( again[ ii ].type ).toStdString() << " "
+         << again[ ii ].name.toStdString();
+   }
+}
+
 // ------------------------------------------- importing into a mock database
 //
 // These run without a server: the importer is handed an IUS_DB2 that the
