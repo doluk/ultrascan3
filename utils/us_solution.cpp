@@ -3,6 +3,18 @@
 #include "ius_db2.h"
 #include "us_util.h"
 #include "us_solution.h"
+
+// A value as the shortest text that reads back as exactly the same double.
+// Disk records are read back with QString::toDouble, which takes this form
+// and every form older files were written in.
+static QString exact_number( double value )
+{
+#if QT_VERSION >= QT_VERSION_CHECK( 5, 7, 0 )
+   return QString::number( value, 'g', QLocale::FloatingPointShortest );
+#else
+   return QString::number( value, 'g', 17 );
+#endif
+}
 #include "us_buffer.h"
 #include "us_analyte.h"
 #include "us_datafiles.h"
@@ -399,8 +411,8 @@ bool US_Solution::saveToFile( const QString& filename )
    xml.writeStartElement( "solution" );
    xml.writeAttribute   ( "id", QString::number( solutionID ) );
    xml.writeAttribute   ( "guid", solutionGUID );
-   xml.writeAttribute   ( "commonVbar20", QString::number( commonVbar20 ) );
-   xml.writeAttribute   ( "storageTemp", QString::number( storageTemp ) );
+   xml.writeAttribute   ( "commonVbar20", exact_number( commonVbar20 ) );
+   xml.writeAttribute   ( "storageTemp", exact_number( storageTemp ) );
    xml.writeTextElement ( "description", solutionDesc );
    xml.writeTextElement ( "notes", notes );
 
@@ -417,9 +429,9 @@ bool US_Solution::saveToFile( const QString& filename )
          xml.writeAttribute   ( "id",   ai.analyte.analyteID   );
          xml.writeAttribute   ( "guid", ai.analyte.analyteGUID );
          xml.writeAttribute   ( "desc", ai.analyte.description );
-         xml.writeAttribute   ( "amount", QString::number( ai.amount  ) );
-         xml.writeAttribute   ( "mw", QString::number( ai.analyte.mw  ) );
-         xml.writeAttribute   ( "vbar20", QString::number( ai.analyte.vbar20  ) );
+         xml.writeAttribute   ( "amount", exact_number( ai.amount  ) );
+         xml.writeAttribute   ( "mw", exact_number( ai.analyte.mw  ) );
+         xml.writeAttribute   ( "vbar20", exact_number( ai.analyte.vbar20  ) );
          xml.writeAttribute   ( "type", analyte_typetext( (int)ai.analyte.type ) );
          xml.writeEndElement  ();
       }
