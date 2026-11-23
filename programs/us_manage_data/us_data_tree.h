@@ -59,9 +59,28 @@ class US_DataTree : public QObject
         //! \brief Show an experiment's records again, from its new rows
         //!
         //! What US_DataModel::runReloaded calls for: the items of the rows
-        //! it left behind go, and the new rows are shown.
+        //! it left behind go, and the new rows are shown.  A selected item
+        //! that goes is replaced in the selection by the new item of the
+        //! same record (by record type and GUID), and so is the item a
+        //! context menu is being opened for.
         //! \param runIndex The position of the experiment
         void refill_run( int runIndex );
+
+        /*! \brief Take the selection a context menu acts on
+
+            The first half of \ref row_context_menu, before the menu shows.
+            Every selected experiment is read first, since an action on it
+            acts on its records; a read can merge another experiment again
+            (see \ref refill_run), so the item and the selection are taken
+            only after the reads.
+            \param item The item the menu was asked for on
+            \returns False when no menu is to be shown: nothing was asked
+                     on, the model is busy, or the item's record went
+        */
+        bool context_selection( QTreeWidgetItem* item );
+
+        //! \brief The item the last context menu was opened for, or NULL
+        QTreeWidgetItem* current_item( void ) const;
 
         //! \brief Colour one experiment's rows again, and count again
         //!        what is under each of them
@@ -255,6 +274,11 @@ class US_DataTree : public QObject
         //! \brief True when a run is required by the GMP framework
         //! \param runID The run ID
         bool check_filename_for_autoflow( const QString& runID );
+
+        //! \brief The key a record's item is found again by after its
+        //!        experiment is shown anew: its type and GUID
+        QString item_key( QTreeWidgetItem* item );
+
         //! \brief The GMP guard for the noise of other edits' models an
         //!        edit removal takes along
         //! \param ddesc The edit

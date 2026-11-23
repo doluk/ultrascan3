@@ -2494,3 +2494,213 @@ TEST_F( TestUSDataDb, AnActionOnManyRecordsAsksForOneComparison )
    EXPECT_EQ( model.pending_verifies(), 1 );
 }
 
+// ------------------------------------------------------------ merged again
+
+// RunA is merged, and RunB not yet: noise RunB's edit holds for RunA's
+// model will merge RunA again when RunB is read
+class TestUSDataDbRemerge : public TestUSDataDb
+{
+   protected:
+      QString cross;
+      QString dbOnly;                     // a model in the database only
+      QString loOnly;                     // a model on local disk only
+      int     runa = -1;
+      int     runb = -1;
+
+      void SetUp() override
+      {
+         TestUSDataDb::SetUp();
+
+         cross  = US_Util::new_guid();
+         dbOnly = US_Util::new_guid();
+         loOnly = US_Util::new_guid();
+
+         server.exps   << FExp  { "2", US_Util::new_guid(), "RunB" };
+         server.raws   << FRaw  { "12", US_Util::new_guid(), "RunB.RA.1.A.280.auc", "2" };
+         server.edits  << FEdit { "22", US_Util::new_guid(), "12", "RunB.2401011200.RA.1.A.280.xml" };
+         server.noises << FNoise{ "63", cross, "22", "31", modelG, "ri_noise",
+                                  runA + ".1A280.e2401011200_a1_2DSA_i01.ri_noise", "<noise/>" };
+
+         QString tmp = root + "/dbonly.xml";
+         writeModel( tmp, dbOnly, editG, runA + ".1A280.e2401011200_a5_2DSA_i01.model" );
+         server.models << FModel{ "35", dbOnly, runA + ".1A280.e2401011200_a5_2DSA_i01.model",
+                                  editG, "21", textOf( tmp ) };
+         server.digest[ dbOnly ] = FakeServer::md5Of( textOf( tmp ) );
+
+         writeModel( US_Settings::dataDir() + "/models/M0000005.xml", loOnly, editG,
+                     runA + ".1A280.e2401011200_a6_2DSA_i01.model" );
+
+         server.failing << "get_rawData_by_person";    // one experiment at a time
+      }
+
+      // Scan as far as RunA, and show it; the model is prepared
+      void scanRunA( US_DataModel& model, Window& win )
+      {
+         QObject::connect( &model, &US_DataModel::runMerged, [ & ]( int index )
+         {
+            if ( model.run_entry( index ).runID == runA )
+               model.stop_scan();
+         } );
+         QObject::connect( &model, &US_DataModel::runReloaded,
+                           [ & ]( int index ) { win.tree.refill_run( index ); } );
+
+         model.scan_data();
+         win.tree.build_dtree();
+
+         runa = model.index_of_run( runA );
+         runb = model.index_of_run( "RunB" );
+         ASSERT_GE( runa, 0 );
+         ASSERT_GE( runb, 0 );
+         ASSERT_TRUE ( model.run_entry( runa ).loaded );
+         ASSERT_FALSE( model.run_entry( runb ).loaded );
+      }
+};
+
+// An experiment merged again from the catalogs shows what the actions since
+// the scan did: a removed record stays removed, a downloaded one local, an
+// uploaded one in the database -- and the two copies are compared again
+TEST_F( TestUSDataDbRemerge, AMergeAgainKeepsWhatActionsDid )
+{
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   scanRunA( model, win );
+
+   EXPECT_EQ( win.proc.record_remove_db( rowOf( model, noiseG, runa ) ), 0 )
+      << win.proc.lastError().toStdString();
+   EXPECT_EQ( win.proc.record_download( rowOf( model, dbOnly, runa ) ), 0 )
+      << win.proc.lastError().toStdString();
+   EXPECT_EQ( win.proc.record_upload( rowOf( model, loOnly, runa ) ), 0 )
+      << win.proc.lastError().toStdString();
+
+   QString loID;
+   for ( const FModel& mm : server.models )  if ( mm.guid == loOnly )  loID = mm.id;
+   ASSERT_FALSE( loID.isEmpty() );
+
+   int reloaded = 0;
+   QObject::connect( &model, &US_DataModel::runReloaded,
+                     [ & ]( int index ) { reloaded += ( index == runa ) ? 1 : 0; } );
+
+   EXPECT_TRUE( model.scan_run( runb ) );
+   ASSERT_EQ( reloaded, 1 );
+
+   Desc noise = model.row_datadesc( rowOf( model, noiseG, runa ) );
+   EXPECT_EQ( noise.recState & US_DataModel::REC_DB, 0 );
+   EXPECT_NE( noise.recState & US_DataModel::REC_LO, 0 );
+   EXPECT_LT( noise.recordID, 0 );
+
+   Desc down = model.row_datadesc( rowOf( model, dbOnly, runa ) );
+   EXPECT_NE( down.recState & US_DataModel::REC_LO, 0 );
+   EXPECT_NE( down.recState & US_DataModel::REC_DB, 0 );
+   EXPECT_TRUE( QFile::exists( down.filename ) ) << down.filename.toStdString();
+
+   Desc up = model.row_datadesc( rowOf( model, loOnly, runa ) );
+   EXPECT_NE( up.recState & US_DataModel::REC_DB, 0 );
+   EXPECT_EQ( up.recordID, loID.toInt() );
+
+   // one row each in RunA, and the tree shows them so
+   int ndown = 0;
+   for ( int rr = 0; rr < model.recCount(); rr++ )
+      ndown += ( model.row_datadesc( rr ).dataGUID == dbOnly  &&
+                 model.run_of_row( rr ) == runa ) ? 1 : 0;
+   EXPECT_EQ( ndown, 1 );
+   QTreeWidgetItem* nitem = itemOfRow( win.tw, rowOf( model, noiseG, runa ) );
+   ASSERT_NE( nitem, nullptr );
+   EXPECT_EQ( nitem->text( 3 ).toStdString(), "Local" );
+
+   // and a second download does not write another copy
+   server.changes.clear();
+   int before = QDir( US_Settings::dataDir() + "/models" ).entryList( QDir::Files ).size();
+   EXPECT_EQ( win.proc.record_download( rowOf( model, dbOnly, runa ) ), 0 );
+   EXPECT_EQ( QDir( US_Settings::dataDir() + "/models" ).entryList( QDir::Files ).size(), before );
+
+   // the changed records are compared on their own, and found the same
+   while ( model.pump_once() ) {}
+   EXPECT_EQ( US_DataModel::sync_state( model.row_datadesc( rowOf( model, dbOnly, runa ) ) ),
+              US_DataModel::SYNC_INSYNC ) << model.scan_errors().join( "\n" ).toStdString();
+   EXPECT_EQ( US_DataModel::sync_state( model.row_datadesc( rowOf( model, loOnly, runa ) ) ),
+              US_DataModel::SYNC_INSYNC ) << model.scan_errors().join( "\n" ).toStdString();
+}
+
+// ------------------------------------------------------------ context menu
+
+// Reading the experiments a context menu acts on can merge another one
+// again: the item the menu is for, and the selection, are its new items
+TEST_F( TestUSDataDbRemerge, AContextMenuTakesTheItemsAReadLeft )
+{
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   scanRunA( model, win );
+
+   int              nrow  = rowOf( model, noiseG, runa );
+   QTreeWidgetItem* nitem = itemOfRow( win.tw, nrow );
+   ASSERT_NE( nitem, nullptr );
+
+   win.tw.clearSelection();
+   nitem->setSelected( true );
+   win.tw.topLevelItem( runb )->setSelected( true );
+
+   // reading RunB merges RunA again: the noise item goes
+   ASSERT_TRUE( win.tree.context_selection( nitem ) );
+   EXPECT_TRUE( model.run_entry( runb ).loaded );
+
+   QTreeWidgetItem* cur = win.tree.current_item();
+   ASSERT_NE( cur, nullptr );
+   int crow = cur->type() - (int)QTreeWidgetItem::UserType;
+   EXPECT_NE( crow, nrow );
+   EXPECT_EQ( model.run_of_row( crow ), runa );
+   EXPECT_EQ( model.row_datadesc( crow ).dataGUID.toStdString(), noiseG.toStdString() );
+
+   QList< QTreeWidgetItem* > sel = win.tw.selectedItems();
+   EXPECT_TRUE( sel.contains( cur ) );
+   EXPECT_TRUE( sel.contains( win.tw.topLevelItem( runb ) ) );
+   EXPECT_EQ( sel.size(), 2 );
+
+   // and the action rows are RunB's records and the new noise row
+   QVector< int > rows = win.tree.action_row_list();
+   EXPECT_TRUE( rows.contains( crow ) );
+   EXPECT_FALSE( rows.contains( nrow ) );
+}
+
+// A patched server lists noise with the experiment of its model: noise
+// recorded against a later experiment's edit is read with the model's own
+// experiment, under its model, once, and nothing is merged again
+TEST_F( TestUSDataDb, NoiseListedWithItsModelsExperimentIsShownOnce )
+{
+   QString cross = US_Util::new_guid();
+   server.exps   << FExp  { "2", US_Util::new_guid(), "RunB" };
+   server.raws   << FRaw  { "12", US_Util::new_guid(), "RunB.RA.1.A.280.auc", "2" };
+   server.edits  << FEdit { "22", US_Util::new_guid(), "12", "RunB.2401011200.RA.1.A.280.xml" };
+   server.noises << FNoise{ "63", cross, "22", "31", modelG, "ri_noise",
+                            runA + ".1A280.e2401011200_a1_2DSA_i01.ri_noise", "<noise/>" };
+   server.noiseByModel = true;
+   server.failing << "get_rawData_by_person";        // one experiment at a time
+
+   US_DataModel model;
+   prepare( model );
+
+   int reloaded = 0;
+   QObject::connect( &model, &US_DataModel::runReloaded, [ & ]( int ) { reloaded++; } );
+
+   model.scan_data();
+
+   int runa = model.index_of_run( runA );
+   int row  = rowOf( model, cross );
+   ASSERT_GE( row, 0 );
+   EXPECT_EQ( model.run_of_row( row ), runa );
+   EXPECT_EQ( model.row_datadesc( model.parent_row( row ) ).dataGUID.toStdString(),
+              modelG.toStdString() );
+   EXPECT_EQ( reloaded, 0 );
+
+   int nrows = 0;
+   for ( int rr = 0; rr < model.recCount(); rr++ )
+      nrows += ( model.row_datadesc( rr ).dataGUID == cross  &&
+                 model.run_of_row( rr ) >= 0 ) ? 1 : 0;
+   EXPECT_EQ( nrows, 1 );
+   EXPECT_EQ( model.count_records().db[ US_DataModel::NOISE ], 2 );
+   EXPECT_EQ( model.run_entry( runa ).dbCount, model.count_records( runa ).db[ 1 ]
+                                               + model.count_records( runa ).db[ 2 ]
+                                               + model.count_records( runa ).db[ 3 ]
+                                               + model.count_records( runa ).db[ 4 ] );
+}

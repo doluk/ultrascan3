@@ -744,6 +744,7 @@ void US_DataModel::scan_runs( )
    batch_runs.clear();
    stale_runs.clear();
    run_taken.clear();
+   acted    .clear();
    errors   .clear();
    db_failed  = false;
    demo       = false;
@@ -1417,7 +1418,18 @@ bool US_DataModel::do_merge_run( int index )
    int  base  = adescs.size();
 
    for ( int ii = 0; ii < mdescs.size(); ii++ )
-      append_row( mdescs.at( ii ), index );
+   {
+      // The catalogs are what the scan read: a record an action changed
+      // since is where the action left it, not where they say it is
+      DataDesc desc   = mdescs.at( ii );
+      bool     redone = apply_action( desc );
+
+      append_row( desc, index );
+
+      if ( redone  &&  ( desc.recState & REC_DB ) != 0  &&
+           ( desc.recState & REC_LO ) != 0 )
+         touched.insert( adescs.size() - 1 );   // compared on its own
+   }
 
    bool any       = ( adescs.size() > base );
    entry.firstRow = any ? base : -1;
@@ -1666,6 +1678,12 @@ void US_DataModel::record_changed( int row )
 
    const DataDesc& desc = adescs.at( row );
 
+   // Where the action left it, for a merge from the catalogs to come
+   QString key = action_key( desc );
+
+   if ( ! key.isEmpty() )
+      acted.insert( key, desc );
+
    if ( ( desc.recState & REC_DB ) != 0  &&
         ( desc.recState & REC_LO ) != 0 )
    {  // Two copies that were not compared with each other
@@ -1689,6 +1707,43 @@ void US_DataModel::record_changed( int row )
    }
 
    run_changed( index );
+}
+
+// What a record an action changed is known by: its type and GUID
+QString US_DataModel::action_key( const DataDesc& desc )
+{
+   QString guid = desc.dataGUID.simplified().toLower();
+
+   if ( guid.isEmpty()  ||  guid == dmyGUID )   return QString();
+
+   return QString::number( desc.recType ) + ":" + guid;
+}
+
+/* Put back what an action did to a record the catalogs read before it.
+
+   An action changes the row, not the catalogs, so a merge from them --
+   an experiment merged again when a later read hung noise under it, a
+   branch of orphans adopted -- would show a removed record as present, a
+   downloaded one as in the database only, an uploaded one as local only.
+   Where the record is, its IDs and its file are taken from the last
+   action on it; it is compared again.
+*/
+bool US_DataModel::apply_action( DataDesc& desc ) const
+{
+   QString key = action_key( desc );
+
+   if ( key.isEmpty()  ||  ! acted.contains( key ) )   return false;
+
+   const DataDesc& done = acted[ key ];
+
+   desc.recordID    = done.recordID;
+   desc.recState    = done.recState & ~HV_DET;
+   desc.filename    = done.filename;
+   desc.filemodDate = done.filemodDate;
+   desc.lastmodDate = done.lastmodDate;
+   desc.contents    = QString();
+
+   return true;
 }
 
 // Bring an experiment up to date after records of it changed
@@ -3117,6 +3172,7 @@ void US_DataModel::dummy_data()
    batch_runs.clear();
    stale_runs.clear();
    run_taken.clear();
+   acted    .clear();
    errors   .clear();
    db_failed  = false;
    stopped    = false;

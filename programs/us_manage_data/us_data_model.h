@@ -721,6 +721,11 @@ class US_DataModel : public QObject
         //! The orphan branches each experiment took: (side, branch_key)
         QHash< int, QList< QPair< int, QString > > > run_taken;
         QList< int >        batch_runs;   //!< Experiments a batch changed
+
+        //! Every record an action changed since the scan, as the action
+        //! left it, by \ref action_key: a merge from the catalogs, which
+        //! actions do not change, puts it back (\ref apply_action)
+        QHash< QString, DataDesc > acted;
         bool                case_set;     //!< setFileNameCase() was called
         Qt::CaseSensitivity file_case;    //!< What setFileNameCase() set
 
@@ -802,6 +807,15 @@ class US_DataModel : public QObject
 
         //! \brief Bring an experiment up to date after its records changed
         void run_changed( int index );
+
+        //! \brief What a record an action changed is known by, or empty
+        //!        for a record with no GUID (a filler)
+        static QString action_key( const DataDesc& desc );
+
+        //! \brief Put back on a record merged from the catalogs what an
+        //!        action did to it since the scan
+        //! \returns True when an action had changed it
+        bool apply_action( DataDesc& desc ) const;
 
         //! \brief Append a row of an experiment
         void append_row( const DataDesc& desc, int runIndex );
