@@ -118,6 +118,22 @@ the file name and description, e.g. `...2DSA-FM_000001_i03-m59000t04000.model`
    minimum compared with τ = 0 at the same meniscus. `--plot` writes
    `<triple>_tau_landscape.png`.
 
+   **Several wavelengths of one cell** (e.g. 4B220 and 4B230) share the
+   meniscus, while τ may differ per wavelength. Run every triple on the same
+   meniscus grid and evaluate them together:
+
+   ```bash
+   tau_landscape.py chB-4B220/output/analysis-results.tar \
+       chB-4B230/output/analysis-results.tar --joint \
+       --points 4B220=<scans x radii> --points 4B230=<scans x radii> --plot
+   ```
+
+   For every meniscus each triple takes its best τ; the summed χ² gives the
+   common meniscus (with its Δχ² = 1 uncertainty when `--points` is given;
+   σ defaults to each triple's lowest RMSD) and the τ of each triple at that
+   meniscus, with the τ range over the meniscus uncertainty. `--plot` writes
+   `<cell><channel>_joint_tau.png`.
+
    For a final model, rerun the 2DSA (with refinement iterations or Monte
    Carlo) with the fitted meniscus in the edit and `radial_scan_time` set to
    the fitted τ (`make_tau_job.py --radial-scan-time <tau>`).
