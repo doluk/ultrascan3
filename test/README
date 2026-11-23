@@ -158,28 +158,58 @@ server live in their own executable, `test_us_utils_db` (label
 says where the server is, so an ordinary build and an ordinary `ctest` run need
 no database at all.
 
-To run them, load the UltraScan3 schema and stored procedures (from the
-[us3_sql](https://github.com/doluk/us3_sql) repository) into a scratch
-database, add the fixture, and point the tests at it:
+To run them, load the UltraScan3 schema, stored procedures and hardware data
+(from the [us3_sql](https://github.com/doluk/us3_sql) repository) into a
+scratch database, add the fixture, and point the tests at it:
 
 ```bash
-mysql -u root us3test < us3_schema.sql
+mysql -u root us3test < us3.sql
 mysql -u root us3test < us3_procedures.sql
+mysql -u root us3test < us3_hardware_data.sql        # rotors, centerpieces, lab
+mysql -u root us3test < us3_buffer_components.sql    # the component table
 mysql -u root us3test < test/utils/data/us3_db_fixture.sql
 
 US3_TEST_DB_HOST=127.0.0.1:3306 US3_TEST_DB_NAME=us3test \
 US3_TEST_DB_USER=us3test        US3_TEST_DB_PASS=us3testpw \
-US3_TEST_DB_PERSON_GUID=aaaaaaaa-0000-0000-0000-00000000user \
+US3_TEST_DB_PERSON_GUID=aaaaaaaa-0000-4000-8000-000000000002 \
 US3_TEST_DB_PERSON_PW=secret    US3_TEST_DB_PERSON_ID=2 \
-US3_TEST_DB_EMAIL=test@example.org ./bin/test_us_utils_db
+US3_TEST_DB_EMAIL=test@example.org \
+US3_TEST_DB_ADMIN_GUID=aaaaaaaa-0000-4000-8000-000000000001 \
+US3_TEST_DB_ADMIN_PW=adminpw    US3_TEST_DB_OTHER_ID=3 ./bin/test_us_utils_db
 ```
 
-`US_DB2` always connects over TLS, so the server needs a certificate, and the
-client certificate, key and CA it presents are read from
-`<build>/etc/mysql/{server-cert.pem,server-key.pem,ca-cert.pem}`.
+The fixture is a complete, realistic data set (see the comment at its head):
+every GUID is a real UUID, the raw data are real `.auc` files, the edits,
+model and noise real UltraScan XML, the solution has its buffer (with
+components and an extinction profile), analyte and investigator, and the run
+has a rotor, a calibration and a cell table, so that a run can be read and
+exported whole.  The tests are written for a server in strict SQL mode (the
+MySQL 8 default), which refuses, for example, `''` for an integer argument.
+
+The variables, and who reads them:
+
+| Variable | Read by |
+|---|---|
+| `US3_TEST_DB_HOST`, `US3_TEST_DB_NAME`, `US3_TEST_DB_USER` | every database test |
+| `US3_TEST_DB_PASS` | the catalog tests (`test_us_data_catalog_db.cpp`), `test_us_datapub`'s `DataPubDb` cases, the edited-data loaders |
+| `US3_TEST_DB_PASSWORD` | the tests that install stand-in procedures in a scratch database (`test_us_db2_connect_authenticated.cpp`, `test_us_buffer_component_live.cpp`) |
+| `US3_TEST_DB_PERSON_GUID`, `_PW`, `_ID`, `US3_TEST_DB_EMAIL` | the investigator the tests log in as |
+| `US3_TEST_DB_ADMIN_GUID`, `_ADMIN_PW`, `US3_TEST_DB_OTHER_ID` | the tests that switch investigators (they skip without) |
+| `US3_TEST_DB_IMPORT_NAME` | `test_us_datapub`'s `DataPubDbImport`: a scratch database it writes into |
+
+Set both password variables to the same value to run everything. The
+scratch-database tests skip when the database already has the US3
+procedures, so point them at an empty one (`US3_TEST_DB_NAME=us3scratch`).
+
+`US_DB2` always connects over TLS and sends no client certificate: the server
+needs TLS on, and the only file the client needs is the CA it checks the
+server against, `<appBaseDir>/etc/mysql/ca-cert.pem`, where `appBaseDir` is
+the directory above the test binary's `bin/` (so for `build/bin/test_us_*`,
+`build/etc/mysql/ca-cert.pem`).
 
 `test_us_datapub` takes the same variables and runs its own `DataPubDb` cases
-against the database.
+against the database, among them an export of the fixture's run with its
+whole chain (skipped on a database that is not the fixture).
 
 ### Testing the fall-back
 

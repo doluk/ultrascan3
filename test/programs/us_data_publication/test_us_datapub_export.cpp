@@ -1422,6 +1422,51 @@ TEST_F( DataPubCatalogDb, ACalibrationIsNotAssumed )
    EXPECT_FALSE( asked.contains( "get_rotor_calibration_profiles" ) );
 }
 
+// A NULL rotor or project column reads as "", which a server in strict mode
+// refuses as an integer argument; a record that names none is not looked up
+TEST_F( DataPubCatalogDb, ANullRotorOrProjectIsNotLookedUp )
+{
+   ON_CALL( db, lastErrno() ).WillByDefault( Return( IUS_DB2::OK ) );
+
+   QString                    current;
+   QList< QStringList >       asked;
+
+   ON_CALL( db, query( An< const QStringList& >() ) )
+      .WillByDefault( [ &current, &asked ]( const QStringList& args )
+                      { current = args.value( 0 );  asked << args; } );
+
+   ON_CALL( db, next() ).WillByDefault( [ &current ]()
+   {
+      return current == "get_experiment_info_by_runID";
+   } );
+
+   ON_CALL( db, value( _ ) ).WillByDefault( [ &current ]( unsigned col )
+   {
+      if ( col == 0  ||  col == 6 )  return QVariant( QString() );  // NULL
+      return QVariant( "1" );
+   } );
+
+   US_DataPubCatalog::ExpInfo info;
+   QString                    error;
+
+   ASSERT_TRUE( catalog.expInfo( db_run(), info, error ) )
+      << error.toStdString();
+
+   for ( int ii = 0; ii < asked.size(); ii++ )
+   {
+      EXPECT_NE( asked[ ii ].value( 0 ), QString( "get_rotor_info" ) );
+      EXPECT_NE( asked[ ii ].value( 0 ), QString( "get_project_info" ) );
+
+      // No procedure argument may be an empty string where a number goes
+      for ( int jj = 1; jj < asked[ ii ].size(); jj++ )
+         EXPECT_FALSE( asked[ ii ][ jj ].isEmpty() )
+            << asked[ ii ].join( " " ).toStdString();
+   }
+
+   EXPECT_TRUE( info.rotorID.isEmpty() );
+   EXPECT_TRUE( info.projectGUID.isEmpty() );
+}
+
 // ------------------------------------------- export steps, one at a time
 
 /**

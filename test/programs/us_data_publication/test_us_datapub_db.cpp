@@ -436,6 +436,122 @@ TEST_F( DataPubDb, ABundleIsExportedFromTheDatabase )
    QDir( root ).removeRecursively();
 }
 
+/* The fixture's run, exported whole.
+
+   test/utils/data/us3_db_fixture.sql holds one run with everything a run
+   has: its project, rotor calibration and centerpiece, the solution with
+   its buffer (two components, an extinction profile) and analyte (an
+   extinction profile) and a profile of its own, three triples, edits, a
+   model with its noise and a time state.  Every record has to arrive, and
+   the values the library files round have to arrive whole.  Skips on a
+   database that is not the fixture.
+*/
+TEST_F( DataPubDb, TheFixtureRunIsExportedWithItsWholeChain )
+{
+   US_DataPubCatalog catalog;
+   QString           error;
+
+   ASSERT_TRUE( catalog.open( true, master, error ) );
+
+   US_DataPubCatalog::Run run;
+
+   if ( ! catalog.runByID( "MWL_demo_run", run, error ) )
+      GTEST_SKIP() << "not the fixture database: " << error.toStdString();
+
+   QString root = QDir::tempPath() + "/us_datapub_db_chain_"
+                  + QString::number( QCoreApplication::applicationPid() );
+   QDir().mkpath( root );
+
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection;
+   selection.fromDb     = true;
+   selection.dbPassword = master;
+   selection.scope      = US_DataPub::ScopeNoise;
+   selection.runIDs << "MWL_demo_run";
+
+   bool made = exporter.exportBundle( selection, root + "/chain.tar.gz",
+                                      error );
+
+   if ( ! made )  QDir( root ).removeRecursively();
+
+   ASSERT_TRUE( made ) << error.toStdString() << "\n"
+                       << exporter.log().join( "\n" ).toStdString();
+
+   const US_DataPubManifest& mani = exporter.manifest();
+   SCOPED_TRACE( exporter.log().join( "\n" ).toStdString() );
+
+   EXPECT_EQ( mani.count( US_DataPub::Project          ), 1 );
+   EXPECT_EQ( mani.count( US_DataPub::RotorCalibration ), 1 );
+   EXPECT_EQ( mani.count( US_DataPub::Centerpiece      ), 1 );
+   EXPECT_EQ( mani.count( US_DataPub::Experiment       ), 1 );
+   EXPECT_EQ( mani.count( US_DataPub::TimeState        ), 1 );
+   EXPECT_EQ( mani.count( US_DataPub::Buffer           ), 1 );
+   EXPECT_EQ( mani.count( US_DataPub::Analyte          ), 1 );
+   EXPECT_EQ( mani.count( US_DataPub::Solution         ), 1 );
+   EXPECT_EQ( mani.count( US_DataPub::RawData          ), 3 );
+   EXPECT_EQ( mani.count( US_DataPub::EditedData       ), 3 );
+   EXPECT_EQ( mani.count( US_DataPub::Model            ), 1 );
+   EXPECT_EQ( mani.count( US_DataPub::Noise            ), 1 );
+
+   US_DataPubBundle unpacked;
+   ASSERT_TRUE( unpacked.unpack( root + "/chain.tar.gz", error ) )
+      << error.toStdString();
+   QString top = unpacked.rootPath() + "/";
+
+   auto spectra = [ &top ]( const US_DataPubEntity& entity )
+   {
+      US_DataPubRecords::Spectra read;
+      US_DataPubRecords::readSpectra(
+            top + entity.attrs.value( "spectraPayload" ), read );
+      return read.value( "extinction" );
+   };
+
+   // The values as the database holds them, not as the files round them
+   ASSERT_EQ( mani.count( US_DataPub::Buffer ), 1 );
+   US_DataPubEntity buffer = mani.section( US_DataPub::Buffer )[ 0 ];
+   QMap< double, double > bext = spectra( buffer );
+   EXPECT_EQ( bext.value( 260.0 ), 0.0123456789 );
+   EXPECT_EQ( bext.value( 280.0 ), 0.00987654321 );
+
+   QStringList     ids;
+   QList< double > concs;
+   ASSERT_TRUE( US_DataPubRecords::readBufferConcentrations(
+                top + buffer.attrs.value( "componentsPayload" ), ids, concs ) );
+   EXPECT_EQ( ids, QStringList() << "70" << "92" );
+   EXPECT_EQ( concs, QList< double >() << 150.0 << 10.0 );
+
+   ASSERT_EQ( mani.count( US_DataPub::Analyte ), 1 );
+   EXPECT_EQ( spectra( mani.section( US_DataPub::Analyte )[ 0 ] )
+              .value( 280.0 ), 43824.1234567 );
+
+   ASSERT_EQ( mani.count( US_DataPub::Solution ), 1 );
+   EXPECT_EQ( spectra( mani.section( US_DataPub::Solution )[ 0 ] )
+              .value( 280.0 ), 43824.987654321 );
+
+   unpacked.cleanup();
+   QDir( root ).removeRecursively();
+}
+
+// A run whose record names no rotor (NULL) is read without asking a strict
+// server about the rotor ''
+TEST_F( DataPubDb, ARunWithoutARotorIsRead )
+{
+   US_DataPubCatalog catalog;
+   QString           error;
+
+   ASSERT_TRUE( catalog.open( true, master, error ) );
+
+   US_DataPubCatalog::Run run;
+
+   if ( ! catalog.runByID( "Empty_run", run, error ) )
+      GTEST_SKIP() << "not the fixture database: " << error.toStdString();
+
+   US_DataPubCatalog::ExpInfo info;
+   ASSERT_TRUE( catalog.expInfo( run, info, error ) ) << error.toStdString();
+   EXPECT_TRUE( info.rotorID.isEmpty() );
+   EXPECT_TRUE( info.calibrationID.isEmpty() );
+}
+
 /* Switching the investigator has to reach the queries.
 
    The investigator is chosen from a dialog while a catalog is open -- the

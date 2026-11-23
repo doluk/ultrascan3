@@ -700,30 +700,45 @@ bool US_DataPubCatalog::expInfo( const Run& run, ExpInfo& info,
    info.comments      = dbase->value( 11 ).toString();
    info.runID         = run.runID;
 
-   query.clear();
-   query << "get_project_info" << info.projectID;
-   dbase->query( query );
-
-   if ( failed( QObject::tr( "project" ) ) )  return false;
-
-   if ( dbase->next() )
+   // A NULL column comes back as "", which a server in strict mode refuses
+   // as an integer argument ("Incorrect integer value"): a record that
+   // names no project or rotor is not looked up at all
+   if ( info.projectID.toInt() > 0 )
    {
-      info.projectGUID = dbase->value(  1 ).toString();
-      info.projectDesc = dbase->value( 10 ).toString();
+      query.clear();
+      query << "get_project_info" << info.projectID;
+      dbase->query( query );
+
+      if ( failed( QObject::tr( "project" ) ) )  return false;
+
+      if ( dbase->next() )
+      {
+         info.projectGUID = dbase->value(  1 ).toString();
+         info.projectDesc = dbase->value( 10 ).toString();
+      }
    }
 
-   query.clear();
-   query << "get_rotor_info" << info.rotorID;
-   dbase->query( query );
+   else
+      info.projectID.clear();
 
-   if ( failed( QObject::tr( "rotor" ) ) )  return false;
-
-   if ( dbase->next() )
+   if ( info.rotorID.toInt() > 0 )
    {
-      info.rotorGUID   = dbase->value( 0 ).toString();
-      info.rotorName   = dbase->value( 1 ).toString();
-      info.rotorSerial = dbase->value( 2 ).toString();
+      query.clear();
+      query << "get_rotor_info" << info.rotorID;
+      dbase->query( query );
+
+      if ( failed( QObject::tr( "rotor" ) ) )  return false;
+
+      if ( dbase->next() )
+      {
+         info.rotorGUID   = dbase->value( 0 ).toString();
+         info.rotorName   = dbase->value( 1 ).toString();
+         info.rotorSerial = dbase->value( 2 ).toString();
+      }
    }
+
+   else
+      info.rotorID.clear();
 
    // Older records do not name a calibration.  The rotor's first one is
    // not assumed in its place: a rotor is recalibrated over the years, and
@@ -732,15 +747,19 @@ bool US_DataPubCatalog::expInfo( const Run& run, ExpInfo& info,
    if ( info.calibrationID.toInt() < 1 )
       info.calibrationID.clear();
 
-   query.clear();
-   query << "all_cell_experiments" << info.expID;
-   dbase->query( query );
-
-   if ( failed( QObject::tr( "cell assignments" ) ) )  return false;
-
    const QString letters = US_Util::channel_letters();
 
-   while ( dbase->next() )
+   query.clear();
+
+   if ( info.expID.toInt() > 0 )
+   {
+      query << "all_cell_experiments" << info.expID;
+      dbase->query( query );
+
+      if ( failed( QObject::tr( "cell assignments" ) ) )  return false;
+   }
+
+   while ( ! query.isEmpty()  &&  dbase->next() )
    {
       QString cell  = dbase->value( 2 ).toString();
       int     chanx = qMax( 0, dbase->value( 3 ).toInt() );
