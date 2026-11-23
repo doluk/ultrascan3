@@ -252,6 +252,21 @@ TEST_F( TestUSSimCache, DatasetKeyCoversGridAndParameters )
    simparams2 = simparams;
    simparams2.speed_step << US_SimulationParameters::SpeedProfile();
    EXPECT_NE( US_SimCache::dataset_key( simparams2, edata ), dskey );
+   // Sequential radial scanning:  time per point, direction, start, delays
+   simparams2                  = simparams;
+   simparams2.radial_scan_time = 0.16;
+   EXPECT_NE( US_SimCache::dataset_key( simparams2, edata ), dskey );
+   simparams2.scan_outward = !simparams2.scan_outward;
+   EXPECT_NE( US_SimCache::dataset_key( simparams2, edata ), US_SimCache::dataset_key( simparams, edata ) );
+   const QByteArray taukey = US_SimCache::dataset_key( simparams2, edata );
+   simparams2.scan_start   = 6.0;
+   EXPECT_NE( US_SimCache::dataset_key( simparams2, edata ), taukey );
+   simparams2                  = simparams;
+   simparams2.scan_time_offset = 10.0;
+   EXPECT_NE( US_SimCache::dataset_key( simparams2, edata ), dskey );
+   simparams2                    = simparams;
+   simparams2.scan_offset_points = 201.0;
+   EXPECT_NE( US_SimCache::dataset_key( simparams2, edata ), dskey );
 
    // A user mesh matters only for the user mesh type
    simparams2             = simparams;

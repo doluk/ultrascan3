@@ -210,6 +210,12 @@ static void dataset_values( QByteArray&                    vals,
    add_bytes( vals, simparams.cp_pathlen );
    add_bytes( vals, simparams.cp_angle );
    add_bytes( vals, simparams.cp_width );
+   // Sequential radial scanning (the time of each recorded point)
+   add_bytes( vals, simparams.radial_scan_time );
+   add_bytes( vals, simparams.scan_outward );
+   add_bytes( vals, simparams.scan_start );
+   add_bytes( vals, simparams.scan_offset_points );
+   add_bytes( vals, simparams.scan_time_offset );
 
    // Experiment grid, as copied to a simulation by US_AstfemMath::initSimData
    add_string( vals, edata.cell );
