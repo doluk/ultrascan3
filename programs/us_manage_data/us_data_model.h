@@ -654,6 +654,14 @@ class US_DataModel : public QObject
         //! \param index The position of the stand-in experiment
         void orphansAdded( int index );
 
+        //! \brief An experiment merged already was merged again, since the
+        //!        database catalog hung more records under it
+        //!
+        //! Its rows are new: whoever shows them drops what it showed for
+        //! the experiment and shows its rows again.
+        //! \param index The position of the experiment
+        void runReloaded( int index );
+
     private:
         IUS_DB2*      db;               //!< Pointer to opened DB connection
         US_DataCatalog* cat_db;         //!< Catalog of the database records
@@ -702,6 +710,12 @@ class US_DataModel : public QObject
         //! -1: what \ref parent_row reads, found as the rows are appended
         QVector< int >      row_parent;
         int                 batch_depth;  //!< Nesting of begin_changes()
+        QList< int >        stale_runs;   //!< Merged, then changed by the
+                                          //!< catalog: to be merged again
+        bool                remerging;    //!< merge_stale_runs() is running
+        int                 merging_run;  //!< Experiment adopting orphans
+        //! The orphan branches each experiment took: (side, branch_key)
+        QHash< int, QList< QPair< int, QString > > > run_taken;
         QList< int >        batch_runs;   //!< Experiments a batch changed
         bool                case_set;     //!< setFileNameCase() was called
         Qt::CaseSensitivity file_case;    //!< What setFileNameCase() set
@@ -724,6 +738,10 @@ class US_DataModel : public QObject
         //! \brief Put a note from a catalog on the status line
         //! \param note The note
         void scanner_note( const QString& note );
+
+        //! \brief The database catalog changed an experiment it had read
+        //! \param dbIndex The experiment's position in that catalog
+        void catalog_run_changed( int dbIndex );
 
     private:
         //! \brief Put a note on the status line, cut to what it can show
@@ -770,6 +788,13 @@ class US_DataModel : public QObject
 
         //! \brief Count again the records under an experiment
         void recount_run( int index );
+
+        //! \brief Merge again the experiments noted by catalog_run_changed
+        void merge_stale_runs( void );
+
+        //! \brief Merge one experiment again; its old rows are left
+        //!        behind, belonging to no experiment
+        bool remerge_run( int index );
 
         //! \brief Bring an experiment up to date after its records changed
         void run_changed( int index );

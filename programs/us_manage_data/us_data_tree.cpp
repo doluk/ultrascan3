@@ -397,6 +397,25 @@ void US_DataTree::row_counts( int row, int lastRow, QString& anch,
    ande = ( ityp < 3 ) ? QString( "%1, %2" ).arg( kdedb ).arg( kdelo ) : "";
 }
 
+// Show an experiment's records again, from the rows it was merged into anew
+void US_DataTree::refill_run( int runIndex )
+{
+   if ( runIndex < 0  ||  runIndex >= runitems.size() )   return;
+
+   QTreeWidgetItem* runitem = runitems[ runIndex ];
+
+   // The selection may hold items about to go
+   selitems.clear();
+   tw_item = NULL;
+
+   qDeleteAll( runitem->takeChildren() );
+
+   if ( da_model->run_entry( runIndex ).loaded )
+      fill_run( runIndex );
+   else
+      refresh_run_item( runIndex );
+}
+
 // Colour an experiment row from what is under it now, and show its counts
 void US_DataTree::refresh_run_item( int runIndex )
 {

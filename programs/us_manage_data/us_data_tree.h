@@ -56,6 +56,13 @@ class US_DataTree : public QObject
         //! \param runIndex The position of the experiment
         void fill_run( int runIndex );
 
+        //! \brief Show an experiment's records again, from its new rows
+        //!
+        //! What US_DataModel::runReloaded calls for: the items of the rows
+        //! it left behind go, and the new rows are shown.
+        //! \param runIndex The position of the experiment
+        void refill_run( int runIndex );
+
         //! \brief Colour one experiment's rows again, and count again
         //!        what is under each of them
         //!

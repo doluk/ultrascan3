@@ -58,6 +58,8 @@ US_DataModel::US_DataModel( QWidget* parwidg /*=0*/ ) : QObject( parwidg )
    kdb_recs   = 0;
    klo_recs   = 0;
    batch_depth = 0;
+   remerging  = false;
+   merging_run = -1;
    case_set   = false;
    file_case  = Qt::CaseSensitive;
    orph_size[ 0 ] = 0;
@@ -635,6 +637,8 @@ void US_DataModel::open_catalogs( )
 
       connect( cat_db, &US_DataCatalog::message,
                this,   &US_DataModel::scanner_note );
+      connect( cat_db, &US_DataCatalog::runChanged,
+               this,   &US_DataModel::catalog_run_changed );
 
       if ( ! cat_db->attach( db, error ) )
       {
@@ -738,6 +742,8 @@ void US_DataModel::scan_runs( )
    run_queue.clear();
    ver_queue.clear();
    batch_runs.clear();
+   stale_runs.clear();
+   run_taken.clear();
    errors   .clear();
    db_failed  = false;
    demo       = false;
@@ -799,7 +805,6 @@ void US_DataModel::scan_runs( )
             entry.dbCount   = run_record_count( run );
             entry.problem   = run.usable ? QString()
                             : tr( "database: %1" ).arg( run.problem );
-            byRun.insert( run.runID, entries.size() );
             entries << entry;
          }
       }
@@ -821,6 +826,17 @@ void US_DataModel::scan_runs( )
       scan_error( tr( "The local results could not be listed: %1" )
                   .arg( scanner->error() ) );
 
+   // A run ID names the same run in both places as the local store compares
+   // names: where they ignore case, "runa" on disk is the database's "RunA"
+   // (the database never tells the two apart)
+   Qt::CaseSensitivity lcase = ( cat_lo != NULL ) ? cat_lo->fileNameCase()
+                                                  : Qt::CaseSensitive;
+   auto runKey = [ lcase ]( const QString& runID )
+   { return ( lcase == Qt::CaseInsensitive ) ? runID.toLower() : runID; };
+
+   for ( int ii = 0; ii < entries.size(); ii++ )
+      byRun.insert( runKey( entries[ ii ].runID ), ii );
+
    // How many local directories hold each run
    QHash< QString, int > lodirs;
 
@@ -837,7 +853,7 @@ void US_DataModel::scan_runs( )
 
          int  match = -1;
          int  rank  = 0;               // 3 by GUID, 2 by ID, 1 by order
-         QList< int > same = byRun.values( run.runID );
+         QList< int > same = byRun.values( runKey( run.runID ) );
          std::sort( same.begin(), same.end() );
 
          QString loGUID = run.guid.simplified();
@@ -877,7 +893,7 @@ void US_DataModel::scan_runs( )
             RunEntry entry;
             entry.runID = run.runID;
             match       = entries.size();
-            byRun.insert( run.runID, match );
+            byRun.insert( runKey( run.runID ), match );
             entries << entry;
          }
 
@@ -1000,6 +1016,8 @@ US_DataModel::Counts US_DataModel::count_records( int index ) const
 
    for ( int row = first; row >= 0  &&  row <= last; row++ )
    {
+      if ( row_run.at( row ) < 0 )   continue;   // left behind by a re-merge
+
       const DataDesc& desc = adescs.at( row );
       int ityp = desc.recType;
 
@@ -1022,10 +1040,19 @@ US_DataModel::RunEntry US_DataModel::run_entry( int index ) const
 }
 
 // Position of an experiment, by run identifier
+//
+// As the catalogs find one: the exact run ID first, then one that differs
+// only in case -- the database never tells those apart, nor does a local
+// store whose file names ignore case
 int US_DataModel::index_of_run( const QString& runID ) const
 {
    for ( int ii = 0; ii < runents.size(); ii++ )
       if ( runents.at( ii ).runID == runID )
+         return ii;
+
+   for ( int ii = 0; ii < runents.size(); ii++ )
+      if ( ! runents.at( ii ).orphans  &&
+           runents.at( ii ).runID.compare( runID, Qt::CaseInsensitive ) == 0 )
          return ii;
 
    return -1;
@@ -1368,6 +1395,8 @@ bool US_DataModel::do_merge_run( int index )
    // not under the stand-in.
    index_orphans();
 
+   merging_run = index;
+
    for ( int pass = 0; pass < 3; pass++ )
    {
       int before = ddescs.size() + ldescs.size();
@@ -1377,6 +1406,8 @@ bool US_DataModel::do_merge_run( int index )
 
       if ( ddescs.size() + ldescs.size() == before )   break;
    }
+
+   merging_run = -1;
 
    kdb_recs      += ddescs.size();
    klo_recs      += ldescs.size();
@@ -1413,7 +1444,98 @@ bool US_DataModel::do_merge_run( int index )
    if ( progress != NULL )
       progress->setValue( 1 );
 
+   // What this read added to experiments merged before it
+   merge_stale_runs();
+
    return true;
+}
+
+/* The database catalog hung records under an experiment merged already.
+
+   Noise is recorded against an edit, and belongs to its model: read with
+   one experiment, it may belong to a model of another one, and the catalog
+   hangs it there (US_DataCatalog::runChanged).  That experiment's rows are
+   then merged again.  This is said while a read is going on, so it is only
+   noted here and done once that read is over (merge_stale_runs).
+*/
+void US_DataModel::catalog_run_changed( int dbIndex )
+{
+   for ( int ii = 0; ii < runents.size(); ii++ )
+   {
+      const RunEntry& entry = runents.at( ii );
+
+      if ( entry.dbIndex == dbIndex  &&  entry.loaded  &&  ! entry.orphans  &&
+           ! stale_runs.contains( ii ) )
+         stale_runs << ii;
+   }
+}
+
+// Merge again the experiments the catalog changed after they were merged
+void US_DataModel::merge_stale_runs( void )
+{
+   if ( remerging )   return;
+
+   remerging = true;
+
+   while ( ! stale_runs.isEmpty() )
+   {
+      int index = stale_runs.takeFirst();
+
+      if ( remerge_run( index ) )
+         emit runReloaded( index );
+   }
+
+   remerging = false;
+}
+
+/* Merge one experiment's records again.
+
+   Its rows are appended anew and the old ones are left behind, belonging
+   to no experiment, so every row number held elsewhere stays what it was;
+   the tree drops the old rows' items (see runReloaded).  The orphans it
+   had taken are given back first, so it takes them again.  Its records
+   are compared afresh.
+*/
+bool US_DataModel::remerge_run( int index )
+{
+   if ( index < 0  ||  index >= runents.size() )   return false;
+
+   RunEntry& entry = runents[ index ];
+
+   if ( ! entry.loaded  ||  entry.orphans )        return false;
+
+   for ( int row = entry.firstRow; row >= 0  &&  row <= entry.lastRow; row++ )
+   {
+      row_run[ row ] = -1;
+      touched.remove( row );
+   }
+
+   QList< QPair< int, QString > > taken = run_taken.take( index );
+
+   for ( int ii = 0; ii < taken.size(); ii++ )
+   {
+      int side = taken[ ii ].first;
+      orph_taken[ side ].remove( taken[ ii ].second );
+
+      for ( int bx = 0; bx < orph_branches[ side ].size(); bx++ )
+         if ( branch_key( orph_branches[ side ][ bx ].first() )
+              == taken[ ii ].second )
+            orph_adopted[ side ][ bx ] = false;
+   }
+
+   kdb_recs      -= qMax( entry.dbCount, 0 );
+   klo_recs      -= qMax( entry.loCount, 0 );
+   entry.loaded      = false;
+   entry.verified    = false;
+   entry.catVerified = false;
+   entry.firstRow    = -1;
+   entry.lastRow     = -1;
+
+   bool ok = do_merge_run( index );
+
+   request_verify( index );
+
+   return ok;
 }
 
 // ------------------------------------------------------------ verification
@@ -2469,10 +2591,13 @@ void US_DataModel::adopt_orphans( int side, const QVector< DataDesc >& chain,
 
          if ( orph_adopted[ side ][ bx ] )   continue;
 
+         QString bkey = branch_key( orph_branches[ side ][ bx ].first() );
          orph_adopted[ side ][ bx ] = true;
-         orph_taken  [ side ].insert(
-            branch_key( orph_branches[ side ][ bx ].first() ) );
+         orph_taken  [ side ].insert( bkey );
          descs << orph_branches[ side ][ bx ];
+
+         if ( merging_run >= 0 )
+            run_taken[ merging_run ] << qMakePair( side, bkey );
       }
    }
 }
@@ -2934,6 +3059,7 @@ QList< US_DataModel::Duplicate > US_DataModel::find_duplicates( void ) const
       const DataDesc& desc = adescs.at( row );
 
       if ( desc.recType < RAW  ||  desc.recState == NOSTAT )   continue;
+      if ( row_run.at( row ) < 0 )   continue;   // left behind by a re-merge
 
       QString key = QString::number( desc.recType ) + ":" + desc.dataGUID;
 
@@ -2987,6 +3113,8 @@ void US_DataModel::dummy_data()
    run_queue.clear();
    ver_queue.clear();
    batch_runs.clear();
+   stale_runs.clear();
+   run_taken.clear();
    errors   .clear();
    db_failed  = false;
    stopped    = false;

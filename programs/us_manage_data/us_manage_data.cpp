@@ -366,6 +366,16 @@ DbgLv(1) << "GUI setup complete";
    connect( da_model, &US_DataModel::runCompared,
             da_tree,  &US_DataTree::refresh_run );
 
+   // Noise read with a later experiment can belong to a model of an
+   // experiment shown already: that experiment is shown again, and the
+   // totals counted again
+   connect( da_model, &US_DataModel::runReloaded, this, [ this ]( int index )
+            {
+               da_tree->refill_run( index );
+               counts = da_model->count_records();
+               reportDataStatus();
+            } );
+
    // A read or a comparison asked for outside a scan is done in the
    // background, one experiment per turn of the event loop
    connect( da_model, &US_DataModel::workRequested,

@@ -1691,28 +1691,78 @@ TEST_F( TestUSDataDb, AReadThatFailsOnceIsTriedAgain )
               US_DataModel::SYNC_INSYNC );
 }
 
-// In the per-experiment read, the stray noise of every experiment is shown
-TEST_F( TestUSDataDb, StrayNoiseOfEveryExperimentIsShownWhenReadOneAtATime )
+// Read one experiment at a time, noise recorded against a later
+// experiment's edit for a model of an experiment shown already goes under
+// that model: the catalog says so, and that experiment is merged again
+TEST_F( TestUSDataDb, NoiseReadWithALaterExperimentJoinsItsModel )
 {
-   QString strayA = US_Util::new_guid();
-   QString strayB = US_Util::new_guid();
+   QString cross = US_Util::new_guid();
    server.exps   << FExp  { "2", US_Util::new_guid(), "RunB" };
    server.raws   << FRaw  { "12", US_Util::new_guid(), "RunB.RA.1.A.280.auc", "2" };
    server.edits  << FEdit { "22", US_Util::new_guid(), "12", "RunB.2401011200.RA.1.A.280.xml" };
-   server.noises << FNoise{ "61", strayA, "21", "71", US_Util::new_guid(), "ti_noise",
-                            runA + ".stray.ti_noise", "" };
-   server.noises << FNoise{ "62", strayB, "22", "72", US_Util::new_guid(), "ti_noise",
-                            "RunB.stray.ti_noise", "" };
+   server.noises << FNoise{ "63", cross, "22", "31", modelG, "ri_noise",
+                            runA + ".1A280.e2401011200_a1_2DSA_i01.ri_noise", "<noise/>" };
    server.failing << "get_rawData_by_person";        // the whole-store read fails
 
    US_DataModel model;
    prepare( model );
+   Window       win( model );
+
+   QList< int > reloaded;
+   QObject::connect( &model, &US_DataModel::runsListed,
+                     [ & ]() { win.tree.build_dtree(); } );
+   QObject::connect( &model, &US_DataModel::runMerged,
+                     [ & ]( int index ) { win.tree.fill_run( index ); } );
+   QObject::connect( &model, &US_DataModel::runReloaded, [ & ]( int index )
+                     { reloaded << index; win.tree.refill_run( index ); } );
+
    model.scan_data();
 
-   int orph = standIn( model, false );
-   ASSERT_GE( orph, 0 );
-   EXPECT_EQ( model.run_of_row( rowOf( model, strayA ) ), orph );
-   EXPECT_EQ( model.run_of_row( rowOf( model, strayB ) ), orph );
+   int runa = model.index_of_run( runA );
+   ASSERT_EQ( reloaded, QList< int >() << runa );
+
+   int row = rowOf( model, cross );
+   ASSERT_GE( row, 0 );
+   EXPECT_EQ( model.run_of_row( row ), runa );
+   EXPECT_EQ( model.row_datadesc( model.parent_row( row ) ).dataGUID.toStdString(),
+              modelG.toStdString() );
+
+   // one row each, the rows left behind are no one's, and the tree and the
+   // counts show the new rows
+   int nrows = 0;
+   for ( int rr = 0; rr < model.recCount(); rr++ )
+      nrows += ( model.row_datadesc( rr ).dataGUID == modelG  &&
+                 model.run_of_row( rr ) >= 0 ) ? 1 : 0;
+   EXPECT_EQ( nrows, 1 );
+   EXPECT_TRUE( model.find_duplicates().isEmpty() );
+   EXPECT_NE( itemOfRow( win.tw, row ), nullptr );
+   QTreeWidgetItem* mitem = itemOfRow( win.tw, rowOf( model, modelG, runa ) );
+   ASSERT_NE( mitem, nullptr );
+   EXPECT_EQ( mitem->text( 4 ).toStdString(), "2, 1" );
+   EXPECT_EQ( model.count_records().db[ US_DataModel::NOISE ], 2 );
+
+   // and it is compared again: the local copies are still in sync
+   EXPECT_TRUE( model.run_entry( runa ).verified );
+   EXPECT_EQ( US_DataModel::sync_state( model.row_datadesc( rowOf( model, editG, runa ) ) ),
+              US_DataModel::SYNC_INSYNC );
+}
+
+// The run ID finds an experiment as the catalogs find one: exactly first,
+// then without case
+TEST_F( TestUSDataDb, AnExperimentIsFoundByRunIdAsTheCatalogsFindIt )
+{
+   server.exps << FExp{ "2", US_Util::new_guid(), "runa" };
+
+   US_DataModel model;
+   prepare( model, "ALL", "DB Only" );
+   model.scan_data();
+
+   ASSERT_EQ( model.runCount(), 2 );
+   EXPECT_EQ( model.run_entry( model.index_of_run( "runa" ) ).runID.toStdString(), "runa" );
+   EXPECT_EQ( model.run_entry( model.index_of_run( runA ) ).runID.toStdString(),
+              runA.toStdString() );
+   EXPECT_GE( model.index_of_run( "RUNA" ), 0 );
+   EXPECT_EQ( model.index_of_run( "RunZ" ), -1 );
 }
 
 // ------------------------------------------------------------ pairing
