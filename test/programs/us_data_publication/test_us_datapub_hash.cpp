@@ -252,7 +252,60 @@ TEST( DataPubHash, NumbersCompareByValueNotByDigits )
 
    EXPECT_NE( US_DataPubHash::canonicalXml( mixed ),
               US_DataPubHash::canonicalXml( mixed2 ) );
-   EXPECT_EQ( US_DataPubHash::canonicalXml( named ),
+   EXPECT_NE( US_DataPubHash::canonicalXml( named ),
               US_DataPubHash::canonicalXml( seven ) )
-      << "a value that is a number is compared as one";
+      << "a description is text, even one that reads as a number";
+}
+
+// Free text is never read as a number, whatever it looks like: a
+// description, label, name, serial or comment of "007" is not one of "7"
+TEST( DataPubHash, FreeTextKeepsItsDigits )
+{
+   QStringList textKeys;
+   textKeys << "description" << "desc" << "label" << "name" << "serial"
+            << "comment" << "serialNumber";
+
+   for ( int ii = 0; ii < textKeys.size(); ii++ )
+   {
+      QByteArray named = QString( "<r %1=\"007\"/>" ).arg( textKeys[ ii ] )
+                         .toUtf8();
+      QByteArray seven = QString( "<r %1=\"7\"/>" ).arg( textKeys[ ii ] )
+                         .toUtf8();
+      QByteArray zero  = QString( "<r %1=\"1.50\"/>" ).arg( textKeys[ ii ] )
+                         .toUtf8();
+      QByteArray other = QString( "<r %1=\"1.5\"/>" ).arg( textKeys[ ii ] )
+                         .toUtf8();
+
+      EXPECT_NE( US_DataPubHash::canonicalXml( named ),
+                 US_DataPubHash::canonicalXml( seven ) )
+         << textKeys[ ii ].toStdString();
+      EXPECT_NE( US_DataPubHash::canonicalXml( zero ),
+                 US_DataPubHash::canonicalXml( other ) )
+         << textKeys[ ii ].toStdString();
+      EXPECT_FALSE( US_DataPubHash::isNumericKey( textKeys[ ii ] ) );
+   }
+
+   // ... while a numeric attribute still compares by value
+   EXPECT_EQ( US_DataPubHash::canonicalXml( "<r ph=\"007\"/>" ),
+              US_DataPubHash::canonicalXml( "<r ph=\"7\"/>" ) );
+}
+
+// Values a double cannot tell apart keep their text: huge integers that
+// differ beyond a double's precision, and a value that underflows to zero
+TEST( DataPubHash, NumbersADoubleCannotHoldKeepTheirText )
+{
+   EXPECT_NE( US_DataPubHash::canonicalXml(
+                 "<r mw=\"12345678901234567890\"/>" ),
+              US_DataPubHash::canonicalXml(
+                 "<r mw=\"12345678901234567891\"/>" ) );
+   EXPECT_NE( US_DataPubHash::canonicalXml( "<r value=\"1e-400\"/>" ),
+              US_DataPubHash::canonicalXml( "<r value=\"0\"/>" ) );
+   EXPECT_NE( US_DataPubHash::canonicalXml( "<r value=\"1e-400\"/>" ),
+              US_DataPubHash::canonicalXml( "<r value=\"2e-400\"/>" ) );
+
+   // Zero itself, in any form, is still zero
+   EXPECT_EQ( US_DataPubHash::canonicalXml( "<r value=\"0.000\"/>" ),
+              US_DataPubHash::canonicalXml( "<r value=\"-0\"/>" ) );
+   EXPECT_EQ( US_DataPubHash::canonicalXml( "<r value=\"0e-400\"/>" ),
+              US_DataPubHash::canonicalXml( "<r value=\"0\"/>" ) );
 }
