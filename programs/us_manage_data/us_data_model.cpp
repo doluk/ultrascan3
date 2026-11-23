@@ -798,7 +798,13 @@ void US_DataModel::scan_runs( )
          {
             const US_DataCatalog::Run& run = cat_db->run( ii );
 
-            if ( rfilt  &&  run.runID != filt_run )   continue;
+            // The database never tells run IDs apart by case, and pairs
+            // them with local runs so (see runKey below): a filter that
+            // did would show a database run as missing from local disk,
+            // and a download would write into the directory it is in
+            if ( rfilt  &&  run.runID.compare( filt_run,
+                                               Qt::CaseInsensitive ) != 0 )
+               continue;
 
             RunEntry entry;
             entry.runID     = run.runID;
@@ -846,55 +852,91 @@ void US_DataModel::scan_runs( )
 
    if ( use_lo  &&  cat_lo != NULL )
    {
+      // Each local run takes the database experiment of its name its
+      // experiment file records by GUID, or else by ID, or else the first
+      // one of its name nobody took.  The best matches are made first, over
+      // all the local runs, so a run that matches by order alone does not
+      // take the experiment another run records.  An ID says something only
+      // in the database it came from: a run whose file records a GUID that
+      // matches none of these experiments came from another one, and its ID
+      // is not looked at.
+      QList< int > lruns;
+
       for ( int ii = 0; ii < cat_lo->runCount(); ii++ )
       {
-         const US_DataCatalog::Run& run = cat_lo->run( ii );
+         // The run filter compares as the local store compares names, and
+         // a local run that pairs with a database run it kept is kept too:
+         // its records would otherwise read as in the database only, and a
+         // download would write copies of them into its directory
+         QString key = runKey( cat_lo->run( ii ).runID );
 
-         if ( rfilt  &&  run.runID != filt_run )   continue;
+         if ( rfilt  &&  key != runKey( filt_run )  &&  ! byRun.contains( key ) )
+            continue;
 
-         int  match = -1;
-         int  rank  = 0;               // 3 by GUID, 2 by ID, 1 by order
-         QList< int > same = byRun.values( runKey( run.runID ) );
-         std::sort( same.begin(), same.end() );
+         lruns << ii;
+      }
 
+      auto rank = [ & ]( int ii, int cand )
+      {
+         const US_DataCatalog::Run& run  = cat_lo->run( ii );
+         const RunEntry&            cent = entries[ cand ];
+
+         if ( cent.dbIndex < 0  ||  cat_db == NULL )   return 1;
+
+         const US_DataCatalog::Run& dbr = cat_db->run( cent.dbIndex );
          QString loGUID = run.guid.simplified();
          QString loID   = run.id.simplified();
+         bool    hasGUID = ( loGUID.length() == 36 );
 
-         for ( int jj = 0; jj < same.size(); jj++ )
+         if ( hasGUID  &&
+              loGUID.compare( dbr.guid.simplified(), Qt::CaseInsensitive ) == 0 )
+            return 3;
+
+         if ( ! hasGUID  &&  ! loID.isEmpty()  &&  loID != "-1"  &&
+              loID == dbr.id.simplified() )
+            return 2;
+
+         return 1;
+      };
+
+      QHash< int, int > lmatch;               // local index -> entry
+
+      for ( int tier = 3; tier >= 1; tier-- )
+      {
+         for ( int kk = 0; kk < lruns.size(); kk++ )
          {
-            const RunEntry& cand = entries[ same[ jj ] ];
+            int ii = lruns[ kk ];
 
-            if ( cand.loIndex >= 0 )   continue;     // taken
+            if ( lmatch.contains( ii ) )   continue;
 
-            int crank = 1;
+            QList< int > same = byRun.values( runKey( cat_lo->run( ii ).runID ) );
+            std::sort( same.begin(), same.end() );
 
-            if ( cand.dbIndex >= 0  &&  cat_db != NULL )
+            for ( int jj = 0; jj < same.size(); jj++ )
             {
-               const US_DataCatalog::Run& dbr = cat_db->run( cand.dbIndex );
+               if ( entries[ same[ jj ] ].loIndex >= 0 )   continue;   // taken
 
-               if ( loGUID.length() == 36  &&
-                    loGUID.compare( dbr.guid.simplified(),
-                                    Qt::CaseInsensitive ) == 0 )
-                  crank = 3;
-
-               else if ( ! loID.isEmpty()  &&  loID != "-1"  &&
-                         loID == dbr.id.simplified() )
-                  crank = 2;
-            }
-
-            if ( crank > rank )
-            {
-               rank  = crank;
-               match = same[ jj ];
+               if ( rank( ii, same[ jj ] ) >= tier )
+               {
+                  lmatch.insert( ii, same[ jj ] );
+                  entries[ same[ jj ] ].loIndex = ii;
+                  break;
+               }
             }
          }
+      }
+
+      for ( int kk = 0; kk < lruns.size(); kk++ )
+      {
+         int ii = lruns[ kk ];
+         const US_DataCatalog::Run& run = cat_lo->run( ii );
+         int  match = lmatch.value( ii, -1 );
 
          if ( match < 0 )
-         {
+         {  // A run of no database experiment, or of one taken already
             RunEntry entry;
             entry.runID = run.runID;
             match       = entries.size();
-            byRun.insert( runKey( run.runID ), match );
             entries << entry;
          }
 

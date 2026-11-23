@@ -2668,6 +2668,98 @@ TEST_F( TestUSDataDbRemerge, AContextMenuTakesTheItemsAReadLeft )
    EXPECT_FALSE( rows.contains( nrow ) );
 }
 
+// ------------------------------------------------------------ run filter
+
+// The run filter finds the database run as the pairing does -- without
+// case -- and the local run that pairs with it: never the database run on
+// its own, which a download would copy into the run's own directory
+TEST_F( TestUSDataDb, ARunFilterComparesRunIdsAsThePairingDoes )
+{
+   {  // a local store that ignores case: "runa" is RunA in both places
+      US_DataModel model;
+      model.setFileNameCase( Qt::CaseInsensitive );
+      prepare( model, "runa" );
+      model.scan_data();
+
+      ASSERT_EQ( model.runCount(), 1 );
+      EXPECT_TRUE( model.run_entry( 0 ).inBoth() );
+      EXPECT_EQ( stateOf( model, editG ) & ( US_DataModel::REC_DB | US_DataModel::REC_LO ),
+                 US_DataModel::REC_DB | US_DataModel::REC_LO );
+   }
+
+   {  // one that does not: the database's RunA still pairs with RunA
+      US_DataModel model;
+      model.setFileNameCase( Qt::CaseSensitive );
+      prepare( model, "runa" );
+      model.scan_data();
+
+      ASSERT_EQ( model.runCount(), 1 );
+      EXPECT_TRUE( model.run_entry( 0 ).inBoth() );
+   }
+}
+
+// ------------------------------------------------------------ pairing
+
+// The best matches are made first: a local run that matches by order alone
+// does not take the experiment another local run records
+TEST_F( TestUSDataDb, ALocalRunRecordingAnExperimentGetsItFirst )
+{
+   QString exp2 = US_Util::new_guid();
+   QString raw3 = US_Util::new_guid();
+   server.exps << FExp{ "2", exp2, runA };
+
+   // a second directory of RunA, after "RunA" in order, recording the
+   // first experiment
+   QString copy = US_Settings::resultDir() + "/ZCopy";
+   QDir().mkpath( copy );
+   writeAuc( copy + "/" + runA + ".RA.1.A.280.auc", raw3 );
+   QFile file( copy + "/" + runA + ".RA.xml" );
+   ASSERT_TRUE( file.open( QIODevice::WriteOnly | QIODevice::Text ) );
+   file.write( QString( "<?xml version=\"1.0\"?>\n<experiment id=\"1\" guid=\"%1\""
+                        " type=\"velocity\">\n</experiment>\n" ).arg( expG ).toUtf8() );
+   file.close();
+
+   US_DataModel model;
+   prepare( model );
+   model.scan_data();
+
+   int first = -1;
+   for ( int ii = 0; ii < model.runCount(); ii++ )
+      if ( model.row_datadesc( model.run_entry( ii ).row ).recordID == 1 )  first = ii;
+   ASSERT_GE( first, 0 );
+   EXPECT_TRUE( model.run_entry( first ).inBoth() );
+   EXPECT_EQ( model.run_of_row( rowOf( model, raw3 ) ), first );
+}
+
+// An experiment ID means something only in the database it came from: a
+// local run whose file records a GUID none of these experiments has is
+// from another one, and does not pair by its ID
+TEST_F( TestUSDataDb, AnIdFromAnotherDatabaseDoesNotPair )
+{
+   server.exps << FExp{ "2", US_Util::new_guid(), runA };
+
+   auto pairedId = [ & ]( const QString& attrs )
+   {
+      QFile file( runDir( runA ) + "/" + runA + ".RA.xml" );
+      EXPECT_TRUE( file.open( QIODevice::WriteOnly | QIODevice::Text ) );
+      file.write( ( "<?xml version=\"1.0\"?>\n<experiment " + attrs
+                    + " type=\"velocity\">\n</experiment>\n" ).toUtf8() );
+      file.close();
+
+      US_DataModel model;
+      prepare( model );
+      model.scan_data();
+
+      for ( int ii = 0; ii < model.runCount(); ii++ )
+         if ( model.run_entry( ii ).inBoth() )
+            return model.row_datadesc( model.run_entry( ii ).row ).recordID;
+      return -1;
+   };
+
+   EXPECT_EQ( pairedId( "id=\"2\" guid=\"" + US_Util::new_guid() + "\"" ), 1 );
+   EXPECT_EQ( pairedId( "id=\"2\"" ), 2 );         // no GUID: the ID is all
+}
+
 // ------------------------------------------------------------ line ends
 
 // A model file with CRLF line ends -- as written on Windows -- holds what the
