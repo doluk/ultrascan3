@@ -4,6 +4,7 @@
 #include "archive.h"
 
 #include <QRegularExpression>
+#include <QSaveFile>
 
 #include <cstdint>
 #include <string>
@@ -100,6 +101,16 @@ QStringList name_parts( const QString& name )
     parts.removeAll( QString() );
     parts.removeAll( QString( "." ) );
     return parts;
+}
+
+// True when an entry names the destination itself: ".", "./" and the like,
+// which GNU tar writes first for "tar -C dir -cf x.tar ."
+bool root_entry( const QString& name )
+{
+    if ( name.isEmpty()  ||  name.startsWith( "/" )  ||  name.startsWith( "\\" ) )
+        return false;
+
+    return name_parts( name ).isEmpty()  &&  ! name.contains( ".." );
 }
 
 // True when a name holds a character Windows does not allow in a file
@@ -237,6 +248,66 @@ bool US_Archive::unsafe_on_disk( const QString& root, const QString& target,
     return false;
 }
 
+bool US_Archive::writable_on_disk( const QString& root, const QStringList& parts,
+                                   bool isDir, const QString& name )
+{
+    // Every directory above the entry that is there already must be a
+    // directory, and the entry itself, if it is there, must be what the
+    // archive makes of it.  Finding out on the second pass would stop the
+    // extraction with some of the archive written.
+    QString path    = root;
+    QString deepest = root;
+
+    // The destination is made when it is not there yet, below whatever of
+    // it is there
+    while ( ! QFileInfo::exists( deepest )  &&  deepest.contains( "/" ) )
+        deepest = deepest.section( "/", 0, -2 );
+
+    for ( int ii = 0; ii < parts.size(); ii++ )
+    {
+        path += "/" + parts[ ii ];
+        const QFileInfo info( path );
+
+        if ( ! info.exists() )
+            break;
+
+        const bool last = ( ii == parts.size() - 1 );
+
+        if ( ( ! last  ||  isDir )  &&  ! info.isDir() )
+        {
+            error = QObject::tr( "US_Archive: Error: refusing \"%1\": %2 is already"
+                                 " in the destination and is not a directory" )
+                    .arg( name, path );
+            return false;
+        }
+
+        if ( last  &&  ! isDir  &&  ( ! info.isFile()  ||  ! info.isWritable() ) )
+        {
+            error = QObject::tr( "US_Archive: Error: refusing \"%1\": %2 is already"
+                                 " in the destination and cannot be replaced" )
+                    .arg( name, path );
+            return false;
+        }
+
+        if ( info.isDir() )
+            deepest = path;
+    }
+
+    // A file is written next to where it goes and then put in place, and a
+    // directory not there yet is made: both need the deepest directory that
+    // is there to take new entries
+    const bool there = QFileInfo::exists( root + "/" + parts.join( "/" ) );
+
+    if ( ( ! isDir  ||  ! there )  &&  ! QFileInfo( deepest ).isWritable() )
+    {
+        error = QObject::tr( "US_Archive: Error: refusing \"%1\": cannot write"
+                             " in %2" ).arg( name, deepest );
+        return false;
+    }
+
+    return true;
+}
+
 bool US_Archive::check_entries( const QString& filename, const QDir& dir )
 {
     struct archive* archive = open_reader( filename, error );
@@ -256,6 +327,13 @@ bool US_Archive::check_entries( const QString& filename, const QDir& dir )
     while ( ( result = archive_read_next_header( archive, &entry ) ) == ARCHIVE_OK )
     {
         const QString name = entry_name( entry );
+
+        // The destination itself: there is nothing to write for it
+        if ( root_entry( name )  &&  archive_entry_filetype( entry ) == AE_IFDIR )
+        {
+            archive_read_data_skip( archive );
+            continue;
+        }
 
         if ( ! safeEntryName( name )  ||  ! inside( root, root + "/" + name ) )
         {
@@ -320,7 +398,8 @@ bool US_Archive::check_entries( const QString& filename, const QDir& dir )
             }
         }
 
-        if ( unsafe_on_disk( root, root + "/" + parts.join( "/" ), name ) )
+        if ( unsafe_on_disk( root, root + "/" + parts.join( "/" ), name )  ||
+             ! writable_on_disk( root, parts, isDir, name ) )
         {
             close_reader( archive );
             return false;
@@ -414,6 +493,12 @@ bool US_Archive::extract(const QString& filename, const QString& path, QStringLi
     while ((result = archive_read_next_header(archive, &entry)) == ARCHIVE_OK) {
         // Get the relative path of entry
         QString entry_path = entry_name( entry );
+
+        if ( root_entry( entry_path )  &&  archive_entry_filetype( entry ) == AE_IFDIR ) {
+            archive_read_data_skip( archive );
+            continue;
+        }
+
         QFileInfo target(dir.absoluteFilePath(entry_path));
 
         // The file is read a second time here, so check again rather than
@@ -456,9 +541,10 @@ bool US_Archive::extract(const QString& filename, const QString& path, QStringLi
                 return false;
             }
 
-            // A file that is already there keeps its permissions; a new one
-            // gets the ones the process creates files with
-            QFile file(target.absoluteFilePath());
+            // Written aside and put in place only when complete, so a failed
+            // entry leaves a file that was already there as it was.  One
+            // that is replaced keeps its permissions.
+            QSaveFile file(target.absoluteFilePath());
             if (! file.open(QIODevice::WriteOnly)) {
                 error = "US_Archive: Error: Failed to open file: " + target.absolutePath();
                 close_reader( archive );
@@ -480,8 +566,7 @@ bool US_Archive::extract(const QString& filename, const QString& path, QStringLi
                 if ( end > max_entry  ||  total > max_total ) {
                     error = QObject::tr( "US_Archive: Error: \"%1\" decompresses to more"
                                          " than the size limit" ).arg( entry_path );
-                    file.close();
-                    file.remove();
+                    file.cancelWriting();
                     close_reader( archive );
                     return false;
                 }
@@ -489,8 +574,7 @@ bool US_Archive::extract(const QString& filename, const QString& path, QStringLi
                 // A sparse entry leaves holes between its blocks
                 if ( offset != file.pos()  &&  ! file.seek( offset ) ) {
                     error = "US_Archive: Error: Failed to write data blocks: " + target.absolutePath();
-                    file.close();
-                    file.remove();
+                    file.cancelWriting();
                     close_reader( archive );
                     return false;
                 }
@@ -499,8 +583,7 @@ bool US_Archive::extract(const QString& filename, const QString& path, QStringLi
                                                  static_cast<qint64>(size));
                 if (size_o != static_cast<qint64>(size)) {
                     error = "US_Archive: Error: Failed to write data blocks: " + target.absolutePath();
-                    file.close();
-                    file.remove();
+                    file.cancelWriting();
                     close_reader( archive );
                     return false;
                 }
@@ -512,8 +595,7 @@ bool US_Archive::extract(const QString& filename, const QString& path, QStringLi
             if ( block != ARCHIVE_EOF ) {
                 error = QObject::tr( "US_Archive: Error: Failed to read \"%1\": %2" )
                         .arg( entry_path, archive_error_string( archive ) );
-                file.close();
-                file.remove();
+                file.cancelWriting();
                 close_reader( archive );
                 return false;
             }
@@ -523,22 +605,19 @@ bool US_Archive::extract(const QString& filename, const QString& path, QStringLi
                  written < archive_entry_size( entry )  &&
                  ! file.resize( archive_entry_size( entry ) ) ) {
                 error = "US_Archive: Error: Failed to write data blocks: " + target.absolutePath();
-                file.close();
-                file.remove();
+                file.cancelWriting();
                 close_reader( archive );
                 return false;
             }
 
-            // What is still buffered can fail to reach the disk too
-            if ( ! file.flush() ) {
-                error = "US_Archive: Error: Failed to write data blocks: " + target.absolutePath();
-                file.close();
-                file.remove();
+            // What is still buffered can fail to reach the disk too, and so
+            // can putting the file in place
+            if ( ! file.commit() ) {
+                error = QObject::tr( "US_Archive: Error: Failed to write %1: %2" )
+                        .arg( target.absoluteFilePath(), file.errorString() );
                 close_reader( archive );
                 return false;
             }
-
-            file.close();
             emit itemExtracted(entry_path, target.absoluteFilePath());
             file_list_in << target.absoluteFilePath();
         }
@@ -678,7 +757,16 @@ bool US_Archive::compress(const QStringList& list, QString& filename) {
 
         // Write the file header
         entry = archive_entry_new();
-        archive_entry_set_pathname(entry, relative.toUtf8().constData());
+        // On Windows the narrow setter takes the ANSI code page, which cannot
+        // hold every name; the wide one can.  Elsewhere file names are UTF-8
+        // bytes, which the narrow setter keeps as they are.  (Not
+        // archive_entry_set_pathname_utf8: libarchive's pax writer then
+        // crashes on a non-ASCII name under the C locale.)
+#ifdef Q_OS_WIN
+        archive_entry_copy_pathname_w(entry, relative.toStdWString().c_str());
+#else
+        archive_entry_set_pathname(entry, QFile::encodeName(relative).constData());
+#endif
         archive_entry_set_size(entry, file.size());
         archive_entry_set_filetype(entry, AE_IFREG);
         archive_entry_set_perm(entry, 0644);
