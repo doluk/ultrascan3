@@ -110,8 +110,16 @@ centerpiece table, an undefined buffer component, a time state without its
 definitions. A run without raw data is only a warning, unless none of the
 selected runs has any. A raw data record or an edit read from the database
 whose GUIDs are not the ones the catalog listed stops the export too, as does
-a noise record selected by GUID whose model is not in the bundle. A missing
-project file on disk is reported with the hint to leave the project out.
+a noise record selected by GUID whose model is not in the bundle, an
+experiment XML that names another run ID or GUID than its run (a run
+directory renamed by hand), and a spectrum, buffer concentration or analyte
+amount that is not a number. A missing project file on disk is reported with
+the hint to leave the project out.
+
+When the runs come with a project rather than by name, a run whose own records
+do not hold together -- one of those problems, or a channel without a
+solution -- is left out with a warning instead, and the rest of the project is
+exported. A database or disk that fails still fails the export.
 
 An export also refuses to write a bundle the import would refuse, and checks
 it with the import's own rules before packing: every GUID of the manifest,
@@ -184,7 +192,9 @@ The Export tab works from the top down.
   there, so such a model travels with the newest noise of its edit that existed
   when the model was made -- one record of each type, since a run can carry a
   time-invariant and a radially-invariant record at once. Those rows are marked
-  *(of this edit)* in the tree.
+  *(of this edit)* in the tree. The record still belongs to the model it was
+  fitted to, so that model is exported too, and the bundle notes which model
+  the record is carried for.
 
 **Export up to**, **Include time state**, **Comment**, **Bundle file**
   The scope, whether the runs' time state travels along, a free-text comment

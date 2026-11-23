@@ -5,6 +5,7 @@
 
 #include "us_datapub_catalog.h"
 #include "us_datapub_export.h"
+#include "us_datapub_import.h"
 #include "us_datapub_manifest.h"
 #include "us_datapub_hash.h"
 #include "us_datapub_bundle.h"
@@ -13,6 +14,8 @@
 #include "mock_us_db2.h"
 
 #include <gmock/gmock.h>
+
+#include <limits>
 
 class DataPubExport : public DataPubTestEnv
 {
@@ -1555,6 +1558,33 @@ class US_DataPubExporterTest
       {
          return ex.mani;
       }
+
+      static bool openDisk( US_DataPubExporter& ex )
+      {
+         QString error;
+         return ex.catalog.open( false, QString(), error );
+      }
+
+      static bool addFittedModels( US_DataPubExporter& ex,
+                                   QList< US_DataPubCatalog::Model >& models,
+                                   QList< US_DataPubCatalog::Noise >& noises,
+                                   QString& error )
+      {
+         return ex.addFittedModels( models, noises, error );
+      }
+
+      static bool checkExperimentXml( const QString& path,
+                                      const QString& runID,
+                                      const QString& guid, QString& error )
+      {
+         return US_DataPubExporter::checkExperimentXml( path, runID, guid,
+                                                        error );
+      }
+
+      static bool runFault( US_DataPubExporter& ex )
+      {
+         return ex.run_fault;
+      }
 };
 
 /**
@@ -2400,4 +2430,439 @@ TEST_F( DataPubExport, AnAnalyteCarriesOnlyItsMeasuredSpectrum )
    QMap< double, double > want;
    want.insert( 230.5, 1234.5 );
    EXPECT_EQ( spectrum, want );
+}
+
+// ------------------------------------------------------- round trips, fixes
+
+namespace
+{
+   US_DataPubImporter::Options disk_target( const QString& dir )
+   {
+      US_DataPubImporter::Options options;
+      options.target       = US_DataPub::TargetDisk;
+      options.outputDir    = dir;
+      options.verifyHashes = true;
+      options.dryRun       = false;
+      options.policy       = US_DataPub::PolicyReuse;
+
+      return options;
+   }
+
+   // The noise records of a disk store, by GUID: the model each one names
+   QMap< QString, QString > noise_models( const QString& dir )
+   {
+      QMap< QString, QString > found;
+      QStringList names = QDir( dir ).entryList( QStringList( "N*.xml" ),
+                                                 QDir::Files );
+
+      for ( int ii = 0; ii < names.size(); ii++ )
+      {
+         US_Noise noise;
+
+         if ( noise.load( dir + "/" + names[ ii ] ) == IUS_DB2::OK )
+            found.insert( noise.noiseGUID, noise.modelGUID );
+      }
+
+      return found;
+   }
+}
+
+/* A model with no noise of its own travels with the noise of its edit,
+   which still belongs to the model it was fitted to: the payload names
+   that model, and so does the manifest, which is what an import checks
+   the payload against.  The model it was fitted to travels too, and the
+   bundle says which model the noise is carried for.  Exported as the
+   export tab does it -- the later model and its (borrowed) noise ticked,
+   nothing else -- the bundle imports.
+*/
+TEST_F( DataPubExport, BorrowedNoiseTravelsWithItsOwnModelAndImports )
+{
+   QString  laterGUID = US_Util::new_guid();
+   US_Model later;
+   later.modelGUID   = laterGUID;
+   later.editGUID    = editGUID;
+   later.description = "demo_run.1A280.2dsa-mc.model";
+   later.write( US_Settings::dataDir() + "/models/M0000002.xml" );
+
+   US_DataPubExporter::Selection selection =
+      baseSelection( US_DataPub::ScopeNoise );
+   selection.setModels( QStringList() << laterGUID );
+   selection.setNoises( QStringList() << noiseGUID );
+
+   US_DataPubExporter exporter;
+   QString            bundle = root + "/borrowed.tar.gz";
+   QString            error;
+
+   ASSERT_TRUE( exporter.exportBundle( selection, bundle, error ) )
+      << error.toStdString() << "\n"
+      << exporter.log().join( "\n" ).toStdString();
+
+   const US_DataPubManifest& mani = exporter.manifest();
+
+   EXPECT_TRUE( mani.contains( US_DataPub::Model, laterGUID ) );
+   EXPECT_TRUE( mani.contains( US_DataPub::Model, modelGUID ) )
+      << "the model the noise was fitted to does not travel";
+
+   US_DataPubEntity noise;
+   ASSERT_TRUE( mani.entity( US_DataPub::Noise, noiseGUID, noise ) );
+   EXPECT_EQ( noise.depend( US_DataPub::Model ), modelGUID );
+   EXPECT_EQ( noise.attrs.value( "borrowedByModelGUID" ), laterGUID );
+   EXPECT_FALSE( noise.attrs.contains( "fittedToModelGUID" ) );
+
+   // The import takes it, and the noise lands on the model it was fitted to
+   QString            target = root + "/target";
+   US_DataPubImporter importer;
+
+   ASSERT_TRUE( importer.inspect( bundle, error ) ) << error.toStdString();
+   ASSERT_TRUE( importer.runImport( disk_target( target ), error ) )
+      << error.toStdString();
+
+   QMap< QString, QString > noises = noise_models( target + "/data/noises" );
+   ASSERT_TRUE( noises.contains( noiseGUID ) );
+   EXPECT_EQ( noises.value( noiseGUID ), modelGUID );
+   EXPECT_EQ( QDir( target + "/data/models" ).entryList(
+              QStringList( "M*.xml" ), QDir::Files ).size(), 2 );
+}
+
+// The same when the catalog lists the later model first: the noise is
+// carried for it, and still depends on the model it was fitted to
+TEST_F( DataPubExport, BorrowedNoiseOfAWholeRunImports )
+{
+   QString  laterGUID = US_Util::new_guid();
+   US_Model later;
+   later.modelGUID   = laterGUID;
+   later.editGUID    = editGUID;
+   later.description = "demo_run.1A280.2dsa-mc.model";
+   later.write( US_Settings::dataDir() + "/models/M0000000.xml" );
+
+   US_DataPubExporter exporter;
+   QString            bundle = root + "/whole.tar.gz";
+   QString            error;
+
+   ASSERT_TRUE( exporter.exportBundle( baseSelection( US_DataPub::ScopeNoise ),
+                                       bundle, error ) )
+      << error.toStdString();
+
+   const US_DataPubManifest& mani = exporter.manifest();
+   EXPECT_EQ( mani.count( US_DataPub::Model ), 2 );
+   ASSERT_EQ( mani.count( US_DataPub::Noise ), 1 );
+   EXPECT_EQ( mani.section( US_DataPub::Noise )[ 0 ]
+              .depend( US_DataPub::Model ), modelGUID );
+
+   US_DataPubImporter importer;
+   ASSERT_TRUE( importer.inspect( bundle, error ) ) << error.toStdString();
+   ASSERT_TRUE( importer.runImport( disk_target( root + "/target" ), error ) )
+      << error.toStdString();
+   EXPECT_EQ( noise_models( root + "/target/data/noises" ).value( noiseGUID ),
+              modelGUID );
+}
+
+// Noise carried for a model whose own model cannot travel -- it is gone --
+// stays out with a warning, or fails the export when it was asked for
+TEST_F( DataPubExport, BorrowedNoiseWithoutItsModelStaysOut )
+{
+   QString  laterGUID = US_Util::new_guid();
+   US_Model later;
+   later.modelGUID   = laterGUID;
+   later.editGUID    = editGUID;
+   later.description = "demo_run.1A280.2dsa-mc.model";
+   later.write( US_Settings::dataDir() + "/models/M0000002.xml" );
+
+   QList< US_DataPubCatalog::Model > models;
+   US_DataPubCatalog::Model model;
+   model.guid     = laterGUID;
+   model.editGUID = editGUID;
+   models << model;
+
+   US_DataPubCatalog::Noise noise;
+   noise.guid         = noiseGUID;
+   noise.modelGUID    = laterGUID;
+   noise.borrowedFrom = US_Util::new_guid();      // no such model
+   noise.noiseType    = "ti";
+   QList< US_DataPubCatalog::Noise > noises;
+   noises << noise;
+
+   US_DataPubExporter exporter;
+   QString            error;
+   US_DataPubExporterTest::openDisk( exporter );
+
+   QList< US_DataPubCatalog::Noise > kept = noises;
+   ASSERT_TRUE( US_DataPubExporterTest::addFittedModels( exporter, models,
+                kept, error ) ) << error.toStdString();
+   EXPECT_TRUE( kept.isEmpty() );
+   EXPECT_EQ( models.size(), 1 );
+   EXPECT_TRUE( exporter.log().join( "\n" ).contains( "left out" ) );
+
+   US_DataPubExporterTest::askForNoises( exporter, QStringList() << noiseGUID );
+   kept = noises;
+   EXPECT_FALSE( US_DataPubExporterTest::addFittedModels( exporter, models,
+                 kept, error ) );
+   EXPECT_TRUE( error.contains( noiseGUID ) ) << error.toStdString();
+}
+
+/* The experiment XML of a run names its run ID and GUID, and an import
+   refuses one that names another run than its manifest entry: a run
+   directory renamed by hand, say.  The export refuses it first, when the
+   run was named; a project export leaves the run out with a warning.
+*/
+TEST_F( DataPubExport, AnExperimentXmlOfAnotherRunIdIsRefused )
+{
+   QString expXml = runDir() + "/" + runID + "." + runType + ".xml";
+   ASSERT_TRUE( replace_in_file( expXml, "runID=\"" + runID + "\"",
+                                 "runID=\"old_name\"" ) );
+
+   US_DataPubExporter exporter;
+   QString            error;
+
+   EXPECT_FALSE( exporter.exportBundle( baseSelection( US_DataPub::ScopeNoise ),
+                                        root + "/renamed.tar.gz", error ) );
+   EXPECT_TRUE( error.contains( "old_name" ) ) << error.toStdString();
+   EXPECT_FALSE( QFile::exists( root + "/renamed.tar.gz" ) );
+}
+
+TEST_F( DataPubExport, AnExperimentXmlOfAnotherGuidIsRefused )
+{
+   QString staged = root + "/staged.xml";
+   QString expXml = runDir() + "/" + runID + "." + runType + ".xml";
+   ASSERT_TRUE( QFile::copy( expXml, staged ) );
+
+   QString error;
+   EXPECT_TRUE ( US_DataPubExporterTest::checkExperimentXml( staged, runID,
+                 expGUID, error ) ) << error.toStdString();
+
+   QString other = US_Util::new_guid();
+   EXPECT_FALSE( US_DataPubExporterTest::checkExperimentXml( staged, runID,
+                 other, error ) );
+   EXPECT_TRUE ( error.contains( expGUID ) ) << error.toStdString();
+
+   EXPECT_FALSE( US_DataPubExporterTest::checkExperimentXml( staged,
+                 "another_run", expGUID, error ) );
+   EXPECT_TRUE ( error.contains( runID ) ) << error.toStdString();
+
+   // The comparison is the import's: exact
+   EXPECT_FALSE( US_DataPubExporterTest::checkExperimentXml( staged, runID,
+                 expGUID.toUpper(), error ) );
+}
+
+// A project export leaves out a run whose records do not hold together --
+// here the experiment XML of a renamed run directory, and a channel whose
+// solution is gone -- with a warning, takes back what was staged for it,
+// and writes a bundle that imports; the same run named fails the export
+TEST_F( DataPubExportTwoRuns, AProjectExportSkipsARunThatFailsToStage )
+{
+   addRun( "demo_run2" );
+   QString xml2 = US_Settings::resultDir() + "/" + runID2 + "/" + runID2
+                  + "." + runType + ".xml";
+
+   for ( int pass = 0; pass < 2; pass++ )
+   {
+      SCOPED_TRACE( pass == 0 ? "renamed run" : "no solution" );
+
+      QString original = read_text( xml2 );
+
+      if ( pass == 0 )
+         ASSERT_TRUE( replace_in_file( xml2, "runID=\"" + runID2 + "\"",
+                                       "runID=\"old_name\"" ) );
+      else
+         ASSERT_TRUE( replace_in_file( xml2, solutionGUID,
+                                       US_Util::new_guid() ) );
+
+         US_DataPubExporter            exporter;
+      US_DataPubExporter::Selection selection;
+      selection.fromDb      = false;
+      selection.scope       = US_DataPub::ScopeNoise;
+      selection.projectGUID = projectGUID;
+
+      QString bundle = root + QString( "/project%1.tar.gz" ).arg( pass );
+      QString error;
+
+      ASSERT_TRUE( exporter.exportBundle( selection, bundle, error ) )
+         << error.toStdString() << "\n"
+         << exporter.log().join( "\n" ).toStdString();
+
+      const US_DataPubManifest& mani = exporter.manifest();
+      EXPECT_EQ( mani.count( US_DataPub::Experiment ), 1 );
+      EXPECT_TRUE( mani.contains( US_DataPub::Experiment, expGUID1 ) );
+      EXPECT_FALSE( mani.contains( US_DataPub::RawData, rawGUID2b ) );
+      EXPECT_EQ( mani.count( US_DataPub::Model ), 1 );
+      EXPECT_TRUE( exporter.log().join( "\n" ).contains(
+                   "run " + runID2 + " of the project is left out" ) )
+         << exporter.log().join( "\n" ).toStdString();
+
+      // Nothing of the run is left in the bundle, and the bundle imports
+      US_DataPubImporter importer;
+      ASSERT_TRUE( importer.inspect( bundle, error ) ) << error.toStdString();
+      EXPECT_TRUE( importer.verifyPayloads().isEmpty() );
+
+      QMap< QString, qint64 > files;
+      QString                 why;
+      ASSERT_TRUE( US_DataPubBundle::listTree( importer.bundleRoot(), files,
+                                               why ) );
+
+      for ( auto it = files.constBegin(); it != files.constEnd(); ++it )
+         EXPECT_FALSE( it.key().contains( runID2 ) ) << it.key().toStdString();
+
+      QDir dirs( importer.bundleRoot() + "/rawData" );
+      EXPECT_FALSE( dirs.exists( runID2 ) );
+
+      ASSERT_TRUE( importer.runImport( disk_target( root + "/target"
+                   + QString::number( pass ) ), error ) )
+         << error.toStdString();
+
+      // The same run, named, fails the export
+      US_DataPubExporter            named;
+      US_DataPubExporter::Selection one =
+         baseSelection( US_DataPub::ScopeNoise );
+      one.runIDs = QStringList() << runID2;
+
+      EXPECT_FALSE( named.exportBundle( one, root + "/one.tar.gz", error ) );
+      EXPECT_FALSE( QFile::exists( root + "/one.tar.gz" ) );
+
+      // Back to a run that holds together for the next pass
+      QFile file( xml2 );
+      ASSERT_TRUE( file.open( QIODevice::WriteOnly | QIODevice::Truncate ) );
+      file.write( original.toUtf8() );
+      file.close();
+   }
+}
+
+// When no run of the project can be exported, there is nothing to export
+TEST_F( DataPubExport, AProjectOfOnlyBrokenRunsFailsTheExport )
+{
+   QString expXml = runDir() + "/" + runID + "." + runType + ".xml";
+   ASSERT_TRUE( replace_in_file( expXml, solutionGUID, US_Util::new_guid() ) );
+
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection;
+   selection.fromDb      = false;
+   selection.scope       = US_DataPub::ScopeNoise;
+   selection.projectGUID = projectGUID;
+   QString error;
+
+   EXPECT_FALSE( exporter.exportBundle( selection, root + "/none.tar.gz",
+                                        error ) );
+   EXPECT_TRUE( error.contains( "None of the 1 runs" ) ) << error.toStdString();
+}
+
+/* The analyte's main payload holds what was measured and nothing else: no
+   extinction at 280 nm computed from the sequence, which the library's
+   reader adds.  So it is the same whether the analyte is exported from
+   disk or from the database (which stores only the measured profile).
+*/
+TEST_F( DataPubExport, TheAnalytePayloadHoldsOnlyMeasuredSpectra )
+{
+   auto payloadOf = [ this ]( QString& xml )
+   {
+      US_DataPubExporter exporter;
+      QString            bundle = root + "/analyte_main.tar.gz";
+      QString            error;
+
+      if ( ! exporter.exportBundle( baseSelection( US_DataPub::ScopeSolutions ),
+                                    bundle, error ) )
+         return false;
+
+      US_DataPubEntity entity;
+      US_DataPubBundle unpacked;
+
+      if ( ! exporter.manifest().entity( US_DataPub::Analyte, analyteGUID,
+                                         entity )  ||
+           ! unpacked.unpack( bundle, error ) )
+         return false;
+
+      xml = read_text( unpacked.rootPath() + "/" + entity.payload );
+      return ! xml.isEmpty();
+   };
+
+   QString xml;
+   ASSERT_TRUE( payloadOf( xml ) );
+   EXPECT_TRUE( xml.contains( analyteGUID ) );
+   EXPECT_FALSE( xml.contains( "<extinction" ) ) << xml.toStdString();
+
+   // A measured spectrum is all there is
+   QString apath = file_with_guid( dataDir( "analytes" ), analyteGUID );
+   ASSERT_TRUE( replace_in_file( apath, "</analyte>",
+                "<extinction frequency=\"230.5\" value=\"1234.5\"/>"
+                "</analyte>" ) );
+
+   ASSERT_TRUE( payloadOf( xml ) );
+   EXPECT_EQ( xml.count( "<extinction" ), 1 ) << xml.toStdString();
+   EXPECT_TRUE( xml.contains( "frequency=\"230.5\"" ) ) << xml.toStdString();
+}
+
+// A spectrum or a concentration that is not a number would be refused on
+// import; the export refuses it first
+TEST_F( DataPubExportSteps, NonFiniteSpectraAndConcentrationsAreRefused )
+{
+   auto plain = [ this ]()
+   {
+      US_Solution solution;
+      solution.solutionGUID       = solutionGUID;
+      solution.solutionDesc       = "Plain";
+      solution.buffer.GUID        = bufferGUID;
+      solution.buffer.description = "Plain buffer";
+      return solution;
+   };
+
+   const double nan = std::numeric_limits< double >::quiet_NaN();
+   const double inf = std::numeric_limits< double >::infinity();
+
+   QList< US_Solution > bad;
+
+   US_Solution solution = plain();
+   solution.extinction.insert( 280.0, nan );
+   bad << solution;
+
+   solution = plain();
+   solution.buffer.extinction.insert( 280.0, inf );
+   bad << solution;
+
+   solution = plain();
+   solution.buffer.refraction.insert( nan, 1.33 );
+   bad << solution;
+
+   solution = plain();
+   US_BufferComponent comp;
+   comp.componentID = "99";
+   comp.name        = "sodium chloride";
+   solution.buffer.component     << comp;
+   solution.buffer.componentIDs  << "99";
+   solution.buffer.concentration << inf;
+   bad << solution;
+
+   solution = plain();
+   US_Solution::AnalyteInfo info;
+   info.analyte.analyteGUID = analyteGUID;
+   info.analyte.description = "Demo analyte";
+   info.analyte.extinction.insert( 280.0, -inf );
+   info.amount = 1.0;
+   solution.analyteInfo << info;
+   bad << solution;
+
+   solution = plain();
+   info.analyte.extinction.clear();
+   info.amount = nan;
+   solution.analyteInfo.clear();
+   solution.analyteInfo << info;
+   bad << solution;
+
+   for ( int ii = 0; ii < bad.size(); ii++ )
+   {
+      US_DataPubExporter fresh;
+      US_DataPubExporterTest::attach( fresh, sdb.db() );
+      QString error;
+      ASSERT_TRUE( US_DataPubExporterTest::stage( fresh, error ) );
+
+      EXPECT_FALSE( US_DataPubExporterTest::addSolution( fresh, bad[ ii ],
+                    expGUID, error ) ) << "case " << ii;
+      EXPECT_TRUE( error.contains( "not a number" ) )
+         << "case " << ii << ": " << error.toStdString();
+      EXPECT_TRUE( US_DataPubExporterTest::runFault( fresh ) ) << "case " << ii;
+   }
+
+   // A finite one goes
+   solution = plain();
+   solution.extinction.insert( 280.0, 1.5 );
+   QString error;
+   EXPECT_TRUE( US_DataPubExporterTest::addSolution( exporter, solution,
+                expGUID, error ) ) << error.toStdString();
 }

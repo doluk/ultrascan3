@@ -218,11 +218,13 @@ added because a local store keeps that information elsewhere, or rounds it:
   the profile stored for the analyte, from disk the `<extinction>`,
   `<refraction>` and `<fluorescence>` elements the analyte file really holds
   (`US_DataPubRecords::readAnalyteSpectra()`) — not the 280 nm value
-  `US_Analyte`'s reader computes from a protein's sequence. The main payload
-  keeps the library writer's own copy (rounded, and for a protein read from
-  disk with that computed point), so a bundle still reads as a local store
-  and compares equal with the same record of a target; an import takes the
-  spectra from the spectra payload.
+  `US_Analyte`'s reader computes from a protein's sequence. The main payload,
+  the library writer's own file, is written with the same measured spectra,
+  so it is the same whether the analyte was exported from the database or
+  from disk, and it carries no computed point as if it had been measured; an
+  import takes the spectra from the spectra payload. A spectrum (of a buffer,
+  analyte or solution), a buffer concentration or an analyte amount that is
+  not a finite number is refused by the export, as an import would refuse it.
 * `experiment/<runID>.RIProfile.xml` — the radial intensity profile an RI
   (pseudo-absorbance) run is reduced with, in the format of the local
   `<runID>.RIProfile.xml`. On disk it is the file in the run directory; from
@@ -510,7 +512,14 @@ command line exits with `1`, when
 **A run of a project export that breaks a rule is left out** rather than
 failing the whole export: a project with a run whose run ID, run type, or the
 GUID or file name of one of its triples or edits cannot be exported goes
-without that run, with a warning naming it. A run named on its own
+without that run, with a warning naming it. So does a run whose records turn
+out not to hold together while they are staged: a channel without a solution
+(or whose solution, buffer or analyte is gone), a payload that does not carry
+the GUID the catalog lists it under, an experiment XML that names another run
+ID or GUID than the run (a run directory renamed by hand), a spectrum that is
+not all numbers. Everything already staged for that run is taken back, and
+its models and noise stay out with it. A database or disk that fails is not
+the run's fault and still fails the export. A run named on its own
 (`--experiment-id`, or picked in the window) is refused instead. When no run
 of the project is left, the export fails.
 
@@ -606,9 +615,13 @@ The Export tab works top to bottom:
    was already there, so such a model travels with the newest noise of its
    edit that existed when the model was made — one record of each type, since
    a run can carry a time-invariant and a radially-invariant record at once.
-   Those rows are marked *(of this edit)* in the tree, and the manifest keeps
-   the GUID of the model the record was really fitted to in
-   `fittedToModelGUID`.
+   Those rows are marked *(of this edit)* in the tree. The record still
+   belongs to the model it was fitted to — its payload names that model — so
+   that model travels too (the log says so), the noise depends on it in the
+   manifest (`depends: modelGUID`), and the model it is carried for is in
+   `borrowedByModelGUID`. When the model it was fitted to cannot travel (it is
+   gone, or its edit is not in the bundle) the noise stays out with a
+   warning, or fails the export when it was asked for by GUID.
 8. **Export up to**, **Include time state**, **Comment**, **Bundle file**.
 9. **Summary** — the counts of projects, experiments, raw data, edits, models
    and noise records. With only a project picked and no run selected, there

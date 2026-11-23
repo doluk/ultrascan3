@@ -209,6 +209,20 @@ class US_DataPubExporter : public QObject
       //! The noise records that were asked for by GUID
       QStringList        explicit_noises;
 
+      //! Whether the runs came with the project rather than by name: a run
+      //! that cannot be exported is then left out instead of failing it
+      bool               from_project;
+
+      //! Whether the last failure is the run's own -- its records do not
+      //! hold together -- rather than the export's (a database or a disk
+      //! that fails); only the former lets a project export go on
+      bool               run_fault;
+
+      //! Every model the catalog lists for the runs, also those that were
+      //! not selected: noise carried for one model may have been fitted to
+      //! another, which then has to travel too
+      QList< US_DataPubCatalog::Model > listed_models;
+
       //! runID -> GUID of the rotor calibration the run was made with
       QMap< QString, QString > cal_guids;
 
@@ -227,6 +241,24 @@ class US_DataPubExporter : public QObject
       bool                                hd_comp_loaded;
 
       bool build( const Selection&, bool payloads, QString& error );
+
+      /*! Stage the records of one run, within the export's scope: its
+          rotor calibration and centerpieces, experiment, solutions, raw
+          data, time state and edits.  A failure that is the run's own sets
+          \ref run_fault.
+      */
+      bool stageRun     ( const Selection&, const US_DataPubCatalog::Run&,
+                          const US_DataPubCatalog::ExpInfo&, QString& );
+
+      //! Fail with \a text as a problem of the run itself
+      bool runFault     ( QString& error, const QString& text );
+
+      /*! The models the noise records were really fitted to: noise carried
+          for a model that has none of its own belongs to another model of
+          the same edit, which travels with it, or the noise stays out
+      */
+      bool addFittedModels( QList< US_DataPubCatalog::Model >&,
+                            QList< US_DataPubCatalog::Noise >&, QString& );
 
       bool gatherRuns   ( const Selection&, QList< US_DataPubCatalog::Run >&,
                           QString& );
@@ -251,6 +283,19 @@ class US_DataPubExporter : public QObject
       static bool checkRawGuid  ( const QString& path, const QString& guid,
                                   QString& error );
 
+      /*! Whether a staged experiment XML names the run and the GUID it is
+          exported under; an import refuses one that does not
+      */
+      static bool checkExperimentXml( const QString& path,
+                                      const QString& runID,
+                                      const QString& guid, QString& error );
+
+      /*! Whether every wavelength and value of the spectra is a finite
+          number; an import refuses a spectrum that is not
+      */
+      static bool spectraAreFinite(
+            const QMap< QString, QMap< double, double > >&, QString& why );
+
       //! Whether an edit payload carries its GUID and its raw data's
       static bool checkEditGuids( const QString& path, const QString& editGUID,
                                   const QString& rawGUID, QString& error );
@@ -271,9 +316,13 @@ class US_DataPubExporter : public QObject
                           const QList< US_DataPubCatalog::Run >&,
                           QList< US_DataPubCatalog::Model >&, QString& );
       bool addModels    ( const QList< US_DataPubCatalog::Model >&, QString& );
+      //! \a leftOut are the models of runs a project export left out:
+      //! noise of theirs that was asked for by GUID goes with them
       bool collectNoises( const Selection&,
                           const QList< US_DataPubCatalog::Model >&,
-                          QList< US_DataPubCatalog::Noise >&, QString& );
+                          QList< US_DataPubCatalog::Noise >&, QString&,
+                          const QList< US_DataPubCatalog::Model >& leftOut
+                             = QList< US_DataPubCatalog::Model >() );
       bool addNoises    ( const QList< US_DataPubCatalog::Noise >&, QString& );
 
       bool buildTriplesFromDb( const US_DataPubCatalog::Run&,
