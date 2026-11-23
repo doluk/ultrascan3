@@ -9,13 +9,24 @@
 // tree shows and what was never asked of the server.  The local half is a
 // scratch results directory, as in test_us_data_model.cpp.
 //
-// The fake fails the way a server does (us3_sql is the reference): a
-// procedure that is missing or may not be run fails the CALL with server
-// error 1305 or 1370, a lost connection with a client error (2013), and
-// "no rows" is a procedure status with no server error at all.  Writes
-// change its data -- a removal removes, delete_editedData cascades as
-// us3_expdata_procs.sql does and is refused while noise of another edit's
-// model refers to the edit (fk_noise_editDataID is ON DELETE NO ACTION) --
+// The fake answers the way a server does (us3_sql is the reference, and
+// test_us_data_db_live.cpp checks the parts that matter against a real
+// one): a procedure that is missing or may not be run fails the CALL with
+// server error 1305 or 1370, a lost connection with a client error (2013),
+// a lock wait with 1205, and "no rows" is a procedure status with no server
+// error at all -- or OK with an empty set, for the procedures that answer
+// so.  The investigator is an ordinary user: the listings hold their own
+// records only, a record of another investigator is refused (201) by the
+// reads and deletes that check permission, and the GUID lookups are not
+// scoped and ignore case.  Columns come back as US_DB2::value() gives them,
+// as text decoded from UTF-8.  Writes change its data -- a removal removes,
+// delete_editedData cascades as us3_expdata_procs.sql does and is refused
+// while noise of another edit's model refers to the edit
+// (fk_noise_editDataID is ON DELETE NO ACTION), keeping what it removed
+// before; with patchedEditDelete it is a transaction of its own that also
+// removes that noise, and commits the client's transaction -- new_noise
+// files noise under edit 1 when the edit may not be used, transactions
+// give back what was written since the begin unless the server ended them,
 // and lastInsertID() never names the record just written.
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
@@ -49,13 +60,17 @@ typedef US_DataModel::DataDesc Desc;
 
 namespace
 {
-   const int     kInv  = 5;
-   const QString kDate = "2024-03-04 05:06:07";
+   const int     kInv   = 5;          // the investigator, an ordinary user
+   const int     kOther = 6;          // another investigator
+   const QString kDate  = "2024-03-04 05:06:07";
 
-   struct FExp   { QString id, guid, runID; };
+   // An experiment, and a model, belong to an investigator (experimentPerson,
+   // modelPerson); raw data and edits through their experiment, a noise
+   // record through its model
+   struct FExp   { QString id, guid, runID; int owner = kInv; };
    struct FRaw   { QString id, guid, file, expID; };
    struct FEdit  { QString id, guid, rawID, file; };
-   struct FModel { QString id, guid, desc, editGUID, editID, xml; };
+   struct FModel { QString id, guid, desc, editGUID, editID, xml; int owner = kInv; };
    struct FNoise { QString id, guid, editID, modelID, modelGUID, type,
                    desc, xml; };
 
@@ -75,10 +90,32 @@ namespace
       return QString::fromUtf8( file.readAll() );
    }
 
-   /* A server holding one investigator's store */
+   // GUIDs compare as the server's collation compares them: without case
+   bool sameGuid( const QString& a, const QString& b )
+   {
+      return a.compare( b, Qt::CaseInsensitive ) == 0;
+   }
+
+   /* A server holding an investigator's store, and records of another one
+
+      What the investigator may see and change follows us3_sql: an
+      ordinary user is held to their own records, in the listings and the
+      deletes alike, while the GUID lookups are not scoped. */
    class FakeServer
    {
       public:
+         // What a transaction can give back
+         struct Data
+         {
+            QList< FExp >   exps;
+            QList< FRaw >   raws;
+            QList< FEdit >  edits;
+            QList< FModel > models;
+            QList< FNoise > noises;
+            QMap< QString, QString > digest;
+            QMap< int, QByteArray >  blobs;
+         };
+
          QList< FExp >   exps;
          QList< FRaw >   raws;
          QList< FEdit >  edits;
@@ -90,16 +127,50 @@ namespace
          QSet< QString >          failing;    // procedures whose call loses
                                               // the connection
          QMap< QString, int >     failTimes;  // ... the next n times only
+         QMap< QString, int >     failAfter;  // ... every time after the
+                                              // first n calls
+         QMap< QString, int >     callCount;  // calls so far, by name
+         QMap< QString, int >     transient;  // the next n calls wait for a
+                                              // lock too long (1205)
          QSet< QString >          missing;    // procedures the server lacks
          QSet< QString >          denied;     // ... or may not be run
          QMap< QString, int >     refusing;   // writes refused with a status
          QStringList              calls;      // every query, by name
          QStringList              changes;    // every statusQuery
-         int                      autoflow = 0;
+         QStringList              txlog;      // begin, commit, rollback
+         int                      autoflow = 0;     // every run is GMP's
+         QSet< QString >          autoflowRuns;     // ... or these
+         QStringList              autoflowModels;   // model IDs GMP made
+         QSet< QString >          commitsInside;    // writes that end the
+                                                    // client's transaction
          int                      nextID   = 900;
+
+         // delete_editedData as the patched us3_sql has it: one transaction
+         // of its own (which commits the client's), and noise recorded
+         // against the edit removed with it.  Without it, as the procedure
+         // has long been: models and their noise go first, and the edit
+         // then fails on fk_noise_editDataID, keeping what went.
+         bool                     patchedEditDelete = false;
 
          Answer current;
          int    row = -1;
+
+         // The client's view of its transaction, and the server's
+         bool   clientTx = false;
+         bool   serverTx = false;
+         Data   saved;
+
+         Data data() const
+         {
+            return Data{ exps, raws, edits, models, noises, digest, blobs };
+         }
+
+         void restore( const Data& dd )
+         {
+            exps   = dd.exps;    raws   = dd.raws;   edits = dd.edits;
+            models = dd.models;  noises = dd.noises;
+            digest = dd.digest;  blobs  = dd.blobs;
+         }
 
          void wire( NiceMock< US_DB2_Mock >& db )
          {
@@ -108,11 +179,17 @@ namespace
                .WillByDefault( Invoke( [ this ]( const QStringList& q ) { call( q ); } ) );
             ON_CALL( db, next() )
                .WillByDefault( Invoke( [ this ]() { return ++row < current.rows.size(); } ) );
+
+            // As US_DB2::value() gives a column: the text of a C string the
+            // server sent as UTF-8, a NULL as an empty string
             ON_CALL( db, value( _ ) )
                .WillByDefault( Invoke( [ this ]( unsigned ii ) -> QVariant
                {
                   if ( row < 0  ||  row >= current.rows.size() )  return QVariant();
-                  return current.rows[ row ].value( int( ii ) );
+                  if ( int( ii ) >= current.rows[ row ].size() )  return QVariant();
+                  QByteArray bytes = current.rows[ row ].value( int( ii ) )
+                                     .toString().toUtf8();
+                  return QVariant( QString( bytes.constData() ) );
                } ) );
             ON_CALL( db, lastErrno() )
                .WillByDefault( Invoke( [ this ]() { return current.status; } ) );
@@ -133,7 +210,7 @@ namespace
                .WillByDefault( Invoke( [ this ]( const QStringList& q )
                {
                   calls << q.value( 0 );
-                  return autoflow;
+                  return autoflowRuns.contains( q.value( 1 ) ) ? 1 : autoflow;
                } ) );
             ON_CALL( db, readBlobFromDB( _, _, _ ) )
                .WillByDefault( Invoke( [ this ]( const QString& path,
@@ -146,6 +223,53 @@ namespace
                      return int( IUS_DB2::DBERROR );
                   file.write( blobs[ id ] );
                   return int( IUS_DB2::OK );
+               } ) );
+
+            // Transactions as US_DB2 has them: a commit or a rollback of a
+            // transaction the server ended already is refused
+            ON_CALL( db, transactionActive() )
+               .WillByDefault( Invoke( [ this ]() { return clientTx; } ) );
+            ON_CALL( db, beginTransaction( _ ) )
+               .WillByDefault( Invoke( [ this ]( QString& error )
+               {
+                  txlog << "begin";
+                  error.clear();
+                  if ( clientTx )  { error = "a transaction is open";  return false; }
+                  clientTx = serverTx = true;
+                  saved    = data();
+                  return true;
+               } ) );
+            ON_CALL( db, commitTransaction( _ ) )
+               .WillByDefault( Invoke( [ this ]( QString& error )
+               {
+                  txlog << "commit";
+                  error.clear();
+                  if ( ! clientTx )  { error = "no transaction";  return false; }
+                  if ( ! serverTx )
+                  {
+                     error = "the transaction ended before the commit;"
+                             " some rows may have been kept";
+                     return false;
+                  }
+                  clientTx = serverTx = false;
+                  return true;
+               } ) );
+            ON_CALL( db, rollbackTransaction( _ ) )
+               .WillByDefault( Invoke( [ this ]( QString& error )
+               {
+                  txlog << "rollback";
+                  error.clear();
+                  if ( ! clientTx )  { error = "no transaction";  return false; }
+                  clientTx = false;
+                  if ( ! serverTx )
+                  {
+                     error = "the transaction ended before the rollback;"
+                             " some rows may have been kept";
+                     return false;
+                  }
+                  serverTx = false;
+                  restore( saved );
+                  return true;
                } ) );
          }
 
@@ -164,20 +288,24 @@ namespace
             current = Answer();
             row     = -1;
 
-            if ( failTimes.value( name ) > 0 )
+            int ncall = ++callCount[ name ];
+
+            if ( failTimes.value( name ) > 0  ||  failing.contains( name )  ||
+                 ( failAfter.contains( name )  &&  ncall > failAfter.value( name ) ) )
             {
-               failTimes[ name ]--;
+               if ( failTimes.value( name ) > 0 )  failTimes[ name ]--;
                current.status = IUS_DB2::DBERROR;
                current.server = 2013;
                current.error  = "Lost connection to MySQL server during query";
                return true;
             }
 
-            if ( failing.contains( name ) )
+            if ( transient.value( name ) > 0 )
             {
+               transient[ name ]--;
                current.status = IUS_DB2::DBERROR;
-               current.server = 2013;
-               current.error  = "Lost connection to MySQL server during query";
+               current.server = 1205;
+               current.error  = "Lock wait timeout exceeded; try restarting transaction";
                return true;
             }
 
@@ -200,6 +328,13 @@ namespace
             return false;
          }
 
+         void refuse( int status, const QString& error )
+         {
+            current.status = status;
+            current.error  = error;
+            current.rows.clear();
+         }
+
          void call( const QStringList& q )
          {
             const QString name = q.value( 0 );
@@ -207,13 +342,7 @@ namespace
 
             if ( fails( name ) )   return;
 
-            current.rows = rowsOf( name, q.mid( 1 ) );
-
-            if ( current.rows.isEmpty() )
-            {  // a procedure status, not a server error
-               current.status = IUS_DB2::NOROWS;
-               current.error  = "MySQL: no rows returned";
-            }
+            answer( name, q.mid( 1 ) );
          }
 
          static QString md5Of( const QString& text )
@@ -223,11 +352,74 @@ namespace
                             .toHex() ) + " " + QString::number( bytes.size() );
          }
 
+         // ---------------------------------------------- who may see what
+
+         const FRaw* rawById( const QString& id ) const
+         {
+            for ( const FRaw& rr : raws )  if ( rr.id == id )  return &rr;
+            return nullptr;
+         }
+
+         const FEdit* editById( const QString& id ) const
+         {
+            for ( const FEdit& ed : edits )  if ( ed.id == id )  return &ed;
+            return nullptr;
+         }
+
+         const FModel* modelById( const QString& id ) const
+         {
+            for ( const FModel& mm : models )  if ( mm.id == id )  return &mm;
+            return nullptr;
+         }
+
+         const FNoise* noiseById( const QString& id ) const
+         {
+            for ( const FNoise& nn : noises )  if ( nn.id == id )  return &nn;
+            return nullptr;
+         }
+
+         QString expOfEdit( const QString& editID ) const
+         {
+            const FEdit* ed = editById( editID );
+            return ( ed  &&  rawById( ed->rawID ) ) ? rawById( ed->rawID )->expID
+                                                    : QString();
+         }
+
+         bool expMine( const QString& expID ) const
+         {
+            for ( const FExp& ee : exps )
+               if ( ee.id == expID )  return ee.owner == kInv;
+            return false;
+         }
+
+         bool editMine( const QString& editID ) const
+         {
+            return expMine( expOfEdit( editID ) );
+         }
+
+         bool modelMine( const QString& modelID ) const
+         {
+            const FModel* mm = modelById( modelID );
+            return mm  &&  mm->owner == kInv;
+         }
+
+         bool noiseMine( const FNoise& nn ) const
+         {
+            return modelMine( nn.modelID );
+         }
+
          QString editIdOfGuid( const QString& guid ) const
          {
-            for ( const FEdit& ed : edits )  if ( ed.guid == guid )  return ed.id;
+            for ( const FEdit& ed : edits )  if ( sameGuid( ed.guid, guid ) )  return ed.id;
             return "1";                      // the "unassigned" edit
          }
+
+         QString rawGUIDOf( const FEdit& ed ) const
+         {
+            return rawById( ed.rawID ) ? rawById( ed.rawID )->guid : QString();
+         }
+
+         // ---------------------------------------------- writes
 
          // A write: what us3_sql's procedure does to the data
          void change( const QStringList& q )
@@ -237,21 +429,35 @@ namespace
 
             if ( fails( name ) )   return;
 
+            // The patched procedure starts a transaction of its own, which
+            // commits the client's before anything else happens
+            if ( ( name == "delete_editedData"  &&  patchedEditDelete )  ||
+                 commitsInside.contains( name ) )
+               serverTx = false;
+
             if ( refusing.contains( name ) )
             {
-               current.status = refusing.value( name );
-               current.error  = "MySQL: you do not have permission";
+               refuse( refusing.value( name ), "MySQL: you do not have permission" );
                return;
             }
 
             if ( name == "delete_noise" )
-            {
+            {  // verify_noise_permission
+               const FNoise* nn = noiseById( a.value( 0 ) );
+               if ( ! nn )            return refuse( IUS_DB2::NO_NOISE,
+                                         "MySQL: the specified noise file does not exist" );
+               if ( ! noiseMine( *nn ) ) return refuse( IUS_DB2::NOTPERMITTED,
+                                         "MySQL: you do not have permission to view or modify this noise file" );
                for ( int ii = noises.size() - 1; ii >= 0; ii-- )
                   if ( noises[ ii ].id == a.value( 0 ) )  noises.removeAt( ii );
             }
 
             else if ( name == "delete_model" )
-            {
+            {  // verify_model_permission; the model's noise goes with it
+               if ( ! modelById( a.value( 0 ) ) )  return refuse( IUS_DB2::NO_MODEL,
+                                         "MySQL: the specified model does not exist" );
+               if ( ! modelMine( a.value( 0 ) ) )  return refuse( IUS_DB2::NOTPERMITTED,
+                                         "MySQL: you do not have permission to view or modify this model" );
                for ( int ii = noises.size() - 1; ii >= 0; ii-- )
                   if ( noises[ ii ].modelID == a.value( 0 ) )  noises.removeAt( ii );
                for ( int ii = models.size() - 1; ii >= 0; ii-- )
@@ -261,18 +467,28 @@ namespace
             else if ( name == "delete_editedData" )
             {
                const QString edit = a.value( 0 );
-               QSet< QString > mine;
 
+               // verify_editData_permission
+               if ( expOfEdit( edit ).isEmpty() )  return refuse( 508,
+                                         "MySQL: the associated experiment does not exist" );
+               if ( ! editMine( edit ) )           return refuse( IUS_DB2::NOTPERMITTED,
+                                         "MySQL: you do not have permission to view or modify this experiment" );
+
+               // Every model of the edit, whoever's, and its noise wherever
+               // it was recorded
+               QSet< QString > onEdit;
                for ( const FModel& mm : models )
-                  if ( mm.editID == edit )  mine << mm.id;
+                  if ( mm.editID == edit )  onEdit << mm.id;
 
-               // The models, their noise wherever it was recorded; then the
-               // edit, which noise of another edit's model still refers to
                for ( int ii = noises.size() - 1; ii >= 0; ii-- )
-                  if ( mine.contains( noises[ ii ].modelID ) )  noises.removeAt( ii );
+                  if ( onEdit.contains( noises[ ii ].modelID )  ||
+                       ( patchedEditDelete  &&  noises[ ii ].editID == edit ) )
+                     noises.removeAt( ii );
                for ( int ii = models.size() - 1; ii >= 0; ii-- )
-                  if ( mine.contains( models[ ii ].id ) )  models.removeAt( ii );
+                  if ( onEdit.contains( models[ ii ].id ) )  models.removeAt( ii );
 
+               // Noise of another edit's model still refers to the edit:
+               // the last statement fails, the ones before it stand
                for ( const FNoise& nn : noises )
                   if ( nn.editID == edit )
                   {
@@ -289,14 +505,23 @@ namespace
 
             else if ( name == "new_model" )
             {  // modelGUID, description, xml, variance, meniscus, editGUID, ownerID
+               for ( const FModel& mm : models )
+                  if ( sameGuid( mm.guid, a.value( 0 ) ) )
+                     return refuse( 402, "MySQL: Duplicate entry for modelGUID field" );
+
                QString id = QString::number( ++nextID );
-               models << FModel{ id, a.value( 0 ), a.value( 1 ), a.value( 5 ),
-                                 editIdOfGuid( a.value( 5 ) ), a.value( 2 ) };
+               FModel  mm{ id, a.value( 0 ), a.value( 1 ), a.value( 5 ),
+                           editIdOfGuid( a.value( 5 ) ), a.value( 2 ) };
+               mm.owner = a.value( 6 ).toInt();
+               models << mm;
                digest[ a.value( 0 ) ] = md5Of( a.value( 2 ) );
             }
 
             else if ( name == "update_model" )
             {  // modelID, description, xml, variance, meniscus, editGUID
+               if ( ! modelMine( a.value( 0 ) ) )
+                  return refuse( IUS_DB2::NOTPERMITTED, "MySQL: you do not have permission" );
+
                for ( FModel& mm : models )
                   if ( mm.id == a.value( 0 ) )
                   {
@@ -308,42 +533,44 @@ namespace
 
             else if ( name == "new_noise" )
             {  // noiseGUID, editID, modelID, modelGUID, type, description, xml
+               // An edit that may not be used is replaced by edit 1; the
+               // model is found by GUID first, then by ID
+               QString editID = editMine( a.value( 1 ) ) ? a.value( 1 ) : "1";
+               const FModel* model = nullptr;
+
+               for ( const FModel& mm : models )
+                  if ( sameGuid( mm.guid, a.value( 3 ) ) )  model = &mm;
+               if ( ! model )
+                  model = modelById( a.value( 2 ) );
+
+               if ( ! model )
+                  return refuse( IUS_DB2::NO_MODEL, "MySQL: the model was not found in the database" );
+               if ( model->owner != kInv )
+                  return refuse( IUS_DB2::NOTPERMITTED, "MySQL: you do not have permission" );
+
                QString id = QString::number( ++nextID );
-               noises << FNoise{ id, a.value( 0 ), a.value( 1 ), a.value( 2 ),
-                                 a.value( 3 ), a.value( 4 ), a.value( 5 ), a.value( 6 ) };
+               noises << FNoise{ id, a.value( 0 ), editID, model->id, model->guid,
+                                 a.value( 4 ), a.value( 5 ), a.value( 6 ) };
                digest[ a.value( 0 ) ] = md5Of( a.value( 6 ) );
             }
 
             else if ( name == "update_noise" )
             {  // noiseID, noiseGUID, editID, modelID, modelGUID, type, description, xml
-               for ( FNoise& nn : noises )
-                  if ( nn.id == a.value( 0 ) )
+               const FNoise* nn = noiseById( a.value( 0 ) );
+               if ( ! nn  ||  ! noiseMine( *nn ) )
+                  return refuse( IUS_DB2::NOTPERMITTED, "MySQL: you do not have permission" );
+
+               for ( FNoise& no : noises )
+                  if ( no.id == a.value( 0 ) )
                   {
-                     nn.desc = a.value( 6 );
-                     nn.xml  = a.value( 7 );
-                     digest[ nn.guid ] = md5Of( nn.xml );
+                     no.desc = a.value( 6 );
+                     no.xml  = a.value( 7 );
+                     digest[ no.guid ] = md5Of( no.xml );
                   }
             }
          }
 
-         const FRaw* rawById( const QString& id ) const
-         {
-            for ( const FRaw& rr : raws )  if ( rr.id == id )  return &rr;
-            return nullptr;
-         }
-
-         QString expOfEdit( const QString& editID ) const
-         {
-            for ( const FEdit& ed : edits )
-               if ( ed.id == editID )
-                  return rawById( ed.rawID ) ? rawById( ed.rawID )->expID : QString();
-            return QString();
-         }
-
-         QString rawGUIDOf( const FEdit& ed ) const
-         {
-            return rawById( ed.rawID ) ? rawById( ed.rawID )->guid : QString();
-         }
+         // ---------------------------------------------- reads
 
          QVariantList rawRow( const FRaw& rr, bool hashed ) const
          {
@@ -375,28 +602,52 @@ namespace
                                   << ck( nn.guid, 0 ) << ck( nn.guid, 1 ) << nn.desc;
          }
 
-         QList< QVariantList > rowsOf( const QString& name, const QStringList& a ) const
+         // A procedure's answer: its status, and the rows that follow it
+         void answer( const QString& name, const QStringList& a )
          {
-            QList< QVariantList > rows;
+            QList< QVariantList >& rows = current.rows;
+
+            // These answer OK with an empty data set when there is nothing
+            // (us3_catalog_procs.sql); every other one answers NOROWS
+            static const QSet< QString > okWhenEmpty
+            {
+               "get_experiment_summary", "get_model_desc_by_experiment",
+               "get_noise_desc_by_experiment", "get_rawData_by_person",
+               "get_editedData_by_person"
+            };
 
             if ( name == "get_experiment_summary" )
                for ( const FExp& ee : exps )
                {
+                  if ( ee.owner != kInv )  continue;
                   int nr = 0, ne = 0, nm = 0, nn = 0;
                   for ( const FRaw& rr : raws )   if ( rr.expID == ee.id )  nr++;
-                  for ( const FEdit& ed : edits ) if ( rawById( ed.rawID ) && rawById( ed.rawID )->expID == ee.id ) ne++;
-                  for ( const FModel& mm : models ) if ( expOfEdit( mm.editID ) == ee.id ) nm++;
-                  for ( const FNoise& no : noises ) if ( expOfEdit( no.editID ) == ee.id ) nn++;
+                  for ( const FEdit& ed : edits ) if ( expOfEdit( ed.id ) == ee.id ) ne++;
+                  for ( const FModel& mm : models )
+                     if ( mm.owner == kInv  &&  expOfEdit( mm.editID ) == ee.id ) nm++;
+                  for ( const FNoise& no : noises )
+                     if ( noiseMine( no )  &&  expOfEdit( no.editID ) == ee.id ) nn++;
                   rows << ( QVariantList() << ee.id << ee.guid << ee.runID << "velocity" << "RA"
                                            << ee.runID + " label" << "1" << ""
                                            << "project" << kDate << nr << ne << nm << nn );
                }
 
             else if ( name == "get_rawData_by_person" )
-               for ( const FRaw& rr : raws )  rows << rawRow( rr, false );
+            {
+               for ( const FRaw& rr : raws )
+                  if ( expMine( rr.expID ) )  rows << rawRow( rr, false );
+            }
 
             else if ( name == "get_editedData_by_person" )
-               for ( const FEdit& ed : edits )  rows << editRow( ed, false );
+            {
+               for ( const FEdit& ed : edits )
+                  if ( editMine( ed.id ) )  rows << editRow( ed, false );
+            }
+
+            else if ( name.endsWith( "_by_experiment" )  &&
+                      ! expMine( a.value( name.startsWith( "get_model" )  ||
+                                          name.startsWith( "get_noise" ) ? 1 : 0 ) ) )
+               return refuse( IUS_DB2::NOTPERMITTED, "MySQL: you do not have permission" );
 
             else if ( name == "get_rawData_by_experiment" )
             {
@@ -407,97 +658,134 @@ namespace
             else if ( name == "get_editedData_by_experiment" )
             {
                for ( const FEdit& ed : edits )
-                  if ( rawById( ed.rawID ) && rawById( ed.rawID )->expID == a.value( 0 ) )
-                     rows << editRow( ed, true );
+                  if ( expOfEdit( ed.id ) == a.value( 0 ) )  rows << editRow( ed, true );
             }
 
             else if ( name == "get_model_desc" )
-               for ( const FModel& mm : models )  rows << modelRow( mm );
+            {
+               for ( const FModel& mm : models )
+                  if ( mm.owner == kInv )  rows << modelRow( mm );
+            }
 
             else if ( name == "get_noise_desc" )
-               for ( const FNoise& nn : noises )  rows << noiseRow( nn );
+            {
+               for ( const FNoise& nn : noises )
+                  if ( noiseMine( nn ) )  rows << noiseRow( nn );
+            }
 
             else if ( name == "get_model_desc_by_experiment" )
             {
                for ( const FModel& mm : models )
-                  if ( expOfEdit( mm.editID ) == a.value( 1 ) )  rows << modelRow( mm );
+                  if ( mm.owner == kInv  &&  expOfEdit( mm.editID ) == a.value( 1 ) )
+                     rows << modelRow( mm );
             }
 
             else if ( name == "get_noise_desc_by_experiment" )
             {
                for ( const FNoise& nn : noises )
-                  if ( expOfEdit( nn.editID ) == a.value( 1 ) )  rows << noiseRow( nn );
+                  if ( noiseMine( nn )  &&  expOfEdit( nn.editID ) == a.value( 1 ) )
+                     rows << noiseRow( nn );
             }
 
             else if ( name == "get_rawData" )
             {
-               if ( const FRaw* rr = rawById( a.value( 0 ) ) )
+               const FRaw* rr = rawById( a.value( 0 ) );
+               if ( rr  &&  ! expMine( rr->expID ) )
+                  return refuse( IUS_DB2::NOTPERMITTED, "MySQL: you do not have permission" );
+               if ( rr )
                   rows << ( QVariantList() << rr->guid << "label" << rr->file << "comment"
                                            << rr->expID << "1" << "" << kDate
                                            << ck( rr->guid, 0 ) << ck( rr->guid, 1 ) );
             }
 
             else if ( name == "get_editedData" )
-            {
-               for ( const FEdit& ed : edits )
-                  if ( ed.id == a.value( 0 ) )
-                     rows << ( QVariantList() << ed.rawID << ed.guid << "label" << ed.file
-                                              << "comment" << kDate << ck( ed.guid, 0 )
-                                              << ck( ed.guid, 1 ) );
+            {  // NOROWS for no such edit, before the permission
+               const FEdit* ed = editById( a.value( 0 ) );
+               if ( ed  &&  ! editMine( ed->id ) )
+                  return refuse( IUS_DB2::NOTPERMITTED, "MySQL: you do not have permission" );
+               if ( ed )
+                  rows << ( QVariantList() << ed->rawID << ed->guid << "label" << ed->file
+                                           << "comment" << kDate << ck( ed->guid, 0 )
+                                           << ck( ed->guid, 1 ) );
             }
 
             else if ( name == "get_model_info" )
-            {
-               for ( const FModel& mm : models )
-                  if ( mm.id == a.value( 0 ) )
-                     rows << ( QVariantList() << mm.guid << mm.desc << mm.xml << 0.0
-                                              << mm.editGUID << "" << kDate );
+            {  // verify_model_permission first
+               const FModel* mm = modelById( a.value( 0 ) );
+               if ( ! mm )            return refuse( IUS_DB2::NO_MODEL, "MySQL: the specified model does not exist" );
+               if ( mm->owner != kInv ) return refuse( IUS_DB2::NOTPERMITTED, "MySQL: you do not have permission" );
+
+               // modelGUID, description, xml, variance, meniscus, personID,
+               // lastUpdated, checksum, size
+               rows << ( QVariantList() << mm->guid << mm->desc << mm->xml << "0" << "0"
+                                        << mm->owner << kDate << ck( mm->guid, 0 )
+                                        << ck( mm->guid, 1 ) );
             }
 
             else if ( name == "get_noise_info" )
-            {
-               for ( const FNoise& nn : noises )
-                  if ( nn.id == a.value( 0 ) )
-                     rows << ( QVariantList() << nn.guid << nn.desc << nn.modelGUID
-                                              << nn.type << nn.modelID << nn.xml );
+            {  // verify_noise_permission first
+               const FNoise* nn = noiseById( a.value( 0 ) );
+               if ( ! nn )               return refuse( IUS_DB2::NO_NOISE, "MySQL: the specified noise file does not exist" );
+               if ( ! noiseMine( *nn ) ) return refuse( IUS_DB2::NOTPERMITTED, "MySQL: you do not have permission" );
+
+               // noiseGUID, editedDataID, modelID, modelGUID, noiseType, xml,
+               // timeEntered, checksum, size, description
+               rows << ( QVariantList() << nn->guid << nn->editID << nn->modelID
+                                        << nn->modelGUID << nn->type << nn->xml << kDate
+                                        << ck( nn->guid, 0 ) << ck( nn->guid, 1 )
+                                        << nn->desc );
             }
 
             // The GUID lookups are not scoped to the investigator
             else if ( name == "get_modelID" )
             {
                for ( const FModel& mm : models )
-                  if ( mm.guid == a.value( 0 ) )  rows << ( QVariantList() << mm.id );
+                  if ( sameGuid( mm.guid, a.value( 0 ) ) )  rows << ( QVariantList() << mm.id );
             }
 
             else if ( name == "get_noiseID" )
             {
                for ( const FNoise& nn : noises )
-                  if ( nn.guid == a.value( 0 ) )  rows << ( QVariantList() << nn.id );
+                  if ( sameGuid( nn.guid, a.value( 0 ) ) )  rows << ( QVariantList() << nn.id );
             }
 
             else if ( name == "get_rawDataID_from_GUID" )
             {
                for ( const FRaw& rr : raws )
-                  if ( rr.guid == a.value( 0 ) )  rows << ( QVariantList() << rr.id );
+                  if ( sameGuid( rr.guid, a.value( 0 ) ) )  rows << ( QVariantList() << rr.id );
             }
 
-            // investigator, editedDataID
+            // investigator, editedDataID: an ordinary user's own, whatever
+            // investigator is named
             else if ( name == "get_model_desc_by_editID" )
             {
                for ( const FModel& mm : models )
-                  if ( mm.editID == a.value( 1 ) )  rows << modelRow( mm );
+                  if ( mm.owner == kInv  &&  mm.editID == a.value( 1 ) )
+                     rows << modelRow( mm );
             }
 
             else if ( name == "get_noise_desc_by_editID" )
             {
                for ( const FNoise& nn : noises )
-                  if ( nn.editID == a.value( 1 ) )  rows << noiseRow( nn );
+                  if ( noiseMine( nn )  &&  nn.editID == a.value( 1 ) )
+                     rows << noiseRow( nn );
             }
 
             else if ( name == "update_editedData" )
                rows << ( QVariantList() << IUS_DB2::OK );
 
-            return rows;
+            else if ( name == "get_modelIDs_for_autoflow" )
+            {
+               for ( const QString& id : autoflowModels )
+                  rows << ( QVariantList()
+                            << QString( "{\"2DSA_IT\":[{\"modelID\":\"%1\"}]}" ).arg( id ) );
+            }
+
+            if ( rows.isEmpty()  &&  ! okWhenEmpty.contains( name ) )
+            {  // a procedure status, not a server error
+               current.status = IUS_DB2::NOROWS;
+               current.error  = "MySQL: no rows returned";
+            }
          }
    };
 }
