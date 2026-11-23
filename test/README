@@ -333,6 +333,17 @@ The variables, and who reads them:
 | `US3_TEST_DB_ADMIN_GUID`, `_ADMIN_PW`, `US3_TEST_DB_OTHER_ID` | the tests that switch investigators (they skip without) |
 | `US3_TEST_DB_IMPORT_NAME` | `test_us_datapub`'s `DataPubDbImport`: a scratch database it writes into |
 
+`test_us_manage_data` has live cases of its own, `TestUSDataDbLive`
+(`test/programs/us_manage_data/test_us_data_db_live.cpp`).  They read the
+connection, person and administrator variables above (`US3_TEST_DB_PASS`,
+`US3_TEST_DB_ADMIN_GUID`, `_ADMIN_PW`, `US3_TEST_DB_OTHER_ID`) and skip without
+them.  They create and remove records, so point `US3_TEST_DB_NAME` at a copy
+of the fixture, never at the fixture itself:
+
+```bash
+US3_TEST_DB_NAME=<copy of us3test> ./bin/test_us_manage_data --gtest_filter='TestUSDataDbLive*'
+```
+
 Set both password variables to the same value to run everything. The
 scratch-database tests skip when the database already has the US3
 procedures, so point them at an empty one (`US3_TEST_DB_NAME=us3scratch`,
