@@ -35,7 +35,8 @@ class US_DataPubHash
 
       //! \brief The SHA-256 digest of a file, as lower-case hexadecimal
       //! \param filename The full path of the file to digest
-      //! \returns An empty string when the file cannot be read
+      //! \returns An empty string when the file cannot be opened or a read
+      //!          fails part way, never the digest of part of the file
       static QString fileHash( const QString& filename );
 
       //! \brief The SHA-256 digest of a byte array, as hexadecimal
@@ -78,7 +79,10 @@ class US_DataPubHash
           identity attribute \a ownAttr on the first \a ownElement.  Nothing
           else is dropped: an attribute such as \c solid or \c liquid, the
           GUID of a parent record, or the ID of a buffer's component, is part
-          of what the record means.
+          of what the record means.  An attribute value that is a decimal
+          number is written in its shortest round-trip form, so "7.00000"
+          and "7", or "1.0020e+00" and "1.002", are the same value: the
+          library's writers have written numbers both ways.
           \param xml        The XML text to render
           \param ownElement As for \ref fingerprint
           \param ownAttr    As for \ref fingerprint

@@ -669,7 +669,14 @@ An import replays a bundle into the database or into a local disk store. The
 which. The database connection is the one already configured in UltraScan.
 
 **Nothing in the target is ever overwritten.** A record that is already there
-is either pointed at or imported again under a new name.
+is either pointed at or imported again under a new name. In a disk store, a
+file of a run directory that is already there is reused only when it is the
+file the import would write; a time state only when its field definitions are
+there beside it and are the bundle's too. Anything else stops the import, and
+so does a file that cannot be compared, with the reason. A run directory's
+experiment XML is the `<runID>.<runType>.xml` whose run type is one to eight
+letters and digits, so an RI run's `<runID>.RIProfile.xml` is never taken for
+it.
 
 ### What is checked before anything is written
 
@@ -705,8 +712,23 @@ checked as a whole first, and refused as a whole when any check fails:
   edit. The library writers update a record by the GUID inside its payload, so
   a payload naming another record could otherwise overwrite that one.
 * **Dependencies.** Every buffer and analyte a solution names, the model a
-  noise record names, and the edit a model names (whether or not the manifest
-  lists it as a dependency) has to be in the bundle or already in the target.
+  noise record names, the edit a model names (whether or not the manifest
+  lists it as a dependency), the raw data an edit belongs to and the solution
+  of every triple of a run has to be in the bundle or already in the target.
+* **Owners** (database). A project, solution, raw data, edit, model or noise
+  record the import would reuse, or attach a record of the bundle to, has to
+  be in the bundle or be one of the current investigator's own. The GUID
+  lookups the database offers do not see to that: `get_editID`,
+  `get_modelID` and `get_noiseID` (like `get_bufferID` and `get_analyteID`)
+  find a record whoever owns it, and `get_projectID_from_GUID`,
+  `get_solutionID_from_GUID` and `get_rawDataID_from_GUID`, which check the
+  permission of the person logged in, find anyone's for an admin. So every
+  such record is checked against the investigator's own listing
+  (`get_project_desc`, `all_solutionIDs`, `all_rawDataIDs`,
+  `all_editedDataIDs`, `get_model_desc`, `get_noise_desc`), and a record of
+  someone else's stops the import before anything is written. Buffers and
+  analytes are chemistry the investigators of a database share, and are
+  reused whoever entered them.
 * **Buffer components.** A buffer's component definitions are read and checked
   here, before anything is written (see *Buffer components* below). A bundle
   of the older format, which carries no `componentsPayload`, is refused when
@@ -724,9 +746,25 @@ A database import runs in a single transaction on one connection. It is
 committed once every record is in, and rolled back on any failure, so a failed
 import leaves the database as it was. That holds within what a MySQL
 transaction can promise: the tables written are InnoDB, and no stored procedure
-commits by itself. Every lookup that can be made in advance — the bundle's runs
-among them — is made before the transaction opens, so that it is held open for
-the writes and little else.
+commits by itself. A statement that does commit ends the transaction on the
+server; the commit (or rollback) that follows then fails, and the import says
+that some records may have been kept rather than that nothing was imported.
+
+Every lookup that can be made in advance is made before the transaction
+opens, so that it is held open for the writes and little else: every record of
+the bundle by its GUID, the investigator's listings and the name indexes made
+from them, the fingerprints of the records a name conflict compares with, the
+buffer component table, the labs, rotors, calibrations, instruments and
+centerpieces, the rotors and operators the runs and calibrations name, the
+project a run names when the bundle carries none, and the names a renamed run
+would try. What is left to the transaction is what depends on its own writes:
+the IDs of records it has just written, the queries the library writers
+(`US_ConvertIO`, `US_TimeState`, `US_BufferComponent`, `US_ExtProfile`) make
+themselves, the names of model and noise records of a run it renamed, and one
+last `get_experiment_info_by_runID` per new run, right before the run's row is
+written: a run of that ID that another session created since the preflight
+fails the import (import again to have the run renamed) instead of being
+duplicated.
 
 Raw data and edits are written the way the rest of UltraScan writes them, with
 `US_ConvertIO`: `writeRawDataToDB()` for a run's raw data rows and blobs, its
@@ -741,18 +779,45 @@ writers keep a local copy of what they store (`US_Project::saveToDB()`,
 the import writes those records with the same stored procedures, in the same
 order and with the same arguments, but without the copy. For a buffer that is
 `new_buffer` and one `add_buffer_component` per component; for an analyte
-`new_analyte` and, for DNA and RNA, `set_nucleotide_info`. The extinction
-spectrum of either is stored as its extinction profile (`new_eprofile`, through
-`US_ExtProfile::create_eprofile()`): the library writers store a profile only
-for a spectrum they were told is new, which one read from a file never is. Its
-only files are work copies in the bundle's own staging directory, removed with
-it.
+`new_analyte` and, for DNA and RNA, `set_nucleotide_info`; for a noise record
+`new_noise`, with the model's ID and the ID of the edit the model was fitted
+to, without the lookups `US_Noise::write()` makes (and without its update of a
+noise record that happens to have the GUID). `US_Buffer::saveToDB()` and
+`US_Analyte::write()` join a caller's transaction and then leave their disk
+copy out, but they still update a record of the same GUID whoever owns it,
+where the import only creates.
+
+The extinction spectrum of a buffer, analyte or solution is stored as its
+extinction profile (`new_eprofile`, through
+`US_ExtProfile::create_eprofile()`; a solution's under the component type
+`Sample`, as `US_Solution::saveToDB()` stores it), made of the values the
+bundle carries and nothing else: those of its `spectraPayload`, at full
+precision, or, in an older bundle without one, the `<extinction>` elements of
+the record's own XML. `US_Analyte`'s reader adds the extinction at 280 nm that
+it computes from a protein's sequence; that value is not part of the record,
+so a protein without a spectrum gets no profile, and a measured spectrum keeps
+the points it has. A buffer's component concentrations are taken at full
+precision from the `concentration` of each component in its
+`componentsPayload` (an older bundle has only the buffer file's five
+decimals); the database column is a `FLOAT`. A disk store has no place for a
+solution's profile, so a disk import leaves it out and says so.
+The library writers store a profile only for a spectrum they were told is new,
+which one read from a file never is. The import's only files are work copies
+in the bundle's own staging directory, removed with it.
 
 A disk import writes files as it goes. When it fails part way, the files it
 already wrote stay, and the error lists them.
 
 A **dry run** reads the target and decides everything, but opens no
-transaction and writes nothing — not even the output directory.
+transaction and writes nothing — not even the output directory. Into a
+database it makes the decisions the writers make as they go: it stages each
+run and checks its triples against the bundle, reads its RI profile, resolves
+its project and its hardware (so `--strict-hardware` fails a dry run that
+would need a substitute, as it fails the import), leaves out a rotor
+calibration whose rotor the target lacks, and checks that every solution and
+time state has a run of the import and every triple its solution. What only
+the writes can find is left: a constraint the server enforces, a lost
+connection, a record another session writes in the meantime.
 
 ### Which project the data lands in
 
@@ -782,13 +847,14 @@ For every record in the manifest, in dependency order:
    first — one query, which settles a run the investigator already holds — and
    only a run that leaves open is looked for in the investigator's whole
    experiment list (a run renamed in the target). A run the investigator does
-   not hold, but whose raw data the database has (the raw data lookup is not
-   limited to one investigator), belongs to someone else: the import stops,
-   rather than create a second experiment of that GUID or attach anything to
-   another person's records. (A run of someone else's that has no raw data
-   cannot be seen this way; the database's unique experiment GUID then refuses
-   the second copy, and the import is rolled back.) All of this happens before
-   the transaction opens.
+   not hold, but whose raw data the database has, belongs to someone else: the
+   import stops, rather than create a second experiment of that GUID or attach
+   anything to another person's records. (`get_rawDataID_from_GUID` finds
+   anyone's raw data for an admin and refuses it as "not permitted" to anyone
+   else, which says the same.) A run of someone else's that has no raw data
+   cannot be seen this way; `experiment.experimentGUID` is `UNIQUE` in the
+   schema (`us3.sql`), so `new_experiment` refuses the second copy and the
+   import is rolled back. All of this happens before the transaction opens.
 2. **Name free** → the record is created, keeping its GUID from the bundle. A
    database allocates a fresh ID.
 3. **Name taken by a record with a different GUID** → the properties of the two
@@ -815,7 +881,11 @@ one; its file name already names the triple.
 
 Renaming changes the name inside the payload; the GUID is untouched, so the
 record's dependants follow it. Auto-generated names are `<name> (imported)`,
-then `<name> (imported 2)`, and so on until one is free. A run is renamed
+then `<name> (imported 2)`, and so on until one is free (after a thousand,
+`<name>-` and eight random hexadecimal digits, checked like the others). A
+buffer is compared and renamed into a database under the description it is
+stored with, without the `  [M]` marker of a manually entered buffer. A run
+is renamed
 `<runID>-imported` (the suffix with anything a run ID cannot hold replaced by
 `_`), and everything that carries the run ID follows it: the raw data, edit
 and time state file names, the `runid` inside each edit, and the descriptions
@@ -1080,12 +1150,19 @@ payloads without a digest or of another GUID, and tampered time state
 definitions. The database import runs against the `IUS_DB2` gmock mock
 (`datapub_fake_db.h`), which pins down its single transaction, the rollback on
 a failure part way, the speed profile, hardware substitution and a second
-import of the same bundle writing nothing. The fake scopes experiments per
-investigator, keeps an owner per GUID and a unique experiment GUID, forgets
-what a transaction wrote when it is rolled back (or the connection dropped),
-and keeps the bytes of every blob; the tests use it for the run lookups made
-before the transaction, a run of another investigator, the extinction
-profiles, and a local disk store left byte for byte and time for time as it
-was. The disk import tests name a component table of their own
-(`Options::componentTable`) and check that neither it nor the
+import of the same bundle writing nothing. The fake scopes its lookups and
+listings as the stored procedures do: the GUID lookups of buffers, analytes,
+edits, models and noise find anyone's record, those of projects, solutions
+and raw data refuse someone else's unless the person is an admin, and the
+listings are the given investigator's. It keeps an owner per GUID and a
+unique experiment GUID, forgets what a transaction wrote when it is rolled
+back (or the connection dropped), can have a procedure commit implicitly,
+can change the database as the transaction begins, and keeps the bytes of
+every blob. The tests use it for the run lookups made before the
+transaction and the lookups the transaction must not make, a run ID taken
+while the import ran, an implicit commit, records of another investigator
+(reused, or named as a parent), the extinction profiles, a dry run that
+decides what the import would, and a local disk store left byte for byte
+and time for time as it was. The disk import tests name a component table of
+their own (`Options::componentTable`) and check that neither it nor the
 installation's table is changed.

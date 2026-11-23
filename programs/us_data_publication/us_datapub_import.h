@@ -128,13 +128,22 @@ class US_DataPubConflictResolver
     GUID the manifest gives it, and every record a solution, model or noise
     record names has to be in the bundle or in the target.
 
+    In a database, a record the import reuses or attaches anything to has to
+    be in the bundle or be the investigator's own: the GUID lookups of
+    edits, models and noise are not limited to one investigator (nor, for
+    an admin, those of projects, solutions and raw data), so each such
+    record is checked against the investigator's listing.
+
     A database import runs in one transaction on one connection: it is
     committed only when every record is in, and rolled back on any failure.
-    Every target lookup that can be made in advance -- the bundle's runs
-    among them -- is made before the transaction opens.  The import writes
-    the records with the procedures the library writers use, but never the
-    copy in the local disk store some of those writers make, so it writes
-    nothing outside the bundle's own staging directory.  A disk import
+    Every target lookup that can be made in advance is made before the
+    transaction opens (\ref lookUpInAdvance); inside it run only the writes,
+    the queries the library writers make themselves, lookups of what the
+    import has just written, the name lookups of model and noise records of
+    a run it renamed, and a last check that each new run ID is still free.
+    The import writes the records with the procedures the library writers
+    use, but never the copy in the local disk store some of those writers
+    make, so it writes nothing outside the bundle's own staging directory.  A disk import
     writes files as it goes; on a failure the files already written stay,
     and \ref outcome lists them.  It never changes the installation's
     buffer component table: a buffer's components have to be in it already.
@@ -174,7 +183,17 @@ class US_DataPubImporter : public QObject
             //! Per-record-type overrides of \ref policy
             QMap< int, US_DataPub::ConflictPolicy > typePolicies;
 
-            bool    dryRun;                //!< Decide everything, write nothing
+            /*! Decide everything, write nothing.  Into a database, a dry
+                run makes the decisions the writers make as they go: it
+                stages each run and checks its triples, resolves the
+                project and the hardware (so --strict-hardware fails it as
+                it would fail the import), leaves out a calibration whose
+                rotor the target lacks, and checks that every solution, time
+                state and triple has what it needs.  Only what the writes
+                themselves can find -- a constraint the server enforces, a
+                record someone else writes in the meantime -- is left.
+            */
+            bool    dryRun;
 
             /*! Check every payload against its digest first.  A payload
                 without a digest fails the check; switching it off is the
@@ -407,6 +426,138 @@ class US_DataPubImporter : public QObject
       //! investigator's run of that ID, both empty when there is none
       QHash< QString, QPair< QString, QString > > run_lookup;
 
+      // ---- what a database target holds, read before the transaction ----
+
+      //! The investigator's own records of one type
+      class Owned
+      {
+         public:
+            QSet< QString >          ids;        //!< Their record IDs
+            QSet< QString >          guids;      //!< Their GUIDs, lower case
+            QHash< QString, QString > edits;     //!< A model's edit ID
+      };
+
+      //! The investigator's records, per type, once listed
+      QMap< int, Owned >         owned;
+
+      //! GUID lookups made so far: "type:GUID" -> ( ID, name ), the GUIDs
+      //! a lookup did not find, and those a permission-checked lookup found
+      //! but refused, because the record is someone else's
+      QHash< QString, QPair< QString, QString > > guid_found;
+      QSet< QString >            guid_missing;
+      QSet< QString >            guid_foreign;
+
+      //! The target's labs (with their instruments), the rotors of each lab
+      //! and the calibrations of each rotor, read once
+      bool                       hw_read;
+      QVector< US_Rotor::Lab >   hw_labs;
+      QList< QVector< US_Rotor::Rotor > > hw_rotors;
+      QMap< int, QVector< US_Rotor::RotorCalibration > > hw_cals;
+
+      //! The target database's centerpieces, once read
+      bool                       cp_read;
+      QList< US_AbstractCenterpiece > cp_list;
+
+      //! Rotor and person IDs by GUID, as looked up (0: not there)
+      QHash< QString, int >      rotor_ids;
+      QHash< QString, int >      person_ids;
+
+      //! The rotor calibrations this import created: ID -> rotor ID
+      QMap< int, int >           created_cals;
+
+      //! The fingerprints of target records, by "type:GUID"
+      QHash< QString, QString >  print_cache;
+
+      //! Runs whose raw data a dry run has checked
+      QSet< QString >            raw_checked;
+
+      //! \brief Read the target database's hardware into the caches
+      bool    readHardwareDb( void );
+
+      //! \brief The target's rotor of a GUID; false when the lookup failed
+      bool    rotorIdOf ( const QString& rotorGUID, int& rotorID );
+
+      //! \brief The target's person of a GUID; false when the lookup failed
+      bool    personIdOf( const QString& personGUID, int& personID );
+
+      /*! \brief Make every target lookup that can be made in advance
+
+          Run in the preflight of a database import, so that the transaction
+          finds the answers waiting: the GUID of every record of the bundle,
+          the investigator's listings and name indexes, the buffer
+          components, the hardware, the rotors and operators the runs name,
+          and the fingerprints of the records a name conflict compares with.
+      */
+      bool    lookUpInAdvance( QString& error );
+
+      //! \brief Whether the investigator's own records of a type are checked
+      //!        before the import reuses or attaches to one
+      static bool ownedType( US_DataPub::EntityType );
+
+      //! \brief List the investigator's records of a type; false on a
+      //!        failed lookup
+      bool    readOwned ( US_DataPub::EntityType );
+
+      /*! \brief Whether a database record the import found may be used
+
+          The GUID lookups of buffers, analytes, edits, models and noise are
+          not limited to one investigator, and an admin's project, solution
+          and raw data lookups are not either.  A record of one of the types
+          \ref ownedType names has to be the investigator's own to be reused
+          or named as a parent.
+          \returns True when it is the investigator's; false, with \a error
+                   set, when it is someone else's or the listing failed
+      */
+      bool    checkOwner( US_DataPub::EntityType, const QString& guid,
+                          const QString& id, QString& error );
+
+      //! \brief The refusal for a record of another investigator
+      QString foreignText( US_DataPub::EntityType, const QString& guid ) const;
+
+      //! \brief Refuse a bundle record that the target holds for someone else
+      bool    checkReuse( QString& error );
+
+      //! \brief The GUIDs of the solutions an experiment XML names
+      static QStringList solutionsNamed( const QByteArray& xml );
+
+      /*! \brief Stage a run and decide everything about it but the writes
+
+          The experiment XML and raw data are staged and read, every triple
+          is checked against the bundle, the RI profile is read, the project
+          and the hardware are resolved.  A dry run stops here; a real import
+          then writes the run.
+          \param projID  Filled in with the project the run belongs to; 0
+                         when a project is still to be created from what the
+                         run names, which only a real import does
+      */
+      bool    prepareRunDb( const US_DataPubEntity&, const QString& name,
+                            QByteArray& RIxml, int& projID, QString& error );
+
+      //! \brief Map a staged run's solutions and centerpieces to the target's
+      bool    prepareRunRawData( const QString& expGUID, QString& error );
+
+      /*! \brief What a dry run into a database checks of one record
+
+          Everything the writer would decide, without writing: a calibration
+          whose rotor the target lacks is omitted, a run is staged and its
+          hardware resolved, a solution has to have a run of this import, a
+          run's triples their solutions.
+          \param omitted Set when the record was recorded as omitted
+      */
+      bool    checkDryDb( const US_DataPubEntity&, const QString& workPath,
+                          const QString& name, bool& omitted,
+                          QString& error );
+
+      /*! \brief The extinction spectrum a buffer or analyte payload carries
+
+          Only the values the bundle holds: US_Analyte's reader adds the 280
+          nm value it computes from a protein's sequence, which is not part
+          of the record and is not stored with it.
+      */
+      bool    payloadSpectrum( const US_DataPubEntity&, const QString& workPath,
+                               QMap< double, double >& spectrum,
+                               QString& error ) const;
+
       bool    targetComponents( QString& error );
 
       //! \brief Read and check the component definitions of a buffer, and on
@@ -420,8 +571,8 @@ class US_DataPubImporter : public QObject
           investigator already has; then, only for a run that settles
           nothing, in the investigator's whole experiment list.  A run the
           investigator does not have but whose raw data the database holds
-          belongs to someone else, and is refused.  Done before the
-          transaction opens, so no lookup runs inside it.
+          (or refuses to show) belongs to someone else, and is refused.
+          Done before the transaction opens, so no lookup runs inside it.
       */
       bool    resolveExperiments( QString& error );
 
@@ -478,6 +629,10 @@ class US_DataPubImporter : public QObject
                           QString& id, QString& name );
       bool    findByName( US_DataPub::EntityType, const QString& name,
                           QString& guid, QString& id );
+
+      //! \brief Whether a name is taken in the target, without asking which
+      //!        record has it
+      bool    nameInUse ( US_DataPub::EntityType, const QString& name );
 
       //! \brief Read the database's experiments into the GUID index
       void    indexExperiments( void );
@@ -556,9 +711,11 @@ class US_DataPubImporter : public QObject
       //! \param entity    The record to look for
       //! \param path      Filled in with where the record would be written
       //! \param identical Set to true when the file there matches the payload
+      //!                  -- for a time state, its field definitions too
+      //! \param error     Filled in when the payload could not be compared
       //! \returns True when a file of that name is already there
       bool    diskFilePresent( const US_DataPubEntity& entity, QString& path,
-                               bool& identical );
+                               bool& identical, QString& error );
 
       QString runIdFor    ( const US_DataPubEntity& ) const;
       QString renamedFile ( const US_DataPubEntity& ) const;

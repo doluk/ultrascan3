@@ -1246,6 +1246,16 @@ TEST_F( DataPubCliImport, TheDatabasePasswordIsCheckedFirstWithOneError )
 }
 #endif
 
+// A password file that cannot be read is a failure (1), not a usage error
+// (2), as any other unreadable input is
+TEST_F( DataPubCliImport, AnUnreadablePasswordFileFailsTheImport )
+{
+   EXPECT_EQ( run( QStringList() << "--mode" << "import" << "--bundle"
+                   << bundlePath << "--target" << "db" << "--non-interactive"
+                   << "--db-password-file" << root + "/no_such_password" ),
+              1 );
+}
+
 TEST_F( DataPubCliImport, ADiskImportSucceedsAndAFailedOneSaysSo )
 {
    EXPECT_EQ( run( QStringList() << "--mode" << "import" << "--bundle"
@@ -1746,4 +1756,122 @@ TEST( DataPubImportState, OnlyAChangeOfTargetClearsTheProject )
    EXPECT_FALSE( state.setTarget( true ) );      // nothing left to clear
    state.setInspected( false );
    EXPECT_FALSE( state.importEnabled() );
+}
+
+// ------------------------------- what is already in a disk store's run
+
+class DataPubDiskAgain : public DataPubImport
+{
+   protected:
+      QString targetRun() { return targetDir + "/results/" + runID; }
+
+      void importFirst()
+      {
+         US_DataPubImporter first;
+         QString            error;
+         ASSERT_TRUE( first.inspect  ( bundlePath, error ) );
+         ASSERT_TRUE( first.runImport( diskOptions(), error ) )
+            << error.toStdString();
+      }
+
+      // The second import of the same bundle fails, with this in its error
+      void expectSecondFails( const QString& text )
+      {
+         US_DataPubImporter second;
+         QString            error;
+         ASSERT_TRUE ( second.inspect( bundlePath, error ) );
+         EXPECT_FALSE( second.runImport( diskOptions(), error ) );
+         EXPECT_TRUE ( error.contains( text ) ) << error.toStdString();
+      }
+};
+
+// A time state is the pair of files: one whose definitions are missing or
+// different is not the bundle's, whatever its binary holds
+TEST_F( DataPubDiskAgain, ATimeStateIsTheSameOnlyWithItsDefinitions )
+{
+   importFirst();
+
+   QString defs = targetRun() + "/" + runID + ".time_state.xml";
+   ASSERT_TRUE( QFile::exists( defs ) );
+
+   QFile file( defs );
+   ASSERT_TRUE( file.open( QIODevice::ReadOnly ) );
+   QByteArray bytes = file.readAll();
+   file.close();
+
+   // Different definitions
+   ASSERT_TRUE( file.open( QIODevice::WriteOnly | QIODevice::Truncate ) );
+   file.write( bytes + "<!-- changed -->\n" );
+   file.close();
+
+   expectSecondFails( "field definitions" );
+
+   // No definitions at all
+   ASSERT_TRUE( QFile::remove( defs ) );
+
+   expectSecondFails( "field definitions" );
+
+   // ... and with them back, the run is the same again
+   ASSERT_TRUE( file.open( QIODevice::WriteOnly | QIODevice::Truncate ) );
+   file.write( bytes );
+   file.close();
+
+   US_DataPubImporter third;
+   QString            error;
+   ASSERT_TRUE( third.inspect  ( bundlePath, error ) );
+   EXPECT_TRUE( third.runImport( diskOptions(), error ) ) << error.toStdString();
+}
+
+// A payload that cannot even be copied to be compared is reported as that,
+// not as a file of different content
+TEST_F( DataPubDiskAgain, AFailedComparisonSaysWhy )
+{
+   importFirst();
+
+   US_DataPubImporter second;
+   QString            error;
+   ASSERT_TRUE( second.inspect( bundlePath, error ) );
+
+   // The work directory cannot be made: a file stands where it would go
+   QString work = QFileInfo( second.bundleRoot() ).path() + "/work";
+   QDir( work ).removeRecursively();
+   QFile block( work );
+   ASSERT_TRUE( block.open( QIODevice::WriteOnly ) );
+   block.close();
+
+   EXPECT_FALSE( second.runImport( diskOptions(), error ) );
+   EXPECT_TRUE ( error.contains( "work directory" ) ) << error.toStdString();
+   EXPECT_FALSE( error.contains( "different content" ) ) << error.toStdString();
+}
+
+// The experiment XML of a run directory is the one named for a run type,
+// never an RI profile that happens to sort before it
+TEST_F( DataPubDiskAgain, AnRiProfileIsNotTakenForTheExperiment )
+{
+   importFirst();
+
+   // The run is filed under a run type that sorts after "RIProfile", beside
+   // an RI profile
+   QString xml = targetRun() + "/" + runID + "." + runType + ".xml";
+   ASSERT_TRUE( QFile::exists( xml ) );
+   ASSERT_TRUE( QFile::rename( xml, targetRun() + "/" + runID + ".WA.xml" ) );
+
+   QFile rip( targetRun() + "/" + runID + ".RIProfile.xml" );
+   ASSERT_TRUE( rip.open( QIODevice::WriteOnly ) );
+   rip.write( "<?xml version=\"1.0\"?>\n<US_RIProfile version=\"1.0\">"
+              "<RI value=\"1.5\"/></US_RIProfile>\n" );
+   rip.close();
+
+   US_DataPubImporter second;
+   QString            error;
+   ASSERT_TRUE( second.inspect  ( bundlePath, error ) );
+   ASSERT_TRUE( second.runImport( diskOptions(), error ) )
+      << error.toStdString();
+
+   EXPECT_EQ( countOf( second.results(), US_DataPub::ResolvedRenamed ), 0 );
+
+   for ( int ii = 0; ii < second.results().size(); ii++ )
+      if ( second.results()[ ii ].type == US_DataPub::Experiment )
+         EXPECT_EQ( second.results()[ ii ].resolution,
+                    US_DataPub::ResolvedReused );
 }
