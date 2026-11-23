@@ -762,3 +762,30 @@ TEST( US_MPI_JobConfig, ChannelOffsetParameters )
    EXPECT_EQ( validated( GRID_2DSA + "<channel_b_after_a value=\"yes\"/>" ).errors,
               QStringList( "channel_b_after_a \"yes\": not 0 or 1" ) );
 }
+
+TEST( US_MPI_JobConfig, ScanDelayFitParameters )
+{
+   Config config = validated( GRID_2DSA + "<delay_points value=\"31\"/><delay_min value=\"0\"/>"
+                                          "<delay_max value=\"300\"/><radial_scan_time value=\"0.05\"/>" );
+   EXPECT_TRUE( config.errors.isEmpty() ) << all_of( config );
+   EXPECT_TRUE( config.warnings.isEmpty() ) << all_of( config );
+   EXPECT_EQ( config.params.delay_points, 31 );
+   EXPECT_DOUBLE_EQ( config.params.delay_min, 0.0 );
+   EXPECT_DOUBLE_EQ( config.params.delay_max, 300.0 );
+
+   auto errors_of = []( const QString& params, const QString& method = "2DSA" )
+   { return validated( method == "2DSA" ? GRID_2DSA + params : params, method ).errors; };
+   EXPECT_EQ( errors_of( "<delay_points value=\"5\"/>" ), QStringList( "delay_max: required with delay_points > 1" ) );
+   EXPECT_EQ( errors_of( "<delay_points value=\"5\"/><delay_min value=\"100\"/><delay_max value=\"50\"/>" ),
+              QStringList( "delay_min (100) must be less than delay_max (50)" ) );
+   const QStringList both =
+      errors_of( "<delay_points value=\"5\"/><delay_max value=\"50\"/><tau_points value=\"5\"/><tau_max value=\"0.1\"/>" );
+   ASSERT_EQ( both.size(), 1 );
+   EXPECT_TRUE( both[0].contains( "cannot be fitted together" ) );
+   const QStringList ga = errors_of( "<population value=\"30\"/><generations value=\"15\"/>"
+                                     "<bucket x_min=\"1\" x_max=\"2\" y_min=\"1\" y_max=\"2\"/>"
+                                     "<delay_points value=\"5\"/><delay_max value=\"50\"/>",
+                                     "GA" );
+   ASSERT_EQ( ga.size(), 1 );
+   EXPECT_TRUE( ga[0].contains( "needs a 2DSA analysis" ) );
+}

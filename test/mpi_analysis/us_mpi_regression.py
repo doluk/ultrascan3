@@ -193,6 +193,13 @@ CASES = {
         "params": dict(GRID_2DSA, tau_points="3", tau_min="0.0", tau_max="0.6",
                        channel_b_after_a="1"),
     },
+    "2dsa_delay_channel_b": {
+        # The same data, tau fixed at 0.3 s/point, the scan start delay
+        #  fitted: 0, 60.3 (= 201 * 0.3, the true delay) and 120.6 s
+        "method": "2DSA", "datasets": [DS_TAU_B], "np": 2,
+        "params": dict(GRID_2DSA, radial_scan_time="0.3", delay_points="3",
+                       delay_min="0.0", delay_max="120.6"),
+    },
     "2dsa_timestate": {
         # Timestate file given (as in every LIMS job), at 1-second intervals
         "method": "2DSA", "datasets": [DS_A], "np": 2,
@@ -489,6 +496,10 @@ INPUT_CASES = {
     "input_tau_max_missing": input_case(
         "2dsa_tau", params=lambda p: without(p, ("tau_max",)),
         expect={"abort": r"tau_max"}),
+    "input_delay_with_tau": input_case(
+        "2dsa_delay_channel_b",
+        params=lambda p: dict(p, tau_points="3", tau_max="0.6"),
+        expect={"abort": r"cannot be fitted together"}),
     "input_tau_mc": input_case(
         "2dsa_tau", params=lambda p: dict(p, mc_iterations="3"),
         expect={"abort": r"radial scan time fit is not compatible with Monte Carlo"}),

@@ -77,7 +77,10 @@ def parse_points(text):
         triple = name.split(".")[2] if name.count(".") >= 3 else "?"
         points[triple].append(dict(file=name,
                                    meniscus=float(vals.get("meniscus_value", "nan")),
-                                   tau=float(vals.get("tau_value", "0")),
+                                   # The second fit axis: the scan start delay of a delay fit,
+                                   #  else the radial scan time
+                                   tau=float(vals.get("delay_value", vals.get("tau_value", "0"))),
+                                   delay="delay_value" in vals,
                                    rmsd=math.sqrt(max(0.0, float(vals["variance"])))))
     return points
 
@@ -142,6 +145,9 @@ class Landscape:
         self.taus = sorted({round(p["tau"], 6) for p in pts})
         self.grid = {(round(p["meniscus"], 6), round(p["tau"], 6)): p for p in pts}
         self.best = min(pts, key=lambda p: p["rmsd"])
+        self.delay = any(p.get("delay") for p in pts)
+        self.name = "delay" if self.delay else "tau"
+        self.unit = "s" if self.delay else "s/point"
 
     def rmsd(self, m, t):
         p = self.grid.get((m, t))
@@ -157,16 +163,16 @@ class Landscape:
 
 def report_triple(ls, sigma, points, plot):
     mens, taus, grid = ls.mens, ls.taus, ls.grid
-    print("== %s: %d fit points, meniscus %d x tau %d" % (ls.triple, len(ls.pts), len(mens), len(taus)))
-    print("   RMSD (OD)  rows: tau (s/point), columns: meniscus (cm)")
+    print("== %s: %d fit points, meniscus %d x %s %d" % (ls.triple, len(ls.pts), len(mens), ls.name, len(taus)))
+    print("   RMSD (OD)  rows: %s (%s), columns: meniscus (cm)" % (ls.name, ls.unit))
     print("   %9s " % "" + " ".join("%9.4f" % m for m in mens))
     for t in taus:
         print("   %9.4f " % t + " ".join("%9.6f" % grid[(m, t)]["rmsd"] if (m, t) in grid else "%9s" % "-"
                                       for m in mens))
 
     best = ls.best
-    print("   grid minimum:   meniscus %.4f cm, tau %.4f s/point, RMSD %.6f OD  (%s)"
-          % (best["meniscus"], best["tau"], best["rmsd"], best["file"]))
+    print("   grid minimum:   meniscus %.4f cm, %s %.4f %s, RMSD %.6f OD  (%s)"
+          % (best["meniscus"], ls.name, best["tau"], ls.unit, best["rmsd"], best["file"]))
 
     # Profiles (RMSD^2 minimised over the other parameter) and parabolas
     prof_t = [min(grid[(m, t)]["rmsd"] ** 2 for m in mens if (m, t) in grid) for t in taus]
@@ -177,17 +183,17 @@ def report_triple(ls, sigma, points, plot):
     m_opt, m_a, _, m_edge = parabola(mens, prof_m)
     note = []
     if t_edge:
-        note.append("tau at the grid edge")
+        note.append("%s at the grid edge" % ls.name)
     if m_edge:
         note.append("meniscus at the grid edge")
-    print("   refined:        meniscus %.5f cm, tau %.5f s/point%s"
-          % (m_opt, t_opt, ("  [" + "; ".join(note) + ": widen the range]") if note else ""))
+    print("   refined:        meniscus %.5f cm, %s %.5f %s%s"
+          % (m_opt, ls.name, t_opt, ls.unit, ("  [" + "; ".join(note) + ": widen the range]") if note else ""))
 
     if sigma and points:
         scale = points / sigma ** 2
         sd = lambda curv: (1.0 / math.sqrt(curv * scale)) if curv else float("nan")
-        print("   profile 1-sigma (delta chi^2 = 1, sigma %.4g OD, %d points):  meniscus %.2g cm, tau %.2g s/point"
-              % (sigma, points, sd(m_a), sd(t_a)))
+        print("   profile 1-sigma (delta chi^2 = 1, sigma %.4g OD, %d points):  meniscus %.2g cm, %s %.2g %s"
+              % (sigma, points, sd(m_a), ls.name, sd(t_a), ls.unit))
 
     mom = model_moments(ls.files[best["file"]]) if best["file"] in ls.files else None
     if mom:
@@ -197,8 +203,8 @@ def report_triple(ls, sigma, points, plot):
     if zero and zero[0]["file"] in ls.files and best["tau"] != 0.0:
         mz = model_moments(ls.files[zero[0]["file"]])
         if mz and mom:
-            print("   same meniscus, tau = 0:     total %.4f, <s> %.4f S, <f/f0> %.4f, <MW> %.0f  (RMSD %.6f)"
-                  % (mz["total"], mz["s"], mz["ff0"], mz["mw"], zero[0]["rmsd"]))
+            print("   same meniscus, %s = 0:%s total %.4f, <s> %.4f S, <f/f0> %.4f, <MW> %.0f  (RMSD %.6f)"
+                  % (ls.name, " " * (5 - len(ls.name)), mz["total"], mz["s"], mz["ff0"], mz["mw"], zero[0]["rmsd"]))
 
     if plot:
         plt = pyplot()
@@ -213,14 +219,14 @@ def report_triple(ls, sigma, points, plot):
             ax[0].plot(mens if len(taus) == 1 else taus, [r for row_ in z for r in row_], "o-")
         ax[0].plot(m_opt, t_opt, "o", mfc="none", mec="#eb6834", mew=2, ms=9, label="refined optimum")
         ax[0].set_xlabel("meniscus (cm)")
-        ax[0].set_ylabel("tau (s/point)")
+        ax[0].set_ylabel("%s (%s)" % (ls.name, ls.unit))
         ax[0].legend(frameon=False)
         ax[0].set_title("%s: RMSD landscape" % ls.triple, loc="left")
         ax[1].plot(taus, [math.sqrt(v) for v in prof_t], "o-", color="#2a78d6")
-        ax[1].set_xlabel("tau (s/point)")
+        ax[1].set_xlabel("%s (%s)" % (ls.name, ls.unit))
         ax[1].set_ylabel("RMSD, meniscus optimised (OD)")
-        ax[1].set_title("tau profile", loc="left")
-        out = "%s_tau_landscape.png" % ls.triple
+        ax[1].set_title("%s profile" % ls.name, loc="left")
+        out = "%s_%s_landscape.png" % (ls.triple, ls.name)
         fig.savefig(out, dpi=130)
         print("   wrote %s" % out)
 
@@ -251,7 +257,12 @@ def report_joint(group, lss, sigmas, npoints, plot):
     """Common meniscus, own tau per triple."""
     names = [ls.triple for ls in lss]
     common = sorted(set.intersection(*[set(ls.mens) for ls in lss]))
-    print("== joint %s: %s, common meniscus, tau per triple" % (group, ", ".join(names)))
+    kinds = {ls.name for ls in lss}
+    if len(kinds) > 1:
+        print("== joint %s: the triples mix tau and delay fits; not combined" % group)
+        return
+    name, unit = lss[0].name, lss[0].unit
+    print("== joint %s: %s, common meniscus, %s per triple" % (group, ", ".join(names), name))
     if len(common) < 3:
         print("   fewer than 3 common meniscus values: run the triples on the same meniscus grid")
         return
@@ -267,13 +278,13 @@ def report_joint(group, lss, sigmas, npoints, plot):
         rows.append((m, chi, row))
     chi_min = min(r[1] for r in rows)
 
-    print("   meniscus (cm)  " + "  ".join("%-24s" % ("%s: tau, RMSD" % n) for n in names)
+    print("   meniscus (cm)  " + "  ".join("%-24s" % ("%s: %s, RMSD" % (n, name)) for n in names)
           + ("  sum of (RMSD/sigma)^2 - min" if relative else "  delta chi^2"))
     for m, chi, row in rows:
         cells = "  ".join("%-24s" % ("%7.4f%s %.6f" % (t0, "*" if edge else " ", r)) for t0, r, _, edge in row)
         print("   %9.4f      %s  %.5g" % (m, cells, chi - chi_min))
     if any(edge for _, _, row in rows for _, _, _, edge in row):
-        print("   (* tau at the edge of the tau grid)")
+        print("   (* %s at the edge of the %s grid)" % (name, name))
 
     m_opt, m_a, _, m_edge = parabola([r[0] for r in rows], [r[1] for r in rows])
     taus_m = {n: [r[2][k][0] for r in rows] for k, n in enumerate(names)}
@@ -286,7 +297,7 @@ def report_joint(group, lss, sigmas, npoints, plot):
         print("   meniscus 1-sigma (joint profile, delta chi^2 = 1): %.2g cm" % sd_m)
     for k, n in enumerate(names):
         t_at = interp(ms, taus_m[n], m_opt)
-        text = "   %s: tau %.4f s/point at the common meniscus" % (n, t_at)
+        text = "   %s: %s %.4f %s at the common meniscus" % (n, name, t_at, unit)
         if sd_m:
             lo, hi = sorted((interp(ms, taus_m[n], m_opt - sd_m), interp(ms, taus_m[n], m_opt + sd_m)))
             text += " (%.4f to %.4f over meniscus +- 1 sigma)" % (lo, hi)
@@ -311,10 +322,10 @@ def report_joint(group, lss, sigmas, npoints, plot):
             ax[1].plot(ms, taus_m[n], "o-", label=n)
         ax[1].axvline(m_opt, color="#eb6834", lw=1)
         ax[1].set_xlabel("meniscus (cm)")
-        ax[1].set_ylabel("best tau (s/point)")
+        ax[1].set_ylabel("best %s (%s)" % (name, unit))
         ax[1].legend(frameon=False)
-        ax[1].set_title("best tau per triple", loc="left")
-        out = "%s_joint_tau.png" % group
+        ax[1].set_title("best %s per triple" % name, loc="left")
+        out = "%s_joint_%s.png" % (group, name)
         fig.savefig(out, dpi=130)
         print("   wrote %s" % out)
 

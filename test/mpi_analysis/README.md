@@ -31,6 +31,7 @@ and compare the fitted models with stored baselines.
 | `2dsa_tau_fixed` | sequentially scanned data (0.3 s/point), fixed `radial_scan_time` | 2 | exact |
 | `2dsa_tau` | radial scan time fit (3 points) | 2 | exact |
 | `2dsa_meniscus_tau` | meniscus and radial scan time fit (3 × 3) | 2 | exact |
+| `2dsa_delay_channel_b` | the same data, tau fixed, scan start delay fitted (0, 60.3, 120.6 s) | 2 | exact |
 | `2dsa_tau_channel_b` | channel B scanned after channel A (offset 201 points), tau fit with `channel_b_after_a` | 2 | exact |
 | `2dsa_timestate`, `2dsa_composite_timestate` | timestate file given (as in LIMS jobs), 1-second intervals | 2 | exact |
 | `2dsa_noise` | TI + RI noise | 2 | exact |
@@ -103,6 +104,7 @@ leave the job's input files in the work directory.
 | `input_centerpiece_bottom_default` | `centerpiece_bottom="7.3"` (the invalid default) | abort naming 7.3 |
 | `input_tau_not_2dsa` | GA with `tau_points` | abort naming the radial scan time fit |
 | `input_tau_max_missing` | `tau_points` without `tau_max` | abort naming `tau_max` |
+| `input_delay_with_tau` | `delay_points` together with `tau_points` | abort |
 | `input_tau_mc` | radial scan time fit with Monte Carlo | abort |
 | `input_unknown_key` | additional parameter `s_mx` | warning, result as `2dsa_basic` |
 

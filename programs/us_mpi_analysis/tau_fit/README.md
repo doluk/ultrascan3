@@ -35,6 +35,8 @@ outside the meniscus adds a constant delay that shifts the fitted meniscus
 | `channel_a_points` | 0 | Radial points of the channel-A scan; 0: the raw point count of the dataset's `.auc` (A scanned over the same range as B). |
 | `channel_offset_time` | 0 | Extra fixed delay (s) of channel B, e.g. moving between the channels. |
 | `scan_offset_points` | 0 | n_offset for every dataset (in addition to the channel-B offset). |
+| `delay_points` | 0 | Number of scan start delays; > 1 fits the delay t_offset (s) of every scan behind its stored time instead of τ (2DSA only; τ fixed by `radial_scan_time`, default 0; the channel offsets are not used). |
+| `delay_min`, `delay_max` | 0 | Range of the fitted delays (s); `delay_max` is required with `delay_points` > 1. |
 
 The fit runs one 2DSA per grid point: `meniscus_points × tau_points` (times
 `bottom_points` for a meniscus + bottom fit). The meniscus/bottom points vary
@@ -117,6 +119,19 @@ the file name and description, e.g. `...2DSA-FM_000001_i03-m59000t04000.model`
    and the number of fitted points), and the weighted s, f/f0 and MW at the
    minimum compared with τ = 0 at the same meniscus. `--plot` writes
    `<triple>_tau_landscape.png`.
+
+   **Delay fit.** If the scan behind channel B is not one channel-A scan at
+   B's own speed (e.g. channel A absorbs strongly and scans slower), fit the
+   delay of the B scan in seconds instead of τ, with τ fixed:
+
+   ```bash
+   make_tau_job.py ... --radial-scan-time 0 --delay-min 0 --delay-max 400 --delay-points 41 -o b220_delay.tar
+   ```
+
+   The models carry `d<delay in 0.1 s>` in their names, `analysis_files.txt`
+   lists `delay_value`, and `tau_landscape.py` (also `--joint`) uses the
+   delay as its second axis. Compare the fitted delays with the time between
+   scans: the delay of B cannot exceed the cycle time minus the B scan.
 
    **Several wavelengths of one cell** (e.g. 4B220 and 4B230) share the
    meniscus, while τ may differ per wavelength. Run every triple on the same

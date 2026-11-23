@@ -170,7 +170,8 @@ class US_MPI_Analysis : public QObject
         bool fit_meni;           //!< Fit meniscus flag
         bool fit_bott;           //!< Fit bottom flag
         bool fit_menbot;         //!< Fit meniscus+bottom flag
-        bool                      fit_tau;            //!< Fit radial scan time flag
+        bool                      fit_tau;            //!< Fit a scan timing value (tau, or with fit_delay the delay)
+        bool                      fit_delay;          //!< The fitted timing value is the scan start delay (s)
 
         US_DataIO::RawData* res_data;      //!< Residual data (populated in calc_residuals)
         US_DataIO::RawData* sim_data;      //!< Simulation data (populated in calc_residuals)
@@ -441,6 +442,7 @@ class US_MPI_Analysis : public QObject
         void                   prepare_speed_steps( bool );
         void                   apply_scan_timing( void );
         QString                tau_iter_id( const QString& ) const;
+        void                   apply_timing_value( US_SimulationParameters&, double ) const;
         void                   check_grid_size( void );
         void                   choose_groups( void );
         void                   read_job_config( const QString& );

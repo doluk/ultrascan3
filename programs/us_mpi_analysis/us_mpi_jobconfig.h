@@ -168,6 +168,9 @@ class US_MPI_JobConfig
             bool              channel_b_after_a   = false;     //!< Channel B scanned after channel A, both stamped with A's start
             double            channel_a_points    = 0.0;       //!< Points of the channel A scan; 0: raw point count of the dataset
             double            channel_offset_time = 0.0;       //!< Extra fixed delay (s) of the channel B scan
+            int               delay_points        = 0;         //!< Fit the scan start delay on this many points (2DSA, > 1)
+            double            delay_min           = 0.0;       //!< Lowest fitted scan start delay (s)
+            double            delay_max           = 0.0;       //!< Highest fitted scan start delay (s)
             int               tinoise_option   = 0;
             int               rinoise_option   = 0;
             bool              global_fit       = false; //!< "1" or "T"

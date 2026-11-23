@@ -120,6 +120,9 @@ void US_MPI_JobConfig::read_parameters( void )
    pp.channel_b_after_a   = p.value( "channel_b_after_a" ) == "1" || p.value( "channel_b_after_a" ) == "T";
    pp.channel_a_points    = number( "channel_a_points" );
    pp.channel_offset_time = number( "channel_offset_time" );
+   pp.delay_points        = integer( "delay_points" );
+   pp.delay_min           = number( "delay_min" );
+   pp.delay_max           = number( "delay_max" );
    pp.tinoise_option   = integer( "tinoise_option" );
    pp.rinoise_option   = integer( "rinoise_option" );
    pp.global_fit       = p.value( "global_fit" ) == "1" || p.value( "global_fit" ) == "T";
@@ -760,6 +763,10 @@ const ParamSpec PARAMS[] = {
    { "channel_b_after_a", Kind::Flag, M_ANY, 0, 0, 0, nullptr },
    { "channel_a_points", Kind::Double, M_ANY, 0, 0, NOLIM, nullptr },
    { "channel_offset_time", Kind::Double, M_ANY, 0, 0, NOLIM, nullptr },
+   // Scan start delay fit of the 2DSA (instead of the radial scan time fit)
+   { "delay_points", Kind::Int, M_2DSA, 0, 0, NOLIM, nullptr },
+   { "delay_min", Kind::Double, M_2DSA, 0, 0, NOLIM, nullptr },
+   { "delay_max", Kind::Double, M_2DSA, 0, 0, NOLIM, nullptr },
    { "global_fit", Kind::Flag, M_ANY, 0, 0, 0, nullptr },
    { "seed", Kind::Int, M_ANY, 0, 0, 4294967295.0, nullptr },
    { "debug_level", Kind::Int, M_ANY, 0, 0, NOLIM, nullptr },
@@ -1038,6 +1045,29 @@ void US_MPI_JobConfig::validate()
       else
       {
          check_range( "tau_min", "tau_max", false );
+      }
+   }
+
+   // Scan start delay fit: 2DSA only, with a range of delays, not together
+   //  with the radial scan time fit
+   if ( parameters.value( "delay_points" ).toInt() > 1 )
+   {
+      if ( mbit != M_2DSA )
+      {
+         errors << QString( "delay_points: the scan delay fit needs a 2DSA analysis, not %1" ).arg( method );
+      }
+      else if ( parameters.value( "delay_max" ).trimmed().isEmpty() )
+      {
+         errors << QString( "delay_max: required with delay_points > 1" );
+      }
+      else
+      {
+         check_range( "delay_min", "delay_max", false );
+      }
+      if ( parameters.value( "tau_points" ).toInt() > 1 )
+      {
+         errors << QString( "delay_points: the scan delay and the radial scan time cannot be fitted together "
+                            "(fix tau with radial_scan_time)" );
       }
    }
 

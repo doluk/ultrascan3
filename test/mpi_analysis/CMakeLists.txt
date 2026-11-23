@@ -76,6 +76,7 @@ set(US_MPI_CASES
     2dsa_tau
     2dsa_meniscus_tau
     2dsa_tau_channel_b
+    2dsa_delay_channel_b
     2dsa_timestate
     2dsa_composite_timestate
     2dsa_customgrid
@@ -123,6 +124,7 @@ set(US_MPI_INPUT_CASES
     input_tau_not_2dsa
     input_tau_max_missing
     input_tau_mc
+    input_delay_with_tau
     input_centerpiece_bottom_default
     feature_cache_off
     feature_cache_default_policy

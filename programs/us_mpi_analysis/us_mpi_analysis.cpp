@@ -493,11 +493,12 @@ void US_MPI_Analysis::load_data( void )
       dset->vbartb      = US_Math2::calcCommonVbar( dset->solution_rec, dset->temperature );
 
       // The raw radial range: the default scan start of sequential scanning
-      const bool scan_timing = job_config.params.radial_scan_time > 0.0 || job_config.params.tau_points > 1;
-      double     rad_first   = dset->run_data.radius( 0 );
-      double     rad_last    = dset->run_data.radius( dset->run_data.pointCount() - 1 );
-      int        raw_count   = dset->run_data.pointCount();
-      const bool need_raw    = ( scan_timing && job_config.params.scan_start <= 0.0 ) ||
+      const bool scan_timing =
+         job_config.params.radial_scan_time > 0.0 || job_config.params.tau_points > 1 || job_config.params.delay_points > 1;
+      double     rad_first = dset->run_data.radius( 0 );
+      double     rad_last  = dset->run_data.radius( dset->run_data.pointCount() - 1 );
+      int        raw_count = dset->run_data.pointCount();
+      const bool need_raw  = ( scan_timing && job_config.params.scan_start <= 0.0 ) ||
                             ( job_config.params.channel_b_after_a && job_config.params.channel_a_points <= 0.0 );
       if ( need_raw && error.isEmpty() )
       {
@@ -720,9 +721,11 @@ void US_MPI_Analysis::set_fit_controls( void )
       DbgLv( 0 ) << "FMB: bottom:  start delta" << bottom_start << dbot;
    }
 
-   // Radial scan time: a fixed value, or a grid of values fitted together
-   //  with the meniscus/bottom points (2DSA only)
-   tau_points     = qMax( 1, job_config.params.tau_points );
+   // Scan timing: a fixed radial scan time, or a grid of values fitted
+   //  together with the meniscus/bottom points (2DSA only): the radial scan
+   //  time, or with delay_points the scan start delay (tau fixed)
+   fit_delay      = ( job_config.params.delay_points > 1 );
+   tau_points     = qMax( 1, fit_delay ? job_config.params.delay_points : job_config.params.tau_points );
    fit_tau        = ( tau_points > 1 );
    menibott_inner = menibott_count;
    menibott_count = menibott_inner * tau_points;
@@ -730,24 +733,31 @@ void US_MPI_Analysis::set_fit_controls( void )
 
    if ( fit_tau )
    {
-      const double tmin = job_config.params.tau_min;
-      const double tmax = job_config.params.tau_max;
+      const double tmin = fit_delay ? job_config.params.delay_min : job_config.params.tau_min;
+      const double tmax = fit_delay ? job_config.params.delay_max : job_config.params.tau_max;
       for ( int ii = 0; ii < tau_points; ii++ )
       {
          tau_values[ii] = tmin + ( tmax - tmin ) * ii / (double) ( tau_points - 1 );
       }
 
+      const QString what = fit_delay ? "scan delay fit (delay_points > 1)" : "radial scan time fit (tau_points > 1)";
       if ( !analysis_type.startsWith( "2DSA" ) )
       {
-         abort_all( "The radial scan time fit (tau_points > 1) needs a 2DSA analysis" );
+         abort_all( "The " + what + " needs a 2DSA analysis" );
+      }
+      if ( fit_delay && job_config.params.tau_points > 1 )
+      {
+         abort_all( "The scan delay and the radial scan time cannot be fitted together" );
       }
       if ( mc_iterations > 1 )
       {
-         abort_all( "The radial scan time fit is not compatible with Monte Carlo analysis" );
+         abort_all( fit_delay ? "The scan delay fit is not compatible with Monte Carlo analysis"
+                              : "The radial scan time fit is not compatible with Monte Carlo analysis" );
       }
       if ( is_global_fit )
       {
-         abort_all( "The radial scan time fit is not compatible with global fit" );
+         abort_all( fit_delay ? "The scan delay fit is not compatible with global fit"
+                              : "The radial scan time fit is not compatible with global fit" );
       }
    }
    else
@@ -757,8 +767,12 @@ void US_MPI_Analysis::set_fit_controls( void )
 
    if ( my_rank == 0 )
    {
-      DbgLv( 0 ) << "TAU: fit_tau" << fit_tau << "points" << tau_points << "values" << tau_values.first() << tau_values.last()
-                 << "menibott inner count" << menibott_inner << menibott_count;
+      DbgLv( 0 ) << "TAU: fit"
+                 << ( fit_delay ? "delay"
+                      : fit_tau ? "tau"
+                                : "none" )
+                 << "points" << tau_points << "values" << tau_values.first() << tau_values.last() << "menibott inner count"
+                 << menibott_inner << menibott_count;
    }
 }
 
@@ -768,7 +782,8 @@ void US_MPI_Analysis::set_fit_controls( void )
 void US_MPI_Analysis::apply_scan_timing( void )
 {
    const bool   outward = ( job_config.params.scan_direction != "inward" );
-   const double tau     = tau_values.isEmpty() ? 0.0 : tau_values[0];
+   const double first   = tau_values.isEmpty() ? 0.0 : tau_values[0];
+   const double tau     = fit_delay ? job_config.params.radial_scan_time : first;
 
    for ( int ee = 0; ee < data_sets.size(); ee++ )
    {
@@ -781,7 +796,8 @@ void US_MPI_Analysis::apply_scan_timing( void )
 
       // Points recorded before this scan's start: a general offset, plus
       //  for channel B the channel A scan when both carry A's scan time
-      const bool is_b     = job_config.params.channel_b_after_a && ds->run_data.channel.trimmed().toUpper() == "B";
+      //  (a fitted scan delay replaces the channel offsets)
+      const bool is_b     = !fit_delay && job_config.params.channel_b_after_a && ds->run_data.channel.trimmed().toUpper() == "B";
       double     a_points = job_config.params.channel_a_points;
       if ( a_points <= 0.0 && ee < raw_point_count.size() )
       {
@@ -791,14 +807,32 @@ void US_MPI_Analysis::apply_scan_timing( void )
       ds->simparams.scan_outward       = outward;
       ds->simparams.scan_start         = start;
       ds->simparams.scan_offset_points = job_config.params.scan_offset_points + ( is_b ? a_points : 0.0 );
-      ds->simparams.scan_time_offset   = is_b ? job_config.params.channel_offset_time : 0.0;
+      ds->simparams.scan_time_offset   = fit_delay ? first : is_b ? job_config.params.channel_offset_time : 0.0;
 
       if ( my_rank == 0 && ( tau > 0.0 || fit_tau || ds->simparams.scan_start_delay() > 0.0 ) )
       {
          DbgLv( 0 ) << "TAU: dataset" << ee << "channel" << ds->run_data.channel << "scan" << ( outward ? "outward" : "inward" )
-                    << "from" << start << "cm; tau" << ( fit_tau ? QString( "fitted" ) : QString::number( tau ) ) << "s/pt; offset"
-                    << ds->simparams.scan_offset_points << "points +" << ds->simparams.scan_time_offset << "s";
+                    << "from" << start << "cm; tau" << ( fit_tau && !fit_delay ? QString( "fitted" ) : QString::number( tau ) )
+                    << "s/pt; offset" << ds->simparams.scan_offset_points << "points +"
+                    << ( fit_delay ? QString( "fitted delay" ) : QString::number( ds->simparams.scan_time_offset ) ) << "s";
       }
+   }
+   if ( my_rank == 0 && fit_delay && job_config.params.channel_b_after_a )
+   {
+      DbgLv( 0 ) << "TAU: channel_b_after_a is not used in a scan delay fit: the fitted delay replaces it";
+   }
+}
+
+// Apply a fitted timing value: the radial scan time, or the scan start delay
+void US_MPI_Analysis::apply_timing_value( US_SimulationParameters& sp, double value ) const
+{
+   if ( fit_delay )
+   {
+      sp.scan_time_offset = value;
+   }
+   else
+   {
+      sp.radial_scan_time = value;
    }
 }
 
@@ -812,7 +846,12 @@ QString US_MPI_Analysis::tau_iter_id( const QString& iterID ) const
    }
 
    const QString base = ( iterID == "i01" ) ? QString::asprintf( "i%02d", menibott_ndx + 1 ) : iterID;
-   return base + QString::asprintf( "%st%05d", base.contains( '-' ) ? "" : "-", (int) qRound( tau_value * 10000.0 ) );
+   const QString sep  = base.contains( '-' ) ? "" : "-";
+   if ( fit_delay )
+   { // "d" and the delay in 0.1 s
+      return base + sep + QString::asprintf( "d%05d", (int) qRound( tau_value * 10.0 ) );
+   }
+   return base + sep + QString::asprintf( "t%05d", (int) qRound( tau_value * 10000.0 ) );
 }
 
 // GA and DMGA controls
@@ -2800,7 +2839,11 @@ void US_MPI_Analysis::write_model( const SIMULATION&      sim,
 
    tsout << fn << ";meniscus_value=" << meniscus_value << ";MC_iteration=" << mc_iter << ";variance=" << sim.variance
          << ";run=" << runstring << ";bottom_value=" << bottom_value;
-   if ( fit_tau || tau_value > 0.0 )
+   if ( fit_delay )
+   {
+      tsout << ";tau_value=" << job_config.params.radial_scan_time << ";delay_value=" << tau_value;
+   }
+   else if ( fit_tau || tau_value > 0.0 )
    {
       tsout << ";tau_value=" << tau_value;
    }
@@ -3327,7 +3370,11 @@ void US_MPI_Analysis::write_superg( const SIMULATION&      sim,
 
    tsout << fn << ";meniscus_value=" << meniscus_value << ";MC_iteration=" << mc_iter << ";variance=" << sim.variance
          << ";run=" << runstring << ";bottom_value=" << bottom_value;
-   if ( fit_tau || tau_value > 0.0 )
+   if ( fit_delay )
+   {
+      tsout << ";tau_value=" << job_config.params.radial_scan_time << ";delay_value=" << tau_value;
+   }
+   else if ( fit_tau || tau_value > 0.0 )
    {
       tsout << ";tau_value=" << tau_value;
    }

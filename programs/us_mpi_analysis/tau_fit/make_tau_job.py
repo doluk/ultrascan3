@@ -51,13 +51,17 @@ def job_parameters(a):
                  fit_mb_select=1)
     else:
         p.update(meniscus_points=1, meniscus_range=0.0, fit_mb_select=0)
-    if a.tau_points > 1:
+    if a.delay_points > 1:
+        # Scan start delay fit, tau fixed (the delay replaces the channel offsets)
+        p.update(delay_points=a.delay_points, delay_min=a.delay_min, delay_max=a.delay_max,
+                 radial_scan_time=a.radial_scan_time)
+    elif a.tau_points > 1:
         p.update(tau_points=a.tau_points, tau_min=a.tau_min, tau_max=a.tau_max)
     else:
         p.update(radial_scan_time=a.radial_scan_time)
     if a.scan_start > 0.0:
         p["scan_start"] = a.scan_start
-    if a.channel_b_after_a:
+    if a.channel_b_after_a and a.delay_points <= 1:
         p["channel_b_after_a"] = 1
         if a.channel_a_points > 0.0:
             p["channel_a_points"] = a.channel_a_points
@@ -155,6 +159,11 @@ def main():
     t.add_argument("--scan-start", type=float, default=0.0,
                    help="radius (cm) where each scan starts; 0: first raw radius in scan direction")
     t.add_argument("--scan-direction", default="outward", choices=["outward", "inward"])
+    t.add_argument("--delay-min", type=float, default=0.0, help="lowest scan start delay (s)")
+    t.add_argument("--delay-max", type=float, default=0.0, help="highest scan start delay (s)")
+    t.add_argument("--delay-points", type=int, default=1,
+                   help="scan start delay points; > 1 fits the delay of every scan behind its stored time "
+                        "(tau fixed by --radial-scan-time, default 0)")
     t.add_argument("--channel-b-after-a", action="store_true",
                    help="channel B is scanned after channel A and both carry A's scan time: "
                         "channel B data are delayed by the channel A scan")
@@ -172,6 +181,12 @@ def main():
         ap.error("give one --edit for every --auc")
     if a.tau_points > 1 and not a.tau_max > a.tau_min:
         ap.error("--tau-max must be larger than --tau-min")
+    if a.delay_points > 1 and not a.delay_max > a.delay_min:
+        ap.error("--delay-max must be larger than --delay-min")
+    if a.delay_points > 1 and a.tau_points > 1:
+        ap.error("fit either the delay (--delay-points) or tau (--tau-points), with the other fixed")
+    if a.delay_points > 1 and a.channel_b_after_a:
+        print("note: --channel-b-after-a is not used in a delay fit; the fitted delay replaces it")
     if a.meniscus_points > 1 and a.meniscus_range <= 0.0:
         ap.error("--meniscus-range must be positive with --meniscus-points > 1")
 
@@ -213,9 +228,10 @@ def main():
                 tar.add(f, arcname=f.name)
         shutil.copy(xml_path, Path(a.output).with_suffix(".xml"))
 
-    npts = max(1, a.meniscus_points) * max(1, a.tau_points)
-    print("wrote %s: %d dataset(s), %d fit point(s) per dataset (meniscus %d x tau %d)"
-          % (a.output, len(datasets), npts, max(1, a.meniscus_points), max(1, a.tau_points)))
+    second, label = (a.delay_points, "delay") if a.delay_points > 1 else (a.tau_points, "tau")
+    npts = max(1, a.meniscus_points) * max(1, second)
+    print("wrote %s: %d dataset(s), %d fit point(s) per dataset (meniscus %d x %s %d)"
+          % (a.output, len(datasets), npts, max(1, a.meniscus_points), label, max(1, second)))
     return 0
 
 

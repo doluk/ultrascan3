@@ -351,8 +351,10 @@ QString US_MPI_Analysis::progress_2dsa( void )
 
    if ( fit_tau && mc_iterations <= 1 )
    {
-      progress +=
-         "; Scan time: " + QString::number( tau_value, 'f', 4 ) + tr( " s/pt (%1 of %2)" ).arg( tau_run + 1 ).arg( tau_points );
+      progress += fit_delay ? "; Scan delay: " + QString::number( tau_value, 'f', 1 ) +
+                                 tr( " s (%1 of %2)" ).arg( tau_run + 1 ).arg( tau_points )
+                            : "; Scan time: " + QString::number( tau_value, 'f', 4 ) +
+                                 tr( " s/pt (%1 of %2)" ).arg( tau_run + 1 ).arg( tau_points );
    }
 
    return progress;
@@ -849,7 +851,7 @@ void US_MPI_Analysis::begin_fit_context( void )
    // The master's own simulations (e.g. final residuals) use the same tau
    for ( int ee = current_dataset; ee < current_dataset + datasets_to_process && ee < data_sets.size(); ee++ )
    {
-      data_sets[ee]->simparams.radial_scan_time = tau_value;
+      apply_timing_value( data_sets[ee]->simparams, tau_value );
    }
 
    DbgLv( 1 ) << "FitContext: ds" << current_dataset << "men" << meniscus_value << "bot" << bottom_value << "tau" << tau_value

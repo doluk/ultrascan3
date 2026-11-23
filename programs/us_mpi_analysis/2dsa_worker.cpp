@@ -234,16 +234,17 @@ void US_MPI_Analysis::_2dsa_worker( void )
    }  // repeat_loop
 }
 
-// Apply a job's meniscus, bottom and radial scan time to its dataset.  This
+// Apply a job's meniscus, bottom and timing value (radial scan time, or the
+//  scan start delay of a delay fit) to its dataset.  This
 //  is the workers' fit-context entry point; returns true if the simulation
 //  parameters differ from those of the previous job.
 bool US_MPI_Analysis::worker_fit_context( int offset, double meniscus, double bottom, double tau )
 {
-   data_sets[offset]->run_data.meniscus          = meniscus;
-   data_sets[offset]->run_data.bottom            = bottom;
-   data_sets[offset]->simparams.meniscus         = meniscus;
-   data_sets[offset]->simparams.bottom           = bottom;
-   data_sets[offset]->simparams.radial_scan_time = tau;
+   data_sets[offset]->run_data.meniscus  = meniscus;
+   data_sets[offset]->run_data.bottom    = bottom;
+   data_sets[offset]->simparams.meniscus = meniscus;
+   data_sets[offset]->simparams.bottom   = bottom;
+   apply_timing_value( data_sets[offset]->simparams, tau );
 
    const bool sim_changed = ( fit_context.dataset != offset || fit_context.meniscus != meniscus || fit_context.bottom != bottom ||
                               fit_context.tau != tau );
