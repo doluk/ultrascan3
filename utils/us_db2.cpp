@@ -685,13 +685,12 @@ int US_DB2::statusQuery( const QString& sqlQuery )
    // status below are statements too, and must not overwrite it
    server_errno = int( mysql_errno( db ) );
 
-   if ( ! result  &&  mysql_errno( db ) != 0 )
+   // A statement the server refused itself -- a duplicate key, a wrong
+   // argument count -- has its reason in the MySQL error rawQuery() kept.
+   // last_error() holds only what a procedure recorded, possibly for an
+   // earlier call, so it is asked only when the statement ran.
+   if ( mysql_errno( db ) != 0 )
    {
-      // The statement itself failed, so the procedure never reached the
-      // point of recording a US3 message.  What rawQuery has already put
-      // in error is all there is to say; asking the server for
-      // last_error() would replace it with the empty string and leave the
-      // caller reporting a failure with no reason.
       return db_errno;
    }
 
@@ -1072,6 +1071,30 @@ int US_DB2::writeBlobToDB( const QString& filename,
 }
 #endif
 
+int US_DB2::writeBlobFile( const QString& filename, const QByteArray& data, QString& error )
+{
+   QFile fout( filename );
+   if ( !fout.open( QIODevice::WriteOnly ) )
+   {
+      error = QString( "readBlob: could not write file " ) + filename;
+      return DBERROR;
+   }
+
+   const qint64  written = fout.write( data );
+   const bool    flushed = fout.flush();
+   const bool    failed  = written != data.size() || !flushed || fout.error() != QFileDevice::NoError;
+   const QString reason  = fout.errorString();
+   fout.close();
+
+   if ( failed )
+   {
+      error = QString( "readBlob: could not write all %1 bytes to %2: %3" ).arg( data.size() ).arg( filename, reason );
+      QFile::remove( filename );
+      return DBERROR;
+   }
+   return OK;
+}
+
 #ifdef NO_DB
 int US_DB2::readBlobFromDB( const QString& , const QString& , const int ) { return 0; }
 #else
@@ -1127,7 +1150,6 @@ int US_DB2::readBlobFromDB( const QString& filename,
       result = NULL;
 
       // Since we got data, let's write it out
-      QFile fout( filename );
       if ( checksum != calculated )
       {
          error = QString( "readBlob: data transmission error (MD5 checksum)" ) ;
@@ -1135,17 +1157,13 @@ int US_DB2::readBlobFromDB( const QString& filename,
          db_errno = BAD_CHECKSUM;
       }
 
-      else if ( ! fout.open( QIODevice::WriteOnly ) )
-      {
-         error = QString( "readBlob: could not write file " ) + filename;
-
-         db_errno = DBERROR;
-      }
-
       else
       {
-         fout.write( aucData );
-         fout.close();
+         const int written = writeBlobFile( filename, aucData, error );
+         if ( written != OK )
+         {
+            db_errno = written;
+         }
       }
 if(!error.isEmpty()) qDebug() << error;
    }

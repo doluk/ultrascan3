@@ -111,8 +111,15 @@ class US_UTIL_EXTERN US_Solution
       //! \brief    Quick method to zero out the solution attributes
       void clear             ( void );
 
-      //! \brief    Method to save the current solution to disk
-      void saveToDisk        ( void );
+      /*! \brief    Method to save the current solution to disk, with its buffer
+                    and analyte files
+
+          \return   True when the solution file, the buffer file (when the buffer
+                    has a GUID and no file yet) and every analyte file are written.
+                    False when the solution lacks a description or a valid buffer,
+                    or any of those writes fails; saveStatus then is unchanged.
+      */
+      bool                   saveToDisk( void );
 
       /*! \brief    Method to write the solution XML (without the separate
                     buffer and analyte files) to a specific file
@@ -176,8 +183,8 @@ class US_UTIL_EXTERN US_Solution
       //! \brief Parse a solution file into this object, as it goes
       int     parseFile   ( const QString&, bool );
       int readBufferDiskGUID ( US_Buffer& , QString& );
-      void saveBufferDisk    ( void ) const;
-      void saveAnalytesDisk  ( void );
+      bool    saveBufferDisk( void ) const;
+      bool    saveAnalytesDisk( void );
       QString get_filename   ( const QString&, bool& ) const;
       int analyte_type       (const QString& antype);
       QString analyte_typetext( int );
