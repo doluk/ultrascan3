@@ -633,6 +633,15 @@ QString US_DataPubCLI::password( bool needed )
          err.flush();
       }
 
+      // A password was given, and it is no use: a failure, not a usage
+      // error, like any other input the run cannot use
+      if ( pw.isEmpty() )
+      {
+         fail( tr( "The password file %1 holds an empty password" )
+               .arg( args.dbPasswordFile ) );
+         password_failed = true;
+      }
+
       return pw;
    }
 
@@ -650,7 +659,17 @@ QString US_DataPubCLI::password( bool needed )
    QString fromEnv = qEnvironmentVariable( "US3_DB_PASSWORD" );
 
    if ( ! fromEnv.isEmpty() )
-      return chopLineEnd( fromEnv );
+   {
+      QString pw = chopLineEnd( fromEnv );
+
+      if ( pw.isEmpty() )
+      {
+         fail( tr( "US3_DB_PASSWORD holds an empty password" ) );
+         password_failed = true;
+      }
+
+      return pw;
+   }
 
    if ( args.nonInteractive )
    {
@@ -675,6 +694,12 @@ QString US_DataPubCLI::password( bool needed )
                 " --db-password-file, or set US3_DB_PASSWORD" ).arg( error ) );
       password_failed = true;
       return QString();
+   }
+
+   if ( line.isEmpty() )
+   {
+      fail( tr( "No password was entered" ) );
+      password_failed = true;
    }
 
    return line;
@@ -810,8 +835,9 @@ int US_DataPubCLI::runExport( void )
    selection.scope            = scope;
 
    // One error for one problem: password() has said what went wrong when
-   // it could.  A file or terminal that could not be read is a failure
-   // (1); no password given at all is a usage error (2).
+   // it could.  A file or terminal that could not be read, or that gave an
+   // empty password, is a failure (1); no password given at all is a usage
+   // error (2).
    if ( selection.fromDb  &&  selection.dbPassword.isEmpty() )
    {
       if ( errors_reported == before )

@@ -328,22 +328,47 @@ QString US_DataPubManifest::escape( const QString& value )
    text.replace( "\r", "\\r"  );
    text.replace( "\t", "\\t"  );
 
-   // Every other control character -- C0, DEL, C1 -- and the Unicode line
-   // and paragraph separators go as YAML's "\uXXXX": a YAML reader refuses
-   // them raw in a quoted scalar, and a NUL ends the text for a reader that
-   // stops at one
+   // Everything outside YAML's printable set goes as YAML's "\uXXXX" (or
+   // "\UXXXXXXXX" beyond the first plane): the other control characters --
+   // C0, DEL, C1 -- U+FFFE and U+FFFF, and a surrogate without its pair,
+   // which UTF-8 cannot even hold.  So do the Unicode line and paragraph
+   // separators and the noncharacters (U+FDD0..U+FDEF and the last two
+   // code points of every plane): a YAML reader may take the former as line
+   // breaks, and other tools refuse the latter.  A NUL would end the text
+   // for a reader that stops at one.
    QString out;
    out.reserve( text.size() );
 
    for ( int ii = 0; ii < text.size(); ii++ )
    {
-      ushort code = text.at( ii ).unicode();
+      QChar chr  = text.at( ii );
+      uint  code = chr.unicode();
+      int   len  = 1;
+
+      if ( chr.isHighSurrogate()  &&  ii + 1 < text.size()  &&
+           text.at( ii + 1 ).isLowSurrogate() )
+      {
+         code = QChar::surrogateToUcs4( chr, text.at( ii + 1 ) );
+         len  = 2;
+      }
+
+      bool lone    = ( len == 1  &&  chr.isSurrogate() );
+      bool nonchar = ( code >= 0xfdd0  &&  code <= 0xfdef )  ||
+                     ( ( code & 0xfffe ) == 0xfffe );
 
       if ( code < 0x20  ||  ( code >= 0x7f  &&  code <= 0x9f )  ||
-           code == 0x2028  ||  code == 0x2029 )
-         out += QString( "\\u%1" ).arg( uint( code ), 4, 16, QChar( '0' ) );
+           code == 0x2028  ||  code == 0x2029  ||  lone  ||  nonchar )
+      {
+         if ( code > 0xffff )
+            out += QString( "\\U%1" ).arg( code, 8, 16, QChar( '0' ) );
+         else
+            out += QString( "\\u%1" ).arg( code, 4, 16, QChar( '0' ) );
+      }
+
       else
-         out += text.at( ii );
+         out += text.mid( ii, len );
+
+      ii += len - 1;
    }
 
    return "\"" + out + "\"";
@@ -376,6 +401,8 @@ QString US_DataPubManifest::unescape( const QString& value )
 
       static const QRegularExpression hex4(
          QRegularExpression::anchoredPattern( "[0-9A-Fa-f]{4}" ) );
+      static const QRegularExpression hex8(
+         QRegularExpression::anchoredPattern( "[0-9A-Fa-f]{8}" ) );
 
       if ( nxt == QChar( 'u' )  &&  ii + 4 <= text.size()  &&
            hex4.match( text.mid( ii, 4 ) ).hasMatch() )
@@ -386,6 +413,28 @@ QString US_DataPubManifest::unescape( const QString& value )
          {
             out += QChar( code );
             ii  += 4;
+            continue;
+         }
+      }
+
+      // YAML's escape beyond the first plane
+      if ( nxt == QChar( 'U' )  &&  ii + 8 <= text.size()  &&
+           hex8.match( text.mid( ii, 8 ) ).hasMatch() )
+      {
+         uint code = text.mid( ii, 8 ).toUInt( &hex, 16 );
+
+         if ( hex  &&  code <= 0x10ffff )
+         {
+            if ( QChar::requiresSurrogates( code ) )
+            {
+               out += QChar( QChar::highSurrogate( code ) );
+               out += QChar( QChar::lowSurrogate ( code ) );
+            }
+
+            else
+               out += QChar( ushort( code ) );
+
+            ii += 8;
             continue;
          }
       }

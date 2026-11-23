@@ -154,37 +154,173 @@ the settings of whoever ran it.
 
 Most tests run without a database.  The tests that have to talk to a real
 server live in their own executable, `test_us_utils_db` (label
-`gtest-integration-db-utils`).  They skip themselves unless the environment
-says where the server is, so an ordinary build and an ordinary `ctest` run need
-no database at all.
+`gtest-integration-db-utils`), and in the `DataPubDb*` cases of
+`test_us_datapub`.  They skip themselves unless the environment says where
+the server is, so an ordinary build and an ordinary `ctest` run need no
+database at all.
 
-To run them, load the UltraScan3 schema, stored procedures and hardware data
-(from the [us3_sql](https://github.com/doluk/us3_sql) repository) into a
-scratch database, add the fixture, and point the tests at it:
+The steps below start from a server with nothing on it and were followed as
+written on MySQL 8.0 and MariaDB 10.11.  They need the
+[us3_sql](https://github.com/doluk/us3_sql) repository (the schema, the
+stored procedures and the hardware data); `$US3_SQL` is where it is checked
+out, `$US3` the root of this repository, and `build` the build directory
+(`build/bin/test_us_*`; with `-B build/t`, read `build/t` for `build`).
+
+### 1. The server: TLS and the binary log
+
+`US_DB2` always connects over TLS, checks the server's certificate against a
+CA and sends no client certificate, so the server needs TLS on:
+
+* **MySQL 8** turns it on by itself: at its first start it writes a CA and a
+  server certificate into its data directory (`ca.pem`, `server-cert.pem`,
+  `server-key.pem`).
+* **MariaDB** needs a certificate configured in the `[mysqld]` section of its
+  configuration, for example one signed by that same CA:
+
+  ```ini
+  [mysqld]
+  ssl-ca   = /path/to/ca.pem
+  ssl-cert = /path/to/server-cert.pem
+  ssl-key  = /path/to/server-key.pem
+  ```
+
+The client reads the CA from `<appBaseDir>/etc/mysql/ca-cert.pem`, where
+`appBaseDir` is the directory above the test binary's `bin/`:
 
 ```bash
-mysql -u root us3test < us3.sql
-mysql -u root us3test < us3_procedures.sql
-mysql -u root us3test < us3_hardware_data.sql        # rotors, centerpieces, lab
-mysql -u root us3test < us3_buffer_components.sql    # the component table
-mysql -u root us3test < test/utils/data/us3_db_fixture.sql
-
-US3_TEST_DB_HOST=127.0.0.1:3306 US3_TEST_DB_NAME=us3test \
-US3_TEST_DB_USER=us3test        US3_TEST_DB_PASS=us3testpw \
-US3_TEST_DB_PERSON_GUID=aaaaaaaa-0000-4000-8000-000000000002 \
-US3_TEST_DB_PERSON_PW=secret    US3_TEST_DB_PERSON_ID=2 \
-US3_TEST_DB_EMAIL=test@example.org \
-US3_TEST_DB_ADMIN_GUID=aaaaaaaa-0000-4000-8000-000000000001 \
-US3_TEST_DB_ADMIN_PW=adminpw    US3_TEST_DB_OTHER_ID=3 ./bin/test_us_utils_db
+mkdir -p build/etc/mysql
+cp /var/lib/mysql/ca.pem build/etc/mysql/ca-cert.pem    # the server's CA
 ```
+
+The procedures create stored functions, which a server with the binary log
+on (the MySQL 8 default) refuses from a user without `SUPER` unless
+`log_bin_trust_function_creators = 1` is set in `[mysqld]`; loading them as
+`root`, as below, needs nothing.
+
+The tests are written for a server in strict SQL mode (the MySQL 8 default,
+and MariaDB's `STRICT_TRANS_TABLES`), which refuses, for example, `''` for an
+integer argument.  Leave it on.
+
+### 2. Databases, user and grants
+
+As `root` (`mysql -u root`, or `mariadb -u root`):
+
+```sql
+CREATE DATABASE us3test;     -- the fixture: what the tests read
+CREATE DATABASE us3imp;      -- a scratch target the import tests write into
+CREATE USER 'us3test'@'localhost' IDENTIFIED BY 'us3testpw';
+CREATE USER 'us3test'@'%'         IDENTIFIED BY 'us3testpw';
+GRANT ALL ON us3test.* TO 'us3test'@'localhost', 'us3test'@'%';
+GRANT ALL ON us3imp.*  TO 'us3test'@'localhost', 'us3test'@'%';
+```
+
+The tests connect over TCP to `127.0.0.1`; which of the two accounts a server
+matches that to differs between servers and their configuration, so create
+both.
+
+### 3. Schema, procedures, hardware data, fixture
+
+Run these **from inside `$US3_SQL`**: `us3_procedures.sql` loads the other
+procedure files with `SOURCE <file>`, which the client resolves against its
+working directory.
+
+```bash
+cd $US3_SQL
+
+# The schema.  MySQL 8 refuses four things in us3.sql: the SQL mode
+# NO_AUTO_CREATE_USER (removed in 8.0), defaults on TEXT columns, a zero
+# date default and DROP/CREATE INDEX IF [NOT] EXISTS; --force goes on past
+# them.  That leaves out the autoflow* and HPCAnalysis* tables and two
+# indexes of personal_access_tokens, which no test uses, and the session's
+# SQL mode stays the server's strict one.  MariaDB takes the file as it is
+# (--force does no harm there).
+mysql --force -u root us3test < us3.sql
+
+mysql -u root us3test < us3_procedures.sql
+
+# The hardware data inserts the rotors before the lab they belong to, so
+# its foreign keys are checked off for this one session
+mysql --init-command="SET FOREIGN_KEY_CHECKS=0" -u root us3test \
+      < us3_hardware_data.sql
+
+mysql -u root us3test < us3_buffer_components.sql
+mysql -u root us3test < $US3/test/utils/data/us3_db_fixture.sql
+```
+
+(With MariaDB's client, `mariadb` takes the same options.)
 
 The fixture is a complete, realistic data set (see the comment at its head):
 every GUID is a real UUID, the raw data are real `.auc` files, the edits,
-model and noise real UltraScan XML, the solution has its buffer (with
-components and an extinction profile), analyte and investigator, and the run
-has a rotor, a calibration and a cell table, so that a run can be read and
-exported whole.  The tests are written for a server in strict SQL mode (the
-MySQL 8 default), which refuses, for example, `''` for an integer argument.
+model and noise real UltraScan XML, the time state what `US_TimeState`
+writes, the solution has its buffer (with components and an extinction
+profile), analyte and investigator, and the run has a rotor, a calibration
+and a cell table, so that a run can be read and exported whole.
+
+### 4. The import target
+
+`test_us_datapub`'s `DataPubDbImport` cases write into the scratch database
+named by `US3_TEST_DB_IMPORT_NAME`.  It needs the schema, the procedures, the
+hardware data (a lab, a rotor with a calibration, the centerpiece table) and
+the component table as above, then the investigator the tests log in as,
+with an instrument they may operate and the `channel` row 1 that
+`US_ConvertIO` writes raw data under:
+
+```bash
+cd $US3_SQL
+mysql --force -u root us3imp < us3.sql
+mysql -u root us3imp < us3_procedures.sql
+mysql --init-command="SET FOREIGN_KEY_CHECKS=0" -u root us3imp \
+      < us3_hardware_data.sql
+mysql -u root us3imp < us3_buffer_components.sql
+mysql -u root us3imp -e "
+  INSERT INTO people (personID, personGUID, fname, lname, email, password,
+                      activated, userlevel, account_enabled, authenticatePAM,
+                      userNamePAM)
+  VALUES (2, 'aaaaaaaa-0000-4000-8000-000000000002', 'Test', 'User',
+          'test@example.org', MD5('secret'), 1, 2, 1, 0, '');
+  INSERT INTO instrument (instrumentID, labID, name, serialNumber,
+                          opsys1, opsys2, opsys3)
+  VALUES (1, 1, 'XLA', 'SN1', 'UV/visible', '(not installed)',
+          '(not installed)');
+  INSERT INTO permits (personID, collaboratorID, instrumentID)
+  VALUES (2, 2, 1);
+  INSERT INTO channel (channelID, channelGUID)
+  VALUES (1, 'aaaaaaaa-0000-4000-8000-000000000902');"
+```
+
+The instrument procedures call `DECODE()`, which MySQL 8 no longer has, so
+the import cases need MariaDB (or a MySQL 5.7); against MySQL 8 leave
+`US3_TEST_DB_IMPORT_NAME` unset and they skip.  Each run of them adds
+records, so drop and rebuild the database now and then.
+
+### 5. Running the suites
+
+From the build directory, so that `etc/mysql/ca-cert.pem` is found:
+
+```bash
+cd build
+export US3_TEST_DB_HOST=127.0.0.1:3306        # MariaDB: its own port
+export US3_TEST_DB_NAME=us3test
+export US3_TEST_DB_USER=us3test  US3_TEST_DB_PASS=us3testpw
+export US3_TEST_DB_PASSWORD=us3testpw
+export US3_TEST_DB_PERSON_GUID=aaaaaaaa-0000-4000-8000-000000000002
+export US3_TEST_DB_PERSON_PW=secret  US3_TEST_DB_PERSON_ID=2
+export US3_TEST_DB_EMAIL=test@example.org
+export US3_TEST_DB_ADMIN_GUID=aaaaaaaa-0000-4000-8000-000000000001
+export US3_TEST_DB_ADMIN_PW=adminpw  US3_TEST_DB_OTHER_ID=3
+export US3_TEST_DB_IMPORT_NAME=us3imp         # MariaDB only, see above
+export QT_QPA_PLATFORM=offscreen
+
+./bin/test_us_utils_db
+./bin/test_us_datapub --gtest_filter='DataPubDb*'
+```
+
+On a fresh fixture `test_us_utils_db` passes 19 cases and skips 5: two that
+want a scratch database (below), the old-server case, which wants the
+fall-back database, and the two `BufferComponentSeedDb` cases, which run only
+with `US3_TEST_LIVE_DB=1` against a seeded database of their own (see the head
+of `test/utils/test_us_buffer_component_live.cpp`).  The `DataPubDb*` cases
+pass 14 on MariaDB, or 11 with the 3 import cases skipped on MySQL 8.
 
 The variables, and who reads them:
 
@@ -199,34 +335,26 @@ The variables, and who reads them:
 
 Set both password variables to the same value to run everything. The
 scratch-database tests skip when the database already has the US3
-procedures, so point them at an empty one (`US3_TEST_DB_NAME=us3scratch`).
+procedures, so point them at an empty one (`US3_TEST_DB_NAME=us3scratch`,
+created and granted as in step 2, with nothing loaded).
 
-`US_DB2` always connects over TLS and sends no client certificate: the server
-needs TLS on, and the only file the client needs is the CA it checks the
-server against, `<appBaseDir>/etc/mysql/ca-cert.pem`, where `appBaseDir` is
-the directory above the test binary's `bin/` (so for `build/bin/test_us_*`,
-`build/etc/mysql/ca-cert.pem`).
-
-`test_us_datapub` takes the same variables and runs its own `DataPubDb` cases
-against the database, among them an export of the fixture's run with its
-whole chain (skipped on a database that is not the fixture).  Its `DataPubDbImport` cases import into a scratch
-database named by `US3_TEST_DB_IMPORT_NAME`, which needs the schema, the
-procedures, the person of `US3_TEST_DB_PERSON_ID` (with the GUID of
-`US3_TEST_DB_PERSON_GUID`) with a permit, a lab with an
-instrument, a rotor with a calibration, the centerpiece table and one
-`channel` row (`channelID` 1, which `US_ConvertIO` writes raw data under).
-The instrument procedures call `DECODE()`, which MySQL 8 no longer has, so
-those cases need MariaDB (or a MySQL 5.7) to pass.
+`test_us_datapub` runs its own `DataPubDb` cases against the fixture, among
+them an export of the fixture's run with its whole chain (skipped on a
+database that is not the fixture), and the `DataPubDbImport` cases export the
+synthetic disk store the tests build and import it into the scratch target.
 
 ### Testing the fall-back
 
 The catalog prefers stored procedures added for it and falls back on the ones
 UltraScan has always had when a server does not have them.  Both paths have to
-work, so point the same suites at a database with those procedures dropped:
+work, so point the same suites at a copy of the fixture with those procedures
+dropped:
 
 ```bash
-mysqldump -u root --routines --databases us3test | sed 's/us3test/us3old/g' \
-    | mysql -u root
+mysqldump -u root --routines us3test > us3test.sql
+mysql -u root -e "CREATE DATABASE us3old;
+  GRANT ALL ON us3old.* TO 'us3test'@'localhost', 'us3test'@'%';"
+mysql -u root us3old < us3test.sql
 mysql -u root us3old -e "
   DROP PROCEDURE get_experiment_summary;
   DROP PROCEDURE get_rawData_by_experiment;
@@ -236,9 +364,14 @@ mysql -u root us3old -e "
   DROP PROCEDURE get_rawData_by_person;
   DROP PROCEDURE get_editedData_by_person;"
 
-US3_TEST_DB_NAME=us3old ... ./bin/test_us_utils_db
-US3_TEST_DB_NAME=us3old ... ./bin/test_us_datapub
+US3_TEST_DB_NAME=us3old ./bin/test_us_utils_db
+US3_TEST_DB_NAME=us3old ./bin/test_us_datapub --gtest_filter='DataPubDb*'
 ```
+
+(MySQL 8's `mysqldump` also dumps a MariaDB database; add
+`--column-statistics=0`.)  Against it `test_us_utils_db` passes 18 and skips
+6 -- the two cases about the fast path skip, the old-server case runs -- and
+the `DataPubDb*` cases pass as against the fixture.
 
 The cases that are about the fast path ask the server what it has and skip;
 the rest are expected to pass against either.  A partly upgraded server --

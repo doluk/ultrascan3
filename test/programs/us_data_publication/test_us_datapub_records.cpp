@@ -158,8 +158,22 @@ TEST_F( DataPubRecords, DerivedGuidsFollowTheContent )
    EXPECT_NE( one, US_DataPubRecords::calibrationGuid( other ) );
 
    other = cal;
-   other.lastUpdated = QDate( 2025, 1, 1 );
+   other.coeff2 = 3.6e-10;
    EXPECT_NE( one, US_DataPubRecords::calibrationGuid( other ) );
+
+   other = cal;
+   other.ID = 4;
+   EXPECT_NE( one, US_DataPubRecords::calibrationGuid( other ) );
+
+   other = cal;
+   other.rotorGUID = "55555555-5555-5555-5555-555555555555";
+   EXPECT_NE( one, US_DataPubRecords::calibrationGuid( other ) );
+
+   // The date is when the row or the file was last written, not part of
+   // what was measured
+   other = cal;
+   other.lastUpdated = QDate( 2025, 1, 1 );
+   EXPECT_EQ( one, US_DataPubRecords::calibrationGuid( other ) );
 
    // A record's own GUID always wins ...
    other.GUID = "77777777-7777-7777-7777-777777777777";
@@ -189,6 +203,10 @@ TEST_F( DataPubRecords, ACalibrationGuidIsTheSameFromTheDatabaseAndFromDisk )
    fromDisk.coeff2 = QString::number( fromDb.coeff2 ).toFloat();
    fromDisk.calibrationExperimentGUID = "66666666-6666-6666-6666-666666666666";
 
+   // the database's date is when the row was last written, the file's
+   // when it was copied
+   fromDisk.lastUpdated = QDate( 2025, 6, 30 );
+
    ASSERT_NE( fromDb.coeff1, fromDisk.coeff1 );
    EXPECT_EQ( US_DataPubRecords::calibrationGuid( fromDb ),
               US_DataPubRecords::calibrationGuid( fromDisk ) );
@@ -214,10 +232,10 @@ TEST_F( DataPubRecords, DerivedGuidsAreKnownValues )
    cal.coeff2      = 3.5e-10;
    cal.lastUpdated = QDate( 2024, 1, 1 );
 
-   // uuid5( ns, "rotorCalibration:<rotorGUID>:3:1.25000e-05:3.50000e-10:"
-   //            "2024-01-01" )
+   // uuid5( ns, "rotorCalibration:<rotorGUID>:3:1.25000e-05:3.50000e-10" ),
+   // with no date in it
    EXPECT_EQ( US_DataPubRecords::calibrationGuid( cal ),
-              QString( "fb9d594e-cff1-5bab-9ed1-1e961d368e16" ) );
+              QString( "116899ce-6150-5f54-bdf6-795320a03ae9" ) );
 }
 
 TEST_F( DataPubRecords, CenterpieceGuidsFollowTheContent )

@@ -116,6 +116,8 @@ US_DataPubExporter::US_DataPubExporter( QObject* parent ) : QObject( parent )
    exp_scope      = US_DataPub::ScopeNoise;
    cp_loaded      = false;
    hd_comp_loaded = false;
+   from_project   = false;
+   run_fault      = false;
 }
 
 US_DataPubExporter::~US_DataPubExporter()
@@ -211,6 +213,36 @@ void US_DataPubExporter::note( const QString& text )
    emit message( text );
 }
 
+bool US_DataPubExporter::runFault( QString& error, const QString& text )
+{
+   error     = text;
+   run_fault = true;
+
+   return false;
+}
+
+bool US_DataPubExporter::spectraAreFinite(
+      const QMap< QString, QMap< double, double > >& spectra, QString& why )
+{
+   for ( auto it = spectra.constBegin(); it != spectra.constEnd(); ++it )
+   {
+      const QMap< double, double >& spectrum = it.value();
+
+      for ( auto jt = spectrum.constBegin(); jt != spectrum.constEnd(); ++jt )
+      {
+         if ( qIsFinite( jt.key() )  &&  qIsFinite( jt.value() ) )  continue;
+
+         why = tr( "its %1 spectrum holds %2 at %3, which is not a number" )
+               .arg( it.key() ).arg( jt.value() ).arg( jt.key() );
+         return false;
+      }
+   }
+
+   why.clear();
+
+   return true;
+}
+
 bool US_DataPubExporter::copyPayload( const QString& source,
                                       const QString& staged, QString& error )
 {
@@ -301,10 +333,17 @@ bool US_DataPubExporter::stageSpectra(
 {
    error.clear();
 
-   bool any = always;
+   bool    any = always;
+   QString why;
 
    for ( auto it = spectra.constBegin(); it != spectra.constEnd(); ++it )
       if ( ! it.value().isEmpty() )  any = true;
+
+   // An import refuses a spectrum that is not all numbers, so the record
+   // stops here rather than in a bundle that cannot be imported
+   if ( ! spectraAreFinite( spectra, why ) )
+      return runFault( error, tr( "%1 cannot be exported: %2" )
+                              .arg( entity.label() ).arg( why ) );
 
    if ( ! any )  return true;
 
@@ -436,6 +475,9 @@ bool US_DataPubExporter::build( const Selection& selection, bool payloads,
    hd_comp_loaded = false;
    stage_payloads = payloads;
    step_count     = 0;
+   from_project   = false;
+   run_fault      = false;
+   listed_models.clear();
 
    US_DataPub::Scope scope = selection.effectiveScope();
    exp_scope       = scope;
@@ -551,43 +593,117 @@ bool US_DataPubExporter::build( const Selection& selection, bool payloads,
                 " it, so an import can attach them to a project the target"
                 " already has" ) );
 
-   // ---- rotor calibration -------------------------------------------------
-   if ( scope >= US_DataPub::ScopeRotorCalibration )
-      for ( int ii = 0; ii < infos.size(); ii++ )
-         if ( ! addCalibration( infos[ ii ], error ) )  return false;
+   // ---- the records of each run -------------------------------------------
+   // A run of a project export whose own records do not hold together --
+   // no solution in a channel, a payload that is not what the catalog says
+   // -- is left out with a warning, and everything staged for it is taken
+   // back; a run the user named fails the export
+   QList< US_DataPubCatalog::Model > leftOutModels;
+   int                               leftOut = 0;
 
-   // ---- centerpieces ------------------------------------------------------
-   if ( scope >= US_DataPub::ScopeCenterpiece )
-      for ( int ii = 0; ii < runs.size(); ii++ )
-         if ( ! addCenterpieces( runs[ ii ], infos[ ii ], error ) )
+   for ( int ii = 0; ii < runs.size(); ii++ )
+   {
+      US_DataPubManifest       saveMani  = mani;
+      QMap< QString, QString > saveCals  = cal_guids;
+      QMap< QString, QString > saveSols  = raw_solutions;
+      int                      saveSteps = step_count;
+      QMap< QString, qint64 >  saveFiles;
+
+      if ( stage_payloads  &&
+           ! US_DataPubBundle::listTree( bundle.stagingPath(), saveFiles,
+                                         error ) )
+         return false;
+
+      run_fault = false;
+
+      if ( stageRun( selection, runs[ ii ], infos[ ii ], error ) )  continue;
+
+      if ( ! from_project  ||  ! run_fault )  return false;
+
+      QString why = error;
+
+      mani          = saveMani;
+      cal_guids     = saveCals;
+      raw_solutions = saveSols;
+      step_count    = saveSteps;
+
+      if ( stage_payloads )
+      {
+         QMap< QString, qint64 > files;
+
+         if ( ! US_DataPubBundle::listTree( bundle.stagingPath(), files,
+                                            error ) )
             return false;
 
-   // ---- experiment --------------------------------------------------------
-   if ( scope >= US_DataPub::ScopeExperiment )
-      for ( int ii = 0; ii < runs.size(); ii++ )
-         if ( ! addExperiment( runs[ ii ], infos[ ii ], error ) )  return false;
+         for ( auto it = files.constBegin(); it != files.constEnd(); ++it )
+         {
+            if ( saveFiles.contains( it.key() ) )  continue;
 
-   // ---- solutions, with their buffers and analytes ------------------------
-   if ( scope >= US_DataPub::ScopeSolutions )
-      for ( int ii = 0; ii < runs.size(); ii++ )
-         if ( ! addSolutions( runs[ ii ], infos[ ii ], error ) )  return false;
+            QString path = bundle.stagingPath() + "/" + it.key();
 
-   // ---- raw data and time state -------------------------------------------
-   if ( scope >= US_DataPub::ScopeRawData )
-   {
-      for ( int ii = 0; ii < runs.size(); ii++ )
-      {
-         if ( ! addRawData( runs[ ii ], infos[ ii ], error ) )  return false;
+            if ( ! QFile::remove( path ) )
+            {
+               error = tr( "Cannot take back the staged file %1 of run %2" )
+                       .arg( it.key() ).arg( runs[ ii ].runID );
+               return false;
+            }
 
-         if ( selection.includeTimeState )
-            if ( ! addTimeState( runs[ ii ], error ) )  return false;
+            // ... and the directories that held nothing else
+            QDir dir = QFileInfo( path ).dir();
+
+            while ( dir.absolutePath() != QDir( bundle.stagingPath() )
+                                          .absolutePath()  &&
+                    dir.isEmpty()  &&  dir.rmdir( dir.absolutePath() ) )
+               dir.cdUp();
+         }
       }
+
+      note( tr( "Warning: run %1 of the project is left out: %2" )
+            .arg( runs[ ii ].runID ).arg( why ) );
+      leftOut++;
+
+      // Its models and their noise go with it
+      QStringList edits;
+
+      for ( int jj = 0; jj < runs[ ii ].raws.size(); jj++ )
+         for ( int kk = 0; kk < runs[ ii ].raws[ jj ].edits.size(); kk++ )
+            edits << runs[ ii ].raws[ jj ].edits[ kk ].guid;
+
+      for ( int jj = models.size() - 1; jj >= 0; jj-- )
+         if ( edits.contains( models[ jj ].editGUID ) )
+            leftOutModels << models.takeAt( jj );
    }
 
-   // ---- edits -------------------------------------------------------------
-   if ( scope >= US_DataPub::ScopeEdits )
-      for ( int ii = 0; ii < runs.size(); ii++ )
-         if ( ! addEdits( runs[ ii ], error ) )  return false;
+   if ( leftOut > 0 )
+   {
+      if ( leftOut == runs.size() )
+      {
+         error = tr( "None of the %1 runs of the project can be exported; see"
+                     " the warnings" ).arg( leftOut );
+         return false;
+      }
+
+      note( tr( "Warning: %1 run(s) of the project are left out of the"
+                " bundle" ).arg( leftOut ) );
+   }
+
+   run_fault = false;
+
+   // ---- noise, and the models it was fitted to ----------------------------
+   QList< US_DataPubCatalog::Noise > noises;
+
+   if ( scope >= US_DataPub::ScopeNoise )
+   {
+      if ( ! collectNoises( selection, models, noises, error, leftOutModels ) )
+         return false;
+
+      if ( ! addFittedModels( models, noises, error ) )  return false;
+   }
+
+   else if ( selection.noisesExplicit  &&  ! selection.noiseGUIDs.isEmpty() )
+      note( tr( "%1 selected noise record(s) are left out: the scope ends at"
+                " \"%2\"" ).arg( selection.noiseGUIDs.size() )
+            .arg( US_DataPub::scopeKey( scope ) ) );
 
    // ---- models ------------------------------------------------------------
    if ( scope >= US_DataPub::ScopeModels )
@@ -595,18 +711,7 @@ bool US_DataPubExporter::build( const Selection& selection, bool payloads,
 
    // ---- noise -------------------------------------------------------------
    if ( scope >= US_DataPub::ScopeNoise )
-   {
-      QList< US_DataPubCatalog::Noise > noises;
-
-      if ( ! collectNoises( selection, models, noises, error ) )  return false;
-
       if ( ! addNoises( noises, error ) )  return false;
-   }
-
-   else if ( selection.noisesExplicit  &&  ! selection.noiseGUIDs.isEmpty() )
-      note( tr( "%1 selected noise record(s) are left out: the scope ends at"
-                " \"%2\"" ).arg( selection.noiseGUIDs.size() )
-            .arg( US_DataPub::scopeKey( scope ) ) );
 
    emit steps( step_count );
 
@@ -644,6 +749,142 @@ bool US_DataPubExporter::build( const Selection& selection, bool payloads,
    return true;
 }
 
+bool US_DataPubExporter::stageRun( const Selection& selection,
+                                   const US_DataPubCatalog::Run& run,
+                                   const US_DataPubCatalog::ExpInfo& info,
+                                   QString& error )
+{
+   US_DataPub::Scope scope = exp_scope;
+
+   if ( scope >= US_DataPub::ScopeRotorCalibration  &&
+        ! addCalibration( info, error ) )
+      return false;
+
+   if ( scope >= US_DataPub::ScopeCenterpiece  &&
+        ! addCenterpieces( run, info, error ) )
+      return false;
+
+   if ( scope >= US_DataPub::ScopeExperiment  &&
+        ! addExperiment( run, info, error ) )
+      return false;
+
+   if ( scope >= US_DataPub::ScopeSolutions  &&
+        ! addSolutions( run, info, error ) )
+      return false;
+
+   if ( scope >= US_DataPub::ScopeRawData )
+   {
+      if ( ! addRawData( run, info, error ) )  return false;
+
+      if ( selection.includeTimeState  &&  ! addTimeState( run, error ) )
+         return false;
+   }
+
+   if ( scope >= US_DataPub::ScopeEdits  &&  ! addEdits( run, error ) )
+      return false;
+
+   error.clear();
+
+   return true;
+}
+
+/* Noise is fitted to an edit, for one model.  A model with none of its own
+   is carried with the noise of its edit that was there when it was made
+   (see US_DataPubCatalog::noises()), and that noise still names the model
+   it was fitted to: its payload says so, and so does the manifest, which
+   is what an import checks the payload against.  That model therefore
+   travels too.  When it cannot -- it is not to be found, or its edit is
+   not in the bundle -- the noise stays out, with a warning, or fails the
+   export when it was asked for by GUID.
+*/
+bool US_DataPubExporter::addFittedModels(
+      QList< US_DataPubCatalog::Model >& models,
+      QList< US_DataPubCatalog::Noise >& noises, QString& error )
+{
+   QStringList have;
+
+   for ( int ii = 0; ii < models.size(); ii++ )
+      have << models[ ii ].guid;
+
+   for ( int ii = noises.size() - 1; ii >= 0; ii-- )
+   {
+      const US_DataPubCatalog::Noise& noise  = noises[ ii ];
+      QString                         fitted = noise.borrowedFrom;
+
+      if ( fitted.isEmpty()  ||  have.contains( fitted ) )  continue;
+
+      US_DataPubCatalog::Model model;
+      bool                     found = false;
+
+      for ( int jj = 0; jj < listed_models.size()  &&  ! found; jj++ )
+      {
+         if ( listed_models[ jj ].guid != fitted )  continue;
+
+         model = listed_models[ jj ];
+         found = true;
+      }
+
+      if ( ! found )
+      {
+         US_Model record;
+         int      status = record.load( catalog.isDb(), fitted, catalog.db() );
+
+         if ( status == IUS_DB2::OK  &&  record.modelGUID == fitted )
+         {
+            model.guid        = record.modelGUID;
+            model.description = record.description;
+            model.editGUID    = record.editGUID;
+            found             = true;
+         }
+
+         else if ( status != IUS_DB2::OK  &&  status != IUS_DB2::NO_MODEL  &&
+                   catalog.isDb() )
+         {
+            error = tr( "The model %1, which the noise %2 was fitted to,"
+                        " could not be read (status %3): %4" ).arg( fitted )
+                    .arg( noise.guid ).arg( status )
+                    .arg( catalog.db()->lastError() );
+            return false;
+         }
+      }
+
+      QString why;
+
+      if ( ! found )
+         why = tr( "the model %1 it was fitted to is not to be found" )
+               .arg( fitted );
+
+      else if ( ! mani.contains( US_DataPub::EditedData, model.editGUID ) )
+         why = tr( "the edit of the model %1 it was fitted to is not in this"
+                   " bundle" ).arg( fitted );
+
+      if ( why.isEmpty() )
+      {
+         models << model;
+         have   << model.guid;
+         note( tr( "Model \"%1\" travels too: the %2 noise carried for model"
+                   " %3 was fitted to it" ).arg( model.description )
+               .arg( noise.noiseType ).arg( noise.modelGUID ) );
+         continue;
+      }
+
+      if ( explicit_noises.contains( noise.guid ) )
+      {
+         error = tr( "The noise record %1 was asked for, but %2" )
+                 .arg( noise.guid ).arg( why );
+         return false;
+      }
+
+      note( tr( "Warning: the noise %1 carried for model %2 is left out: %3" )
+            .arg( noise.guid ).arg( noise.modelGUID ).arg( why ) );
+      noises.removeAt( ii );
+   }
+
+   error.clear();
+
+   return true;
+}
+
 bool US_DataPubExporter::gatherRuns( const Selection& selection,
                                      QList< US_DataPubCatalog::Run >& runs,
                                      QString& error )
@@ -671,6 +912,8 @@ bool US_DataPubExporter::gatherRuns( const Selection& selection,
       runIDs      = unique( runIDs );
       fromProject = true;
    }
+
+   from_project = fromProject;
 
    int skipped = 0;
 
@@ -1080,11 +1323,8 @@ bool US_DataPubExporter::buildTriplesFromDb(
       if ( solID < 1 )
       {
          if ( needed )
-         {
-            error = tr( "The raw data %1 names no solution" )
-                    .arg( raw.filename );
-            return false;
-         }
+            return runFault( error, tr( "The raw data %1 names no solution" )
+                                    .arg( raw.filename ) );
 
          note( tr( "Warning: the raw data %1 names no solution; the"
                    " experiment XML names none for it" ).arg( raw.filename ) );
@@ -1104,7 +1344,10 @@ bool US_DataPubExporter::buildTriplesFromDb(
 
             if ( needed )
             {
-               error = why;
+               error     = why;
+               run_fault = ( status == IUS_DB2::NO_SOLUTION  ||
+                             status == IUS_DB2::NO_BUFFER    ||
+                             status == IUS_DB2::NO_ANALYTE );
                return false;
             }
 
@@ -1272,13 +1515,11 @@ bool US_DataPubExporter::stageExperimentXml(
    // A dataset without a GUID cannot be told apart from the others, so
    // the deselected triples cannot be taken out of such a file
    if ( noGuid > 0  &&  ! dropped.isEmpty() )
-   {
-      error = tr( "The experiment XML of run %1 does not describe every"
-                  " triple by its GUID, so the deselected ones cannot be left"
-                  " out of it; export all triples of the run instead" )
-              .arg( run.runID );
-      return false;
-   }
+      return runFault( error, tr( "The experiment XML of run %1 does not"
+                                  " describe every triple by its GUID, so the"
+                                  " deselected ones cannot be left out of it;"
+                                  " export all triples of the run instead" )
+                              .arg( run.runID ) );
 
    if ( leave.isEmpty() )
    {
@@ -1388,11 +1629,8 @@ bool US_DataPubExporter::addExperiment( const US_DataPubCatalog::Run& run,
                      cal_guids.value( info.runID, QString() ) );
 
    if ( entity.guid.isEmpty() )
-   {
-      error = tr( "Run %1 has no experiment GUID and cannot be exported" )
-              .arg( run.runID );
-      return false;
-   }
+      return runFault( error, tr( "Run %1 has no experiment GUID and cannot"
+                                  " be exported" ).arg( run.runID ) );
 
    QString runType = runTypeOf( run );
    QString expDir  = US_DataPub::payloadDir( US_DataPub::Experiment );
@@ -1471,12 +1709,10 @@ bool US_DataPubExporter::addExperiment( const US_DataPubCatalog::Run& run,
       if ( ! readExperimentDb( run, exper, speedsteps, error ) )  return false;
 
       if ( ! exper.expGUID.isEmpty()  &&  exper.expGUID != entity.guid )
-      {
-         error = tr( "The experiment record of run %1 has the GUID %2, the"
-                     " catalog %3" ).arg( run.runID ).arg( exper.expGUID )
-                 .arg( entity.guid );
-         return false;
-      }
+         return runFault( error, tr( "The experiment record of run %1 has the"
+                                     " GUID %2, the catalog %3" )
+                                 .arg( run.runID ).arg( exper.expGUID )
+                                 .arg( entity.guid ) );
 
       if ( QString( exper.opticalSystem ) != runType  &&
            ! QString( exper.opticalSystem ).isEmpty() )
@@ -1501,11 +1737,8 @@ bool US_DataPubExporter::addExperiment( const US_DataPubCatalog::Run& run,
       }
 
       if ( exper.expGUID != entity.guid )
-      {
-         error = tr( "The experiment GUID of run %1 is not a valid GUID" )
-                 .arg( run.runID );
-         return false;
-      }
+         return runFault( error, tr( "The experiment GUID of run %1 is not a"
+                                     " valid GUID" ).arg( run.runID ) );
 
       // The RI intensity profile is part of the experiment record in the
       // database; it travels as a file of its own, as on disk
@@ -1534,6 +1767,12 @@ bool US_DataPubExporter::addExperiment( const US_DataPubCatalog::Run& run,
                .arg( run.runID ) );
    }
 
+   // An import refuses an experiment XML that names another run or GUID
+   // than its manifest entry -- a run directory renamed by hand, say
+   if ( ! checkExperimentXml( staged, run.runID, entity.guid, error ) )
+      return runFault( error, tr( "Run %1 cannot be exported: %2" )
+                              .arg( run.runID ).arg( error ) );
+
    if ( ! finishEntity( entity, staged, error ) )  return false;
 
    mani.add( entity );
@@ -1555,18 +1794,13 @@ bool US_DataPubExporter::addRawData( const US_DataPubCatalog::Run& run,
       QString solGUID    = raw_solutions.value( raw.guid );
 
       if ( raw.guid.isEmpty() )
-      {
-         error = tr( "The raw data file %1 has no GUID and cannot"
-                     " be exported" ).arg( raw.filename );
-         return false;
-      }
+         return runFault( error, tr( "The raw data file %1 has no GUID and"
+                                     " cannot be exported" )
+                                 .arg( raw.filename ) );
 
       if ( solGUID.isEmpty() )
-      {
-         error = tr( "The raw data %1 has no solution in the bundle" )
-                 .arg( raw.filename );
-         return false;
-      }
+         return runFault( error, tr( "The raw data %1 has no solution in the"
+                                     " bundle" ).arg( raw.filename ) );
 
       US_DataPubEntity entity( US_DataPub::RawData );
       entity.id       = raw.id;
@@ -1614,10 +1848,8 @@ bool US_DataPubExporter::addRawData( const US_DataPubCatalog::Run& run,
          // An import refuses a payload whose GUID is not its entry's, so
          // a record that does not hold what the catalog says stops here
          if ( ! checkRawGuid( staged, raw.guid, error ) )
-         {
-            error = tr( "The raw data %1: %2" ).arg( raw.filename ).arg( error );
-            return false;
-         }
+            return runFault( error, tr( "The raw data %1: %2" )
+                                    .arg( raw.filename ).arg( error ) );
 
          if ( ! finishEntity( entity, staged, error ) )  return false;
       }
@@ -1878,20 +2110,22 @@ bool US_DataPubExporter::addCenterpieces( const US_DataPubCatalog::Run& run,
 bool US_DataPubExporter::addBuffer( US_Buffer& buffer, QString& error )
 {
    if ( buffer.GUID.isEmpty() )
-   {
-      error = tr( "The buffer \"%1\" has no GUID and cannot be exported" )
-              .arg( buffer.description );
-      return false;
-   }
+      return runFault( error, tr( "The buffer \"%1\" has no GUID and cannot"
+                                  " be exported" ).arg( buffer.description ) );
 
    if ( mani.contains( US_DataPub::Buffer, buffer.GUID ) )  return true;
 
    if ( buffer.componentIDs.size() != buffer.concentration.size() )
-   {
-      error = tr( "The components of buffer \"%1\" are not readable" )
-              .arg( buffer.description );
-      return false;
-   }
+      return runFault( error, tr( "The components of buffer \"%1\" are not"
+                                  " readable" ).arg( buffer.description ) );
+
+   for ( int ii = 0; ii < buffer.concentration.size(); ii++ )
+      if ( ! qIsFinite( buffer.concentration[ ii ] ) )
+         return runFault( error, tr( "The concentration of component %1 in"
+                                     " buffer \"%2\" is %3, which is not a"
+                                     " number" ).arg( buffer.componentIDs[ ii ] )
+                                 .arg( buffer.description )
+                                 .arg( buffer.concentration[ ii ] ) );
 
    // The buffer file names its components by ID; what the IDs stand for
    // is read here, from the database or from the local component table
@@ -1935,13 +2169,12 @@ bool US_DataPubExporter::addBuffer( US_Buffer& buffer, QString& error )
       }
 
       if ( ! found )
-      {
-         error = tr( "Component %1 of buffer \"%2\" is not defined in the %3" )
-                 .arg( compID ).arg( buffer.description )
-                 .arg( catalog.isDb() ? tr( "database" )
-                                      : tr( "local component table" ) );
-         return false;
-      }
+         return runFault( error, tr( "Component %1 of buffer \"%2\" is not"
+                                     " defined in the %3" )
+                                 .arg( compID ).arg( buffer.description )
+                                 .arg( catalog.isDb()
+                                       ? tr( "database" )
+                                       : tr( "local component table" ) ) );
    }
 
    // writeToDisk() writes one entry per component definition
@@ -2024,11 +2257,9 @@ bool US_DataPubExporter::addSolutions( const US_DataPubCatalog::Run& run,
                     : info.tripleSolutionGUIDs.value( channel_key( raw ) );
 
       if ( ref.isEmpty()  ||  ( catalog.isDb()  &&  ref.toInt() < 1 ) )
-      {
-         error = tr( "The raw data %1 of run %2 names no solution" )
-                 .arg( raw.filename ).arg( run.runID );
-         return false;
-      }
+         return runFault( error, tr( "The raw data %1 of run %2 names no"
+                                     " solution" )
+                                 .arg( raw.filename ).arg( run.runID ) );
 
       rawRefs.insert( raw.guid, ref );
 
@@ -2057,15 +2288,19 @@ bool US_DataPubExporter::addSolutions( const US_DataPubCatalog::Run& run,
                  .arg( refs[ ii ] ).arg( run.runID )
                  .arg( US_Solution::readErrorText( status, catalog.isDb()
                        ? catalog.db()->lastError() : QString() ) );
+
+         // A record that is not there is the run's problem; a database
+         // that fails to answer is not
+         run_fault = ! catalog.isDb()  ||  status == IUS_DB2::NO_SOLUTION  ||
+                     status == IUS_DB2::NO_BUFFER  ||
+                     status == IUS_DB2::NO_ANALYTE;
          return false;
       }
 
       if ( solution.solutionGUID.isEmpty() )
-      {
-         error = tr( "The solution %1 of run %2 has no GUID and cannot be"
-                     " exported" ).arg( refs[ ii ] ).arg( run.runID );
-         return false;
-      }
+         return runFault( error, tr( "The solution %1 of run %2 has no GUID"
+                                     " and cannot be exported" )
+                                 .arg( refs[ ii ] ).arg( run.runID ) );
 
       refGUIDs.insert( refs[ ii ], solution.solutionGUID );
 
@@ -2108,11 +2343,16 @@ bool US_DataPubExporter::addSolution( US_Solution& solution,
       US_Analyte& analyte = solution.analyteInfo[ jj ].analyte;
 
       if ( analyte.analyteGUID.isEmpty() )
-      {
-         error = tr( "An analyte of solution \"%1\" has no GUID and"
-                     " cannot be exported" ).arg( solution.solutionDesc );
-         return false;
-      }
+         return runFault( error, tr( "An analyte of solution \"%1\" has no"
+                                     " GUID and cannot be exported" )
+                                 .arg( solution.solutionDesc ) );
+
+      if ( ! qIsFinite( solution.analyteInfo[ jj ].amount ) )
+         return runFault( error, tr( "The amount of analyte \"%1\" in"
+                                     " solution \"%2\" is %3, which is not a"
+                                     " number" ).arg( analyte.description )
+                                 .arg( solution.solutionDesc )
+                                 .arg( solution.analyteInfo[ jj ].amount ) );
 
       anaGUIDs << analyte.analyteGUID;
 
@@ -2180,10 +2420,10 @@ bool US_DataPubExporter::addAnalyte( US_Analyte& analyte, QString& error )
    // profile stored for it and nothing else; from disk US_Analyte's reader
    // adds the extinction at 280 nm it computes from a protein's sequence,
    // which a bundle would then carry as if it had been measured, so the
-   // spectra are taken from the file itself.  The main payload stays what
-   // the library writes, so that it still compares equal with the same
-   // analyte a target wrote; the spectra payload is what an import stores,
-   // and an analyte always has one -- empty when nothing was measured.
+   // spectra are taken from the file itself.  They go into both payloads:
+   // the main one is then the same whichever source it was exported from,
+   // and the spectra payload is what an import stores -- an analyte always
+   // has one, empty when nothing was measured.
    US_DataPubRecords::Spectra spectra;
 
    if ( catalog.isDb() )
@@ -2206,10 +2446,14 @@ bool US_DataPubExporter::addAnalyte( US_Analyte& analyte, QString& error )
 
    if ( stage_payloads )
    {
-      QString staged = bundle.stagedPath( entity.payload );
+      QString    staged   = bundle.stagedPath( entity.payload );
+      US_Analyte measured = analyte;
+      measured.extinction   = spectra.value( "extinction"   );
+      measured.refraction   = spectra.value( "refraction"   );
+      measured.fluorescence = spectra.value( "fluorescence" );
 
       if ( staged.isEmpty()  ||
-           analyte.write( false, staged ) != IUS_DB2::OK )
+           measured.write( false, staged ) != IUS_DB2::OK )
       {
          error = tr( "The analyte %1 could not be staged" )
                  .arg( analyte.analyteGUID );
@@ -2243,11 +2487,9 @@ bool US_DataPubExporter::addEdits( const US_DataPubCatalog::Run& run,
          const US_DataPubCatalog::Edit& edit = raw.edits[ jj ];
 
          if ( edit.guid.isEmpty() )
-         {
-            error = tr( "The edit %1 has no GUID and cannot be exported" )
-                    .arg( edit.filename );
-            return false;
-         }
+            return runFault( error, tr( "The edit %1 has no GUID and cannot"
+                                        " be exported" )
+                                    .arg( edit.filename ) );
 
          US_DataPubEntity entity( US_DataPub::EditedData );
          entity.id       = edit.id;
@@ -2290,11 +2532,8 @@ bool US_DataPubExporter::addEdits( const US_DataPubCatalog::Run& run,
                return false;
 
             if ( ! checkEditGuids( staged, edit.guid, raw.guid, error ) )
-            {
-               error = tr( "The edit %1: %2" ).arg( edit.filename )
-                       .arg( error );
-               return false;
-            }
+               return runFault( error, tr( "The edit %1: %2" )
+                                       .arg( edit.filename ).arg( error ) );
 
             if ( ! finishEntity( entity, staged, error ) )  return false;
          }
@@ -2331,6 +2570,8 @@ bool US_DataPubExporter::collectModels(
    QList< US_DataPubCatalog::Model > found = catalog.models( runs, error );
 
    if ( ! error.isEmpty() )  return false;
+
+   listed_models = found;
 
    if ( ! selection.modelsExplicit )
    {
@@ -2469,7 +2710,8 @@ bool US_DataPubExporter::addModels(
 bool US_DataPubExporter::collectNoises(
       const Selection& selection,
       const QList< US_DataPubCatalog::Model >& models,
-      QList< US_DataPubCatalog::Noise >& noises, QString& error )
+      QList< US_DataPubCatalog::Noise >& noises, QString& error,
+      const QList< US_DataPubCatalog::Model >& leftOut )
 {
    noises.clear();
 
@@ -2506,6 +2748,17 @@ bool US_DataPubExporter::collectNoises(
       if ( ! listed )  unknown << wanted[ ii ];
    }
 
+   // Noise of a run a project export left out went with the run
+   if ( ! unknown.isEmpty()  &&  ! leftOut.isEmpty() )
+   {
+      QList< US_DataPubCatalog::Noise > gone = catalog.noises( leftOut, error );
+
+      if ( ! error.isEmpty() )  return false;
+
+      for ( int ii = 0; ii < gone.size(); ii++ )
+         unknown.removeAll( gone[ ii ].guid );
+   }
+
    if ( ! unknown.isEmpty() )
    {
       error = tr( "No noise record of the exported models has the GUID %1" )
@@ -2534,15 +2787,19 @@ bool US_DataPubExporter::addNoises(
 
       if ( mani.contains( US_DataPub::Noise, noise.guid ) )  continue;
 
-      if ( ! mani.contains( US_DataPub::Model, noise.modelGUID ) )
+      // The model the noise was fitted to, which its payload names: the
+      // model it is listed under, unless it is carried for another one
+      QString fitted = noise.borrowedFrom.isEmpty() ? noise.modelGUID
+                                                    : noise.borrowedFrom;
+
+      if ( ! mani.contains( US_DataPub::Model, fitted ) )
       {
          // One that was asked for by GUID is not quietly dropped
          if ( explicit_noises.contains( noise.guid ) )
          {
             error = tr( "The noise record %1 was asked for, but its model %2"
                         " is not in this bundle" ).arg( noise.guid )
-                    .arg( noise.modelGUID.isEmpty() ? tr( "(none named)" )
-                                                    : noise.modelGUID );
+                    .arg( fitted.isEmpty() ? tr( "(none named)" ) : fitted );
             return false;
          }
 
@@ -2558,11 +2815,12 @@ bool US_DataPubExporter::addNoises(
       entity.payload = US_DataPub::payloadDir( US_DataPub::Noise ) + "/"
                        + noise.guid + ".xml";
       entity.attrs.insert( "noiseType", noise.noiseType );
-      entity.setDepend( US_DataPub::Model, noise.modelGUID );
+      entity.setDepend( US_DataPub::Model, fitted );
 
-      if ( ! noise.borrowedFrom.isEmpty() )
+      if ( ! noise.borrowedFrom.isEmpty()  &&
+           mani.contains( US_DataPub::Model, noise.modelGUID ) )
       {  // Noise of the edit, carried for a model that has none of its own
-         entity.attrs.insert( "fittedToModelGUID", noise.borrowedFrom );
+         entity.attrs.insert( "borrowedByModelGUID", noise.modelGUID );
 
          note( tr( "Model %1 has no noise of its own; the %2 noise of its"
                    " edit travels with it" ).arg( noise.modelGUID )
@@ -2593,6 +2851,15 @@ bool US_DataPubExporter::addNoises(
          {
             error = tr( "The noise record %1 could not be read (status %2)" )
                     .arg( noise.guid ).arg( status );
+            return false;
+         }
+
+         // An import checks the payload's model against its manifest entry
+         if ( record.modelGUID != fitted )
+         {
+            error = tr( "The noise record %1 names the model %2, not %3, the"
+                        " one it is exported for" ).arg( noise.guid )
+                    .arg( record.modelGUID ).arg( fitted );
             return false;
          }
 
@@ -2721,6 +2988,63 @@ bool US_DataPubExporter::checkStagedTree( QString& error )
                      " import would refuse the bundle" ).arg( rel ).arg( bad );
          return false;
       }
+   }
+
+   error.clear();
+
+   return true;
+}
+
+bool US_DataPubExporter::checkExperimentXml( const QString& path,
+                                             const QString& runID,
+                                             const QString& guid,
+                                             QString& error )
+{
+   QFile file( path );
+
+   if ( ! file.open( QIODevice::ReadOnly ) )
+   {
+      error = tr( "its experiment XML cannot be read" );
+      return false;
+   }
+
+   // The first <experiment> element, as an import reads it
+   QXmlStreamReader xml( &file );
+   QString          foundRun;
+   QString          foundGuid;
+   bool             found = false;
+
+   while ( ! xml.atEnd() )
+   {
+      xml.readNext();
+
+      if ( found  ||  ! xml.isStartElement()  ||
+           xml.name().toString() != "experiment" )
+         continue;
+
+      foundRun  = xml.attributes().value( "runID" ).toString();
+      foundGuid = xml.attributes().value( "guid"  ).toString();
+      found     = true;
+   }
+
+   if ( xml.hasError()  ||  ! found )
+   {
+      error = tr( "its experiment XML does not describe an experiment" );
+      return false;
+   }
+
+   if ( foundRun != runID )
+   {
+      error = tr( "its experiment XML names the run \"%1\", not %2 (was the"
+                  " run directory renamed?)" ).arg( foundRun ).arg( runID );
+      return false;
+   }
+
+   if ( foundGuid != guid )
+   {
+      error = tr( "its experiment XML has the GUID \"%1\", not %2" )
+              .arg( foundGuid ).arg( guid );
+      return false;
    }
 
    error.clear();

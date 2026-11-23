@@ -112,7 +112,7 @@ two installations only arrive at the same GUID for the same record:
 | Record                                | Derived from                                   |
 |---------------------------------------|------------------------------------------------|
 | time state                            | `timeState:<experimentGUID>`                   |
-| rotor calibration without a GUID      | `rotorCalibration:<rotorGUID>:<calibrationID>:<coeff1>:<coeff2>:<yyyy-MM-dd>` (coefficients with six significant digits, `'e'`, 5) |
+| rotor calibration without a GUID      | `rotorCalibration:<rotorGUID>:<calibrationID>:<coeff1>:<coeff2>` (coefficients with six significant digits, `'e'`, 5) |
 | centerpiece without a GUID            | `centerpiece:<serial>:<name>:<material>:<channels>:<shape>:<maxRPM>:<angle>:<width>` followed by `:<pathlen>:<bottom>` for each row (numbers with 17 significant digits) |
 
 "Without a GUID" includes a GUID column that holds something other than a
@@ -120,11 +120,15 @@ GUID. A calibration's identity only uses what its database record and its
 local copy agree on, so that it is the same whichever the export reads: the
 local file keeps six digits of each coefficient (and both are read as floats),
 and the database does not return the calibration experiment's GUID, which is
-therefore not part of it. The date is written with ASCII digits whatever the
-locale (Qt 5 formats dates with the system locale). For example the
-calibration 3 of rotor `44444444-4444-4444-4444-444444444444` with
-coefficients `1.25e-5` and `3.5e-10`, dated 2024-01-01, is always
-`fb9d594e-cff1-5bab-9ed1-1e961d368e16`.
+therefore not part of it. Nor is the date: the database's is when the row was
+last written, the local file's when it was copied, so the two sources of the
+same calibration would disagree on it. Leaving it out costs no uniqueness that
+matters: within one installation the ID alone tells calibrations apart, and
+across installations two records only share a GUID when they name the same
+rotor and ID and agree on both coefficients to six digits — the same
+measurement, copied. For example the calibration 3 of rotor
+`44444444-4444-4444-4444-444444444444` with coefficients `1.25e-5` and
+`3.5e-10` is always `116899ce-6150-5f54-bdf6-795320a03ae9`, whatever its date.
 
 Bundles written before these rules derived the two from other fields; an
 import of an older bundle therefore does not recognise the same calibration
@@ -214,11 +218,13 @@ added because a local store keeps that information elsewhere, or rounds it:
   the profile stored for the analyte, from disk the `<extinction>`,
   `<refraction>` and `<fluorescence>` elements the analyte file really holds
   (`US_DataPubRecords::readAnalyteSpectra()`) — not the 280 nm value
-  `US_Analyte`'s reader computes from a protein's sequence. The main payload
-  keeps the library writer's own copy (rounded, and for a protein read from
-  disk with that computed point), so a bundle still reads as a local store
-  and compares equal with the same record of a target; an import takes the
-  spectra from the spectra payload.
+  `US_Analyte`'s reader computes from a protein's sequence. The main payload,
+  the library writer's own file, is written with the same measured spectra,
+  so it is the same whether the analyte was exported from the database or
+  from disk, and it carries no computed point as if it had been measured; an
+  import takes the spectra from the spectra payload. A spectrum (of a buffer,
+  analyte or solution), a buffer concentration or an analyte amount that is
+  not a finite number is refused by the export, as an import would refuse it.
 * `experiment/<runID>.RIProfile.xml` — the radial intensity profile an RI
   (pseudo-absorbance) run is reduced with, in the format of the local
   `<runID>.RIProfile.xml`. On disk it is the file in the run directory; from
@@ -396,8 +402,11 @@ exported run whose channels it fills (`experimentGUID`, `experimentGUID_2`,
 
 Every value is written as a double-quoted YAML scalar. `\`, `"`, newline,
 carriage return and tab are escaped as `\\`, `\"`, `\n`, `\r` and `\t`; every
-other control character (C0, DEL, C1) and the Unicode line and paragraph
-separators as `\uXXXX`. A description of any kind — non-ASCII, quoted, over
+other control character (C0, DEL, C1), the Unicode line and paragraph
+separators, U+FFFE and U+FFFF, every other noncharacter (U+FDD0–U+FDEF and the
+last two code points of each plane) and a surrogate without its pair as
+`\uXXXX`, or `\UXXXXXXXX` beyond the first plane. Everything else is written
+as UTF-8, so the file holds only what YAML calls printable. A description of any kind — non-ASCII, quoted, over
 several lines, with a NUL in it — therefore reads back as it was written; an
 export reads the manifest it wrote back and refuses to pack one that does
 not.
@@ -503,7 +512,14 @@ command line exits with `1`, when
 **A run of a project export that breaks a rule is left out** rather than
 failing the whole export: a project with a run whose run ID, run type, or the
 GUID or file name of one of its triples or edits cannot be exported goes
-without that run, with a warning naming it. A run named on its own
+without that run, with a warning naming it. So does a run whose records turn
+out not to hold together while they are staged: a channel without a solution
+(or whose solution, buffer or analyte is gone), a payload that does not carry
+the GUID the catalog lists it under, an experiment XML that names another run
+ID or GUID than the run (a run directory renamed by hand), a spectrum that is
+not all numbers. Everything already staged for that run is taken back, and
+its models and noise stay out with it. A database or disk that fails is not
+the run's fault and still fails the export. A run named on its own
 (`--experiment-id`, or picked in the window) is refused instead. When no run
 of the project is left, the export fails.
 
@@ -599,9 +615,13 @@ The Export tab works top to bottom:
    was already there, so such a model travels with the newest noise of its
    edit that existed when the model was made — one record of each type, since
    a run can carry a time-invariant and a radially-invariant record at once.
-   Those rows are marked *(of this edit)* in the tree, and the manifest keeps
-   the GUID of the model the record was really fitted to in
-   `fittedToModelGUID`.
+   Those rows are marked *(of this edit)* in the tree. The record still
+   belongs to the model it was fitted to — its payload names that model — so
+   that model travels too (the log says so), the noise depends on it in the
+   manifest (`depends: modelGUID`), and the model it is carried for is in
+   `borrowedByModelGUID`. When the model it was fitted to cannot travel (it is
+   gone, or its edit is not in the bundle) the noise stays out with a
+   warning, or fails the export when it was asked for by GUID.
 8. **Export up to**, **Include time state**, **Comment**, **Bundle file**.
 9. **Summary** — the counts of projects, experiments, raw data, edits, models
    and noise records. With only a project picked and no run selected, there
@@ -1092,8 +1112,9 @@ From a file, the environment and the prompt alike only the line end that ends
 the password — one `\n`, `\r\n` or `\r` — is removed; spaces are part of it,
 and all three are read as UTF-8 (the environment variable as the text the
 system holds, so a non-ASCII password survives on Windows too). A password
-file that cannot be read is reported once and an export exits with `1`; no
-password at all is a usage error (`2`). The prompt keeps the terminal quiet
+file that cannot be read, and an empty password from the file, the environment
+or the prompt, is reported once and the run exits with `1`; no password at all
+is a usage error (`2`). The prompt keeps the terminal quiet
 across Ctrl-Z: a stopped and continued prompt goes on reading without echo,
 and a signal that does not end the program does not leave it echoing either.
 | `--dry-run` | Decide everything, write nothing |

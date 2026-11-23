@@ -519,7 +519,15 @@ TEST_F( DataPubDb, TheFixtureRunIsExportedWithItsWholeChain )
    ASSERT_TRUE( US_DataPubRecords::readBufferConcentrations(
                 top + buffer.attrs.value( "componentsPayload" ), ids, concs ) );
    EXPECT_EQ( ids, QStringList() << "70" << "92" );
-   EXPECT_EQ( concs, QList< double >() << 150.0 << 10.0 );
+   // 0.000525 needs six decimals: a buffer file keeps five (0.00053)
+   EXPECT_EQ( concs, QList< double >() << 150.0 << 0.000525 );
+
+   // The time state is the one US_TimeState wrote, readable record by record
+   ASSERT_EQ( mani.count( US_DataPub::TimeState ), 1 );
+   QString why;
+   EXPECT_TRUE( DataPubTestEnv::isTheTimeState(
+                top + mani.section( US_DataPub::TimeState )[ 0 ].payload,
+                why ) ) << why.toStdString();
 
    ASSERT_EQ( mani.count( US_DataPub::Analyte ), 1 );
    EXPECT_EQ( spectra( mani.section( US_DataPub::Analyte )[ 0 ] )
@@ -895,6 +903,65 @@ TEST_F( DataPubDbImport, ATimeStateIsImportedWithItsDefinitions )
    EXPECT_TRUE ( xdefs.contains( "TimeState" ) ) << xdefs.toStdString();
 }
 
+
+/* Borrowed noise, through a real server.  A model with no noise of its own
+   travels with the noise of its edit, which still belongs to the model it
+   was fitted to; the bundle used to list it under the borrowing model, and
+   every import refused it.  Exported as the export tab does it -- the later
+   model and its borrowed noise ticked -- it now imports into a database,
+   and the noise is stored with the model it was fitted to.
+*/
+TEST_F( DataPubDbImport, BorrowedNoiseIsImportedWithItsOwnModel )
+{
+   QString  laterGUID = US_Util::new_guid();
+   US_Model later;
+   later.modelGUID   = laterGUID;
+   later.editGUID    = editGUID;
+   later.description = "demo_run.1A280.2dsa-mc.model";
+   later.write( US_Settings::dataDir() + "/models/M0000002.xml" );
+
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection;
+   selection.fromDb = false;
+   selection.scope  = US_DataPub::ScopeNoise;
+   selection.runIDs << runID;
+   selection.setModels( QStringList() << laterGUID );
+   selection.setNoises( QStringList() << noiseGUID );
+
+   QString bundle = root + "/borrowed.tar.gz";
+   QString error;
+
+   ASSERT_TRUE( exporter.exportBundle( selection, bundle, error ) )
+      << error.toStdString();
+
+   US_DataPubEntity noise;
+   ASSERT_TRUE( exporter.manifest().entity( US_DataPub::Noise, noiseGUID,
+                                            noise ) );
+   EXPECT_EQ( noise.depend( US_DataPub::Model ), modelGUID );
+   EXPECT_EQ( noise.attrs.value( "borrowedByModelGUID" ), laterGUID );
+
+   US_DataPubImporter::Options options;
+   options.target       = US_DataPub::TargetDb;
+   options.dbPassword   = master;
+   options.verifyHashes = true;
+   options.dryRun       = false;
+   options.policy       = US_DataPub::PolicyRename;
+
+   US_DataPubImporter importer;
+   ASSERT_TRUE( importer.inspect( bundle, error ) ) << error.toStdString();
+   ASSERT_TRUE( importer.runImport( options, error ) )
+      << error.toStdString() << "\n" << importer.log().join( "\n" )
+                                                      .toStdString();
+
+   // Both models are in the database, and the noise names its own
+   US_Model stored;
+   EXPECT_EQ( stored.load( true, modelGUID, db ), IUS_DB2::OK );
+   EXPECT_EQ( stored.load( true, laterGUID, db ), IUS_DB2::OK );
+
+   US_Noise record;
+   ASSERT_EQ( record.load( true, noiseGUID, db ), IUS_DB2::OK );
+   EXPECT_EQ( record.modelGUID, modelGUID );
+}
 
 /* Against a real server: a dry run decides what the import then does, and
    a second import of the same bundle finds every record -- which takes the

@@ -14,6 +14,7 @@
 #include "us_model.h"
 #include "us_noise.h"
 #include "us_dataIO.h"
+#include "us_time_state.h"
 
 #include "us_datapub_records.h"
 
@@ -469,51 +470,97 @@ class DataPubTestEnv : public ::testing::Test
 
       // A time state is a pair of files -- the binary readings and the XML
       // that says what the fields in them are.  One is no use without the
-      // other, so a run always has both.
+      // other, so a run always has both.  Both are what US_TimeState writes
+      // for a run: the fields an import writes, one record a second.
       void writeTimeState()
       {
-         QString base = runDir() + "/" + runID + ".time_state";
-
-         QFile tmst( base + ".tmst" );
-
-         if ( tmst.open( QIODevice::WriteOnly ) )
-         {
-            QDataStream ds( &tmst );
-            ds.writeRawData( "USTS", 4 );
-            ds.writeRawData( "2.1",  3 );
-            int record = 42;
-            ds.writeRawData( reinterpret_cast< const char* >( &record ), 4 );
-            tmst.close();
-         }
-
-         QFile defs( base + ".xml" );
-
-         if ( defs.open( QIODevice::WriteOnly | QIODevice::Text ) )
-         {
-            QXmlStreamWriter xml( &defs );
-            xml.setAutoFormatting( true );
-            xml.writeStartDocument();
-            xml.writeDTD( "<!DOCTYPE US_TimeState>" );
-            xml.writeStartElement( "TimeState" );
-            xml.writeAttribute( "version",     "2.1" );
-            xml.writeAttribute( "import_type", "XLA" );
-            xml.writeStartElement( "file" );
-            xml.writeAttribute( "time_count",     "1"   );
-            xml.writeAttribute( "constant_incr",  "1"   );
-            xml.writeAttribute( "time_increment", "1.0" );
-            xml.writeAttribute( "first_time",     "0.0" );
-            xml.writeAttribute( "ss_reso",        "100" );
-            xml.writeStartElement( "value" );
-            xml.writeAttribute( "key",    "testkey" );
-            xml.writeAttribute( "format", "I4" );
-            xml.writeEndElement();
-            xml.writeEndElement();
-            xml.writeEndElement();
-            xml.writeEndDocument();
-            defs.close();
-         }
+         writeTimeStateFiles( runDir() + "/" + runID + ".time_state.tmst" );
       }
 
+   public:
+      //! The number of records writeTimeStateFiles() writes
+      static const int timeStateRecords = 5;
+
+      /*! Write a time state as US_TimeState does: \a tmstPath and the
+          definitions beside it (".xml" for ".tmst")
+      */
+      static bool writeTimeStateFiles( const QString& tmstPath )
+      {
+         US_TimeState tsobj;
+
+         if ( tsobj.open_write_data( tmstPath, 1.0, 0.0 ) != 0 )  return false;
+
+         QStringList keys;
+         QStringList formats;
+         keys    << "Time" << "RawSpeed" << "SetSpeed" << "Omega2T"
+                 << "Temperature" << "Step" << "Scan";
+         formats << "I4"   << "F4"       << "I4"       << "F4"
+                 << "F4"          << "I2"   << "I2";
+         tsobj.set_keys( keys, formats );
+
+         double omega2t = 0.0;
+
+         for ( int ii = 0; ii < timeStateRecords; ii++ )
+         {
+            double rpm   = 45000.0 - 3.0 * ii;
+            double omega = rpm * M_PI / 30.0;
+            omega2t     += omega * omega;
+
+            tsobj.set_value( "Time",        ii + 1 );
+            tsobj.set_value( "RawSpeed",    rpm );
+            tsobj.set_value( "SetSpeed",    45000 );
+            tsobj.set_value( "Omega2T",     omega2t );
+            tsobj.set_value( "Temperature", 20.0 + 0.01 * ii );
+            tsobj.set_value( "Step",        1 );
+            tsobj.set_value( "Scan",        ii == 2 ? 1 : 0 );
+
+            if ( tsobj.flush_record() != 0 )  return false;
+         }
+
+         if ( tsobj.close_write_data() != 0 )  return false;
+
+         tsobj.setImportType( US_TimeState::IMPORT_TYPE::XLA );
+
+         return tsobj.write_defs( 1.0 ) == 0;
+      }
+
+      /*! Whether \a tmstPath, with its definitions beside it, is the time
+          state writeTimeStateFiles() writes, as US_TimeState reads it
+      */
+      static bool isTheTimeState( const QString& tmstPath, QString& why )
+      {
+         US_TimeState tsobj;
+
+         if ( tsobj.open_read_data( tmstPath, true ) != 0 )
+         {
+            why = "not readable: " + tsobj.last_error_message();
+            return false;
+         }
+
+         int count = tsobj.time_count();
+
+         if ( count != timeStateRecords )
+         {
+            why = QString( "%1 records" ).arg( count );
+            return false;
+         }
+
+         if ( tsobj.read_record( 2 ) != 0  ||
+              tsobj.time_ivalue( "Time" ) != 3  ||
+              tsobj.time_ivalue( "Scan" ) != 1  ||
+              qAbs( tsobj.time_dvalue( "RawSpeed" ) - 44994.0 ) > 0.01 )
+         {
+            why = "record 3 does not hold what was written";
+            return false;
+         }
+
+         tsobj.close_read_data();
+         why.clear();
+
+         return true;
+      }
+
+   protected:
       QString timeStatePath( const QString& ext )
       {
          return runDir() + "/" + runID + ".time_state." + ext;

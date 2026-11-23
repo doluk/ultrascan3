@@ -81,14 +81,21 @@ QString US_DataPubRecords::calibrationGuid(
    // has one.  What was measured is part of the name, so two installations
    // only agree on the identity when they hold the same calibration.  Only
    // what the database record and its local copy have in common counts:
-   // the local file keeps six digits of each coefficient, and the database
-   // returns no calibration experiment GUID.
+   // the local file keeps six digits of each coefficient, the database
+   // returns no calibration experiment GUID, and the date is not the same
+   // either -- the database's is when the row was last written, the local
+   // file's when it was copied -- so it is left out.
+   //
+   // That costs no uniqueness that matters.  Within one installation the
+   // ID alone tells calibrations apart.  Across installations two records
+   // only collide when they name the same rotor (its GUID), have the same
+   // ID and agree on both coefficients to six digits: that is the same
+   // measurement copied, which an import should take as one record.
    return US_DataPub::derivedGuid(
             "rotorCalibration:" + calibration.rotorGUID
           + ":" + QString::number( calibration.ID )
           + ":" + QString::number( calibration.coeff1, 'e', 5 )
-          + ":" + QString::number( calibration.coeff2, 'e', 5 )
-          + ":" + isoDate( calibration.lastUpdated ) );
+          + ":" + QString::number( calibration.coeff2, 'e', 5 ) );
 }
 
 QString US_DataPubRecords::centerpieceGuid(
