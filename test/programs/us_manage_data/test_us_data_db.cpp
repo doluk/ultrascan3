@@ -1112,15 +1112,16 @@ TEST_F( TestUSDataDb, AChildIsNotDownloadedWithoutItsParent )
 TEST_F( TestUSDataDb, DescriptionsAnOlderServerCutAreShownInFull )
 {
    QString full = runA + ".1A280.e2401011200_a2401011300_2DSA-FM-IT_"
-                  "with_a_description_long_enough_to_be_cut_i01.model";
-   ASSERT_GT( full.length(), 80 );
+                  "with_a_description_long_enough_to_be_cut_by_the_160_character"
+                  "_description_column_of_the_model_table_in_the_database_i01.model";
+   ASSERT_GT( full.length(), 160 );
 
    QString cutG  = US_Util::new_guid();
    QString cutN  = US_Util::new_guid();
    QString mpath = root + "/cut.xml";
    writeModel( mpath, cutG, editG, full );
 
-   server.models << FModel{ "36", cutG, full.left( 80 ), editG, "21",
+   server.models << FModel{ "36", cutG, full.left( 160 ), editG, "21",
                             textOf( mpath ) };
    server.noises << FNoise{ "46", cutN, "21", "36", cutG, "ri_noise", "", "" };
 
