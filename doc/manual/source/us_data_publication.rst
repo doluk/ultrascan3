@@ -113,6 +113,17 @@ whose GUIDs are not the ones the catalog listed stops the export too, as does
 a noise record selected by GUID whose model is not in the bundle. A missing
 project file on disk is reported with the hint to leave the project out.
 
+An export also refuses to write a bundle the import would refuse, and checks
+it with the import's own rules before packing: every GUID of the manifest,
+and every GUID an XML payload names (``guid``, ``...GUID``, the ``value`` of a
+``...GUID`` element), has to be a GUID; a run type is one to eight letters or
+digits; raw data, edits and the time state are named after their run. A legacy
+record that breaks one is named in the message. Just before packing, the
+staged files have to be exactly the manifest, its digest and the payloads it
+names, each still matching its digest. When a whole project is exported, a run
+of it that cannot be exported is left out with a warning instead; a run picked
+by name is refused.
+
 Only what the selected triples need goes into the bundle: the solutions and
 centerpieces of their channels, and on disk an experiment XML without the
 datasets of deselected triples or of triples whose ``.auc`` file is gone. An
@@ -134,7 +145,8 @@ The Export tab works from the top down.
 **Select Project**
   Opens the standard :doc:`project <us_project>` dialog. At most one project
   can be chosen. Choosing one drops any already selected run that does not
-  belong to it.
+  belong to it. A project chosen without any run exports every run of the
+  project, with everything up to the scope.
 
 **Export the project record itself**
   Clear this to leave the project out of the bundle. The scope cannot be the
@@ -210,20 +222,32 @@ and one directory per record type::
   |-- timeState/<runID>/<runID>.time_state.xml
   |-- buffers/<bufferGUID>.xml
   |-- buffers/<bufferGUID>.components.xml         (buffers with components)
+  |-- buffers/<bufferGUID>.spectra.xml            (buffers with spectra)
   |-- analytes/<analyteGUID>.xml
+  |-- analytes/<analyteGUID>.spectra.xml          (analytes with spectra)
   |-- solutions/<solutionGUID>.xml
+  |-- solutions/<solutionGUID>.spectra.xml        (solutions with an extinction profile)
   |-- rawData/<runID>/<runID>.<runType>.<cell>.<channel>.<wl>.auc
   |-- edits/<runID>/<runID>.<editID>.<runType>.<cell>.<channel>.<wl>.xml
   |-- models/<modelGUID>.xml
   `-- noise/<noiseGUID>.xml
 
 Payload files are exactly the files UltraScan-III uses in a local disk store,
-so a bundle can be opened and read with ordinary tools. Two kinds are added
-because a local store keeps that information elsewhere: the definitions of a
-buffer's components (name, unit, density and viscosity coefficients), since a
-buffer file names its components only by an installation's own IDs, and the
-radial intensity profile of an RI run. ``manifest.sha256`` holds the digest of
-the manifest in the format ``sha256sum -c`` checks.
+so a bundle can be opened and read with ordinary tools. Three kinds are added
+because a local store keeps that information elsewhere, or rounds it: the
+definitions of a buffer's components (name, unit, density and viscosity
+coefficients) together with the buffer's concentration of each at full
+precision, since a buffer file names its components only by an
+installation's own IDs and keeps a concentration to five decimals; the
+radial intensity profile of an RI run, from a database copied as stored; and
+the spectra of buffers, analytes and solutions at full precision
+(``<US_DataPubSpectra>`` with one ``<spectrum type=...>`` per kind --
+extinction, refraction, fluorescence -- of ``<point wavelength value>``
+pairs), since a buffer file
+keeps a wavelength to 0.1 nm and a value to five digits, an analyte file a
+value to six, and a solution file has no place for its extinction profile.
+``manifest.sha256`` holds the digest of the manifest in the format
+``sha256sum -c`` checks.
 
 The manifest is a small subset of YAML in UTF-8: a block of scalar header keys
 (``version``, ``created``, ``generator``, ``source``, ``scope``,
@@ -237,15 +261,19 @@ in which every record depends only on records listed before it. Each entry
 names the record's ID, GUID and name, the path of its payload inside the
 bundle, the **SHA-256 digest of that payload file**, and the GUIDs of the
 records it depends on -- a solution, for instance, on every one of its
-analytes. Extra files (the time state's definitions, the RI profile, the
-buffer components) are named by keys ending in ``Payload`` and have their
-digests under the same key ending in ``Sha256``. A section that was exported
+analytes and on the experiment of every run whose channels it fills. Extra
+files (the time state's definitions, the RI profile, the buffer components,
+the spectra) are named by keys ending in ``Payload`` and have their digests
+under the same key ending in ``Sha256``. Every value is quoted, with control
+characters escaped (``\n``, ``\t``, ``\uXXXX``), so any description reads
+back as it was written; an export checks that it does. A section that was exported
 but has nothing in it is written as ``[]``; one that was not exported is left
 out. A record without a GUID of its own -- a time state, an old rotor
 calibration or centerpiece -- gets a name-based UUID derived from what
 identifies it; for a calibration and a centerpiece that includes what the
 record holds (coefficients, date, geometry), so two installations do not give
-the same GUID to different records.
+the same GUID to different records. A calibration gets the same GUID from the
+database as from its local copy: only what both keep goes into it.
 
 A manifest that is larger than 64 MiB, gives a key or section twice, has no
 usable ``version``, nests a map under a key other than ``depends``, names a
@@ -421,12 +449,15 @@ Export options
 ``--project-id <id>``           Export this project, by database ID
 ``--project-guid <guid>``       Export this project, by GUID
 ``--experiment-id <run>``       Export this run; repeatable. Accepts a runID or an
-                                experiment database ID
+                                experiment database ID; a run ID that matches
+                                exactly wins, and an ID only counts when one run
+                                has it
 ``--max-scope <scope>``         Export up to and including this record type
                                 (default: ``noise``, the whole chain)
 ``--include-<scope>``           Export up to and including this record type;
                                 the deepest one given counts, and it may not
-                                go beyond ``--max-scope``
+                                go beyond ``--max-scope``, within which it is
+                                what is exported
 ``--model-guid <guid>``         Export only these models; repeatable
 ``--noise-guid <guid>``         Export only these noise records; repeatable
 ``--no-timestate``              Leave the runs' time state out
@@ -483,7 +514,9 @@ needs no ``--bundle``. An option is never taken as the value of the one before
 it; a value starting with ``--`` is given as ``--comment=--draft``. An option
 of the other mode -- ``--target`` with an export, ``--model-guid`` with an
 import -- is refused with ``2``. Only the line end is taken off a password
-read from a file, the environment or the prompt; spaces are part of it.
+read from a file, the environment or the prompt; spaces are part of it, and
+all three are read as UTF-8. A password file that cannot be read is reported
+once and an export exits with ``1``.
 
 Examples
 --------
