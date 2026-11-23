@@ -446,7 +446,11 @@ class US_DataModel : public QObject
         void begin_changes( void );
 
         //! \brief End a batch of record changes; see \ref begin_changes
-        void end_changes( void );
+        //! \returns The experiments the batch changed, brought up to date
+        //!          now -- those of the records acted on, and any other an
+        //!          action reached, as the foreign noise an edit removal
+        //!          takes along; empty while an outer batch is open
+        QList< int > end_changes( void );
 
         //! \brief Ask the scan that is running, or the read or comparison
         //!        in progress outside a scan, to stop after the step it is

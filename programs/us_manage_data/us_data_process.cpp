@@ -447,61 +447,10 @@ DbgLv(1) << "REC_RMV: exp ID" << cdesc.parentID;
    }
 
    else if ( cdesc.recType == 2 )
-   {  // remove an EditedData record
-      // The noise of another edit's model recorded against this edit is
-      // not removed with it, and the edit cannot go while it is there
-      QMap< int, QString > foreign;
-
-      if ( ! foreign_noise_of_edit( irecID, foreign ) )
-         return 2017;
-
-      for ( auto it = foreign.constBegin(); it != foreign.constEnd(); ++it )
-      {
-         query.clear();
-         query << "delete_noise" << QString::number( it.key() );
-
-         if ( ( stat = db->statusQuery( query ) ) != 0 )
-         {
-            errMsg = tr( "%1 could not be removed: noise %2 of another edit's"
-                         " model was computed from it and could not be"
-                         " removed first (delete_noise status %3: %4)" )
-                     .arg( cdesc.label ).arg( it.value() ).arg( stat )
-                     .arg( db->lastError() );
-            return 2018;
-         }
-
-         // Its rows -- under that other model -- are gone from the database
-         for ( int nrow = 0; nrow < da_model->recCount(); nrow++ )
-         {
-            US_DataModel::DataDesc ndesc = da_model->row_datadesc( nrow );
-
-            if ( ndesc.recType == US_DataModel::NOISE  &&
-                 ndesc.recordID == it.key()  &&
-                 ( ndesc.recState & US_DataModel::REC_DB ) != 0 )
-               mark_removed_from_db( nrow );
-         }
-      }
-
-      cdesc = da_model->row_datadesc( row );   // as it is now
-      query.clear();
-      query << "delete_editedData" << dataID;
-DbgLv(1) << "EDT_RMV:" << query;
-
-      if ( ( stat = db->statusQuery( query ) ) != 0 )
-      {
-         errMsg = tr( "delete_editedData status=%1: %2" ).arg( stat )
-                  .arg( db->lastError() )
-                  + tr( "\nNoise of a model of another investigator, or of a"
-                        " model this window does not list, may have been"
-                        " computed from this edit; the database keeps the"
-                        " edit while such noise refers to it." );
-DbgLv(1) << "EDT_RMV:   stat" << stat << db->lastError() << db->lastErrno();
-DbgLv(1) << "EDT_RMV:   dataID" << dataID << "errMsg:" << errMsg;
-         stat   = 2012;
-      }
-      else
+   {  // remove an EditedData record, with the noise of other edits' models
+      // recorded against it
+      if ( ( stat = remove_edit( row ) ) == 0 )
          irecID = -1;
-DbgLv(1) << "EDT_RMV:    stat" << stat;
    }
 
    else if ( cdesc.recType == 3 )
@@ -571,13 +520,14 @@ void US_DataProcess::mark_removed_from_db( int row )
 /* The noise recorded against an edit whose model belongs to another edit.
 
    delete_editedData removes the edit's models and their noise, wherever
-   that noise was recorded; it does not remove noise recorded against the
-   edit for a model of another edit (a global fit, say), and while such
-   noise is there the edit cannot be removed.  These are the investigator's
-   records, as the listings give them.
+   that noise was recorded; an older one does not remove noise recorded
+   against the edit for a model of another edit (a global fit, say), and
+   while such noise is there the edit cannot be removed.  These are the
+   investigator's records, as the listings give them: another
+   investigator's noise is not listed for an ordinary user.
 */
 bool US_DataProcess::foreign_noise_of_edit( int editID,
-                                            QMap< int, QString >& noise )
+                                            QList< ForeignNoise >& noise )
 {
    noise.clear();
 
@@ -612,16 +562,282 @@ bool US_DataProcess::foreign_noise_of_edit( int editID,
       return false;
    }
 
-   // noiseID, noiseGUID, editedDataID, modelID, ...
+   // noiseID, noiseGUID, editedDataID, modelID, noiseType, modelGUID,
+   // timeEntered, checksum, size, description
    while ( status == IUS_DB2::OK  &&  db->next() )
    {
       if ( db->value( 2 ).toInt() != editID )             continue;
       if ( models.contains( db->value( 3 ).toInt() ) )    continue;
 
-      noise.insert( db->value( 0 ).toInt(), db->value( 1 ).toString() );
+      ForeignNoise fn;
+      fn.noiseID     = db->value( 0 ).toInt();
+      fn.guid        = db->value( 1 ).toString();
+      fn.modelID     = db->value( 3 ).toInt();
+      fn.description = db->value( 9 ).toString();
+      noise << fn;
    }
 
    return true;
+}
+
+/* Remove an edit, and the foreign noise recorded against it.
+
+   The edit is removed in a transaction, and the database is asked first as
+   it is.  A patched delete_editedData removes all noise recorded against the
+   edit with it -- another investigator's too -- and changes nothing when it
+   fails (it uses a savepoint in the caller's transaction).  An older one
+   removes the edit's models and their noise, and only then fails on noise
+   of another edit's model still recorded against the edit
+   (fk_noise_editDataID): the rollback gives the models and noise back.
+   Only then, and only when that noise is the investigator's own, is it
+   removed first in a second transaction, and the edit asked for again.
+   Whenever a removal fails, or its outcome is not confirmed, what the
+   database holds is read back (settle_edit).
+*/
+int US_DataProcess::remove_edit( int row )
+{
+   int         editID = cdesc.recordID;
+   QString     label  = cdesc.label;
+   QList< ForeignNoise > foreign;
+
+   if ( ! foreign_noise_of_edit( editID, foreign ) )
+   {
+      errMsg = tr( "%1 was not removed: %2" ).arg( label ).arg( errMsg );
+      return 2017;
+   }
+
+   QString why;
+   bool    clean = true;           // a failure was rolled back as a whole
+   int     stat  = edit_attempt( editID, QList< ForeignNoise >(), why, clean );
+
+   if ( stat == 2012  &&  clean  &&  ! foreign.isEmpty() )
+   {  // An older database: the noise of other edits' models goes first
+      why.clear();
+      stat = edit_attempt( editID, foreign, why, clean );
+   }
+
+   if ( stat == 0 )
+   {  // Gone, with its models and their noise, and no noise recorded
+      // against it can be left
+      QVector< int > drows = da_model->descendant_rows( row );
+
+      for ( int ii = 0; ii < drows.size(); ii++ )
+         if ( ( da_model->row_datadesc( drows[ ii ] ).recState
+                & US_DataModel::REC_DB ) != 0 )
+            mark_removed_from_db( drows[ ii ] );
+
+      for ( int ii = 0; ii < foreign.size(); ii++ )
+         mark_noise_removed( foreign.at( ii ).noiseID );
+
+      return 0;
+   }
+
+   return settle_edit( row, foreign, stat, why );
+}
+
+// One transaction of an edit removal: the given noise, then the edit
+int US_DataProcess::edit_attempt( int editID,
+                                  const QList< ForeignNoise >& first,
+                                  QString& why, bool& clean )
+{
+   QStringList query;
+   QString     terr;
+
+   clean = true;
+
+   if ( ! db->beginTransaction( terr ) )
+   {
+      why = tr( "a database transaction could not be started (%1)." )
+            .arg( terr );
+      return 2019;
+   }
+
+   int stat = 0;
+
+   for ( int ii = 0; ii < first.size(); ii++ )
+   {
+      const ForeignNoise& fn = first.at( ii );
+      query.clear();
+      query << "delete_noise" << QString::number( fn.noiseID );
+
+      int nst = db->statusQuery( query );
+
+      if ( nst != IUS_DB2::OK )
+      {
+         why  = tr( "noise %1 of another edit's model was computed from it,"
+                    " the database keeps the edit while that noise refers to"
+                    " it, and the noise could not be removed (delete_noise"
+                    " status %2: %3)" )
+                .arg( fn.description.isEmpty() ? fn.guid : fn.description )
+                .arg( nst ).arg( db->lastError() );
+         stat = 2018;
+         break;
+      }
+   }
+
+   if ( stat == 0 )
+   {
+      query.clear();
+      query << "delete_editedData" << QString::number( editID );
+DbgLv(1) << "EDT_RMV:" << query;
+
+      int est = db->statusQuery( query );
+
+      if ( est != IUS_DB2::OK )
+      {
+DbgLv(1) << "EDT_RMV:   stat" << est << db->lastError() << db->lastErrno();
+         why  = tr( "the database refused it (delete_editedData status %1:"
+                    " %2)." ).arg( est ).arg( db->lastError() );
+
+         if ( db->lastServerErrno() == 1451  ||  est == 404 )
+            why += tr( "\nAnother record still refers to the edit.  On an"
+                       " older database that may be noise computed from it"
+                       " for a model of another investigator, which this"
+                       " window cannot list; only that investigator (or an"
+                       " administrator) can remove that noise." );
+         stat = 2012;
+      }
+   }
+
+   if ( stat == 0 )
+   {
+      if ( db->commitTransaction( terr ) )
+         return 0;
+
+      // Not confirmed: still open as far as the client knows
+      QString rerr;
+      db->rollbackTransaction( rerr );
+      why   = tr( "the removal could not be committed: %1" ).arg( terr );
+      clean = false;
+      return 2019;
+   }
+
+   if ( ! db->rollbackTransaction( terr ) )
+   {
+      why  += tr( "\nThe database transaction could not be rolled back as a"
+                  " whole: %1" ).arg( terr );
+      clean = false;
+   }
+
+   return stat;
+}
+
+// Whether a record is still in the database
+int US_DataProcess::db_has( const QString& proc, int id, int gone )
+{
+   QStringList query;
+   query << proc << QString::number( id );
+   db->query( query );
+
+   int status = db->lastErrno();
+
+   if ( status == IUS_DB2::OK )
+      return db->next() ? 1 : 0;
+
+   if ( status == gone  ||  status == IUS_DB2::NOROWS )
+      return 0;
+
+   return -1;
+}
+
+// Mark as gone every row of a noise record, wherever it is in the tree
+void US_DataProcess::mark_noise_removed( int noiseID )
+{
+   for ( int nrow = 0; nrow < da_model->recCount(); nrow++ )
+   {
+      US_DataModel::DataDesc ndesc = da_model->row_datadesc( nrow );
+
+      if ( ndesc.recType == US_DataModel::NOISE  &&
+           ndesc.recordID == noiseID  &&
+           ( ndesc.recState & US_DataModel::REC_DB ) != 0 )
+         mark_removed_from_db( nrow );
+   }
+}
+
+/* What the database holds after an edit removal that failed, or whose
+   outcome is not known.
+
+   An older delete_editedData has removed the edit's models and noise
+   before it fails, and a transaction that a newer one committed has kept
+   the foreign noise removed before it: whatever the transaction did not
+   give back is read here, so no row shows a record the database no longer
+   holds.
+*/
+int US_DataProcess::settle_edit( int row, const QList< ForeignNoise >& foreign,
+                                 int stat, const QString& why )
+{
+   US_DataModel::DataDesc edesc = da_model->row_datadesc( row );
+   QStringList gone;
+   bool        unknown = false;
+
+   int edit = db_has( "get_editedData", edesc.recordID, IUS_DB2::NO_EDITDATA );
+
+   // The edit's own models and noise, as the tree shows them
+   QVector< int > drows = da_model->descendant_rows( row );
+
+   for ( int ii = 0; ii < drows.size(); ii++ )
+   {
+      US_DataModel::DataDesc ddesc = da_model->row_datadesc( drows[ ii ] );
+
+      if ( ( ddesc.recState & US_DataModel::REC_DB ) == 0  ||
+           ddesc.recordID < 0 )
+         continue;
+
+      int has = ( ddesc.recType == US_DataModel::MODEL )
+              ? db_has( "get_model_info", ddesc.recordID, IUS_DB2::NO_MODEL )
+              : db_has( "get_noise_info", ddesc.recordID, IUS_DB2::NO_NOISE );
+
+      if ( has < 0 )
+         unknown = true;
+
+      else if ( has == 0 )
+      {
+         gone << ddesc.label;
+         mark_removed_from_db( drows[ ii ] );
+      }
+   }
+
+   // The noise of other edits' models taken on with it
+   for ( int ii = 0; ii < foreign.size(); ii++ )
+   {
+      const ForeignNoise& fn = foreign.at( ii );
+      int has = db_has( "get_noise_info", fn.noiseID, IUS_DB2::NO_NOISE );
+
+      if ( has < 0 )
+         unknown = true;
+
+      else if ( has == 0 )
+      {
+         gone << ( fn.description.isEmpty() ? fn.guid : fn.description );
+         mark_noise_removed( fn.noiseID );
+      }
+   }
+
+   if ( edit == 0 )
+      return 0;                     // removed after all
+
+   errMsg = tr( "%1 was not removed: %2" ).arg( edesc.label ).arg( why );
+
+   if ( edit < 0 )
+   {
+      unknown = true;
+      stat    = ( stat == 0 ) ? 2019 : stat;
+   }
+
+   if ( ! gone.isEmpty() )
+      errMsg += tr( "\n\nThese records were removed from the database all"
+                    " the same, and their rows say so:\n  %1" )
+                .arg( gone.join( "\n  " ) );
+
+   else if ( ! unknown )
+      errMsg += tr( "\n\nNothing was removed." );
+
+   if ( unknown )
+      errMsg += tr( "\n\nWhat the database holds now could not all be read"
+                    " back (%1); scan again before acting on these records." )
+                .arg( db->lastError() );
+
+   return stat;
 }
 
 // The database ID a model or noise row holds after its record is written.

@@ -1704,16 +1704,18 @@ void US_DataModel::begin_changes( void )
    batch_depth++;
 }
 
-void US_DataModel::end_changes( void )
+QList< int > US_DataModel::end_changes( void )
 {
-   if ( batch_depth <= 0 )     return;
-   if ( --batch_depth > 0 )    return;
+   if ( batch_depth <= 0 )     return QList< int >();
+   if ( --batch_depth > 0 )    return QList< int >();
 
    QList< int > runs = batch_runs;
    batch_runs.clear();
 
    for ( int ii = 0; ii < runs.size(); ii++ )
       run_changed( runs.at( ii ) );
+
+   return runs;
 }
 
 // Count again what is under an experiment, in each place

@@ -761,9 +761,16 @@ void US_DataTree::dtree_help()
 
       tr( "    \"remove from DB\"\n" ) +
       tr( "       -> Remove this record from the database.  Removing an\n" ) +
-      tr( "          edit first removes noise of another edit's model\n" ) +
-      tr( "          that was computed from it; the database would not\n" ) +
-      tr( "          remove the edit while that noise refers to it.\n" ) +
+      tr( "          edit also removes the noise of another edit's\n" ) +
+      tr( "          model that was computed from it (the GMP checks\n" ) +
+      tr( "          apply to it too); an older database keeps the edit\n" ) +
+      tr( "          while that noise refers to it, and your own such\n" ) +
+      tr( "          noise is then removed first.  It is all done in\n" ) +
+      tr( "          transactions.  On an older database another\n" ) +
+      tr( "          investigator's noise keeps the edit; then nothing\n" ) +
+      tr( "          is removed, and the message says why.  After a\n" ) +
+      tr( "          failure what the database holds is read back, and\n" ) +
+      tr( "          the rows show it.\n" ) +
       tr( "    \"remove from local\"\n" ) +
       tr( "       -> Remove this record from local disk.\n" ) +
       tr( "    \"remove both\"\n" ) +
@@ -1141,6 +1148,69 @@ bool US_DataTree::is_modelIDs_from_autoflow( const QString& mID )
    return gmp_models.contains( mID );
 }
 
+// The GMP guard for the noise of other edits' models an edit removal takes
+// along.  What cannot be listed is left to the removal, which reports it.
+bool US_DataTree::foreign_noise_gmp_ok( const US_DataModel::DataDesc& ddesc,
+                                        const QString& runID )
+{
+   if ( da_process == NULL )
+      da_process = (US_DataProcess*)da_model->procobj();
+
+   if ( ddesc.recordID < 0  ||  da_process == NULL )   return true;
+
+   QList< US_DataProcess::ForeignNoise > foreign;
+
+   if ( ! da_process->foreign_noise_of_edit( ddesc.recordID, foreign ) )
+      return true;
+
+   for ( int ii = 0; ii < foreign.size(); ii++ )
+   {
+      const US_DataProcess::ForeignNoise& fn = foreign.at( ii );
+      QString name = fn.description.isEmpty() ? fn.guid : fn.description;
+
+      if ( is_modelIDs_from_autoflow( QString::number( fn.modelID ) ) )
+      {
+         ask_user( PROMPT_INFORM, tr( "Selected Model GMP produced!" ),
+            tr( "Removing %1 would also remove noise %2, which was computed"
+                " from it for a model generated within the GMP framework."
+                "\n\nIt can NOT be deleted..." )
+            .arg( ddesc.label ).arg( name ) );
+         return false;
+      }
+
+      // The run of that noise: where the tree shows it, else the one its
+      // description names
+      QString nrun;
+
+      for ( int row = 0; row < da_model->recCount()  &&  nrun.isEmpty(); row++ )
+      {
+         US_DataModel::DataDesc ndesc = da_model->row_datadesc( row );
+
+         if ( ndesc.recType == US_DataModel::NOISE  &&
+              ndesc.recordID == fn.noiseID  &&
+              da_model->run_of_row( row ) >= 0 )
+            nrun = da_model->run_id_of_row( row );
+      }
+
+      if ( nrun.isEmpty() )
+         nrun = ( fn.description.count( "." ) >= 3 )
+              ? fn.description.section( ".", 0, -4 )
+              : fn.description.section( ".", 0, 0 );
+
+      if ( nrun != runID  &&  check_filename_for_autoflow( nrun ) )
+      {
+         ask_user( PROMPT_INFORM, tr( "Data Cannot be Deleted" ),
+            tr( "Removing %1 would also remove noise %2 of the Run:\n\n"
+                "\"%3\"\n\n"
+                "which can NOT be deleted since it is required by the GMP"
+                " framework!" ).arg( ddesc.label ).arg( name ).arg( nrun ) );
+         return false;
+      }
+   }
+
+   return true;
+}
+
 // True when the run is part of the GMP framework
 //
 // Asked once per run per action, over the window's own connection.
@@ -1178,12 +1248,13 @@ US_DataTree::ChangeBatch::~ChangeBatch()
    end();
 }
 
-void US_DataTree::ChangeBatch::end( void )
+QList< int > US_DataTree::ChangeBatch::end( void )
 {
-   if ( da_model == NULL )   return;
+   if ( da_model == NULL )   return QList< int >();
 
-   da_model->end_changes();
+   QList< int > runs = da_model->end_changes();
    da_model = NULL;
+   return runs;
 }
 
 // Act on the selection the tree has now
@@ -1342,6 +1413,12 @@ DbgLv(1) << "ITEM do_actions" << narows << item_exs << item_act;
             return ACT_REFUSED;
          }
 
+         // An edit takes along noise of other edits' models computed from
+         // it: that noise is guarded as if it had been selected
+         if ( ddesc.recType == US_DataModel::EDIT  &&
+              ! foreign_noise_gmp_ok( ddesc, runID ) )
+            return ACT_REFUSED;
+
          if ( ddesc.recType == US_DataModel::MODEL  ||
               ddesc.recType == US_DataModel::NOISE )
          {
@@ -1497,10 +1574,10 @@ DbgLv(1) << "RMV_REC: irow stat1" << irow << stat1;
       }
    }
 
-   batch.end();
-
-   // The rows acted on show where their records are now
-   QList< int > runs;
+   // The rows acted on show where their records are now, and so do the
+   // rows of any other experiment an action reached: the noise of another
+   // edit's model an edit removal takes along may be under another one
+   QList< int > runs = batch.end();
 
    for ( int jj = 0; jj < narows; jj++ )
    {

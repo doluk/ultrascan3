@@ -23,8 +23,9 @@
 // delete_editedData cascades as us3_expdata_procs.sql does and is refused
 // while noise of another edit's model refers to the edit
 // (fk_noise_editDataID is ON DELETE NO ACTION), keeping what it removed
-// before; with patchedEditDelete it is a transaction of its own that also
-// removes that noise, and commits the client's transaction -- new_noise
+// before; with patchedEditDelete it is all or nothing and also removes that
+// noise, and commitsInside names writes that end the client's transaction
+// (a COMMIT inside a procedure) -- new_noise
 // files noise under edit 1 when the edit may not be used, transactions
 // give back what was written since the begin unless the server ended them,
 // and lastInsertID() never names the record just written.
@@ -145,12 +146,18 @@ namespace
                                                     // client's transaction
          int                      nextID   = 900;
 
-         // delete_editedData as the patched us3_sql has it: one transaction
-         // of its own (which commits the client's), and noise recorded
-         // against the edit removed with it.  Without it, as the procedure
-         // has long been: models and their noise go first, and the edit
-         // then fails on fk_noise_editDataID, keeping what went.
+         // delete_editedData as the patched us3_sql has it: all or nothing
+         // (a savepoint in the caller's transaction), and all noise
+         // recorded against the edit removed with it; a refusal changes
+         // nothing.  Without it, as the procedure has long been: models and
+         // their noise go first, and the edit then fails on
+         // fk_noise_editDataID, keeping what went.
          bool                     patchedEditDelete = false;
+
+         // The patched catalog procedures place a noise record with the
+         // experiment of its model, not of the edit it was recorded against;
+         // noise of a model on edit 1 belongs to no experiment
+         bool                     noiseByModel = false;
 
          Answer current;
          int    row = -1;
@@ -378,6 +385,13 @@ namespace
             return nullptr;
          }
 
+         QString expOfNoise( const FNoise& nn ) const
+         {
+            if ( ! noiseByModel )   return expOfEdit( nn.editID );
+            const FModel* mm = modelById( nn.modelID );
+            return mm ? expOfEdit( mm->editID ) : QString();
+         }
+
          QString expOfEdit( const QString& editID ) const
          {
             const FEdit* ed = editById( editID );
@@ -431,8 +445,7 @@ namespace
 
             // The patched procedure starts a transaction of its own, which
             // commits the client's before anything else happens
-            if ( ( name == "delete_editedData"  &&  patchedEditDelete )  ||
-                 commitsInside.contains( name ) )
+            if ( commitsInside.contains( name ) )
                serverTx = false;
 
             if ( refusing.contains( name ) )
@@ -626,7 +639,7 @@ namespace
                   for ( const FModel& mm : models )
                      if ( mm.owner == kInv  &&  expOfEdit( mm.editID ) == ee.id ) nm++;
                   for ( const FNoise& no : noises )
-                     if ( noiseMine( no )  &&  expOfEdit( no.editID ) == ee.id ) nn++;
+                     if ( noiseMine( no )  &&  expOfNoise( no ) == ee.id ) nn++;
                   rows << ( QVariantList() << ee.id << ee.guid << ee.runID << "velocity" << "RA"
                                            << ee.runID + " label" << "1" << ""
                                            << "project" << kDate << nr << ne << nm << nn );
@@ -683,7 +696,7 @@ namespace
             else if ( name == "get_noise_desc_by_experiment" )
             {
                for ( const FNoise& nn : noises )
-                  if ( noiseMine( nn )  &&  expOfEdit( nn.editID ) == a.value( 1 ) )
+                  if ( noiseMine( nn )  &&  expOfNoise( nn ) == a.value( 1 ) )
                      rows << noiseRow( nn );
             }
 
@@ -1818,20 +1831,212 @@ TEST_F( TestUSDataDb, RemovingAnEditFirstRemovesNoiseOfAnotherEditsModel )
    EXPECT_EQ( win.tree.act_on_selection( "Database only", "DB-only remove" ), 0 )
       << win.proc.lastError().toStdString();
 
-   EXPECT_EQ( server.changes, QStringList() << "delete_noise 47" << "delete_editedData 21" );
+   // the edit is asked for as it is; the older procedure refuses it, and
+   // gives back what it took, so the noise goes first in a second try
+   EXPECT_EQ( server.changes, QStringList() << "delete_editedData 21"
+                              << "delete_noise 47" << "delete_editedData 21" );
+   EXPECT_EQ( server.txlog, QStringList() << "begin" << "rollback"
+                            << "begin" << "commit" );
    EXPECT_EQ( model.row_datadesc( crow ).recState, (int)US_DataModel::NOSTAT );
    EXPECT_NE( stateOf( model, model2 ) & US_DataModel::REC_DB, 0 );
    EXPECT_EQ( server.edits.size(), 1 );
 }
 
-// When the server still refuses to remove an edit, the message says what
-// it said, and why that may be
+// Noise of another investigator's model, recorded against the edit, is not
+// listed, and an older delete_editedData removes the edit's models and
+// noise before it fails on it.  The removal is one transaction: nothing is
+// removed, the rows say so, and the message says why
+TEST_F( TestUSDataDb, AnEditAnotherInvestigatorsNoiseKeepsLosesNothing )
+{
+   QString edit2  = US_Util::new_guid();
+   QString model2 = US_Util::new_guid();
+   server.edits  << FEdit { "22", edit2, "11", runA + ".2401021200.RA.1.A.280.xml" };
+   FModel theirs { "34", model2, "other.model", edit2, "22", "<model/>" };
+   theirs.owner = kOther;
+   server.models << theirs;
+   server.noises << FNoise{ "48", US_Util::new_guid(), "21", "34", model2,
+                            "ti_noise", "hidden.ti_noise", "<noise/>" };
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   ASSERT_EQ( rowOf( model, model2 ), -1 );           // not this investigator's
+   int row = rowOf( model, editG );
+
+   EXPECT_EQ( win.proc.record_remove_db( row ), 2012 );
+
+   QString error = win.proc.lastError();
+   EXPECT_TRUE( error.contains( "fk_noise_editDataID" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "another investigator" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "Nothing was removed" ) ) << error.toStdString();
+   EXPECT_EQ( server.txlog, QStringList() << "begin" << "rollback" );
+
+   // the database has everything still, and every row says it does
+   EXPECT_EQ( server.edits.size(), 2 );
+   EXPECT_NE( server.modelById( "31" ), nullptr );
+   EXPECT_NE( server.noiseById( "41" ), nullptr );
+
+   for ( const QString& guid : { editG, modelG, noiseG } )
+   {
+      Desc desc = model.row_datadesc( rowOf( model, guid ) );
+      EXPECT_NE( desc.recState & US_DataModel::REC_DB, 0 ) << guid.toStdString();
+      EXPECT_GE( desc.recordID, 0 );
+   }
+}
+
+// Where the transaction cannot give back what an older delete_editedData
+// removed -- the server ended it -- what is gone is read back, the rows of
+// those records say so, and the message names them
+TEST_F( TestUSDataDb, WhatARefusedEditRemovalTookIsReadBack )
+{
+   QString model2 = US_Util::new_guid();
+   FModel theirs { "34", model2, "other.model", "", "1", "<model/>" };
+   theirs.owner = kOther;
+   server.models << theirs;
+   server.noises << FNoise{ "48", US_Util::new_guid(), "21", "34", model2,
+                            "ti_noise", "hidden.ti_noise", "<noise/>" };
+   server.commitsInside << "delete_editedData";
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   int row = rowOf( model, editG );
+   EXPECT_EQ( win.proc.record_remove_db( row ), 2012 );
+
+   QString error = win.proc.lastError();
+   EXPECT_TRUE( error.contains( "removed from the database all the same" ) )
+      << error.toStdString();
+   EXPECT_TRUE( error.contains( model.row_datadesc( rowOf( model, modelG ) ).label ) )
+      << error.toStdString();
+
+   // the edit stayed, its model and noise did not
+   EXPECT_NE( stateOf( model, editG ) & US_DataModel::REC_DB, 0 );
+
+   for ( const QString& guid : { modelG, noiseG } )
+   {
+      Desc desc = model.row_datadesc( rowOf( model, guid ) );
+      EXPECT_EQ( desc.recState & US_DataModel::REC_DB, 0 ) << guid.toStdString();
+      EXPECT_EQ( US_DataModel::sync_state( desc ), US_DataModel::SYNC_LOCAL );
+   }
+}
+
+// The patched delete_editedData removes the noise of another edit's model
+// recorded against the edit itself: nothing is removed first, and that
+// noise's row, under its own model, says it is gone
+TEST_F( TestUSDataDb, APatchedDatabaseTakesTheNoiseRecordedAgainstTheEdit )
+{
+   QString edit2  = US_Util::new_guid();
+   QString model2 = US_Util::new_guid();
+   QString cross  = US_Util::new_guid();
+   server.edits  << FEdit { "22", edit2, "11", runA + ".2401021200.RA.1.A.280.xml" };
+   server.models << FModel{ "34", model2, runA + ".1A280.e2401021200_a1_2DSA_i01.model",
+                            edit2, "22", "<model/>" };
+   server.noises << FNoise{ "47", cross, "21", "34", model2, "ti_noise",
+                            runA + ".1A280.e2401021200_a1_2DSA_i01.ti_noise", "<noise/>" };
+   server.patchedEditDelete = true;
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   win.select( itemOfRow( win.tw, rowOf( model, editG ) ) );
+   EXPECT_EQ( win.tree.act_on_selection( "Database only", "DB-only remove" ), 0 )
+      << win.proc.lastError().toStdString();
+
+   EXPECT_EQ( server.changes, QStringList() << "delete_editedData 21" );
+   EXPECT_EQ( server.txlog, QStringList() << "begin" << "commit" );
+   EXPECT_EQ( server.edits.size(), 1 );
+   EXPECT_EQ( stateOf( model, editG ) & US_DataModel::REC_DB, 0 );
+   EXPECT_EQ( stateOf( model, cross ), (int)US_DataModel::NOSTAT );
+   EXPECT_NE( stateOf( model, model2 ) & US_DataModel::REC_DB, 0 );
+}
+
+// A patched delete_editedData that refuses the edit has changed nothing,
+// and the second try, with the noise first, is rolled back as a whole
+TEST_F( TestUSDataDb, APatchedRefusalRemovesNothing )
+{
+   QString edit2  = US_Util::new_guid();
+   QString model2 = US_Util::new_guid();
+   QString cross  = US_Util::new_guid();
+   server.edits  << FEdit { "22", edit2, "11", runA + ".2401021200.RA.1.A.280.xml" };
+   server.models << FModel{ "34", model2, runA + ".1A280.e2401021200_a1_2DSA_i01.model",
+                            edit2, "22", "<model/>" };
+   server.noises << FNoise{ "47", cross, "21", "34", model2, "ti_noise",
+                            runA + ".1A280.e2401021200_a1_2DSA_i01.ti_noise", "<noise/>" };
+   server.patchedEditDelete = true;
+   server.refusing[ "delete_editedData" ] = 404;     // @CONSTRAINT_FAILED
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+
+   EXPECT_EQ( win.proc.record_remove_db( rowOf( model, editG ) ), 2012 );
+   QString error = win.proc.lastError();
+   EXPECT_TRUE( error.contains( "status 404" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "Nothing was removed" ) ) << error.toStdString();
+
+   EXPECT_NE( server.noiseById( "47" ), nullptr );
+   EXPECT_NE( server.modelById( "31" ), nullptr );
+   for ( const QString& guid : { editG, modelG, noiseG, cross } )
+      EXPECT_NE( stateOf( model, guid ) & US_DataModel::REC_DB, 0 ) << guid.toStdString();
+}
+
+// When the edit is still refused after the noise of another edit's model
+// was removed first, and that removal was kept -- the transaction ended
+// under it -- the message says so, and so does its row, under that model
+TEST_F( TestUSDataDb, ForeignNoiseRemovedBeforeARefusedEditIsReported )
+{
+   QString edit2  = US_Util::new_guid();
+   QString model2 = US_Util::new_guid();
+   QString cross  = US_Util::new_guid();
+   server.edits  << FEdit { "22", edit2, "11", runA + ".2401021200.RA.1.A.280.xml" };
+   server.models << FModel{ "34", model2, runA + ".1A280.e2401021200_a1_2DSA_i01.model",
+                            edit2, "22", "<model/>" };
+   server.noises << FNoise{ "47", cross, "21", "34", model2, "ti_noise",
+                            runA + ".1A280.e2401021200_a1_2DSA_i01.ti_noise", "<noise/>" };
+   server.refusing[ "delete_editedData" ] = IUS_DB2::DBERROR;
+   server.commitsInside << "delete_noise";
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   int crow = rowOf( model, cross );
+   ASSERT_GE( crow, 0 );
+
+   EXPECT_EQ( win.proc.record_remove_db( rowOf( model, editG ) ), 2012 );
+   EXPECT_EQ( server.changes, QStringList() << "delete_editedData 21"
+                              << "delete_noise 47" << "delete_editedData 21" );
+
+   QString error = win.proc.lastError();
+   EXPECT_TRUE( error.contains( runA + ".1A280.e2401021200_a1_2DSA_i01.ti_noise" ) )
+      << error.toStdString();
+   EXPECT_TRUE( error.contains( "all the same" ) ) << error.toStdString();
+
+   EXPECT_EQ( server.noiseById( "47" ), nullptr );
+   EXPECT_EQ( model.row_datadesc( crow ).recState, (int)US_DataModel::NOSTAT );
+   EXPECT_NE( stateOf( model, editG ) & US_DataModel::REC_DB, 0 );
+   EXPECT_NE( stateOf( model, modelG ) & US_DataModel::REC_DB, 0 );
+}
+
+// The noise of another edit's model that cannot be listed stops nothing
+// before the database is asked; noise that cannot be removed stops the
+// edit, and nothing is removed
 TEST_F( TestUSDataDb, AnEditTheServerKeepsIsReportedWithItsReason )
 {
    server.edits  << FEdit { "22", US_Util::new_guid(), "11", runA + ".2401021200.RA.1.A.280.xml" };
    server.models << FModel{ "34", US_Util::new_guid(), "other.model", "", "22", "" };
-   // noise this investigator's listing does not show: no foreign noise is
-   // found, and the delete fails on the constraint
    server.noises << FNoise{ "48", US_Util::new_guid(), "21", "34", server.models.last().guid,
                             "ti_noise", "hidden.ti_noise", "" };
    server.denied << "get_noise_desc_by_editID";
@@ -1852,8 +2057,125 @@ TEST_F( TestUSDataDb, AnEditTheServerKeepsIsReportedWithItsReason )
    EXPECT_EQ( win.proc.record_remove_db( row ), 2018 );
    EXPECT_TRUE( win.proc.lastError().contains( "permission" ) )
       << win.proc.lastError().toStdString();
-   EXPECT_EQ( server.changes, QStringList() << "delete_noise 48" );
+   EXPECT_TRUE( win.proc.lastError().contains( "Nothing was removed" ) )
+      << win.proc.lastError().toStdString();
+   EXPECT_EQ( server.changes, QStringList() << "delete_editedData 21"
+                              << "delete_noise 48" );
+   EXPECT_EQ( server.txlog, QStringList() << "begin" << "rollback"
+                            << "begin" << "rollback" );
    EXPECT_NE( stateOf( model, editG ) & US_DataModel::REC_DB, 0 );
+   EXPECT_NE( server.noiseById( "48" ), nullptr );
+}
+
+// Noise of another edit's model goes with the edit, so it is guarded as if
+// it had been selected: by the model GMP made, and by the run it is of
+TEST_F( TestUSDataDb, ForeignNoiseTheGmpFrameworkNeedsKeepsTheEdit )
+{
+   QString rawB   = US_Util::new_guid();
+   QString edit2  = US_Util::new_guid();
+   QString model2 = US_Util::new_guid();
+   server.exps   << FExp  { "2", US_Util::new_guid(), "RunB" };
+   server.raws   << FRaw  { "12", rawB, "RunB.RA.1.A.280.auc", "2" };
+   server.edits  << FEdit { "22", edit2, "12", "RunB.2401021200.RA.1.A.280.xml" };
+   server.models << FModel{ "34", model2, "RunB.1A280.e2401021200_a1_2DSA-GL_i01.model",
+                            edit2, "22", "<model/>" };
+   server.noises << FNoise{ "47", US_Util::new_guid(), "21", "34", model2, "ti_noise",
+                            "RunB.1A280.e2401021200_a1_2DSA-GL_i01.ti_noise", "<noise/>" };
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   // the model the noise was fitted with was made by GMP
+   server.autoflowModels << "34";
+   win.select( itemOfRow( win.tw, rowOf( model, editG ) ) );
+   EXPECT_EQ( win.tree.act_on_selection( "Database only", "DB-only remove" ),
+              US_DataTree::ACT_REFUSED );
+   ASSERT_EQ( win.prompts.size(), 1 );
+   EXPECT_TRUE( win.prompts[ 0 ].contains( "GMP" ) ) << win.prompts[ 0 ].toStdString();
+   EXPECT_TRUE( server.changes.isEmpty() ) << server.changes.join( "\n" ).toStdString();
+
+   // the run the noise is of is GMP's, though the edit's run is not
+   server.autoflowModels.clear();
+   server.autoflowRuns << "RunB";
+   win.prompts.clear();
+   EXPECT_EQ( win.tree.act_on_selection( "Database only", "DB-only remove" ),
+              US_DataTree::ACT_REFUSED );
+   ASSERT_EQ( win.prompts.size(), 1 );
+   EXPECT_TRUE( win.prompts[ 0 ].contains( "RunB" ) ) << win.prompts[ 0 ].toStdString();
+   EXPECT_TRUE( server.changes.isEmpty() ) << server.changes.join( "\n" ).toStdString();
+   EXPECT_NE( server.noiseById( "47" ), nullptr );
+}
+
+// The rows of another experiment an edit removal reached -- its noise of
+// another edit's model is under that model -- are shown as they are now
+TEST_F( TestUSDataDb, AnotherExperimentsRowsAnEditRemovalReachedAreRepainted )
+{
+   QString rawB   = US_Util::new_guid();
+   QString edit2  = US_Util::new_guid();
+   QString model2 = US_Util::new_guid();
+   QString cross  = US_Util::new_guid();
+   server.exps   << FExp  { "2", US_Util::new_guid(), "RunB" };
+   server.raws   << FRaw  { "12", rawB, "RunB.RA.1.A.280.auc", "2" };
+   server.edits  << FEdit { "22", edit2, "12", "RunB.2401021200.RA.1.A.280.xml" };
+   server.models << FModel{ "34", model2, "RunB.1A280.e2401021200_a1_2DSA-GL_i01.model",
+                            edit2, "22", "<model/>" };
+   server.noises << FNoise{ "47", cross, "21", "34", model2, "ti_noise",
+                            "RunB.1A280.e2401021200_a1_2DSA-GL_i01.ti_noise", "<noise/>" };
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   int crow = rowOf( model, cross );
+   ASSERT_GE( crow, 0 );
+   ASSERT_EQ( model.run_of_row( crow ), model.index_of_run( "RunB" ) );
+   QTreeWidgetItem* citem = itemOfRow( win.tw, crow );
+   ASSERT_NE( citem, nullptr );
+   ASSERT_EQ( citem->text( 3 ).toStdString(), "DB" );
+
+   win.select( itemOfRow( win.tw, rowOf( model, editG ) ) );
+   EXPECT_EQ( win.tree.act_on_selection( "Database only", "DB-only remove" ), 0 )
+      << win.proc.lastError().toStdString();
+
+   EXPECT_EQ( model.row_datadesc( crow ).recState, (int)US_DataModel::NOSTAT );
+   EXPECT_EQ( citem->text( 3 ).toStdString(), "dummy" );
+   QTreeWidgetItem* mitem = itemOfRow( win.tw, rowOf( model, model2 ) );
+   ASSERT_NE( mitem, nullptr );
+   EXPECT_EQ( mitem->text( 4 ).toStdString(), "0, 0" );
+}
+
+// Another investigator's records are not listed, and are not removed when
+// a row names them
+TEST_F( TestUSDataDb, AnotherInvestigatorsRecordsAreNeitherListedNorRemoved )
+{
+   QString theirsG = US_Util::new_guid();
+   FModel  theirs { "34", theirsG, runA + ".1A280.e2401011200_a9_2DSA_i01.model",
+                    editG, "21", "<model/>" };
+   theirs.owner = kOther;
+   server.models << theirs;
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+
+   EXPECT_EQ( rowOf( model, theirsG ), -1 );
+
+   int  row  = rowOf( model, modelG );
+   Desc desc = model.row_datadesc( row );
+   desc.recordID = 34;                       // as a stale row might
+   model.change_datadesc( desc, row );
+
+   EXPECT_EQ( win.proc.record_remove_db( row ), 2013 );
+   EXPECT_TRUE( win.proc.lastError().contains( "permission" ) )
+      << win.proc.lastError().toStdString();
+   EXPECT_NE( server.modelById( "34" ), nullptr );
+   EXPECT_NE( stateOf( model, modelG ) & US_DataModel::REC_DB, 0 );
 }
 
 // A removal the server refuses says why, and the record stays where it is
@@ -2171,3 +2493,4 @@ TEST_F( TestUSDataDb, AnActionOnManyRecordsAsksForOneComparison )
    EXPECT_EQ( model.run_entry( 0 ).loCount, 8 );
    EXPECT_EQ( model.pending_verifies(), 1 );
 }
+

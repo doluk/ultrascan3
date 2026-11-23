@@ -224,7 +224,9 @@ class US_DataTree : public QObject
                 ~ChangeBatch();
 
                 //! \brief End the batch now; later calls do nothing
-                void end( void );
+                //! \returns The experiments it changed (see
+                //!          US_DataModel::end_changes)
+                QList< int > end( void );
 
             private:
                 US_DataModel* da_model;
@@ -253,6 +255,13 @@ class US_DataTree : public QObject
         //! \brief True when a run is required by the GMP framework
         //! \param runID The run ID
         bool check_filename_for_autoflow( const QString& runID );
+        //! \brief The GMP guard for the noise of other edits' models an
+        //!        edit removal takes along
+        //! \param ddesc The edit
+        //! \param runID The run of the edit
+        //! \returns False, with the user told why, when it must not go
+        bool foreign_noise_gmp_ok( const US_DataModel::DataDesc& ddesc,
+                                   const QString& runID );
 
         //! \brief True when a model was produced by an autoflow
         //! \param mID The model ID

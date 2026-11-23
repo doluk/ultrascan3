@@ -62,15 +62,28 @@ class US_DataProcess : public QObject
 
         /*! \brief Remove a record from the database
 
-            The database removes what hangs off the record with it.  It
-            does not remove the noise recorded against an edit whose model
-            belongs to another edit, and that noise would stop the edit
-            from being removed at all (fk_noise_editDataID), so it is
-            removed first -- it was computed from the edit that goes -- and
-            its rows read as gone from the database.  A removal the server
-            refuses says so, with its message.
+            The database removes what hangs off the record with it.
+
+            An edit is removed in a transaction.  A patched
+            delete_editedData removes with it all noise recorded against it,
+            whoever's, and changes nothing when it fails.  An older one does
+            not remove noise of another edit's model recorded against the
+            edit (a global fit, say): it removes the edit's models and noise
+            and then fails on that noise (fk_noise_editDataID).  The rollback
+            gives them back, and when that noise is the investigator's own it
+            is removed first in a second transaction -- it was computed from
+            the edit that goes -- and the edit asked for again; another
+            investigator's is not listed, and keeps the edit there.  After
+            any failure, and whenever the outcome is not confirmed, what the
+            database holds is read back -- the edit, its models and noise,
+            and that other noise -- and every row of a record found gone is
+            marked so (\ref mark_removed_from_db).  The message then says
+            what was removed all the same, if anything was.
             \param recordID The row of the record to be removed
-            \return Status code of the operation
+            \return 0, or 2012 (the database kept the edit), 2016 (no
+                    database ID), 2017 (the edit's noise could not be
+                    listed), 2018 (that noise could not be removed), 2019
+                    (no transaction), or another error status
         */
         int record_remove_db( int recordID );
 
@@ -119,12 +132,23 @@ class US_DataProcess : public QObject
         //! \param row The row
         void mark_removed_from_db( int row );
 
+        //! \brief A noise record of another edit's model, recorded
+        //!        against an edit
+        class ForeignNoise
+        {
+            public:
+                int     noiseID;      //!< Its database ID
+                int     modelID;      //!< The database ID of its model
+                QString guid;         //!< Its GUID
+                QString description;  //!< Its description
+        };
+
         //! \brief The noise recorded against an edit whose model belongs
-        //!        to another edit: noiseID -> noiseGUID
+        //!        to another edit, as the investigator's listing gives it
         //! \param editID The editedDataID
         //! \param noise  Filled in
         //! \returns False, with the message set, when it cannot be listed
-        bool foreign_noise_of_edit( int editID, QMap< int, QString >& noise );
+        bool foreign_noise_of_edit( int editID, QList< ForeignNoise >& noise );
 
     private:
         //! \brief The row's record ID after a model or noise write
@@ -132,6 +156,51 @@ class US_DataProcess : public QObject
         //! \param guid The GUID the record was written with
         //! \returns 0, or an error status with the message set
         int  written_record_id( const QString& proc, const QString& guid );
+
+        //! \brief Remove an edit, and the noise of other edits' models
+        //!        recorded against it
+        //!
+        //! The edit is asked for first, as the database has it; only when
+        //! an older database refuses it while the investigator's own noise
+        //! of another edit's model refers to it is that noise removed
+        //! first, in a second transaction.
+        //! \returns 0, or an error status with the message set
+        int  remove_edit( int row );
+
+        //! \brief One transaction of an edit removal: the noise \a first,
+        //!        then the edit
+        //! \param why   Set to what went wrong
+        //! \param clean Set false when a failure could not be rolled back
+        //!              as a whole, or a commit was not confirmed
+        //! \returns 0 once committed, 2012 (edit refused), 2018 (noise
+        //!          refused) or 2019 (no transaction, or no commit)
+        int  edit_attempt( int editID, const QList< ForeignNoise >& first,
+                           QString& why, bool& clean );
+
+        /*! \brief Read back what the database holds after an edit removal
+                   that failed, or whose outcome is not known
+
+            Every row of a record found gone -- the edit's own models and
+            noise, and the foreign noise -- is marked as gone.
+            \param row     The row of the edit
+            \param foreign The foreign noise the removal took on
+            \param stat    The status of the removal so far
+            \param why     What went wrong
+            \returns 0 when the edit is gone after all, else an error
+                     status with the message set
+        */
+        int  settle_edit( int row, const QList< ForeignNoise >& foreign,
+                          int stat, const QString& why );
+
+        //! \brief Whether a record is still in the database
+        //! \param proc   "get_editedData", "get_model_info", ...
+        //! \param id     Its database ID
+        //! \param gone   The status that says it is not there
+        //! \returns 1 present, 0 gone, -1 when the database did not say
+        int  db_has( const QString& proc, int id, int gone );
+
+        //! \brief Mark as gone every noise row of a database ID
+        void mark_noise_removed( int noiseID );
 
         QString                 errMsg;     //!< Message from the last error
         QWidget*                parentw;    //!< Parent widget
