@@ -80,6 +80,25 @@ class US_DataPubExporter : public QObject
             //! \brief Select exactly these noise records
             void setNoises( const QStringList& );
 
+            /*! \brief Select what a tree of the runs has checked
+
+                What the export tab shows: the runs, with their raw data,
+                edits, models and noise checked or not.  When \a runsListed
+                is false -- only a project was picked, and no run is shown
+                -- nothing is narrowed: every run of the project goes, with
+                everything it holds, as an export of the project on the
+                command line does.
+                \param runsListed Whether any run is listed
+                \param raws       The raw data checked
+                \param edits      The edits checked
+                \param models     The models checked
+                \param noises     The noise records checked
+            */
+            void setChecked( bool runsListed, const QStringList& raws,
+                             const QStringList& edits,
+                             const QStringList& models,
+                             const QStringList& noises );
+
             /*! \brief The scope an export actually runs with
 
                 Raw data cannot be re-created in a target installation
@@ -157,6 +176,22 @@ class US_DataPubExporter : public QObject
       */
       static QString runTypeOf( const US_DataPubCatalog::Run& run );
 
+      /*! \brief Whether an import would accept a run as the catalog lists it
+
+          The rules of US_DataPub that a run's own records have to meet:
+          its run ID and run type, the GUID of its experiment, and -- within
+          \a scope -- the GUID and file name of each of its raw triples and
+          edits (the file names have to start with the run ID).  A run of a
+          project export that breaks one is left out with a warning; a run
+          the user named fails the export.
+          \param run   The run, with its details loaded and its triples
+                       narrowed to those selected
+          \param scope The scope of the export
+          \param why   Filled in with the first rule the run breaks
+      */
+      static bool runIsAcceptable( const US_DataPubCatalog::Run& run,
+                                   US_DataPub::Scope scope, QString& why );
+
    private:
       //! Lets the unit tests drive the steps of an export one at a time
       friend class US_DataPubExporterTest;
@@ -228,6 +263,9 @@ class US_DataPubExporter : public QObject
       bool addSolutions ( const US_DataPubCatalog::Run&,
                           const US_DataPubCatalog::ExpInfo&, QString& );
       bool addBuffer    ( US_Buffer&, QString& );
+      bool addAnalyte   ( US_Analyte&, QString& );
+      //! A solution with its buffer and analytes, in a run of \a expGUID
+      bool addSolution  ( US_Solution&, const QString& expGUID, QString& );
       bool addEdits     ( const US_DataPubCatalog::Run&, QString& );
       bool collectModels( const Selection&,
                           const QList< US_DataPubCatalog::Run >&,
@@ -241,7 +279,24 @@ class US_DataPubExporter : public QObject
       bool buildTriplesFromDb( const US_DataPubCatalog::Run&,
                                QList< US_Convert::TripleInfo >&, QString& );
 
-      bool finishEntity( US_DataPubEntity&, const QString& stagedPath );
+      //! Fails with the reason in \a error when a payload cannot be digested
+      bool finishEntity( US_DataPubEntity&, const QString& stagedPath,
+                         QString& error );
+      //! Stage the spectra of a record as its \c spectraPayload, when it
+      //! has any
+      bool stageSpectra( US_DataPubEntity&,
+                         const QMap< QString, QMap< double, double > >&,
+                         QString& error );
+      /*! The RI intensity profile column of a database run's experiment
+          record, as stored; empty when there is none or it cannot be read
+      */
+      QByteArray storedRiProfile( const US_DataPubCatalog::Run& );
+      /*! Check, just before packing, that the staged tree is exactly the
+          manifest, its digest file and the payloads the manifest names,
+          that every payload still matches its digest and that every XML
+          payload names only usable GUIDs
+      */
+      bool checkStagedTree( QString& error );
       bool copyPayload ( const QString& source, const QString& staged,
                          QString& error );
       void note        ( const QString& );

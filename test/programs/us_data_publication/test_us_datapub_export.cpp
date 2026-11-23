@@ -1494,6 +1494,22 @@ class US_DataPubExporterTest
       {
          return ex.bundle.stagingPath() + "/" + rel;
       }
+
+      static bool addSolution( US_DataPubExporter& ex, US_Solution& solution,
+                               const QString& expGUID, QString& error )
+      {
+         return ex.addSolution( solution, expGUID, error );
+      }
+
+      static bool checkStagedTree( US_DataPubExporter& ex, QString& error )
+      {
+         return ex.checkStagedTree( error );
+      }
+
+      static const US_DataPubManifest& manifest( US_DataPubExporter& ex )
+      {
+         return ex.mani;
+      }
 };
 
 /**
@@ -1889,4 +1905,394 @@ TEST_F( DataPubExport, AMissingProjectFileSuggestsLeavingItOut )
    EXPECT_FALSE( exporter.previewManifest(
                  baseSelection( US_DataPub::ScopeRawData ), error ) );
    EXPECT_TRUE ( error.contains( "--no-project" ) ) << error.toStdString();
+}
+
+// --------------------------------------------------- round three: export
+
+/**
+ * A second run of the same project in the scratch store: its own
+ * experiment and triple, in a channel filled with the same solution as
+ * the first run's.
+ */
+class DataPubExportTwoRuns : public DataPubExport
+{
+   protected:
+      QString runID1;
+      QString expGUID1;
+      QString rawGUID1;
+      QString runID2;
+      QString expGUID2;
+      QString rawGUID2b;
+
+      void addRun( const QString& newRunID )
+      {
+         runID1   = runID;
+         expGUID1 = expGUID;
+         rawGUID1 = rawGUID;
+
+         runID     = newRunID;
+         expGUID   = US_Util::new_guid();
+         rawGUID   = US_Util::new_guid();
+         runID2    = runID;
+         expGUID2  = expGUID;
+         rawGUID2b = rawGUID;
+
+         QString file = writeRawFile( 1, rawGUID );
+         writeExperimentXml();
+
+         // Back to the first run, which the other helpers work on
+         runID   = runID1;
+         expGUID = expGUID1;
+         rawGUID = rawGUID1;
+         Q_UNUSED( file );
+      }
+};
+
+// A solution that fills channels of two runs belongs to both of them
+TEST_F( DataPubExportTwoRuns, ASharedSolutionDependsOnEveryRunsExperiment )
+{
+   addRun( "demo_run2" );
+
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection =
+      baseSelection( US_DataPub::ScopeSolutions );
+   selection.runIDs << runID2;
+   QString error;
+
+   ASSERT_TRUE( exporter.previewManifest( selection, error ) )
+      << error.toStdString();
+
+   const US_DataPubManifest& mani = exporter.manifest();
+   EXPECT_EQ( mani.count( US_DataPub::Experiment ), 2 );
+   ASSERT_EQ( mani.count( US_DataPub::Solution   ), 1 );
+
+   QStringList exps = mani.section( US_DataPub::Solution )[ 0 ]
+                      .dependsOn( US_DataPub::Experiment );
+   EXPECT_EQ( exps.size(), 2 );
+   EXPECT_TRUE( exps.contains( expGUID1 ) );
+   EXPECT_TRUE( exps.contains( expGUID2 ) );
+
+   QString verror;
+   EXPECT_TRUE( mani.validate( verror ) ) << verror.toStdString();
+}
+
+// A project export leaves out a run it cannot export, with a warning; the
+// same run named on its own fails the export
+TEST_F( DataPubExportTwoRuns, AProjectExportSkipsARunWithAnUnusableRunId )
+{
+   addRun( "bad run" );
+
+   US_DataPubCatalog catalog;
+   QString           error;
+   ASSERT_TRUE( catalog.open( false, QString(), error ) );
+   QList< US_DataPubCatalog::Run > listed = catalog.runs( projectGUID, error );
+   bool seen = false;
+
+   for ( int ii = 0; ii < listed.size(); ii++ )
+      if ( listed[ ii ].runID == runID2 )  seen = true;
+
+   ASSERT_TRUE( seen ) << "the catalog does not list the run";
+
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection;
+   selection.fromDb      = false;
+   selection.scope       = US_DataPub::ScopeSolutions;
+   selection.projectGUID = projectGUID;
+
+   ASSERT_TRUE( exporter.previewManifest( selection, error ) )
+      << error.toStdString();
+   EXPECT_EQ( exporter.manifest().count( US_DataPub::Experiment ), 1 );
+   EXPECT_TRUE( exporter.log().join( "\n" ).contains( "bad run" ) );
+
+   US_DataPubExporter            named;
+   US_DataPubExporter::Selection one = baseSelection( US_DataPub::ScopeSolutions );
+   one.runIDs = QStringList() << runID2;
+
+   EXPECT_FALSE( named.previewManifest( one, error ) );
+   EXPECT_TRUE ( error.contains( "bad run" ) ) << error.toStdString();
+}
+
+// With only a project picked there is no tree: everything of its runs goes
+TEST_F( DataPubExport, AProjectAloneExportsAllOfItsRuns )
+{
+   US_DataPubExporter::Selection selection;
+   selection.fromDb      = false;
+   selection.scope       = US_DataPub::ScopeNoise;
+   selection.projectGUID = projectGUID;
+
+   // What the export tab used to make of it: nothing checked, so nothing
+   US_DataPubExporter::Selection empty = selection;
+   empty.setChecked( true, QStringList(), QStringList(), QStringList(),
+                     QStringList() );
+   US_DataPubExporter before;
+   QString            error;
+   EXPECT_FALSE( before.previewManifest( empty, error ) );
+
+   selection.setChecked( false, QStringList(), QStringList(), QStringList(),
+                         QStringList() );
+   EXPECT_FALSE( selection.rawsExplicit );
+
+   US_DataPubExporter exporter;
+   ASSERT_TRUE( exporter.exportBundle( selection, root + "/project.tar.gz",
+                error ) ) << error.toStdString();
+   EXPECT_EQ( exporter.manifest().count( US_DataPub::RawData    ), 1 );
+   EXPECT_EQ( exporter.manifest().count( US_DataPub::EditedData ), 1 );
+   EXPECT_EQ( exporter.manifest().count( US_DataPub::Model      ), 1 );
+   EXPECT_EQ( exporter.manifest().count( US_DataPub::Noise      ), 1 );
+}
+
+// A legacy record that names something other than a GUID where a GUID
+// belongs would be refused on import; the export refuses it first, and
+// writes no bundle
+TEST_F( DataPubExport, AnUnusableGuidInsideAPayloadFailsTheExport )
+{
+   QString expXml = runDir() + "/" + runID + "." + runType + ".xml";
+   QString text   = read_text( expXml );
+   QRegularExpression rx( "(<operator[^>]*guid=\")[^\"]*\"" );
+   ASSERT_TRUE( rx.match( text ).hasMatch() );
+   text.replace( rx, "\\1operator-7\"" );
+
+   QFile file( expXml );
+   ASSERT_TRUE( file.open( QIODevice::WriteOnly | QIODevice::Truncate ) );
+   file.write( text.toUtf8() );
+   file.close();
+
+   US_DataPubExporter exporter;
+   QString            bundle = root + "/legacy.tar.gz";
+   QString            error;
+
+   EXPECT_FALSE( exporter.exportBundle( baseSelection( US_DataPub::ScopeRawData ),
+                 bundle, error ) );
+   EXPECT_TRUE ( error.contains( "operator-7" ) ) << error.toStdString();
+   EXPECT_FALSE( QFile::exists( bundle ) );
+}
+
+// A description of any kind -- non-ASCII, quoted, over several lines --
+// reaches the bundle's manifest as it is
+TEST_F( DataPubExport, DescriptionsOfAnyKindSurviveTheManifest )
+{
+   QString desc = QString::fromUtf8( "Pr\xC3\xBC" "fung \"A\" \\ 1\n"
+                                     "zweite Zeile\t\xCE\xB1" );
+
+   US_Project project;
+   project.projectID   = 7;
+   project.projectGUID = projectGUID;
+   project.projectDesc = desc;
+   ASSERT_TRUE( project.saveToFile( dataDir( "projects" ) + "/P0000001.xml" ) );
+
+   US_DataPubExporter::Selection selection =
+      baseSelection( US_DataPub::ScopeSolutions );
+   selection.comment = desc + QChar( 0x01 ) + QChar( 0x00 ) + "after a NUL";
+
+   US_DataPubExporter exporter;
+   QString            bundle = root + "/text.tar.gz";
+   QString            error;
+
+   ASSERT_TRUE( exporter.exportBundle( selection, bundle, error ) )
+      << error.toStdString();
+
+   US_DataPubBundle unpacked;
+   ASSERT_TRUE( unpacked.unpack( bundle, error ) ) << error.toStdString();
+
+   US_DataPubManifest mani;
+   ASSERT_TRUE( mani.read( unpacked.rootPath() + "/"
+                           + US_DataPubBundle::manifestName(), error ) )
+      << error.toStdString();
+
+   EXPECT_EQ( mani.comment, desc + QChar( 0x01 ) + QChar( 0x00 ) + "after a NUL" );
+   ASSERT_EQ( mani.count( US_DataPub::Project ), 1 );
+   EXPECT_EQ( mani.section( US_DataPub::Project )[ 0 ].name, desc );
+}
+
+// Buffer, analyte and solution spectra, and the buffer's concentrations,
+// leave at the precision they have: a database record is read in full
+TEST_F( DataPubExportSteps, SpectraAndConcentrationsTravelAtFullPrecision )
+{
+   US_BufferComponent comp;
+   comp.componentID = "99";
+   comp.name        = "sodium chloride";
+   comp.unit        = "mM";
+
+   US_Solution solution;
+   solution.solutionID   = 11;
+   solution.solutionGUID = solutionGUID;
+   solution.solutionDesc = "Demo solution";
+   solution.buffer.GUID        = bufferGUID;
+   solution.buffer.bufferID    = "3";
+   solution.buffer.description = "Demo buffer";
+   solution.buffer.component     << comp;
+   solution.buffer.componentIDs  << "99";
+   solution.buffer.concentration << 0.005;           // 5 uM
+   solution.buffer.extinction  .insert( 280.0,  1.0 / 3.0 );
+   solution.buffer.extinction  .insert( 280.02, 2.0 / 3.0 );
+   solution.buffer.refraction  .insert( 589.3,  1.333000123456789 );
+   solution.buffer.fluorescence.insert( 350.0,  1.0e-9 / 7.0 );
+
+   US_Solution::AnalyteInfo info;
+   info.analyte.analyteGUID = analyteGUID;
+   info.analyte.analyteID   = "5";
+   info.analyte.description = "Demo analyte";
+   info.analyte.type        = US_Analyte::PROTEIN;
+   info.analyte.extinction.insert( 280.0, 43824.123456789 );
+   info.analyte.extinction.insert( 280.04, 43800.5 );
+   info.amount = 1.0;
+   solution.analyteInfo << info;
+
+   solution.extinction.insert( 280.0, 12345.678901234567 );
+   solution.extinction.insert( 230.5, 0.1 / 3.0 );
+
+   QString error;
+   ASSERT_TRUE( US_DataPubExporterTest::addSolution( exporter, solution,
+                expGUID, error ) ) << error.toStdString();
+
+   const US_DataPubManifest& mani = US_DataPubExporterTest::manifest( exporter );
+
+   auto spectraOf = [ this, &mani ]( US_DataPub::EntityType type,
+                                     const QString& guid,
+                                     US_DataPubRecords::Spectra& spectra )
+   {
+      US_DataPubEntity entity;
+      if ( ! mani.entity( type, guid, entity ) )  return false;
+
+      QString rel    = entity.attrs.value( "spectraPayload" );
+      QString staged = US_DataPubExporterTest::staged( exporter, rel );
+      QString digest;
+
+      return ! rel.isEmpty()  &&
+             US_DataPub::fileSha256( staged, digest )  &&
+             digest == entity.attrs.value( "spectraSha256" )  &&
+             US_DataPubRecords::readSpectra( staged, spectra );
+   };
+
+   US_DataPubRecords::Spectra spectra;
+
+   ASSERT_TRUE( spectraOf( US_DataPub::Buffer, bufferGUID, spectra ) );
+   EXPECT_EQ( spectra.value( "extinction"   ), solution.buffer.extinction );
+   EXPECT_EQ( spectra.value( "refraction"   ), solution.buffer.refraction );
+   EXPECT_EQ( spectra.value( "fluorescence" ), solution.buffer.fluorescence );
+
+   ASSERT_TRUE( spectraOf( US_DataPub::Analyte, analyteGUID, spectra ) );
+   EXPECT_EQ( spectra.value( "extinction" ), info.analyte.extinction );
+   EXPECT_FALSE( spectra.contains( "refraction" ) );
+
+   ASSERT_TRUE( spectraOf( US_DataPub::Solution, solutionGUID, spectra ) );
+   EXPECT_EQ( spectra.value( "extinction" ), solution.extinction );
+
+   // The concentrations, with the component definitions
+   US_DataPubEntity buffer;
+   ASSERT_TRUE( mani.entity( US_DataPub::Buffer, bufferGUID, buffer ) );
+
+   QStringList     ids;
+   QList< double > concs;
+   ASSERT_TRUE( US_DataPubRecords::readBufferConcentrations(
+                US_DataPubExporterTest::staged( exporter,
+                   buffer.attrs.value( "componentsPayload" ) ), ids, concs ) );
+   EXPECT_EQ( ids, QStringList() << "99" );
+   ASSERT_EQ( concs.size(), 1 );
+   EXPECT_EQ( concs[ 0 ], 0.005 );
+
+   // The library writers' own files are still there, and still round
+   US_Buffer written;
+   ASSERT_TRUE( written.readFromDisk(
+                US_DataPubExporterTest::staged( exporter, buffer.payload ) ) );
+   EXPECT_NE( written.extinction, solution.buffer.extinction );
+}
+
+// A record without spectra carries no spectra payload
+TEST_F( DataPubExportSteps, NoSpectraNoSpectraPayload )
+{
+   US_Solution solution;
+   solution.solutionGUID       = solutionGUID;
+   solution.solutionDesc       = "Plain";
+   solution.buffer.GUID        = bufferGUID;
+   solution.buffer.description = "Plain buffer";
+
+   QString error;
+   ASSERT_TRUE( US_DataPubExporterTest::addSolution( exporter, solution,
+                expGUID, error ) ) << error.toStdString();
+
+   US_DataPubEntity entity;
+   const US_DataPubManifest& mani = US_DataPubExporterTest::manifest( exporter );
+   ASSERT_TRUE( mani.entity( US_DataPub::Solution, solutionGUID, entity ) );
+   EXPECT_FALSE( entity.attrs.contains( "spectraPayload" ) );
+   ASSERT_TRUE( mani.entity( US_DataPub::Buffer, bufferGUID, entity ) );
+   EXPECT_FALSE( entity.attrs.contains( "spectraPayload" ) );
+}
+
+// Just before packing, the staged tree has to be exactly what the manifest
+// names, and every payload still what its digest says
+TEST_F( DataPubExportSteps, TheStagedTreeIsTheManifest )
+{
+   US_Solution solution;
+   solution.solutionGUID       = solutionGUID;
+   solution.solutionDesc       = "Plain";
+   solution.buffer.GUID        = bufferGUID;
+   solution.buffer.description = "Plain buffer";
+   solution.extinction.insert( 280.0, 1.5 );
+
+   QString error;
+   ASSERT_TRUE( US_DataPubExporterTest::addSolution( exporter, solution,
+                expGUID, error ) ) << error.toStdString();
+
+   auto touch = [ this ]( const QString& rel, const QByteArray& data )
+   {
+      QFile file( US_DataPubExporterTest::staged( exporter, rel ) );
+      file.open( QIODevice::WriteOnly | QIODevice::Truncate );
+      file.write( data );
+      file.close();
+   };
+
+   touch( US_DataPubBundle::manifestName(), "manifest" );
+   EXPECT_FALSE( US_DataPubExporterTest::checkStagedTree( exporter, error ) );
+   EXPECT_TRUE ( error.contains( US_DataPubExporter::manifestDigestName() ) )
+      << error.toStdString();
+
+   touch( US_DataPubExporter::manifestDigestName(), "digest" );
+   ASSERT_TRUE( US_DataPubExporterTest::checkStagedTree( exporter, error ) )
+      << error.toStdString();
+
+   // Something the manifest does not name
+   touch( "solutions/stray.xml", "<x/>" );
+   EXPECT_FALSE( US_DataPubExporterTest::checkStagedTree( exporter, error ) );
+   EXPECT_TRUE ( error.contains( "stray.xml" ) ) << error.toStdString();
+   ASSERT_TRUE( QFile::remove( US_DataPubExporterTest::staged( exporter,
+                               "solutions/stray.xml" ) ) );
+
+   // A payload changed after it was digested
+   US_DataPubEntity entity;
+   ASSERT_TRUE( US_DataPubExporterTest::manifest( exporter ).entity(
+                US_DataPub::Solution, solutionGUID, entity ) );
+   touch( entity.attrs.value( "spectraPayload" ), "<US_DataPubSpectra/>" );
+   EXPECT_FALSE( US_DataPubExporterTest::checkStagedTree( exporter, error ) );
+   EXPECT_TRUE ( error.contains( "digest" ) ) << error.toStdString();
+}
+
+// The RI intensity profile of a database run goes into the bundle as the
+// record stores it, not as six-digit values written again
+TEST_F( DataPubExportSteps, TheStoredRIProfileIsCopiedByteForByte )
+{
+   QByteArray rip( "<?xml version=\"1.0\"?>\n<US_RIProfile version=\"1.0\">"
+                   "<RI value=\"0.12345678901234567\"/>"
+                   "<RI value=\"0.98765432109876543\"/>"
+                   "</US_RIProfile>\n" );
+
+   sdb.rows.insert( "get_experiment_info_by_runID", QList< QVariantList >()
+                    << experimentRow( "RI", QString::fromLatin1( rip ) ) );
+
+   US_DataPubCatalog::Run run = dbRun();
+   run.runType = "RI";
+   run.raws.clear();
+
+   QString error;
+   ASSERT_TRUE( US_DataPubExporterTest::addExperiment( exporter, run, error ) )
+      << error.toStdString();
+
+   US_DataPubEntity exper;
+   ASSERT_TRUE( exporter.manifest().entity( US_DataPub::Experiment, expGUID,
+                                            exper ) );
+
+   QFile staged( US_DataPubExporterTest::staged( exporter,
+                 exper.attrs.value( "riProfilePayload" ) ) );
+   ASSERT_TRUE( staged.open( QIODevice::ReadOnly ) );
+   EXPECT_EQ( staged.readAll(), rip );
 }
