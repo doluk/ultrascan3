@@ -17,6 +17,43 @@
 
 #include "us_datapub_records.h"
 
+#include "us3_gtest_sandbox.h"
+
+/**
+ * Whether US_Settings writes into the test sandbox.
+ *
+ * The fixture below changes the "workBaseDir" setting.  That is only safe
+ * when the process runs in the sandbox us3EnterSandbox() sets up (as
+ * test_us_datapub_main.cpp does): US3_SETTINGS_ROOT is set, and the
+ * settings store's file really is under it -- the store resolves the root
+ * once, so a variable set too late would not count.
+ * \param why Filled in with the reason when it is not
+ */
+inline bool datapub_settings_sandboxed( QString* why = nullptr )
+{
+   QString reason;
+   QString sandbox = qEnvironmentVariable( "US3_SETTINGS_ROOT" );
+
+   if ( sandbox.isEmpty() )
+      reason = "US3_SETTINGS_ROOT is not set; call us3EnterSandbox() in main()"
+               " before anything reads US_Settings";
+
+   else
+   {
+      US_SettingsStore store;
+      QString file = QFileInfo( store.fileName() ).absoluteFilePath();
+      QString dir  = QDir( sandbox ).absolutePath() + "/";
+
+      if ( ! file.startsWith( dir ) )
+         reason = QString( "the settings are stored in %1, outside the sandbox"
+                           " %2" ).arg( file ).arg( dir );
+   }
+
+   if ( why != nullptr )  *why = reason;
+
+   return reason.isEmpty();
+}
+
 /**
  * A self-contained UltraScan3 disk store, built in a temporary directory.
  *
@@ -25,12 +62,16 @@
  * solution, one run (experiment XML, one .auc triple, one edit), one model
  * and one noise record.  That is the whole dependency chain the exporter
  * walks, so a test can export it, import it somewhere else and compare.
+ *
+ * It refuses to run outside the settings sandbox (datapub_settings_sandboxed()),
+ * so that a test never changes the settings of the person running it.
  */
 class DataPubTestEnv : public ::testing::Test
 {
    protected:
       QString  root;          // The scratch directory of this test
       QString  savedWorkDir;  // The setting to restore afterwards
+      bool     sandboxed = false;  // Whether the settings may be changed
 
       QString  runID;
       QString  runType;
@@ -57,9 +98,14 @@ class DataPubTestEnv : public ::testing::Test
 
       void SetUp() override
       {
+         QString why;
+         sandboxed = datapub_settings_sandboxed( &why );
+         ASSERT_TRUE( sandboxed ) << why.toStdString();
+
          savedWorkDir = US_Settings::workBaseDir();
 
-         root = QDir::tempPath() + "/us_datapub_test_"
+         root = qEnvironmentVariable( "US3_TEST_SANDBOX", QDir::tempPath() )
+                + "/us_datapub_test_"
                 + QString::number( QCoreApplication::applicationPid() ) + "_"
                 + QString::number( QDateTime::currentMSecsSinceEpoch() );
          QDir().mkpath( root );
@@ -89,6 +135,8 @@ class DataPubTestEnv : public ::testing::Test
 
       void TearDown() override
       {
+         if ( ! sandboxed )  return;      // SetUp() changed nothing
+
          US_Settings::set_workBaseDir( savedWorkDir );
 
          QDir( root ).removeRecursively();

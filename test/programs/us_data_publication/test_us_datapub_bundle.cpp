@@ -11,6 +11,33 @@
 
 class DataPubBundle : public DataPubTestEnv {};
 
+// The fixture changes "workBaseDir"; that setting has to land in the test
+// sandbox, never in the settings of the person running the tests
+TEST( DataPubTestSandbox, TheFixtureOnlyRunsInTheSettingsSandbox )
+{
+   QString why;
+   ASSERT_TRUE( datapub_settings_sandboxed( &why ) ) << why.toStdString();
+
+   US_SettingsStore store;
+   EXPECT_TRUE( QFileInfo( store.fileName() ).absoluteFilePath().startsWith(
+                QDir( qEnvironmentVariable( "US3_TEST_SANDBOX" ) )
+                .absolutePath() + "/" ) ) << store.fileName().toStdString();
+
+   // A root the store does not use is no sandbox: the check looks at where
+   // the settings really go, not at the variable alone
+   QByteArray saved = qgetenv( "US3_SETTINGS_ROOT" );
+   qputenv( "US3_SETTINGS_ROOT", QFile::encodeName( QDir::tempPath()
+                                 + "/somewhere_else" ) );
+   EXPECT_FALSE( datapub_settings_sandboxed( &why ) );
+   EXPECT_FALSE( why.isEmpty() );
+
+   qunsetenv( "US3_SETTINGS_ROOT" );
+   EXPECT_FALSE( datapub_settings_sandboxed( &why ) );
+
+   qputenv( "US3_SETTINGS_ROOT", saved );
+   EXPECT_TRUE( datapub_settings_sandboxed() );
+}
+
 TEST_F( DataPubBundle, StageAndPackAndUnpack )
 {
    US_DataPubBundle bundle;
