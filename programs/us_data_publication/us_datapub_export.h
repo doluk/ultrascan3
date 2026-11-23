@@ -323,6 +323,9 @@ class US_DataPubExporter : public QObject
                           const QList< US_DataPubCatalog::Run >&,
                           QList< US_DataPubCatalog::Model >&, QString& );
       bool addModels    ( const QList< US_DataPubCatalog::Model >&, QString& );
+      //! The variance and meniscus columns of a model's database row
+      bool modelRowValues( const US_DataPubCatalog::Model&, double& variance,
+                           double& meniscus, QString& error );
       //! \a leftOut are the models of runs a project export left out:
       //! noise of theirs that was asked for by GUID goes with them
       bool collectNoises( const Selection&,

@@ -2683,6 +2683,25 @@ bool US_DataPubExporter::addModels(
             return false;
          }
 
+         // The variance and meniscus are columns of the database row as
+         // well as attributes of the XML, which a model the database stored
+         // need not have: the manifest carries them, so an import into a
+         // database can give the row what it had
+         double variance = record.variance;
+         double meniscus = record.meniscus;
+
+         if ( catalog.isDb()  &&
+              ! modelRowValues( model, variance, meniscus, error ) )
+            return false;
+
+         if ( qIsFinite( variance ) )
+            entity.attrs.insert( "variance",
+                                 QString::number( variance, 'g', 17 ) );
+
+         if ( qIsFinite( meniscus ) )
+            entity.attrs.insert( "meniscus",
+                                 QString::number( meniscus, 'g', 17 ) );
+
          if ( staged.isEmpty()  ||  record.write( staged ) != IUS_DB2::OK )
          {
             error = tr( "The model \"%1\" could not be staged" )
@@ -2701,6 +2720,59 @@ bool US_DataPubExporter::addModels(
 
    if ( ! models.isEmpty() )
       note( tr( "Models: %1" ).arg( models.size() ) );
+
+   return true;
+}
+
+/* The variance and meniscus of a model's database row.  US_Model's
+   reader takes them from the stored XML (the variance from the row only
+   for a Monte Carlo model), which need not hold them.
+*/
+bool US_DataPubExporter::modelRowValues(
+      const US_DataPubCatalog::Model& model, double& variance,
+      double& meniscus, QString& error )
+{
+   IUS_DB2*    dbase = catalog.db();
+   QString     id    = model.id;
+   QStringList query;
+
+   if ( id.toInt() < 1 )
+   {
+      query << "get_modelID" << model.guid;
+      dbase->query( query );
+
+      if ( dbase->lastErrno() != IUS_DB2::OK  ||  ! dbase->next() )
+      {
+         error = tr( "The model \"%1\" could not be looked up: %2" )
+                 .arg( model.description ).arg( dbase->lastError() );
+         return false;
+      }
+
+      id = dbase->value( 0 ).toString();
+   }
+
+   query.clear();
+   query << "get_model_info" << id;
+   dbase->query( query );
+
+   if ( dbase->lastErrno() != IUS_DB2::OK  ||  ! dbase->next() )
+   {
+      error = tr( "The model \"%1\" could not be read: %2" )
+              .arg( model.description ).arg( dbase->lastError() );
+      return false;
+   }
+
+   // modelGUID, description, xml, variance, meniscus, ...
+   QVariant var = dbase->value( 3 );
+   QVariant men = dbase->value( 4 );
+
+   if ( ! var.isNull()  &&  ! var.toString().isEmpty() )
+      variance = var.toString().toDouble();
+
+   if ( ! men.isNull()  &&  ! men.toString().isEmpty() )
+      meniscus = men.toString().toDouble();
+
+   error.clear();
 
    return true;
 }

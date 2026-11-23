@@ -963,6 +963,103 @@ TEST_F( DataPubDbImport, BorrowedNoiseIsImportedWithItsOwnModel )
    EXPECT_EQ( record.modelGUID, modelGUID );
 }
 
+/* A model's variance and meniscus are columns of its database row as well
+   as attributes of its XML, and the XML the database stores need not have
+   them -- the fixture's model does not.  Exported from the fixture database
+   and imported into the scratch one, the model row keeps both: the bundle
+   carries them in the manifest.  Skips on a database that is not the
+   fixture.
+*/
+TEST_F( DataPubDbImport, AModelRowKeepsItsVarianceAndMeniscus )
+{
+   QString fixture = qEnvironmentVariable( "US3_TEST_DB_NAME" );
+
+   if ( fixture.isEmpty() )
+      GTEST_SKIP() << "no fixture database configured";
+
+   // Export from the fixture database ...
+   QStringList target = US_Settings::defaultDB();
+   QStringList source = target;
+   source.replace( 2, fixture );
+   US_Settings::set_defaultDB( source );
+
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection;
+   selection.fromDb     = true;
+   selection.dbPassword = master;
+   selection.scope      = US_DataPub::ScopeModels;
+   selection.runIDs << "MWL_demo_run";
+
+   QString bundle = root + "/fixture_models.tar.gz";
+   QString error;
+   bool    made   = exporter.exportBundle( selection, bundle, error );
+
+   US_Settings::set_defaultDB( target );
+
+   if ( ! made  &&  error.contains( "MWL_demo_run" ) )
+      GTEST_SKIP() << "not the fixture database: " << error.toStdString();
+
+   ASSERT_TRUE( made ) << error.toStdString();
+
+   const QString modelGUID300 = "aaaaaaaa-0000-4000-8000-000000000300";
+   US_DataPubEntity entity;
+   ASSERT_TRUE( exporter.manifest().entity( US_DataPub::Model, modelGUID300,
+                                            entity ) );
+   EXPECT_EQ( entity.attrs.value( "variance" ).toDouble(), 0.001 );
+   EXPECT_EQ( entity.attrs.value( "meniscus" ).toDouble(), 5.85 );
+
+   // ... and into the scratch one, where an earlier run may have left the
+   // model: it has to be written now, not reused
+   QStringList query;
+   query << "get_modelID" << modelGUID300;
+   db->query( query );
+
+   if ( db->lastErrno() == IUS_DB2::OK  &&  db->next() )
+   {
+      QString oldID = db->value( 0 ).toString();
+      query.clear();
+      query << "delete_model" << oldID;
+      ASSERT_EQ( db->statusQuery( query ), IUS_DB2::OK )
+         << db->lastError().toStdString();
+   }
+
+   US_DataPubImporter::Options options;
+   options.target       = US_DataPub::TargetDb;
+   options.dbPassword   = master;
+   options.verifyHashes = true;
+   options.dryRun       = false;
+   options.policy       = US_DataPub::PolicyRename;
+
+   US_DataPubImporter importer;
+   ASSERT_TRUE( importer.inspect( bundle, error ) ) << error.toStdString();
+   ASSERT_TRUE( importer.runImport( options, error ) )
+      << error.toStdString() << "\n" << importer.log().join( "\n" )
+                                                      .toStdString();
+
+   bool created = false;
+
+   for ( const US_DataPubImporter::Result& result : importer.results() )
+      if ( result.type == US_DataPub::Model  &&  result.guid == modelGUID300 )
+         created = ( result.resolution == US_DataPub::ResolvedCreated );
+
+   EXPECT_TRUE( created ) << "the model was not written by this import";
+
+   query.clear();
+   query << "get_modelID" << modelGUID300;
+   db->query( query );
+   ASSERT_EQ( db->lastErrno(), IUS_DB2::OK ) << db->lastError().toStdString();
+   ASSERT_TRUE( db->next() );
+   QString modelID = db->value( 0 ).toString();
+
+   query.clear();
+   query << "get_model_info" << modelID;
+   db->query( query );
+   ASSERT_EQ( db->lastErrno(), IUS_DB2::OK ) << db->lastError().toStdString();
+   ASSERT_TRUE( db->next() );
+   EXPECT_EQ( db->value( 3 ).toString().toDouble(), 0.001 );
+   EXPECT_EQ( db->value( 4 ).toString().toDouble(), 5.85 );
+}
+
 /* Against a real server: a dry run decides what the import then does, and
    a second import of the same bundle finds every record -- which takes the
    investigator's listings the import checks owners against

@@ -15,7 +15,9 @@
 --   US3_TEST_DB_EMAIL=test@example.org  ./bin/test_us_utils_db
 --
 --   US3_TEST_DB_ADMIN_GUID=aaaaaaaa-0000-4000-8000-000000000001 \
---   US3_TEST_DB_ADMIN_PW=adminpw  US3_TEST_DB_OTHER_ID=3
+--   US3_TEST_DB_ADMIN_PW=adminpw  US3_TEST_DB_OTHER_ID=3 \
+--   US3_TEST_DB_OTHER_GUID=aaaaaaaa-0000-4000-8000-000000000003 \
+--   US3_TEST_DB_OTHER_PW=secret3
 --
 -- The investigator here is deliberately an ordinary user, not an admin, so
 -- the tests go through the same permission checks a real user does.  The

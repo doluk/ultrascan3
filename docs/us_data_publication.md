@@ -854,7 +854,9 @@ that has not changed for two days.
 
 A model's variance and meniscus are columns of its database row as well as
 attributes of its XML. When the XML has neither, a `variance` and `meniscus`
-attribute of the model's manifest entry are used.
+attribute of the model's manifest entry are used. An export writes both: from
+the database the values of the model's row (which the stored XML need not
+hold), from disk those of the model file.
 
 A **dry run** reads the target and decides everything, but opens no
 transaction and writes nothing — not even the output directory. Into a
