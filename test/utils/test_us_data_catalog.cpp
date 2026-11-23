@@ -748,9 +748,13 @@ TEST_F( TestUSDataCatalog, TwoDirectoriesWithTheSameRunIdAreTwoRuns )
 
    // and the directory whose name is not the run ID says that too
    for ( int ii : same )
+   {
       if ( catalog.run( ii ).dirPath.endsWith( "Copy_of_" + runOne ) )
+      {
          EXPECT_TRUE( catalog.run( ii ).problem.contains( "Copy_of_" + runOne ) )
             << catalog.run( ii ).problem.toStdString();
+      }
+   }
 }
 
 // A run ID that is a prefix of another followed by a dot does not count
@@ -1097,4 +1101,54 @@ TEST_F( TestUSDataCatalog, FileNamesCompareAsTheFileSystemDoes )
    ASSERT_TRUE( folded.loadRuns( error ) );
    ASSERT_GE  ( folded.indexOfRun( "Other_run" ), 0 );
    EXPECT_TRUE( folded.run( folded.indexOfRun( "Other_run" ) ).usable );
+
+   // and a run is found by its ID as the file system compares names
+   EXPECT_EQ( folded.indexOfRun( "OTHER_RUN" ), folded.indexOfRun( "Other_run" ) );
+   EXPECT_LT( exact .indexOfRun( "OTHER_RUN" ), 0 );
+}
+
+// A file that cannot be read has no checksum, and saying it has checksum
+// "0" would make it look like a copy that differs.  The read fails instead,
+// and the experiment stays as it was.
+TEST_F( TestUSDataCatalog, AFileThatCannotBeHashedFailsTheRead )
+{
+   for ( const QString& gone : { QString( "/noises/N0000001.xml" ),
+                                 QString( "/models/M0000001.xml" ) } )
+   {
+      SCOPED_TRACE( gone.toStdString() );
+
+      US_DataCatalog catalog;
+      QString        error;
+      ASSERT_TRUE( catalog.open( US_DataCatalog::Disk, QString(), error ) );
+      ASSERT_TRUE( catalog.loadRuns( error ) );
+
+      int one = catalog.indexOfRun( runOne );
+      ASSERT_GE( one, 0 );
+
+      // listed, and indexed, while it was there; gone before it is hashed
+      const QString path = US_Settings::dataDir() + gone;
+      const QString keep = path + ".kept";
+      ASSERT_TRUE( QFile::rename( path, keep ) );
+
+      EXPECT_FALSE( catalog.loadRunDetail( one, error ) );
+      EXPECT_TRUE ( error.contains( path ) ) << error.toStdString();
+      EXPECT_FALSE( catalog.isRunLoaded( one ) );
+
+      if ( gone.startsWith( "/noises" ) )
+      {
+         EXPECT_TRUE( catalog.noisesOfModel( modelGUID, error ).isEmpty() );
+         EXPECT_TRUE( error.contains( path ) ) << error.toStdString();
+      }
+
+      // without checksums nothing is hashed, so nothing fails
+      catalog.setChecksums( false );
+      EXPECT_TRUE( catalog.loadRunDetail( one, error ) ) << error.toStdString();
+
+      // and a verify that cannot hash the file fails, and changes nothing
+      EXPECT_FALSE( catalog.verifyRun( one, error ) );
+      EXPECT_TRUE ( error.contains( path ) ) << error.toStdString();
+      EXPECT_FALSE( catalog.isRunVerified( one ) );
+
+      ASSERT_TRUE( QFile::rename( keep, path ) );
+   }
 }

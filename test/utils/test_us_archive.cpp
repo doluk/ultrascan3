@@ -344,6 +344,15 @@ TEST_F( TestUSArchive, DuplicateAndCaseCollidingNamesAreRefused )
    expectRefused( QList< Entry >() << file( "a", "x" ) << file( "a/b", "y" ),
                   "a file that is also a directory" );
 
+   // one accented name, composed and decomposed: macOS writes both to one file
+   const QString composed   = QString( "caf" ) + QChar( 0x00e9 ) + ".txt";
+   const QString decomposed = QString( "cafe" ) + QChar( 0x0301 ) + ".txt";
+   expectRefused( QList< Entry >() << file( composed, "x" ) << file( decomposed, "y" ),
+                  "names that differ only in normalization" );
+   expectRefused( QList< Entry >() << file( "Caf" + QString( QChar( 0x00e9 ) ) + "/a", "x" )
+                                   << file( decomposed.left( 5 ) + "/b", "y" ),
+                  "directories that differ in case and normalization" );
+
    // a directory listed again, and files below it, are fine
    Entry dir;
    dir.name = "run";
@@ -366,9 +375,23 @@ TEST_F( TestUSArchive, NamesWindowsCannotHoldAreRefused )
                   "a device name with an extension" );
    expectRefused( QList< Entry >() << file( "com1/a.auc", "x" ), "a device directory" );
 
+   // refused before anything is written, the good entry before it included
+   expectRefused( QList< Entry >() << file( "ok.txt", "x" ) << file( "a<b>.txt", "x" ),
+                  "angle brackets" );
+   expectRefused( QList< Entry >() << file( "ok.txt", "x" ) << file( "run/what?.auc", "x" ),
+                  "a question mark" );
+   expectRefused( QList< Entry >() << file( "ok.txt", "x" ) << file( "a\001b", "x" ),
+                  "a control character" );
+
    EXPECT_FALSE( US_Archive::safeEntryName( "Lpt9" ) );
    EXPECT_FALSE( US_Archive::safeEntryName( "aux .txt" ) );
    EXPECT_FALSE( US_Archive::safeEntryName( "./" ) );
+   EXPECT_FALSE( US_Archive::safeEntryName( "a?b.txt" ) );
+   EXPECT_FALSE( US_Archive::safeEntryName( "run/a*.auc" ) );
+   EXPECT_FALSE( US_Archive::safeEntryName( "a|b" ) );
+   EXPECT_FALSE( US_Archive::safeEntryName( "quote\"d" ) );
+   EXPECT_FALSE( US_Archive::safeEntryName( QString( "tab\there" ) ) );
+   EXPECT_FALSE( US_Archive::safeEntryName( QString( "bell" ) + QChar( 7 ) ) );
    EXPECT_TRUE ( US_Archive::safeEntryName( "CONSOLE.txt" ) );
    EXPECT_TRUE ( US_Archive::safeEntryName( "COM10/a.auc" ) );
    EXPECT_TRUE ( US_Archive::safeEntryName( "run/.hidden" ) );
@@ -469,4 +492,57 @@ TEST_F( TestUSArchive, AFailedWriteRemovesThePartlyWrittenFile )
 #else
    GTEST_SKIP() << "needs RLIMIT_FSIZE";
 #endif
+}
+
+// Extracting over a file that is already there leaves its permissions as
+// they were; it used to be left writable by its owner only (mode 0200)
+TEST_F( TestUSArchive, AnExistingFileKeepsItsPermissions )
+{
+   const QString dest = root + "/out";
+   const QString path = dest + "/a.txt";
+   QDir().mkpath( dest );
+
+   QFile old( path );
+   ASSERT_TRUE( old.open( QIODevice::WriteOnly ) );
+   old.write( "old" );
+   old.close();
+
+   const QFileDevice::Permissions perms = QFileDevice::ReadOwner | QFileDevice::WriteOwner
+                                        | QFileDevice::ReadGroup | QFileDevice::ReadOther;
+   ASSERT_TRUE( QFile::setPermissions( path, perms ) );
+
+   QString    tar = makeTar( "over.tar", QList< Entry >() << file( "a.txt", "new" ) );
+   US_Archive archive;
+   ASSERT_TRUE( archive.extract( tar, dest ) ) << archive.getError().toStdString();
+
+   EXPECT_TRUE( QFile::permissions( path ).testFlag( QFileDevice::ReadOwner ) );
+   EXPECT_TRUE( QFile::permissions( path ).testFlag( QFileDevice::ReadGroup ) );
+   EXPECT_TRUE( QFile::permissions( path ).testFlag( QFileDevice::ReadOther ) );
+
+   QFile ff( path );
+   ASSERT_TRUE( ff.open( QIODevice::ReadOnly ) );
+   EXPECT_EQ( ff.readAll(), QByteArray( "new" ) );
+}
+
+// A name with letters outside ASCII is written and read back as itself
+TEST_F( TestUSArchive, ANonAsciiNameRoundTrips )
+{
+   const QString name = QString( "R" ) + QChar( 0x00fc ) + "n_" + QChar( 0x03bb ) + ".auc";
+   const QString src  = root + "/src";
+   QDir().mkpath( src );
+
+   QFile ff( src + "/" + name );
+   ASSERT_TRUE( ff.open( QIODevice::WriteOnly ) );
+   ff.write( "data" );
+   ff.close();
+
+   QString    tar = root + "/" + QChar( 0x00e9 ) + "t" + QChar( 0x00e9 ) + ".tar.gz";
+   US_Archive archive;
+   ASSERT_TRUE( archive.compress( QStringList() << src, tar ) ) << archive.getError().toStdString();
+
+   QStringList files;
+   ASSERT_TRUE( archive.extract( tar, root + "/out", &files ) ) << archive.getError().toStdString();
+   ASSERT_EQ  ( files.size(), 1 );
+   EXPECT_TRUE( QFile::exists( root + "/out/src/" + name ) )
+      << contentsOf( root + "/out" ).join( ", " ).toStdString();
 }
