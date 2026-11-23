@@ -120,8 +120,15 @@ class US_DataPubExporter : public QObject
           The export fails -- and writes nothing -- when there would be
           nothing in the bundle, when a GUID it was explicitly given matches
           no record, when a run named belongs to a project other than the
-          one asked for, and when any record it needs cannot be read.  Next
-          to \c manifest.yaml the bundle carries \c manifest.sha256, the
+          one asked for, and when any record it needs cannot be read.  When
+          the runs come with the project rather than by name, a run whose
+          own records do not hold together while it is staged -- a channel
+          without a solution, a payload of another GUID, an experiment XML
+          of another run ID or GUID, a spectrum that is not all numbers --
+          is left out with a warning instead, and what was staged for it is
+          taken back.  Noise carried for a model with none of its own
+          brings the model it was fitted to along.  Next to
+          \c manifest.yaml the bundle carries \c manifest.sha256, the
           digest of the manifest file in \c sha256sum format.
           \param selection  What to export
           \param bundlePath The full path of the .tar.gz to write
