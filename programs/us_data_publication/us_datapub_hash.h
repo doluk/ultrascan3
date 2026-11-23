@@ -79,10 +79,14 @@ class US_DataPubHash
           identity attribute \a ownAttr on the first \a ownElement.  Nothing
           else is dropped: an attribute such as \c solid or \c liquid, the
           GUID of a parent record, or the ID of a buffer's component, is part
-          of what the record means.  An attribute value that is a decimal
-          number is written in its shortest round-trip form, so "7.00000"
-          and "7", or "1.0020e+00" and "1.002", are the same value: the
-          library's writers have written numbers both ways.
+          of what the record means.  The value of an attribute that holds a
+          number (\ref isNumericKey) is written in its shortest round-trip
+          form, so "7.00000" and "7", or "1.0020e+00" and "1.002", are the
+          same value: the library's writers have written numbers both ways.
+          Every other attribute keeps its text, so a description, label,
+          name, serial or comment of "007" is not one of "7".  A number with
+          more significant digits than a double holds, or one that is not
+          zero but underflows to zero, keeps its text too.
           \param xml        The XML text to render
           \param ownElement As for \ref fingerprint
           \param ownAttr    As for \ref fingerprint
@@ -111,6 +115,16 @@ class US_DataPubHash
       */
       static bool    isVolatileOn( const QString& element,
                                    const QString& name );
+
+      /*! \brief True when an attribute holds a number in the records'
+          payloads, and so is compared by value, from an explicit list
+          (buffer, analyte, solution, model, noise, calibration and
+          centerpiece writers).  An attribute missing from the list is
+          compared by its text, which can only make two copies of a record
+          differ, never two different records the same.
+          \param name The attribute name to test
+      */
+      static bool    isNumericKey( const QString& name );
 
       //! \brief True when the file name looks like an XML payload
       //! \param filename The file name to test

@@ -101,8 +101,15 @@ namespace
       write numbers -- "7.00000" (a fixed number of decimals) then, "7" (the
       shortest form that reads back as the same double) now -- so the same
       record written before and after that change differs in its text only.
-      A value that is a decimal number is put in the shortest form; anything
-      else (a GUID, a name, "inf") is kept as it is.
+
+      Only an attribute that holds a number (isNumericKey()) is read as
+      one; a name, a description, a label or a serial number keeps its
+      text whatever it looks like, so "007" stays apart from "7".  And only
+      a value a double holds exactly enough to compare is folded: one with
+      more significant digits than a double keeps (a huge integer), or one
+      that is not zero but reads as zero (an underflow), keeps its text, so
+      two different values never become one.  Anything that is not a
+      decimal number (a GUID, "inf") is kept as it is.
    */
    QString canonical_value( const QString& value )
    {
@@ -111,15 +118,68 @@ namespace
 
       if ( ! number.match( value ).hasMatch() )  return value;
 
+      // The significant digits of the mantissa
+      QString mantissa = value.section( QRegularExpression( "[eE]" ), 0, 0 );
+      bool    point    = mantissa.contains( '.' );
+      QString digits   = mantissa;
+      digits.remove( '+' ).remove( '-' ).remove( '.' );
+
+      while ( digits.startsWith( '0' ) )  digits.remove( 0, 1 );
+
+      if ( point )
+         while ( digits.endsWith( '0' ) )  digits.chop( 1 );
+
+      if ( digits.size() > 17 )  return value;     // More than a double holds
+
       bool   ok = false;
       double dv = QLocale::c().toDouble( value, &ok );
 
       if ( ! ok  ||  ! qIsFinite( dv ) )  return value;
 
+      if ( dv == 0.0  &&  ! digits.isEmpty() )  return value;   // Underflow
+
       if ( dv == 0.0 )  dv = 0.0;         // -0 is 0
 
       return QLocale::c().toString( dv, 'g', QLocale::FloatingPointShortest );
    }
+}
+
+/* The attributes the records' writers put numbers in, by name.
+
+   An explicit list, like the volatile keys: a pattern would sooner or
+   later take in a text attribute, and a text that merely looks like a
+   number ("007", a serial, a label) would then compare equal to another.
+   An attribute missing from the list keeps its text, which at worst makes
+   two copies of one record compare as different -- the import then makes
+   a renamed copy rather than reuse the wrong record.
+*/
+bool US_DataPubHash::isNumericKey( const QString& name )
+{
+   static const QSet< QString > keys = QSet< QString >()
+      // buffers and their components
+      << "compressibility" << "ph"         << "density"    << "viscosity"
+      << "concentration"   << "value"      << "wavelength"
+      << "c0" << "c1" << "c2" << "c3" << "c4" << "c5"
+      // analytes
+      << "vbar20"     << "mw"           << "frequency"  << "sodium"
+      << "potassium"  << "lithium"      << "magnesium"  << "calcium"
+      // solutions
+      << "amount"     << "commonVbar20" << "storageTemp"
+      // models and their components
+      << "D"          << "K_d"          << "alphaRP"    << "bottom"
+      << "delta"      << "extinction"   << "f"          << "f_f0"
+      << "k_off"      << "meniscus"     << "molar"      << "radius"
+      << "s"          << "sigma"        << "signal"     << "stoich"
+      << "variance"   << "xMax"         << "xMin"       << "xRes"
+      << "yMax"       << "yMin"         << "yRes"       << "zVal"
+      << "temperature"
+      // noise
+      << "minradius"  << "maxradius"    << "v"
+      // rotor calibrations and centerpieces
+      << "coeff1"     << "coeff2"       << "omega2t"    << "angle"
+      << "pathlen"    << "width"        << "maxRPM";
+
+   return keys.contains( name );
 }
 
 QByteArray US_DataPubHash::canonicalXml( const QByteArray& xml,
@@ -162,9 +222,11 @@ QByteArray US_DataPubHash::canonicalXml( const QByteArray& xml,
             if ( isVolatileOn( ename, aname ) )  continue;
             if ( isOwn  &&  aname == ownAttr )   continue;
 
-            out += " " + aname.toUtf8() + "=\""
-                   + escaped( canonical_value(
-                              attrs.value( aname ).toString().trimmed() ), true )
+            QString value = attrs.value( aname ).toString().trimmed();
+
+            if ( isNumericKey( aname ) )  value = canonical_value( value );
+
+            out += " " + aname.toUtf8() + "=\"" + escaped( value, true )
                    + "\"";
          }
 

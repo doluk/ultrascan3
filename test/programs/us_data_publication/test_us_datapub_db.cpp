@@ -31,6 +31,7 @@
 #include "us_datapub_import.h"
 #include "us_datapub_manifest.h"
 #include "us_datapub_hash.h"
+#include "us_datapub_bundle.h"
 #include "us_db2.h"
 #include "us_crypto.h"
 #include "us_settings.h"
@@ -1028,6 +1029,445 @@ TEST_F( DataPubDbImport, ADryRunAndASecondImportAgreeWithTheImport )
    }
 }
 
+// ------------------------- the rules a real server enforces, on a real server
+//
+// These write into the scratch import database as well.  The calibration
+// test needs an administrator login (US3_TEST_DB_ADMIN_GUID and _PW), the
+// test of a second investigator one of that investigator:
+//
+//   US3_TEST_DB_OTHER_GUID=... US3_TEST_DB_OTHER_PW=... US3_TEST_DB_OTHER_ID=3
+//
+// The investigator of US3_TEST_DB_PERSON_GUID has to be at user level 2
+// (enough to add buffer components, not to add rotor calibrations), and
+// the database's user has to be allowed to read and change the channel
+// table.  Without these they skip.
+
+class DataPubDbRules : public DataPubDbImport
+{
+   protected:
+      // Log in as another person of the database, importing for invID
+      bool loginAs( const QString& guid, const QString& password, int invID )
+      {
+         if ( guid.isEmpty() )  return false;
+
+         QStringList dbCipher   = US_Crypto::encrypt(
+               qEnvironmentVariable( "US3_TEST_DB_PASS" ), master );
+         QStringList userCipher = US_Crypto::encrypt( password, master );
+
+         QStringList entry;
+         entry << "us3 import database"
+               << qEnvironmentVariable( "US3_TEST_DB_USER" )
+               << qEnvironmentVariable( "US3_TEST_DB_IMPORT_NAME" )
+               << qEnvironmentVariable( "US3_TEST_DB_HOST" )
+               << dbCipher.at( 0 ) << dbCipher.at( 1 ) << ""
+               << userCipher.at( 0 ) << userCipher.at( 1 ) << guid;
+
+         US_Settings::set_defaultDB( entry );
+         US_Settings::set_us_inv_ID( invID );
+
+         return true;
+      }
+
+      // The fixture's store exported into a bundle
+      QString exportStore( const QString& name )
+      {
+         QString bundle = root + "/" + name + ".tar.gz";
+         QString error;
+         QFile::remove( bundle );
+
+         US_DataPubExporter            exporter;
+         US_DataPubExporter::Selection selection;
+         selection.fromDb = false;
+         selection.scope  = US_DataPub::ScopeNoise;
+         selection.runIDs << runID;
+
+         EXPECT_TRUE( exporter.exportBundle( selection, bundle, error ) )
+            << error.toStdString();
+
+         return bundle;
+      }
+
+      US_DataPubImporter::Options options( bool dry = false )
+      {
+         US_DataPubImporter::Options opts;
+         opts.target       = US_DataPub::TargetDb;
+         opts.dbPassword   = master;
+         opts.verifyHashes = true;
+         opts.dryRun       = dry;
+         opts.policy       = US_DataPub::PolicyRename;
+
+         return opts;
+      }
+
+      const US_DataPubImporter::Result* resultOf(
+            const QList< US_DataPubImporter::Result >& results,
+            US_DataPub::EntityType type )
+      {
+         for ( int ii = 0; ii < results.size(); ii++ )
+            if ( results[ ii ].type == type )  return &results[ ii ];
+
+         return nullptr;
+      }
+
+      // A bundle's manifest changed, and the bundle packed again
+      QString recraft( const QString& bundle,
+                       std::function< void( US_DataPubManifest&,
+                                            const QString& ) > change )
+      {
+         US_DataPubImporter source;
+         QString            error;
+         EXPECT_TRUE( source.inspect( bundle, error ) ) << error.toStdString();
+
+         US_DataPubBundle out;
+         EXPECT_TRUE( out.createStaging( error ) ) << error.toStdString();
+
+         QString     stage = out.stagingPath();
+         QDir        src( source.bundleRoot() );
+         QDirIterator it( source.bundleRoot(), QDir::Files,
+                          QDirIterator::Subdirectories );
+
+         while ( it.hasNext() )
+         {
+            QString rel = src.relativeFilePath( it.next() );
+            QDir().mkpath( QFileInfo( stage + "/" + rel ).path() );
+            QFile::copy( source.bundleRoot() + "/" + rel, stage + "/" + rel );
+         }
+
+         US_DataPubManifest mani;
+         QString mpath = stage + "/" + US_DataPubBundle::manifestName();
+         EXPECT_TRUE( mani.read( mpath, error ) ) << error.toStdString();
+
+         change( mani, stage );
+
+         EXPECT_TRUE( mani.write( mpath, error ) ) << error.toStdString();
+
+         QFile digest( stage + "/" + US_DataPubExporter::manifestDigestName() );
+         digest.open( QIODevice::WriteOnly | QIODevice::Truncate );
+         digest.write( ( US_DataPubHash::fileHash( mpath ) + "  "
+                         + US_DataPubBundle::manifestName() + "\n" ).toUtf8() );
+         digest.close();
+
+         QString packed = bundle;
+         packed.replace( ".tar.gz", "-crafted.tar.gz" );
+         QFile::remove( packed );
+         EXPECT_TRUE( out.pack( packed, error ) ) << error.toStdString();
+
+         return packed;
+      }
+
+      // The store again under new GUIDs, but for its buffer and analyte
+      void rebuildKeepingChemistry()
+      {
+         QDir( US_Settings::dataDir()   ).removeRecursively();
+         QDir( US_Settings::resultDir() ).removeRecursively();
+         QDir().mkpath( US_Settings::dataDir()   );
+         QDir().mkpath( US_Settings::resultDir() );
+
+         projectGUID  = US_Util::new_guid();
+         solutionGUID = US_Util::new_guid();
+         expGUID      = US_Util::new_guid();
+         rawGUID      = US_Util::new_guid();
+         editGUID     = US_Util::new_guid();
+         modelGUID    = US_Util::new_guid();
+         noiseGUID    = US_Util::new_guid();
+         calGUID      = US_Util::new_guid();
+
+         buildStore();
+      }
+
+      // The fixture's calibration, for a rotor of the target
+      void calibrateTargetRotor( const QString& rotorGUID )
+      {
+         US_Rotor::RotorCalibration calibration;
+         QString path = US_Settings::dataDir() + "/rotors/C0000001.xml";
+         ASSERT_TRUE( US_DataPubRecords::readCalibration( path, calibration ) );
+         calibration.rotorGUID = rotorGUID;
+
+         // A label of its own, so that no calibration an earlier run of the
+         // test left in the target is the same one
+         calibration.label = "Demo calibration " + US_Util::new_guid().left( 8 );
+         QFile::remove( path );
+         ASSERT_TRUE( US_DataPubRecords::writeCalibration( calibration, path ) );
+      }
+
+      // The GUID of a rotor the target database has
+      QString targetRotorGUID()
+      {
+         QVector< US_Rotor::Lab > labs;
+         QStringList              q( "get_lab_names" );
+         db->query( q );
+         QStringList ids;
+
+         while ( db->next() )  ids << db->value( 0 ).toString();
+
+         for ( int ii = 0; ii < ids.size(); ii++ )
+         {
+            QVector< US_Rotor::Rotor > rotors;
+            US_Rotor::readRotorsFromDB( rotors, ids[ ii ].toInt(), db );
+
+            if ( ! rotors.isEmpty() )  return rotors[ 0 ].GUID;
+         }
+
+         return QString();
+      }
+};
+
+/* A buffer component the target lacks is added, and the buffer linked to
+   the row that was added.  The server's create_buffer_component inserts
+   with an ID of its own and answers with LAST_INSERT_ID(), which an
+   explicit ID does not set: the connection's previous insert ID came back
+   (the project's, written just before) and the buffer was linked to that
+   component instead. */
+TEST_F( DataPubDbRules, ANewComponentIsTheOneTheBufferNames )
+{
+   QMap< QString, US_BufferComponent > table;
+   US_BufferComponent::getAllFromHD( table );
+   ASSERT_TRUE( table.contains( "1" ) ) << "no local component table";
+
+   US_Buffer buffer;
+   QString   bpath = US_Settings::dataDir() + "/buffers/B0000001.xml";
+   ASSERT_TRUE( buffer.readFromDisk( bpath ) );
+   buffer.component     << table.value( "1" );
+   buffer.componentIDs  << "1";
+   buffer.concentration << 150.0;
+   ASSERT_TRUE( buffer.writeToDisk( bpath ) );
+
+   // A component no target has
+   QString unique = "Trisx " + US_Util::new_guid().left( 8 );
+   QString bundle = recraft( exportStore( "component" ),
+         [ & ]( US_DataPubManifest& m, const QString& stage )
+   {
+      QList< US_DataPubEntity > bufs = m.section( US_DataPub::Buffer );
+      ASSERT_EQ( bufs.size(), 1 );
+      QString cpath = stage + "/" + bufs[ 0 ].attrs.value( "componentsPayload" );
+      QFile   file( cpath );
+      ASSERT_TRUE( file.open( QIODevice::ReadOnly ) );
+      QString text = QString::fromUtf8( file.readAll() );
+      file.close();
+      text.replace( "name=\"" + table.value( "1" ).name + "\"",
+                    "name=\"" + unique + "\"" );
+      ASSERT_TRUE( text.contains( unique ) );
+      ASSERT_TRUE( file.open( QIODevice::WriteOnly | QIODevice::Truncate ) );
+      file.write( text.toUtf8() );
+      file.close();
+      bufs[ 0 ].attrs.insert( US_DataPub::digestKeyOf( "componentsPayload" ),
+                              US_DataPubHash::fileHash( cpath ) );
+      m.setSection( US_DataPub::Buffer, bufs );
+   } );
+
+   US_DataPubImporter importer;
+   QString            error;
+   ASSERT_TRUE( importer.inspect( bundle, error ) ) << error.toStdString();
+   ASSERT_TRUE( importer.runImport( options(), error ) )
+      << error.toStdString() << "\n" << importer.log().join( "\n" ).toStdString();
+
+   const US_DataPubImporter::Result* made =
+         resultOf( importer.results(), US_DataPub::Buffer );
+   ASSERT_NE( made, nullptr );
+
+   US_Buffer stored;
+   ASSERT_TRUE( stored.readFromDB( db, made->targetID ) );
+   ASSERT_EQ  ( stored.component.size(), 1 );
+   EXPECT_EQ  ( stored.component[ 0 ].name, unique )
+      << "linked to component " << stored.componentIDs.value( 0 ).toStdString();
+}
+
+/* add_rotor_calibration takes an administrator, and -1 for "no calibration
+   experiment" (0 is an ID it looks for).  An investigator's import leaves
+   the calibration out with a warning -- and its dry run says the same; an
+   administrator's creates it, with no experiment. */
+TEST_F( DataPubDbRules, ACalibrationIsAddedByAnAdministratorOnly )
+{
+   QString rotor = targetRotorGUID();
+   ASSERT_FALSE( rotor.isEmpty() ) << "the target database has no rotor";
+
+   calibrateTargetRotor( rotor );
+   QString bundle = exportStore( "calibration" );
+   QString error;
+
+   // ---- an investigator ----------------------------------------------------
+   {
+      US_DataPubImporter dry;
+      ASSERT_TRUE( dry.inspect( bundle, error ) ) << error.toStdString();
+      ASSERT_TRUE( dry.runImport( options( true ), error ) )
+         << error.toStdString();
+
+      US_DataPubImporter importer;
+      ASSERT_TRUE( importer.inspect( bundle, error ) ) << error.toStdString();
+      ASSERT_TRUE( importer.runImport( options(), error ) )
+         << error.toStdString() << "\n"
+         << importer.log().join( "\n" ).toStdString();
+
+      for ( const US_DataPubImporter* run : { &dry, &importer } )
+      {
+         const US_DataPubImporter::Result* cal =
+               resultOf( run->results(), US_DataPub::RotorCalibration );
+         ASSERT_NE( cal, nullptr );
+         EXPECT_EQ( cal->resolution, US_DataPub::ResolvedOmitted );
+         EXPECT_TRUE( run->warnings().join( "\n" ).contains( "administrator" ) );
+      }
+
+      // Strict about hardware, the import refuses to leave it out
+      US_DataPubImporter          strict;
+      US_DataPubImporter::Options opts = options();
+      opts.strictHardware = true;
+      ASSERT_TRUE ( strict.inspect( bundle, error ) ) << error.toStdString();
+      EXPECT_FALSE( strict.runImport( opts, error ) );
+      EXPECT_TRUE ( error.contains( "administrator" ) ) << error.toStdString();
+      EXPECT_EQ   ( strict.outcome(), QString( "Nothing was written" ) );
+   }
+
+   // ---- an administrator, for the same investigator -------------------------
+   if ( ! loginAs( qEnvironmentVariable( "US3_TEST_DB_ADMIN_GUID" ),
+                   qEnvironmentVariable( "US3_TEST_DB_ADMIN_PW" ),
+                   qEnvironmentVariable( "US3_TEST_DB_PERSON_ID" ).toInt() ) )
+      GTEST_SKIP() << "no administrator login configured";
+
+   rebuildKeepingChemistry();
+   calibrateTargetRotor( rotor );
+   QString adminBundle = exportStore( "admin" );
+
+   US_DataPubImporter admin;
+   ASSERT_TRUE( admin.inspect( adminBundle, error ) ) << error.toStdString();
+   ASSERT_TRUE( admin.runImport( options(), error ) )
+      << error.toStdString() << "\n" << admin.log().join( "\n" ).toStdString();
+
+   const US_DataPubImporter::Result* cal =
+         resultOf( admin.results(), US_DataPub::RotorCalibration );
+   ASSERT_NE( cal, nullptr );
+   ASSERT_TRUE( cal->resolution == US_DataPub::ResolvedCreated  ||
+                cal->resolution == US_DataPub::ResolvedRenamed );
+
+   US_Rotor::RotorCalibration stored;
+   ASSERT_EQ( stored.readDB( cal->targetID.toInt(), db ), US_Rotor::ROTOR_OK );
+   EXPECT_EQ( stored.GUID, calGUID );
+   EXPECT_EQ( stored.calibrationExperimentID, -1 );
+}
+
+/* A second investigator imports a bundle whose buffer and analyte the first
+   one's import put in the database.  The analyte is not theirs to use (the
+   server refuses it in new_solutionAnalyte, half way through the import)
+   and the buffer is the first one's private buffer: both are copied under
+   GUIDs of their own, and the dry run says what the import does. */
+TEST_F( DataPubDbRules, AnotherInvestigatorsChemistryIsCopied )
+{
+   QString otherGUID = qEnvironmentVariable( "US3_TEST_DB_OTHER_GUID" );
+   QString otherPW   = qEnvironmentVariable( "US3_TEST_DB_OTHER_PW" );
+   int     otherID   = qEnvironmentVariable( "US3_TEST_DB_OTHER_ID" ).toInt();
+
+   if ( otherGUID.isEmpty()  ||  otherID < 1 )
+      GTEST_SKIP() << "no second investigator configured";
+
+   QString error;
+
+   // The first investigator's import
+   QString first = exportStore( "first" );
+   US_DataPubImporter mine;
+   ASSERT_TRUE( mine.inspect( first, error ) ) << error.toStdString();
+   ASSERT_TRUE( mine.runImport( options(), error ) )
+      << error.toStdString() << "\n" << mine.log().join( "\n" ).toStdString();
+
+   // Another run of the same chemistry, imported by the second investigator
+   rebuildKeepingChemistry();
+   QString second = exportStore( "second" );
+   ASSERT_TRUE( loginAs( otherGUID, otherPW, otherID ) );
+
+   US_DataPubImporter dry;
+   ASSERT_TRUE( dry.inspect( second, error ) ) << error.toStdString();
+   ASSERT_TRUE( dry.runImport( options( true ), error ) )
+      << error.toStdString() << "\n" << dry.log().join( "\n" ).toStdString();
+
+   US_DataPubImporter theirs;
+   ASSERT_TRUE( theirs.inspect( second, error ) ) << error.toStdString();
+   ASSERT_TRUE( theirs.runImport( options(), error ) )
+      << error.toStdString() << "\n" << theirs.log().join( "\n" ).toStdString();
+
+   for ( US_DataPub::EntityType type : { US_DataPub::Buffer,
+                                         US_DataPub::Analyte } )
+   {
+      const US_DataPubImporter::Result* would = resultOf( dry.results(), type );
+      const US_DataPubImporter::Result* did   = resultOf( theirs.results(),
+                                                          type );
+      ASSERT_NE( would, nullptr );
+      ASSERT_NE( did,   nullptr );
+      EXPECT_EQ( would->resolution, did->resolution );
+      // A copy (renamed when an earlier run of the test left one of that
+      // name), or that earlier copy -- never the first investigator's record
+      EXPECT_TRUE( did->resolution == US_DataPub::ResolvedCreated  ||
+                   did->resolution == US_DataPub::ResolvedRenamed  ||
+                   did->resolution == US_DataPub::ResolvedReused )
+         << US_DataPub::typeText( type ).toStdString();
+      EXPECT_NE( did->targetGUID, did->guid )
+         << US_DataPub::typeText( type ).toStdString();
+   }
+
+   // ... and their solution names the copies
+   const US_DataPubImporter::Result* sol =
+         resultOf( theirs.results(), US_DataPub::Solution );
+   ASSERT_NE( sol, nullptr );
+
+   // Read as the second investigator, whose solution it is
+   US_DB2 asThem;
+   ASSERT_TRUE( asThem.connect( master, error ) ) << error.toStdString();
+
+   US_Solution solution;
+   ASSERT_EQ( solution.readFromDB( sol->targetID.toInt(), &asThem ),
+              IUS_DB2::OK );
+   EXPECT_EQ( solution.buffer.GUID,
+              resultOf( theirs.results(), US_DataPub::Buffer )->targetGUID );
+   ASSERT_EQ( solution.analyteInfo.size(), 1 );
+   EXPECT_EQ( solution.analyteInfo[ 0 ].analyte.analyteGUID,
+              resultOf( theirs.results(), US_DataPub::Analyte )->targetGUID );
+}
+
+/* The raw data and solution rows name channel 1, which a fresh schema may
+   not have: the dry run finds it, and the import fails before it writes
+   anything, instead of on the server's foreign key half way through. */
+TEST_F( DataPubDbRules, AMissingChannelFailsBeforeTheImport )
+{
+   db->rawQuery( "CREATE TEMPORARY TABLE fx_channel_saved"
+                 " SELECT * FROM channel WHERE channelID = 1" );
+   db->rawQuery( "SET FOREIGN_KEY_CHECKS = 0" );
+   db->rawQuery( "DELETE FROM channel WHERE channelID = 1" );
+   db->rawQuery( "SET FOREIGN_KEY_CHECKS = 1" );
+
+   int left = db->statusQuery(
+         "SELECT IF( COUNT(*) > 0, 0, 301 ) FROM channel WHERE channelID = 1" );
+
+   if ( left != IUS_DB2::NOROWS )
+   {
+      db->rawQuery( "INSERT IGNORE INTO channel SELECT * FROM fx_channel_saved" );
+      GTEST_SKIP() << "the channel table cannot be changed here";
+   }
+
+   QString bundle = exportStore( "channel" );
+   QString error;
+   QString dryError;
+   QString realError;
+   QString outcome;
+
+   {
+      US_DataPubImporter dry;
+      EXPECT_TRUE ( dry.inspect( bundle, error ) ) << error.toStdString();
+      EXPECT_FALSE( dry.runImport( options( true ), dryError ) );
+
+      US_DataPubImporter importer;
+      EXPECT_TRUE ( importer.inspect( bundle, error ) ) << error.toStdString();
+      EXPECT_FALSE( importer.runImport( options(), realError ) );
+      outcome = importer.outcome();
+   }
+
+   db->rawQuery( "INSERT IGNORE INTO channel SELECT * FROM fx_channel_saved" );
+   db->rawQuery( "DROP TEMPORARY TABLE fx_channel_saved" );
+
+   EXPECT_TRUE( dryError .contains( "channel 1" ) ) << dryError.toStdString();
+   EXPECT_TRUE( realError.contains( "channel 1" ) ) << realError.toStdString();
+   EXPECT_EQ  ( outcome, QString( "Nothing was written" ) );
+   EXPECT_EQ  ( db->statusQuery( "SELECT IF( COUNT(*) > 0, 0, 301 ) FROM"
+                                 " channel WHERE channelID = 1" ),
+                int( IUS_DB2::OK ) ) << "channel 1 was not put back";
+}
+
 // ------------------------------------------- importing into a mock database
 //
 // These run without a server: the importer is handed an IUS_DB2 that the
@@ -1424,12 +1864,18 @@ TEST_F( DataPubMockImport, AKnownRotorTakesTheCalibration )
    ASSERT_EQ( cals.size(), 1 );
    fake.registry[ "rotor" ].insert( cals[ 0 ].attrs.value( "rotorGUID" ), 3 );
 
+   // add_rotor_calibration takes an administrator
+   fake.admin = true;
+
    US_DataPubImporter importer;
    ASSERT_TRUE( importOnce( importer, error, dbOptions() ) )
       << error.toStdString();
 
+   // ... and -1 for "no calibration experiment": 0 is an experiment ID it
+   // looks for, and refuses
    ASSERT_EQ( fake.callsOf( "add_rotor_calibration" ).size(), 1 );
    EXPECT_EQ( fake.callsOf( "add_rotor_calibration" )[ 0 ].value( 1 ), "3" );
+   EXPECT_EQ( fake.callsOf( "add_rotor_calibration" )[ 0 ].value( 7 ), "-1" );
 
    QStringList exp = fake.callsOf( "new_experiment" ).value( 0 );
    EXPECT_EQ( exp.value( 4 ), "1" );    // the target's lab
@@ -1438,6 +1884,53 @@ TEST_F( DataPubMockImport, AKnownRotorTakesTheCalibration )
    EXPECT_EQ( exp.value( 8 ),
               QString::number( fake.registry[ "calibration" ]
                                .value( cals[ 0 ].guid ) ) );
+}
+
+// Anyone but an administrator is refused a new calibration by the server:
+// it is left out with a warning -- decided in the preflight, so a dry run
+// says the same and a strict import fails before anything is written
+TEST_F( DataPubMockImport, OnlyAnAdministratorAddsACalibration )
+{
+   US_DataPubImporter probe;
+   QString            error;
+   ASSERT_TRUE( probe.inspect( bundlePath, error ) );
+
+   QList< US_DataPubEntity > cals =
+         probe.manifest().section( US_DataPub::RotorCalibration );
+   ASSERT_EQ( cals.size(), 1 );
+   fake.registry[ "rotor" ].insert( cals[ 0 ].attrs.value( "rotorGUID" ), 3 );
+
+   US_DataPubImporter          dry;
+   US_DataPubImporter::Options options = dbOptions();
+   options.dryRun = true;
+   ASSERT_TRUE( importOnce( dry, error, options ) ) << error.toStdString();
+   EXPECT_EQ  ( resolutionOf( dry.results(), US_DataPub::RotorCalibration ),
+                US_DataPub::ResolvedOmitted );
+   EXPECT_TRUE( dry.warnings().join( "\n" ).contains( "administrator" ) )
+      << dry.warnings().join( "\n" ).toStdString();
+
+   US_DataPubImporter importer;
+   ASSERT_TRUE( importOnce( importer, error, dbOptions() ) )
+      << error.toStdString();
+   EXPECT_EQ( resolutionOf( importer.results(), US_DataPub::RotorCalibration ),
+              US_DataPub::ResolvedOmitted );
+   EXPECT_EQ( fake.callsOf( "add_rotor_calibration" ).size(), 0 );
+   EXPECT_EQ( fake.commits, 1 );
+
+   DataPubFakeDb strictDb;
+   strictDb.addHardware( "DEMO-1" );
+   strictDb.registry[ "rotor" ].insert( cals[ 0 ].attrs.value( "rotorGUID" ),
+                                         3 );
+
+   US_DataPubImporter strict;
+   strict.setDatabase( strictDb.db() );
+   options = dbOptions();
+   options.strictHardware = true;
+   ASSERT_TRUE ( strict.inspect( bundlePath, error ) );
+   EXPECT_FALSE( strict.runImport( options, error ) );
+   EXPECT_TRUE ( error.contains( "administrator" ) ) << error.toStdString();
+   EXPECT_EQ   ( strictDb.begins,   0 );
+   EXPECT_EQ   ( strictDb.writes(), 0 );
 }
 
 // A chosen project has to be the current investigator's
@@ -1600,10 +2093,19 @@ TEST_F( DataPubMockExtras, AKnownComponentIsLinkedByTheTargetsId )
    EXPECT_EQ( fake.callsOf( "add_buffer_component" )[ 0 ].value( 2 ), "42" );
 }
 
-// One the database lacks is created, and the buffer linked to the new row
+// One the database lacks is created, and the buffer linked to the new row.
+// The procedure inserts with an ID of its own (the row count plus one) and
+// answers with LAST_INSERT_ID(), which that does not set: the connection's
+// previous insert ID comes back -- here the project's.  The row is found
+// again by what it is, never by that ID.
 TEST_F( DataPubMockExtras, AnUnknownComponentIsCreated )
 {
    exportWithComponent();
+
+   fake.addComponent( 1, "Sodium chloride", "mM", "", "0 0 0 0 0 0",
+                      "0 0 0 0 0 0" );
+   fake.addComponent( 2, "Cadmium chloride", "mM", "", "0 0 0 0 0 0",
+                      "0 0 0 0 0 0" );
 
    US_DataPubImporter importer;
    QString            error;
@@ -1613,9 +2115,66 @@ TEST_F( DataPubMockExtras, AnUnknownComponentIsCreated )
    ASSERT_EQ( fake.callsOf( "create_buffer_component" ).size(), 1 );
    EXPECT_EQ( fake.callsOf( "create_buffer_component" )[ 0 ].value( 2 ),
               component.name );
+   ASSERT_EQ( fake.state.components.size(), 3 );
+   EXPECT_EQ( fake.state.components.value( 3 ).value( 1 ).toString(),
+              component.name );
+
+   // Linked to the new row, 3 -- not to the stale insert ID the procedure
+   // answered with, nor to another component
    ASSERT_EQ( fake.callsOf( "add_buffer_component" ).size(), 1 );
-   EXPECT_NE( fake.callsOf( "add_buffer_component" )[ 0 ].value( 2 ), "1" );
+   EXPECT_EQ( fake.callsOf( "add_buffer_component" )[ 0 ].value( 2 ), "3" );
    EXPECT_EQ( fake.commits, 1 );
+}
+
+// A server whose procedure picks a taken ID fails the creation; the import
+// says so before it starts, and is rolled back when it fails
+TEST_F( DataPubMockExtras, AComponentIdThatIsTakenIsForeseen )
+{
+   exportWithComponent();
+
+   // Two rows, IDs 1 and 3: the next is "3" again
+   fake.addComponent( 1, "Sodium chloride", "mM", "", "0 0 0 0 0 0",
+                      "0 0 0 0 0 0" );
+   fake.addComponent( 3, "Cadmium chloride", "mM", "", "0 0 0 0 0 0",
+                      "0 0 0 0 0 0" );
+
+   US_DataPubImporter          importer;
+   US_DataPubImporter::Options options = dbOptions();
+   options.dryRun = true;
+   QString                     error;
+   ASSERT_TRUE( importOnce( importer, error, options ) )
+      << error.toStdString();
+   EXPECT_TRUE( importer.warnings().join( "\n" ).contains( "IDs 3" ) )
+      << importer.warnings().join( "\n" ).toStdString();
+
+   US_DataPubImporter real;
+   EXPECT_FALSE( importOnce( real, error, dbOptions() ) );
+   EXPECT_TRUE ( error.contains( "could not be added" ) ) << error.toStdString();
+   EXPECT_EQ   ( fake.commits,   0 );
+   EXPECT_EQ   ( fake.rollbacks, 1 );
+   EXPECT_EQ   ( fake.state.components.size(), 2 );
+}
+
+// Adding a component takes user level 2: below it the import is refused
+// before anything is written, and the dry run says so too
+TEST_F( DataPubMockExtras, AComponentNeedsLevelTwo )
+{
+   exportWithComponent();
+   fake.userLevel = 1;
+
+   for ( int dry = 0; dry < 2; dry++ )
+   {
+      US_DataPubImporter          importer;
+      US_DataPubImporter::Options options = dbOptions();
+      options.dryRun = ( dry == 1 );
+      QString                     error;
+
+      EXPECT_FALSE( importOnce( importer, error, options ) );
+      EXPECT_TRUE ( error.contains( "user level 2" ) ) << error.toStdString();
+   }
+
+   EXPECT_EQ( fake.begins,   0 );
+   EXPECT_EQ( fake.writes(), 0 );
 }
 
 // An RI run's intensity profile goes into the experiment row
@@ -2153,7 +2712,6 @@ TEST_F( DataPubMockTxn, TheTransactionRunsNoLookupThatCouldComeFirst )
          << "get_instrument_info_new" << "get_rotor_names" << "get_rotor_info"
          << "get_rotor_calibration_profiles" << "get_rotor_calibration_info"
          << "get_abstractCenterpiece_names" << "get_abstractCenterpiece_info"
-         << "get_buffer_component_desc" << "get_buffer_component_info"
          << "get_project_desc" << "get_buffer_desc" << "get_analyte_desc"
          << "all_solutionIDs" << "all_rawDataIDs" << "all_editedDataIDs"
          << "get_model_desc" << "get_noise_desc" << "get_experiment_desc"
@@ -2168,6 +2726,13 @@ TEST_F( DataPubMockTxn, TheTransactionRunsNoLookupThatCouldComeFirst )
       EXPECT_EQ( inside.count( early[ ii ] ), 0 )
          << early[ ii ].toStdString() << " in: "
          << inside.join( " " ).toStdString();
+
+   // The component table is read in the transaction only right after a
+   // component was added, to find the new row
+   int added = inside.indexOf( "create_buffer_component" );
+   ASSERT_GE( added, 0 );
+   EXPECT_EQ( inside.count( "get_buffer_component_desc" ), 1 );
+   EXPECT_EQ( inside.indexOf( "get_buffer_component_desc" ), added + 1 );
 
    // ... and the analyte was renamed, after comparing it with the other one
    EXPECT_EQ( fake.callsOf( "new_analyte" ).value( 0 ).value( 5 ),
@@ -2637,4 +3202,648 @@ TEST_F( DataPubMockTxn, ATargetRecordThatCannotBeComparedFailsTheImport )
    EXPECT_TRUE ( error.contains( "written out to be compared" ) )
       << error.toStdString();
    EXPECT_EQ   ( fake.writes(), 0 );
+}
+
+// ------------------------- what the server would refuse, refused up front
+//
+// The fake refuses what the real procedures refuse (datapub_fake_db.h), so
+// an import that would fail half way on a server fails half way here too.
+// These pin down that the import -- and its dry run -- find it before the
+// transaction opens, or make the record so the server takes it.
+
+class DataPubMockRules : public DataPubMockSpectra
+{
+   protected:
+      // The import is refused before anything is written, a dry run too
+      void expectRefusedEarly( DataPubFakeDb& db, const QString& what )
+      {
+         for ( int dry = 0; dry < 2; dry++ )
+         {
+            US_DataPubImporter          importer;
+            US_DataPubImporter::Options options = dbOptions();
+            options.dryRun = ( dry == 1 );
+            QString                     error;
+
+            importer.setDatabase( db.db() );
+            ASSERT_TRUE ( importer.inspect( bundlePath, error ) )
+               << error.toStdString();
+            EXPECT_FALSE( importer.runImport( options, error ) )
+               << ( dry ? "dry run" : "import" );
+            EXPECT_TRUE ( error.contains( what ) ) << error.toStdString();
+         }
+
+         EXPECT_EQ( db.begins,   0 );
+         EXPECT_EQ( db.writes(), 0 );
+      }
+
+      QString resultName( const QList< US_DataPubImporter::Result >& results,
+                          US_DataPub::EntityType type )
+      {
+         for ( int ii = 0; ii < results.size(); ii++ )
+            if ( results[ ii ].type == type )  return results[ ii ].targetName;
+
+         return QString();
+      }
+
+      // The analyte's payload, with its XML text changed
+      void editAnalyteXml( std::function< void( QString& ) > change,
+                           bool dropSpectra )
+      {
+         craft( [ & ]( US_DataPubManifest& m, const QString& stage )
+         {
+            QList< US_DataPubEntity > list = m.section( US_DataPub::Analyte );
+            ASSERT_EQ( list.size(), 1 );
+
+            QString path = stage + "/" + list[ 0 ].payload;
+            QFile   file( path );
+            ASSERT_TRUE( file.open( QIODevice::ReadOnly ) );
+            QString text = QString::fromUtf8( file.readAll() );
+            file.close();
+
+            change( text );
+
+            ASSERT_TRUE( file.open( QIODevice::WriteOnly | QIODevice::Truncate ) );
+            file.write( text.toUtf8() );
+            file.close();
+
+            list[ 0 ].sha256 = US_DataPubHash::fileHash( path );
+
+            if ( dropSpectra )
+            {
+               list[ 0 ].attrs.remove( "spectraPayload" );
+               list[ 0 ].attrs.remove(
+                     US_DataPub::digestKeyOf( "spectraPayload" ) );
+            }
+
+            m.setSection( US_DataPub::Analyte, list );
+         } );
+      }
+};
+
+// Someone else's analyte of the bundle's GUID is not hung from the
+// investigator's solution -- new_solutionAnalyte would refuse it half way
+// through the import.  The import makes a copy of the bundle's analyte
+// under a GUID of its own, and a dry run says so too.
+TEST_F( DataPubMockRules, AnotherInvestigatorsAnalyteIsCopied )
+{
+   fake.addRecord( "analyte", analyteGUID, 300, 9, "Demo analyte" );
+
+   US_DataPubImporter          dry;
+   US_DataPubImporter::Options options = dbOptions();
+   options.dryRun = true;
+   QString                     error;
+   ASSERT_TRUE( importOnce( dry, error, options ) ) << error.toStdString();
+   EXPECT_EQ  ( resolutionOf( dry.results(), US_DataPub::Analyte ),
+                US_DataPub::ResolvedCreated );
+
+   US_DataPubImporter importer;
+   ASSERT_TRUE( importOnce( importer, error, dbOptions() ) )
+      << error.toStdString() << "\n"
+      << importer.log().join( "\n" ).toStdString();
+
+   ASSERT_EQ( fake.callsOf( "new_analyte" ).size(), 1 );
+   QString copy = fake.callsOf( "new_analyte" )[ 0 ].value( 1 );
+   EXPECT_NE( copy, analyteGUID );
+   EXPECT_TRUE( US_DataPubImporter::guidIsUsable( copy ) );
+
+   ASSERT_EQ( fake.callsOf( "new_solutionAnalyte" ).size(), 1 );
+   EXPECT_EQ( fake.callsOf( "new_solutionAnalyte" )[ 0 ].value( 3 ), copy );
+   EXPECT_EQ( resolutionOf( importer.results(), US_DataPub::Analyte ),
+              US_DataPub::ResolvedCreated );
+   EXPECT_EQ( fake.commits, 1 );
+}
+
+// An administrator may use any analyte (verify_analyte_permission): the
+// target's is reused as it is
+TEST_F( DataPubMockRules, AnAdministratorReusesAnyAnalyte )
+{
+   fake.admin = true;
+   fake.addRecord( "analyte", analyteGUID, 300, 9, "Demo analyte" );
+
+   US_DataPubImporter importer;
+   QString            error;
+   ASSERT_TRUE( importOnce( importer, error, dbOptions() ) )
+      << error.toStdString();
+
+   EXPECT_EQ( fake.callsOf( "new_analyte" ).size(), 0 );
+   ASSERT_EQ( fake.callsOf( "new_solutionAnalyte" ).size(), 1 );
+   EXPECT_EQ( fake.callsOf( "new_solutionAnalyte" )[ 0 ].value( 3 ),
+              analyteGUID );
+   EXPECT_EQ( resolutionOf( importer.results(), US_DataPub::Analyte ),
+              US_DataPub::ResolvedReused );
+}
+
+// Another investigator's analyte that the bundle does not carry cannot be
+// copied: the import is refused before it starts
+TEST_F( DataPubMockRules, AnotherInvestigatorsAnalyteTheBundleLacksIsRefused )
+{
+   craft( []( US_DataPubManifest& m, const QString& )
+          { leaveOut( m, US_DataPub::Analyte ); } );
+
+   fake.addRecord( "analyte", analyteGUID, 300, 9, "Demo analyte" );
+
+   expectRefusedEarly( fake, "another investigator's analyte" );
+}
+
+// Another investigator's private buffer is not linked to the solution
+// (no procedure would stop that): the import makes a copy of its own.  A
+// public one is shared, and reused.
+TEST_F( DataPubMockRules, AnotherInvestigatorsPrivateBufferIsCopied )
+{
+   fake.addRecord( "buffer", bufferGUID, 300, 9, "Demo buffer" );
+
+   US_DataPubImporter importer;
+   QString            error;
+   ASSERT_TRUE( importOnce( importer, error, dbOptions() ) )
+      << error.toStdString();
+
+   ASSERT_EQ( fake.callsOf( "new_buffer" ).size(), 1 );
+   QString copy = fake.callsOf( "new_buffer" )[ 0 ].value( 1 );
+   EXPECT_NE( copy, bufferGUID );
+   ASSERT_EQ( fake.callsOf( "new_solutionBuffer" ).size(), 1 );
+   EXPECT_EQ( fake.callsOf( "new_solutionBuffer" )[ 0 ].value( 3 ), copy );
+
+   DataPubFakeDb shared;
+   shared.addHardware( "DEMO-1" );
+   shared.addRecord( "buffer", bufferGUID, 300, 9, "Demo buffer" );
+   shared.state.publicBuffers << bufferGUID;
+
+   US_DataPubImporter second;
+   second.setDatabase( shared.db() );
+   ASSERT_TRUE( second.inspect( bundlePath, error ) );
+   ASSERT_TRUE( second.runImport( dbOptions(), error ) ) << error.toStdString();
+   EXPECT_EQ  ( shared.callsOf( "new_buffer" ).size(), 0 );
+   ASSERT_EQ  ( shared.callsOf( "new_solutionBuffer" ).size(), 1 );
+   EXPECT_EQ  ( shared.callsOf( "new_solutionBuffer" )[ 0 ].value( 3 ),
+                bufferGUID );
+}
+
+// A target without channel 1, which every raw data and solution row names,
+// is found before anything is written; a dry run says so too
+TEST_F( DataPubMockRules, AMissingChannelIsFoundBeforeTheImport )
+{
+   fake.channelRow1 = false;
+
+   expectRefusedEarly( fake, "channel 1" );
+}
+
+// A noise record whose edit the target cannot give is refused in the
+// preflight, not written with edit 0 for the server to refuse
+TEST_F( DataPubMockRules, ANoiseWithoutAnEditIsRefusedBeforeTheImport )
+{
+   craft( []( US_DataPubManifest& m, const QString& )
+          { leaveOut( m, US_DataPub::Model ); } );
+
+   // The investigator's own model, fitted to no edit the target has
+   fake.addRecord( "model", modelGUID, 300, 2, "their model" );
+
+   expectRefusedEarly( fake, "edit" );
+}
+
+// A project the import makes from what a run names is reported with the
+// records, by the dry run as by the import
+TEST_F( DataPubMockRules, AProjectMadeFromARunIsReported )
+{
+   craft( []( US_DataPubManifest& m, const QString& )
+          { leaveOut( m, US_DataPub::Project ); } );
+
+   for ( int dry = 1; dry >= 0; dry-- )
+   {
+      US_DataPubImporter          importer;
+      US_DataPubImporter::Options options = dbOptions();
+      options.dryRun = ( dry == 1 );
+      QString                     error;
+      ASSERT_TRUE( importOnce( importer, error, options ) )
+         << error.toStdString();
+
+      QList< US_DataPubImporter::Result > results = importer.results();
+      int                                 found   = 0;
+
+      for ( int ii = 0; ii < results.size(); ii++ )
+      {
+         if ( results[ ii ].type != US_DataPub::Project )  continue;
+
+         found++;
+         EXPECT_EQ( results[ ii ].guid, projectGUID );
+         EXPECT_EQ( results[ ii ].resolution, US_DataPub::ResolvedCreated );
+         EXPECT_TRUE( results[ ii ].detail.contains( runID ) )
+            << results[ ii ].detail.toStdString();
+      }
+
+      EXPECT_EQ( found, 1 ) << ( dry ? "dry run" : "import" );
+   }
+
+   EXPECT_EQ( fake.callsOf( "new_project2" ).size(), 1 );
+}
+
+// The raw data, edit and time state of a renamed run are reported under
+// the names they have in the target
+TEST_F( DataPubMockRules, ARenamedRunsFilesAreReportedUnderTheirNewNames )
+{
+   fake.addExperiment( 50, US_Util::new_guid(), runID );
+
+   US_DataPubImporter importer;
+   QString            error;
+   ASSERT_TRUE( importOnce( importer, error, dbOptions() ) )
+      << error.toStdString();
+
+   QString newRun = runID + "-imported";
+   QList< US_DataPubImporter::Result > results = importer.results();
+
+   EXPECT_EQ( resultName( results, US_DataPub::RawData ),
+              newRun + rawFile.mid( runID.size() ) );
+   EXPECT_EQ( resultName( results, US_DataPub::EditedData ),
+              newRun + editFile.mid( runID.size() ) );
+   EXPECT_TRUE( resultName( results, US_DataPub::TimeState )
+                .startsWith( newRun + "." ) )
+      << resultName( results, US_DataPub::TimeState ).toStdString();
+
+   QString log = importer.log().join( "\n" );
+   EXPECT_FALSE( log.contains( "\"" + rawFile + "\"" ) ) << log.toStdString();
+}
+
+// The investigator's own raw data under another of their runs is not said
+// to be someone else's
+TEST_F( DataPubMockRules, OwnRawDataUnderAnotherRunIsNotCalledForeign )
+{
+   fake.addRecord( "rawData", rawGUID, 51, 2 );
+
+   US_DataPubImporter importer;
+   QString            error;
+   EXPECT_FALSE( importOnce( importer, error, dbOptions() ) );
+   EXPECT_TRUE ( error.contains( "same investigator" ) ) << error.toStdString();
+   EXPECT_FALSE( error.contains( "another investigator" ) )
+      << error.toStdString();
+   EXPECT_EQ   ( fake.begins, 0 );
+}
+
+// An old bundle's extinction value that is not a finite number refuses
+// the bundle in the preflight
+TEST_F( DataPubMockRules, AnOldBundlesSpectrumHasToBeFinite )
+{
+   editAnalyteXml( []( QString& text )
+   {
+      text.remove( QRegularExpression( "<extinction [^>]*/>" ) );
+      text.replace( "</sequence>", "</sequence><extinction frequency=\"230\""
+                                   " value=\"nan\"/>" );
+   }, true );
+
+   expectRefusedEarly( fake, "finite" );
+}
+
+// An old bundle's protein carries the 280 nm value US_Analyte computed
+// from its sequence; a lone point at 280 nm is that, and not stored as if
+// it were measured
+TEST_F( DataPubMockRules, AnOldBundlesComputedPointIsNotStored )
+{
+   editAnalyteXml( []( QString& text )
+   {
+      text.remove( QRegularExpression( "<extinction [^>]*/>" ) );
+      text.replace( QRegularExpression( "<sequence>\\s*</sequence>" ),
+                    "<sequence>\nMKWVTFISLLLLFSSAYS\n</sequence>"
+                    "<extinction frequency=\"280\" value=\"5960\"/>" );
+   }, true );
+
+   US_DataPubImporter importer;
+   QString            error;
+   ASSERT_TRUE( importOnce( importer, error, dbOptions() ) )
+      << error.toStdString();
+
+   EXPECT_EQ( analyteProfiles(), QStringList() );
+   EXPECT_EQ( fake.callsOf( "new_analyte" ).value( 0 ).value( 6 ), QString() );
+}
+
+// A sequence goes in as the record holds it: US_Analyte's files frame it
+// in newlines, which are not part of it -- an empty one stays empty
+TEST_F( DataPubMockRules, ASequenceGoesInWithoutItsLineBreaks )
+{
+   US_DataPubImporter importer;
+   QString            error;
+   ASSERT_TRUE( importOnce( importer, error, dbOptions() ) )
+      << error.toStdString();
+   EXPECT_EQ( fake.callsOf( "new_analyte" ).value( 0 ).value( 3 ), QString() );
+
+   QString seq = QString( "MKWVTFISLL" ).repeated( 9 );     // 90 letters
+
+   DataPubFakeDb other;
+   other.addHardware( "DEMO-1" );
+   editAnalyteXml( [ & ]( QString& text )
+   {
+      text.replace( QRegularExpression( "<sequence>\\s*</sequence>" ),
+                    "<sequence>\n" + seq.left( 80 ) + "\n" + seq.mid( 80 )
+                    + "\n</sequence>" );
+   }, false );
+
+   US_DataPubImporter second;
+   second.setDatabase( other.db() );
+   ASSERT_TRUE( second.inspect( bundlePath, error ) );
+   ASSERT_TRUE( second.runImport( dbOptions(), error ) ) << error.toStdString();
+   EXPECT_EQ  ( other.callsOf( "new_analyte" ).value( 0 ).value( 3 ), seq );
+}
+
+// A protein the bundle carries from a disk store holds the 280 nm value
+// US_Analyte computed; the same analyte in the database holds no such
+// point.  They are the same analyte, and the target's is reused.
+TEST_F( DataPubMockRules, ADiskProteinMatchesItsDatabaseCopy )
+{
+   QString seq = "MKWVTFISLLLLFSSAYSRGVFRRDTHKSEIAHRFKD";
+
+   editAnalyteXml( [ & ]( QString& text )
+   {
+      text.remove( QRegularExpression( "<extinction [^>]*/>" ) );
+      text.replace( QRegularExpression( "<sequence>\\s*</sequence>" ),
+                    "<sequence>\n" + seq + "\n</sequence>"
+                    "<extinction frequency=\"280\" value=\"5960\"/>" );
+   }, false );
+
+   US_DataPubImporter probe;
+   QString            error;
+   ASSERT_TRUE( probe.inspect( bundlePath, error ) );
+   QString     analytePath = probe.bundleRoot() + "/"
+                             + probe.manifest().section( US_DataPub::Analyte )
+                               .value( 0 ).payload;
+   US_Analyte  source;
+   ASSERT_EQ( source.readFromFile( analytePath ), IUS_DB2::OK );
+
+   // The same analyte in the database, under another GUID
+   QString other = US_Util::new_guid();
+   fake.addRecord( "analyte", other, 40, 2, "Demo analyte" );
+   fake.cannedFor.insert( "get_analyte_info:40", QList< QVariantList >()
+      << ( QVariantList() << other << "Protein" << seq
+                          << QString::number( source.vbar20, 'g', 17 )
+                          << "Demo analyte" << ""
+                          << QString::number( source.mw, 'g', 17 ) << "0" ) );
+
+   US_DataPubImporter importer;
+   ASSERT_TRUE( importOnce( importer, error, dbOptions() ) )
+      << error.toStdString();
+
+   EXPECT_EQ( fake.callsOf( "new_analyte" ).size(), 0 );
+   EXPECT_EQ( resolutionOf( importer.results(), US_DataPub::Analyte ),
+              US_DataPub::ResolvedReused );
+}
+
+// A target record of the name that cannot be read is a failure, not a
+// different record: a renamed duplicate would be made of it
+TEST_F( DataPubMockRules, ATargetRecordThatCannotBeReadFailsTheImport )
+{
+   QString other = US_Util::new_guid();
+   fake.addRecord( "buffer", other, 40, 2, "Demo buffer" );
+   fake.failOn = "get_buffer_components";
+
+   US_DataPubImporter importer;
+   QString            error;
+   EXPECT_FALSE( importOnce( importer, error, dbOptions() ) );
+   EXPECT_TRUE ( error.contains( "could not be read" ) ) << error.toStdString();
+   EXPECT_EQ   ( fake.callsOf( "new_buffer" ).size(), 0 );
+   EXPECT_EQ   ( fake.writes(), 0 );
+}
+
+// A model's variance and meniscus are columns of its row: a bundle that
+// carries them beside an XML without them has them stored
+TEST_F( DataPubMockRules, AModelsVarianceAndMeniscusComeFromTheManifest )
+{
+   craft( []( US_DataPubManifest& m, const QString& )
+   {
+      QList< US_DataPubEntity > list = m.section( US_DataPub::Model );
+      ASSERT_EQ( list.size(), 1 );
+      list[ 0 ].attrs.insert( "variance", "0.00123" );
+      list[ 0 ].attrs.insert( "meniscus", "5.87" );
+      m.setSection( US_DataPub::Model, list );
+   } );
+
+   US_DataPubImporter importer;
+   QString            error;
+   ASSERT_TRUE( importOnce( importer, error, dbOptions() ) )
+      << error.toStdString();
+
+   ASSERT_EQ( fake.callsOf( "new_model" ).size(), 1 );
+   EXPECT_EQ( fake.callsOf( "new_model" )[ 0 ].value( 4 ), "0.00123" );
+   EXPECT_EQ( fake.callsOf( "new_model" )[ 0 ].value( 5 ), "5.87" );
+}
+
+// The concentrations a bundle carries for a buffer's components are
+// matched by component ID, not by their order in the definitions file
+class DataPubMockComponents : public DataPubMockExtras
+{
+};
+
+TEST_F( DataPubMockComponents, ConcentrationsAreMatchedByComponentId )
+{
+   QMap< QString, US_BufferComponent > table;
+   US_BufferComponent::getAllFromHD( table );
+   ASSERT_TRUE( table.contains( "1" )  &&  table.contains( "2" ) )
+      << "no local component table";
+
+   US_Buffer buffer;
+   QString   bpath = US_Settings::dataDir() + "/buffers/B0000001.xml";
+   ASSERT_TRUE( buffer.readFromDisk( bpath ) );
+   buffer.component     << table.value( "1" ) << table.value( "2" );
+   buffer.componentIDs  << "1" << "2";
+   buffer.concentration << 150.0 << 25.0;
+   ASSERT_TRUE( buffer.writeToDisk( bpath ) );
+   reexport();
+
+   // The definitions file with its two components the other way round
+   US_DataPubImporter source;
+   QString            error;
+   ASSERT_TRUE( source.inspect( bundlePath, error ) ) << error.toStdString();
+
+   US_DataPubBundle out;
+   ASSERT_TRUE( out.createStaging( error ) );
+   QString stage = out.stagingPath();
+
+   QDir        src( source.bundleRoot() );
+   QStringList files;
+   QDirIterator it( source.bundleRoot(), QDir::Files,
+                    QDirIterator::Subdirectories );
+
+   while ( it.hasNext() )  files << src.relativeFilePath( it.next() );
+
+   for ( int ii = 0; ii < files.size(); ii++ )
+   {
+      QDir().mkpath( QFileInfo( stage + "/" + files[ ii ] ).path() );
+      ASSERT_TRUE( QFile::copy( source.bundleRoot() + "/" + files[ ii ],
+                                stage + "/" + files[ ii ] ) );
+   }
+
+   US_DataPubManifest mani;
+   QString            mpath = stage + "/" + US_DataPubBundle::manifestName();
+   ASSERT_TRUE( mani.read( mpath, error ) ) << error.toStdString();
+
+   QList< US_DataPubEntity > bufs = mani.section( US_DataPub::Buffer );
+   ASSERT_EQ( bufs.size(), 1 );
+   QString cpath = stage + "/" + bufs[ 0 ].attrs.value( "componentsPayload" );
+
+   QMap< QString, US_BufferComponent > defs;
+   ASSERT_TRUE( US_DataPubRecords::readBufferComponents( cpath, defs ) );
+   ASSERT_EQ  ( defs.size(), 2 );
+
+   QList< US_BufferComponent > reversed;
+   reversed << defs.value( "2" ) << defs.value( "1" );
+   QFile::remove( cpath );
+   ASSERT_TRUE( US_DataPubRecords::writeBufferComponents(
+                   reversed, QList< double >() << 25.0 << 150.0, cpath ) );
+
+   bufs[ 0 ].attrs.insert( US_DataPub::digestKeyOf( "componentsPayload" ),
+                           US_DataPubHash::fileHash( cpath ) );
+   mani.setSection( US_DataPub::Buffer, bufs );
+   ASSERT_TRUE( mani.write( mpath, error ) ) << error.toStdString();
+
+   QFile digest( stage + "/" + US_DataPubExporter::manifestDigestName() );
+   ASSERT_TRUE( digest.open( QIODevice::WriteOnly | QIODevice::Truncate ) );
+   digest.write( ( US_DataPubHash::fileHash( mpath ) + "  "
+                   + US_DataPubBundle::manifestName() + "\n" ).toUtf8() );
+   digest.close();
+
+   bundlePath = root + "/reversed.tar.gz";
+   QFile::remove( bundlePath );
+   ASSERT_TRUE( out.pack( bundlePath, error ) ) << error.toStdString();
+
+   US_DataPubImporter importer;
+   ASSERT_TRUE( importOnce( importer, error, dbOptions() ) )
+      << error.toStdString();
+
+   // Each component with its own concentration, whatever IDs the target
+   // gave them
+   QList< QStringList > adds = fake.callsOf( "add_buffer_component" );
+   ASSERT_EQ( adds.size(), 2 );
+
+   QMap< QString, QString > concOf;   // component name -> concentration
+
+   for ( int ii = 0; ii < adds.size(); ii++ )
+   {
+      int id = adds[ ii ].value( 2 ).toInt();
+      ASSERT_TRUE( fake.state.components.contains( id ) );
+      concOf.insert( fake.state.components.value( id ).value( 1 ).toString(),
+                     adds[ ii ].value( 3 ) );
+   }
+
+   EXPECT_EQ( concOf.value( table.value( "1" ).name ).toDouble(), 150.0 );
+   EXPECT_EQ( concOf.value( table.value( "2" ).name ).toDouble(),  25.0 );
+}
+
+// ------------------------------------------------ staging directories
+
+#if defined( Q_OS_UNIX )
+#include <sys/time.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+// A staging directory whose importer is gone is swept; a live importer's
+// is not, whatever its age
+TEST_F( DataPubMockImport, StaleStagingDirectoriesAreSwept )
+{
+   US_DataPubImporter live;
+   QString            error;
+   ASSERT_TRUE( live.inspect( bundlePath, error ) ) << error.toStdString();
+   QString liveDir = QFileInfo( live.bundleRoot() ).path();
+   ASSERT_TRUE( QFile::exists( liveDir + "/import.lock" ) );
+
+   QString parent = US_Settings::tmpDir() + "/us_datapub";
+   ASSERT_TRUE( QDir().mkpath( parent + "/bundle_dead" ) );
+
+   // The lock of a process that took it and was killed
+   fflush( nullptr );
+   pid_t pid = fork();
+   ASSERT_GE( pid, 0 );
+
+   if ( pid == 0 )
+   {
+      QLockFile held( parent + "/bundle_dead/import.lock" );
+      held.tryLock( 0 );
+      _exit( held.isLocked() ? 0 : 1 );    // Without unlocking it
+   }
+
+   int status = 0;
+   ASSERT_EQ( waitpid( pid, &status, 0 ), pid );
+   ASSERT_TRUE( WIFEXITED( status )  &&  WEXITSTATUS( status ) == 0 );
+   ASSERT_TRUE( QFile::exists( parent + "/bundle_dead/import.lock" ) );
+
+   // A directory without a lock that has not changed for days
+   ASSERT_TRUE( QDir().mkpath( parent + "/bundle_old" ) );
+   QDateTime past = QDateTime::currentDateTimeUtc().addDays( -3 );
+   struct timeval times[ 2 ];
+   times[ 0 ].tv_sec  = time_t( past.toSecsSinceEpoch() );
+   times[ 0 ].tv_usec = 0;
+   times[ 1 ]         = times[ 0 ];
+   ASSERT_EQ( utimes( QFile::encodeName( parent + "/bundle_old" ).constData(),
+                      times ), 0 );
+
+   // ... and one that changed a moment ago
+   ASSERT_TRUE( QDir().mkpath( parent + "/bundle_new" ) );
+
+   EXPECT_EQ  ( US_DataPubImporter::sweepStaleStaging(), 2 );
+   EXPECT_FALSE( QFile::exists( parent + "/bundle_old" ) );
+   EXPECT_TRUE ( QFile::exists( parent + "/bundle_new" ) );
+   EXPECT_FALSE( QFile::exists( parent + "/bundle_dead" ) );
+   EXPECT_TRUE ( QFile::exists( liveDir ) );
+
+   // ... and once the importer is gone, so is its directory
+   live.inspect( bundlePath, error );
+   EXPECT_FALSE( QFile::exists( liveDir ) );
+}
+
+// An importer told to stop by a signal removes its staging directory
+// before the signal ends the process
+TEST_F( DataPubMockImport, AStopSignalRemovesTheStagingDirectory )
+{
+   US_DataPubImporter importer;
+   QString            error;
+   ASSERT_TRUE( importer.inspect( bundlePath, error ) ) << error.toStdString();
+   QString stage = QFileInfo( importer.bundleRoot() ).path();
+   ASSERT_TRUE( QFile::exists( stage ) );
+
+   fflush( nullptr );
+   pid_t pid = fork();
+   ASSERT_GE( pid, 0 );
+
+   if ( pid == 0 )
+   {  // The child shares the importer's registration; it only signals
+      US_DataPubImporter::installSignalCleanup();
+      raise( SIGTERM );
+      _exit( 3 );                     // Not reached
+   }
+
+   int status = 0;
+   ASSERT_EQ( waitpid( pid, &status, 0 ), pid );
+   EXPECT_TRUE( WIFSIGNALED( status ) );
+
+   if ( WIFSIGNALED( status ) )
+   {
+      EXPECT_EQ( WTERMSIG( status ), SIGTERM );
+   }
+
+   EXPECT_FALSE( QFile::exists( stage ) );
+}
+#endif
+
+// new_experiment refuses an operator without a permit for the instrument:
+// the import records one who holds a permit instead, with a warning -- or,
+// when no one does, refuses the run, in the dry run too
+TEST_F( DataPubMockRules, TheOperatorHoldsAPermitForTheInstrument )
+{
+   fake.operators = QList< int >() << 5;
+
+   US_DataPubImporter importer;
+   QString            error;
+   ASSERT_TRUE( importOnce( importer, error, dbOptions() ) )
+      << error.toStdString();
+
+   ASSERT_EQ( fake.callsOf( "new_experiment" ).size(), 1 );
+   EXPECT_EQ( fake.callsOf( "new_experiment" )[ 0 ].value( 6 ), "5" );
+   EXPECT_TRUE( importer.warnings().join( "\n" ).contains( "operator" ) )
+      << importer.warnings().join( "\n" ).toStdString();
+
+   DataPubFakeDb none;
+   none.addHardware( "DEMO-1" );
+   none.operators.clear();
+
+   US_DataPubImporter          dry;
+   US_DataPubImporter::Options options = dbOptions();
+   options.dryRun = true;
+   dry.setDatabase( none.db() );
+   ASSERT_TRUE ( dry.inspect( bundlePath, error ) );
+   EXPECT_FALSE( dry.runImport( options, error ) );
+   EXPECT_TRUE ( error.contains( "permit" ) ) << error.toStdString();
 }
