@@ -9,13 +9,25 @@
 // tree shows and what was never asked of the server.  The local half is a
 // scratch results directory, as in test_us_data_model.cpp.
 //
-// The fake fails the way a server does (us3_sql is the reference): a
-// procedure that is missing or may not be run fails the CALL with server
-// error 1305 or 1370, a lost connection with a client error (2013), and
-// "no rows" is a procedure status with no server error at all.  Writes
-// change its data -- a removal removes, delete_editedData cascades as
-// us3_expdata_procs.sql does and is refused while noise of another edit's
-// model refers to the edit (fk_noise_editDataID is ON DELETE NO ACTION) --
+// The fake answers the way a server does (us3_sql is the reference, and
+// test_us_data_db_live.cpp checks the parts that matter against a real
+// one): a procedure that is missing or may not be run fails the CALL with
+// server error 1305 or 1370, a lost connection with a client error (2013),
+// a lock wait with 1205, and "no rows" is a procedure status with no server
+// error at all -- or OK with an empty set, for the procedures that answer
+// so.  The investigator is an ordinary user: the listings hold their own
+// records only, a record of another investigator is refused (201) by the
+// reads and deletes that check permission, and the GUID lookups are not
+// scoped and ignore case.  Columns come back as US_DB2::value() gives them,
+// as text decoded from UTF-8.  Writes change its data -- a removal removes,
+// delete_editedData cascades as us3_expdata_procs.sql does and is refused
+// while noise of another edit's model refers to the edit
+// (fk_noise_editDataID is ON DELETE NO ACTION), keeping what it removed
+// before; with patchedEditDelete it is all or nothing and also removes that
+// noise, and commitsInside names writes that end the client's transaction
+// (a COMMIT inside a procedure) -- new_noise
+// files noise under edit 1 when the edit may not be used, transactions
+// give back what was written since the begin unless the server ended them,
 // and lastInsertID() never names the record just written.
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
@@ -49,13 +61,17 @@ typedef US_DataModel::DataDesc Desc;
 
 namespace
 {
-   const int     kInv  = 5;
-   const QString kDate = "2024-03-04 05:06:07";
+   const int     kInv   = 5;          // the investigator, an ordinary user
+   const int     kOther = 6;          // another investigator
+   const QString kDate  = "2024-03-04 05:06:07";
 
-   struct FExp   { QString id, guid, runID; };
+   // An experiment, and a model, belong to an investigator (experimentPerson,
+   // modelPerson); raw data and edits through their experiment, a noise
+   // record through its model
+   struct FExp   { QString id, guid, runID; int owner = kInv; };
    struct FRaw   { QString id, guid, file, expID; };
    struct FEdit  { QString id, guid, rawID, file; };
-   struct FModel { QString id, guid, desc, editGUID, editID, xml; };
+   struct FModel { QString id, guid, desc, editGUID, editID, xml; int owner = kInv; };
    struct FNoise { QString id, guid, editID, modelID, modelGUID, type,
                    desc, xml; };
 
@@ -75,10 +91,32 @@ namespace
       return QString::fromUtf8( file.readAll() );
    }
 
-   /* A server holding one investigator's store */
+   // GUIDs compare as the server's collation compares them: without case
+   bool sameGuid( const QString& a, const QString& b )
+   {
+      return a.compare( b, Qt::CaseInsensitive ) == 0;
+   }
+
+   /* A server holding an investigator's store, and records of another one
+
+      What the investigator may see and change follows us3_sql: an
+      ordinary user is held to their own records, in the listings and the
+      deletes alike, while the GUID lookups are not scoped. */
    class FakeServer
    {
       public:
+         // What a transaction can give back
+         struct Data
+         {
+            QList< FExp >   exps;
+            QList< FRaw >   raws;
+            QList< FEdit >  edits;
+            QList< FModel > models;
+            QList< FNoise > noises;
+            QMap< QString, QString > digest;
+            QMap< int, QByteArray >  blobs;
+         };
+
          QList< FExp >   exps;
          QList< FRaw >   raws;
          QList< FEdit >  edits;
@@ -90,16 +128,56 @@ namespace
          QSet< QString >          failing;    // procedures whose call loses
                                               // the connection
          QMap< QString, int >     failTimes;  // ... the next n times only
+         QMap< QString, int >     failAfter;  // ... every time after the
+                                              // first n calls
+         QMap< QString, int >     callCount;  // calls so far, by name
+         QMap< QString, int >     transient;  // the next n calls wait for a
+                                              // lock too long (1205)
          QSet< QString >          missing;    // procedures the server lacks
          QSet< QString >          denied;     // ... or may not be run
          QMap< QString, int >     refusing;   // writes refused with a status
          QStringList              calls;      // every query, by name
          QStringList              changes;    // every statusQuery
-         int                      autoflow = 0;
+         QStringList              txlog;      // begin, commit, rollback
+         int                      autoflow = 0;     // every run is GMP's
+         QSet< QString >          autoflowRuns;     // ... or these
+         QStringList              autoflowModels;   // model IDs GMP made
+         QSet< QString >          commitsInside;    // writes that end the
+                                                    // client's transaction
          int                      nextID   = 900;
+
+         // delete_editedData as the patched us3_sql has it: all or nothing
+         // (a savepoint in the caller's transaction), and all noise
+         // recorded against the edit removed with it; a refusal changes
+         // nothing.  Without it, as the procedure has long been: models and
+         // their noise go first, and the edit then fails on
+         // fk_noise_editDataID, keeping what went.
+         bool                     patchedEditDelete = false;
+
+         // The patched catalog procedures place a noise record with the
+         // experiment of its model, not of the edit it was recorded against;
+         // noise of a model on edit 1 belongs to no experiment
+         bool                     noiseByModel = false;
 
          Answer current;
          int    row = -1;
+
+         // The client's view of its transaction, and the server's
+         bool   clientTx = false;
+         bool   serverTx = false;
+         Data   saved;
+
+         Data data() const
+         {
+            return Data{ exps, raws, edits, models, noises, digest, blobs };
+         }
+
+         void restore( const Data& dd )
+         {
+            exps   = dd.exps;    raws   = dd.raws;   edits = dd.edits;
+            models = dd.models;  noises = dd.noises;
+            digest = dd.digest;  blobs  = dd.blobs;
+         }
 
          void wire( NiceMock< US_DB2_Mock >& db )
          {
@@ -108,11 +186,17 @@ namespace
                .WillByDefault( Invoke( [ this ]( const QStringList& q ) { call( q ); } ) );
             ON_CALL( db, next() )
                .WillByDefault( Invoke( [ this ]() { return ++row < current.rows.size(); } ) );
+
+            // As US_DB2::value() gives a column: the text of a C string the
+            // server sent as UTF-8, a NULL as an empty string
             ON_CALL( db, value( _ ) )
                .WillByDefault( Invoke( [ this ]( unsigned ii ) -> QVariant
                {
                   if ( row < 0  ||  row >= current.rows.size() )  return QVariant();
-                  return current.rows[ row ].value( int( ii ) );
+                  if ( int( ii ) >= current.rows[ row ].size() )  return QVariant();
+                  QByteArray bytes = current.rows[ row ].value( int( ii ) )
+                                     .toString().toUtf8();
+                  return QVariant( QString( bytes.constData() ) );
                } ) );
             ON_CALL( db, lastErrno() )
                .WillByDefault( Invoke( [ this ]() { return current.status; } ) );
@@ -133,7 +217,7 @@ namespace
                .WillByDefault( Invoke( [ this ]( const QStringList& q )
                {
                   calls << q.value( 0 );
-                  return autoflow;
+                  return autoflowRuns.contains( q.value( 1 ) ) ? 1 : autoflow;
                } ) );
             ON_CALL( db, readBlobFromDB( _, _, _ ) )
                .WillByDefault( Invoke( [ this ]( const QString& path,
@@ -146,6 +230,53 @@ namespace
                      return int( IUS_DB2::DBERROR );
                   file.write( blobs[ id ] );
                   return int( IUS_DB2::OK );
+               } ) );
+
+            // Transactions as US_DB2 has them: a commit or a rollback of a
+            // transaction the server ended already is refused
+            ON_CALL( db, transactionActive() )
+               .WillByDefault( Invoke( [ this ]() { return clientTx; } ) );
+            ON_CALL( db, beginTransaction( _ ) )
+               .WillByDefault( Invoke( [ this ]( QString& error )
+               {
+                  txlog << "begin";
+                  error.clear();
+                  if ( clientTx )  { error = "a transaction is open";  return false; }
+                  clientTx = serverTx = true;
+                  saved    = data();
+                  return true;
+               } ) );
+            ON_CALL( db, commitTransaction( _ ) )
+               .WillByDefault( Invoke( [ this ]( QString& error )
+               {
+                  txlog << "commit";
+                  error.clear();
+                  if ( ! clientTx )  { error = "no transaction";  return false; }
+                  if ( ! serverTx )
+                  {
+                     error = "the transaction ended before the commit;"
+                             " some rows may have been kept";
+                     return false;
+                  }
+                  clientTx = serverTx = false;
+                  return true;
+               } ) );
+            ON_CALL( db, rollbackTransaction( _ ) )
+               .WillByDefault( Invoke( [ this ]( QString& error )
+               {
+                  txlog << "rollback";
+                  error.clear();
+                  if ( ! clientTx )  { error = "no transaction";  return false; }
+                  clientTx = false;
+                  if ( ! serverTx )
+                  {
+                     error = "the transaction ended before the rollback;"
+                             " some rows may have been kept";
+                     return false;
+                  }
+                  serverTx = false;
+                  restore( saved );
+                  return true;
                } ) );
          }
 
@@ -164,20 +295,24 @@ namespace
             current = Answer();
             row     = -1;
 
-            if ( failTimes.value( name ) > 0 )
+            int ncall = ++callCount[ name ];
+
+            if ( failTimes.value( name ) > 0  ||  failing.contains( name )  ||
+                 ( failAfter.contains( name )  &&  ncall > failAfter.value( name ) ) )
             {
-               failTimes[ name ]--;
+               if ( failTimes.value( name ) > 0 )  failTimes[ name ]--;
                current.status = IUS_DB2::DBERROR;
                current.server = 2013;
                current.error  = "Lost connection to MySQL server during query";
                return true;
             }
 
-            if ( failing.contains( name ) )
+            if ( transient.value( name ) > 0 )
             {
+               transient[ name ]--;
                current.status = IUS_DB2::DBERROR;
-               current.server = 2013;
-               current.error  = "Lost connection to MySQL server during query";
+               current.server = 1205;
+               current.error  = "Lock wait timeout exceeded; try restarting transaction";
                return true;
             }
 
@@ -200,6 +335,13 @@ namespace
             return false;
          }
 
+         void refuse( int status, const QString& error )
+         {
+            current.status = status;
+            current.error  = error;
+            current.rows.clear();
+         }
+
          void call( const QStringList& q )
          {
             const QString name = q.value( 0 );
@@ -207,13 +349,7 @@ namespace
 
             if ( fails( name ) )   return;
 
-            current.rows = rowsOf( name, q.mid( 1 ) );
-
-            if ( current.rows.isEmpty() )
-            {  // a procedure status, not a server error
-               current.status = IUS_DB2::NOROWS;
-               current.error  = "MySQL: no rows returned";
-            }
+            answer( name, q.mid( 1 ) );
          }
 
          static QString md5Of( const QString& text )
@@ -223,11 +359,81 @@ namespace
                             .toHex() ) + " " + QString::number( bytes.size() );
          }
 
+         // ---------------------------------------------- who may see what
+
+         const FRaw* rawById( const QString& id ) const
+         {
+            for ( const FRaw& rr : raws )  if ( rr.id == id )  return &rr;
+            return nullptr;
+         }
+
+         const FEdit* editById( const QString& id ) const
+         {
+            for ( const FEdit& ed : edits )  if ( ed.id == id )  return &ed;
+            return nullptr;
+         }
+
+         const FModel* modelById( const QString& id ) const
+         {
+            for ( const FModel& mm : models )  if ( mm.id == id )  return &mm;
+            return nullptr;
+         }
+
+         const FNoise* noiseById( const QString& id ) const
+         {
+            for ( const FNoise& nn : noises )  if ( nn.id == id )  return &nn;
+            return nullptr;
+         }
+
+         QString expOfNoise( const FNoise& nn ) const
+         {
+            if ( ! noiseByModel )   return expOfEdit( nn.editID );
+            const FModel* mm = modelById( nn.modelID );
+            return mm ? expOfEdit( mm->editID ) : QString();
+         }
+
+         QString expOfEdit( const QString& editID ) const
+         {
+            const FEdit* ed = editById( editID );
+            return ( ed  &&  rawById( ed->rawID ) ) ? rawById( ed->rawID )->expID
+                                                    : QString();
+         }
+
+         bool expMine( const QString& expID ) const
+         {
+            for ( const FExp& ee : exps )
+               if ( ee.id == expID )  return ee.owner == kInv;
+            return false;
+         }
+
+         bool editMine( const QString& editID ) const
+         {
+            return expMine( expOfEdit( editID ) );
+         }
+
+         bool modelMine( const QString& modelID ) const
+         {
+            const FModel* mm = modelById( modelID );
+            return mm  &&  mm->owner == kInv;
+         }
+
+         bool noiseMine( const FNoise& nn ) const
+         {
+            return modelMine( nn.modelID );
+         }
+
          QString editIdOfGuid( const QString& guid ) const
          {
-            for ( const FEdit& ed : edits )  if ( ed.guid == guid )  return ed.id;
+            for ( const FEdit& ed : edits )  if ( sameGuid( ed.guid, guid ) )  return ed.id;
             return "1";                      // the "unassigned" edit
          }
+
+         QString rawGUIDOf( const FEdit& ed ) const
+         {
+            return rawById( ed.rawID ) ? rawById( ed.rawID )->guid : QString();
+         }
+
+         // ---------------------------------------------- writes
 
          // A write: what us3_sql's procedure does to the data
          void change( const QStringList& q )
@@ -237,21 +443,34 @@ namespace
 
             if ( fails( name ) )   return;
 
+            // The patched procedure starts a transaction of its own, which
+            // commits the client's before anything else happens
+            if ( commitsInside.contains( name ) )
+               serverTx = false;
+
             if ( refusing.contains( name ) )
             {
-               current.status = refusing.value( name );
-               current.error  = "MySQL: you do not have permission";
+               refuse( refusing.value( name ), "MySQL: you do not have permission" );
                return;
             }
 
             if ( name == "delete_noise" )
-            {
+            {  // verify_noise_permission
+               const FNoise* nn = noiseById( a.value( 0 ) );
+               if ( ! nn )            return refuse( IUS_DB2::NO_NOISE,
+                                         "MySQL: the specified noise file does not exist" );
+               if ( ! noiseMine( *nn ) ) return refuse( IUS_DB2::NOTPERMITTED,
+                                         "MySQL: you do not have permission to view or modify this noise file" );
                for ( int ii = noises.size() - 1; ii >= 0; ii-- )
                   if ( noises[ ii ].id == a.value( 0 ) )  noises.removeAt( ii );
             }
 
             else if ( name == "delete_model" )
-            {
+            {  // verify_model_permission; the model's noise goes with it
+               if ( ! modelById( a.value( 0 ) ) )  return refuse( IUS_DB2::NO_MODEL,
+                                         "MySQL: the specified model does not exist" );
+               if ( ! modelMine( a.value( 0 ) ) )  return refuse( IUS_DB2::NOTPERMITTED,
+                                         "MySQL: you do not have permission to view or modify this model" );
                for ( int ii = noises.size() - 1; ii >= 0; ii-- )
                   if ( noises[ ii ].modelID == a.value( 0 ) )  noises.removeAt( ii );
                for ( int ii = models.size() - 1; ii >= 0; ii-- )
@@ -261,18 +480,28 @@ namespace
             else if ( name == "delete_editedData" )
             {
                const QString edit = a.value( 0 );
-               QSet< QString > mine;
 
+               // verify_editData_permission
+               if ( expOfEdit( edit ).isEmpty() )  return refuse( 508,
+                                         "MySQL: the associated experiment does not exist" );
+               if ( ! editMine( edit ) )           return refuse( IUS_DB2::NOTPERMITTED,
+                                         "MySQL: you do not have permission to view or modify this experiment" );
+
+               // Every model of the edit, whoever's, and its noise wherever
+               // it was recorded
+               QSet< QString > onEdit;
                for ( const FModel& mm : models )
-                  if ( mm.editID == edit )  mine << mm.id;
+                  if ( mm.editID == edit )  onEdit << mm.id;
 
-               // The models, their noise wherever it was recorded; then the
-               // edit, which noise of another edit's model still refers to
                for ( int ii = noises.size() - 1; ii >= 0; ii-- )
-                  if ( mine.contains( noises[ ii ].modelID ) )  noises.removeAt( ii );
+                  if ( onEdit.contains( noises[ ii ].modelID )  ||
+                       ( patchedEditDelete  &&  noises[ ii ].editID == edit ) )
+                     noises.removeAt( ii );
                for ( int ii = models.size() - 1; ii >= 0; ii-- )
-                  if ( mine.contains( models[ ii ].id ) )  models.removeAt( ii );
+                  if ( onEdit.contains( models[ ii ].id ) )  models.removeAt( ii );
 
+               // Noise of another edit's model still refers to the edit:
+               // the last statement fails, the ones before it stand
                for ( const FNoise& nn : noises )
                   if ( nn.editID == edit )
                   {
@@ -289,14 +518,23 @@ namespace
 
             else if ( name == "new_model" )
             {  // modelGUID, description, xml, variance, meniscus, editGUID, ownerID
+               for ( const FModel& mm : models )
+                  if ( sameGuid( mm.guid, a.value( 0 ) ) )
+                     return refuse( 402, "MySQL: Duplicate entry for modelGUID field" );
+
                QString id = QString::number( ++nextID );
-               models << FModel{ id, a.value( 0 ), a.value( 1 ), a.value( 5 ),
-                                 editIdOfGuid( a.value( 5 ) ), a.value( 2 ) };
+               FModel  mm{ id, a.value( 0 ), a.value( 1 ), a.value( 5 ),
+                           editIdOfGuid( a.value( 5 ) ), a.value( 2 ) };
+               mm.owner = a.value( 6 ).toInt();
+               models << mm;
                digest[ a.value( 0 ) ] = md5Of( a.value( 2 ) );
             }
 
             else if ( name == "update_model" )
             {  // modelID, description, xml, variance, meniscus, editGUID
+               if ( ! modelMine( a.value( 0 ) ) )
+                  return refuse( IUS_DB2::NOTPERMITTED, "MySQL: you do not have permission" );
+
                for ( FModel& mm : models )
                   if ( mm.id == a.value( 0 ) )
                   {
@@ -308,42 +546,44 @@ namespace
 
             else if ( name == "new_noise" )
             {  // noiseGUID, editID, modelID, modelGUID, type, description, xml
+               // An edit that may not be used is replaced by edit 1; the
+               // model is found by GUID first, then by ID
+               QString editID = editMine( a.value( 1 ) ) ? a.value( 1 ) : "1";
+               const FModel* model = nullptr;
+
+               for ( const FModel& mm : models )
+                  if ( sameGuid( mm.guid, a.value( 3 ) ) )  model = &mm;
+               if ( ! model )
+                  model = modelById( a.value( 2 ) );
+
+               if ( ! model )
+                  return refuse( IUS_DB2::NO_MODEL, "MySQL: the model was not found in the database" );
+               if ( model->owner != kInv )
+                  return refuse( IUS_DB2::NOTPERMITTED, "MySQL: you do not have permission" );
+
                QString id = QString::number( ++nextID );
-               noises << FNoise{ id, a.value( 0 ), a.value( 1 ), a.value( 2 ),
-                                 a.value( 3 ), a.value( 4 ), a.value( 5 ), a.value( 6 ) };
+               noises << FNoise{ id, a.value( 0 ), editID, model->id, model->guid,
+                                 a.value( 4 ), a.value( 5 ), a.value( 6 ) };
                digest[ a.value( 0 ) ] = md5Of( a.value( 6 ) );
             }
 
             else if ( name == "update_noise" )
             {  // noiseID, noiseGUID, editID, modelID, modelGUID, type, description, xml
-               for ( FNoise& nn : noises )
-                  if ( nn.id == a.value( 0 ) )
+               const FNoise* nn = noiseById( a.value( 0 ) );
+               if ( ! nn  ||  ! noiseMine( *nn ) )
+                  return refuse( IUS_DB2::NOTPERMITTED, "MySQL: you do not have permission" );
+
+               for ( FNoise& no : noises )
+                  if ( no.id == a.value( 0 ) )
                   {
-                     nn.desc = a.value( 6 );
-                     nn.xml  = a.value( 7 );
-                     digest[ nn.guid ] = md5Of( nn.xml );
+                     no.desc = a.value( 6 );
+                     no.xml  = a.value( 7 );
+                     digest[ no.guid ] = md5Of( no.xml );
                   }
             }
          }
 
-         const FRaw* rawById( const QString& id ) const
-         {
-            for ( const FRaw& rr : raws )  if ( rr.id == id )  return &rr;
-            return nullptr;
-         }
-
-         QString expOfEdit( const QString& editID ) const
-         {
-            for ( const FEdit& ed : edits )
-               if ( ed.id == editID )
-                  return rawById( ed.rawID ) ? rawById( ed.rawID )->expID : QString();
-            return QString();
-         }
-
-         QString rawGUIDOf( const FEdit& ed ) const
-         {
-            return rawById( ed.rawID ) ? rawById( ed.rawID )->guid : QString();
-         }
+         // ---------------------------------------------- reads
 
          QVariantList rawRow( const FRaw& rr, bool hashed ) const
          {
@@ -375,28 +615,52 @@ namespace
                                   << ck( nn.guid, 0 ) << ck( nn.guid, 1 ) << nn.desc;
          }
 
-         QList< QVariantList > rowsOf( const QString& name, const QStringList& a ) const
+         // A procedure's answer: its status, and the rows that follow it
+         void answer( const QString& name, const QStringList& a )
          {
-            QList< QVariantList > rows;
+            QList< QVariantList >& rows = current.rows;
+
+            // These answer OK with an empty data set when there is nothing
+            // (us3_catalog_procs.sql); every other one answers NOROWS
+            static const QSet< QString > okWhenEmpty
+            {
+               "get_experiment_summary", "get_model_desc_by_experiment",
+               "get_noise_desc_by_experiment", "get_rawData_by_person",
+               "get_editedData_by_person"
+            };
 
             if ( name == "get_experiment_summary" )
                for ( const FExp& ee : exps )
                {
+                  if ( ee.owner != kInv )  continue;
                   int nr = 0, ne = 0, nm = 0, nn = 0;
                   for ( const FRaw& rr : raws )   if ( rr.expID == ee.id )  nr++;
-                  for ( const FEdit& ed : edits ) if ( rawById( ed.rawID ) && rawById( ed.rawID )->expID == ee.id ) ne++;
-                  for ( const FModel& mm : models ) if ( expOfEdit( mm.editID ) == ee.id ) nm++;
-                  for ( const FNoise& no : noises ) if ( expOfEdit( no.editID ) == ee.id ) nn++;
+                  for ( const FEdit& ed : edits ) if ( expOfEdit( ed.id ) == ee.id ) ne++;
+                  for ( const FModel& mm : models )
+                     if ( mm.owner == kInv  &&  expOfEdit( mm.editID ) == ee.id ) nm++;
+                  for ( const FNoise& no : noises )
+                     if ( noiseMine( no )  &&  expOfNoise( no ) == ee.id ) nn++;
                   rows << ( QVariantList() << ee.id << ee.guid << ee.runID << "velocity" << "RA"
                                            << ee.runID + " label" << "1" << ""
                                            << "project" << kDate << nr << ne << nm << nn );
                }
 
             else if ( name == "get_rawData_by_person" )
-               for ( const FRaw& rr : raws )  rows << rawRow( rr, false );
+            {
+               for ( const FRaw& rr : raws )
+                  if ( expMine( rr.expID ) )  rows << rawRow( rr, false );
+            }
 
             else if ( name == "get_editedData_by_person" )
-               for ( const FEdit& ed : edits )  rows << editRow( ed, false );
+            {
+               for ( const FEdit& ed : edits )
+                  if ( editMine( ed.id ) )  rows << editRow( ed, false );
+            }
+
+            else if ( name.endsWith( "_by_experiment" )  &&
+                      ! expMine( a.value( name.startsWith( "get_model" )  ||
+                                          name.startsWith( "get_noise" ) ? 1 : 0 ) ) )
+               return refuse( IUS_DB2::NOTPERMITTED, "MySQL: you do not have permission" );
 
             else if ( name == "get_rawData_by_experiment" )
             {
@@ -407,97 +671,134 @@ namespace
             else if ( name == "get_editedData_by_experiment" )
             {
                for ( const FEdit& ed : edits )
-                  if ( rawById( ed.rawID ) && rawById( ed.rawID )->expID == a.value( 0 ) )
-                     rows << editRow( ed, true );
+                  if ( expOfEdit( ed.id ) == a.value( 0 ) )  rows << editRow( ed, true );
             }
 
             else if ( name == "get_model_desc" )
-               for ( const FModel& mm : models )  rows << modelRow( mm );
+            {
+               for ( const FModel& mm : models )
+                  if ( mm.owner == kInv )  rows << modelRow( mm );
+            }
 
             else if ( name == "get_noise_desc" )
-               for ( const FNoise& nn : noises )  rows << noiseRow( nn );
+            {
+               for ( const FNoise& nn : noises )
+                  if ( noiseMine( nn ) )  rows << noiseRow( nn );
+            }
 
             else if ( name == "get_model_desc_by_experiment" )
             {
                for ( const FModel& mm : models )
-                  if ( expOfEdit( mm.editID ) == a.value( 1 ) )  rows << modelRow( mm );
+                  if ( mm.owner == kInv  &&  expOfEdit( mm.editID ) == a.value( 1 ) )
+                     rows << modelRow( mm );
             }
 
             else if ( name == "get_noise_desc_by_experiment" )
             {
                for ( const FNoise& nn : noises )
-                  if ( expOfEdit( nn.editID ) == a.value( 1 ) )  rows << noiseRow( nn );
+                  if ( noiseMine( nn )  &&  expOfNoise( nn ) == a.value( 1 ) )
+                     rows << noiseRow( nn );
             }
 
             else if ( name == "get_rawData" )
             {
-               if ( const FRaw* rr = rawById( a.value( 0 ) ) )
+               const FRaw* rr = rawById( a.value( 0 ) );
+               if ( rr  &&  ! expMine( rr->expID ) )
+                  return refuse( IUS_DB2::NOTPERMITTED, "MySQL: you do not have permission" );
+               if ( rr )
                   rows << ( QVariantList() << rr->guid << "label" << rr->file << "comment"
                                            << rr->expID << "1" << "" << kDate
                                            << ck( rr->guid, 0 ) << ck( rr->guid, 1 ) );
             }
 
             else if ( name == "get_editedData" )
-            {
-               for ( const FEdit& ed : edits )
-                  if ( ed.id == a.value( 0 ) )
-                     rows << ( QVariantList() << ed.rawID << ed.guid << "label" << ed.file
-                                              << "comment" << kDate << ck( ed.guid, 0 )
-                                              << ck( ed.guid, 1 ) );
+            {  // NOROWS for no such edit, before the permission
+               const FEdit* ed = editById( a.value( 0 ) );
+               if ( ed  &&  ! editMine( ed->id ) )
+                  return refuse( IUS_DB2::NOTPERMITTED, "MySQL: you do not have permission" );
+               if ( ed )
+                  rows << ( QVariantList() << ed->rawID << ed->guid << "label" << ed->file
+                                           << "comment" << kDate << ck( ed->guid, 0 )
+                                           << ck( ed->guid, 1 ) );
             }
 
             else if ( name == "get_model_info" )
-            {
-               for ( const FModel& mm : models )
-                  if ( mm.id == a.value( 0 ) )
-                     rows << ( QVariantList() << mm.guid << mm.desc << mm.xml << 0.0
-                                              << mm.editGUID << "" << kDate );
+            {  // verify_model_permission first
+               const FModel* mm = modelById( a.value( 0 ) );
+               if ( ! mm )            return refuse( IUS_DB2::NO_MODEL, "MySQL: the specified model does not exist" );
+               if ( mm->owner != kInv ) return refuse( IUS_DB2::NOTPERMITTED, "MySQL: you do not have permission" );
+
+               // modelGUID, description, xml, variance, meniscus, personID,
+               // lastUpdated, checksum, size
+               rows << ( QVariantList() << mm->guid << mm->desc << mm->xml << "0" << "0"
+                                        << mm->owner << kDate << ck( mm->guid, 0 )
+                                        << ck( mm->guid, 1 ) );
             }
 
             else if ( name == "get_noise_info" )
-            {
-               for ( const FNoise& nn : noises )
-                  if ( nn.id == a.value( 0 ) )
-                     rows << ( QVariantList() << nn.guid << nn.desc << nn.modelGUID
-                                              << nn.type << nn.modelID << nn.xml );
+            {  // verify_noise_permission first
+               const FNoise* nn = noiseById( a.value( 0 ) );
+               if ( ! nn )               return refuse( IUS_DB2::NO_NOISE, "MySQL: the specified noise file does not exist" );
+               if ( ! noiseMine( *nn ) ) return refuse( IUS_DB2::NOTPERMITTED, "MySQL: you do not have permission" );
+
+               // noiseGUID, editedDataID, modelID, modelGUID, noiseType, xml,
+               // timeEntered, checksum, size, description
+               rows << ( QVariantList() << nn->guid << nn->editID << nn->modelID
+                                        << nn->modelGUID << nn->type << nn->xml << kDate
+                                        << ck( nn->guid, 0 ) << ck( nn->guid, 1 )
+                                        << nn->desc );
             }
 
             // The GUID lookups are not scoped to the investigator
             else if ( name == "get_modelID" )
             {
                for ( const FModel& mm : models )
-                  if ( mm.guid == a.value( 0 ) )  rows << ( QVariantList() << mm.id );
+                  if ( sameGuid( mm.guid, a.value( 0 ) ) )  rows << ( QVariantList() << mm.id );
             }
 
             else if ( name == "get_noiseID" )
             {
                for ( const FNoise& nn : noises )
-                  if ( nn.guid == a.value( 0 ) )  rows << ( QVariantList() << nn.id );
+                  if ( sameGuid( nn.guid, a.value( 0 ) ) )  rows << ( QVariantList() << nn.id );
             }
 
             else if ( name == "get_rawDataID_from_GUID" )
             {
                for ( const FRaw& rr : raws )
-                  if ( rr.guid == a.value( 0 ) )  rows << ( QVariantList() << rr.id );
+                  if ( sameGuid( rr.guid, a.value( 0 ) ) )  rows << ( QVariantList() << rr.id );
             }
 
-            // investigator, editedDataID
+            // investigator, editedDataID: an ordinary user's own, whatever
+            // investigator is named
             else if ( name == "get_model_desc_by_editID" )
             {
                for ( const FModel& mm : models )
-                  if ( mm.editID == a.value( 1 ) )  rows << modelRow( mm );
+                  if ( mm.owner == kInv  &&  mm.editID == a.value( 1 ) )
+                     rows << modelRow( mm );
             }
 
             else if ( name == "get_noise_desc_by_editID" )
             {
                for ( const FNoise& nn : noises )
-                  if ( nn.editID == a.value( 1 ) )  rows << noiseRow( nn );
+                  if ( noiseMine( nn )  &&  nn.editID == a.value( 1 ) )
+                     rows << noiseRow( nn );
             }
 
             else if ( name == "update_editedData" )
                rows << ( QVariantList() << IUS_DB2::OK );
 
-            return rows;
+            else if ( name == "get_modelIDs_for_autoflow" )
+            {
+               for ( const QString& id : autoflowModels )
+                  rows << ( QVariantList()
+                            << QString( "{\"2DSA_IT\":[{\"modelID\":\"%1\"}]}" ).arg( id ) );
+            }
+
+            if ( rows.isEmpty()  &&  ! okWhenEmpty.contains( name ) )
+            {  // a procedure status, not a server error
+               current.status = IUS_DB2::NOROWS;
+               current.error  = "MySQL: no rows returned";
+            }
          }
    };
 }
@@ -1530,20 +1831,212 @@ TEST_F( TestUSDataDb, RemovingAnEditFirstRemovesNoiseOfAnotherEditsModel )
    EXPECT_EQ( win.tree.act_on_selection( "Database only", "DB-only remove" ), 0 )
       << win.proc.lastError().toStdString();
 
-   EXPECT_EQ( server.changes, QStringList() << "delete_noise 47" << "delete_editedData 21" );
+   // the edit is asked for as it is; the older procedure refuses it, and
+   // gives back what it took, so the noise goes first in a second try
+   EXPECT_EQ( server.changes, QStringList() << "delete_editedData 21"
+                              << "delete_noise 47" << "delete_editedData 21" );
+   EXPECT_EQ( server.txlog, QStringList() << "begin" << "rollback"
+                            << "begin" << "commit" );
    EXPECT_EQ( model.row_datadesc( crow ).recState, (int)US_DataModel::NOSTAT );
    EXPECT_NE( stateOf( model, model2 ) & US_DataModel::REC_DB, 0 );
    EXPECT_EQ( server.edits.size(), 1 );
 }
 
-// When the server still refuses to remove an edit, the message says what
-// it said, and why that may be
+// Noise of another investigator's model, recorded against the edit, is not
+// listed, and an older delete_editedData removes the edit's models and
+// noise before it fails on it.  The removal is one transaction: nothing is
+// removed, the rows say so, and the message says why
+TEST_F( TestUSDataDb, AnEditAnotherInvestigatorsNoiseKeepsLosesNothing )
+{
+   QString edit2  = US_Util::new_guid();
+   QString model2 = US_Util::new_guid();
+   server.edits  << FEdit { "22", edit2, "11", runA + ".2401021200.RA.1.A.280.xml" };
+   FModel theirs { "34", model2, "other.model", edit2, "22", "<model/>" };
+   theirs.owner = kOther;
+   server.models << theirs;
+   server.noises << FNoise{ "48", US_Util::new_guid(), "21", "34", model2,
+                            "ti_noise", "hidden.ti_noise", "<noise/>" };
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   ASSERT_EQ( rowOf( model, model2 ), -1 );           // not this investigator's
+   int row = rowOf( model, editG );
+
+   EXPECT_EQ( win.proc.record_remove_db( row ), 2012 );
+
+   QString error = win.proc.lastError();
+   EXPECT_TRUE( error.contains( "fk_noise_editDataID" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "another investigator" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "Nothing was removed" ) ) << error.toStdString();
+   EXPECT_EQ( server.txlog, QStringList() << "begin" << "rollback" );
+
+   // the database has everything still, and every row says it does
+   EXPECT_EQ( server.edits.size(), 2 );
+   EXPECT_NE( server.modelById( "31" ), nullptr );
+   EXPECT_NE( server.noiseById( "41" ), nullptr );
+
+   for ( const QString& guid : { editG, modelG, noiseG } )
+   {
+      Desc desc = model.row_datadesc( rowOf( model, guid ) );
+      EXPECT_NE( desc.recState & US_DataModel::REC_DB, 0 ) << guid.toStdString();
+      EXPECT_GE( desc.recordID, 0 );
+   }
+}
+
+// Where the transaction cannot give back what an older delete_editedData
+// removed -- the server ended it -- what is gone is read back, the rows of
+// those records say so, and the message names them
+TEST_F( TestUSDataDb, WhatARefusedEditRemovalTookIsReadBack )
+{
+   QString model2 = US_Util::new_guid();
+   FModel theirs { "34", model2, "other.model", "", "1", "<model/>" };
+   theirs.owner = kOther;
+   server.models << theirs;
+   server.noises << FNoise{ "48", US_Util::new_guid(), "21", "34", model2,
+                            "ti_noise", "hidden.ti_noise", "<noise/>" };
+   server.commitsInside << "delete_editedData";
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   int row = rowOf( model, editG );
+   EXPECT_EQ( win.proc.record_remove_db( row ), 2012 );
+
+   QString error = win.proc.lastError();
+   EXPECT_TRUE( error.contains( "removed from the database all the same" ) )
+      << error.toStdString();
+   EXPECT_TRUE( error.contains( model.row_datadesc( rowOf( model, modelG ) ).label ) )
+      << error.toStdString();
+
+   // the edit stayed, its model and noise did not
+   EXPECT_NE( stateOf( model, editG ) & US_DataModel::REC_DB, 0 );
+
+   for ( const QString& guid : { modelG, noiseG } )
+   {
+      Desc desc = model.row_datadesc( rowOf( model, guid ) );
+      EXPECT_EQ( desc.recState & US_DataModel::REC_DB, 0 ) << guid.toStdString();
+      EXPECT_EQ( US_DataModel::sync_state( desc ), US_DataModel::SYNC_LOCAL );
+   }
+}
+
+// The patched delete_editedData removes the noise of another edit's model
+// recorded against the edit itself: nothing is removed first, and that
+// noise's row, under its own model, says it is gone
+TEST_F( TestUSDataDb, APatchedDatabaseTakesTheNoiseRecordedAgainstTheEdit )
+{
+   QString edit2  = US_Util::new_guid();
+   QString model2 = US_Util::new_guid();
+   QString cross  = US_Util::new_guid();
+   server.edits  << FEdit { "22", edit2, "11", runA + ".2401021200.RA.1.A.280.xml" };
+   server.models << FModel{ "34", model2, runA + ".1A280.e2401021200_a1_2DSA_i01.model",
+                            edit2, "22", "<model/>" };
+   server.noises << FNoise{ "47", cross, "21", "34", model2, "ti_noise",
+                            runA + ".1A280.e2401021200_a1_2DSA_i01.ti_noise", "<noise/>" };
+   server.patchedEditDelete = true;
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   win.select( itemOfRow( win.tw, rowOf( model, editG ) ) );
+   EXPECT_EQ( win.tree.act_on_selection( "Database only", "DB-only remove" ), 0 )
+      << win.proc.lastError().toStdString();
+
+   EXPECT_EQ( server.changes, QStringList() << "delete_editedData 21" );
+   EXPECT_EQ( server.txlog, QStringList() << "begin" << "commit" );
+   EXPECT_EQ( server.edits.size(), 1 );
+   EXPECT_EQ( stateOf( model, editG ) & US_DataModel::REC_DB, 0 );
+   EXPECT_EQ( stateOf( model, cross ), (int)US_DataModel::NOSTAT );
+   EXPECT_NE( stateOf( model, model2 ) & US_DataModel::REC_DB, 0 );
+}
+
+// A patched delete_editedData that refuses the edit has changed nothing,
+// and the second try, with the noise first, is rolled back as a whole
+TEST_F( TestUSDataDb, APatchedRefusalRemovesNothing )
+{
+   QString edit2  = US_Util::new_guid();
+   QString model2 = US_Util::new_guid();
+   QString cross  = US_Util::new_guid();
+   server.edits  << FEdit { "22", edit2, "11", runA + ".2401021200.RA.1.A.280.xml" };
+   server.models << FModel{ "34", model2, runA + ".1A280.e2401021200_a1_2DSA_i01.model",
+                            edit2, "22", "<model/>" };
+   server.noises << FNoise{ "47", cross, "21", "34", model2, "ti_noise",
+                            runA + ".1A280.e2401021200_a1_2DSA_i01.ti_noise", "<noise/>" };
+   server.patchedEditDelete = true;
+   server.refusing[ "delete_editedData" ] = 404;     // @CONSTRAINT_FAILED
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+
+   EXPECT_EQ( win.proc.record_remove_db( rowOf( model, editG ) ), 2012 );
+   QString error = win.proc.lastError();
+   EXPECT_TRUE( error.contains( "status 404" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "Nothing was removed" ) ) << error.toStdString();
+
+   EXPECT_NE( server.noiseById( "47" ), nullptr );
+   EXPECT_NE( server.modelById( "31" ), nullptr );
+   for ( const QString& guid : { editG, modelG, noiseG, cross } )
+      EXPECT_NE( stateOf( model, guid ) & US_DataModel::REC_DB, 0 ) << guid.toStdString();
+}
+
+// When the edit is still refused after the noise of another edit's model
+// was removed first, and that removal was kept -- the transaction ended
+// under it -- the message says so, and so does its row, under that model
+TEST_F( TestUSDataDb, ForeignNoiseRemovedBeforeARefusedEditIsReported )
+{
+   QString edit2  = US_Util::new_guid();
+   QString model2 = US_Util::new_guid();
+   QString cross  = US_Util::new_guid();
+   server.edits  << FEdit { "22", edit2, "11", runA + ".2401021200.RA.1.A.280.xml" };
+   server.models << FModel{ "34", model2, runA + ".1A280.e2401021200_a1_2DSA_i01.model",
+                            edit2, "22", "<model/>" };
+   server.noises << FNoise{ "47", cross, "21", "34", model2, "ti_noise",
+                            runA + ".1A280.e2401021200_a1_2DSA_i01.ti_noise", "<noise/>" };
+   server.refusing[ "delete_editedData" ] = IUS_DB2::DBERROR;
+   server.commitsInside << "delete_noise";
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   int crow = rowOf( model, cross );
+   ASSERT_GE( crow, 0 );
+
+   EXPECT_EQ( win.proc.record_remove_db( rowOf( model, editG ) ), 2012 );
+   EXPECT_EQ( server.changes, QStringList() << "delete_editedData 21"
+                              << "delete_noise 47" << "delete_editedData 21" );
+
+   QString error = win.proc.lastError();
+   EXPECT_TRUE( error.contains( runA + ".1A280.e2401021200_a1_2DSA_i01.ti_noise" ) )
+      << error.toStdString();
+   EXPECT_TRUE( error.contains( "all the same" ) ) << error.toStdString();
+
+   EXPECT_EQ( server.noiseById( "47" ), nullptr );
+   EXPECT_EQ( model.row_datadesc( crow ).recState, (int)US_DataModel::NOSTAT );
+   EXPECT_NE( stateOf( model, editG ) & US_DataModel::REC_DB, 0 );
+   EXPECT_NE( stateOf( model, modelG ) & US_DataModel::REC_DB, 0 );
+}
+
+// The noise of another edit's model that cannot be listed stops nothing
+// before the database is asked; noise that cannot be removed stops the
+// edit, and nothing is removed
 TEST_F( TestUSDataDb, AnEditTheServerKeepsIsReportedWithItsReason )
 {
    server.edits  << FEdit { "22", US_Util::new_guid(), "11", runA + ".2401021200.RA.1.A.280.xml" };
    server.models << FModel{ "34", US_Util::new_guid(), "other.model", "", "22", "" };
-   // noise this investigator's listing does not show: no foreign noise is
-   // found, and the delete fails on the constraint
    server.noises << FNoise{ "48", US_Util::new_guid(), "21", "34", server.models.last().guid,
                             "ti_noise", "hidden.ti_noise", "" };
    server.denied << "get_noise_desc_by_editID";
@@ -1564,8 +2057,125 @@ TEST_F( TestUSDataDb, AnEditTheServerKeepsIsReportedWithItsReason )
    EXPECT_EQ( win.proc.record_remove_db( row ), 2018 );
    EXPECT_TRUE( win.proc.lastError().contains( "permission" ) )
       << win.proc.lastError().toStdString();
-   EXPECT_EQ( server.changes, QStringList() << "delete_noise 48" );
+   EXPECT_TRUE( win.proc.lastError().contains( "Nothing was removed" ) )
+      << win.proc.lastError().toStdString();
+   EXPECT_EQ( server.changes, QStringList() << "delete_editedData 21"
+                              << "delete_noise 48" );
+   EXPECT_EQ( server.txlog, QStringList() << "begin" << "rollback"
+                            << "begin" << "rollback" );
    EXPECT_NE( stateOf( model, editG ) & US_DataModel::REC_DB, 0 );
+   EXPECT_NE( server.noiseById( "48" ), nullptr );
+}
+
+// Noise of another edit's model goes with the edit, so it is guarded as if
+// it had been selected: by the model GMP made, and by the run it is of
+TEST_F( TestUSDataDb, ForeignNoiseTheGmpFrameworkNeedsKeepsTheEdit )
+{
+   QString rawB   = US_Util::new_guid();
+   QString edit2  = US_Util::new_guid();
+   QString model2 = US_Util::new_guid();
+   server.exps   << FExp  { "2", US_Util::new_guid(), "RunB" };
+   server.raws   << FRaw  { "12", rawB, "RunB.RA.1.A.280.auc", "2" };
+   server.edits  << FEdit { "22", edit2, "12", "RunB.2401021200.RA.1.A.280.xml" };
+   server.models << FModel{ "34", model2, "RunB.1A280.e2401021200_a1_2DSA-GL_i01.model",
+                            edit2, "22", "<model/>" };
+   server.noises << FNoise{ "47", US_Util::new_guid(), "21", "34", model2, "ti_noise",
+                            "RunB.1A280.e2401021200_a1_2DSA-GL_i01.ti_noise", "<noise/>" };
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   // the model the noise was fitted with was made by GMP
+   server.autoflowModels << "34";
+   win.select( itemOfRow( win.tw, rowOf( model, editG ) ) );
+   EXPECT_EQ( win.tree.act_on_selection( "Database only", "DB-only remove" ),
+              US_DataTree::ACT_REFUSED );
+   ASSERT_EQ( win.prompts.size(), 1 );
+   EXPECT_TRUE( win.prompts[ 0 ].contains( "GMP" ) ) << win.prompts[ 0 ].toStdString();
+   EXPECT_TRUE( server.changes.isEmpty() ) << server.changes.join( "\n" ).toStdString();
+
+   // the run the noise is of is GMP's, though the edit's run is not
+   server.autoflowModels.clear();
+   server.autoflowRuns << "RunB";
+   win.prompts.clear();
+   EXPECT_EQ( win.tree.act_on_selection( "Database only", "DB-only remove" ),
+              US_DataTree::ACT_REFUSED );
+   ASSERT_EQ( win.prompts.size(), 1 );
+   EXPECT_TRUE( win.prompts[ 0 ].contains( "RunB" ) ) << win.prompts[ 0 ].toStdString();
+   EXPECT_TRUE( server.changes.isEmpty() ) << server.changes.join( "\n" ).toStdString();
+   EXPECT_NE( server.noiseById( "47" ), nullptr );
+}
+
+// The rows of another experiment an edit removal reached -- its noise of
+// another edit's model is under that model -- are shown as they are now
+TEST_F( TestUSDataDb, AnotherExperimentsRowsAnEditRemovalReachedAreRepainted )
+{
+   QString rawB   = US_Util::new_guid();
+   QString edit2  = US_Util::new_guid();
+   QString model2 = US_Util::new_guid();
+   QString cross  = US_Util::new_guid();
+   server.exps   << FExp  { "2", US_Util::new_guid(), "RunB" };
+   server.raws   << FRaw  { "12", rawB, "RunB.RA.1.A.280.auc", "2" };
+   server.edits  << FEdit { "22", edit2, "12", "RunB.2401021200.RA.1.A.280.xml" };
+   server.models << FModel{ "34", model2, "RunB.1A280.e2401021200_a1_2DSA-GL_i01.model",
+                            edit2, "22", "<model/>" };
+   server.noises << FNoise{ "47", cross, "21", "34", model2, "ti_noise",
+                            "RunB.1A280.e2401021200_a1_2DSA-GL_i01.ti_noise", "<noise/>" };
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   int crow = rowOf( model, cross );
+   ASSERT_GE( crow, 0 );
+   ASSERT_EQ( model.run_of_row( crow ), model.index_of_run( "RunB" ) );
+   QTreeWidgetItem* citem = itemOfRow( win.tw, crow );
+   ASSERT_NE( citem, nullptr );
+   ASSERT_EQ( citem->text( 3 ).toStdString(), "DB" );
+
+   win.select( itemOfRow( win.tw, rowOf( model, editG ) ) );
+   EXPECT_EQ( win.tree.act_on_selection( "Database only", "DB-only remove" ), 0 )
+      << win.proc.lastError().toStdString();
+
+   EXPECT_EQ( model.row_datadesc( crow ).recState, (int)US_DataModel::NOSTAT );
+   EXPECT_EQ( citem->text( 3 ).toStdString(), "dummy" );
+   QTreeWidgetItem* mitem = itemOfRow( win.tw, rowOf( model, model2 ) );
+   ASSERT_NE( mitem, nullptr );
+   EXPECT_EQ( mitem->text( 4 ).toStdString(), "0, 0" );
+}
+
+// Another investigator's records are not listed, and are not removed when
+// a row names them
+TEST_F( TestUSDataDb, AnotherInvestigatorsRecordsAreNeitherListedNorRemoved )
+{
+   QString theirsG = US_Util::new_guid();
+   FModel  theirs { "34", theirsG, runA + ".1A280.e2401011200_a9_2DSA_i01.model",
+                    editG, "21", "<model/>" };
+   theirs.owner = kOther;
+   server.models << theirs;
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+
+   EXPECT_EQ( rowOf( model, theirsG ), -1 );
+
+   int  row  = rowOf( model, modelG );
+   Desc desc = model.row_datadesc( row );
+   desc.recordID = 34;                       // as a stale row might
+   model.change_datadesc( desc, row );
+
+   EXPECT_EQ( win.proc.record_remove_db( row ), 2013 );
+   EXPECT_TRUE( win.proc.lastError().contains( "permission" ) )
+      << win.proc.lastError().toStdString();
+   EXPECT_NE( server.modelById( "34" ), nullptr );
+   EXPECT_NE( stateOf( model, modelG ) & US_DataModel::REC_DB, 0 );
 }
 
 // A removal the server refuses says why, and the record stays where it is
@@ -1654,7 +2264,9 @@ TEST_F( TestUSDataDb, AModelIsDownloadedAsUtf8 )
 // ------------------------------------------------------------ reads
 
 // A side that cannot read an experiment is not merged as if it held
-// nothing: the local records would read as local only
+// nothing: the local records would read as local only.  A lost connection
+// is not tried again -- US_DB2 does not connect again -- and the message
+// says what will
 TEST_F( TestUSDataDb, AnExperimentADatabaseReadFailedOnIsNotShownAsLocal )
 {
    server.failing << "get_rawData_by_experiment";
@@ -1666,8 +2278,10 @@ TEST_F( TestUSDataDb, AnExperimentADatabaseReadFailedOnIsNotShownAsLocal )
    ASSERT_EQ( model.runCount(), 1 );
    EXPECT_FALSE( model.run_entry( 0 ).loaded );
    EXPECT_EQ( rowOf( model, editG ), -1 );
-   EXPECT_FALSE( model.scan_errors().isEmpty() );
-   EXPECT_EQ( server.count( "get_rawData_by_experiment" ), 2 );   // tried again
+   ASSERT_FALSE( model.scan_errors().isEmpty() );
+   EXPECT_TRUE( model.scan_errors().join( "\n" ).contains( "connection to the database was lost" ) )
+      << model.scan_errors().join( "\n" ).toStdString();
+   EXPECT_EQ( server.count( "get_rawData_by_experiment" ), 1 );   // not again
 
    // opening it later tries again
    server.failing.clear();
@@ -1677,10 +2291,11 @@ TEST_F( TestUSDataDb, AnExperimentADatabaseReadFailedOnIsNotShownAsLocal )
               US_DataModel::REC_DB | US_DataModel::REC_LO );
 }
 
-// A read that fails once is tried again before anything is given up
+// A read that fails once, on something that passes -- a lock the server
+// waited on too long -- is tried again before anything is given up
 TEST_F( TestUSDataDb, AReadThatFailsOnceIsTriedAgain )
 {
-   server.failTimes[ "get_rawData_by_experiment" ] = 1;
+   server.transient[ "get_rawData_by_experiment" ] = 1;
 
    US_DataModel model;
    prepare( model, runA );
@@ -1882,4 +2497,368 @@ TEST_F( TestUSDataDb, AnActionOnManyRecordsAsksForOneComparison )
    EXPECT_EQ( asked, 1 );
    EXPECT_EQ( model.run_entry( 0 ).loCount, 8 );
    EXPECT_EQ( model.pending_verifies(), 1 );
+}
+
+// ------------------------------------------------------------ merged again
+
+// RunA is merged, and RunB not yet: noise RunB's edit holds for RunA's
+// model will merge RunA again when RunB is read
+class TestUSDataDbRemerge : public TestUSDataDb
+{
+   protected:
+      QString cross;
+      QString dbOnly;                     // a model in the database only
+      QString loOnly;                     // a model on local disk only
+      int     runa = -1;
+      int     runb = -1;
+
+      void SetUp() override
+      {
+         TestUSDataDb::SetUp();
+
+         cross  = US_Util::new_guid();
+         dbOnly = US_Util::new_guid();
+         loOnly = US_Util::new_guid();
+
+         server.exps   << FExp  { "2", US_Util::new_guid(), "RunB" };
+         server.raws   << FRaw  { "12", US_Util::new_guid(), "RunB.RA.1.A.280.auc", "2" };
+         server.edits  << FEdit { "22", US_Util::new_guid(), "12", "RunB.2401011200.RA.1.A.280.xml" };
+         server.noises << FNoise{ "63", cross, "22", "31", modelG, "ri_noise",
+                                  runA + ".1A280.e2401011200_a1_2DSA_i01.ri_noise", "<noise/>" };
+
+         QString tmp = root + "/dbonly.xml";
+         writeModel( tmp, dbOnly, editG, runA + ".1A280.e2401011200_a5_2DSA_i01.model" );
+         server.models << FModel{ "35", dbOnly, runA + ".1A280.e2401011200_a5_2DSA_i01.model",
+                                  editG, "21", textOf( tmp ) };
+         server.digest[ dbOnly ] = FakeServer::md5Of( textOf( tmp ) );
+
+         writeModel( US_Settings::dataDir() + "/models/M0000005.xml", loOnly, editG,
+                     runA + ".1A280.e2401011200_a6_2DSA_i01.model" );
+
+         server.failing << "get_rawData_by_person";    // one experiment at a time
+      }
+
+      // Scan as far as RunA, and show it; the model is prepared
+      void scanRunA( US_DataModel& model, Window& win )
+      {
+         QObject::connect( &model, &US_DataModel::runMerged, [ & ]( int index )
+         {
+            if ( model.run_entry( index ).runID == runA )
+               model.stop_scan();
+         } );
+         QObject::connect( &model, &US_DataModel::runReloaded,
+                           [ & ]( int index ) { win.tree.refill_run( index ); } );
+
+         model.scan_data();
+         win.tree.build_dtree();
+
+         runa = model.index_of_run( runA );
+         runb = model.index_of_run( "RunB" );
+         ASSERT_GE( runa, 0 );
+         ASSERT_GE( runb, 0 );
+         ASSERT_TRUE ( model.run_entry( runa ).loaded );
+         ASSERT_FALSE( model.run_entry( runb ).loaded );
+      }
+};
+
+// An experiment merged again from the catalogs shows what the actions since
+// the scan did: a removed record stays removed, a downloaded one local, an
+// uploaded one in the database -- and the two copies are compared again
+TEST_F( TestUSDataDbRemerge, AMergeAgainKeepsWhatActionsDid )
+{
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   scanRunA( model, win );
+
+   EXPECT_EQ( win.proc.record_remove_db( rowOf( model, noiseG, runa ) ), 0 )
+      << win.proc.lastError().toStdString();
+   EXPECT_EQ( win.proc.record_download( rowOf( model, dbOnly, runa ) ), 0 )
+      << win.proc.lastError().toStdString();
+   EXPECT_EQ( win.proc.record_upload( rowOf( model, loOnly, runa ) ), 0 )
+      << win.proc.lastError().toStdString();
+
+   QString loID;
+   for ( const FModel& mm : server.models )  if ( mm.guid == loOnly )  loID = mm.id;
+   ASSERT_FALSE( loID.isEmpty() );
+
+   int reloaded = 0;
+   QObject::connect( &model, &US_DataModel::runReloaded,
+                     [ & ]( int index ) { reloaded += ( index == runa ) ? 1 : 0; } );
+
+   EXPECT_TRUE( model.scan_run( runb ) );
+   ASSERT_EQ( reloaded, 1 );
+
+   Desc noise = model.row_datadesc( rowOf( model, noiseG, runa ) );
+   EXPECT_EQ( noise.recState & US_DataModel::REC_DB, 0 );
+   EXPECT_NE( noise.recState & US_DataModel::REC_LO, 0 );
+   EXPECT_LT( noise.recordID, 0 );
+
+   Desc down = model.row_datadesc( rowOf( model, dbOnly, runa ) );
+   EXPECT_NE( down.recState & US_DataModel::REC_LO, 0 );
+   EXPECT_NE( down.recState & US_DataModel::REC_DB, 0 );
+   EXPECT_TRUE( QFile::exists( down.filename ) ) << down.filename.toStdString();
+
+   Desc up = model.row_datadesc( rowOf( model, loOnly, runa ) );
+   EXPECT_NE( up.recState & US_DataModel::REC_DB, 0 );
+   EXPECT_EQ( up.recordID, loID.toInt() );
+
+   // one row each in RunA, and the tree shows them so
+   int ndown = 0;
+   for ( int rr = 0; rr < model.recCount(); rr++ )
+      ndown += ( model.row_datadesc( rr ).dataGUID == dbOnly  &&
+                 model.run_of_row( rr ) == runa ) ? 1 : 0;
+   EXPECT_EQ( ndown, 1 );
+   QTreeWidgetItem* nitem = itemOfRow( win.tw, rowOf( model, noiseG, runa ) );
+   ASSERT_NE( nitem, nullptr );
+   EXPECT_EQ( nitem->text( 3 ).toStdString(), "Local" );
+
+   // and a second download does not write another copy
+   server.changes.clear();
+   int before = QDir( US_Settings::dataDir() + "/models" ).entryList( QDir::Files ).size();
+   EXPECT_EQ( win.proc.record_download( rowOf( model, dbOnly, runa ) ), 0 );
+   EXPECT_EQ( QDir( US_Settings::dataDir() + "/models" ).entryList( QDir::Files ).size(), before );
+
+   // the changed records are compared on their own, and found the same
+   while ( model.pump_once() ) {}
+   EXPECT_EQ( US_DataModel::sync_state( model.row_datadesc( rowOf( model, dbOnly, runa ) ) ),
+              US_DataModel::SYNC_INSYNC ) << model.scan_errors().join( "\n" ).toStdString();
+   EXPECT_EQ( US_DataModel::sync_state( model.row_datadesc( rowOf( model, loOnly, runa ) ) ),
+              US_DataModel::SYNC_INSYNC ) << model.scan_errors().join( "\n" ).toStdString();
+}
+
+// ------------------------------------------------------------ context menu
+
+// Reading the experiments a context menu acts on can merge another one
+// again: the item the menu is for, and the selection, are its new items
+TEST_F( TestUSDataDbRemerge, AContextMenuTakesTheItemsAReadLeft )
+{
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   scanRunA( model, win );
+
+   int              nrow  = rowOf( model, noiseG, runa );
+   QTreeWidgetItem* nitem = itemOfRow( win.tw, nrow );
+   ASSERT_NE( nitem, nullptr );
+
+   win.tw.clearSelection();
+   nitem->setSelected( true );
+   win.tw.topLevelItem( runb )->setSelected( true );
+
+   // reading RunB merges RunA again: the noise item goes
+   ASSERT_TRUE( win.tree.context_selection( nitem ) );
+   EXPECT_TRUE( model.run_entry( runb ).loaded );
+
+   QTreeWidgetItem* cur = win.tree.current_item();
+   ASSERT_NE( cur, nullptr );
+   int crow = cur->type() - (int)QTreeWidgetItem::UserType;
+   EXPECT_NE( crow, nrow );
+   EXPECT_EQ( model.run_of_row( crow ), runa );
+   EXPECT_EQ( model.row_datadesc( crow ).dataGUID.toStdString(), noiseG.toStdString() );
+
+   QList< QTreeWidgetItem* > sel = win.tw.selectedItems();
+   EXPECT_TRUE( sel.contains( cur ) );
+   EXPECT_TRUE( sel.contains( win.tw.topLevelItem( runb ) ) );
+   EXPECT_EQ( sel.size(), 2 );
+
+   // and the action rows are RunB's records and the new noise row
+   QVector< int > rows = win.tree.action_row_list();
+   EXPECT_TRUE( rows.contains( crow ) );
+   EXPECT_FALSE( rows.contains( nrow ) );
+}
+
+// ------------------------------------------------------------ run filter
+
+// The run filter finds the database run as the pairing does -- without
+// case -- and the local run that pairs with it: never the database run on
+// its own, which a download would copy into the run's own directory
+TEST_F( TestUSDataDb, ARunFilterComparesRunIdsAsThePairingDoes )
+{
+   {  // a local store that ignores case: "runa" is RunA in both places
+      US_DataModel model;
+      model.setFileNameCase( Qt::CaseInsensitive );
+      prepare( model, "runa" );
+      model.scan_data();
+
+      ASSERT_EQ( model.runCount(), 1 );
+      EXPECT_TRUE( model.run_entry( 0 ).inBoth() );
+      EXPECT_EQ( stateOf( model, editG ) & ( US_DataModel::REC_DB | US_DataModel::REC_LO ),
+                 US_DataModel::REC_DB | US_DataModel::REC_LO );
+   }
+
+   {  // one that does not: the database's RunA still pairs with RunA
+      US_DataModel model;
+      model.setFileNameCase( Qt::CaseSensitive );
+      prepare( model, "runa" );
+      model.scan_data();
+
+      ASSERT_EQ( model.runCount(), 1 );
+      EXPECT_TRUE( model.run_entry( 0 ).inBoth() );
+   }
+}
+
+// ------------------------------------------------------------ pairing
+
+// The best matches are made first: a local run that matches by order alone
+// does not take the experiment another local run records
+TEST_F( TestUSDataDb, ALocalRunRecordingAnExperimentGetsItFirst )
+{
+   QString exp2 = US_Util::new_guid();
+   QString raw3 = US_Util::new_guid();
+   server.exps << FExp{ "2", exp2, runA };
+
+   // a second directory of RunA, after "RunA" in order, recording the
+   // first experiment
+   QString copy = US_Settings::resultDir() + "/ZCopy";
+   QDir().mkpath( copy );
+   writeAuc( copy + "/" + runA + ".RA.1.A.280.auc", raw3 );
+   QFile file( copy + "/" + runA + ".RA.xml" );
+   ASSERT_TRUE( file.open( QIODevice::WriteOnly | QIODevice::Text ) );
+   file.write( QString( "<?xml version=\"1.0\"?>\n<experiment id=\"1\" guid=\"%1\""
+                        " type=\"velocity\">\n</experiment>\n" ).arg( expG ).toUtf8() );
+   file.close();
+
+   US_DataModel model;
+   prepare( model );
+   model.scan_data();
+
+   int first = -1;
+   for ( int ii = 0; ii < model.runCount(); ii++ )
+      if ( model.row_datadesc( model.run_entry( ii ).row ).recordID == 1 )  first = ii;
+   ASSERT_GE( first, 0 );
+   EXPECT_TRUE( model.run_entry( first ).inBoth() );
+   EXPECT_EQ( model.run_of_row( rowOf( model, raw3 ) ), first );
+}
+
+// An experiment ID means something only in the database it came from: a
+// local run whose file records a GUID none of these experiments has is
+// from another one, and does not pair by its ID
+TEST_F( TestUSDataDb, AnIdFromAnotherDatabaseDoesNotPair )
+{
+   server.exps << FExp{ "2", US_Util::new_guid(), runA };
+
+   auto pairedId = [ & ]( const QString& attrs )
+   {
+      QFile file( runDir( runA ) + "/" + runA + ".RA.xml" );
+      EXPECT_TRUE( file.open( QIODevice::WriteOnly | QIODevice::Text ) );
+      file.write( ( "<?xml version=\"1.0\"?>\n<experiment " + attrs
+                    + " type=\"velocity\">\n</experiment>\n" ).toUtf8() );
+      file.close();
+
+      US_DataModel model;
+      prepare( model );
+      model.scan_data();
+
+      for ( int ii = 0; ii < model.runCount(); ii++ )
+         if ( model.run_entry( ii ).inBoth() )
+            return model.row_datadesc( model.run_entry( ii ).row ).recordID;
+      return -1;
+   };
+
+   EXPECT_EQ( pairedId( "id=\"2\" guid=\"" + US_Util::new_guid() + "\"" ), 1 );
+   EXPECT_EQ( pairedId( "id=\"2\"" ), 2 );         // no GUID: the ID is all
+}
+
+// ------------------------------------------------------------ line ends
+
+// A model file with CRLF line ends -- as written on Windows -- holds what the
+// database holds, with LF ones: it is in sync, and nothing is uploaded
+TEST_F( TestUSDataDb, AModelFileWithCrlfLineEndsIsInSync )
+{
+   QByteArray bytes = textOf( modelPath ).toUtf8();
+   ASSERT_FALSE( bytes.contains( '\r' ) );
+   bytes.replace( "\n", "\r\n" );
+   QFile file( modelPath );
+   ASSERT_TRUE( file.open( QIODevice::WriteOnly ) );
+   file.write( bytes );
+   file.close();
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+
+   int row = rowOf( model, modelG );
+   ASSERT_GE( row, 0 );
+   EXPECT_EQ( US_DataModel::sync_state( model.row_datadesc( row ) ),
+              US_DataModel::SYNC_INSYNC ) << model.row_datadesc( row ).contents.toStdString();
+
+   Desc desc = model.row_datadesc( row );       // not compared since
+   desc.recState &= ~US_DataModel::HV_DET;
+   desc.contents  = QString();
+   model.change_datadesc( desc, row );
+   EXPECT_EQ( win.proc.record_upload( row ), (int)US_DataProcess::IN_SYNC );
+   EXPECT_EQ( server.count( "update_model" ), 0 );
+}
+
+// ------------------------------------------------------------ record IDs
+
+// A model written whose ID cannot be read back is in the database all the
+// same: its row says so, with no ID to act on it by until a new scan
+TEST_F( TestUSDataDb, AWrittenModelWithoutAnIdIsInTheDatabase )
+{
+   QString newM = US_Util::new_guid();
+   writeModel( US_Settings::dataDir() + "/models/M0000002.xml", newM, editG,
+               runA + ".1A280.e2401011200_a2_2DSA_i01.model" );
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+
+   int row = rowOf( model, newM );
+   ASSERT_GE( row, 0 );
+
+   server.failAfter[ "get_modelID" ] = server.count( "get_modelID" ) + 1;
+   EXPECT_EQ( win.proc.record_upload( row ), 3047 );
+   EXPECT_TRUE( win.proc.lastError().contains( "scan again" ) )
+      << win.proc.lastError().toStdString();
+
+   Desc desc = model.row_datadesc( row );
+   EXPECT_NE( desc.recState & US_DataModel::REC_DB, 0 );
+   EXPECT_LT( desc.recordID, 0 );
+   EXPECT_EQ( win.proc.record_remove_db( row ), 2016 );   // nothing to go by
+}
+
+// A patched server lists noise with the experiment of its model: noise
+// recorded against a later experiment's edit is read with the model's own
+// experiment, under its model, once, and nothing is merged again
+TEST_F( TestUSDataDb, NoiseListedWithItsModelsExperimentIsShownOnce )
+{
+   QString cross = US_Util::new_guid();
+   server.exps   << FExp  { "2", US_Util::new_guid(), "RunB" };
+   server.raws   << FRaw  { "12", US_Util::new_guid(), "RunB.RA.1.A.280.auc", "2" };
+   server.edits  << FEdit { "22", US_Util::new_guid(), "12", "RunB.2401011200.RA.1.A.280.xml" };
+   server.noises << FNoise{ "63", cross, "22", "31", modelG, "ri_noise",
+                            runA + ".1A280.e2401011200_a1_2DSA_i01.ri_noise", "<noise/>" };
+   server.noiseByModel = true;
+   server.failing << "get_rawData_by_person";        // one experiment at a time
+
+   US_DataModel model;
+   prepare( model );
+
+   int reloaded = 0;
+   QObject::connect( &model, &US_DataModel::runReloaded, [ & ]( int ) { reloaded++; } );
+
+   model.scan_data();
+
+   int runa = model.index_of_run( runA );
+   int row  = rowOf( model, cross );
+   ASSERT_GE( row, 0 );
+   EXPECT_EQ( model.run_of_row( row ), runa );
+   EXPECT_EQ( model.row_datadesc( model.parent_row( row ) ).dataGUID.toStdString(),
+              modelG.toStdString() );
+   EXPECT_EQ( reloaded, 0 );
+
+   int nrows = 0;
+   for ( int rr = 0; rr < model.recCount(); rr++ )
+      nrows += ( model.row_datadesc( rr ).dataGUID == cross  &&
+                 model.run_of_row( rr ) >= 0 ) ? 1 : 0;
+   EXPECT_EQ( nrows, 1 );
+   EXPECT_EQ( model.count_records().db[ US_DataModel::NOISE ], 2 );
+   EXPECT_EQ( model.run_entry( runa ).dbCount, model.count_records( runa ).db[ 1 ]
+                                               + model.count_records( runa ).db[ 2 ]
+                                               + model.count_records( runa ).db[ 3 ]
+                                               + model.count_records( runa ).db[ 4 ] );
 }

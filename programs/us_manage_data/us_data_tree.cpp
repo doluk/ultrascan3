@@ -398,15 +398,55 @@ void US_DataTree::row_counts( int row, int lastRow, QString& anch,
 }
 
 // Show an experiment's records again, from the rows it was merged into anew
+//
+// The items of its records go, and they may be selected, or be the item a
+// context menu is being opened for: each is replaced there by the new item
+// of the same record.
 void US_DataTree::refill_run( int runIndex )
 {
    if ( runIndex < 0  ||  runIndex >= runitems.size() )   return;
 
    QTreeWidgetItem* runitem = runitems[ runIndex ];
 
-   // The selection may hold items about to go
-   selitems.clear();
-   tw_item = NULL;
+   QList< QTreeWidgetItem* > olds;
+   QList< QTreeWidgetItem* > stack;
+
+   for ( int ii = 0; ii < runitem->childCount(); ii++ )
+      stack << runitem->child( ii );
+
+   while ( ! stack.isEmpty() )
+   {
+      QTreeWidgetItem* item = stack.takeFirst();
+      olds << item;
+
+      for ( int ii = 0; ii < item->childCount(); ii++ )
+         stack << item->child( ii );
+   }
+
+   QSet< QString > selkeys;          // selected in the tree
+   QSet< QString > actkeys;          // in the selection an action uses
+   QString         curkey;
+   bool            curgone = false;
+
+   for ( int ii = 0; ii < olds.size(); ii++ )
+   {
+      QTreeWidgetItem* item = olds[ ii ];
+      QString          key  = item_key( item );
+
+      if ( item->isSelected() )         selkeys << key;
+      if ( selitems.contains( item ) )  actkeys << key;
+
+      if ( item == tw_item )
+      {
+         curkey  = key;
+         curgone = true;
+      }
+
+      selitems.removeAll( item );
+   }
+
+   if ( curgone )
+      tw_item = NULL;
 
    qDeleteAll( runitem->takeChildren() );
 
@@ -414,6 +454,43 @@ void US_DataTree::refill_run( int runIndex )
       fill_run( runIndex );
    else
       refresh_run_item( runIndex );
+
+   // The same records, in their new items
+   for ( int ii = 0; ii < runitem->childCount(); ii++ )
+      stack << runitem->child( ii );
+
+   while ( ! stack.isEmpty() )
+   {
+      QTreeWidgetItem* item = stack.takeFirst();
+      QString          key  = item_key( item );
+
+      for ( int ii = 0; ii < item->childCount(); ii++ )
+         stack << item->child( ii );
+
+      if ( selkeys.contains( key ) )
+         item->setSelected( true );
+
+      if ( actkeys.contains( key )  &&  ! selitems.contains( item ) )
+         selitems << item;
+
+      if ( curgone  &&  tw_item == NULL  &&  key == curkey )
+         tw_item = item;
+   }
+}
+
+// What a record's item is found again by: its type and GUID, or for a
+// filler, which has no GUID, its label
+QString US_DataTree::item_key( QTreeWidgetItem* item )
+{
+   int row = item->type() - (int)QTreeWidgetItem::UserType;
+
+   if ( row < 0  ||  row >= da_model->recCount() )   return QString();
+
+   US_DataModel::DataDesc desc = da_model->row_datadesc( row );
+   QString guid = desc.dataGUID.simplified().toLower();
+
+   return QString::number( desc.recType ) + ":"
+          + ( guid.isEmpty() ? "~" + desc.label : guid );
 }
 
 // Colour an experiment row from what is under it now, and show its counts
@@ -546,28 +623,62 @@ void US_DataTree::item_opened( QTreeWidgetItem* item )
    da_model->request_verify( runIndex );
 }
 
-// set up and display a row context menu
-void US_DataTree::row_context_menu( QTreeWidgetItem* item )
+// Take the selection a context menu acts on
+bool US_DataTree::context_selection( QTreeWidgetItem* item )
 {
-   if ( item == NULL )                                     return;
-   if ( da_model->scan_active()  ||  da_model->is_busy() ) return;
+   if ( item == NULL )                                     return false;
+   if ( da_model->scan_active()  ||  da_model->is_busy() ) return false;
+
+   // An experiment acts on its records, so they have to be read.  Reading
+   // one can merge another experiment again, whose items are then new ones
+   // (refill_run): what the items are is taken first, and the item and the
+   // selection only after the reads.
+   QList< QTreeWidgetItem* > sel = tw_recs->selectedItems();
+   QList< int >              runs;
+
+   if ( ! sel.contains( item ) )
+      sel << item;
+
+   for ( int ii = 0; ii < sel.size(); ii++ )
+   {
+      int runIndex = ( sel[ ii ]->parent() == NULL )
+                   ? runitems.indexOf( sel[ ii ] ) : -1;
+
+      if ( runIndex >= 0  &&  ! runs.contains( runIndex ) )
+         runs << runIndex;
+   }
+
+   tw_item  = item;
+   selitems = sel;
+
+   for ( int ii = 0; ii < runs.size(); ii++ )
+      ensure_loaded( runs[ ii ] );
+
+   if ( tw_item == NULL )            // its record is no longer shown
+      return false;
 
    selitems = tw_recs->selectedItems();
 
-   if ( ! selitems.contains( item ) )
-      selitems << item;
+   if ( ! selitems.contains( tw_item ) )
+      selitems << tw_item;
 
+   return true;
+}
+
+QTreeWidgetItem* US_DataTree::current_item( void ) const
+{
+   return tw_item;
+}
+
+// set up and display a row context menu
+void US_DataTree::row_context_menu( QTreeWidgetItem* item )
+{
+   if ( ! context_selection( item ) )                      return;
+
+   item     = tw_item;
    int nsel = selitems.size();
 DbgLv(1) << "    context_menu nbr sel rows" << selitems.size();
-   tw_item  = item;
    int irow = item->type() - (int)QTreeWidgetItem::UserType;
-
-   // An experiment acts on its records, so they have to be read
-   for ( int ii = 0; ii < nsel; ii++ )
-   {
-      if ( selitems[ ii ]->parent() == NULL )
-         ensure_loaded( runitems.indexOf( selitems[ ii ] ) );
-   }
 
    if ( nsel > 1 )
    {  // If multiple selections, set first row
@@ -663,7 +774,10 @@ DbgLv(2) << "    context_menu row" << irow+1;
    // display the context menu and act on selection
    QAction* chosen = cmenu.exec( QCursor::pos() );
 
+   // While the menu was up the window ran its background reads, which can
+   // show an experiment anew: the item is then the new one, or gone
    if      ( chosen == NULL )      return;
+   else if ( tw_item == NULL )     return;
    else if ( chosen == aupload )   item_upload();
    else if ( chosen == adnload )   item_download();
    else if ( chosen == adbasrm )   item_remove_db();
@@ -740,7 +854,10 @@ void US_DataTree::dtree_help()
       tr( "  no input; with a run selected, that run's local files are\n" ) +
       tr( "  read in the window itself, which is not redrawn until then.\n" ) +
       tr( "  Opening an experiment while a scan runs moves it to the front\n" ) +
-      tr( "  of the queue.  Closing the window stops the scan.\n\n" ) +
+      tr( "  of the queue.  Closing the window stops the scan.  A read\n" ) +
+      tr( "  that fails is tried once more; after a lost database\n" ) +
+      tr( "  connection it is not, since the window does not connect\n" ) +
+      tr( "  again: close it and open it again.\n\n" ) +
       tr( "Tree Entry Processes --\n\n" ) +
       tr( "  A right-mouse-button click on any cell of a row pops up\n" ) +
       tr( "  a context menu with actions to take for the record.\n" ) +
@@ -761,9 +878,16 @@ void US_DataTree::dtree_help()
 
       tr( "    \"remove from DB\"\n" ) +
       tr( "       -> Remove this record from the database.  Removing an\n" ) +
-      tr( "          edit first removes noise of another edit's model\n" ) +
-      tr( "          that was computed from it; the database would not\n" ) +
-      tr( "          remove the edit while that noise refers to it.\n" ) +
+      tr( "          edit also removes the noise of another edit's\n" ) +
+      tr( "          model that was computed from it (the GMP checks\n" ) +
+      tr( "          apply to it too); an older database keeps the edit\n" ) +
+      tr( "          while that noise refers to it, and your own such\n" ) +
+      tr( "          noise is then removed first.  It is all done in\n" ) +
+      tr( "          transactions.  On an older database another\n" ) +
+      tr( "          investigator's noise keeps the edit; then nothing\n" ) +
+      tr( "          is removed, and the message says why.  After a\n" ) +
+      tr( "          failure what the database holds is read back, and\n" ) +
+      tr( "          the rows show it.\n" ) +
       tr( "    \"remove from local\"\n" ) +
       tr( "       -> Remove this record from local disk.\n" ) +
       tr( "    \"remove both\"\n" ) +
@@ -787,6 +911,8 @@ void US_DataTree::dtree_help()
 // Ask whether to go ahead with an action, then do it and report
 void US_DataTree::confirm_and_act( QString item_exs, QString item_act )
 {
+   if ( tw_item == NULL )   return;
+
    QMessageBox msgBox( parentw );
    int irow = tw_item->type() - (int)QTreeWidgetItem::UserType;
    da_model->setCurrent( irow );
@@ -801,7 +927,9 @@ void US_DataTree::confirm_and_act( QString item_exs, QString item_act )
    msgBox.addButton( QMessageBox::Yes );
    msgBox.setDefaultButton( QMessageBox::No );
 
-   if ( msgBox.exec() == QMessageBox::Yes )
+   // The background reads run while the question is asked, too: when the
+   // item it was asked about went, nothing is done
+   if ( msgBox.exec() == QMessageBox::Yes  &&  tw_item != NULL )
       action_result( do_actions( item_exs, item_act ), item_act );
 
    else
@@ -1141,6 +1269,69 @@ bool US_DataTree::is_modelIDs_from_autoflow( const QString& mID )
    return gmp_models.contains( mID );
 }
 
+// The GMP guard for the noise of other edits' models an edit removal takes
+// along.  What cannot be listed is left to the removal, which reports it.
+bool US_DataTree::foreign_noise_gmp_ok( const US_DataModel::DataDesc& ddesc,
+                                        const QString& runID )
+{
+   if ( da_process == NULL )
+      da_process = (US_DataProcess*)da_model->procobj();
+
+   if ( ddesc.recordID < 0  ||  da_process == NULL )   return true;
+
+   QList< US_DataProcess::ForeignNoise > foreign;
+
+   if ( ! da_process->foreign_noise_of_edit( ddesc.recordID, foreign ) )
+      return true;
+
+   for ( int ii = 0; ii < foreign.size(); ii++ )
+   {
+      const US_DataProcess::ForeignNoise& fn = foreign.at( ii );
+      QString name = fn.description.isEmpty() ? fn.guid : fn.description;
+
+      if ( is_modelIDs_from_autoflow( QString::number( fn.modelID ) ) )
+      {
+         ask_user( PROMPT_INFORM, tr( "Selected Model GMP produced!" ),
+            tr( "Removing %1 would also remove noise %2, which was computed"
+                " from it for a model generated within the GMP framework."
+                "\n\nIt can NOT be deleted..." )
+            .arg( ddesc.label ).arg( name ) );
+         return false;
+      }
+
+      // The run of that noise: where the tree shows it, else the one its
+      // description names
+      QString nrun;
+
+      for ( int row = 0; row < da_model->recCount()  &&  nrun.isEmpty(); row++ )
+      {
+         US_DataModel::DataDesc ndesc = da_model->row_datadesc( row );
+
+         if ( ndesc.recType == US_DataModel::NOISE  &&
+              ndesc.recordID == fn.noiseID  &&
+              da_model->run_of_row( row ) >= 0 )
+            nrun = da_model->run_id_of_row( row );
+      }
+
+      if ( nrun.isEmpty() )
+         nrun = ( fn.description.count( "." ) >= 3 )
+              ? fn.description.section( ".", 0, -4 )
+              : fn.description.section( ".", 0, 0 );
+
+      if ( nrun != runID  &&  check_filename_for_autoflow( nrun ) )
+      {
+         ask_user( PROMPT_INFORM, tr( "Data Cannot be Deleted" ),
+            tr( "Removing %1 would also remove noise %2 of the Run:\n\n"
+                "\"%3\"\n\n"
+                "which can NOT be deleted since it is required by the GMP"
+                " framework!" ).arg( ddesc.label ).arg( name ).arg( nrun ) );
+         return false;
+      }
+   }
+
+   return true;
+}
+
 // True when the run is part of the GMP framework
 //
 // Asked once per run per action, over the window's own connection.
@@ -1178,12 +1369,13 @@ US_DataTree::ChangeBatch::~ChangeBatch()
    end();
 }
 
-void US_DataTree::ChangeBatch::end( void )
+QList< int > US_DataTree::ChangeBatch::end( void )
 {
-   if ( da_model == NULL )   return;
+   if ( da_model == NULL )   return QList< int >();
 
-   da_model->end_changes();
+   QList< int > runs = da_model->end_changes();
    da_model = NULL;
+   return runs;
 }
 
 // Act on the selection the tree has now
@@ -1342,6 +1534,12 @@ DbgLv(1) << "ITEM do_actions" << narows << item_exs << item_act;
             return ACT_REFUSED;
          }
 
+         // An edit takes along noise of other edits' models computed from
+         // it: that noise is guarded as if it had been selected
+         if ( ddesc.recType == US_DataModel::EDIT  &&
+              ! foreign_noise_gmp_ok( ddesc, runID ) )
+            return ACT_REFUSED;
+
          if ( ddesc.recType == US_DataModel::MODEL  ||
               ddesc.recType == US_DataModel::NOISE )
          {
@@ -1497,10 +1695,10 @@ DbgLv(1) << "RMV_REC: irow stat1" << irow << stat1;
       }
    }
 
-   batch.end();
-
-   // The rows acted on show where their records are now
-   QList< int > runs;
+   // The rows acted on show where their records are now, and so do the
+   // rows of any other experiment an action reached: the noise of another
+   // edit's model an edit removal takes along may be under another one
+   QList< int > runs = batch.end();
 
    for ( int jj = 0; jj < narows; jj++ )
    {

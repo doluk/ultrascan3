@@ -744,6 +744,7 @@ void US_DataModel::scan_runs( )
    batch_runs.clear();
    stale_runs.clear();
    run_taken.clear();
+   acted    .clear();
    errors   .clear();
    db_failed  = false;
    demo       = false;
@@ -797,7 +798,13 @@ void US_DataModel::scan_runs( )
          {
             const US_DataCatalog::Run& run = cat_db->run( ii );
 
-            if ( rfilt  &&  run.runID != filt_run )   continue;
+            // The database never tells run IDs apart by case, and pairs
+            // them with local runs so (see runKey below): a filter that
+            // did would show a database run as missing from local disk,
+            // and a download would write into the directory it is in
+            if ( rfilt  &&  run.runID.compare( filt_run,
+                                               Qt::CaseInsensitive ) != 0 )
+               continue;
 
             RunEntry entry;
             entry.runID     = run.runID;
@@ -845,55 +852,91 @@ void US_DataModel::scan_runs( )
 
    if ( use_lo  &&  cat_lo != NULL )
    {
+      // Each local run takes the database experiment of its name its
+      // experiment file records by GUID, or else by ID, or else the first
+      // one of its name nobody took.  The best matches are made first, over
+      // all the local runs, so a run that matches by order alone does not
+      // take the experiment another run records.  An ID says something only
+      // in the database it came from: a run whose file records a GUID that
+      // matches none of these experiments came from another one, and its ID
+      // is not looked at.
+      QList< int > lruns;
+
       for ( int ii = 0; ii < cat_lo->runCount(); ii++ )
       {
-         const US_DataCatalog::Run& run = cat_lo->run( ii );
+         // The run filter compares as the local store compares names, and
+         // a local run that pairs with a database run it kept is kept too:
+         // its records would otherwise read as in the database only, and a
+         // download would write copies of them into its directory
+         QString key = runKey( cat_lo->run( ii ).runID );
 
-         if ( rfilt  &&  run.runID != filt_run )   continue;
+         if ( rfilt  &&  key != runKey( filt_run )  &&  ! byRun.contains( key ) )
+            continue;
 
-         int  match = -1;
-         int  rank  = 0;               // 3 by GUID, 2 by ID, 1 by order
-         QList< int > same = byRun.values( runKey( run.runID ) );
-         std::sort( same.begin(), same.end() );
+         lruns << ii;
+      }
 
+      auto rank = [ & ]( int ii, int cand )
+      {
+         const US_DataCatalog::Run& run  = cat_lo->run( ii );
+         const RunEntry&            cent = entries[ cand ];
+
+         if ( cent.dbIndex < 0  ||  cat_db == NULL )   return 1;
+
+         const US_DataCatalog::Run& dbr = cat_db->run( cent.dbIndex );
          QString loGUID = run.guid.simplified();
          QString loID   = run.id.simplified();
+         bool    hasGUID = ( loGUID.length() == 36 );
 
-         for ( int jj = 0; jj < same.size(); jj++ )
+         if ( hasGUID  &&
+              loGUID.compare( dbr.guid.simplified(), Qt::CaseInsensitive ) == 0 )
+            return 3;
+
+         if ( ! hasGUID  &&  ! loID.isEmpty()  &&  loID != "-1"  &&
+              loID == dbr.id.simplified() )
+            return 2;
+
+         return 1;
+      };
+
+      QHash< int, int > lmatch;               // local index -> entry
+
+      for ( int tier = 3; tier >= 1; tier-- )
+      {
+         for ( int kk = 0; kk < lruns.size(); kk++ )
          {
-            const RunEntry& cand = entries[ same[ jj ] ];
+            int ii = lruns[ kk ];
 
-            if ( cand.loIndex >= 0 )   continue;     // taken
+            if ( lmatch.contains( ii ) )   continue;
 
-            int crank = 1;
+            QList< int > same = byRun.values( runKey( cat_lo->run( ii ).runID ) );
+            std::sort( same.begin(), same.end() );
 
-            if ( cand.dbIndex >= 0  &&  cat_db != NULL )
+            for ( int jj = 0; jj < same.size(); jj++ )
             {
-               const US_DataCatalog::Run& dbr = cat_db->run( cand.dbIndex );
+               if ( entries[ same[ jj ] ].loIndex >= 0 )   continue;   // taken
 
-               if ( loGUID.length() == 36  &&
-                    loGUID.compare( dbr.guid.simplified(),
-                                    Qt::CaseInsensitive ) == 0 )
-                  crank = 3;
-
-               else if ( ! loID.isEmpty()  &&  loID != "-1"  &&
-                         loID == dbr.id.simplified() )
-                  crank = 2;
-            }
-
-            if ( crank > rank )
-            {
-               rank  = crank;
-               match = same[ jj ];
+               if ( rank( ii, same[ jj ] ) >= tier )
+               {
+                  lmatch.insert( ii, same[ jj ] );
+                  entries[ same[ jj ] ].loIndex = ii;
+                  break;
+               }
             }
          }
+      }
+
+      for ( int kk = 0; kk < lruns.size(); kk++ )
+      {
+         int ii = lruns[ kk ];
+         const US_DataCatalog::Run& run = cat_lo->run( ii );
+         int  match = lmatch.value( ii, -1 );
 
          if ( match < 0 )
-         {
+         {  // A run of no database experiment, or of one taken already
             RunEntry entry;
             entry.runID = run.runID;
             match       = entries.size();
-            byRun.insert( runKey( run.runID ), match );
             entries << entry;
          }
 
@@ -1211,6 +1254,13 @@ int US_DataModel::pending_runs( ) const
    return run_queue.size();
 }
 
+// Whether a client error number says the connection to the server is gone:
+// CR_SERVER_GONE_ERROR (2006) or CR_SERVER_LOST (2013)
+bool US_DataModel::connection_lost( int serverErrno )
+{
+   return ( serverErrno == 2006  ||  serverErrno == 2013 );
+}
+
 // Read the second layer of one experiment and merge it into the whole
 bool US_DataModel::scan_run( int index )
 {
@@ -1246,8 +1296,13 @@ bool US_DataModel::do_scan_run( int index )
    nothing: merging the other side alone would show every record as in that
    place only, and a download would then overwrite the local copies, or
    write model and noise files that duplicate the GUIDs of the ones there.
-   So the read is tried once more, and when it still fails the experiment
-   is reported and left unread -- opening it later tries again.
+   So the read is tried once more, which helps when what made it fail
+   passes -- a lock the server waited on too long, a file being written --
+   and when it still fails the experiment is reported and left unread:
+   opening it later tries again.  A lost database connection is not tried
+   again: the connection is not made anew (US_DB2 does not reconnect), so
+   every read after it fails too, and the message says to open the window
+   again.
 */
 bool US_DataModel::load_sides( int index )
 {
@@ -1273,18 +1328,29 @@ bool US_DataModel::load_sides( int index )
 
       if ( catalog->loadRunDetail( cx, error ) )   continue;
 
-      DbgLv(1) << "LoadSides: retry" << entry.runID << side << error;
+      bool lost = ( side == 0  &&  db != NULL  &&
+                    connection_lost( db->lastServerErrno() ) );
 
-      if ( catalog->loadRunDetail( cx, error ) )   continue;
+      DbgLv(1) << "LoadSides: retry" << entry.runID << side << lost << error;
+
+      if ( ! lost  &&  catalog->loadRunDetail( cx, error ) )   continue;
 
       ok = false;
-      scan_error( ( side == 0 )
-         ? tr( "%1: the database records could not be read, so the"
-               " experiment is not shown; open it to try again: %2" )
-           .arg( entry.runID ).arg( error )
-         : tr( "%1: the local records could not be read, so the"
-               " experiment is not shown; open it to try again: %2" )
-           .arg( entry.runID ).arg( error ) );
+
+      if ( lost )
+         scan_error( tr( "%1: the connection to the database was lost, so"
+                         " the experiment is not shown.  This window does"
+                         " not connect again: close it and open it again."
+                         "  (%2)" ).arg( entry.runID ).arg( error ) );
+
+      else
+         scan_error( ( side == 0 )
+            ? tr( "%1: the database records could not be read, so the"
+                  " experiment is not shown; open it to try again: %2" )
+              .arg( entry.runID ).arg( error )
+            : tr( "%1: the local records could not be read, so the"
+                  " experiment is not shown; open it to try again: %2" )
+              .arg( entry.runID ).arg( error ) );
    }
 
    return ok;
@@ -1417,7 +1483,18 @@ bool US_DataModel::do_merge_run( int index )
    int  base  = adescs.size();
 
    for ( int ii = 0; ii < mdescs.size(); ii++ )
-      append_row( mdescs.at( ii ), index );
+   {
+      // The catalogs are what the scan read: a record an action changed
+      // since is where the action left it, not where they say it is
+      DataDesc desc   = mdescs.at( ii );
+      bool     redone = apply_action( desc );
+
+      append_row( desc, index );
+
+      if ( redone  &&  ( desc.recState & REC_DB ) != 0  &&
+           ( desc.recState & REC_LO ) != 0 )
+         touched.insert( adescs.size() - 1 );   // compared on its own
+   }
 
    bool any       = ( adescs.size() > base );
    entry.firstRow = any ? base : -1;
@@ -1666,6 +1743,12 @@ void US_DataModel::record_changed( int row )
 
    const DataDesc& desc = adescs.at( row );
 
+   // Where the action left it, for a merge from the catalogs to come
+   QString key = action_key( desc );
+
+   if ( ! key.isEmpty() )
+      acted.insert( key, desc );
+
    if ( ( desc.recState & REC_DB ) != 0  &&
         ( desc.recState & REC_LO ) != 0 )
    {  // Two copies that were not compared with each other
@@ -1691,6 +1774,43 @@ void US_DataModel::record_changed( int row )
    run_changed( index );
 }
 
+// What a record an action changed is known by: its type and GUID
+QString US_DataModel::action_key( const DataDesc& desc )
+{
+   QString guid = desc.dataGUID.simplified().toLower();
+
+   if ( guid.isEmpty()  ||  guid == dmyGUID )   return QString();
+
+   return QString::number( desc.recType ) + ":" + guid;
+}
+
+/* Put back what an action did to a record the catalogs read before it.
+
+   An action changes the row, not the catalogs, so a merge from them --
+   an experiment merged again when a later read hung noise under it, a
+   branch of orphans adopted -- would show a removed record as present, a
+   downloaded one as in the database only, an uploaded one as local only.
+   Where the record is, its IDs and its file are taken from the last
+   action on it; it is compared again.
+*/
+bool US_DataModel::apply_action( DataDesc& desc ) const
+{
+   QString key = action_key( desc );
+
+   if ( key.isEmpty()  ||  ! acted.contains( key ) )   return false;
+
+   const DataDesc& done = acted[ key ];
+
+   desc.recordID    = done.recordID;
+   desc.recState    = done.recState & ~HV_DET;
+   desc.filename    = done.filename;
+   desc.filemodDate = done.filemodDate;
+   desc.lastmodDate = done.lastmodDate;
+   desc.contents    = QString();
+
+   return true;
+}
+
 // Bring an experiment up to date after records of it changed
 void US_DataModel::run_changed( int index )
 {
@@ -1704,16 +1824,18 @@ void US_DataModel::begin_changes( void )
    batch_depth++;
 }
 
-void US_DataModel::end_changes( void )
+QList< int > US_DataModel::end_changes( void )
 {
-   if ( batch_depth <= 0 )     return;
-   if ( --batch_depth > 0 )    return;
+   if ( batch_depth <= 0 )     return QList< int >();
+   if ( --batch_depth > 0 )    return QList< int >();
 
    QList< int > runs = batch_runs;
    batch_runs.clear();
 
    for ( int ii = 0; ii < runs.size(); ii++ )
       run_changed( runs.at( ii ) );
+
+   return runs;
 }
 
 // Count again what is under an experiment, in each place
@@ -1746,6 +1868,35 @@ QString US_DataModel::file_digest( const QString& path )
    QString digest = US_Util::md5sum_file( path );
 
    return ( digest == "0 0" ) ? QString() : digest;
+}
+
+/* The checksum of a record's local file, as it compares with the database.
+
+   A model or noise file is XML, which the database holds with LF line
+   ends: written on Windows (US_Model::write rewrites the file a model is
+   uploaded from) it has CRLF ones, and would never compare equal.  Its
+   line ends are made LF before it is hashed.  Raw and edit files are
+   compared byte for byte, as the server hashes their blobs.
+*/
+QString US_DataModel::local_digest( const DataDesc& desc )
+{
+   if ( desc.recType != MODEL  &&  desc.recType != NOISE )
+      return file_digest( desc.filename );
+
+   QFile file( desc.filename );
+
+   if ( desc.filename.isEmpty()  ||  ! file.open( QIODevice::ReadOnly ) )
+      return QString();
+
+   QByteArray bytes = file.readAll();
+
+   if ( file.error() != QFileDevice::NoError )
+      return QString();
+
+   bytes.replace( "\r\n", "\n" );
+
+   return QString( QCryptographicHash::hash( bytes, QCryptographicHash::Md5 )
+                   .toHex() ) + " " + QString::number( bytes.size() );
 }
 
 // The checksum of one database record, read on its own
@@ -1977,6 +2128,12 @@ void US_DataModel::apply_digests( int index )
       QString dbc = dbDigests.value( desc.dataGUID );
       QString loc = loDigests.value( desc.dataGUID );
 
+      // A model or noise file whose bytes differ may differ only in its
+      // line ends: it is compared on its own (local_digest)
+      if ( ( desc.recType == MODEL  ||  desc.recType == NOISE )  &&
+           ! dbc.isEmpty()  &&  ! loc.isEmpty()  &&  dbc != loc )
+         continue;
+
       desc.contents  = ( dbc.isEmpty() ? QString( "- -" ) : dbc ) + " "
                      + ( loc.isEmpty() ? QString( "- -" ) : loc );
       desc.recState |= HV_DET;
@@ -2010,6 +2167,11 @@ bool US_DataModel::verify_rows( int index )
            ( desc.recState & HV_DET ) != 0 )
          continue;
 
+      // Written under an ID that could not be read back (see
+      // US_DataProcess::record_upload): a new scan reads it
+      if ( desc.recordID < 0 )
+         continue;
+
       QString dbc;
       QString error;
 
@@ -2021,7 +2183,7 @@ bool US_DataModel::verify_rows( int index )
          continue;                   // the row stays unverified
       }
 
-      QString loc = file_digest( desc.filename );
+      QString loc = local_digest( desc );
 
       if ( loc.isEmpty() )
       {
@@ -3115,6 +3277,7 @@ void US_DataModel::dummy_data()
    batch_runs.clear();
    stale_runs.clear();
    run_taken.clear();
+   acted    .clear();
    errors   .clear();
    db_failed  = false;
    stopped    = false;
