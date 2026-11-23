@@ -296,11 +296,12 @@ bool US_DataPubExporter::finishEntity( US_DataPubEntity& entity,
 
 bool US_DataPubExporter::stageSpectra(
       US_DataPubEntity& entity,
-      const QMap< QString, QMap< double, double > >& spectra, QString& error )
+      const QMap< QString, QMap< double, double > >& spectra, QString& error,
+      bool always )
 {
    error.clear();
 
-   bool any = false;
+   bool any = always;
 
    for ( auto it = spectra.constBegin(); it != spectra.constEnd(); ++it )
       if ( ! it.value().isEmpty() )  any = true;
@@ -2175,13 +2176,33 @@ bool US_DataPubExporter::addAnalyte( US_Analyte& analyte, QString& error )
    entity.payload = US_DataPub::payloadDir( US_DataPub::Analyte ) + "/"
                     + analyte.analyteGUID + ".xml";
 
-   // The analyte file keeps six digits of each value
+   // Only measured spectra travel.  From the database the analyte holds the
+   // profile stored for it and nothing else; from disk US_Analyte's reader
+   // adds the extinction at 280 nm it computes from a protein's sequence,
+   // which a bundle would then carry as if it had been measured, so the
+   // spectra are taken from the file itself.  The main payload stays what
+   // the library writes, so that it still compares equal with the same
+   // analyte a target wrote; the spectra payload is what an import stores,
+   // and an analyte always has one -- empty when nothing was measured.
    US_DataPubRecords::Spectra spectra;
-   spectra.insert( "extinction",   analyte.extinction   );
-   spectra.insert( "refraction",   analyte.refraction   );
-   spectra.insert( "fluorescence", analyte.fluorescence );
 
-   if ( ! stageSpectra( entity, spectra, error ) )  return false;
+   if ( catalog.isDb() )
+   {
+      spectra.insert( "extinction",   analyte.extinction   );
+      spectra.insert( "refraction",   analyte.refraction   );
+      spectra.insert( "fluorescence", analyte.fluorescence );
+   }
+
+   else if ( ! US_DataPubRecords::readAnalyteSpectra(
+                  US_Settings::dataDir() + "/analytes", analyte.analyteGUID,
+                  spectra ) )
+   {
+      error = tr( "The file of analyte %1 cannot be read for its spectra" )
+              .arg( analyte.analyteGUID );
+      return false;
+   }
+
+   if ( ! stageSpectra( entity, spectra, error, true ) )  return false;
 
    if ( stage_payloads )
    {

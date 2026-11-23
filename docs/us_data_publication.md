@@ -208,9 +208,17 @@ added because a local store keeps that information elsewhere, or rounds it:
   so that they read back as the same double. It is
   `US_DataPubRecords::writeSpectra()` / `readSpectra()`; the reader refuses
   another root, an unknown or repeated spectrum, a point that is not a pair
-  of finite numbers and a wavelength listed twice. A record without spectra
-  has no such file. The main payload keeps its own, rounded, copy, so a
-  bundle still reads as a local store.
+  of finite numbers and a wavelength listed twice. A buffer or solution
+  without spectra has no such file; an **analyte always has one**, empty when
+  nothing was measured, and it holds only measured spectra: from the database
+  the profile stored for the analyte, from disk the `<extinction>`,
+  `<refraction>` and `<fluorescence>` elements the analyte file really holds
+  (`US_DataPubRecords::readAnalyteSpectra()`) — not the 280 nm value
+  `US_Analyte`'s reader computes from a protein's sequence. The main payload
+  keeps the library writer's own copy (rounded, and for a protein read from
+  disk with that computed point), so a bundle still reads as a local store
+  and compares equal with the same record of a target; an import takes the
+  spectra from the spectra payload.
 * `experiment/<runID>.RIProfile.xml` — the radial intensity profile an RI
   (pseudo-absorbance) run is reduced with, in the format of the local
   `<runID>.RIProfile.xml`. On disk it is the file in the run directory; from

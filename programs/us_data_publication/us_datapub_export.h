@@ -283,10 +283,11 @@ class US_DataPubExporter : public QObject
       bool finishEntity( US_DataPubEntity&, const QString& stagedPath,
                          QString& error );
       //! Stage the spectra of a record as its \c spectraPayload, when it
-      //! has any
+      //! has any -- or, with \a always, also an empty one, which says that
+      //! the record has no measured spectrum
       bool stageSpectra( US_DataPubEntity&,
                          const QMap< QString, QMap< double, double > >&,
-                         QString& error );
+                         QString& error, bool always = false );
       /*! The RI intensity profile column of a database run's experiment
           record, as stored; empty when there is none or it cannot be read
       */

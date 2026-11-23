@@ -2342,3 +2342,62 @@ TEST_F( DataPubExportSteps, TheStoredRIProfileIsCopiedByteForByte )
    ASSERT_TRUE( staged.open( QIODevice::ReadOnly ) );
    EXPECT_EQ( staged.readAll(), rip );
 }
+
+// Only what an analyte file holds is a measured spectrum: US_Analyte's
+// reader adds the extinction at 280 nm it computes from a protein's
+// sequence, which must not travel as if it had been measured
+TEST_F( DataPubExport, AnAnalyteCarriesOnlyItsMeasuredSpectrum )
+{
+   auto exportedSpectrum = [ this ]( QMap< double, double >& spectrum )
+   {
+      US_DataPubExporter exporter;
+      QString            bundle = root + "/analyte.tar.gz";
+      QString            error;
+
+      if ( ! exporter.exportBundle( baseSelection( US_DataPub::ScopeSolutions ),
+                                    bundle, error ) )
+         return false;
+
+      US_DataPubEntity entity;
+      US_DataPubBundle unpacked;
+
+      if ( ! exporter.manifest().entity( US_DataPub::Analyte, analyteGUID,
+                                         entity )  ||
+           entity.attrs.value( "spectraPayload" ).isEmpty()  ||
+           ! unpacked.unpack( bundle, error ) )
+         return false;
+
+      US_DataPubRecords::Spectra spectra;
+      bool ok = US_DataPubRecords::readSpectra( unpacked.rootPath() + "/"
+                   + entity.attrs.value( "spectraPayload" ), spectra );
+      spectrum = spectra.value( "extinction" );
+      return ok;
+   };
+
+   // A protein with no spectrum: what the reader makes of it has a point
+   US_Analyte read;
+   QString    apath = file_with_guid( dataDir( "analytes" ), analyteGUID );
+   ASSERT_EQ( read.readFromFile( apath ), IUS_DB2::OK );
+   ASSERT_TRUE( read.extinction.contains( 280.0 ) );
+
+   QMap< double, double > spectrum;
+   ASSERT_TRUE( exportedSpectrum( spectrum ) );
+   EXPECT_TRUE( spectrum.isEmpty() ) << spectrum.size();
+
+   // A measured one comes as it is, with no computed point added
+   QFile file( apath );
+   ASSERT_TRUE( file.open( QIODevice::ReadOnly ) );
+   QString xml = QString::fromUtf8( file.readAll() );
+   file.close();
+   ASSERT_TRUE( xml.contains( "</analyte>" ) );
+   xml.replace( "</analyte>", "<extinction frequency=\"230.5\" value=\"1234.5\"/>"
+                              "</analyte>" );
+   ASSERT_TRUE( file.open( QIODevice::WriteOnly | QIODevice::Truncate ) );
+   file.write( xml.toUtf8() );
+   file.close();
+
+   ASSERT_TRUE( exportedSpectrum( spectrum ) );
+   QMap< double, double > want;
+   want.insert( 230.5, 1234.5 );
+   EXPECT_EQ( spectrum, want );
+}

@@ -734,6 +734,71 @@ bool US_DataPubRecords::readBufferConcentrations( const QString& filename,
 
 // ------------------------------------------------------------------ spectra
 
+bool US_DataPubRecords::readAnalyteSpectra( const QString& dir,
+                                            const QString& guid,
+                                            Spectra& spectra )
+{
+   spectra.clear();
+
+   QStringList names = QDir( dir ).entryList( QStringList( "A*.xml" ),
+                                              QDir::Files, QDir::Name );
+
+   for ( int ii = 0; ii < names.size(); ii++ )
+   {
+      QFile file( dir + "/" + names[ ii ] );
+
+      if ( ! file.open( QIODevice::ReadOnly ) )  continue;
+
+      QXmlStreamReader xml( &file );
+      bool             inside = false;
+      bool             found  = false;
+      Spectra          read;
+
+      while ( ! xml.atEnd() )
+      {
+         xml.readNext();
+
+         QString ename = xml.name().toString();
+
+         if ( xml.isEndElement()  &&  ename == "analyte"  &&  inside )
+            break;
+
+         if ( ! xml.isStartElement() )  continue;
+
+         if ( ename == "analyte" )
+         {
+            inside = ( xml.attributes().value( "analyteGUID" ).toString()
+                       == guid );
+            found  = found  ||  inside;
+            continue;
+         }
+
+         if ( ! inside )  continue;
+
+         if ( ename == "extinction"  ||  ename == "refraction"  ||
+              ename == "fluorescence" )
+         {
+            QXmlStreamAttributes a = xml.attributes();
+            read[ ename ].insert(
+               a.value( "frequency" ).toString().toDouble(),
+               a.value( "value"     ).toString().toDouble() );
+         }
+      }
+
+      bool failed = xml.hasError();
+      file.close();
+
+      if ( ! found )  continue;
+
+      if ( failed )  return false;
+
+      spectra = read;
+      return true;
+   }
+
+   return false;
+}
+
 QStringList US_DataPubRecords::spectrumNames( void )
 {
    return QStringList() << "extinction" << "refraction" << "fluorescence";

@@ -222,6 +222,22 @@ class US_DataPubRecords
       static bool readSpectra( const QString& filename, Spectra& spectra,
                                QString* why = nullptr );
 
+      /*! \brief The spectra an analyte file of a local store really holds
+
+          US_Analyte's reader adds the extinction at 280 nm it computes from
+          a protein's sequence (0 without one) to what the file says, so its
+          map cannot tell a measured spectrum from none.  This reads the
+          \c extinction, \c refraction and \c fluorescence elements of the
+          \c analyte element with the given GUID, and nothing else.
+          \param dir     The directory holding the A*.xml analyte files
+          \param guid    The analyteGUID to look for
+          \param spectra Filled in with the spectra (empty ones left out)
+          \returns False when no file there holds that analyte, or the file
+                   holding it is not well-formed
+      */
+      static bool readAnalyteSpectra( const QString& dir, const QString& guid,
+                                      Spectra& spectra );
+
       /*! \brief The date of a record as the digits "yyyy-MM-dd"
 
           Locale-independent: Qt 5 formats a date with the system locale,

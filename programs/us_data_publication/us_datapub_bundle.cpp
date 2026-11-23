@@ -252,9 +252,15 @@ bool US_DataPubBundle::pack( const QString& archivePath, QString& error )
       {
          QString rel = relPaths[ ii ];
 
+         // Two reads that both failed give two empty digests, which are
+         // equal; a digest that could not be taken is a failure
+         QString packedDigest;
+         QString stagedDigest;
+
          if ( packed.value( rel, -1 ) != staged.value( rel )  ||
-              US_DataPubHash::fileHash( verifyDir + "/" + rel ) !=
-              US_DataPubHash::fileHash( staging + "/" + rel ) )
+              ! US_DataPub::fileSha256( verifyDir + "/" + rel, packedDigest )  ||
+              ! US_DataPub::fileSha256( staging + "/" + rel, stagedDigest )  ||
+              packedDigest.isEmpty()  ||  packedDigest != stagedDigest )
             missing << rel;
       }
    }

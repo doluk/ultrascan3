@@ -2532,12 +2532,10 @@ TEST_F( DataPubMockSpectra, ASolutionsOwnProfileGoesInWithIt )
 }
 
 // End to end: a protein the source holds without a spectrum gets no
-// profile in the target.  Disabled until the export stops staging the
-// 280 nm value US_Analyte's disk reader computes from the sequence as if it
-// were a measured spectrum (US_DataPubExporter::addAnalyte stages
-// analyte.extinction as read); the import side is covered by
-// DataPubMockSpectra above.
-TEST_F( DataPubMockRoundTrip, DISABLED_AProteinWithoutASpectrumStaysWithout )
+// profile in the target: the export carries only the spectra the analyte
+// file holds, not the 280 nm value US_Analyte's disk reader computes from
+// the sequence; the import side is covered by DataPubMockSpectra above.
+TEST_F( DataPubMockRoundTrip, AProteinWithoutASpectrumStaysWithout )
 {
    US_DataPubImporter importer;
    QString            error;
