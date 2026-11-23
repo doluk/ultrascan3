@@ -510,12 +510,29 @@ void US_Buffer::putSpectrum( IUS_DB2* db, const QString& type ) const
    }
 }
 
+QStringList US_Buffer::componentIdList( void ) const
+{
+   if ( component.isEmpty() )
+   {
+      return componentIDs;
+   }
+
+   QStringList ids;
+   for ( const US_BufferComponent& bc : component )
+   {
+      ids << bc.componentID;
+   }
+   return ids;
+}
+
 bool US_Buffer::writeToDisk( const QString& filename ) const
 {
+   const QStringList ids = componentIdList();
+
    // Every component needs its concentration.  Writing 0 for a missing one
    // would save a different buffer than this one, which reads back as
    // valid; so such a buffer is refused, before the file is touched.
-   if ( concentration.size() < qMax( componentIDs.size(), component.size() ) )
+   if ( concentration.size() < ids.size() )
    {
       qDebug() << "Cannot write buffer" << GUID << "to" << filename
                << ": a component has no concentration";
@@ -547,15 +564,9 @@ bool US_Buffer::writeToDisk( const QString& filename ) const
    xml.writeAttribute( "compressibility", exact_number( compressibility ) );
    xml.writeAttribute( "manual"     , US_Util::bool_string( manual ) );
 
-   // A buffer read from disk has its component IDs and no component
-   // details, and one built from the components may have only those, so
-   // the components are counted by whichever of the two is filled.
-   const int ncomp = qMax( componentIDs.size(), component.size() );
-
-   for ( int i = 0; i < ncomp; i++ )
+   for ( int i = 0; i < ids.size(); i++ )
    {
-      const QString id = ( i < componentIDs.size() ) ? componentIDs[ i ]
-                                                     : component[ i ].componentID;
+      const QString id = ids[ i ];
       const double  cc = concentration[ i ];
 
       xml.writeStartElement( "component" );
@@ -675,7 +686,6 @@ int US_Buffer::saveToDB( IUS_DB2* db, const QString private_buffer, QString* err
    q << "get_bufferID" << GUID;
    db->query( q );
 
-   int     ncomp    = component.size();
    int     status   = db->lastErrno();
    QString descrip  = description;
    int     manx     = descrip.indexOf( "  [M]" );
@@ -692,6 +702,21 @@ int US_Buffer::saveToDB( IUS_DB2* db, const QString private_buffer, QString* err
       }
       qDebug() << "get_bufferID error=" << status;
       return -9;
+   }
+
+   // A buffer read from disk has only componentIDs; its components are
+   // stored all the same.  One without a concentration for each is not
+   // this buffer, and is refused before anything is written.
+   const QStringList ids = componentIdList();
+   if ( concentration.size() < ids.size() )
+   {
+      if ( error != nullptr )
+      {
+         *error = QObject::tr( "The buffer has %1 components but %2 concentrations." )
+                     .arg( ids.size() )
+                     .arg( concentration.size() );
+      }
+      return -4;
    }
 
    // Transaction control drains query results: capture the existing ID first.
@@ -806,12 +831,12 @@ int US_Buffer::saveToDB( IUS_DB2* db, const QString private_buffer, QString* err
 
    qDebug() << "bufferID before adding components called: " << bufferID;
 
-   for ( int i = 0; i < ncomp; i++ )
+   for ( int i = 0; i < ids.size(); i++ )
    {
       q.clear();
       q << "add_buffer_component"
         << bufferID
-        << component[ i ].componentID
+        << ids[ i ]
         << QString::number( concentration[ i ], 'f', 5 );
       db->statusQuery( q );
 
@@ -955,8 +980,11 @@ void US_Buffer::readBuffer( QXmlStreamReader& xml )
    viscosity       = a.value( "viscosity"   ).toString().toDouble();
    manual          = US_Util::bool_flag( a.value( "manual" ).toString() );
 
+   // A buffer object used before keeps nothing of what it held: the
+   // components of another buffer would be counted with these IDs
    concentration.clear();
    componentIDs .clear();
+   component    .clear();
 
    while ( ! xml.atEnd() )
    {

@@ -116,6 +116,14 @@ class US_UTIL_EXTERN US_Buffer
       // Constructor of a null buffer
       US_Buffer();
 
+      //! \brief The IDs of the buffer's components, in the order of
+      //!        \ref concentration
+      //!
+      //! A buffer read from the database or built in the buffer dialog has
+      //! \ref component, and its IDs are those; one read from disk has only
+      //! \ref componentIDs.  Every writer counts the components this way.
+      QStringList componentIdList( void ) const;
+
       //! \brief Write the buffer to a disk file
       //!
       //! Every number is written as the shortest text that reads back as
