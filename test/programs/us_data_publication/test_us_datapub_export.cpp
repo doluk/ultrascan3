@@ -2191,11 +2191,12 @@ TEST_F( DataPubExportSteps, SpectraAndConcentrationsTravelAtFullPrecision )
    ASSERT_EQ( concs.size(), 1 );
    EXPECT_EQ( concs[ 0 ], 0.005 );
 
-   // The library writers' own files are still there, and still round
+   // The library writer's own file is there too, and now keeps the
+   // spectra whole as well
    US_Buffer written;
    ASSERT_TRUE( written.readFromDisk(
                 US_DataPubExporterTest::staged( exporter, buffer.payload ) ) );
-   EXPECT_NE( written.extinction, solution.buffer.extinction );
+   EXPECT_EQ( written.extinction, solution.buffer.extinction );
 }
 
 // A record without spectra carries no spectra payload

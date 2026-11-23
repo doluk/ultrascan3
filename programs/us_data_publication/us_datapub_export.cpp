@@ -1961,7 +1961,8 @@ bool US_DataPubExporter::addBuffer( US_Buffer& buffer, QString& error )
       entity.attrs.insert( "components", QString::number( comps.size() ) );
    }
 
-   // The buffer file rounds its spectra; the bundle carries them whole
+   // The bundle carries the spectra whole in a payload of their own: buffer
+   // files written before the library kept full precision rounded them
    US_DataPubRecords::Spectra spectra;
    spectra.insert( "extinction",   buffer.extinction   );
    spectra.insert( "refraction",   buffer.refraction   );
@@ -1979,8 +1980,8 @@ bool US_DataPubExporter::addBuffer( US_Buffer& buffer, QString& error )
          return false;
       }
 
-      // ... and its concentrations, which it keeps to five decimals, go
-      // with the component definitions at full precision
+      // ... and its concentrations go with the component definitions at
+      // full precision (older buffer files kept five decimals)
       if ( ! comps.isEmpty()  &&
            ! US_DataPubRecords::writeBufferComponents( comps,
                 buffer.concentration,
