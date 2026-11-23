@@ -13,12 +13,14 @@
 //! archive is refused as a whole, before anything is written, when an entry
 //! - has an absolute path, a drive letter, or a ".." component, or a path
 //!   that does not stay inside the destination once cleaned;
-//! - has a name Windows cannot hold: a ':' anywhere, a component that ends
-//!   in '.' or ' ', or a component named for a device (CON, PRN, AUX, NUL,
-//!   COM1-9, LPT1-9, in any case and with any extension);
+//! - has a name Windows cannot hold: a ':', '<', '>', '"', '|', '?', '*'
+//!   or a control character anywhere, a component that ends in '.' or ' ',
+//!   or a component named for a device (CON, PRN, AUX, NUL, COM1-9,
+//!   LPT1-9, in any case and with any extension);
 //! - has the same name as an earlier entry, or a name that differs from
-//!   another (or from a directory above another) only in case, which a
-//!   case-insensitive file system would write to one place;
+//!   another (or from a directory above another) only in case or in Unicode
+//!   normalization (an accent composed or decomposed), which a
+//!   case-insensitive file system, or macOS, would write to one place;
 //! - is anything but a regular file or a directory: symbolic links, hard
 //!   links, devices, FIFOs and sockets are all refused, unless
 //!   \ref setSkipLinks is on, when they are passed over (see below);
@@ -38,8 +40,17 @@
 //! programs used to pass over them.  \ref setSkipLinks( true ) keeps that
 //! behaviour for them: such entries are not written, each one is noted in
 //! \ref skippedEntries and announced by \ref itemSkipped, and the rest of
-//! the archive is extracted.  Every other check still applies.  Refusing
-//! the archive is the default.
+//! the archive is extracted.  Every other check still applies, the name
+//! rules included: skipping is about what kind of entry is written, and a
+//! name that is refused on Windows is refused everywhere, so an archive
+//! extracts the same on every platform.  UltraScan's own archives name
+//! their files after run IDs and record files, which the rules accept.
+//! Refusing the archive is the default.
+//!
+//! An extracted file that is already in the destination is overwritten and
+//! keeps its permissions; a new one is created with the process's default
+//! permissions.  Paths are opened in a form that holds any Unicode name on
+//! every platform (the wide-character calls on Windows).
 class US_UTIL_EXTERN US_Archive : public QObject
 {
     Q_OBJECT
@@ -65,8 +76,9 @@ public:
 
     //! \brief True when an archive entry name may be extracted below a
     //!        destination: relative, no ".." component, and nothing
-    //!        Windows cannot hold -- no ':', no component ending in '.' or
-    //!        ' ', no component named for a device (CON, NUL, COM1, ...).
+    //!        Windows cannot hold -- no ':', '<', '>', '"', '|', '?', '*' or
+    //!        control character, no component ending in '.' or ' ', no
+    //!        component named for a device (CON, NUL, COM1, ...).
     //! \param name The entry name, as stored in the archive
     static bool safeEntryName( const QString& name );
 

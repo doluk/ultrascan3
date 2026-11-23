@@ -5,6 +5,9 @@
 
 #include <QRegularExpression>
 
+#include <cstdint>
+#include <string>
+
 namespace
 {
 // The entry name, or an empty string when the archive gives none
@@ -32,8 +35,17 @@ struct archive* open_reader( const QString& filename, QString& error )
     archive_read_support_format_all( archive );
     archive_read_support_filter_all( archive );
 
-    if ( archive_read_open_filename( archive, filename.toUtf8().constData(),
-                                     10240 ) != ARCHIVE_OK )
+#ifdef Q_OS_WIN
+    // The narrow form takes the ANSI code page there, which cannot name
+    // every path; the wide one can
+    const std::wstring wide = filename.toStdWString();
+    const int opened = archive_read_open_filename_w( archive, wide.c_str(), 10240 );
+#else
+    const int opened = archive_read_open_filename(
+                          archive, QFile::encodeName( filename ).constData(), 10240 );
+#endif
+
+    if ( opened != ARCHIVE_OK )
     {
         error = QObject::tr( "US_Archive: Error: %1: %2" )
                 .arg( archive_error_string( archive ), filename );
@@ -90,6 +102,36 @@ QStringList name_parts( const QString& name )
     return parts;
 }
 
+// True when a name holds a character Windows does not allow in a file
+// name: < > " | ? * and the control characters.  ':' and the separators are
+// dealt with on their own.
+bool windows_illegal( const QString& name )
+{
+    for ( const QChar ch : name )
+    {
+        if ( ch.unicode() < 0x20 )
+            return true;
+
+        switch ( ch.unicode() )
+        {
+            case '<': case '>': case '"': case '|': case '?': case '*':
+                return true;
+            default:
+                break;
+        }
+    }
+
+    return false;
+}
+
+// The key two names that land on one file share: a case-insensitive file
+// system folds case, and macOS also does not tell the composed and the
+// decomposed spelling of one accented name apart
+QString collision_key( const QString& path )
+{
+    return path.normalized( QString::NormalizationForm_C ).toCaseFolded();
+}
+
 // True when Windows keeps a component's name for a device: CON, PRN, AUX,
 // NUL, COM1-9 and LPT1-9, in any case, with or without an extension
 bool device_name( const QString& part )
@@ -124,6 +166,10 @@ bool US_Archive::safeEntryName( const QString& name )
 
     // A drive letter, or an NTFS stream, anywhere
     if ( name.contains( ':' ) )
+        return false;
+
+    // Characters no Windows file name may hold
+    if ( windows_illegal( name ) )
         return false;
 
     const QStringList parts = name_parts( name );
@@ -246,7 +292,7 @@ bool US_Archive::check_entries( const QString& filename, const QDir& dir )
             path += ( ii == 0 ? QString() : QString( "/" ) ) + parts[ ii ];
 
             const bool    dirHere = isDir  ||  ii < parts.size() - 1;
-            const QString folded  = path.toCaseFolded();
+            const QString folded  = collision_key( path );
 
             if ( ! seen.contains( folded ) )
             {
@@ -258,7 +304,8 @@ bool US_Archive::check_entries( const QString& filename, const QDir& dir )
 
             if ( prior.first != path )
                 error = QObject::tr( "US_Archive: Error: refusing \"%1\": it differs"
-                                     " from \"%2\" only in case" )
+                                     " from \"%2\" only in case or in how its"
+                                     " accents are encoded" )
                         .arg( name, prior.first );
 
             else if ( ! prior.second  ||  ! dirHere )
@@ -409,8 +456,9 @@ bool US_Archive::extract(const QString& filename, const QString& path, QStringLi
                 return false;
             }
 
+            // A file that is already there keeps its permissions; a new one
+            // gets the ones the process creates files with
             QFile file(target.absoluteFilePath());
-            file.setPermissions(QFileDevice::WriteOwner);
             if (! file.open(QIODevice::WriteOnly)) {
                 error = "US_Archive: Error: Failed to open file: " + target.absolutePath();
                 close_reader( archive );
@@ -419,7 +467,7 @@ bool US_Archive::extract(const QString& filename, const QString& path, QStringLi
 
             const void *buff;
             size_t size;
-            la_int64_t offset;
+            int64_t offset;
             qint64 written = 0;
             int block;
             //Read data blocks with a buffer to write them in a file
@@ -602,7 +650,12 @@ bool US_Archive::compress(const QStringList& list, QString& filename) {
     }
 
     // Create archive file
-    result = archive_write_open_filename(archive, filename.toUtf8().constData());
+#ifdef Q_OS_WIN
+    const std::wstring wide = filename.toStdWString();
+    result = archive_write_open_filename_w(archive, wide.c_str());
+#else
+    result = archive_write_open_filename(archive, QFile::encodeName(filename).constData());
+#endif
     if (result != ARCHIVE_OK) {
         error = QObject::tr("US_Archive: Error: Failed to create archive file: %1").arg(archive_error_string(archive));
         archive_write_free(archive);
@@ -646,9 +699,9 @@ bool US_Archive::compress(const QStringList& list, QString& filename) {
             if (block.isEmpty()) {
                 break;
             }
-            const la_ssize_t sent = archive_write_data(archive, block.constData(),
-                                                       static_cast<size_t>(block.size()));
-            if (sent != static_cast<la_ssize_t>(block.size())) {
+            const auto sent = archive_write_data(archive, block.constData(),
+                                                 static_cast<size_t>(block.size()));
+            if (static_cast<int64_t>(sent) != static_cast<int64_t>(block.size())) {
                 error = QObject::tr("US_Archive: Error: Failed to write %1: %2")
                         .arg(absolute, archive_error_string(archive));
                 written = false;
