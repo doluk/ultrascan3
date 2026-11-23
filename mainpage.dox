@@ -217,7 +217,6 @@
         - \ref US_DataModel
         - \ref US_DataProcess
         - \ref US_DataTree
-        - \ref US_SyncExperiment
     - \ref US_ModelMetrics
     - \ref US_MPI_Analysis
     - \ref US_MwlPlotControl
