@@ -13,6 +13,7 @@
 #include "us_convertio.h"
 #include "us_project.h"
 #include "us_buffer.h"
+#include "us_analyte.h"
 #include "us_rotor.h"
 #include "us_hardware.h"
 
@@ -146,8 +147,10 @@ class US_DataPubConflictResolver
     use, but never the copy in the local disk store some of those writers
     make, so it writes nothing outside the bundle's own staging directory.  A disk import
     writes files as it goes; on a failure the files already written stay,
-    and \ref outcome lists them.  It never changes the installation's
-    buffer component table: a buffer's components have to be in it already.
+    and \ref outcome lists them.  A disk import never changes the
+    installation's buffer component table: a buffer's components have to be
+    in it already.  A database import adds a component its table lacks, and
+    finds the new row again by its definition.
 */
 class US_DataPubImporter : public QObject
 {
@@ -190,9 +193,15 @@ class US_DataPubImporter : public QObject
                 project and the hardware (so --strict-hardware fails it as
                 it would fail the import), leaves out a calibration whose
                 rotor the target lacks, and checks that every solution, time
-                state and triple has what it needs.  Only what the writes
-                themselves can find -- a constraint the server enforces, a
-                record someone else writes in the meantime -- is left.
+                state and triple has what it needs.  Like the import's
+                preflight it checks the rules the server enforces on the
+                writes (see checkServerRules(): calibrations need an
+                administrator, components level 2, analytes and private
+                buffers of others are copied, channel 1, an edit for every
+                noise record; and, as runs are prepared, the operator's
+                permit).  Only what the writes themselves can find -- a lost
+                connection, a record someone else writes in the meantime --
+                is left.
             */
             bool    dryRun;
 
@@ -585,6 +594,12 @@ class US_DataPubImporter : public QObject
       //!        the terms \ref targetFingerprint writes the target's in
       QString ourFingerprint( const US_DataPubEntity&, const QString& workPath,
                               QString& error );
+
+      //! \brief The fingerprint of an analyte as it is stored: without the
+      //!        line breaks of its file's sequence, and without the 280 nm
+      //!        value US_Analyte computes from a protein's sequence when
+      //!        that is the value it holds.  Both sides of a comparison.
+      QString analyteFingerprint( US_Analyte& analyte, const QString& fileName );
 
       //! \brief The edit a noise record is filed under; empty when there
       //!        is none.  \a pending is set for an edit this import creates.

@@ -824,9 +824,18 @@ precision, or, in an older bundle without one, the `<extinction>` elements of
 the record's own XML. `US_Analyte`'s reader adds the extinction at 280 nm that
 it computes from a protein's sequence; that value is not part of the record,
 so a protein without a spectrum gets no profile, and a measured spectrum keeps
-the points it has. A buffer's component concentrations are taken at full
+the points it has. An older bundle stored a protein as `US_Analyte` wrote it,
+computed point included: a lone point at 280 nm in such a bundle's analyte
+XML is taken for that computed value and not stored (a measured 280 nm value
+inside a spectrum of more points is kept). Its values have to be finite
+numbers, or the bundle is refused before anything is written. A sequence is
+stored without the newlines `US_Analyte`'s files put around and into it.
+When an analyte is compared with one of the target, both are put in those
+terms: the sequence without the file's line breaks, and the extinction
+without the 280 nm value computed from the sequence where that is the value
+held. A buffer's component concentrations are taken at full
 precision from the `concentration` of each component in its
-`componentsPayload` (an older bundle has only the buffer file's five
+`componentsPayload`, matched by the source's component ID (an older bundle has only the buffer file's five
 decimals); the database column is a `FLOAT`. A disk store has no place for a
 solution's profile, so a disk import leaves it out and says so.
 The library writers store a profile only for a spectrum they were told is new,
@@ -836,6 +845,17 @@ in the bundle's own staging directory, removed with it.
 A disk import writes files as it goes. When it fails part way, the files it
 already wrote stay, and the error lists them.
 
+An import unpacks the bundle into a private staging directory under the
+temporary directory, and holds a lock file there while it lives. The command
+line removes the directory when it is stopped by SIGTERM, SIGINT or SIGHUP;
+the next import sweeps every staging directory whose lock belongs to a
+process that is gone (after SIGKILL, a crash) and every one without a lock
+that has not changed for two days.
+
+A model's variance and meniscus are columns of its database row as well as
+attributes of its XML. When the XML has neither, a `variance` and `meniscus`
+attribute of the model's manifest entry are used.
+
 A **dry run** reads the target and decides everything, but opens no
 transaction and writes nothing — not even the output directory. Into a
 database it makes the decisions the writers make as they go: it stages each
@@ -843,9 +863,33 @@ run and checks its triples against the bundle, reads its RI profile, resolves
 its project and its hardware (so `--strict-hardware` fails a dry run that
 would need a substitute, as it fails the import), leaves out a rotor
 calibration whose rotor the target lacks, and checks that every solution and
-time state has a run of the import and every triple its solution. What only
-the writes can find is left: a constraint the server enforces, a lost
-connection, a record another session writes in the meantime.
+time state has a run of the import and every triple its solution.
+
+It also checks, as the real import's preflight does before its transaction
+opens, the rules the server would otherwise enforce only on the writes:
+
+| Rule of the server | What the import does |
+|---|---|
+| `add_rotor_calibration` takes an administrator (user level 3) | A calibration the person logged in may not add is left out with a warning (`--strict-hardware` refuses it); an administrator's import records "no calibration experiment" as `-1` |
+| `create_buffer_component` takes user level 2 | A buffer component the target lacks is refused below that level |
+| `new_solutionAnalyte` takes the investigator's own analyte (`analytePerson`), or an administrator | Another investigator's analyte of the bundle's GUID is not reused: the import makes a copy under a GUID of its own. One the bundle does not carry is refused |
+| (none: no procedure checks it) | Another investigator's *private* buffer is not linked either: the import makes a copy. A public one, or the investigator's own, is reused |
+| Raw data and solution rows name channel 1 (foreign keys) | A target without channel 1 is refused (when the channel table cannot be read, the log says the check could not be made) |
+| `new_noise` needs an edit | A noise record that comes to no edit the bundle carries or the target holds is refused, never written with edit 0 |
+| `new_experiment` takes an operator with a permit for the instrument | An operator without one is stood in for by the current investigator, or another operator who holds one, with a warning; with no permit holder at all the run is refused |
+
+So a dry run that succeeds is an import that succeeds, short of what only the
+writes can find: a lost connection, a record another session writes in the
+meantime, and a server whose `create_buffer_component` has not been updated
+and gives a new component a taken ID (it uses the row count plus one; the dry
+run warns when that ID is taken, and the import is then rolled back). The run
+hardware decisions (and so the operator check) are made as each run is
+written; a strict import that has to substitute fails there and is rolled
+back.
+
+A buffer component the import adds is found again in the component table by
+its definition, never by the ID `create_buffer_component` answers with: an
+unpatched server answers with the connection's previous insert ID.
 
 ### Which project the data lands in
 
@@ -890,8 +934,11 @@ For every record in the manifest, in dependency order:
    records (below), and both are re-serialized in a canonical form without the
    keys a copied record legitimately differs in: its own GUID, numeric record
    IDs and time stamps — an explicit list, so a property such as `solid` and
-   the GUID of a parent record still count. A record the target holds without
-   a GUID is never taken for the bundle's.
+   the GUID of a parent record still count. Only the attributes that hold
+   numbers are compared by value ("7.00000" is "7"); a name, description,
+   label or serial keeps its text. A record the target holds without
+   a GUID is never taken for the bundle's, and one that cannot be read to be
+   compared fails the import rather than be taken for a different record.
    - **Properties match** → the policy decides: `reuse` points at the existing
      record, `rename` imports a renamed copy, `fail` stops the import.
    - **Properties differ** → the record is always imported under a new name.

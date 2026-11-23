@@ -417,7 +417,16 @@ clears a chosen project; the end of an import does not.
 Into a database it makes the decisions the import would make as it writes:
 it resolves each run's project and hardware (so a strict import that would
 need a substitute fails its dry run too), leaves out a calibration whose
-rotor the target lacks, and checks every run's triples and solutions.
+rotor the target lacks, and checks every run's triples and solutions. It
+also checks, as the import does before it writes anything, what the server
+would refuse: a rotor calibration only an administrator may add (it is left
+out, with a warning), a buffer component the target lacks (adding one takes
+user level 2), another investigator's analyte or private buffer (the import
+makes a copy of its own instead), a target without channel 1, a noise record
+without an edit, and an operator without a permit for the instrument
+(another one who holds a permit is recorded, with a warning). A dry run that
+succeeds is an import that succeeds, short of a lost connection or a record
+someone else writes in the meantime.
 **Verify payload digests** checks the whole bundle before the first write; a
 bundle whose payloads do not match their digests, or carry none, is refused.
 

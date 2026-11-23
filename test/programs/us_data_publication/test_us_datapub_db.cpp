@@ -1182,6 +1182,10 @@ class DataPubDbRules : public DataPubDbImport
          QString path = US_Settings::dataDir() + "/rotors/C0000001.xml";
          ASSERT_TRUE( US_DataPubRecords::readCalibration( path, calibration ) );
          calibration.rotorGUID = rotorGUID;
+
+         // A label of its own, so that no calibration an earlier run of the
+         // test left in the target is the same one
+         calibration.label = "Demo calibration " + US_Util::new_guid().left( 8 );
          QFile::remove( path );
          ASSERT_TRUE( US_DataPubRecords::writeCalibration( calibration, path ) );
       }
@@ -1387,7 +1391,11 @@ TEST_F( DataPubDbRules, AnotherInvestigatorsChemistryIsCopied )
       ASSERT_NE( would, nullptr );
       ASSERT_NE( did,   nullptr );
       EXPECT_EQ( would->resolution, did->resolution );
-      EXPECT_EQ( did->resolution, US_DataPub::ResolvedCreated )
+      // A copy (renamed when an earlier run of the test left one of that
+      // name), or that earlier copy -- never the first investigator's record
+      EXPECT_TRUE( did->resolution == US_DataPub::ResolvedCreated  ||
+                   did->resolution == US_DataPub::ResolvedRenamed  ||
+                   did->resolution == US_DataPub::ResolvedReused )
          << US_DataPub::typeText( type ).toStdString();
       EXPECT_NE( did->targetGUID, did->guid )
          << US_DataPub::typeText( type ).toStdString();

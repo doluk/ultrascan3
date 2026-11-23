@@ -4386,8 +4386,7 @@ QString US_DataPubImporter::ourFingerprint( const US_DataPubEntity& entity,
    QString ownAttr;
    own_identity( entity.type, ownElem, ownAttr );
 
-   if ( entity.type != US_DataPub::Analyte  ||
-        opts.target != US_DataPub::TargetDb )
+   if ( entity.type != US_DataPub::Analyte )
       return US_DataPubHash::fingerprint( workPath, ownElem, ownAttr );
 
    US_Analyte             analyte;
@@ -4402,22 +4401,65 @@ QString US_DataPubImporter::ourFingerprint( const US_DataPubEntity& entity,
       return QString();
    }
 
-   analyte.sequence   = storedSequence( analyte.sequence );
    analyte.extinction = spectrum;
+
+   QString print = analyteFingerprint( analyte, "ours_analyte.xml" );
+
+   if ( print.isEmpty() )
+      error = tr( "%1 could not be written out to be compared" )
+              .arg( entity.label() );
+
+   return print;
+}
+
+/* The fingerprint of an analyte as it is stored, whichever way it was read.
+
+   The sequence loses the line breaks US_Analyte's files add, and a
+   protein's extinction loses the value at 280 nm that US_Analyte's file
+   reader computes from the sequence, when that is the value there: a copy
+   of the analyte read from a file holds it, one read from a database or
+   from a bundle's spectra does not, and it is not a property of the
+   record.  A measured 280 nm value that differs from the computed one is
+   kept.  Both sides of a comparison go through here.
+*/
+QString US_DataPubImporter::analyteFingerprint( US_Analyte& analyte,
+                                                const QString& fileName )
+{
+   analyte.sequence = storedSequence( analyte.sequence );
+
+   if ( analyte.type == US_Analyte::PROTEIN  &&
+        analyte.extinction.contains( 280.0 ) )
+   {
+      // The value the file reader computes: the analyte without a spectrum,
+      // through a file and back
+      US_Analyte probe = analyte;
+      probe.extinction.clear();
+      QString    probePath = bundle.workPath() + "/target/probe_analyte.xml";
+      QDir().mkpath( bundle.workPath() + "/target" );
+      QFile::remove( probePath );
+
+      US_Analyte computedFrom;
+      double     stored   = analyte.extinction.value( 280.0 );
+      double     computed = qQNaN();
+
+      if ( probe.write( false, probePath ) == IUS_DB2::OK  &&
+           computedFrom.readFromFile( probePath ) == IUS_DB2::OK  &&
+           computedFrom.extinction.contains( 280.0 ) )
+         computed = computedFrom.extinction.value( 280.0 );
+
+      if ( qAbs( stored - computed ) <=
+           1.0e-9 * qMax( 1.0, qMax( qAbs( stored ), qAbs( computed ) ) ) )
+         analyte.extinction.remove( 280.0 );
+   }
 
    QString workDir = bundle.workPath() + "/target";
    QDir().mkpath( workDir );
-   QString path = workDir + "/ours_analyte.xml";
+   QString path = workDir + "/" + fileName;
    QFile::remove( path );
 
-   if ( analyte.write( false, path ) != IUS_DB2::OK )
-   {
-      error = tr( "%1 could not be written out to be compared" )
-              .arg( entity.label() );
-      return QString();
-   }
+   if ( analyte.write( false, path ) != IUS_DB2::OK )  return QString();
 
-   return US_DataPubHash::fingerprint( path, ownElem, ownAttr );
+   return US_DataPubHash::fingerprint( path, "analyte", "analyteGUID" );
 }
 
 /* A centerpiece is reference hardware.  The target's own table is what the
@@ -5422,6 +5464,22 @@ QString US_DataPubImporter::targetFingerprint( US_DataPub::EntityType type,
 
          if ( attrs.value( layout.guidAttr ) != guid )  continue;
 
+         // An analyte in the terms ourFingerprint() puts the bundle's in
+         if ( type == US_DataPub::Analyte )
+         {
+            US_Analyte analyte;
+
+            if ( analyte.readFromFile( fpath ) != IUS_DB2::OK )
+            {
+               if ( lookup_error.isEmpty() )
+                  lookup_error = tr( "The target's analyte %1 could not be"
+                                     " read to be compared" ).arg( fpath );
+               return QString();
+            }
+
+            return analyteFingerprint( analyte, "their_analyte.xml" );
+         }
+
          return US_DataPubHash::fingerprint( fpath, ownElem, ownAttr );
       }
 
@@ -5466,10 +5524,15 @@ QString US_DataPubImporter::targetFingerprint( US_DataPub::EntityType type,
 
          read = ( analyte.load( true, guid, dbase ) == IUS_DB2::OK );
 
+         if ( ! read )  break;
+
          // In the terms ourFingerprint() puts the bundle's analyte in
-         analyte.sequence = storedSequence( analyte.sequence );
-         written = read  &&  ( analyte.write( false, path ) == IUS_DB2::OK );
-         break;
+         QString print = analyteFingerprint( analyte, "their_analyte.xml" );
+
+         if ( print.isEmpty() )  break;
+
+         print_cache.insert( key, print );
+         return print;
       }
 
       case US_DataPub::Solution:
