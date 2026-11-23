@@ -267,6 +267,43 @@ TEST_F( DataPubCli, AnUnreadablePasswordFileFailsWithOneError )
 #endif
 }
 
+// An empty password was given, and is no use: that is a failure (1), as an
+// unreadable password file is, not a usage error (2), and it is said once
+TEST_F( DataPubCli, AnEmptyPasswordFailsWithOneError )
+{
+#if defined( Q_OS_UNIX )
+   QString path = root + "/pw_empty.txt";
+   QFile   file( path );
+   ASSERT_TRUE( file.open( QIODevice::WriteOnly ) );
+   file.write( "\n" );
+   file.close();
+   QFile::setPermissions( path, QFileDevice::ReadOwner |
+                                QFileDevice::WriteOwner );
+
+   QString errText;
+
+   EXPECT_EQ( runCapturing( QStringList() << "--mode" << "export"
+                            << "--source" << "db" << "--experiment-id" << runID
+                            << "--db-password-file" << path
+                            << "--non-interactive" << "--dry-run", errText ),
+              1 );
+   EXPECT_EQ( errText.count( "Error:" ), 1 ) << errText.toStdString();
+   EXPECT_TRUE( errText.contains( "empty password" ) ) << errText.toStdString();
+
+   qputenv( "US3_DB_PASSWORD", "\r\n" );
+   int code = runCapturing( QStringList() << "--mode" << "export"
+                            << "--source" << "db" << "--experiment-id" << runID
+                            << "--non-interactive" << "--dry-run", errText );
+   qunsetenv( "US3_DB_PASSWORD" );
+
+   EXPECT_EQ( code, 1 );
+   EXPECT_EQ( errText.count( "Error:" ), 1 ) << errText.toStdString();
+   EXPECT_TRUE( errText.contains( "US3_DB_PASSWORD" ) ) << errText.toStdString();
+#else
+   GTEST_SKIP() << "the error output is captured on Unix only";
+#endif
+}
+
 TEST_F( DataPubCli, APasswordFileThatIsADirectoryIsNotRead )
 {
    QString pw, warning, error;

@@ -1099,8 +1099,9 @@ From a file, the environment and the prompt alike only the line end that ends
 the password — one `\n`, `\r\n` or `\r` — is removed; spaces are part of it,
 and all three are read as UTF-8 (the environment variable as the text the
 system holds, so a non-ASCII password survives on Windows too). A password
-file that cannot be read is reported once and an export exits with `1`; no
-password at all is a usage error (`2`). The prompt keeps the terminal quiet
+file that cannot be read, and an empty password from the file, the environment
+or the prompt, is reported once and the run exits with `1`; no password at all
+is a usage error (`2`). The prompt keeps the terminal quiet
 across Ctrl-Z: a stopped and continued prompt goes on reading without echo,
 and a signal that does not end the program does not leave it echoing either.
 | `--dry-run` | Decide everything, write nothing |
