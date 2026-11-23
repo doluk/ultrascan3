@@ -92,6 +92,43 @@
     | ExperimentTier  | get_{rawData,editedData}_by_experiment, get_{model,noise}_desc_by_experiment | one query per record |
     | StoreTier       | get_{rawData,editedData}_by_person           | all_rawDataIDs, all_editedDataIDs          |
 
+    Every database ID the catalog gives -- a record's own, and its
+    parent's -- is the ID, or "-1" when there is none: the procedures give
+    NULL or 0 for none, and those are not passed on as "" or "0".  Edit::editID,
+    the edit's time stamp, is not an ID.
+
+    \section catalog_noise_counts Where noise is counted
+
+    A noise record is recorded against an edit (noise.editedDataID) and
+    belongs to the model it was fitted with (noise.modelID).  The two are
+    usually of one experiment, but a global fit's noise is recorded against
+    the edit of each data set while its model is fitted to the first, or to
+    the special UNASSIGNED edit (editedDataID 1, editGUID all zeros), which
+    belongs to no experiment.  The catalog files noise under its model, so:
+
+    - an experiment's \ref Run::noiseCount, once it is loaded, is the number
+      of noise records whose model is under one of its edits, wherever the
+      noise was recorded;
+    - get_experiment_summary counts the same (noise -> model -> edit -> raw
+      data -> experiment) in the current catalog procedures, so loading an
+      experiment does not change its noise count.  The first version of
+      those procedures counted noise by the edit it was recorded against;
+      against such a server the count of an experiment holding such noise
+      changes when it is loaded;
+    - a per-experiment read (\ref loadRunDetail) gets the noise the server
+      lists with the experiment.  When its count then differs from the
+      listing's -- the first catalog procedures list noise by the edit it
+      was recorded against, so noise of a model here recorded elsewhere is
+      not among it -- the investigator's noise listing (get_noise_desc) is
+      read, once, and kept, and the noise of this experiment's models is
+      taken from it, so an experiment read alone has its full count;
+    - noise of a model on the UNASSIGNED edit is counted under no
+      experiment.  \ref loadAll lists that model in Orphans::models -- its
+      edit is not in the store -- with its noise in Model::noises, and
+      \ref noisesOfModel finds the noise by the model's GUID.  A
+      per-experiment read (\ref loadRunDetail) that lists such noise with
+      the edit it was recorded against keeps it aside, under no model.
+
     A procedure is missing when the server answers ER_SP_DOES_NOT_EXIST
     (1305).  ER_PROCACCESS_DENIED (1370) is treated the same way: the
     server gives it for a procedure the account may not run, and also for
@@ -276,9 +313,10 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
 
             //! How much of this experiment was read.  Once it is
             //! \ref Loaded the four counts above are what hangs under the
-            //! experiment in the chain, which may differ from what the
-            //! listing said: the server counts noise by the edit it was
-            //! recorded against, the chain by the model it belongs to.
+            //! experiment in the chain.  The listing counts the same, noise
+            //! by its model's experiment (see \ref catalog_noise_counts),
+            //! except on a server with the first catalog procedures, which
+            //! count noise by the edit it was recorded against.
             Detail  detail;
 
             //! True once the raw-data and edit checksums of this
@@ -329,12 +367,19 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
           apart from a missing one.  It reads the store even when no
           experiment is listed, and then everything in it is here.
 
+          A model of a global fit on the UNASSIGNED edit (Model::editID "1")
+          is here too, with its noise: it is not broken, and a program that
+          cleans up should not offer to delete it as if it were (see
+          \ref catalog_noise_counts).
+
           A database read of one experiment (\ref loadRunDetail) reads the
-          noise recorded against the experiment's edits.  Noise of a model
-          in another experiment is hung under that model, as loadAll hangs
+          noise the server lists with the experiment.  Noise of a model in
+          another experiment is hung under that model, as loadAll hangs
           it -- at once if that experiment is read already, else when it is
           -- so an experiment read alone has the noise and the counts a
-          whole-store read gives it.  \ref loadRuns empties the list.
+          whole-store read gives it.  Noise placed that way that has no
+          description of its own is given its model's, as noise read with
+          its model is.  \ref loadRuns empties the list.
       */
       class Orphans
       {
@@ -468,7 +513,9 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
           It needs a listing: before \ref loadRuns has succeeded (or after
           \ref clear, or a change of investigator) nothing is known to be
           listed, every record would look like an orphan, and the read is
-          refused.
+          refused.  The investigator is checked first, as by
+          \ref refreshInvestigator, so a change made since the listing is
+          caught here.
           \param error Filled in with a message when the scan fails
           \returns True when every experiment now has its records; on false
                    nothing has changed
@@ -484,7 +531,9 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
           the record contents, so it is asked for one experiment at a time
           and only where it means something: a record that is in one place
           only has nothing to compare against.  The experiment must be
-          loaded.
+          loaded.  A database record is matched to its checksum by GUID,
+          or by ID when it has no GUID; one the server no longer lists fails
+          the verify, which leaves the experiment unverified.
           \param index The position of the experiment
           \param error Filled in with a message when the read fails
       */
@@ -593,8 +642,11 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
           The records carry what \ref noisesOfEdit gives: on the database
           every field the listing has, and Noise::editGUID when the model is
           one the catalog has read; on disk the checksum only when
-          \ref checksums is on.  The database answer is read once and kept
-          until the catalog is cleared or relisted.
+          \ref checksums is on.  The database listing is read once and kept
+          until the catalog is cleared or relisted, but which model each
+          record is of is worked out at every call -- by modelID when that
+          model has been read, as the chain attaches noise, else by the
+          record's modelGUID -- so models read since count too.
           \param modelGUID The GUID of the model whose noise is wanted
           \param error     Filled in with a message when the lookup fails
       */
@@ -755,8 +807,9 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
       //! \brief True, with \a error filled in, when the read is cancelled
       bool cancelledError( QString& error ) const;
 
-      //! The investigator's noise records by modelGUID, for noisesOfModel
-      QHash< QString, QList< Noise > > noise_cache;
+      //! The investigator's noise records, for noisesOfModel, which works
+      //! out whose each one is when it is asked
+      QList< Noise > noise_cache;
       bool         noise_cached;
 
       bool loadAllDb  ( QList< Run >&, Orphans&, QString& );
