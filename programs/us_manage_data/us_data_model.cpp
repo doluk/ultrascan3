@@ -31,7 +31,10 @@ namespace
 }
 
 // Scan the database and local disk for R/E/M/N data sets
-US_DataModel::US_DataModel( QWidget* parwidg /*=0*/ )
+//
+// The window owns the model, so the disk worker -- and its thread -- go when
+// the window does
+US_DataModel::US_DataModel( QWidget* parwidg /*=0*/ ) : QObject( parwidg )
 {
    parentw    = parwidg;   // parent (main manage_data) widget
 
@@ -54,6 +57,11 @@ US_DataModel::US_DataModel( QWidget* parwidg /*=0*/ )
    ob_tree    = NULL;
    kdb_recs   = 0;
    klo_recs   = 0;
+   batch_depth = 0;
+   case_set   = false;
+   file_case  = Qt::CaseSensitive;
+   orph_size[ 0 ] = 0;
+   orph_size[ 1 ] = 0;
 
    dbg_level  = US_Settings::us_debug();
 }
@@ -67,6 +75,13 @@ US_DataModel::~US_DataModel()
 void US_DataModel::setDatabase( IUS_DB2* a_db )
 {
    db         = a_db;      // pointer to opened db connection
+}
+
+// How the local store compares file names, from the next scan
+void US_DataModel::setFileNameCase( Qt::CaseSensitivity sensitivity )
+{
+   case_set   = true;
+   file_case  = sensitivity;
 }
 
 // Set progress bar related pointers
@@ -481,12 +496,14 @@ DbgLv(1) << "ScnD: scan stopped " << nowTime();
 DbgLv(1) << "ScnD: scan done    " << nowTime();
 }
 
-// Ask the running scan to stop after the step it is in
+// Ask the running scan, or the read or comparison in progress outside one,
+// to stop after the step it is in
 void US_DataModel::stop_scan( void )
 {
-   if ( ! scanning )   return;
+   if ( ! scanning  &&  busy == 0 )   return;
 
-   stop_req = true;
+   if ( scanning )
+      stop_req = true;
 
    if ( scanner != NULL )
       scanner->cancel();               // a read of the local store stops too
@@ -633,6 +650,10 @@ void US_DataModel::open_catalogs( )
    {
       scanner    = new US_DiskScan( this );
 
+      // The worker has no job yet, so its catalog may be set up from here
+      if ( case_set )
+         scanner->catalog()->setFileNameCase( file_case );
+
       connect( scanner, &US_DiskScan::message,
                this,    &US_DataModel::scanner_note );
    }
@@ -712,11 +733,11 @@ void US_DataModel::scan_runs( )
 
    ddescs   .clear();
    ldescs   .clear();
-   adescs   .clear();
+   clear_rows();
    runents  .clear();
    run_queue.clear();
    ver_queue.clear();
-   touched  .clear();
+   batch_runs.clear();
    errors   .clear();
    db_failed  = false;
    demo       = false;
@@ -728,6 +749,8 @@ void US_DataModel::scan_runs( )
       orph_by_parent[ side ].clear();
       orph_branches [ side ].clear();
       orph_adopted  [ side ].clear();
+      orph_taken    [ side ].clear();
+      orph_size     [ side ] = 0;
    }
 
    orph_indexed = false;
@@ -754,7 +777,9 @@ void US_DataModel::scan_runs( )
    // same run identifier.  Two database experiments may share a run
    // identifier (they are told apart by their experiment IDs), so each
    // database experiment is an entry of its own, and a local run joins the
-   // first one of its name that has no local run yet.
+   // one of its name whose GUID -- or else whose experiment ID -- its
+   // experiment file records, or failing both the first one of its name
+   // that has no local run yet.
    QList< RunEntry > entries;
    QMultiMap< QString, int > byRun;
 
@@ -811,15 +836,39 @@ void US_DataModel::scan_runs( )
          if ( rfilt  &&  run.runID != filt_run )   continue;
 
          int  match = -1;
+         int  rank  = 0;               // 3 by GUID, 2 by ID, 1 by order
          QList< int > same = byRun.values( run.runID );
          std::sort( same.begin(), same.end() );
 
+         QString loGUID = run.guid.simplified();
+         QString loID   = run.id.simplified();
+
          for ( int jj = 0; jj < same.size(); jj++ )
          {
-            if ( entries[ same[ jj ] ].loIndex < 0 )
+            const RunEntry& cand = entries[ same[ jj ] ];
+
+            if ( cand.loIndex >= 0 )   continue;     // taken
+
+            int crank = 1;
+
+            if ( cand.dbIndex >= 0  &&  cat_db != NULL )
             {
+               const US_DataCatalog::Run& dbr = cat_db->run( cand.dbIndex );
+
+               if ( loGUID.length() == 36  &&
+                    loGUID.compare( dbr.guid.simplified(),
+                                    Qt::CaseInsensitive ) == 0 )
+                  crank = 3;
+
+               else if ( ! loID.isEmpty()  &&  loID != "-1"  &&
+                         loID == dbr.id.simplified() )
+                  crank = 2;
+            }
+
+            if ( crank > rank )
+            {
+               rank  = crank;
                match = same[ jj ];
-               break;
             }
          }
 
@@ -837,16 +886,30 @@ void US_DataModel::scan_runs( )
 
          // A directory not named after its run, or one of two holding the
          // same run: what an upload or a download writes would not go
-         // where the run is
-         if ( QDir( run.dirPath ).dirName() != run.runID  ||
-              lodirs.value( run.runID ) > 1 )
+         // where the run is.  Names compare as the catalog compares them,
+         // so this agrees with what it says is wrong with the run.
+         QString dname  = QDir( run.dirPath ).dirName();
+         bool    misdir = ( dname.compare( run.runID,
+                                           cat_lo->fileNameCase() ) != 0 );
+         bool    twodir = ( lodirs.value( run.runID ) > 1 );
+
+         if ( misdir  ||  twodir )
             entries[ match ].unsafe = true;
 
-         if ( ! run.usable )
+         QString lprob = run.usable ? QString() : run.problem;
+
+         // A run that is refused always says why, whatever the catalog said
+         if ( lprob.isEmpty()  &&  misdir )
+            lprob = tr( "The directory %1 holds the files of run %2" )
+                    .arg( dname, run.runID );
+
+         if ( lprob.isEmpty()  &&  twodir )
+            lprob = tr( "Run %1 is in more than one directory" )
+                    .arg( run.runID );
+
+         if ( ! lprob.isEmpty() )
          {
-            QString lprob = tr( "local %1: %2" )
-                            .arg( QDir( run.dirPath ).dirName() )
-                            .arg( run.problem );
+            lprob = tr( "local %1: %2" ).arg( dname ).arg( lprob );
             QString& prob = entries[ match ].problem;
             prob = prob.isEmpty() ? lprob : prob + "; " + lprob;
          }
@@ -873,7 +936,7 @@ void US_DataModel::scan_runs( )
 
       entry.row      = adescs.size();
 
-      adescs    << run_datadesc( entry );
+      append_row( run_datadesc( entry ), runents.size() );
       runents   << entry;
       run_queue << ( runents.size() - 1 );
    }
@@ -968,24 +1031,50 @@ int US_DataModel::index_of_run( const QString& runID ) const
    return -1;
 }
 
-// The experiment a row belongs to
+// The experiment a row belongs to: looked up, not searched for, since an
+// action asks this of every row it touches
 int US_DataModel::run_of_row( int row ) const
 {
-   if ( row < 0  ||  row >= adescs.size() )   return -1;
+   if ( row < 0  ||  row >= row_run.size() )   return -1;
 
-   for ( int ii = 0; ii < runents.size(); ii++ )
+   return row_run.at( row );
+}
+
+// Append a row of an experiment, and say whose it is
+//
+// A record's parent is the nearest row above it, of its own experiment, of
+// a lower level: the row above, or one of that row's ancestors.  So it is
+// found in a step or four, and kept, rather than searched for each time.
+void US_DataModel::append_row( const DataDesc& desc, int runIndex )
+{
+   int prnt = -1;
+   int ityp = desc.recType;
+
+   if ( ityp > RAW )
    {
-      const RunEntry& entry = runents.at( ii );
+      int prev = adescs.size() - 1;
 
-      if ( entry.row == row )
-         return ii;
+      while ( prev >= 0  &&  row_run.at( prev ) == runIndex  &&
+              adescs.at( prev ).recType >= ityp )
+         prev = row_parent.at( prev );
 
-      if ( entry.firstRow >= 0  &&
-           row >= entry.firstRow  &&  row <= entry.lastRow )
-         return ii;
+      if ( prev >= 0  &&  row_run.at( prev ) == runIndex  &&
+           adescs.at( prev ).recType >= RAW )
+         prnt = prev;
    }
 
-   return -1;
+   adescs     << desc;
+   row_run    << runIndex;
+   row_parent << prnt;
+}
+
+// Clear the rows, and the indexes kept of them
+void US_DataModel::clear_rows( void )
+{
+   adescs    .clear();
+   row_run   .clear();
+   row_parent.clear();
+   touched   .clear();
 }
 
 // The row of a record's parent
@@ -1005,12 +1094,8 @@ int US_DataModel::parent_row( int row ) const
       return entry.row;
 
    // The records are in tree order, so the parent is the nearest record
-   // above of a lower level
-   for ( int jj = row - 1; jj >= entry.firstRow; jj-- )
-      if ( adescs.at( jj ).recType < ityp )
-         return jj;
-
-   return -1;
+   // above of a lower level, found when the row was appended
+   return row_parent.value( row, -1 );
 }
 
 // The rows of every descendant of a row
@@ -1124,19 +1209,58 @@ bool US_DataModel::do_scan_run( int index )
       return true;
    }
 
-   QString error;
-
-   if ( entry.dbIndex >= 0  &&  cat_db != NULL  &&
-        ! cat_db->loadRunDetail( entry.dbIndex, error ) )
-      scan_error( tr( "%1: the database records could not be read: %2" )
-                  .arg( entry.runID ).arg( error ) );
-
-   if ( entry.loIndex >= 0  &&  cat_lo != NULL  &&
-        ! cat_lo->loadRunDetail( entry.loIndex, error ) )
-      scan_error( tr( "%1: the local records could not be read: %2" )
-                  .arg( entry.runID ).arg( error ) );
-
+   // do_merge_run() reads what is not read yet, on either side
    return do_merge_run( index );
+}
+
+/* Make sure both sources have read the chain of one experiment.
+
+   A side that cannot be read is not the same thing as a side that holds
+   nothing: merging the other side alone would show every record as in that
+   place only, and a download would then overwrite the local copies, or
+   write model and noise files that duplicate the GUIDs of the ones there.
+   So the read is tried once more, and when it still fails the experiment
+   is reported and left unread -- opening it later tries again.
+*/
+bool US_DataModel::load_sides( int index )
+{
+   const RunEntry entry = runents.at( index );
+   bool ok = true;
+
+   for ( int side = 0; side < 2; side++ )
+   {
+      int cx = ( side == 0 ) ? entry.dbIndex : entry.loIndex;
+
+      if ( cx < 0 )   continue;
+
+      if ( side == 1 )
+         await_disk();                 // the worker is done with its catalog
+
+      US_DataCatalog* catalog = ( side == 0 ) ? cat_db : cat_lo;
+
+      if ( catalog == NULL  ||  cx >= catalog->runCount() )   continue;
+
+      if ( catalog->isRunLoaded( cx ) )   continue;
+
+      QString error;
+
+      if ( catalog->loadRunDetail( cx, error ) )   continue;
+
+      DbgLv(1) << "LoadSides: retry" << entry.runID << side << error;
+
+      if ( catalog->loadRunDetail( cx, error ) )   continue;
+
+      ok = false;
+      scan_error( ( side == 0 )
+         ? tr( "%1: the database records could not be read, so the"
+               " experiment is not shown; open it to try again: %2" )
+           .arg( entry.runID ).arg( error )
+         : tr( "%1: the local records could not be read, so the"
+               " experiment is not shown; open it to try again: %2" )
+           .arg( entry.runID ).arg( error ) );
+   }
+
+   return ok;
 }
 
 /* Read the chain of every experiment at once.
@@ -1214,6 +1338,14 @@ bool US_DataModel::do_merge_run( int index )
       return true;
    }
 
+   // Each side has to have read the experiment: one that could not is not
+   // merged as if it held nothing
+   if ( ! load_sides( index ) )
+   {
+      run_queue.removeAll( index );
+      return false;
+   }
+
    if ( progress != NULL )
    {  // one range per experiment
       progress->setMaximum( 1 );
@@ -1249,40 +1381,23 @@ bool US_DataModel::do_merge_run( int index )
    kdb_recs      += ddescs.size();
    klo_recs      += ldescs.size();
 
-   QVector< DataDesc > mdescs = merge_descs( ddescs, ldescs );
+   QVector< DataDesc > mdescs = kept_records( merge_descs( ddescs, ldescs ) );
 
    int  base  = adescs.size();
-   bool exctr = false;
 
    for ( int ii = 0; ii < mdescs.size(); ii++ )
-   {
-      const DataDesc& desc = mdescs.at( ii );
-
-      if ( desc.recType == RAW )        // heads of the trees under the run
-         exctr = excluded_tree( desc.recState );
-
-      if ( exctr )   continue;
-
-      adescs << desc;
-   }
+      append_row( mdescs.at( ii ), index );
 
    bool any       = ( adescs.size() > base );
    entry.firstRow = any ? base : -1;
    entry.lastRow  = any ? adescs.size() - 1 : -1;
    entry.loaded   = true;
 
-   // The counts on the experiment row are now what is really under it
-   entry.dbCount  = 0;
-   entry.loCount  = 0;
-
-   for ( int row = entry.firstRow; row >= 0  &&  row <= entry.lastRow; row++ )
-   {
-      int state = adescs.at( row ).recState;
-      entry.dbCount += ( ( state & REC_DB ) != 0 ) ? 1 : 0;
-      entry.loCount += ( ( state & REC_LO ) != 0 ) ? 1 : 0;
-   }
-
    runents[ index ] = entry;
+
+   // The counts on the experiment row are now what is really under it
+   recount_run( index );
+   entry = runents.at( index );
 
    run_queue.removeAll( index );
 
@@ -1441,8 +1556,62 @@ void US_DataModel::record_changed( int row )
    else
       touched.remove( row );
 
+   // Each of these walks the experiment's rows, so in a batch they are done
+   // once per experiment at its end rather than once per record
+   if ( batch_depth > 0 )
+   {
+      if ( ! batch_runs.contains( index ) )
+         batch_runs << index;
+
+      return;
+   }
+
+   run_changed( index );
+}
+
+// Bring an experiment up to date after records of it changed
+void US_DataModel::run_changed( int index )
+{
    update_run_row( index );
+   recount_run   ( index );
    request_verify( index );
+}
+
+void US_DataModel::begin_changes( void )
+{
+   batch_depth++;
+}
+
+void US_DataModel::end_changes( void )
+{
+   if ( batch_depth <= 0 )     return;
+   if ( --batch_depth > 0 )    return;
+
+   QList< int > runs = batch_runs;
+   batch_runs.clear();
+
+   for ( int ii = 0; ii < runs.size(); ii++ )
+      run_changed( runs.at( ii ) );
+}
+
+// Count again what is under an experiment, in each place
+void US_DataModel::recount_run( int index )
+{
+   if ( index < 0  ||  index >= runents.size() )   return;
+
+   RunEntry& entry = runents[ index ];
+
+   if ( ! entry.loaded )   return;            // the listing's counts stand
+
+   entry.dbCount = 0;
+   entry.loCount = 0;
+
+   for ( int row = entry.firstRow; row >= 0  &&  row <= entry.lastRow; row++ )
+   {
+      int state = adescs.at( row ).recState;
+      entry.dbCount += ( ( state & REC_DB ) != 0 ) ? 1 : 0;
+      entry.loCount += ( ( state & REC_LO ) != 0 ) ? 1 : 0;
+   }
 }
 
 // The checksum of one local file
@@ -2029,6 +2198,9 @@ void US_DataModel::append_edit( const US_DataCatalog::Edit& edit,
    edesc.recState    = state;
    edesc.dataGUID    = edit.guid.simplified();
    edesc.parentGUID  = rawGUID.simplified();
+
+   if ( edesc.parentGUID.length() != 36 )
+      edesc.parentGUID = dmyGUID;
    edesc.parentID    = isDb ? rawDbID.toInt() : -1;
    edesc.filename    = isDb ? edit.filename : edit.path;
    edesc.contents    = edit.checksum.isEmpty() ? QString()
@@ -2071,6 +2243,11 @@ void US_DataModel::append_model( const US_DataCatalog::Model& model,
    mdesc.recState    = state;
    mdesc.dataGUID    = model.guid.simplified();
    mdesc.parentGUID  = editGUID.simplified();
+
+   // A global model has no edit: one source says so with an empty GUID, the
+   // other with the all-zero one, and the two copies have to pair
+   if ( mdesc.parentGUID.length() != 36 )
+      mdesc.parentGUID = dmyGUID;
    mdesc.parentID    = isDb ? editDbID.toInt() : -1;
    mdesc.filename    = isDb ? QString() : model.path;
    mdesc.contents    = model.checksum.isEmpty() ? QString()
@@ -2105,6 +2282,9 @@ void US_DataModel::append_noise( const US_DataCatalog::Noise& noise,
    ndesc.recState    = state;
    ndesc.dataGUID    = noise.guid.simplified();
    ndesc.parentGUID  = modelGUID.simplified();
+
+   if ( ndesc.parentGUID.length() != 36 )
+      ndesc.parentGUID = dmyGUID;
    ndesc.parentID    = isDb ? modelDbID.toInt() : -1;
    ndesc.filename    = isDb ? QString() : noise.path;
    ndesc.contents    = noise.checksum.isEmpty() ? QString()
@@ -2191,10 +2371,50 @@ QString US_DataModel::adopt_key( const DataDesc& head )
    return QString::number( head.recType - 1 ) + ":" + head.parentGUID;
 }
 
+// How many orphans a catalog holds
+int US_DataModel::orphan_size( US_DataCatalog* catalog )
+{
+   if ( catalog == NULL )   return 0;
+
+   const US_DataCatalog::Orphans& orph = catalog->orphans();
+
+   return orph.raws.size() + orph.edits.size() + orph.models.size()
+        + orph.noises.size();
+}
+
+// What tells one orphan branch from another, from one index to the next.
+// A record's GUID is not enough: one with a broken GUID is given a new one
+// each time it is read.
+QString US_DataModel::branch_key( const DataDesc& head )
+{
+   QString which = ( head.recordID >= 0 ) ? QString::number( head.recordID )
+                 : head.filename;
+
+   if ( which.isEmpty() )
+      which = head.dataGUID;
+
+   return QString::number( head.recType ) + ":" + which;
+}
+
 // The orphans of both catalogs, as branches indexed by their parent
+//
+// A read of one experiment at a time -- with a run filter, or when the
+// whole-store read failed -- adds to the catalog the stray noise each
+// experiment turns out to hold, so the index is made again whenever a
+// catalog holds more orphans than it did, keeping what was adopted.
 void US_DataModel::index_orphans( void )
 {
-   if ( orph_indexed )   return;
+   if ( use_lo )
+      await_disk();
+
+   US_DataCatalog* cats[ 2 ];
+   cats[ 0 ] = ( use_db ) ? cat_db : NULL;
+   cats[ 1 ] = ( use_lo ) ? cat_lo : NULL;
+
+   if ( orph_indexed  &&
+        orphan_size( cats[ 0 ] ) == orph_size[ 0 ]  &&
+        orphan_size( cats[ 1 ] ) == orph_size[ 1 ] )
+      return;
 
    orph_indexed = true;
 
@@ -2203,16 +2423,10 @@ void US_DataModel::index_orphans( void )
       orph_branches [ side ].clear();
       orph_by_parent[ side ].clear();
       orph_adopted  [ side ].clear();
-   }
 
-   if ( use_db  &&  cat_db != NULL )
-      orphan_descs( cat_db, REC_DB, orph_branches[ 0 ] );
-
-
-   if ( use_lo )
-   {
-      await_disk();
-      orphan_descs( cat_lo, REC_LO, orph_branches[ 1 ] );
+      orphan_descs( cats[ side ], ( side == 0 ) ? REC_DB : REC_LO,
+                    orph_branches[ side ] );
+      orph_size[ side ] = orphan_size( cats[ side ] );
    }
 
    for ( int side = 0; side < 2; side++ )
@@ -2221,7 +2435,15 @@ void US_DataModel::index_orphans( void )
 
       for ( int ii = 0; ii < orph_branches[ side ].size(); ii++ )
       {
-         QString key = adopt_key( orph_branches[ side ][ ii ].first() );
+         const DataDesc& head = orph_branches[ side ][ ii ].first();
+
+         if ( orph_taken[ side ].contains( branch_key( head ) ) )
+         {  // merged into an experiment already
+            orph_adopted[ side ][ ii ] = true;
+            continue;
+         }
+
+         QString key = adopt_key( head );
 
          if ( ! key.isEmpty() )
             orph_by_parent[ side ][ key ] << ii;
@@ -2248,6 +2470,8 @@ void US_DataModel::adopt_orphans( int side, const QVector< DataDesc >& chain,
          if ( orph_adopted[ side ][ bx ] )   continue;
 
          orph_adopted[ side ][ bx ] = true;
+         orph_taken  [ side ].insert(
+            branch_key( orph_branches[ side ][ bx ].first() ) );
          descs << orph_branches[ side ][ bx ];
       }
    }
@@ -2512,6 +2736,60 @@ QVector< US_DataModel::DataDesc > US_DataModel::merge_descs(
    return merged;
 }
 
+// The records of a merged list that the source filter keeps
+QVector< US_DataModel::DataDesc > US_DataModel::kept_records(
+      const QVector< DataDesc >& mdescs ) const
+{
+   int nrecs = mdescs.size();
+   QVector< int >  parent( nrecs, -1 );
+   QVector< bool > keep  ( nrecs, false );
+   QVector< bool > filler( nrecs, false );
+   QVector< int >  stack;
+
+   // The records are in tree order: a record's parent is the nearest one
+   // above it of a lower level
+   for ( int ii = 0; ii < nrecs; ii++ )
+   {
+      const DataDesc& desc = mdescs.at( ii );
+
+      while ( ! stack.isEmpty()  &&
+              mdescs.at( stack.last() ).recType >= desc.recType )
+         stack.removeLast();
+
+      parent[ ii ] = stack.isEmpty() ? -1 : stack.last();
+      filler[ ii ] = ( desc.recState == NOSTAT );
+      stack << ii;
+
+      if ( filler[ ii ] )
+         continue;                     // decided by what is under it
+
+      int prnt = parent[ ii ];
+
+      if ( prnt < 0  ||  filler[ prnt ] )
+         keep[ ii ] = ! excluded_tree( desc.recState );   // a head
+      else
+         keep[ ii ] = keep[ prnt ];                       // its head's say
+   }
+
+   // A filler stays while anything under it does; a parent is above its
+   // records, so going up the list reaches every filler above a record
+   for ( int ii = nrecs - 1; ii >= 0; ii-- )
+   {
+      int prnt = parent[ ii ];
+
+      if ( keep[ ii ]  &&  prnt >= 0  &&  filler[ prnt ] )
+         keep[ prnt ] = true;
+   }
+
+   QVector< DataDesc > kept;
+
+   for ( int ii = 0; ii < nrecs; ii++ )
+      if ( keep[ ii ] )
+         kept << mdescs.at( ii );
+
+   return kept;
+}
+
 // ------------------------------------------------------------ orphans
 
 /* Show records that attach to no experiment, under stand-in experiments.
@@ -2574,11 +2852,27 @@ int US_DataModel::add_stand_in( const QString& label,
 {
    if ( dbs.isEmpty()  &&  los.isEmpty() )   return -1;
 
+   // What the source filter excludes is left out, as it is from any
+   // experiment, and a stand-in with nothing left is not shown
+   QVector< DataDesc > mdescs = kept_records( merge_descs( dbs, los ) );
+
+   if ( mdescs.isEmpty() )   return -1;
+
    RunEntry entry;
    entry.runID   = label;
    entry.orphans = true;
    entry.globals = globals;
    entry.loaded  = true;
+
+   int index     = runents.size();
+   int ndb       = 0;
+   int nlo       = 0;
+
+   for ( int ii = 0; ii < mdescs.size(); ii++ )
+   {
+      ndb += ( ( mdescs.at( ii ).recState & REC_DB ) != 0 ) ? 1 : 0;
+      nlo += ( ( mdescs.at( ii ).recState & REC_LO ) != 0 ) ? 1 : 0;
+   }
 
    // Where the records under it are, so the context menu offers what can
    // be done to them; the tree does not show it as a record of either place
@@ -2586,8 +2880,8 @@ int US_DataModel::add_stand_in( const QString& label,
    edesc.recordID    = -1;
    edesc.recType     = EXPERIMENT;
    edesc.parentID    = -1;
-   edesc.recState    = ( dbs.isEmpty() ? 0 : REC_DB )
-                     | ( los.isEmpty() ? 0 : REC_LO );
+   edesc.recState    = ( ndb == 0 ? 0 : REC_DB )
+                     | ( nlo == 0 ? 0 : REC_LO );
    edesc.subType     = "";
    edesc.dataGUID    = dmyGUID;
    edesc.parentGUID  = "";
@@ -2596,39 +2890,23 @@ int US_DataModel::add_stand_in( const QString& label,
    edesc.label       = entry.runID;
    edesc.description = description;
 
-   QVector< DataDesc > mdescs = merge_descs( dbs, los );
-
    entry.row = adescs.size();
-   adescs << edesc;
+   append_row( edesc, index );
 
    int  base  = adescs.size();
-   bool exctr = false;
 
    for ( int ii = 0; ii < mdescs.size(); ii++ )
-   {
-      const DataDesc& desc = mdescs.at( ii );
+      append_row( mdescs.at( ii ), index );
 
-      if ( desc.recType == RAW  ||  ( globals  &&  desc.recType == MODEL ) )
-         exctr = excluded_tree( desc.recState );
+   entry.firstRow = base;
+   entry.lastRow  = adescs.size() - 1;
+   entry.dbCount  = ndb;
+   entry.loCount  = nlo;
 
-      if ( exctr )   continue;
-
-      adescs << desc;
-
-      entry.dbCount += ( ( desc.recState & REC_DB ) != 0 ) ? 1 : 0;
-      entry.loCount += ( ( desc.recState & REC_LO ) != 0 ) ? 1 : 0;
-   }
-
-   bool any       = ( adescs.size() > base );
-   entry.firstRow = any ? base : -1;
-   entry.lastRow  = any ? adescs.size() - 1 : -1;
-
-   kdb_recs      += dbs.size();
-   klo_recs      += los.size();
+   kdb_recs      += ndb;
+   klo_recs      += nlo;
 
    runents << entry;
-
-   int index = runents.size() - 1;
 
    // Records that are in both places are compared like any others
    runents[ index ].verified = ! needs_verify( index );
@@ -2702,13 +2980,13 @@ void US_DataModel::dummy_data()
 
    close_catalogs();
 
-   adescs   .clear();
+   clear_rows();
    ddescs   .clear();
    ldescs   .clear();
    runents  .clear();
    run_queue.clear();
    ver_queue.clear();
-   touched  .clear();
+   batch_runs.clear();
    errors   .clear();
    db_failed  = false;
    stopped    = false;
@@ -2720,6 +2998,8 @@ void US_DataModel::dummy_data()
       orph_by_parent[ side ].clear();
       orph_branches [ side ].clear();
       orph_adopted  [ side ].clear();
+      orph_taken    [ side ].clear();
+      orph_size     [ side ] = 0;
    }
 
    orph_indexed = false;
@@ -2743,7 +3023,7 @@ void US_DataModel::dummy_data()
    cdesc.parentID       = 1;
    cdesc.recordID       = 1;
    cdesc.filename       = "";
-   adescs<<cdesc;
+   append_row( cdesc, 0 );
 
    cdesc.recType        = RAW;
    cdesc.recState       = REC_DB | PAR_DB;
@@ -2756,7 +3036,7 @@ void US_DataModel::dummy_data()
    cdesc.parentID       = 1;
    cdesc.recordID       = 1;
    cdesc.filename       = "";
-   adescs<<cdesc;
+   append_row( cdesc, 0 );
    ddescs<<cdesc;
 
    cdesc.recType        = EDIT;
@@ -2768,7 +3048,7 @@ void US_DataModel::dummy_data()
    cdesc.parentID       = 1;
    cdesc.recordID       = 2;
    cdesc.filename       = "demo1_veloc_edit.xml";
-   adescs<<cdesc;
+   append_row( cdesc, 0 );
    ddescs<<cdesc;
    ldescs<<cdesc;
 
@@ -2781,7 +3061,7 @@ void US_DataModel::dummy_data()
    cdesc.parentID       = 2;
    cdesc.recordID       = -1;
    cdesc.filename       = "demo1_veloc_model.xml";
-   adescs<<cdesc;
+   append_row( cdesc, 0 );
    ldescs<<cdesc;
 
    cdesc.recType        = NOISE;
@@ -2793,7 +3073,7 @@ void US_DataModel::dummy_data()
    cdesc.parentID       = 2;
    cdesc.recordID       = 3;
    cdesc.filename       = "demo1_veloc_noise.xml";
-   adescs<<cdesc;
+   append_row( cdesc, 0 );
    ddescs<<cdesc;
    ldescs<<cdesc;
 
@@ -2806,7 +3086,7 @@ void US_DataModel::dummy_data()
    cdesc.parentID       = 2;
    cdesc.recordID       = 4;
    cdesc.filename       = "demo1_veloc_noise2.xml";
-   adescs<<cdesc;
+   append_row( cdesc, 0 );
    ddescs<<cdesc;
    ldescs<<cdesc;
 
@@ -2818,7 +3098,7 @@ void US_DataModel::dummy_data()
    cdesc.contents       = "CC 15";
    cdesc.recordID       = -1;
    cdesc.filename       = "";
-   adescs<<cdesc;
+   append_row( cdesc, 0 );
 
    entry.lastRow        = adescs.size() - 1;
    entry.dbCount        = 4;

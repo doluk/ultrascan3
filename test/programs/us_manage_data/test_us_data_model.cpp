@@ -11,6 +11,7 @@
 #include <QProgressBar>
 #include <QLabel>
 #include <QTreeWidget>
+#include <QPointer>
 
 #include "us_data_model.h"
 #include "us_data_process.h"
@@ -1265,19 +1266,8 @@ TEST_F( TestUSDataModel, OrphansAreShownWhenNoExperimentIsListed )
    for ( const QString& run : { runOne, runTwo, runThree } )
       ASSERT_TRUE( QDir( runDir( run ) ).removeRecursively() );
 
-   // Whether the catalog reads the orphans of a store with no experiment
-   // in it is the catalog's to say; this side has to ask it regardless
-   {
-      US_DataCatalog probe;
-      QString        error;
-      ASSERT_TRUE( probe.open( US_DataCatalog::Disk, QString(), error ) );
-      ASSERT_TRUE( probe.loadRuns( error ) );
-      ASSERT_TRUE( probe.loadAll( error ) );
-
-      if ( probe.orphans().isEmpty() )
-         GTEST_SKIP() << "this catalog reads no orphans without an experiment";
-   }
-
+   // The model and its noise are left, and their edit is gone with the
+   // runs: the catalog reads them as orphans of a store with no experiment
    US_DataModel model;
    prepare( model );
 
@@ -1290,6 +1280,65 @@ TEST_F( TestUSDataModel, OrphansAreShownWhenNoExperimentIsListed )
    EXPECT_EQ( model.experimentCount(), 0 );
    ASSERT_GE( added, 0 );
    EXPECT_TRUE( model.run_entry( added ).orphans );
+
+   bool found = false;
+   for ( int row = 0; row < model.recCount(); row++ )
+      found = found  ||  model.row_datadesc( row ).dataGUID == modelGUID;
+   EXPECT_TRUE( found );
+}
+
+// -------------------------------------------------------- ownership
+
+// The window owns the model, so its disk worker goes with the window
+TEST_F( TestUSDataModel, TheModelGoesWithItsWindow )
+{
+   QPointer< US_DataModel > model;
+
+   {
+      QWidget window;
+      model = new US_DataModel( &window );
+      model->setProgress( bar, label );
+      model->setFilters ( "ALL", "ALL", "Local Only" );
+      model->scan_data();
+      ASSERT_FALSE( model.isNull() );
+   }
+
+   EXPECT_TRUE( model.isNull() );
+}
+
+// -------------------------------------------------------- case of names
+
+// Where file names ignore case, a run directory named for its run but for
+// case is where the run is: nothing is refused, and nothing is marked
+TEST_F( TestUSDataModel, ADirectoryNamedForItsRunButForCaseIsFineWhereCaseIsIgnored )
+{
+   QString lower = US_Settings::resultDir() + "/" + runOne.toLower();
+   ASSERT_TRUE( QDir().rename( runDir( runOne ), lower ) );
+
+   {
+      US_DataModel model;
+      prepare( model );
+      model.setFileNameCase( Qt::CaseInsensitive );
+      model.scan_data();
+
+      int index = model.index_of_run( runOne );
+      ASSERT_GE( index, 0 );
+      EXPECT_FALSE( model.run_entry( index ).unsafe );
+      EXPECT_TRUE ( model.run_entry( index ).problem.isEmpty() )
+         << model.run_entry( index ).problem.toStdString();
+   }
+
+   {  // where case counts it is another directory: refused, and marked
+      US_DataModel model;
+      prepare( model );
+      model.setFileNameCase( Qt::CaseSensitive );
+      model.scan_data();
+
+      int index = model.index_of_run( runOne );
+      ASSERT_GE( index, 0 );
+      EXPECT_TRUE ( model.run_entry( index ).unsafe );
+      EXPECT_FALSE( model.run_entry( index ).problem.isEmpty() );
+   }
 }
 
 // -------------------------------------------------------- stopping
