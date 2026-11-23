@@ -1,5 +1,17 @@
 //! \file us_buffer.cpp
 #include "us_buffer.h"
+
+// A value as the shortest text that reads back as exactly the same double.
+// Disk records are read back with QString::toDouble, which takes this form
+// and every form older files were written in.
+static QString exact_number( double value )
+{
+#if QT_VERSION >= QT_VERSION_CHECK( 5, 7, 0 )
+   return QString::number( value, 'g', QLocale::FloatingPointShortest );
+#else
+   return QString::number( value, 'g', 17 );
+#endif
+}
 #include "us_settings.h"
 #include "us_constants.h"
 #include "us_db2.h"
@@ -400,6 +412,16 @@ void US_Buffer::putSpectrum( IUS_DB2* db, const QString& type ) const
 
 bool US_Buffer::writeToDisk( const QString& filename ) const
 {
+   // Every component needs its concentration.  Writing 0 for a missing one
+   // would save a different buffer than this one, which reads back as
+   // valid; so such a buffer is refused, before the file is touched.
+   if ( concentration.size() < qMax( componentIDs.size(), component.size() ) )
+   {
+      qDebug() << "Cannot write buffer" << GUID << "to" << filename
+               << ": a component has no concentration";
+      return false;
+   }
+
    QFile file( filename );
    if ( ! file.open( QIODevice::WriteOnly | QIODevice::Text) )
    {
@@ -419,11 +441,10 @@ bool US_Buffer::writeToDisk( const QString& filename ) const
    xml.writeAttribute( "id"         , "0" ); // buffers written to disk get bufferID "0"
    xml.writeAttribute( "guid"       , GUID     );
    xml.writeAttribute( "description", description );
-   xml.writeAttribute( "ph"         , QString::number( pH       , 'f', 5 ) );
-   xml.writeAttribute( "density"    , QString::number( density  , 'f', 6 ) );
-   xml.writeAttribute( "viscosity"  , QString::number( viscosity, 'f', 5 ) );
-   xml.writeAttribute( "compressibility", 
-                                QString::number( compressibility, 'e', 4 ) );
+   xml.writeAttribute( "ph"         , exact_number( pH        ) );
+   xml.writeAttribute( "density"    , exact_number( density   ) );
+   xml.writeAttribute( "viscosity"  , exact_number( viscosity ) );
+   xml.writeAttribute( "compressibility", exact_number( compressibility ) );
    xml.writeAttribute( "manual"     , US_Util::bool_string( manual ) );
 
    // A buffer read from disk has its component IDs and no component
@@ -435,11 +456,11 @@ bool US_Buffer::writeToDisk( const QString& filename ) const
    {
       const QString id = ( i < componentIDs.size() ) ? componentIDs[ i ]
                                                      : component[ i ].componentID;
-      const double  cc = ( i < concentration.size() ) ? concentration[ i ] : 0.0;
+      const double  cc = concentration[ i ];
 
       xml.writeStartElement( "component" );
       xml.writeAttribute( "id"           , id );
-      xml.writeAttribute( "concentration", QString::number( cc, 'f', 5 ) );
+      xml.writeAttribute( "concentration", exact_number( cc ) );
       xml.writeEndElement(); // component
    }
 
@@ -451,8 +472,8 @@ bool US_Buffer::writeToDisk( const QString& filename ) const
       for ( auto it = values.constBegin(); it != values.constEnd(); ++it )
       {
          xml.writeStartElement( name );
-         xml.writeAttribute( "wavelength", QString::number( it.key(), 'f', 1 ) );
-         xml.writeAttribute( "value", QString::number( it.value(), 'e', 4 ) );
+         xml.writeAttribute( "wavelength", exact_number( it.key()   ) );
+         xml.writeAttribute( "value",      exact_number( it.value() ) );
          xml.writeEndElement();
       }
    };

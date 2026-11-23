@@ -787,4 +787,52 @@ TEST_F( AnalyteXmlDevice, ReadsAndWritesAtCurrentPosition )
    EXPECT_TRUE( output.isOpen() );
 }
 
+// Every number an analyte file holds reads back as the double written; the
+// values used to keep six significant digits
+TEST_P( AnalyteXml, NumbersAreKeptAtFullPrecision )
+{
+   const double third = 0.1 + 0.2;
+
+   for ( US_Analyte::analyte_t type : { US_Analyte::PROTEIN, US_Analyte::DNA,
+                                        US_Analyte::CARBOHYDRATE } )
+   {
+      SCOPED_TRACE( int( type ) );
+      US_Analyte a;
+      a.type                  = type;
+      a.description           = "awkward";
+      a.analyteGUID           = "fixture";
+      a.vbar20                = third;
+      a.mw                    = 123456.78901234567;
+      a.sodium                = 1e-7;
+      a.potassium             = 5e-6;
+      a.extinction[ 280.04 ]  = 12345.678901234;
+      a.extinction[ 280.06 ]  = third;
+      a.refraction[ 589.3 ]   = 1e-7;
+      a.fluorescence[ 400.1 ] = 5e-6;
+
+      QByteArray bytes;
+      ASSERT_NO_FATAL_FAILURE( write( a, bytes ) );
+
+      US_Analyte b;
+      ASSERT_NO_FATAL_FAILURE( read( b, bytes ) );
+
+      EXPECT_EQ( b.vbar20, a.vbar20 );
+      EXPECT_EQ( b.mw,     a.mw );
+      if ( type == US_Analyte::DNA )
+      {
+         EXPECT_EQ( b.sodium,    a.sodium );
+         EXPECT_EQ( b.potassium, a.potassium );
+      }
+      // (a protein reader adds the 280 nm value of its sequence, so only
+      // the written wavelengths are compared)
+      for ( auto it = a.extinction.constBegin(); it != a.extinction.constEnd(); ++it )
+      {
+         ASSERT_TRUE( b.extinction.contains( it.key() ) ) << it.key();
+         EXPECT_EQ( b.extinction.value( it.key() ), it.value() ) << it.key();
+      }
+      EXPECT_EQ( b.refraction,   a.refraction );
+      EXPECT_EQ( b.fluorescence, a.fluorescence );
+   }
+}
+
 }

@@ -86,6 +86,12 @@ class US_UTIL_EXTERN US_Buffer
       US_Buffer();
 
       //! \brief Write the buffer to a disk file
+      //!
+      //! Every number is written as the shortest text that reads back as
+      //! the same double, so a buffer read back is the buffer written.  A
+      //! buffer with a component that has no concentration is refused, and
+      //! the file is not touched: writing 0 for it would save another
+      //! buffer.
       //! \param filename  The full path, including filename.
       //! \return A boolean success or failure
       bool writeToDisk( const QString& ) const;

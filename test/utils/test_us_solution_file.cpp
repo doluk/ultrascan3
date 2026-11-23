@@ -137,3 +137,38 @@ TEST_F( TestUSSolutionFile, CopiesCarryEveryMember )
       EXPECT_EQ( copy->analyteInfo[ 0 ].analyte.analyteGUID, QString( "an-1" ) );
    }
 }
+
+// Every number a solution file holds reads back as the double written; the
+// values used to keep six significant digits, so 5 uM of an analyte and a
+// partial specific volume like 0.1 + 0.2 came back changed
+TEST_F( TestUSSolutionFile, NumbersAreKeptAtFullPrecision )
+{
+   const double third = 0.1 + 0.2;
+
+   US_Solution solution;
+   solution.solutionGUID = US_Util::new_guid();
+   solution.solutionDesc = "awkward";
+   solution.commonVbar20 = third;
+   solution.storageTemp  = 20.000000001;
+   solution.buffer.GUID  = US_Util::new_guid();
+
+   US_Solution::AnalyteInfo ai;
+   ai.analyte.analyteGUID = US_Util::new_guid();
+   ai.analyte.mw          = 123456.78901234567;
+   ai.analyte.vbar20      = 0.73456789012345;
+   ai.amount              = 5e-6;
+   solution.analyteInfo << ai;
+
+   const QString path = scratch->path() + "/S0000001.xml";
+   ASSERT_TRUE( solution.saveToFile( path ) );
+
+   US_Solution read;
+   ASSERT_EQ( read.readFromFile( path, false ), IUS_DB2::OK );
+   EXPECT_EQ( read.commonVbar20, solution.commonVbar20 );
+   EXPECT_EQ( read.storageTemp,  solution.storageTemp );
+   ASSERT_EQ( read.analyteInfo.size(), 1 );
+   EXPECT_EQ( read.analyteInfo[ 0 ].amount,         ai.amount );
+   EXPECT_EQ( read.analyteInfo[ 0 ].analyte.mw,     ai.analyte.mw );
+   EXPECT_EQ( read.analyteInfo[ 0 ].analyte.vbar20, ai.analyte.vbar20 );
+}
+

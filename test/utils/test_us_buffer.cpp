@@ -237,3 +237,98 @@ TEST_F( US_BufferTest, MalformedOrIncompleteDiskFileFailsAndLeavesBufferUnchange
       EXPECT_EQ( before.fluorescence, buffer.fluorescence );
    }
 }
+
+// Every number a buffer file holds reads back as the double written: the
+// file used to keep five decimals of a concentration (5 uM became 0.00001),
+// one of a wavelength (280.04 and 280.06 nm became one point) and five
+// significant digits of a spectrum value
+TEST( US_BufferDiskRoundTrip, NumbersAreKeptAtFullPrecision )
+{
+   QTemporaryDir dir;
+   ASSERT_TRUE( dir.isValid() );
+
+   const double third = 0.1 + 0.2;            // 0.30000000000000004
+
+   US_Buffer original;
+   original.GUID            = "aaaaaaaa-1111-2222-3333-555555555555";
+   original.description     = "awkward";
+   original.pH              = 7.123456789012345;
+   original.density         = 0.9982345678912345;
+   original.viscosity       = third;
+   original.compressibility = 4.4567891234e-10;
+   original.componentIDs  << "12" << "34" << "56";
+   original.concentration << 1e-7 << 5e-6 << third;
+   original.extinction[ 280.04 ]  = 1.234567891e-3;
+   original.extinction[ 280.06 ]  = third;
+   original.refraction[ 589.3 ]   = 1.3330000000000001;
+   original.fluorescence[ 400.1 ] = 1e-7;
+
+   const QString file = dir.path() + "/B0000001.xml";
+   ASSERT_TRUE( original.writeToDisk( file ) );
+
+   US_Buffer read;
+   ASSERT_TRUE( read.readFromDisk( file ) );
+   EXPECT_EQ( read.pH,              original.pH );
+   EXPECT_EQ( read.density,         original.density );
+   EXPECT_EQ( read.viscosity,       original.viscosity );
+   EXPECT_EQ( read.compressibility, original.compressibility );
+   EXPECT_EQ( read.concentration,   original.concentration );
+   EXPECT_EQ( read.extinction,      original.extinction );
+   EXPECT_EQ( read.refraction,      original.refraction );
+   EXPECT_EQ( read.fluorescence,    original.fluorescence );
+   EXPECT_EQ( read.extinction.size(), 2 ) << "two wavelengths merged into one";
+}
+
+// A file written with the old fixed digits still reads
+TEST( US_BufferDiskRoundTrip, AFileWithTheOldDigitsStillReads )
+{
+   QTemporaryDir dir;
+   ASSERT_TRUE( dir.isValid() );
+   const QString file = dir.path() + "/B0000001.xml";
+
+   QFile out( file );
+   ASSERT_TRUE( out.open( QIODevice::WriteOnly ) );
+   out.write( "<?xml version=\"1.0\"?><!DOCTYPE US_Buffer><BufferData version=\"1.0\">"
+              "<buffer id=\"0\" guid=\"old-guid\" description=\"old\" ph=\"7.00000\""
+              " density=\"0.998234\" viscosity=\"1.00200\" compressibility=\"4.6000e-10\""
+              " manual=\"0\"><component id=\"12\" concentration=\"0.15000\"/>"
+              "<spectrum><extinction wavelength=\"280.0\" value=\"1.2345e+03\"/></spectrum>"
+              "</buffer></BufferData>" );
+   out.close();
+
+   US_Buffer read;
+   ASSERT_TRUE( read.readFromDisk( file ) );
+   EXPECT_EQ( read.pH,              7.0 );
+   EXPECT_EQ( read.density,         0.998234 );
+   EXPECT_EQ( read.viscosity,       1.002 );
+   EXPECT_EQ( read.compressibility, 4.6e-10 );
+   ASSERT_EQ( read.concentration.size(), 1 );
+   EXPECT_EQ( read.concentration[ 0 ], 0.15 );
+   EXPECT_EQ( read.extinction.value( 280.0 ), 1234.5 );
+}
+
+// A component with no concentration is not written as 0: that would save
+// another buffer, which reads back as a valid one.  The file is not touched.
+TEST( US_BufferDiskRoundTrip, AComponentWithNoConcentrationIsRefused )
+{
+   QTemporaryDir dir;
+   ASSERT_TRUE( dir.isValid() );
+   const QString file = dir.path() + "/B0000001.xml";
+
+   QFile old( file );
+   ASSERT_TRUE( old.open( QIODevice::WriteOnly ) );
+   old.write( "previous" );
+   old.close();
+
+   US_Buffer buffer;
+   buffer.GUID = "aaaaaaaa-1111-2222-3333-666666666666";
+   buffer.componentIDs  << "12" << "34";
+   buffer.concentration << 0.5;
+
+   EXPECT_FALSE( buffer.writeToDisk( file ) );
+
+   QFile kept( file );
+   ASSERT_TRUE( kept.open( QIODevice::ReadOnly ) );
+   EXPECT_EQ( kept.readAll(), QByteArray( "previous" ) );
+}
+
