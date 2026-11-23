@@ -689,6 +689,268 @@ TEST( DataPubManifest, ParseRejectsUnknownSection )
    EXPECT_TRUE ( error.contains( "nonsense" ) ) << error.toStdString();
 }
 
+// ------------------------------------------------------ acceptance rules
+
+TEST( DataPubDefs, GuidsAreCheckedWhole )
+{
+   EXPECT_TRUE ( US_DataPub::guidIsUsable( "aaaaaaaa-0000-0000-0000-00000000000A" ) );
+   EXPECT_FALSE( US_DataPub::guidIsUsable( "aaaaaaaa-0000-0000-0000-000000000001\n" ) );
+   EXPECT_FALSE( US_DataPub::guidIsUsable( "{aaaaaaaa-0000-0000-0000-000000000001}" ) );
+   EXPECT_FALSE( US_DataPub::guidIsUsable( "aaaaaaaa00000000000000000000000001" ) );
+   EXPECT_FALSE( US_DataPub::guidIsUsable( "gaaaaaaa-0000-0000-0000-000000000001" ) );
+   EXPECT_FALSE( US_DataPub::guidIsUsable( QString() ) );
+}
+
+TEST( DataPubDefs, RunTypesAndRunFileNames )
+{
+   EXPECT_TRUE ( US_DataPub::runTypeIsUsable( "RA" ) );
+   EXPECT_TRUE ( US_DataPub::runTypeIsUsable( "WA12345" ) );
+   EXPECT_FALSE( US_DataPub::runTypeIsUsable( "RA\n" ) );
+   EXPECT_FALSE( US_DataPub::runTypeIsUsable( "R.A" ) );
+   EXPECT_FALSE( US_DataPub::runTypeIsUsable( "ABCDEFGHI" ) );
+   EXPECT_FALSE( US_DataPub::runTypeIsUsable( QString() ) );
+
+   EXPECT_TRUE ( US_DataPub::runFileNameIsUsable( "run1.RA.1.A.280.auc", "run1" ) );
+   EXPECT_FALSE( US_DataPub::runFileNameIsUsable( "run10.RA.1.A.280.auc", "run1" ) );
+   EXPECT_FALSE( US_DataPub::runFileNameIsUsable( "other.RA.1.A.280.auc", "run1" ) );
+   EXPECT_FALSE( US_DataPub::runFileNameIsUsable( "run1.RA/1.auc", "run1" ) );
+   EXPECT_FALSE( US_DataPub::runFileNameIsUsable( "run1.x", QString() ) );
+
+   EXPECT_EQ( US_DataPub::timeStateFileName( "run1" ),
+              QString( "run1.time_state.tmst" ) );
+}
+
+// Every attribute that names a record by GUID, and only those
+TEST( DataPubDefs, GuidsInsidePayloadsAreFound )
+{
+   EXPECT_TRUE( US_DataPub::unusableGuidInXml(
+      "<solution guid=\"aaaaaaaa-0000-0000-0000-000000000001\">"
+      "<buffer guid=\"\"/></solution>" ).isEmpty() );
+
+   EXPECT_EQ( US_DataPub::unusableGuidInXml(
+      "<experiment><operator guid=\"7\"/></experiment>" ), QString( "7" ) );
+   EXPECT_EQ( US_DataPub::unusableGuidInXml(
+      "<model editGUID=\"edit-1\"/>" ), QString( "edit-1" ) );
+   EXPECT_EQ( US_DataPub::unusableGuidInXml(
+      "<x><rawDataGUID value=\"raw 1\"/></x>" ), QString( "raw 1" ) );
+
+   // A "value" is only a GUID on a ...GUID element
+   EXPECT_TRUE( US_DataPub::unusableGuidInXml(
+      "<x><meniscus value=\"5.9\"/></x>" ).isEmpty() );
+   EXPECT_TRUE( US_DataPub::isGuidAttribute( "solution", "guid" ) );
+   EXPECT_TRUE( US_DataPub::isGuidAttribute( "x", "bufferGUID" ) );
+   EXPECT_TRUE( US_DataPub::isGuidAttribute( "editGUID", "value" ) );
+   EXPECT_FALSE( US_DataPub::isGuidAttribute( "x", "value" ) );
+   EXPECT_FALSE( US_DataPub::isGuidAttribute( "x", "guidance" ) );
+}
+
+TEST( DataPubDefs, AFileDigestIsAllOrNothing )
+{
+   QTemporaryDir dir;
+   ASSERT_TRUE( dir.isValid() );
+
+   QFile file( dir.path() + "/a.bin" );
+   ASSERT_TRUE( file.open( QIODevice::WriteOnly ) );
+   file.write( "abc" );
+   file.close();
+
+   QString digest;
+   QString why;
+   ASSERT_TRUE( US_DataPub::fileSha256( file.fileName(), digest, &why ) );
+   EXPECT_EQ( digest, QString( "ba7816bf8f01cfea414140de5dae2223"
+                               "b00361a396177a9cb410ff61f20015ad" ) );
+
+   EXPECT_FALSE( US_DataPub::fileSha256( dir.path() + "/none", digest, &why ) );
+   EXPECT_TRUE ( digest.isEmpty() );
+   EXPECT_FALSE( why.isEmpty() );
+
+#if defined( Q_OS_LINUX )
+   // Opens, but every read fails (EIO): no digest of the part that was read
+   EXPECT_FALSE( US_DataPub::fileSha256( "/proc/self/mem", digest, &why ) );
+   EXPECT_TRUE ( digest.isEmpty() );
+#endif
+}
+
+static US_DataPubManifest acceptableManifest()
+{
+   US_DataPubManifest mani = sampleManifest();
+
+   US_DataPubEntity raw( US_DataPub::RawData );
+   raw.guid     = "aaaaaaaa-0000-0000-0000-000000000004";
+   raw.filename = "demo_run.RA.1.A.280.auc";
+   raw.name     = raw.filename;
+   raw.payload  = "rawData/demo_run/demo_run.RA.1.A.280.auc";
+   raw.attrs.insert( "runID", "demo_run" );
+   raw.setDepend( US_DataPub::Experiment, "aaaaaaaa-0000-0000-0000-000000000002" );
+
+   QList< US_DataPubEntity > raws;
+   raws << raw;
+   mani.setSection( US_DataPub::RawData, raws );
+
+   return mani;
+}
+
+TEST( DataPubManifest, AcceptanceFollowsTheImportRules )
+{
+   QString error;
+   EXPECT_TRUE( acceptableManifest().checkAcceptance( error ) )
+      << error.toStdString();
+
+   // A record GUID that is not one
+   {
+      US_DataPubManifest mani = acceptableManifest();
+      QList< US_DataPubEntity > raws = mani.section( US_DataPub::RawData );
+      raws[ 0 ].guid = "legacy-raw-1";
+      mani.setSection( US_DataPub::RawData, raws );
+      EXPECT_FALSE( mani.checkAcceptance( error ) );
+      EXPECT_TRUE ( error.contains( "legacy-raw-1" ) ) << error.toStdString();
+   }
+
+   // A dependency that is not a GUID
+   {
+      US_DataPubManifest mani = acceptableManifest();
+      QList< US_DataPubEntity > raws = mani.section( US_DataPub::RawData );
+      raws[ 0 ].setDepend( US_DataPub::Solution, "sol 1" );
+      mani.setSection( US_DataPub::RawData, raws );
+      EXPECT_FALSE( mani.checkAcceptance( error ) );
+      EXPECT_TRUE ( error.contains( "sol 1" ) ) << error.toStdString();
+   }
+
+   // A raw data file that is not named after its run
+   {
+      US_DataPubManifest mani = acceptableManifest();
+      QList< US_DataPubEntity > raws = mani.section( US_DataPub::RawData );
+      raws[ 0 ].filename = "renamed.RA.1.A.280.auc";
+      raws[ 0 ].payload  = "rawData/demo_run/renamed.RA.1.A.280.auc";
+      mani.setSection( US_DataPub::RawData, raws );
+      EXPECT_FALSE( mani.checkAcceptance( error ) );
+   }
+
+   // ... or names another run than its experiment's
+   {
+      US_DataPubManifest mani = acceptableManifest();
+      QList< US_DataPubEntity > raws = mani.section( US_DataPub::RawData );
+      raws[ 0 ].attrs.insert( "runID", "other_run" );
+      raws[ 0 ].filename = "other_run.RA.1.A.280.auc";
+      raws[ 0 ].payload  = "rawData/other_run/other_run.RA.1.A.280.auc";
+      mani.setSection( US_DataPub::RawData, raws );
+      EXPECT_FALSE( mani.checkAcceptance( error ) );
+   }
+
+   // A run type that cannot be part of a file name
+   {
+      US_DataPubManifest mani = acceptableManifest();
+      QList< US_DataPubEntity > exps = mani.section( US_DataPub::Experiment );
+      exps[ 0 ].attrs.insert( "runType", "R A" );
+      mani.setSection( US_DataPub::Experiment, exps );
+      EXPECT_FALSE( mani.checkAcceptance( error ) );
+      EXPECT_TRUE ( error.contains( "R A" ) ) << error.toStdString();
+   }
+
+   // A time state of another name, or without its definitions
+   {
+      US_DataPubManifest mani = acceptableManifest();
+      US_DataPubEntity   tmst( US_DataPub::TimeState );
+      tmst.guid     = "aaaaaaaa-0000-0000-0000-000000000005";
+      tmst.filename = "demo_run.other.tmst";
+      tmst.payload  = "timeState/demo_run/demo_run.other.tmst";
+      tmst.attrs.insert( "runID", "demo_run" );
+      tmst.attrs.insert( "definitionsPayload",
+                         "timeState/demo_run/demo_run.other.xml" );
+      mani.add( tmst );
+      EXPECT_FALSE( mani.checkAcceptance( error ) );
+
+      US_DataPubManifest bare = acceptableManifest();
+      tmst.filename = "demo_run.time_state.tmst";
+      tmst.payload  = "timeState/demo_run/demo_run.time_state.tmst";
+      tmst.attrs.remove( "definitionsPayload" );
+      bare.add( tmst );
+      EXPECT_FALSE( bare.checkAcceptance( error ) );
+      EXPECT_TRUE ( error.contains( "definitions" ) ) << error.toStdString();
+   }
+}
+
+// Descriptions come from users: any text has to come back as it went in
+TEST( DataPubManifest, AnyTextRoundTrips )
+{
+   QString text = QString::fromUtf8( "Z\xC3\xBCrich \"quoted\" \\ back\\slash\n"
+                                     "second line\r\ttabbed" );
+   text += QChar( 0x01 );
+   text += QChar( 0x00 );
+   text += QChar( 0x1f );
+   text += QChar( 0x7f );
+   text += QChar( 0x85 );
+   text += QChar( 0x2028 );
+   text += QString::fromUtf8( " end \xE2\x80\x93 \xCE\xB1 \\u0041" );
+
+   US_DataPubManifest mani = sampleManifest();
+   mani.comment = text;
+
+   QList< US_DataPubEntity > projects = mani.section( US_DataPub::Project );
+   projects[ 0 ].name = text;
+   mani.setSection( US_DataPub::Project, projects );
+
+   QString yaml = mani.toYaml();
+
+   // Nothing raw that a YAML reader refuses, and nothing that ends the text
+   for ( int ii = 0; ii < yaml.size(); ii++ )
+   {
+      ushort code = yaml.at( ii ).unicode();
+      EXPECT_FALSE( ( code < 0x20  &&  code != '\n' )  ||
+                    ( code >= 0x7f  &&  code <= 0x9f )  ||  code == 0x2028 )
+         << "raw character " << code << " at " << ii;
+   }
+
+   QTemporaryDir dir;
+   ASSERT_TRUE( dir.isValid() );
+   QString path = dir.path() + "/manifest.yaml";
+   QString error;
+   ASSERT_TRUE( mani.write( path, error ) ) << error.toStdString();
+
+   US_DataPubManifest back;
+   ASSERT_TRUE( back.read( path, error ) ) << error.toStdString();
+   EXPECT_EQ( back.comment, text );
+   EXPECT_EQ( back.section( US_DataPub::Project ).value( 0 ).name, text );
+   EXPECT_EQ( back.toYaml(), yaml );
+}
+
+// A NUL in the file does not end what is read: the text after it is still
+// parsed (and here refused), not silently dropped
+TEST( DataPubManifest, ANulInTheFileDoesNotEndIt )
+{
+   QTemporaryDir dir;
+   ASSERT_TRUE( dir.isValid() );
+   QString path = dir.path() + "/manifest.yaml";
+   QString error;
+
+   US_DataPubManifest mani = sampleManifest();
+   ASSERT_TRUE( mani.write( path, error ) ) << error.toStdString();
+
+   QFile file( path );
+   ASSERT_TRUE( file.open( QIODevice::Append ) );
+   file.write( QByteArray( "\0nonsense: [\n", 13 ) );
+   file.close();
+
+   US_DataPubManifest back;
+   EXPECT_FALSE( back.read( path, error ) );
+}
+
+TEST( DataPubManifest, ADependencyCanBeAddedLater )
+{
+   US_DataPubManifest mani = sampleManifest();
+   QString            model = "aaaaaaaa-0000-0000-0000-000000000003";
+
+   EXPECT_TRUE ( mani.addDependency( US_DataPub::Model, model,
+                 US_DataPub::Project, "aaaaaaaa-0000-0000-0000-000000000001" ) );
+   EXPECT_FALSE( mani.addDependency( US_DataPub::Model,
+                 "aaaaaaaa-0000-0000-0000-00000000ffff",
+                 US_DataPub::Project, "aaaaaaaa-0000-0000-0000-000000000001" ) );
+
+   US_DataPubEntity found;
+   ASSERT_TRUE( mani.entity( US_DataPub::Model, model, found ) );
+   EXPECT_EQ( found.dependsOn( US_DataPub::Project ).size(), 1 );
+}
+
 TEST( DataPubDefs, EveryResolutionHasItsOwnText )
 {
    EXPECT_EQ( US_DataPub::resolutionText( US_DataPub::ResolvedSubstituted ),

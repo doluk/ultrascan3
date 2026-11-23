@@ -79,6 +79,27 @@ void US_DataPubExporter::Selection::setNoises( const QStringList& guids )
    noisesExplicit = true;
 }
 
+void US_DataPubExporter::Selection::setChecked( bool runsListed,
+                                                const QStringList& raws,
+                                                const QStringList& edits,
+                                                const QStringList& models,
+                                                const QStringList& noises )
+{
+   if ( ! runsListed )
+   {  // Nothing checked is not "nothing wanted" when nothing was shown
+      rawGUIDs  .clear();   rawsExplicit   = false;
+      editGUIDs .clear();   editsExplicit  = false;
+      modelGUIDs.clear();   modelsExplicit = false;
+      noiseGUIDs.clear();   noisesExplicit = false;
+      return;
+   }
+
+   setRaws  ( raws   );
+   setEdits ( edits  );
+   setModels( models );
+   setNoises( noises );
+}
+
 US_DataPub::Scope US_DataPubExporter::Selection::effectiveScope( void ) const
 {
    if ( scope >= US_DataPub::ScopeRawData  &&
@@ -133,6 +154,57 @@ QString US_DataPubExporter::runTypeOf( const US_DataPubCatalog::Run& run )
    return QString( "RA" );
 }
 
+bool US_DataPubExporter::runIsAcceptable( const US_DataPubCatalog::Run& run,
+                                          US_DataPub::Scope scope,
+                                          QString& why )
+{
+   QString runType = runTypeOf( run );
+
+   if ( ! US_DataPub::runIdIsUsable( run.runID ) )
+      why = tr( "the run ID \"%1\" may hold only letters, digits, '_' and"
+                " '-', at most 80 of them" ).arg( run.runID );
+
+   else if ( ! US_DataPub::runTypeIsUsable( runType ) )
+      why = tr( "its run type \"%1\" is not one to eight letters or digits" )
+            .arg( runType );
+
+   // (an empty one may still be filled in from the experiment record)
+   else if ( scope >= US_DataPub::ScopeExperiment  &&  ! run.guid.isEmpty()  &&
+             ! US_DataPub::guidIsUsable( run.guid ) )
+      why = tr( "its experiment GUID \"%1\" is not a GUID" ).arg( run.guid );
+
+   for ( int ii = 0; ii < run.raws.size()  &&  why.isEmpty()  &&
+                     scope >= US_DataPub::ScopeRawData; ii++ )
+   {
+      const US_DataPubCatalog::Raw& raw = run.raws[ ii ];
+
+      if ( ! US_DataPub::guidIsUsable( raw.guid ) )
+         why = tr( "the raw data %1 has the GUID \"%2\", which is not one" )
+               .arg( raw.filename ).arg( raw.guid );
+
+      else if ( ! US_DataPub::runFileNameIsUsable( raw.filename, run.runID ) )
+         why = tr( "the raw data file name \"%1\" does not start with the"
+                   " run ID" ).arg( raw.filename );
+
+      for ( int jj = 0; jj < raw.edits.size()  &&  why.isEmpty()  &&
+                        scope >= US_DataPub::ScopeEdits; jj++ )
+      {
+         const US_DataPubCatalog::Edit& edit = raw.edits[ jj ];
+
+         if ( ! US_DataPub::guidIsUsable( edit.guid ) )
+            why = tr( "the edit %1 has the GUID \"%2\", which is not one" )
+                  .arg( edit.filename ).arg( edit.guid );
+
+         else if ( ! US_DataPub::runFileNameIsUsable( edit.filename,
+                                                      run.runID ) )
+            why = tr( "the edit file name \"%1\" does not start with the run"
+                      " ID" ).arg( edit.filename );
+      }
+   }
+
+   return why.isEmpty();
+}
+
 void US_DataPubExporter::note( const QString& text )
 {
    logtext << text;
@@ -179,16 +251,26 @@ bool US_DataPubExporter::copyPayload( const QString& source,
    without one.
 */
 bool US_DataPubExporter::finishEntity( US_DataPubEntity& entity,
-                                       const QString& stagedPath )
+                                       const QString& stagedPath,
+                                       QString& error )
 {
    step_count++;
    emit stepDone( step_count );
 
+   error.clear();
+
    if ( ! stage_payloads )  return true;
 
-   entity.sha256 = US_DataPubHash::fileHash( stagedPath );
+   QString why;
 
-   if ( entity.sha256.isEmpty() )  return false;
+   // A payload that cannot be read to its end has no digest; one of a
+   // part of it would be refused on import as not matching
+   if ( ! US_DataPub::fileSha256( stagedPath, entity.sha256, &why ) )
+   {
+      error = tr( "The staged payload of %1 could not be digested: %2" )
+              .arg( entity.label() ).arg( why );
+      return false;
+   }
 
    QStringList keys = entity.payloadKeys();
 
@@ -197,11 +279,48 @@ bool US_DataPubExporter::finishEntity( US_DataPubEntity& entity,
       if ( keys[ ii ] == "payload" )  continue;
 
       QString path = bundle.stagingPath() + "/" + entity.attrs.value( keys[ ii ] );
-      QString hash = US_DataPubHash::fileHash( path );
+      QString hash;
 
-      if ( hash.isEmpty() )  return false;
+      if ( ! US_DataPub::fileSha256( path, hash, &why ) )
+      {
+         error = tr( "The staged %1 of %2 could not be digested: %3" )
+                 .arg( keys[ ii ] ).arg( entity.label() ).arg( why );
+         return false;
+      }
 
       entity.attrs.insert( US_DataPub::digestKeyOf( keys[ ii ] ), hash );
+   }
+
+   return true;
+}
+
+bool US_DataPubExporter::stageSpectra(
+      US_DataPubEntity& entity,
+      const QMap< QString, QMap< double, double > >& spectra, QString& error )
+{
+   error.clear();
+
+   bool any = false;
+
+   for ( auto it = spectra.constBegin(); it != spectra.constEnd(); ++it )
+      if ( ! it.value().isEmpty() )  any = true;
+
+   if ( ! any )  return true;
+
+   QString rel = US_DataPub::payloadDir( entity.type ) + "/" + entity.guid
+                 + ".spectra.xml";
+   entity.attrs.insert( "spectraPayload", rel );
+
+   if ( ! stage_payloads )  return true;
+
+   QString staged = bundle.stagedPath( rel );
+
+   if ( staged.isEmpty()  ||
+        ! US_DataPubRecords::writeSpectra( spectra, staged ) )
+   {
+      error = tr( "The spectra of %1 could not be staged" )
+              .arg( entity.label() );
+      return false;
    }
 
    return true;
@@ -239,18 +358,48 @@ bool US_DataPubExporter::exportBundle( const Selection& selection,
       return false;
    }
 
+   // The manifest as an import will read it: every value has to come back
+   // as it was written, or the bundle would say something else than meant
+   {
+      US_DataPubManifest written;
+      QString            rerror;
+
+      if ( ! written.read( manifestPath, rerror ) )
+      {
+         error = tr( "The manifest just written cannot be read back: %1" )
+                 .arg( rerror );
+         bundle.cleanup();
+         return false;
+      }
+
+      if ( written.toYaml() != mani.toYaml() )
+      {
+         error = tr( "The manifest just written does not read back as the"
+                     " same manifest" );
+         bundle.cleanup();
+         return false;
+      }
+   }
+
    // The digest of the manifest itself, in the format sha256sum reads, so
    // that a bundle can be checked with ordinary tools as well
-   QString   digest = US_DataPubHash::fileHash( manifestPath );
+   QString   digest;
+   bool      digested   = US_DataPub::fileSha256( manifestPath, digest );
    QString   digestPath = bundle.stagedPath( manifestDigestName() );
    QSaveFile dfile( digestPath );
    QByteArray line = ( digest + "  " + US_DataPubBundle::manifestName()
                        + "\n" ).toUtf8();
 
-   if ( digest.isEmpty()  ||  ! dfile.open( QIODevice::WriteOnly )  ||
+   if ( ! digested  ||  ! dfile.open( QIODevice::WriteOnly )  ||
         dfile.write( line ) != line.size()  ||  ! dfile.commit() )
    {
       error = tr( "The manifest digest could not be written" );
+      bundle.cleanup();
+      return false;
+   }
+
+   if ( ! checkStagedTree( error ) )
+   {
       bundle.cleanup();
       return false;
    }
@@ -482,6 +631,13 @@ bool US_DataPubExporter::build( const Selection& selection, bool payloads,
 
    if ( ! mani.validate( error ) )  return false;
 
+   // What an import would refuse is refused here, before a bundle exists
+   if ( ! mani.checkAcceptance( error ) )
+   {
+      error = tr( "The bundle would not be importable: %1" ).arg( error );
+      return false;
+   }
+
    note( tr( "Collected %1 records" ).arg( mani.total() ) );
 
    return true;
@@ -496,6 +652,10 @@ bool US_DataPubExporter::gatherRuns( const Selection& selection,
    QStringList runIDs = unique( selection.runIDs );
    US_DataPub::Scope scope = selection.effectiveScope();
 
+   // Runs the user named are exported or refused; runs that only come with
+   // the project are left out, with a warning, when they cannot be exported
+   bool fromProject = false;
+
    if ( runIDs.isEmpty()  &&  ! selection.projectGUID.isEmpty()  &&
         scope > US_DataPub::ScopeProject )
    {
@@ -506,7 +666,12 @@ bool US_DataPubExporter::gatherRuns( const Selection& selection,
 
       for ( int ii = 0; ii < found.size(); ii++ )
          runIDs << found[ ii ].runID;
+
+      runIDs      = unique( runIDs );
+      fromProject = true;
    }
+
+   int skipped = 0;
 
    if ( runIDs.isEmpty()  &&  scope > US_DataPub::ScopeProject )
    {
@@ -523,9 +688,19 @@ bool US_DataPubExporter::gatherRuns( const Selection& selection,
       // The run ID names directories and files in the bundle
       if ( ! US_DataPub::runIdIsUsable( runIDs[ ii ] ) )
       {
-         error = tr( "\"%1\" cannot be exported: a run ID may hold only"
-                     " letters, digits, '_' and '-', at most 80 of them" )
-                 .arg( runIDs[ ii ] );
+         QString why = tr( "a run ID may hold only letters, digits, '_' and"
+                           " '-', at most 80 of them" );
+
+         if ( fromProject )
+         {
+            note( tr( "Warning: run \"%1\" of the project is left out: %2" )
+                  .arg( runIDs[ ii ] ).arg( why ) );
+            skipped++;
+            continue;
+         }
+
+         error = tr( "\"%1\" cannot be exported: %2" ).arg( runIDs[ ii ] )
+                 .arg( why );
          return false;
       }
 
@@ -582,6 +757,26 @@ bool US_DataPubExporter::gatherRuns( const Selection& selection,
       }
 
       run.raws = raws;
+
+      // What an import would refuse the run for is found now, before
+      // anything is staged
+      QString why;
+
+      if ( ! runIsAcceptable( run, scope, why ) )
+      {
+         if ( fromProject )
+         {
+            note( tr( "Warning: run %1 of the project is left out: %2" )
+                  .arg( run.runID ).arg( why ) );
+            skipped++;
+            continue;
+         }
+
+         error = tr( "Run %1 cannot be exported: %2" ).arg( run.runID )
+                 .arg( why );
+         return false;
+      }
+
       nraws   += raws.size();
       dropped_raws.insert( run.runID, dropped );
 
@@ -590,6 +785,19 @@ bool US_DataPubExporter::gatherRuns( const Selection& selection,
                .arg( run.runID ) );
 
       runs << run;
+   }
+
+   if ( skipped > 0 )
+   {
+      if ( runs.isEmpty() )
+      {
+         error = tr( "None of the %1 runs of the project can be exported; see"
+                     " the warnings" ).arg( skipped );
+         return false;
+      }
+
+      note( tr( "Warning: %1 run(s) of the project are left out of the"
+                " bundle" ).arg( skipped ) );
    }
 
    // A GUID that was asked for by name and matches nothing is a mistake
@@ -759,15 +967,11 @@ bool US_DataPubExporter::addProject( const QString& guid, const QString& id,
          return false;
       }
 
-      if ( ! finishEntity( entity, staged ) )
-      {
-         error = tr( "The staged project payload could not be digested" );
-         return false;
-      }
+      if ( ! finishEntity( entity, staged, error ) )  return false;
    }
 
    else
-      finishEntity( entity, QString() );
+      finishEntity( entity, QString(), error );
 
    mani.add( entity );
    note( tr( "Project: %1" ).arg( entity.name ) );
@@ -945,6 +1149,28 @@ bool US_DataPubExporter::readExperimentDb(
    }
 
    return true;
+}
+
+QByteArray US_DataPubExporter::storedRiProfile(
+      const US_DataPubCatalog::Run& run )
+{
+   IUS_DB2*    dbase = catalog.db();
+   QStringList query;
+
+   if ( dbase == nullptr )  return QByteArray();
+
+   query << "get_experiment_info_by_runID" << run.runID
+         << QString::number( US_Settings::us_inv_ID() );
+   dbase->query( query );
+
+   if ( dbase->lastErrno() != IUS_DB2::OK  ||  ! dbase->next() )
+      return QByteArray();
+
+   // Column 16 is the RIProfile of the experiment row
+   QVariant value = dbase->value( 16 );
+
+   return ( value.userType() == QMetaType::QByteArray )
+          ? value.toByteArray() : value.toString().toUtf8();
 }
 
 /* Stage an RI intensity profile, when it is one an import can read.
@@ -1181,7 +1407,7 @@ bool US_DataPubExporter::addExperiment( const US_DataPubCatalog::Run& run,
            QFile::exists( run.dirPath + "/" + ripName ) )
          entity.attrs.insert( "riProfilePayload", expDir + "/" + ripName );
 
-      finishEntity( entity, QString() );
+      finishEntity( entity, QString(), error );
       mani.add( entity );
       return true;
    }
@@ -1287,7 +1513,15 @@ bool US_DataPubExporter::addExperiment( const US_DataPubCatalog::Run& run,
       {
          QString ripRel = expDir + "/" + ripName;
 
-         if ( stageRiProfile( run, exper.riProfileXml(), ripRel, error ) )
+         // The profile as the record stores it, byte for byte; the reader
+         // keeps only the values, which writing them again rounds to six
+         // digits.  Only a stored profile that cannot be used is remade.
+         QByteArray ripXml = storedRiProfile( run );
+
+         if ( ! US_DataPubRecords::riProfileIsUsable( ripXml ) )
+            ripXml = exper.riProfileXml();
+
+         if ( stageRiProfile( run, ripXml, ripRel, error ) )
             entity.attrs.insert( "riProfilePayload", ripRel );
 
          else if ( ! error.isEmpty() )
@@ -1299,11 +1533,7 @@ bool US_DataPubExporter::addExperiment( const US_DataPubCatalog::Run& run,
                .arg( run.runID ) );
    }
 
-   if ( ! finishEntity( entity, staged ) )
-   {
-      error = tr( "The staged experiment payload could not be digested" );
-      return false;
-   }
+   if ( ! finishEntity( entity, staged, error ) )  return false;
 
    mani.add( entity );
    note( tr( "Experiment: %1" ).arg( run.runID ) );
@@ -1388,16 +1618,11 @@ bool US_DataPubExporter::addRawData( const US_DataPubCatalog::Run& run,
             return false;
          }
 
-         if ( ! finishEntity( entity, staged ) )
-         {
-            error = tr( "The staged raw data payload %1 could not be"
-                        " digested" ).arg( raw.filename );
-            return false;
-         }
+         if ( ! finishEntity( entity, staged, error ) )  return false;
       }
 
       else
-         finishEntity( entity, QString() );
+         finishEntity( entity, QString(), error );
 
       mani.add( entity );
    }
@@ -1459,18 +1684,13 @@ bool US_DataPubExporter::addTimeState( const US_DataPubCatalog::Run& run,
                           entity.attrs.value( "definitionsPayload" ) ), error ) )
          return false;
 
-      if ( ! finishEntity( entity, staged ) )
-      {
-         error = tr( "The staged time state of run %1 could not be digested" )
-                 .arg( run.runID );
-         return false;
-      }
+      if ( ! finishEntity( entity, staged, error ) )  return false;
 
       QDir( workDir ).removeRecursively();
    }
 
    else
-      finishEntity( entity, QString() );
+      finishEntity( entity, QString(), error );
 
    mani.add( entity );
    note( tr( "Time state: %1" ).arg( run.runID ) );
@@ -1546,15 +1766,11 @@ bool US_DataPubExporter::addCalibration(
          return false;
       }
 
-      if ( ! finishEntity( entity, staged ) )
-      {
-         error = tr( "The staged rotor calibration could not be digested" );
-         return false;
-      }
+      if ( ! finishEntity( entity, staged, error ) )  return false;
    }
 
    else
-      finishEntity( entity, QString() );
+      finishEntity( entity, QString(), error );
 
    mani.add( entity );
    note( tr( "Rotor calibration: %1" )
@@ -1644,15 +1860,11 @@ bool US_DataPubExporter::addCenterpieces( const US_DataPubCatalog::Run& run,
             return false;
          }
 
-         if ( ! finishEntity( entity, staged ) )
-         {
-            error = tr( "The staged centerpiece could not be digested" );
-            return false;
-         }
+         if ( ! finishEntity( entity, staged, error ) )  return false;
       }
 
       else
-         finishEntity( entity, QString() );
+         finishEntity( entity, QString(), error );
 
       mani.add( entity );
    }
@@ -1749,6 +1961,14 @@ bool US_DataPubExporter::addBuffer( US_Buffer& buffer, QString& error )
       entity.attrs.insert( "components", QString::number( comps.size() ) );
    }
 
+   // The buffer file rounds its spectra; the bundle carries them whole
+   US_DataPubRecords::Spectra spectra;
+   spectra.insert( "extinction",   buffer.extinction   );
+   spectra.insert( "refraction",   buffer.refraction   );
+   spectra.insert( "fluorescence", buffer.fluorescence );
+
+   if ( ! stageSpectra( entity, spectra, error ) )  return false;
+
    if ( stage_payloads )
    {
       QString staged = bundle.stagedPath( entity.payload );
@@ -1759,8 +1979,11 @@ bool US_DataPubExporter::addBuffer( US_Buffer& buffer, QString& error )
          return false;
       }
 
+      // ... and its concentrations, which it keeps to five decimals, go
+      // with the component definitions at full precision
       if ( ! comps.isEmpty()  &&
            ! US_DataPubRecords::writeBufferComponents( comps,
+                buffer.concentration,
                 bundle.stagedPath( entity.attrs.value( "componentsPayload" ) ) ) )
       {
          error = tr( "The components of buffer %1 could not be staged" )
@@ -1768,15 +1991,11 @@ bool US_DataPubExporter::addBuffer( US_Buffer& buffer, QString& error )
          return false;
       }
 
-      if ( ! finishEntity( entity, staged ) )
-      {
-         error = tr( "The staged buffer could not be digested" );
-         return false;
-      }
+      if ( ! finishEntity( entity, staged, error ) )  return false;
    }
 
    else
-      finishEntity( entity, QString() );
+      finishEntity( entity, QString(), error );
 
    mani.add( entity );
 
@@ -1848,99 +2067,7 @@ bool US_DataPubExporter::addSolutions( const US_DataPubCatalog::Run& run,
 
       refGUIDs.insert( refs[ ii ], solution.solutionGUID );
 
-      if ( mani.contains( US_DataPub::Solution, solution.solutionGUID ) )
-         continue;
-
-      // ---- the buffer of the solution ------------------------------------
-      if ( ! addBuffer( solution.buffer, error ) )  return false;
-
-      // ---- the analytes of the solution ----------------------------------
-      QStringList anaGUIDs;
-
-      for ( int jj = 0; jj < solution.analyteInfo.size(); jj++ )
-      {
-         US_Analyte analyte = solution.analyteInfo[ jj ].analyte;
-
-         if ( analyte.analyteGUID.isEmpty() )
-         {
-            error = tr( "An analyte of solution \"%1\" has no GUID and"
-                        " cannot be exported" ).arg( solution.solutionDesc );
-            return false;
-         }
-
-         anaGUIDs << analyte.analyteGUID;
-
-         if ( mani.contains( US_DataPub::Analyte, analyte.analyteGUID ) )
-            continue;
-
-         US_DataPubEntity entity( US_DataPub::Analyte );
-         entity.id      = analyte.analyteID;
-         entity.guid    = analyte.analyteGUID;
-         entity.name    = analyte.description;
-         entity.payload = US_DataPub::payloadDir( US_DataPub::Analyte ) + "/"
-                          + analyte.analyteGUID + ".xml";
-
-         if ( stage_payloads )
-         {
-            QString staged = bundle.stagedPath( entity.payload );
-
-            if ( staged.isEmpty()  ||
-                 analyte.write( false, staged ) != IUS_DB2::OK )
-            {
-               error = tr( "The analyte %1 could not be staged" )
-                       .arg( analyte.analyteGUID );
-               return false;
-            }
-
-            if ( ! finishEntity( entity, staged ) )
-            {
-               error = tr( "The staged analyte could not be digested" );
-               return false;
-            }
-         }
-
-         else
-            finishEntity( entity, QString() );
-
-         mani.add( entity );
-      }
-
-      // ---- the solution itself -------------------------------------------
-      US_DataPubEntity entity( US_DataPub::Solution );
-      entity.id      = QString::number( solution.solutionID );
-      entity.guid    = solution.solutionGUID;
-      entity.name    = solution.solutionDesc;
-      entity.payload = US_DataPub::payloadDir( US_DataPub::Solution ) + "/"
-                       + solution.solutionGUID + ".xml";
-      entity.setDepend( US_DataPub::Buffer, solution.buffer.GUID );
-      entity.setDepend( US_DataPub::Experiment, run.guid );
-
-      for ( int jj = 0; jj < anaGUIDs.size(); jj++ )
-         entity.addDepend( US_DataPub::Analyte, anaGUIDs[ jj ] );
-
-      if ( stage_payloads )
-      {
-         QString staged = bundle.stagedPath( entity.payload );
-
-         if ( staged.isEmpty()  ||  ! solution.saveToFile( staged ) )
-         {
-            error = tr( "The solution %1 could not be staged" )
-                    .arg( solution.solutionGUID );
-            return false;
-         }
-
-         if ( ! finishEntity( entity, staged ) )
-         {
-            error = tr( "The staged solution could not be digested" );
-            return false;
-         }
-      }
-
-      else
-         finishEntity( entity, QString() );
-
-      mani.add( entity );
-      note( tr( "Solution: %1" ).arg( entity.name ) );
+      if ( ! addSolution( solution, run.guid, error ) )  return false;
    }
 
    QList< QString > rawGUIDs = rawRefs.keys();
@@ -1948,6 +2075,132 @@ bool US_DataPubExporter::addSolutions( const US_DataPubCatalog::Run& run,
    for ( int ii = 0; ii < rawGUIDs.size(); ii++ )
       raw_solutions.insert( rawGUIDs[ ii ],
                             refGUIDs.value( rawRefs.value( rawGUIDs[ ii ] ) ) );
+
+   return true;
+}
+
+/* One solution, with its buffer and analytes, as filling a channel of the
+   run of the given experiment.
+*/
+bool US_DataPubExporter::addSolution( US_Solution& solution,
+                                      const QString& expGUID, QString& error )
+{
+   error.clear();
+
+   // A solution in the channels of several runs belongs to each of them
+   if ( mani.contains( US_DataPub::Solution, solution.solutionGUID ) )
+   {
+      mani.addDependency( US_DataPub::Solution, solution.solutionGUID,
+                          US_DataPub::Experiment, expGUID );
+      return true;
+   }
+
+   // ---- the buffer of the solution ---------------------------------------
+   if ( ! addBuffer( solution.buffer, error ) )  return false;
+
+   // ---- the analytes of the solution -------------------------------------
+   QStringList anaGUIDs;
+
+   for ( int jj = 0; jj < solution.analyteInfo.size(); jj++ )
+   {
+      US_Analyte& analyte = solution.analyteInfo[ jj ].analyte;
+
+      if ( analyte.analyteGUID.isEmpty() )
+      {
+         error = tr( "An analyte of solution \"%1\" has no GUID and"
+                     " cannot be exported" ).arg( solution.solutionDesc );
+         return false;
+      }
+
+      anaGUIDs << analyte.analyteGUID;
+
+      if ( ! addAnalyte( analyte, error ) )  return false;
+   }
+
+   // ---- the solution itself ----------------------------------------------
+   US_DataPubEntity entity( US_DataPub::Solution );
+   entity.id      = QString::number( solution.solutionID );
+   entity.guid    = solution.solutionGUID;
+   entity.name    = solution.solutionDesc;
+   entity.payload = US_DataPub::payloadDir( US_DataPub::Solution ) + "/"
+                    + solution.solutionGUID + ".xml";
+   entity.setDepend( US_DataPub::Buffer, solution.buffer.GUID );
+   entity.setDepend( US_DataPub::Experiment, expGUID );
+
+   for ( int jj = 0; jj < anaGUIDs.size(); jj++ )
+      entity.addDepend( US_DataPub::Analyte, anaGUIDs[ jj ] );
+
+   // The solution's own extinction profile: the solution file has no place
+   // for it at all
+   US_DataPubRecords::Spectra spectra;
+   spectra.insert( "extinction", solution.extinction );
+
+   if ( ! stageSpectra( entity, spectra, error ) )  return false;
+
+   if ( stage_payloads )
+   {
+      QString staged = bundle.stagedPath( entity.payload );
+
+      if ( staged.isEmpty()  ||  ! solution.saveToFile( staged ) )
+      {
+         error = tr( "The solution %1 could not be staged" )
+                 .arg( solution.solutionGUID );
+         return false;
+      }
+
+      if ( ! finishEntity( entity, staged, error ) )  return false;
+   }
+
+   else
+      finishEntity( entity, QString(), error );
+
+   mani.add( entity );
+   note( tr( "Solution: %1" ).arg( entity.name ) );
+
+   return true;
+}
+
+bool US_DataPubExporter::addAnalyte( US_Analyte& analyte, QString& error )
+{
+   error.clear();
+
+   if ( mani.contains( US_DataPub::Analyte, analyte.analyteGUID ) )
+      return true;
+
+   US_DataPubEntity entity( US_DataPub::Analyte );
+   entity.id      = analyte.analyteID;
+   entity.guid    = analyte.analyteGUID;
+   entity.name    = analyte.description;
+   entity.payload = US_DataPub::payloadDir( US_DataPub::Analyte ) + "/"
+                    + analyte.analyteGUID + ".xml";
+
+   // The analyte file keeps six digits of each value
+   US_DataPubRecords::Spectra spectra;
+   spectra.insert( "extinction",   analyte.extinction   );
+   spectra.insert( "refraction",   analyte.refraction   );
+   spectra.insert( "fluorescence", analyte.fluorescence );
+
+   if ( ! stageSpectra( entity, spectra, error ) )  return false;
+
+   if ( stage_payloads )
+   {
+      QString staged = bundle.stagedPath( entity.payload );
+
+      if ( staged.isEmpty()  ||
+           analyte.write( false, staged ) != IUS_DB2::OK )
+      {
+         error = tr( "The analyte %1 could not be staged" )
+                 .arg( analyte.analyteGUID );
+         return false;
+      }
+
+      if ( ! finishEntity( entity, staged, error ) )  return false;
+   }
+
+   else
+      finishEntity( entity, QString(), error );
+
+   mani.add( entity );
 
    return true;
 }
@@ -2021,16 +2274,11 @@ bool US_DataPubExporter::addEdits( const US_DataPubCatalog::Run& run,
                return false;
             }
 
-            if ( ! finishEntity( entity, staged ) )
-            {
-               error = tr( "The staged edit payload %1 could not be digested" )
-                       .arg( edit.filename );
-               return false;
-            }
+            if ( ! finishEntity( entity, staged, error ) )  return false;
          }
 
          else
-            finishEntity( entity, QString() );
+            finishEntity( entity, QString(), error );
 
          mani.add( entity );
          knt++;
@@ -2179,15 +2427,11 @@ bool US_DataPubExporter::addModels(
             return false;
          }
 
-         if ( ! finishEntity( entity, staged ) )
-         {
-            error = tr( "The staged model payload could not be digested" );
-            return false;
-         }
+         if ( ! finishEntity( entity, staged, error ) )  return false;
       }
 
       else
-         finishEntity( entity, QString() );
+         finishEntity( entity, QString(), error );
 
       mani.add( entity );
    }
@@ -2337,15 +2581,11 @@ bool US_DataPubExporter::addNoises(
             return false;
          }
 
-         if ( ! finishEntity( entity, staged ) )
-         {
-            error = tr( "The staged noise payload could not be digested" );
-            return false;
-         }
+         if ( ! finishEntity( entity, staged, error ) )  return false;
       }
 
       else
-         finishEntity( entity, QString() );
+         finishEntity( entity, QString(), error );
 
       mani.add( entity );
    }
@@ -2357,6 +2597,114 @@ bool US_DataPubExporter::addNoises(
 }
 
 // ------------------------------------------------------------ payload checks
+
+bool US_DataPubExporter::checkStagedTree( QString& error )
+{
+   QMap< QString, qint64 > files;
+   QString                 why;
+
+   if ( ! US_DataPubBundle::listTree( bundle.stagingPath(), files, why ) )
+   {
+      error = tr( "The staged bundle cannot be listed: %1" ).arg( why );
+      return false;
+   }
+
+   // Bundle-relative path -> the digest the manifest gives it
+   QMap< QString, QString >  expected;
+   QList< US_DataPubEntity > entities = mani.all();
+
+   expected.insert( US_DataPubBundle::manifestName(), QString() );
+   expected.insert( manifestDigestName(),             QString() );
+
+   for ( int ii = 0; ii < entities.size(); ii++ )
+   {
+      const US_DataPubEntity& entity = entities[ ii ];
+      QStringList             keys   = entity.payloadKeys();
+
+      for ( int jj = 0; jj < keys.size(); jj++ )
+      {
+         bool    main   = ( keys[ jj ] == "payload" );
+         QString rel    = main ? entity.payload
+                               : entity.attrs.value( keys[ jj ] );
+         QString digest = main ? entity.sha256 : entity.attrs.value(
+                                 US_DataPub::digestKeyOf( keys[ jj ] ) );
+
+         if ( digest.isEmpty() )
+         {
+            error = tr( "%1: the %2 %3 has no digest" ).arg( entity.label() )
+                    .arg( keys[ jj ] ).arg( rel );
+            return false;
+         }
+
+         expected.insert( rel, digest );
+      }
+   }
+
+   for ( auto it = files.constBegin(); it != files.constEnd(); ++it )
+   {
+      if ( expected.contains( it.key() ) )  continue;
+
+      error = tr( "%1 is staged, but the manifest does not name it" )
+              .arg( it.key() );
+      return false;
+   }
+
+   for ( auto it = expected.constBegin(); it != expected.constEnd(); ++it )
+   {
+      QString rel  = it.key();
+      QString path = bundle.stagingPath() + "/" + rel;
+
+      if ( ! files.contains( rel ) )
+      {
+         error = tr( "The manifest names %1, which is not staged" ).arg( rel );
+         return false;
+      }
+
+      if ( it.value().isEmpty() )  continue;        // The manifest files
+
+      QString digest;
+
+      if ( ! US_DataPub::fileSha256( path, digest, &why ) )
+      {
+         error = tr( "The staged payload %1 cannot be read: %2" )
+                 .arg( rel ).arg( why );
+         return false;
+      }
+
+      if ( digest != it.value().toLower() )
+      {
+         error = tr( "The staged payload %1 no longer matches its digest" )
+                 .arg( rel );
+         return false;
+      }
+
+      if ( ! rel.endsWith( ".xml", Qt::CaseInsensitive ) )  continue;
+
+      // An import refuses a payload naming something other than a GUID
+      // where a GUID belongs; legacy records can
+      QFile file( path );
+
+      if ( ! file.open( QIODevice::ReadOnly ) )
+      {
+         error = tr( "The staged payload %1 cannot be read" ).arg( rel );
+         return false;
+      }
+
+      QString bad = US_DataPub::unusableGuidInXml( file.readAll() );
+      file.close();
+
+      if ( ! bad.isEmpty() )
+      {
+         error = tr( "The payload %1 names \"%2\" where a GUID belongs, so an"
+                     " import would refuse the bundle" ).arg( rel ).arg( bad );
+         return false;
+      }
+   }
+
+   error.clear();
+
+   return true;
+}
 
 bool US_DataPubExporter::checkRawGuid( const QString& path,
                                        const QString& wanted, QString& error )

@@ -304,6 +304,20 @@ bool US_DataPubManifest::entity( US_DataPub::EntityType type,
    return true;
 }
 
+bool US_DataPubManifest::addDependency( US_DataPub::EntityType type,
+                                        const QString& guid,
+                                        US_DataPub::EntityType parentType,
+                                        const QString& parentGUID )
+{
+   int at = index.value( int( type ) ).value( guid, -1 );
+
+   if ( at < 0 )  return false;
+
+   sections[ int( type ) ][ at ].addDepend( parentType, parentGUID );
+
+   return true;
+}
+
 QString US_DataPubManifest::escape( const QString& value )
 {
    QString text = value;
@@ -314,7 +328,25 @@ QString US_DataPubManifest::escape( const QString& value )
    text.replace( "\r", "\\r"  );
    text.replace( "\t", "\\t"  );
 
-   return "\"" + text + "\"";
+   // Every other control character -- C0, DEL, C1 -- and the Unicode line
+   // and paragraph separators go as YAML's "\uXXXX": a YAML reader refuses
+   // them raw in a quoted scalar, and a NUL ends the text for a reader that
+   // stops at one
+   QString out;
+   out.reserve( text.size() );
+
+   for ( int ii = 0; ii < text.size(); ii++ )
+   {
+      ushort code = text.at( ii ).unicode();
+
+      if ( code < 0x20  ||  ( code >= 0x7f  &&  code <= 0x9f )  ||
+           code == 0x2028  ||  code == 0x2029 )
+         out += QString( "\\u%1" ).arg( uint( code ), 4, 16, QChar( '0' ) );
+      else
+         out += text.at( ii );
+   }
+
+   return "\"" + out + "\"";
 }
 
 QString US_DataPubManifest::unescape( const QString& value )
@@ -340,6 +372,23 @@ QString US_DataPubManifest::unescape( const QString& value )
       }
 
       QChar nxt = text.at( ii++ );
+      bool  hex = false;
+
+      static const QRegularExpression hex4(
+         QRegularExpression::anchoredPattern( "[0-9A-Fa-f]{4}" ) );
+
+      if ( nxt == QChar( 'u' )  &&  ii + 4 <= text.size()  &&
+           hex4.match( text.mid( ii, 4 ) ).hasMatch() )
+      {
+         ushort code = text.mid( ii, 4 ).toUShort( &hex, 16 );
+
+         if ( hex )
+         {
+            out += QChar( code );
+            ii  += 4;
+            continue;
+         }
+      }
 
       if      ( nxt == QChar( 'n' ) )  out += QChar( '\n' );
       else if ( nxt == QChar( 'r' ) )  out += QChar( '\r' );
@@ -717,7 +766,9 @@ bool US_DataPubManifest::read( const QString& filename, QString& error )
       return false;
    }
 
-   return fromYaml( QString::fromUtf8( bytes ), error );
+   // With its size: Qt 5's fromUtf8( QByteArray ) stops at a NUL
+   return fromYaml( QString::fromUtf8( bytes.constData(), bytes.size() ),
+                    error );
 }
 
 bool US_DataPubManifest::checkPaths( QString& error ) const
@@ -785,6 +836,102 @@ bool US_DataPubManifest::checkPaths( QString& error ) const
                               " hold only letters, digits, '_' and '-', at"
                               " most 80 of them" )
                  .arg( entity.label() ).arg( runIDs[ jj ] );
+         return false;
+      }
+   }
+
+   error.clear();
+
+   return true;
+}
+
+bool US_DataPubManifest::checkAcceptance( QString& error ) const
+{
+   if ( ! checkPaths( error ) )  return false;
+
+   QList< US_DataPubEntity > entities = all();
+   QMap< QString, QString >  expRuns;          // experiment GUID -> run ID
+   QList< US_DataPubEntity > exps     = section( US_DataPub::Experiment );
+
+   for ( int ii = 0; ii < exps.size(); ii++ )
+      expRuns.insert( exps[ ii ].guid, exps[ ii ].name );
+
+   for ( int ii = 0; ii < entities.size(); ii++ )
+   {
+      const US_DataPubEntity& entity = entities[ ii ];
+      US_DataPub::EntityType  type   = entity.type;
+
+      if ( ! US_DataPub::guidIsUsable( entity.guid ) )
+      {
+         error = QObject::tr( "%1: \"%2\" is not a GUID" )
+                 .arg( entity.label() ).arg( entity.guid );
+         return false;
+      }
+
+      QList< QString > dkeys = entity.depends.keys();
+
+      for ( int jj = 0; jj < dkeys.size(); jj++ )
+      {
+         QString dguid = entity.depends.value( dkeys[ jj ] );
+
+         if ( US_DataPub::guidIsUsable( dguid ) )  continue;
+
+         error = QObject::tr( "%1: the %2 it depends on, \"%3\", is not a"
+                              " GUID" ).arg( entity.label() )
+                 .arg( dkeys[ jj ] ).arg( dguid );
+         return false;
+      }
+
+      if ( type == US_DataPub::Experiment )
+      {
+         QString runType = entity.attrs.value( "runType", "RA" );
+
+         if ( ! US_DataPub::runTypeIsUsable( runType ) )
+         {
+            error = QObject::tr( "Run %1 has the unusable run type \"%2\":"
+                                 " a run type is one to eight letters or"
+                                 " digits" ).arg( entity.name ).arg( runType );
+            return false;
+         }
+      }
+
+      if ( type != US_DataPub::RawData  &&  type != US_DataPub::EditedData  &&
+           type != US_DataPub::TimeState )
+         continue;
+
+      QString runID   = entity.attrs.value( "runID" );
+      QString expGUID = entity.depend( US_DataPub::Experiment );
+
+      if ( expRuns.contains( expGUID )  &&  expRuns.value( expGUID ) != runID )
+      {
+         error = QObject::tr( "%1 names run %2, but its experiment is run %3" )
+                 .arg( entity.label() ).arg( runID )
+                 .arg( expRuns.value( expGUID ) );
+         return false;
+      }
+
+      if ( ! US_DataPub::runFileNameIsUsable( entity.filename, runID ) )
+      {
+         error = QObject::tr( "%1: the file name \"%2\" does not start with"
+                              " its run ID %3" ).arg( entity.label() )
+                 .arg( entity.filename ).arg( runID );
+         return false;
+      }
+
+      if ( type == US_DataPub::TimeState  &&
+           entity.filename != US_DataPub::timeStateFileName( runID ) )
+      {
+         error = QObject::tr( "%1: the file name \"%2\" is not %3" )
+                 .arg( entity.label() ).arg( entity.filename )
+                 .arg( US_DataPub::timeStateFileName( runID ) );
+         return false;
+      }
+
+      if ( type == US_DataPub::TimeState  &&
+           entity.attrs.value( "definitionsPayload" ).isEmpty() )
+      {
+         error = QObject::tr( "%1 carries no field definitions" )
+                 .arg( entity.label() );
          return false;
       }
    }

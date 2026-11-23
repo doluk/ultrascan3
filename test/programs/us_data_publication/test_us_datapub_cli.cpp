@@ -7,6 +7,11 @@
 #include "us_datapub_bundle.h"
 #include "us_datapub_manifest.h"
 
+#if defined( Q_OS_UNIX )
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+
 /**
  * The command line's export arguments, run against the scratch disk store.
  * Each case runs the front end exactly as main() does and looks at the exit
@@ -39,6 +44,36 @@ class DataPubCli : public DataPubTestEnv
          US_DataPubCLI cli;
          return cli.run( QStringList( "us_data_publication" ) + args );
       }
+
+#if defined( Q_OS_UNIX )
+      // Run, and collect what the command line wrote to its error output
+      int runCapturing( const QStringList& args, QString& errText )
+      {
+         QString path  = root + "/stderr.txt";
+         int     saved = dup( STDERR_FILENO );
+         int     fd    = ::open( QFile::encodeName( path ).constData(),
+                                 O_WRONLY | O_CREAT | O_TRUNC, 0600 );
+         fflush( stderr );
+         dup2( fd, STDERR_FILENO );
+         ::close( fd );
+
+         int code;
+         {
+            US_DataPubCLI cli;
+            code = cli.run( QStringList( "us_data_publication" ) + args );
+         }
+
+         fflush( stderr );
+         dup2( saved, STDERR_FILENO );
+         ::close( saved );
+
+         QFile file( path );
+         file.open( QIODevice::ReadOnly );
+         errText = QString::fromUtf8( file.readAll() );
+
+         return code;
+      }
+#endif
 
       // The manifest of a bundle the command line wrote
       bool manifestOf( const QString& bundlePath, US_DataPubManifest& mani )
@@ -205,12 +240,97 @@ TEST_F( DataPubCli, ANonInteractiveRunWithoutAPasswordStops )
                                  << "--experiment-id" << runID
                                  << "--non-interactive" << "--dry-run" ), 2 );
 
-   // An unreadable password file is no password either
-   EXPECT_EQ( run( QStringList() << "--mode" << "export" << "--source" << "db"
-                                 << "--experiment-id" << runID
-                                 << "--db-password-file"
-                                 << root + "/no_such_file"
-                                 << "--dry-run" ), 2 );
+}
+
+// A password file that cannot be read is a failure, not a usage error, and
+// it is reported once
+TEST_F( DataPubCli, AnUnreadablePasswordFileFailsWithOneError )
+{
+#if defined( Q_OS_UNIX )
+   QString errText;
+
+   EXPECT_EQ( runCapturing( QStringList() << "--mode" << "export"
+                            << "--source" << "db" << "--experiment-id" << runID
+                            << "--db-password-file" << root + "/no_such_file"
+                            << "--dry-run", errText ), 1 );
+   EXPECT_EQ( errText.count( "Error:" ), 1 ) << errText.toStdString();
+   EXPECT_TRUE( errText.contains( "no_such_file" ) ) << errText.toStdString();
+
+   // A directory opens, but cannot be read
+   EXPECT_EQ( runCapturing( QStringList() << "--mode" << "export"
+                            << "--source" << "db" << "--experiment-id" << runID
+                            << "--db-password-file" << root
+                            << "--dry-run", errText ), 1 );
+   EXPECT_EQ( errText.count( "Error:" ), 1 ) << errText.toStdString();
+#else
+   GTEST_SKIP() << "the error output is captured on Unix only";
+#endif
+}
+
+TEST_F( DataPubCli, APasswordFileThatIsADirectoryIsNotRead )
+{
+   QString pw, warning, error;
+
+   EXPECT_FALSE( US_DataPubCLI::readPasswordFile( root, pw, warning, error ) );
+   EXPECT_FALSE( error.isEmpty() );
+   EXPECT_TRUE ( pw.isEmpty() );
+}
+
+// --include-<scope> selects the scope also when --max-scope caps it
+TEST_F( DataPubCli, IncludeCountsUnderAMaxScope )
+{
+   QString bundle = root + "/include.tar.gz";
+
+   ASSERT_EQ( run( QStringList() << "--mode" << "export" << "--experiment-id"
+                                 << runID << "--max-scope" << "noise"
+                                 << "--include-solutions"
+                                 << "--bundle" << bundle ), 0 );
+
+   US_DataPubManifest mani;
+   ASSERT_TRUE( manifestOf( bundle, mani ) );
+   EXPECT_EQ( mani.scope, QString( "solutions" ) );
+   EXPECT_EQ( mani.count( US_DataPub::EditedData ), 0 );
+   EXPECT_EQ( mani.count( US_DataPub::Model ), 0 );
+
+   // Beyond the cap is still a usage error, and so is a cap that is no scope
+   EXPECT_EQ( run( QStringList() << "--mode" << "export" << "--experiment-id"
+                                 << runID << "--max-scope" << "rawData"
+                                 << "--include-models" << "--dry-run" ), 2 );
+   EXPECT_EQ( run( QStringList() << "--mode" << "export" << "--experiment-id"
+                                 << runID << "--max-scope" << "everything"
+                                 << "--include-models" << "--dry-run" ), 2 );
+}
+
+// A run ID made only of digits is the run ID, not another run's database ID
+TEST_F( DataPubCli, AnExactRunIdWinsOverADatabaseId )
+{
+   QList< US_DataPubCatalog::Run > runs;
+   US_DataPubCatalog::Run          one;
+   one.runID = "12345";
+   one.id    = "7";
+   US_DataPubCatalog::Run          two;
+   two.runID = "other_run";
+   two.id    = "12345";
+   runs << two << one;
+
+   QString why;
+   EXPECT_EQ( US_DataPubCLI::resolveRun( runs, "12345", why ),
+              QString( "12345" ) );
+   EXPECT_TRUE( why.contains( "other_run" ) ) << why.toStdString();
+
+   EXPECT_EQ( US_DataPubCLI::resolveRun( runs, "7", why ), QString( "12345" ) );
+   EXPECT_TRUE( why.isEmpty() );
+
+   // An ID two runs share names neither
+   US_DataPubCatalog::Run three;
+   three.runID = "third_run";
+   three.id    = "7";
+   runs << three;
+   EXPECT_TRUE( US_DataPubCLI::resolveRun( runs, "7", why ).isEmpty() );
+   EXPECT_TRUE( why.contains( "third_run" ) ) << why.toStdString();
+
+   EXPECT_TRUE( US_DataPubCLI::resolveRun( runs, "nothing", why ).isEmpty() );
+   EXPECT_FALSE( why.isEmpty() );
 }
 
 // An option of the other mode would be ignored without a word

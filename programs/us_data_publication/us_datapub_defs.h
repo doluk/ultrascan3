@@ -219,4 +219,79 @@ namespace US_DataPub
    */
    QString digestKeyOf    ( const QString& payloadKey );
 }
+//! \brief The rules a bundle has to meet to be imported
+//!
+//! Export and import share these, so that what an export writes is what an
+//! import accepts: the export checks its records against them before it
+//! packs a bundle, the import refuses a bundle that breaks one.
+namespace US_DataPub
+{
+   /*! \brief Whether a text is a GUID
+
+       Eight, four, four, four and twelve hexadecimal digits, in either
+       case, separated by hyphens -- the whole text, without braces and
+       without a trailing line end.
+       \param guid The text to check
+   */
+   bool guidIsUsable      ( const QString& guid );
+
+   /*! \brief Whether an XML attribute names a record by its GUID
+
+       An attribute called \c guid or ending in \c GUID
+       (\c rawDataGUID, \c solutionGUID, ...), or the \c value of an
+       element whose name ends in \c GUID (the way an edit names itself
+       and its raw data: \c <editGUID value="..."/>).
+       \param element   The name of the element carrying the attribute
+       \param attribute The name of the attribute
+   */
+   bool isGuidAttribute   ( const QString& element,
+                            const QString& attribute );
+
+   /*! \brief The first GUID of an XML payload that is not one
+
+       Every attribute isGuidAttribute() takes for a GUID, with a value
+       that is not empty, has to pass guidIsUsable().  Empty values are left
+       to the record's own checks.
+       \param xml The content of the payload
+       \returns The offending value, or an empty string when every GUID
+                is usable (or the text is not XML at all)
+   */
+   QString unusableGuidInXml( const QByteArray& xml );
+
+   /*! \brief Whether a run type can be part of a run's file names
+
+       One to eight letters or digits ("RA", "RI", "IP", "FI", "WA", ...),
+       checked against the whole text.  A manifest that names none means
+       "RA".
+       \param runType The run type to check
+   */
+   bool runTypeIsUsable   ( const QString& runType );
+
+   /*! \brief Whether a file can go into the directory of a run
+
+       Raw data, edits and the time state live in the run's directory, and
+       the readers find them there by their run ID: the name has to be a
+       safe file name (isSafeFileName()) that starts with the run ID and a
+       dot.
+       \param fileName The base name of the file
+       \param runID    The run the file belongs to
+   */
+   bool runFileNameIsUsable( const QString& fileName, const QString& runID );
+
+   //! \brief The one name the time state file of a run may have:
+   //!        \c <runID>.time_state.tmst
+   QString timeStateFileName( const QString& runID );
+
+   /*! \brief The SHA-256 digest of a file, as lower case hexadecimal
+
+       Unlike a digest that stops at the first block it cannot read, a file
+       that cannot be opened or read to its end gives no digest at all.
+       \param path   The file to digest
+       \param digest Filled in with the digest; cleared on failure
+       \param why    Filled in with the reason when it fails
+       \returns True when the whole file was read
+   */
+   bool fileSha256        ( const QString& path, QString& digest,
+                            QString* why = nullptr );
+}
 #endif

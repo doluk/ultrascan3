@@ -50,7 +50,7 @@ bool US_DataPubRecords::writeCalibration(
    xml.writeAttribute   ( "coeff1",     exact( calibration.coeff1 ) );
    xml.writeAttribute   ( "coeff2",     exact( calibration.coeff2 ) );
    xml.writeAttribute   ( "lastUpdated",
-                          calibration.lastUpdated.toString( "yyyy-MM-dd" ) );
+                          isoDate( calibration.lastUpdated ) );
    xml.writeAttribute   ( "omega2t",    exact( calibration.omega2t ) );
    xml.writeAttribute   ( "label",      calibration.label );
    xml.writeTextElement ( "report",     calibration.report );
@@ -62,31 +62,46 @@ bool US_DataPubRecords::writeCalibration(
    return finish_xml( xml, file );
 }
 
+QString US_DataPubRecords::isoDate( const QDate& date )
+{
+   if ( ! date.isValid() )  return QString();
+
+   return QString::asprintf( "%04d-%02d-%02d", date.year(), date.month(),
+                             date.day() );
+}
+
 QString US_DataPubRecords::calibrationGuid(
       const US_Rotor::RotorCalibration& calibration )
 {
-   if ( ! calibration.GUID.isEmpty() )  return calibration.GUID;
+   if ( US_DataPub::guidIsUsable( calibration.GUID ) )
+      return calibration.GUID;
 
    // The ID and the rotor GUID alone are not unique across installations:
    // calibration 3 of a rotor is a different record in every database that
    // has one.  What was measured is part of the name, so two installations
-   // only agree on the identity when they hold the same calibration.
+   // only agree on the identity when they hold the same calibration.  Only
+   // what the database record and its local copy have in common counts:
+   // the local file keeps six digits of each coefficient, and the database
+   // returns no calibration experiment GUID.
    return US_DataPub::derivedGuid(
             "rotorCalibration:" + calibration.rotorGUID
           + ":" + QString::number( calibration.ID )
-          + ":" + exact( calibration.coeff1 )
-          + ":" + exact( calibration.coeff2 )
-          + ":" + calibration.calibrationExperimentGUID
-          + ":" + calibration.lastUpdated.toString( "yyyy-MM-dd" ) );
+          + ":" + QString::number( calibration.coeff1, 'e', 5 )
+          + ":" + QString::number( calibration.coeff2, 'e', 5 )
+          + ":" + isoDate( calibration.lastUpdated ) );
 }
 
 QString US_DataPubRecords::centerpieceGuid(
       const US_AbstractCenterpiece& centerpiece )
 {
-   if ( ! centerpiece.guid.isEmpty() )  return centerpiece.guid;
+   if ( US_DataPub::guidIsUsable( centerpiece.guid ) )
+      return centerpiece.guid;
 
-   // A serial number and a name are local choices; the geometry is what
-   // makes two table rows the same centerpiece
+   // Everything the table row says goes into the identity: its serial
+   // number and name as well as the geometry.  Two installations then only
+   // agree on the GUID for the same row; an import that finds no such GUID
+   // still matches the centerpiece by name and content (its fingerprint),
+   // so a row known by another serial number is reused all the same.
    QStringList parts;
    parts << "centerpiece"
          << QString::number( centerpiece.serial_number )
@@ -187,7 +202,7 @@ bool US_DataPubRecords::readCalibration(
                             = a.value( "calExpGUID" ).toString();
       calibration.coeff1    = a.value( "coeff1"    ).toString().toDouble();
       calibration.coeff2    = a.value( "coeff2"    ).toString().toDouble();
-      calibration.lastUpdated = QDate::fromString(
+      calibration.lastUpdated = QLocale::c().toDate(
                                 a.value( "lastUpdated" ).toString(),
                                 "yyyy-MM-dd" );
       calibration.omega2t   = a.value( "omega2t"   ).toString().toDouble();
@@ -514,6 +529,18 @@ bool US_DataPubRecords::setRecordName( const QString& filename,
 bool US_DataPubRecords::writeBufferComponents(
       const QList< US_BufferComponent >& components, const QString& filename )
 {
+   return writeBufferComponents( components, QList< double >(), filename );
+}
+
+bool US_DataPubRecords::writeBufferComponents(
+      const QList< US_BufferComponent >& components,
+      const QList< double >& concentrations, const QString& filename )
+{
+   bool withConc = ! concentrations.isEmpty();
+
+   if ( withConc  &&  concentrations.size() != components.size() )
+      return false;
+
    QSaveFile file( filename );
 
    if ( ! file.open( QIODevice::WriteOnly ) )  return false;
@@ -537,6 +564,9 @@ bool US_DataPubRecords::writeBufferComponents(
       xml.writeAttribute( "range", comp.range );
       xml.writeAttribute( "gradient_forming",
                           comp.grad_form ? QString( "1" ) : QString( "0" ) );
+
+      if ( withConc )
+         xml.writeAttribute( "concentration", exact( concentrations[ ii ] ) );
 
       xml.writeStartElement( "densityCoefficients" );
 
@@ -628,4 +658,228 @@ bool US_DataPubRecords::readBufferComponents(
    if ( failed )  components.clear();
 
    return ! failed;
+}
+
+bool US_DataPubRecords::readBufferConcentrations( const QString& filename,
+                                                  QStringList& componentIDs,
+                                                  QList< double >& concentrations,
+                                                  QString* why )
+{
+   componentIDs  .clear();
+   concentrations.clear();
+
+   QString reason;
+   QFile   file( filename );
+   int     missing = 0;
+
+   if ( ! file.open( QIODevice::ReadOnly | QIODevice::Text ) )
+      reason = QObject::tr( "the file cannot be read" );
+
+   else
+   {
+      QXmlStreamReader xml( &file );
+
+      while ( ! xml.atEnd()  &&  reason.isEmpty() )
+      {
+         xml.readNext();
+
+         if ( ! xml.isStartElement()  ||
+              xml.name().toString() != "component" )
+            continue;
+
+         QXmlStreamAttributes attrs = xml.attributes();
+
+         if ( ! attrs.hasAttribute( "concentration" ) )
+         {
+            missing++;
+            continue;
+         }
+
+         QString text  = attrs.value( "concentration" ).toString();
+         bool    ok    = false;
+         double  value = text.toDouble( &ok );
+
+         if ( ! ok  ||  ! qIsFinite( value ) )
+            reason = QObject::tr( "the concentration \"%1\" of component %2"
+                                  " is not a number" )
+                     .arg( text ).arg( attrs.value( "id" ).toString() );
+
+         componentIDs   << attrs.value( "id" ).toString();
+         concentrations << value;
+      }
+
+      if ( reason.isEmpty()  &&  xml.hasError() )
+         reason = QObject::tr( "it is not well-formed XML: %1" )
+                  .arg( xml.errorString() );
+
+      file.close();
+   }
+
+   if ( reason.isEmpty()  &&  missing > 0  &&  ! componentIDs.isEmpty() )
+      reason = QObject::tr( "%1 component(s) carry no concentration" )
+               .arg( missing );
+
+   bool ok = reason.isEmpty()  &&  ! componentIDs.isEmpty();
+
+   if ( ! ok )
+   {
+      componentIDs  .clear();
+      concentrations.clear();
+   }
+
+   if ( why != nullptr )  *why = reason;
+
+   return ok;
+}
+
+// ------------------------------------------------------------------ spectra
+
+QStringList US_DataPubRecords::spectrumNames( void )
+{
+   return QStringList() << "extinction" << "refraction" << "fluorescence";
+}
+
+bool US_DataPubRecords::writeSpectra( const Spectra& spectra,
+                                      const QString& filename )
+{
+   const QStringList names = spectrumNames();
+   QList< QString >  keys  = spectra.keys();
+
+   for ( int ii = 0; ii < keys.size(); ii++ )
+      if ( ! names.contains( keys[ ii ] ) )  return false;
+
+   QSaveFile file( filename );
+
+   if ( ! file.open( QIODevice::WriteOnly ) )  return false;
+
+   QXmlStreamWriter xml( &file );
+   xml.setAutoFormatting( true );
+
+   xml.writeStartDocument();
+   xml.writeDTD         ( "<!DOCTYPE US_DataPubSpectra>" );
+   xml.writeStartElement( "US_DataPubSpectra" );
+   xml.writeAttribute   ( "version", "1.0" );
+
+   // In a fixed order, so that the same spectra give the same file
+   for ( int ii = 0; ii < names.size(); ii++ )
+   {
+      const QMap< double, double > points = spectra.value( names[ ii ] );
+
+      if ( points.isEmpty() )  continue;
+
+      xml.writeStartElement( "spectrum" );
+      xml.writeAttribute   ( "type", names[ ii ] );
+
+      for ( auto it = points.constBegin(); it != points.constEnd(); ++it )
+      {
+         xml.writeStartElement( "point" );
+         xml.writeAttribute   ( "wavelength", exact( it.key()   ) );
+         xml.writeAttribute   ( "value",      exact( it.value() ) );
+         xml.writeEndElement  ();
+      }
+
+      xml.writeEndElement  ();       // spectrum
+   }
+
+   xml.writeEndElement  ();          // US_DataPubSpectra
+   xml.writeEndDocument ();
+
+   return finish_xml( xml, file );
+}
+
+bool US_DataPubRecords::readSpectra( const QString& filename, Spectra& spectra,
+                                     QString* why )
+{
+   spectra.clear();
+
+   const QStringList names = spectrumNames();
+   QString           reason;
+   QFile             file( filename );
+
+   if ( ! file.open( QIODevice::ReadOnly ) )
+      reason = QObject::tr( "the file cannot be read" );
+
+   else
+   {
+      QXmlStreamReader xml( &file );
+      bool             root = false;
+      QString          current;            // The spectrum being read
+
+      while ( ! xml.atEnd()  &&  reason.isEmpty() )
+      {
+         xml.readNext();
+
+         if ( xml.isEndElement()  &&  xml.name().toString() == "spectrum" )
+            current.clear();
+
+         if ( ! xml.isStartElement() )  continue;
+
+         QString              ename = xml.name().toString();
+         QXmlStreamAttributes attrs = xml.attributes();
+
+         if ( ! root )
+         {
+            if ( ename != "US_DataPubSpectra" )
+               reason = QObject::tr( "it is not a US_DataPubSpectra"
+                                     " document" );
+
+            root = true;
+         }
+
+         else if ( ename == "spectrum"  &&  current.isEmpty() )
+         {
+            current = attrs.value( "type" ).toString();
+
+            if ( ! names.contains( current ) )
+               reason = QObject::tr( "\"%1\" is not a kind of spectrum" )
+                        .arg( current );
+
+            else if ( spectra.contains( current ) )
+               reason = QObject::tr( "the %1 spectrum is listed twice" )
+                        .arg( current );
+
+            else
+               spectra.insert( current, QMap< double, double >() );
+         }
+
+         else if ( ename == "point"  &&  ! current.isEmpty() )
+         {
+            bool   okw = false;
+            bool   okv = false;
+            double wvl = attrs.value( "wavelength" ).toString().toDouble( &okw );
+            double val = attrs.value( "value"      ).toString().toDouble( &okv );
+
+            if ( ! okw  ||  ! okv  ||  ! qIsFinite( wvl )  ||
+                 ! qIsFinite( val ) )
+               reason = QObject::tr( "a point of the %1 spectrum is not a"
+                                     " pair of numbers" ).arg( current );
+
+            else if ( spectra[ current ].contains( wvl ) )
+               reason = QObject::tr( "the %1 spectrum lists %2 nm twice" )
+                        .arg( current ).arg( exact( wvl ) );
+
+            else
+               spectra[ current ].insert( wvl, val );
+         }
+
+         else
+            reason = QObject::tr( "the element \"%1\" is not expected here" )
+                     .arg( ename );
+      }
+
+      if ( reason.isEmpty()  &&  xml.hasError() )
+         reason = QObject::tr( "it is not well-formed XML: %1" )
+                  .arg( xml.errorString() );
+
+      else if ( reason.isEmpty()  &&  ! root )
+         reason = QObject::tr( "it is empty" );
+
+      file.close();
+   }
+
+   if ( ! reason.isEmpty() )  spectra.clear();
+
+   if ( why != nullptr )  *why = reason;
+
+   return reason.isEmpty();
 }

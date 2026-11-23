@@ -1259,10 +1259,10 @@ US_DataPubExporter::Selection US_DataPubExportPane::selection( void ) const
    for ( int ii = 0; ii < runs.size(); ii++ )
       sel.runIDs << runs[ ii ].runID;
 
-   sel.setRaws  ( checkedRaws () );
-   sel.setEdits ( checkedEdits() );
-   sel.setModels( checkedModels() );
-   sel.setNoises( checkedNoises() );
+   // With only a project picked there is no tree to narrow anything down:
+   // the project's runs go whole
+   sel.setChecked( ! runs.isEmpty(), checkedRaws(), checkedEdits(),
+                   checkedModels(), checkedNoises() );
 
    return sel;
 }
@@ -1287,12 +1287,18 @@ void US_DataPubExportPane::updateSummary( void )
 
    int nprojs = ck_project->isChecked() ? projects.size() : 0;
 
-   le_summary->setText( tr( "%1 project(s), %2 experiment(s), %3 raw data,"
-                            " %4 edit(s), %5 model(s), %6 noise record(s)" )
-                        .arg( nprojs == 0 ? tr( "no" )
-                                          : QString::number( nprojs ) )
-                        .arg( runs.size() ).arg( nraws ).arg( nedits )
-                        .arg( nmods ).arg( nnois ) );
+   if ( runs.isEmpty()  &&  ! project_guid.isEmpty() )
+      le_summary->setText( tr( "%1 project(s); every run of the project, with"
+                               " everything it holds, up to the scope" )
+                           .arg( nprojs == 0 ? tr( "no" )
+                                             : QString::number( nprojs ) ) );
+   else
+      le_summary->setText( tr( "%1 project(s), %2 experiment(s), %3 raw data,"
+                               " %4 edit(s), %5 model(s), %6 noise record(s)" )
+                           .arg( nprojs == 0 ? tr( "no" )
+                                             : QString::number( nprojs ) )
+                           .arg( runs.size() ).arg( nraws ).arg( nedits )
+                           .arg( nmods ).arg( nnois ) );
 
    // There has to be something to read from, and something to write out:
    // a scope beyond the project, or the project record itself.
