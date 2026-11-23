@@ -779,17 +779,12 @@ int US_Analyte::write_xml( QIODevice& device )
    xml.writeAttribute( "description", description );
    xml.writeAttribute( "analyteGUID", analyteGUID );
 
-   xml.writeStartElement( "sequence" );
-   xml.writeCharacters( "\n" );
-
-   for ( int i = 0; i < sequence.length() / 80; i++ )
-      xml.writeCharacters( sequence.mid( i * 80, 80 ) + "\n" );
-
-   if ( sequence.length() % 80 > 0 )
-       xml.writeCharacters( sequence.mid( ( sequence.length() / 80 ) * 80 ) );
-
-   xml.writeCharacters( "\n" );
-   xml.writeEndElement(); // sequence
+   // The sequence is written as it is.  The reader keeps the text of the
+   // element whole -- line breaks and numbering are part of a pasted
+   // sequence -- so line breaks the writer added (it used to frame the
+   // sequence with them and wrap it at 80 characters) were read back as part
+   // of it, and the sequence grew with every write and read.
+   xml.writeTextElement( "sequence", sequence );
 
    // Add extinction values
    QList< double > keys = extinction.keys();
