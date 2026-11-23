@@ -258,12 +258,14 @@ and a cell table, so that a run can be read and exported whole.
 
 ### 4. The import target
 
-`test_us_datapub`'s `DataPubDbImport` cases write into the scratch database
-named by `US3_TEST_DB_IMPORT_NAME`.  It needs the schema, the procedures, the
-hardware data (a lab, a rotor with a calibration, the centerpiece table) and
-the component table as above, then the investigator the tests log in as,
-with an instrument they may operate and the `channel` row 1 that
-`US_ConvertIO` writes raw data under:
+`test_us_datapub`'s `DataPubDbImport` and `DataPubDbRules` cases write into
+the scratch database named by `US3_TEST_DB_IMPORT_NAME`.  It needs the schema,
+the procedures, the hardware data (a lab, a rotor with a calibration, the
+centerpiece table) and the component table as above, then the same three
+people as the fixture -- the investigator the tests log in as (user level 2:
+enough to add buffer components, not rotor calibrations), a second
+investigator and an administrator -- the instrument the two investigators may
+operate, and the `channel` row 1 that `US_ConvertIO` writes raw data under:
 
 ```bash
 cd $US3_SQL
@@ -277,13 +279,17 @@ mysql -u root us3imp -e "
                       activated, userlevel, account_enabled, authenticatePAM,
                       userNamePAM)
   VALUES (2, 'aaaaaaaa-0000-4000-8000-000000000002', 'Test', 'User',
-          'test@example.org', MD5('secret'), 1, 2, 1, 0, '');
+          'test@example.org', MD5('secret'), 1, 2, 1, 0, ''),
+         (3, 'aaaaaaaa-0000-4000-8000-000000000003', 'Other', 'User',
+          'other@example.org', MD5('secret3'), 1, 2, 1, 0, 'test_other'),
+         (1, 'aaaaaaaa-0000-4000-8000-000000000001', 'Test', 'Admin',
+          'admin@example.org', MD5('adminpw'), 1, 3, 1, 0, 'test_admin');
   INSERT INTO instrument (instrumentID, labID, name, serialNumber,
                           opsys1, opsys2, opsys3)
   VALUES (1, 1, 'XLA', 'SN1', 'UV/visible', '(not installed)',
           '(not installed)');
   INSERT INTO permits (personID, collaboratorID, instrumentID)
-  VALUES (2, 2, 1);
+  VALUES (2, 2, 1), (3, 3, 1);
   INSERT INTO channel (channelID, channelGUID)
   VALUES (1, 'aaaaaaaa-0000-4000-8000-000000000902');"
 ```
@@ -307,7 +313,9 @@ export US3_TEST_DB_PERSON_GUID=aaaaaaaa-0000-4000-8000-000000000002
 export US3_TEST_DB_PERSON_PW=secret  US3_TEST_DB_PERSON_ID=2
 export US3_TEST_DB_EMAIL=test@example.org
 export US3_TEST_DB_ADMIN_GUID=aaaaaaaa-0000-4000-8000-000000000001
-export US3_TEST_DB_ADMIN_PW=adminpw  US3_TEST_DB_OTHER_ID=3
+export US3_TEST_DB_ADMIN_PW=adminpw
+export US3_TEST_DB_OTHER_GUID=aaaaaaaa-0000-4000-8000-000000000003
+export US3_TEST_DB_OTHER_PW=secret3  US3_TEST_DB_OTHER_ID=3
 export US3_TEST_DB_IMPORT_NAME=us3imp         # MariaDB only, see above
 export QT_QPA_PLATFORM=offscreen
 
@@ -320,7 +328,8 @@ want a scratch database (below), the old-server case, which wants the
 fall-back database, and the two `BufferComponentSeedDb` cases, which run only
 with `US3_TEST_LIVE_DB=1` against a seeded database of their own (see the head
 of `test/utils/test_us_buffer_component_live.cpp`).  The `DataPubDb*` cases
-pass 14 on MariaDB, or 11 with the 3 import cases skipped on MySQL 8.
+pass 19 on MariaDB, or 11 with the 8 import cases (`DataPubDbImport`,
+`DataPubDbRules`) skipped on MySQL 8.
 
 The variables, and who reads them:
 
@@ -330,14 +339,17 @@ The variables, and who reads them:
 | `US3_TEST_DB_PASS` | the catalog tests (`test_us_data_catalog_db.cpp`), `test_us_datapub`'s `DataPubDb` cases, the edited-data loaders |
 | `US3_TEST_DB_PASSWORD` | the tests that install stand-in procedures in a scratch database (`test_us_db2_connect_authenticated.cpp`, `test_us_buffer_component_live.cpp`) |
 | `US3_TEST_DB_PERSON_GUID`, `_PW`, `_ID`, `US3_TEST_DB_EMAIL` | the investigator the tests log in as |
-| `US3_TEST_DB_ADMIN_GUID`, `_ADMIN_PW`, `US3_TEST_DB_OTHER_ID` | the tests that switch investigators (they skip without) |
-| `US3_TEST_DB_IMPORT_NAME` | `test_us_datapub`'s `DataPubDbImport`: a scratch database it writes into |
+| `US3_TEST_DB_ADMIN_GUID`, `_ADMIN_PW` | an administrator's login: the tests that switch investigators, `TestUSDataDbLive`, and `DataPubDbRules`' rotor-calibration case (they skip without) |
+| `US3_TEST_DB_OTHER_ID` | the second investigator, by ID: the tests that switch investigators, `TestUSDataDbLive` |
+| `US3_TEST_DB_OTHER_GUID`, `_OTHER_PW` | the second investigator's own login: `DataPubDbRules`' case of another investigator's import (skips without) |
+| `US3_TEST_DB_IMPORT_NAME` | `test_us_datapub`'s `DataPubDbImport` and `DataPubDbRules`: a scratch database they write into |
 
 `test_us_manage_data` has live cases of its own, `TestUSDataDbLive`
 (`test/programs/us_manage_data/test_us_data_db_live.cpp`).  They read the
 connection, person and administrator variables above (`US3_TEST_DB_PASS`,
 `US3_TEST_DB_ADMIN_GUID`, `_ADMIN_PW`, `US3_TEST_DB_OTHER_ID`) and skip without
-them.  They create and remove records, so point `US3_TEST_DB_NAME` at a copy
+them.  A copy is made as for the fall-back below (`mysqldump --routines`,
+`CREATE DATABASE`, `GRANT`, load), without dropping anything.  They create and remove records, so point `US3_TEST_DB_NAME` at a copy
 of the fixture, never at the fixture itself:
 
 ```bash

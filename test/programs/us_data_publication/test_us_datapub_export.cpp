@@ -1590,6 +1590,14 @@ class US_DataPubExporterTest
          return ex.run_fault;
       }
 
+      static bool modelRowValues( US_DataPubExporter& ex,
+                                  const US_DataPubCatalog::Model& model,
+                                  double& variance, double& meniscus,
+                                  QString& error )
+      {
+         return ex.modelRowValues( model, variance, meniscus, error );
+      }
+
       static bool addSolutions( US_DataPubExporter& ex,
                                 const US_DataPubCatalog::Run& run,
                                 QString& error )
@@ -2905,4 +2913,63 @@ TEST_F( DataPubExportSteps, AMissingSolutionIsTheRunsFaultAFailingDatabaseIsNot 
    run.raws[ 0 ].solutionID = "0";
    EXPECT_FALSE( US_DataPubExporterTest::addSolutions( exporter, run, error ) );
    EXPECT_TRUE ( US_DataPubExporterTest::runFault( exporter ) );
+}
+
+// A model's variance and meniscus travel in its manifest entry as well:
+// the database keeps them in columns of the row, which an import into a
+// database fills from the manifest when the model XML does not hold them
+TEST_F( DataPubExport, AModelsVarianceAndMeniscusAreInTheManifest )
+{
+   US_Model model;
+   QString  mpath = US_Settings::dataDir() + "/models/M0000001.xml";
+   ASSERT_EQ( model.load( mpath ), IUS_DB2::OK );
+   model.variance = 1.23457e-4;
+   model.meniscus = 5.85123;
+   ASSERT_EQ( model.write( mpath ), IUS_DB2::OK );
+
+   // On disk they are what the model file holds
+   ASSERT_EQ( model.load( mpath ), IUS_DB2::OK );
+   ASSERT_NE( model.variance, 0.0 );
+   ASSERT_NE( model.meniscus, 0.0 );
+
+   US_DataPubExporter exporter;
+   QString            error;
+   ASSERT_TRUE( exporter.exportBundle( baseSelection( US_DataPub::ScopeModels ),
+                root + "/models.tar.gz", error ) ) << error.toStdString();
+
+   US_DataPubEntity entity;
+   ASSERT_TRUE( exporter.manifest().entity( US_DataPub::Model, modelGUID,
+                                            entity ) );
+   EXPECT_EQ( entity.attrs.value( "variance" ).toDouble(), model.variance );
+   EXPECT_EQ( entity.attrs.value( "meniscus" ).toDouble(), model.meniscus );
+}
+
+// From the database they are the row's, whatever the stored XML says
+TEST_F( DataPubExportSteps, AModelsRowValuesAreReadFromTheDatabase )
+{
+   sdb.rows.insert( "get_modelID", QList< QVariantList >()
+                    << ( QVariantList() << 300 ) );
+   sdb.rows.insert( "get_model_info", QList< QVariantList >()
+                    << ( QVariantList() << modelGUID << "m" << "<x/>"
+                                        << "0.00123456789" << "5.85" ) );
+
+   US_DataPubCatalog::Model model;
+   model.guid        = modelGUID;
+   model.description = "m";
+
+   double  variance = 0.0;
+   double  meniscus = 0.0;
+   QString error;
+
+   ASSERT_TRUE( US_DataPubExporterTest::modelRowValues( exporter, model,
+                variance, meniscus, error ) ) << error.toStdString();
+   EXPECT_EQ( variance, 0.00123456789 );
+   EXPECT_EQ( meniscus, 5.85 );
+   EXPECT_TRUE( sdb.asked.contains( "get_modelID" ) );
+
+   // A row that cannot be read fails the export
+   sdb.failing.insert( "get_model_info" );
+   model.id = "300";
+   EXPECT_FALSE( US_DataPubExporterTest::modelRowValues( exporter, model,
+                 variance, meniscus, error ) );
 }
