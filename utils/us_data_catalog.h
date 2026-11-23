@@ -65,6 +65,11 @@
     Run::verified is true exactly when the raw-data and edit checksums of
     the experiment's records are filled in.
 
+    A local file whose checksum is wanted and that cannot be read -- gone
+    since the store was indexed, say -- fails the read or the verify that
+    wanted it, with an error naming the file; it is never given a checksum
+    of its own making.
+
     \section catalog_sources Sources
 
     One catalog reads from one source.  A program that compares the
