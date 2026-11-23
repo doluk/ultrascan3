@@ -455,3 +455,70 @@ TEST_F( TestUSDiskScan, AMissingStoreIsReportedNotFatal )
    EXPECT_FALSE( scan.ok() );
    EXPECT_FALSE( scan.error().isEmpty() );
 }
+
+// A cancel ends with the job it stopped.  Left set, it would make every
+// direct read of the idle catalog fail as "cancelled" -- the one a window
+// makes when someone opens an experiment the scan has not reached.
+TEST_F( TestUSDiskScan, ACancelEndsWithTheJobItStopped )
+{
+   US_DiskScan scan;
+   ASSERT_TRUE( scan.list() );
+   settle( scan );
+   ASSERT_TRUE( scan.ok() ) << scan.error().toStdString();
+
+   // The index is rebuilt by the next listing, and its first note is where
+   // the cancel lands, before any file is read
+   QMetaObject::Connection gate = QObject::connect(
+      scan.catalog(), &US_DataCatalog::message, &scan,
+      [ &scan ]( const QString& ) { scan.cancel(); }, Qt::DirectConnection );
+
+   ASSERT_TRUE( scan.list() );
+   settle( scan );
+   QObject::disconnect( gate );
+   ASSERT_FALSE( scan.ok() ) << "the listing was not cancelled";
+
+   US_DataCatalog* catalog = scan.catalog();
+   ASSERT_NE( catalog, nullptr );
+   EXPECT_FALSE( catalog->cancelled() );
+
+   int     index = catalog->indexOfRun( runOne );
+   QString error;
+   ASSERT_GE( index, 0 );
+   EXPECT_TRUE( catalog->loadRunDetail( index, error ) ) << error.toStdString();
+   EXPECT_TRUE( catalog->isRunLoaded( index ) );
+
+   // and a cancel with nothing running stops nothing
+   scan.cancel();
+   EXPECT_FALSE( catalog->cancelled() );
+   EXPECT_EQ   ( catalog->noisesOfModel( modelGUID, error ).size(), 1 )
+      << error.toStdString();
+   EXPECT_TRUE ( error.isEmpty() ) << error.toStdString();
+}
+
+// A noise lookup against an index whose build was cancelled says so,
+// rather than answering that the model has no noise
+TEST_F( TestUSDiskScan, ANoiseLookupOnAnUnbuiltIndexIsAnError )
+{
+   QAtomicInt     flag;
+   US_DataCatalog catalog;
+   QString        error;
+
+   catalog.setCancelFlag( &flag );
+   ASSERT_TRUE( catalog.open( US_DataCatalog::Disk, QString(), error ) );
+
+   flag.storeRelease( 1 );
+
+   EXPECT_TRUE( catalog.noisesOfModel( modelGUID, error ).isEmpty() );
+   EXPECT_TRUE( error.contains( "cancelled" ) ) << error.toStdString();
+
+   error.clear();
+   EXPECT_TRUE( catalog.noisesOfEdit( editOneGUID, QString(), error ).isEmpty() );
+   EXPECT_TRUE( error.contains( "cancelled" ) ) << error.toStdString();
+
+   flag.storeRelease( 0 );
+
+   EXPECT_EQ  ( catalog.noisesOfModel( modelGUID, error ).size(), 1 );
+   EXPECT_TRUE( error.isEmpty() ) << error.toStdString();
+   EXPECT_EQ  ( catalog.noisesOfEdit( editOneGUID, QString(), error ).size(), 1 );
+   EXPECT_TRUE( error.isEmpty() ) << error.toStdString();
+}
