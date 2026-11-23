@@ -16,12 +16,21 @@ QString US_DataPubHash::fileHash( const QString& filename )
    {
       QByteArray block = file.read( 1024 * 256 );
 
-      if ( block.isEmpty() )  break;
+      // Nothing read before the end is a read error: the digest of the
+      // part read so far would pass for the file's
+      if ( block.isEmpty() )
+      {
+         file.close();
+         return QString();
+      }
 
       hash.addData( block );
    }
 
+   bool failed = ( file.error() != QFileDevice::NoError );
    file.close();
+
+   if ( failed )  return QString();
 
    return QString( hash.result().toHex() );
 }

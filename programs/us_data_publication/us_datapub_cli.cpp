@@ -890,6 +890,12 @@ int US_DataPubCLI::runImport( void )
 
       if ( options.dbPassword.isEmpty() )
       {
+         // A password file that cannot be read is a failure, like any
+         // other file the run cannot read; no password given at all is a
+         // usage error
+         if ( errors_reported != before  &&  ! args.dbPasswordFile.isEmpty() )
+            return 1;
+
          if ( errors_reported == before )
             fail( tr( "A database import needs the master password: give"
                       " --db-password-file, or set US3_DB_PASSWORD" ) );

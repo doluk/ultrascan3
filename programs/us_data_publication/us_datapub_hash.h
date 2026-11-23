@@ -35,7 +35,8 @@ class US_DataPubHash
 
       //! \brief The SHA-256 digest of a file, as lower-case hexadecimal
       //! \param filename The full path of the file to digest
-      //! \returns An empty string when the file cannot be read
+      //! \returns An empty string when the file cannot be opened or a read
+      //!          fails part way, never the digest of part of the file
       static QString fileHash( const QString& filename );
 
       //! \brief The SHA-256 digest of a byte array, as hexadecimal

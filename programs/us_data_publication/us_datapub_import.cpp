@@ -67,6 +67,8 @@ US_DataPubImporter::US_DataPubImporter( QObject* parent ) : QObject( parent )
    exp_indexed = false;
    exp_resolved = false;
    tcomps_read = false;
+   hw_read     = false;
+   cp_read     = false;
    step_count  = 0;
 }
 
@@ -823,8 +825,11 @@ bool US_DataPubImporter::preflight( QString& error )
    note( tr( "All %1 payloads parse and carry the identity the manifest"
              " gives them" ).arg( entities.size() ) );
 
-   // The runs are looked up now, before any transaction is open
+   // The runs are looked up now, before any transaction is open, and so is
+   // everything else that can be
    if ( ! resolveExperiments( error ) )  return false;
+
+   if ( ! lookUpInAdvance( error ) )     return false;
 
    return true;
 }
@@ -880,9 +885,15 @@ namespace
    -- and only a run that this leaves open is looked for in the whole list
    of the investigator's experiments (a run that was renamed in the target).
    A run that is not the investigator's, but whose raw data the database
-   holds (the raw data lookup is not limited to one investigator), belongs
-   to someone else: the import refuses it, rather than create a second
-   experiment of that GUID or attach the data to another person's records.
+   holds, belongs to someone else: the import refuses it, rather than create
+   a second experiment of that GUID or attach the data to another person's
+   records.  The raw data lookup (get_rawDataID_from_GUID) checks the
+   permission of the person logged in: it finds anyone's raw data for an
+   admin, and answers "not permitted" for someone else's to anyone else --
+   which says just as much.  A run of someone else's without raw data in the
+   database cannot be seen at all; experiment.experimentGUID is UNIQUE
+   (us3.sql), so its second copy is refused by new_experiment and the import
+   rolled back.
 */
 bool US_DataPubImporter::resolveExperiments( QString& error )
 {
@@ -957,13 +968,18 @@ bool US_DataPubImporter::resolveExperiments( QString& error )
          query << "get_rawDataID_from_GUID" << raws[ jj ].guid;
          dbase->query( query );
 
-         if ( lookupFailed( tr( "raw data %1" ).arg( raws[ jj ].guid ) ) )
+         if ( dbase->lastErrno() != IUS_DB2::NOTPERMITTED  &&
+              lookupFailed( tr( "raw data %1" ).arg( raws[ jj ].guid ) ) )
          {
             error = lookup_error;
             return false;
          }
 
-         if ( ! dbase->next() )  continue;
+         // The lookup checks the permission of the person logged in: for
+         // anyone but an admin, someone else's raw data is refused
+         bool foreign = ( dbase->lastErrno() == IUS_DB2::NOTPERMITTED );
+
+         if ( ! foreign  &&  ! dbase->next() )  continue;
 
          error = tr( "Run %1 (experiment %2) is already in the target"
                      " database, but not among the runs of investigator %3:"
@@ -983,7 +999,13 @@ bool US_DataPubImporter::resolveExperiments( QString& error )
    return true;
 }
 
-// True when a record of a type is in the bundle or already in the target
+/* True when a record of a type is in the bundle or already in the target --
+   and there, when it is a record of a type others own (a project, an edit,
+   a model, a noise record, a solution), one of the investigator's own.  The
+   database's GUID lookups are not limited to one investigator, so without
+   that check an import would attach its records to whatever record of that
+   GUID the database holds.
+*/
 bool US_DataPubImporter::availableAs( US_DataPub::EntityType type,
                                       const QString& guid, QString& error )
 {
@@ -994,15 +1016,614 @@ bool US_DataPubImporter::availableAs( US_DataPub::EntityType type,
    QString id;
    QString name;
 
-   if ( findByGuid( type, guid, id, name ) )  return true;
+   if ( findByGuid( type, guid, id, name ) )
+      return checkOwner( type, guid, id, error );
 
-   if ( ! lookup_error.isEmpty() )
+   if ( guid_foreign.contains( US_DataPub::typeKey( type ) + ":" + guid ) )
+      error = foreignText( type, guid );
+
+   else if ( ! lookup_error.isEmpty() )
       error = lookup_error;
    else
       error = tr( "%1 %2 is neither in the bundle nor in the target" )
               .arg( US_DataPub::typeText( type ) ).arg( guid );
 
    return false;
+}
+
+// ------------------------------------------------- whose records the target holds
+
+bool US_DataPubImporter::ownedType( US_DataPub::EntityType type )
+{
+   switch ( type )
+   {
+      case US_DataPub::Project:
+      case US_DataPub::Solution:
+      case US_DataPub::RawData:
+      case US_DataPub::EditedData:
+      case US_DataPub::Model:
+      case US_DataPub::Noise:      return true;
+
+      // Buffers and analytes are chemistry the investigators of a database
+      // share; hardware and runs have rules of their own
+      default:                     return false;
+   }
+}
+
+/* The investigator's own records of a type, from the listing the rest of
+   UltraScan lists them with.  Each listing is limited to the investigator
+   it is given (and refused for another one, unless the person logged in is
+   an admin), which is what the GUID lookups are not.
+*/
+bool US_DataPubImporter::readOwned( US_DataPub::EntityType type )
+{
+   if ( owned.contains( int( type ) ) )  return true;
+
+   if ( dbase == nullptr )  return false;
+
+   QString     invID = QString::number( US_Settings::us_inv_ID() );
+   QStringList query;
+   int         guidCol = -1;           // -1: the listing carries no GUID
+
+   switch ( type )
+   {
+      case US_DataPub::Project:
+         query << "get_project_desc"  << invID;                break;
+      case US_DataPub::Solution:
+         query << "all_solutionIDs"   << invID;                break;
+      case US_DataPub::RawData:
+         query << "all_rawDataIDs"    << invID;  guidCol = 9;  break;
+      case US_DataPub::EditedData:
+         query << "all_editedDataIDs" << invID;  guidCol = 9;  break;
+      case US_DataPub::Model:
+         query << "get_model_desc"    << invID;  guidCol = 1;  break;
+      case US_DataPub::Noise:
+         query << "get_noise_desc"    << invID;  guidCol = 1;  break;
+      default:
+         owned.insert( int( type ), Owned() );
+         return true;
+   }
+
+   dbase->query( query );
+
+   if ( lookupFailed( tr( "the investigator's %1 records" )
+                      .arg( US_DataPub::typeText( type ) ) ) )
+      return false;
+
+   Owned list;
+
+   while ( dbase->next() )
+   {
+      QString id = dbase->value( 0 ).toString();
+      list.ids << id;
+
+      if ( guidCol >= 0 )
+         list.guids << dbase->value( guidCol ).toString().toLower();
+
+      // The edit a model was fitted to, which its noise records name
+      if ( type == US_DataPub::Model )
+         list.edits.insert( dbase->value( 1 ).toString().toLower(),
+                            dbase->value( 6 ).toString() );
+   }
+
+   owned.insert( int( type ), list );
+
+   return true;
+}
+
+bool US_DataPubImporter::checkOwner( US_DataPub::EntityType type,
+                                     const QString& guid, const QString& id,
+                                     QString& error )
+{
+   if ( opts.target != US_DataPub::TargetDb  ||  ! ownedType( type ) )
+      return true;
+
+   if ( ! readOwned( type ) )
+   {
+      error = lookup_error;
+      return false;
+   }
+
+   const Owned& list = owned[ int( type ) ];
+
+   if ( list.guids.contains( guid.toLower() )  ||  list.ids.contains( id ) )
+      return true;
+
+   error = foreignText( type, guid );
+
+   return false;
+}
+
+QString US_DataPubImporter::foreignText( US_DataPub::EntityType type,
+                                         const QString& guid ) const
+{
+   return tr( "%1 %2 is in the target database, but it is not a record of"
+              " investigator %3: it belongs to another investigator.  The"
+              " import neither reuses someone else's records nor attaches"
+              " anything to them; import as the investigator who owns it,"
+              " or export it with the bundle" )
+          .arg( US_DataPub::typeText( type ) ).arg( guid )
+          .arg( US_Settings::us_inv_ID() );
+}
+
+/* A record of the bundle that the target database already holds under its
+   GUID is reused, and whatever the bundle hangs from it is attached to it.
+   That is right for the investigator's own record and wrong for anyone
+   else's, so a record of someone else -- one the lookup refused, or one
+   that is not in the investigator's listing -- refuses the bundle before
+   anything is written.
+*/
+bool US_DataPubImporter::checkReuse( QString& error )
+{
+   if ( opts.target != US_DataPub::TargetDb )  return true;
+
+   QList< US_DataPubEntity > entities = mani.all();
+
+   for ( int ii = 0; ii < entities.size(); ii++ )
+   {
+      const US_DataPubEntity& entity = entities[ ii ];
+
+      if ( ! ownedType( entity.type ) )  continue;
+
+      // A project the import was told to use replaces the bundle's
+      if ( entity.type == US_DataPub::Project  &&  ! tproj_guid.isEmpty() )
+         continue;
+
+      QString id;
+      QString name;
+
+      if ( findByGuid( entity.type, entity.guid, id, name ) )
+      {
+         if ( checkOwner( entity.type, entity.guid, id, error ) )  continue;
+
+         error = tr( "%1: %2" ).arg( entity.label() ).arg( error );
+         return false;
+      }
+
+      if ( ! lookup_error.isEmpty() )
+      {
+         error = lookup_error;
+         return false;
+      }
+
+      if ( guid_foreign.contains( US_DataPub::typeKey( entity.type ) + ":"
+                                  + entity.guid ) )
+      {
+         error = tr( "%1: %2" ).arg( entity.label() )
+                 .arg( foreignText( entity.type, entity.guid ) );
+         return false;
+      }
+   }
+
+   return true;
+}
+
+QStringList US_DataPubImporter::solutionsNamed( const QByteArray& xml )
+{
+   QStringList      guids;
+   QXmlStreamReader reader( xml );
+
+   while ( ! reader.atEnd() )
+   {
+      reader.readNext();
+
+      if ( ! reader.isStartElement()  ||
+           reader.name().toString() != "solution" )
+         continue;
+
+      QString guid = reader.attributes().value( "guid" ).toString();
+
+      if ( ! guid.isEmpty()  &&  ! guids.contains( guid ) )  guids << guid;
+   }
+
+   return guids;
+}
+
+/* The labs, rotors and calibrations of the target database, read once.
+
+   They are read as US_Rotor reads them, but without the copy
+   US_Rotor::readLabsDB() writes into the local disk store, and every
+   listing that fails is a failed lookup rather than an empty one.  The
+   hardware decisions of every run -- and the name and GUID lookups of
+   rotor calibrations -- are made from them, so none of these listings is
+   read inside the import's transaction.
+*/
+bool US_DataPubImporter::readHardwareDb( void )
+{
+   if ( hw_read )  return true;
+
+   if ( dbase == nullptr )  return false;
+
+   QVector< US_Rotor::Lab > labs;
+
+   if ( read_labs_db( labs, dbase ) == US_Rotor::MISC_ERROR )
+   {
+      failLookup( tr( "its labs" ) );
+      return false;
+   }
+
+   QList< QVector< US_Rotor::Rotor > >                rotors;
+   QMap< int, QVector< US_Rotor::RotorCalibration > > cals;
+
+   for ( int ii = 0; ii < labs.size(); ii++ )
+   {
+      QVector< US_Rotor::Rotor > labRotors;
+
+      if ( US_Rotor::readRotorsFromDB( labRotors, labs[ ii ].ID, dbase )
+           == US_Rotor::MISC_ERROR )
+      {
+         failLookup( tr( "the rotors of lab %1" ).arg( labs[ ii ].ID ) );
+         return false;
+      }
+
+      for ( int jj = 0; jj < labRotors.size(); jj++ )
+      {
+         QVector< US_Rotor::RotorCalibration > rotorCals;
+
+         if ( US_Rotor::readCalibrationProfilesDB( rotorCals,
+                                                   labRotors[ jj ].ID, dbase )
+              == US_Rotor::MISC_ERROR )
+         {
+            failLookup( tr( "the calibrations of rotor %1" )
+                        .arg( labRotors[ jj ].ID ) );
+            return false;
+         }
+
+         cals.insert( labRotors[ jj ].ID, rotorCals );
+      }
+
+      rotors << labRotors;
+   }
+
+   hw_labs   = labs;
+   hw_rotors = rotors;
+   hw_cals   = cals;
+   hw_read   = true;
+
+   return true;
+}
+
+bool US_DataPubImporter::rotorIdOf( const QString& rotorGUID, int& rotorID )
+{
+   rotorID = 0;
+
+   if ( rotorGUID.isEmpty() )  return true;
+
+   if ( rotor_ids.contains( rotorGUID ) )
+   {
+      rotorID = rotor_ids.value( rotorGUID );
+      return true;
+   }
+
+   QStringList query;
+   query << "get_rotorID_from_GUID" << rotorGUID;
+   dbase->query( query );
+
+   if ( lookupFailed( tr( "rotor %1" ).arg( rotorGUID ) ) )  return false;
+
+   if ( dbase->next() )  rotorID = dbase->value( 0 ).toString().toInt();
+
+   rotor_ids.insert( rotorGUID, rotorID );
+
+   return true;
+}
+
+bool US_DataPubImporter::personIdOf( const QString& personGUID, int& personID )
+{
+   personID = 0;
+
+   if ( personGUID.isEmpty() )  return true;
+
+   if ( person_ids.contains( personGUID ) )
+   {
+      personID = person_ids.value( personGUID );
+      return true;
+   }
+
+   QStringList query;
+   query << "get_personID_from_GUID" << personGUID;
+   dbase->query( query );
+
+   if ( lookupFailed( tr( "operator %1" ).arg( personGUID ) ) )  return false;
+
+   if ( dbase->next() )  personID = dbase->value( 0 ).toString().toInt();
+
+   person_ids.insert( personGUID, personID );
+
+   return true;
+}
+
+/* Every target lookup a database import can make before it writes.
+
+   What is asked here is kept, so that the transaction finds the answers
+   waiting and runs no lookup it could have run before:
+   - every record of the bundle by its GUID, and whether a record the
+     target holds of a type others own is the investigator's;
+   - the investigator's listings of every record type of the bundle (the
+     name indexes), and the GUIDs and fingerprints of the records whose name
+     a bundle record has;
+   - the buffer component table, when a buffer names components;
+   - the labs, rotors, calibrations and centerpieces, and the rotors and
+     operators the runs and calibrations name;
+   - the project a run names when the bundle carries none, and the
+     solutions its triples name that the bundle does not carry.
+   Only what depends on the import's own writes is left to the
+   transaction: the records it has just written, the names of model and
+   noise records of a run it renamed, and a last check that each new run ID
+   is still free.
+*/
+bool US_DataPubImporter::lookUpInAdvance( QString& error )
+{
+   if ( opts.target != US_DataPub::TargetDb  ||  dbase == nullptr )
+      return true;
+
+   QList< US_DataPubEntity > entities = mani.all();
+   bool                      hardware = false;
+   bool                      comps    = false;
+
+   for ( int ii = 0; ii < entities.size(); ii++ )
+   {
+      const US_DataPubEntity& entity = entities[ ii ];
+      US_DataPub::EntityType  type   = entity.type;
+      QString                 id;
+      QString                 name;
+
+      if ( type == US_DataPub::Experiment  ||  type == US_DataPub::Centerpiece
+           ||  type == US_DataPub::RotorCalibration )
+         hardware = true;
+
+      if ( type == US_DataPub::Buffer  &&
+           ! comp_defs.value( entity.guid ).isEmpty() )
+         comps = true;
+
+      // ---- the record by its GUID ---------------------------------------
+      if ( type != US_DataPub::TimeState  &&  type != US_DataPub::Experiment )
+         findByGuid( type, entity.guid, id, name );
+
+      if ( ! lookup_error.isEmpty() )
+      {
+         error = lookup_error;
+         return false;
+      }
+
+      // ---- the record of its name, and what that record holds -----------
+      if ( indexedByName( type ) )
+      {
+         QString other;
+         QString otherID;
+         QString tname = targetName( entity );
+
+         if ( ! tname.isEmpty()  &&  findByName( type, tname, other, otherID )
+              &&  ! other.isEmpty()  &&  other != entity.guid )
+            targetFingerprint( type, other, otherID );
+
+         if ( ! lookup_error.isEmpty() )
+         {
+            error = lookup_error;
+            return false;
+         }
+      }
+
+      // ---- what a run names ---------------------------------------------
+      if ( type == US_DataPub::Experiment )
+      {
+         QByteArray       data;
+         bool             wellFormed = false;
+         int              knownID    = 0;
+         US_DataPubEntity named;
+
+         if ( ! read_capped( payloadPath( entity ), data, error ) )
+            return false;
+
+         if ( ! rotorIdOf ( element_value( data, "rotor", "guid",
+                                           wellFormed ), knownID )  ||
+              ! personIdOf( element_value( data, "operator", "guid",
+                                           wellFormed ), knownID ) )
+         {
+            error = lookup_error;
+            return false;
+         }
+
+         // A run of a bundle without a project goes into the project it
+         // names, which has to be the investigator's
+         QString projGUID = element_value( data, "project", "guid",
+                                           wellFormed );
+
+         if ( tproj_guid.isEmpty()  &&
+              entity.depend( US_DataPub::Project ).isEmpty()  &&
+              ! projGUID.isEmpty()  &&
+              ! mani.entity( US_DataPub::Project, projGUID, named ) )
+         {
+            if ( findByGuid( US_DataPub::Project, projGUID, id, name )  &&
+                 ! checkOwner( US_DataPub::Project, projGUID, id, error ) )
+            {
+               error = tr( "Run %1: %2" ).arg( entity.name ).arg( error );
+               return false;
+            }
+
+            if ( guid_foreign.contains( US_DataPub::typeKey(
+                                        US_DataPub::Project ) + ":"
+                                        + projGUID ) )
+            {
+               error = tr( "Run %1: %2" ).arg( entity.name )
+                       .arg( foreignText( US_DataPub::Project, projGUID ) );
+               return false;
+            }
+         }
+
+         // A run whose ID the target uses for another run is renamed: the
+         // names a rename tries are asked about now, and kept
+         QPair< QString, QString > taken = run_lookup.value( entity.name );
+
+         if ( ! exp_by_guid.contains( entity.guid )  &&
+              ! taken.first.isEmpty()  &&
+              taken.second.toLower() != entity.guid.toLower() )
+            uniqueName( US_DataPub::Experiment, entity.name );
+
+         if ( ! lookup_error.isEmpty() )
+         {
+            error = lookup_error;
+            return false;
+         }
+
+         // Its triples name their solutions, which have to be the bundle's
+         // or the investigator's
+         QStringList sols = solutionsNamed( data );
+
+         for ( int jj = 0; jj < sols.size(); jj++ )
+         {
+            if ( availableAs( US_DataPub::Solution, sols[ jj ], error ) )
+               continue;
+
+            error = tr( "Run %1: %2" ).arg( entity.name ).arg( error );
+            return false;
+         }
+      }
+
+      if ( type == US_DataPub::RotorCalibration )
+      {
+         US_Rotor::RotorCalibration calibration;
+         int                        knownID = 0;
+
+         US_DataPubRecords::readCalibration( payloadPath( entity ),
+                                             calibration );
+
+         if ( ! rotorIdOf( calibration.rotorGUID, knownID )  ||
+              ! rotorIdOf( entity.attrs.value( "rotorGUID" ), knownID ) )
+         {
+            error = lookup_error;
+            return false;
+         }
+      }
+   }
+
+   if ( ! checkReuse( error ) )  return false;
+
+   // The listings a noise record's edit and a run's hardware come from
+   if ( ! mani.section( US_DataPub::Noise ).isEmpty()  &&
+        ! readOwned( US_DataPub::Model ) )
+   {
+      error = lookup_error;
+      return false;
+   }
+
+   QList< US_AbstractCenterpiece > centerpieces;
+
+   if ( hardware  &&  ( ! readHardwareDb()  ||
+                        ! readCenterpieces( centerpieces ) ) )
+   {
+      error = lookup_error.isEmpty()
+              ? tr( "The target's hardware could not be read" )
+              : lookup_error;
+      return false;
+   }
+
+   if ( comps  &&  ! targetComponents( error ) )  return false;
+
+   if ( ! lookup_error.isEmpty() )
+   {
+      error = lookup_error;
+      return false;
+   }
+
+   return true;
+}
+
+/* The extinction spectrum of a buffer or analyte payload.
+
+   It is read from the <extinction> elements the payload actually holds.
+   US_Analyte's reader cannot be used for this: for a protein it adds the
+   extinction at 280 nm that it computes from the sequence, so a protein
+   without a spectrum would gain a profile of that one point, and a
+   measured spectrum a computed point it never had.
+*/
+bool US_DataPubImporter::payloadSpectrum( const US_DataPubEntity& entity,
+                                          const QString& workPath,
+                                          QMap< double, double >& spectrum,
+                                          QString& error ) const
+{
+   spectrum.clear();
+
+   QString owner;                  // The record's own element
+   QString lambda;                 // The attribute holding the wavelength
+
+   if ( entity.type == US_DataPub::Analyte )
+   {
+      owner  = "analyte";
+      lambda = "frequency";
+   }
+
+   else if ( entity.type == US_DataPub::Buffer )
+   {
+      owner  = "buffer";
+      lambda = "wavelength";
+   }
+
+   else
+      return true;
+
+   QByteArray data;
+
+   if ( ! read_capped( workPath, data, error ) )  return false;
+
+   QXmlStreamReader reader( data );
+   int              depth  = 0;     // Inside the record's own element
+   bool             inside = false;
+   bool             done   = false;
+
+   while ( ! reader.atEnd()  &&  ! done )
+   {
+      reader.readNext();
+
+      if ( reader.isStartElement() )
+      {
+         QString ename = reader.name().toString();
+
+         if ( ! inside  &&  ename == owner )
+         {
+            inside = true;
+            depth  = 0;
+            continue;
+         }
+
+         if ( inside )  depth++;
+
+         if ( inside  &&  ename == "extinction" )
+         {
+            QXmlStreamAttributes attrs = reader.attributes();
+            bool                 okl   = false;
+            bool                 okv   = false;
+            double               wl    = attrs.value( lambda ).toString()
+                                         .toDouble( &okl );
+            double               value = attrs.value( "value" ).toString()
+                                         .toDouble( &okv );
+
+            if ( ! okl  ||  ! okv )
+            {
+               error = tr( "%1 holds an extinction value that is not a"
+                           " number" ).arg( entity.label() );
+               return false;
+            }
+
+            spectrum.insert( wl, value );
+         }
+      }
+
+      else if ( reader.isEndElement()  &&  inside )
+      {
+         if ( depth == 0 )  done = true;
+         else               depth--;
+      }
+   }
+
+   if ( reader.hasError() )
+   {
+      error = tr( "The payload of %1 is not well-formed XML: %2" )
+              .arg( entity.label() ).arg( reader.errorString() );
+      return false;
+   }
+
+   return true;
 }
 
 bool US_DataPubImporter::checkPayload( const US_DataPubEntity& entity,
@@ -1386,9 +2007,10 @@ QString US_DataPubImporter::workCopy( const US_DataPubEntity& entity,
 
    QString workDir = bundle.workPath() + "/import";
 
-   if ( ! QDir().mkpath( workDir ) )
+   if ( ! QDir().mkpath( workDir )  ||  ! QFileInfo( workDir ).isDir() )
    {
-      error = tr( "Cannot create the work directory %1" ).arg( workDir );
+      error = tr( "Cannot create the work directory %1 for %2" )
+              .arg( workDir ).arg( entity.label() );
       return QString();
    }
 
@@ -1408,11 +2030,19 @@ QString US_DataPubImporter::workCopy( const US_DataPubEntity& entity,
 
    QString target = workDir + "/" + name;
 
-   if ( QFile::exists( target ) )  QFile::remove( target );
-
-   if ( ! QFile::copy( source, target ) )
+   if ( QFile::exists( target )  &&  ! QFile::remove( target ) )
    {
-      error = tr( "Cannot copy the payload of %1" ).arg( entity.label() );
+      error = tr( "Cannot replace the work copy %1 of %2" )
+              .arg( target ).arg( entity.label() );
+      return QString();
+   }
+
+   QFile payload( source );
+
+   if ( ! payload.copy( target ) )
+   {
+      error = tr( "Cannot copy the payload of %1 to %2: %3" )
+              .arg( entity.label() ).arg( target ).arg( payload.errorString() );
       return QString();
    }
 
@@ -1973,6 +2603,24 @@ void US_DataPubImporter::record( const US_DataPubEntity& entity,
           resolution == US_DataPub::ResolvedRenamed ) )
       created_exps << entity.guid;
 
+   // A record a real import wrote is in the target now, under its GUID
+   if ( ! opts.dryRun  &&  opts.target == US_DataPub::TargetDb  &&
+        ( resolution == US_DataPub::ResolvedCreated  ||
+          resolution == US_DataPub::ResolvedRenamed ) )
+   {
+      QString key = US_DataPub::typeKey( entity.type ) + ":" + targetGUID;
+      guid_missing.remove( key );
+      guid_found.insert( key, qMakePair( targetID, targetName ) );
+
+      // ... and it is the investigator's own (a listing not read yet will
+      // hold it when it is read)
+      if ( owned.contains( int( entity.type ) ) )
+      {
+         owned[ int( entity.type ) ].ids   << targetID;
+         owned[ int( entity.type ) ].guids << targetGUID.toLower();
+      }
+   }
+
    // A record that was not imported maps to nothing; whatever names it keeps
    // its own reference (and is told about it where that matters)
    // A time state goes by its run's GUID and is nobody's parent, so it must
@@ -2194,9 +2842,11 @@ QString US_DataPubImporter::diskResultDir( const QString& runID,
 }
 
 bool US_DataPubImporter::diskFilePresent( const US_DataPubEntity& entity,
-                                          QString& path, bool& identical )
+                                          QString& path, bool& identical,
+                                          QString& error )
 {
    path     .clear();
+   error    .clear();
    identical = false;
 
    QString runID = runIdFor( entity );
@@ -2209,14 +2859,64 @@ bool US_DataPubImporter::diskFilePresent( const US_DataPubEntity& entity,
    if ( ! QFile::exists( path ) )  return false;
 
    // Compared with what the import would write, which is the bundle's
-   // payload rewritten for the target
-   QString error;
+   // payload rewritten for the target.  A payload that cannot be put in
+   // those terms is a failure of its own, not a difference.
    QString work = workCopy( entity, error );
 
-   if ( work.isEmpty()  ||  ! rewriteWork( entity, work, error ) )  return true;
+   if ( work.isEmpty()  ||  ! rewriteWork( entity, work, error ) )
+   {
+      if ( error.isEmpty() )
+         error = tr( "%1 could not be compared with %2" )
+                 .arg( entity.label() ).arg( path );
+      return true;
+   }
 
-   identical = ( US_DataPubHash::fileHash( path )
-                 == US_DataPubHash::fileHash( work ) );
+   QString ours   = US_DataPubHash::fileHash( work );
+   QString theirs = US_DataPubHash::fileHash( path );
+
+   if ( ours.isEmpty()  ||  theirs.isEmpty() )
+   {
+      error = tr( "%1 could not be read to be compared" )
+              .arg( ours.isEmpty() ? work : path );
+      return true;
+   }
+
+   identical = ( ours == theirs );
+
+   // A time state is the pair of files: the one already there is the same
+   // only when its field definitions are there too and are the bundle's
+   if ( identical  &&  entity.type == US_DataPub::TimeState )
+   {
+      QString defs = entity.attrs.value( "definitionsPayload" );
+      QString source;
+      QString target = US_DataPub::timeStateDefs( path );
+
+      if ( defs.isEmpty()  ||  ! insideBundle( defs, source, error ) )
+      {
+         if ( error.isEmpty() )
+            error = tr( "%1 carries no field definitions" )
+                    .arg( entity.label() );
+         return true;
+      }
+
+      if ( target.isEmpty()  ||  ! QFile::exists( target ) )
+         identical = false;
+
+      else
+      {
+         QString sdefs = US_DataPubHash::fileHash( source );
+         QString tdefs = US_DataPubHash::fileHash( target );
+
+         if ( sdefs.isEmpty()  ||  tdefs.isEmpty() )
+         {
+            error = tr( "The field definitions %1 could not be read to be"
+                        " compared" ).arg( sdefs.isEmpty() ? source : target );
+            return true;
+         }
+
+         identical = ( sdefs == tdefs );
+      }
+   }
 
    return true;
 }
@@ -2246,6 +2946,21 @@ bool US_DataPubImporter::runImport( const Options& options, QString& error )
    exp_resolved = false;
    run_lookup.clear();
    raw_written.clear();
+   owned.clear();
+   guid_found.clear();
+   guid_missing.clear();
+   guid_foreign.clear();
+   hw_read = false;
+   hw_labs.clear();
+   hw_rotors.clear();
+   hw_cals.clear();
+   cp_read = false;
+   cp_list.clear();
+   rotor_ids.clear();
+   person_ids.clear();
+   created_cals.clear();
+   print_cache.clear();
+   raw_checked.clear();
    step_count = 0;
 
    if ( mani.total() < 1 )
@@ -2481,6 +3196,19 @@ bool US_DataPubImporter::findTargetProject( QString& error )
 
 QString US_DataPubImporter::targetName( const US_DataPubEntity& entity ) const
 {
+   // A database keeps a buffer's description without the "  [M]" marker of
+   // a manually entered buffer (US_Buffer::saveToDB() strips it, and
+   // readFromDB() takes it off again), so the name is compared, renamed and
+   // written without it
+   if ( entity.type == US_DataPub::Buffer  &&
+        opts.target == US_DataPub::TargetDb )
+   {
+      int manx = entity.name.indexOf( "  [M]" );
+
+      return ( manx > 0 ) ? entity.name.left( manx ).simplified()
+                          : entity.name;
+   }
+
    if ( entity.type != US_DataPub::Model  &&  entity.type != US_DataPub::Noise )
       return entity.name;
 
@@ -2536,12 +3264,18 @@ bool US_DataPubImporter::importEntity( const US_DataPubEntity& entity,
       QString present;
       bool    identical = false;
 
-      if ( diskFilePresent( entity, present, identical ) )
+      if ( diskFilePresent( entity, present, identical, error ) )
       {
+         if ( ! error.isEmpty() )  return false;
+
          if ( ! identical )
          {
-            error = tr( "%1 already exists with different content;"
-                        " the import will not overwrite it" ).arg( present );
+            error = ( type == US_DataPub::TimeState )
+                    ? tr( "%1 already exists with different content, or"
+                          " without the field definitions of this bundle;"
+                          " the import will not overwrite it" ).arg( present )
+                    : tr( "%1 already exists with different content;"
+                          " the import will not overwrite it" ).arg( present );
             return false;
          }
 
@@ -2718,10 +3452,7 @@ bool US_DataPubImporter::importEntity( const US_DataPubEntity& entity,
          return false;
       }
 
-      QString takenGUID;
-      QString takenID;
-
-      if ( name == origName  ||  findByName( type, name, takenGUID, takenID ) )
+      if ( name == origName  ||  nameInUse( type, name ) )
          name = uniqueName( type, origName );
 
       if ( ! lookup_error.isEmpty() )
@@ -2730,8 +3461,22 @@ bool US_DataPubImporter::importEntity( const US_DataPubEntity& entity,
          return false;
       }
 
+      if ( name.isEmpty() )
+      {
+         error = tr( "No free name was found for %1 \"%2\"" )
+                 .arg( US_DataPub::typeText( type ) ).arg( origName );
+         return false;
+      }
+
       if ( opts.dryRun )
       {
+         bool omitted = false;
+
+         if ( ! checkDryDb( entity, workPath, name, omitted, error ) )
+            return false;
+
+         if ( omitted )  return true;
+
          nameTaken( type, name, entity.guid, QString( "-1" ) );
          record( entity, US_DataPub::ResolvedRenamed, entity.guid, name,
                  QString( "-1" ), details );
@@ -2765,6 +3510,13 @@ bool US_DataPubImporter::importEntity( const US_DataPubEntity& entity,
    // ---- a plain new record ------------------------------------------------
    if ( opts.dryRun )
    {
+      bool omitted = false;
+
+      if ( ! checkDryDb( entity, workPath, name, omitted, error ) )
+         return false;
+
+      if ( omitted )  return true;
+
       nameTaken( type, name, entity.guid, QString( "-1" ) );
       record( entity, US_DataPub::ResolvedCreated, entity.guid, name,
               QString( "-1" ), QString() );
@@ -2992,12 +3744,19 @@ namespace
    }
 
    // The experiment XML of a run directory: "<runID>.<runType>.xml", where
-   // neither part has a dot.  An edit is "<runID>.<editID>.<runType>...xml"
-   // and a time state's definitions "<runID>.time_state.xml", so the count
-   // of parts tells them apart -- for a usable run ID, which has no dots.
+   // neither part has a dot.  An edit is "<runID>.<editID>.<runType>...xml",
+   // so the count of parts tells it apart -- for a usable run ID, which has
+   // no dots.  So does the run type, which is what the bundle's run types
+   // are held to: one to eight letters and digits.  That leaves out the
+   // other three-part files of a run directory, a time state's definitions
+   // "<runID>.time_state.xml" and an RI run's "<runID>.RIProfile.xml" --
+   // which sorts before the XML of a run of type "WA", say.
    QString experiment_xml( const QDir& dir, const QString& runID )
    {
       if ( ! US_DataPubImporter::runIdIsUsable( runID ) )  return QString();
+
+      static const QRegularExpression runTypeRx(
+         QRegularExpression::anchoredPattern( "[A-Za-z0-9]{1,8}" ) );
 
       QStringList xmls = dir.entryList( QStringList( runID + ".*.xml" ),
                                         QDir::Files, QDir::Name );
@@ -3007,7 +3766,7 @@ namespace
          QStringList parts = xmls[ ii ].split( '.' );
 
          if ( parts.size() != 3  ||  parts[ 0 ] != runID )  continue;
-         if ( parts[ 1 ] == "time_state" )                   continue;
+         if ( ! runTypeRx.match( parts[ 1 ] ).hasMatch() )  continue;
 
          return dir.absoluteFilePath( xmls[ ii ] );
       }
@@ -3074,41 +3833,11 @@ bool US_DataPubImporter::readCalibrationsDb(
 {
    all.clear();
 
-   QVector< US_Rotor::Lab > labs;
+   if ( ! readHardwareDb() )  return false;
 
-   if ( read_labs_db( labs, dbase ) == US_Rotor::MISC_ERROR )
-   {
-      failLookup( tr( "its labs" ) );
-      return false;
-   }
-
-   for ( int ii = 0; ii < labs.size(); ii++ )
-   {
-      QVector< US_Rotor::Rotor > rotors;
-
-      if ( US_Rotor::readRotorsFromDB( rotors, labs[ ii ].ID, dbase )
-           == US_Rotor::MISC_ERROR )
-      {
-         failLookup( tr( "the rotors of lab %1" ).arg( labs[ ii ].ID ) );
-         return false;
-      }
-
-      for ( int jj = 0; jj < rotors.size(); jj++ )
-      {
-         QVector< US_Rotor::RotorCalibration > cals;
-
-         if ( US_Rotor::readCalibrationProfilesDB( cals, rotors[ jj ].ID,
-                                                   dbase )
-              == US_Rotor::MISC_ERROR )
-         {
-            failLookup( tr( "the calibrations of rotor %1" )
-                        .arg( rotors[ jj ].ID ) );
-            return false;
-         }
-
-         all << cals;
-      }
-   }
+   for ( int ii = 0; ii < hw_rotors.size(); ii++ )
+      for ( int jj = 0; jj < hw_rotors[ ii ].size(); jj++ )
+         all << hw_cals.value( hw_rotors[ ii ][ jj ].ID );
 
    return true;
 }
@@ -3138,6 +3867,13 @@ bool US_DataPubImporter::readCenterpieces(
    // The library reader falls back to the local file when the database
    // fails, which would put local serial numbers into database records
    if ( dbase == nullptr )  return false;
+
+   // Read once, before the transaction
+   if ( cp_read )
+   {
+      centerpieces = cp_list;
+      return true;
+   }
 
    QStringList query( "get_abstractCenterpiece_names" );
    QList< int > ids;
@@ -3187,6 +3923,9 @@ bool US_DataPubImporter::readCenterpieces(
 
       centerpieces << cp;
    }
+
+   cp_list = centerpieces;
+   cp_read = true;
 
    return true;
 }
@@ -3280,17 +4019,46 @@ bool US_DataPubImporter::findByGuid( US_DataPub::EntityType type,
             return false;
       }
 
+      // Asked once per import: the answer is kept, and kept up to date as
+      // the import creates records (record())
+      QString key = US_DataPub::typeKey( type ) + ":" + guid;
+
+      if ( guid_found.contains( key ) )
+      {
+         id   = guid_found.value( key ).first;
+         name = guid_found.value( key ).second;
+         return true;
+      }
+
+      if ( guid_missing.contains( key )  ||  guid_foreign.contains( key ) )
+         return false;
+
       dbase->query( query );
+
+      // A lookup that checks the permission of the person logged in
+      // (project, solution, raw data) refuses someone else's record: it is
+      // there, but not one this import may use
+      if ( dbase->lastErrno() == IUS_DB2::NOTPERMITTED )
+      {
+         guid_foreign << key;
+         return false;
+      }
 
       if ( lookupFailed( tr( "%1 %2" ).arg( US_DataPub::typeText( type ) )
                          .arg( guid ) ) )
          return false;
 
-      if ( ! dbase->next() )  return false;
+      if ( dbase->next() )  id = dbase->value( 0 ).toString();
 
-      id = dbase->value( 0 ).toString();
+      if ( id.isEmpty() )
+      {
+         guid_missing << key;
+         return false;
+      }
 
-      return ! id.isEmpty();
+      guid_found.insert( key, qMakePair( id, name ) );
+
+      return true;
    }
 
    // ---- disk target -------------------------------------------------------
@@ -3420,6 +4188,20 @@ bool US_DataPubImporter::findByName( US_DataPub::EntityType type,
    id   = it->id;
 
    return true;
+}
+
+bool US_DataPubImporter::nameInUse( US_DataPub::EntityType type,
+                                    const QString& name )
+{
+   QString guid;
+   QString id;
+
+   if ( name.isEmpty() )  return false;
+
+   if ( ! indexedByName( type ) )
+      return findOneByName( type, name, guid, id );
+
+   return namesHeld( type ).contains( name );
 }
 
 bool US_DataPubImporter::indexedByName( US_DataPub::EntityType type )
@@ -3687,10 +4469,15 @@ bool US_DataPubImporter::findOneByName( US_DataPub::EntityType type,
 
       if ( lookupFailed( tr( "run %1" ).arg( name ) ) )  return false;
 
-      if ( ! dbase->next() )  return false;
+      if ( dbase->next() )
+      {
+         id   = dbase->value( 1 ).toString();
+         guid = dbase->value( 2 ).toString();
+      }
 
-      id   = dbase->value( 1 ).toString();
-      guid = dbase->value( 2 ).toString();
+      // Kept, so that the candidates a rename tried before the transaction
+      // are not asked about again inside it
+      run_lookup.insert( name, qMakePair( id, guid ) );
 
       return ! id.isEmpty();
    }
@@ -3859,8 +4646,6 @@ QString US_DataPubImporter::uniqueName( US_DataPub::EntityType type,
    if ( suffix.isEmpty() )  suffix = tr( "imported" );
 
    QString base = name.isEmpty() ? US_DataPub::typeText( type ) : name;
-   QString guid;
-   QString id;
 
    if ( type == US_DataPub::Experiment )
    {  // A run ID goes into directory and file names: keep it usable
@@ -3886,17 +4671,31 @@ QString US_DataPubImporter::uniqueName( US_DataPub::EntityType type,
          if ( ! runIdIsUsable( candidate ) )  continue;
       }
 
-      if ( ! findByName( type, candidate, guid, id ) )  return candidate;
+      // Only whether the name is taken matters, not by which record
+      if ( ! nameInUse( type, candidate ) )
+         return lookup_error.isEmpty() ? candidate : QString();
 
       if ( ! lookup_error.isEmpty() )  return QString();
    }
 
-   QString last = US_Util::new_guid().left( 8 );
+   // A thousand names taken: a random tail, which is checked like the rest
+   for ( int ii = 0; ii < 100; ii++ )
+   {
+      QString last      = US_Util::new_guid().left( 8 );
+      QString candidate = ( type == US_DataPub::Experiment )
+                          ? base.left( 70 ) + "-" + last
+                          : base + "-" + last;
 
-   if ( type == US_DataPub::Experiment )
-      return base.left( 70 ) + "-" + last;
+      if ( type == US_DataPub::Experiment  &&  ! runIdIsUsable( candidate ) )
+         continue;
 
-   return base + "-" + last;
+      if ( ! nameInUse( type, candidate ) )
+         return lookup_error.isEmpty() ? candidate : QString();
+
+      if ( ! lookup_error.isEmpty() )  return QString();
+   }
+
+   return QString();
 }
 
 // ------------------------------------------------------- writing the target
@@ -4435,25 +5234,40 @@ bool US_DataPubImporter::resolveHardware( US_Experiment& exper,
                                           const US_DataPubEntity& entity,
                                           QString& error )
 {
+   // Everything below is decided from what the preflight read
+   if ( ! readHardwareDb() )
+   {
+      error = lookup_error.isEmpty() ? tr( "the labs could not be read" )
+                                     : lookup_error;
+      return false;
+   }
+
    // ---- the rotor calibration, and through it the rotor -------------------
    QString calGUID = entity.depend( US_DataPub::RotorCalibration );
    int     calID   = guidMap.contains( calGUID ) ? mappedId( calGUID ).toInt()
                                                  : 0;
    int     rotorID = 0;
 
+   // A dry run has not written the calibration it imports: the run is
+   // going to name it, under the rotor its GUID names
+   bool    calPending = opts.dryRun  &&  guidMap.contains( calGUID )  &&
+                        mappedId( calGUID ) == QString( "-1" );
+
    if ( calID > 0 )
    {
-      US_Rotor::RotorCalibration calibration;
-      US_Rotor::Status           cstat = calibration.readDB( calID, dbase );
+      if ( created_cals.contains( calID ) )
+         rotorID = created_cals.value( calID );
 
-      if ( cstat == US_Rotor::ROTOR_OK )
-         rotorID = calibration.rotorID;
-
-      else if ( cstat != US_Rotor::NOT_FOUND )
+      for ( int ii = 0; ii < hw_rotors.size()  &&  rotorID < 1; ii++ )
       {
-         failLookup( tr( "rotor calibration %1" ).arg( calID ) );
-         error = lookup_error;
-         return false;
+         for ( int jj = 0; jj < hw_rotors[ ii ].size(); jj++ )
+         {
+            const QVector< US_Rotor::RotorCalibration > cals =
+                  hw_cals.value( hw_rotors[ ii ][ jj ].ID );
+
+            for ( int kk = 0; kk < cals.size(); kk++ )
+               if ( cals[ kk ].ID == calID )  rotorID = hw_rotors[ ii ][ jj ].ID;
+         }
       }
    }
 
@@ -4467,57 +5281,18 @@ bool US_DataPubImporter::resolveHardware( US_Experiment& exper,
 
       if ( rotorGUID.isEmpty() )  rotorGUID = exper.rotorGUID;
 
-      if ( ! rotorGUID.isEmpty() )
+      if ( ! rotorIdOf( rotorGUID, rotorID ) )
       {
-         QStringList query;
-         query << "get_rotorID_from_GUID" << rotorGUID;
-         dbase->query( query );
-
-         if ( lookupFailed( tr( "rotor %1" ).arg( rotorGUID ) ) )
-         {
-            error = lookup_error;
-            return false;
-         }
-
-         if ( dbase->next() )
-            rotorID = dbase->value( 0 ).toString().toInt();
-      }
-   }
-
-   QVector< US_Rotor::Lab > labs;
-
-   if ( read_labs_db( labs, dbase ) == US_Rotor::MISC_ERROR )
-   {
-      lookupFailed( tr( "its labs" ) );
-      error = lookup_error.isEmpty() ? tr( "the labs could not be read" )
-                                     : lookup_error;
-      return false;
-   }
-
-   // The rotors of every lab, read once; a listing that fails is a failed
-   // lookup, not a lab without rotors
-   QList< QVector< US_Rotor::Rotor > > labRotors;
-
-   for ( int ii = 0; ii < labs.size(); ii++ )
-   {
-      QVector< US_Rotor::Rotor > rotors;
-
-      if ( US_Rotor::readRotorsFromDB( rotors, labs[ ii ].ID, dbase )
-           == US_Rotor::MISC_ERROR )
-      {
-         failLookup( tr( "the rotors of lab %1" ).arg( labs[ ii ].ID ) );
          error = lookup_error;
          return false;
       }
-
-      labRotors << rotors;
    }
 
    if ( rotorID < 1 )
    {  // Fall back to the first rotor the target knows about
-      for ( int ii = 0; ii < labs.size()  &&  rotorID < 1; ii++ )
+      for ( int ii = 0; ii < hw_labs.size()  &&  rotorID < 1; ii++ )
       {
-         const QVector< US_Rotor::Rotor >& rotors = labRotors[ ii ];
+         const QVector< US_Rotor::Rotor >& rotors = hw_rotors[ ii ];
 
          if ( rotors.isEmpty() )  continue;
 
@@ -4539,17 +5314,9 @@ bool US_DataPubImporter::resolveHardware( US_Experiment& exper,
 
    exper.rotorID = rotorID;
 
-   if ( calID < 1 )
+   if ( calID < 1  &&  ! calPending )
    {  // Take the rotor's first calibration profile
-      QVector< US_Rotor::RotorCalibration > cals;
-
-      if ( US_Rotor::readCalibrationProfilesDB( cals, rotorID, dbase )
-           == US_Rotor::MISC_ERROR )
-      {
-         failLookup( tr( "the calibrations of rotor %1" ).arg( rotorID ) );
-         error = lookup_error;
-         return false;
-      }
+      QVector< US_Rotor::RotorCalibration > cals = hw_cals.value( rotorID );
 
       if ( cals.isEmpty() )
       {
@@ -4569,40 +5336,33 @@ bool US_DataPubImporter::resolveHardware( US_Experiment& exper,
    exper.calibrationID = calID;
 
    // ---- the lab that owns the rotor --------------------------------------
-   int labID = 0;
+   int labIndex = -1;
 
-   for ( int ii = 0; ii < labs.size()  &&  labID < 1; ii++ )
+   for ( int ii = 0; ii < hw_labs.size()  &&  labIndex < 0; ii++ )
    {
-      const QVector< US_Rotor::Rotor >& rotors = labRotors[ ii ];
+      const QVector< US_Rotor::Rotor >& rotors = hw_rotors[ ii ];
 
       for ( int jj = 0; jj < rotors.size(); jj++ )
       {
          if ( rotors[ jj ].ID != rotorID )  continue;
 
-         labID = labs[ ii ].ID;
+         labIndex = ii;
          break;
       }
    }
 
-   if ( labID < 1 )
+   if ( labIndex < 0 )
    {
       error = tr( "Run %1 cannot be imported: no lab of the target owns its"
                   " rotor" ).arg( exper.runID );
       return false;
    }
 
-   exper.labID = labID;
+   // The lab as US_Rotor::Lab::readDB() read it, with its instruments
+   const US_Rotor::Lab& lab = hw_labs[ labIndex ];
+   exper.labID = lab.ID;
 
    // ---- the instrument, by its serial number in that lab ------------------
-   US_Rotor::Lab lab;
-
-   if ( lab.readDB( labID, dbase ) != US_Rotor::ROTOR_OK )
-   {
-      failLookup( tr( "lab %1 and its instruments" ).arg( labID ) );
-      error = lookup_error;
-      return false;
-   }
-
    QString wantSerial = exper.instrumentSerial;
    int     instID     = 0;
 
@@ -4640,20 +5400,10 @@ bool US_DataPubImporter::resolveHardware( US_Experiment& exper,
    // ---- the operator, by GUID ---------------------------------------------
    int operID = 0;
 
-   if ( ! exper.operatorGUID.isEmpty() )
+   if ( ! personIdOf( exper.operatorGUID, operID ) )
    {
-      QStringList query;
-      query << "get_personID_from_GUID" << exper.operatorGUID;
-      dbase->query( query );
-
-      if ( lookupFailed( tr( "operator %1" ).arg( exper.operatorGUID ) ) )
-      {
-         error = lookup_error;
-         return false;
-      }
-
-      if ( dbase->next() )
-         operID = dbase->value( 0 ).toString().toInt();
+      error = lookup_error;
+      return false;
    }
 
    if ( operID < 1 )
@@ -4767,19 +5517,26 @@ bool US_DataPubImporter::createProjectDb( US_Project& project, QString& error )
    return true;
 }
 
-/* A run, written as an experiment row with its speed steps.
+/* A run, staged and decided, but not written.
 
    The run is staged the way US_ConvertIO reads one -- the experiment XML
    with the run's .auc files beside it, under the run ID it gets in the
    target -- so the triples and the speed profile come from the same reader
    the rest of UltraScan uses.  The staged run is kept for the raw data,
    which US_ConvertIO::writeRawDataToDB() writes once the solutions are in.
+   Every triple is checked against the bundle, the RI profile is read, and
+   the project and the hardware are resolved -- all of it in the staging
+   directory and from what the preflight read, so that a dry run decides
+   what a real import would.
 */
-bool US_DataPubImporter::createExperimentDb( const US_DataPubEntity& entity,
-                                             const QString& /*workPath*/,
-                                             const QString& name,
-                                             QString& newID, QString& error )
+bool US_DataPubImporter::prepareRunDb( const US_DataPubEntity& entity,
+                                       const QString& name,
+                                       QByteArray& RIxml, int& projID,
+                                       QString& error )
 {
+   projID = 0;
+   RIxml.clear();
+
    QString runType = entity.attrs.value( "runType", "RA" );
    QString runDir  = bundle.workPath() + "/runs/" + name;
 
@@ -4897,7 +5654,6 @@ bool US_DataPubImporter::createExperimentDb( const US_DataPubEntity& entity,
    // An RI run's intensity profile: read the bundle's file the way the
    // experiment reads its own, and store what it writes back, which is the
    // XML US_Experiment::saveToDB() would have stored
-   QByteArray RIxml;
    QString    rip = entity.attrs.value( "riProfilePayload" );
 
    if ( ! rip.isEmpty() )
@@ -4938,14 +5694,20 @@ bool US_DataPubImporter::createExperimentDb( const US_DataPubEntity& entity,
    // when it does not, the project the run's own XML names is looked up in
    // the target, and created from that reference only when the target does
    // not have it.
-   QString projGUID = entity.depend( US_DataPub::Project );
-   int     projID   = 0;
+   QString projGUID    = entity.depend( US_DataPub::Project );
+   bool    pending     = false;     // A dry run's project, not written
+   bool    createLater = false;     // Created from what the run names
 
    if ( ! tproj_guid.isEmpty() )
       projID = tproj_id.toInt();
 
    else if ( ! projGUID.isEmpty()  &&  guidMap.contains( projGUID ) )
+   {
       projID = mappedId( projGUID ).toInt();
+
+      // A dry run has not written the project it imports
+      pending = opts.dryRun  &&  mappedId( projGUID ) == QString( "-1" );
+   }
 
    else
    {
@@ -4963,6 +5725,11 @@ bool US_DataPubImporter::createExperimentDb( const US_DataPubEntity& entity,
 
       if ( findByGuid( US_DataPub::Project, named, pid, pname ) )
       {
+         // Someone else's project is not attached to (the preflight said so
+         // already; this is the second line)
+         if ( ! checkOwner( US_DataPub::Project, named, pid, error ) )
+            return false;
+
          projID = pid.toInt();
          note( tr( "Run %1 is attached to the project \"%2\" the target"
                    " already has" ).arg( name ).arg( pname ) );
@@ -4974,22 +5741,27 @@ bool US_DataPubImporter::createExperimentDb( const US_DataPubEntity& entity,
          return false;
       }
 
-      else
+      else if ( guid_foreign.contains( US_DataPub::typeKey(
+                                       US_DataPub::Project ) + ":" + named ) )
       {
-         US_Project project;
-         project.projectGUID = named;
-         project.projectDesc = exper.project.projectDesc;
+         error = foreignText( US_DataPub::Project, named );
+         return false;
+      }
 
-         if ( ! createProjectDb( project, error ) )  return false;
-
-         projID = project.projectID;
+      else
+      {  // Created by the writer, from what the run names
+         projID      = 0;
+         createLater = true;
          note( tr( "The bundle carries no project; a project record \"%1\""
-                   " is created from what run %2 names" )
-               .arg( project.projectDesc ).arg( name ) );
+                   " %2 from what run %3 names" )
+               .arg( exper.project.projectDesc )
+               .arg( opts.dryRun ? tr( "would be created" )
+                                 : tr( "is created" ) )
+               .arg( name ) );
       }
    }
 
-   if ( projID < 1 )
+   if ( projID < 1  &&  ! pending  &&  ! createLater )
    {
       error = tr( "The project of run %1 is not in the target database" )
               .arg( name );
@@ -4998,6 +5770,72 @@ bool US_DataPubImporter::createExperimentDb( const US_DataPubEntity& entity,
 
    // ---- the hardware ------------------------------------------------------
    if ( ! resolveHardware( exper, entity, error ) )  return false;
+
+   return true;
+}
+
+/* A run, written as an experiment row with its speed steps.
+
+   prepareRunDb() staged it and decided everything; what is left is the
+   project a bundle without one has to have, a last check that the run ID
+   is still free -- another session may have taken it since the preflight
+   -- and the rows.
+*/
+bool US_DataPubImporter::createExperimentDb( const US_DataPubEntity& entity,
+                                             const QString& /*workPath*/,
+                                             const QString& name,
+                                             QString& newID, QString& error )
+{
+   QByteArray RIxml;
+   int        projID = 0;
+
+   if ( ! prepareRunDb( entity, name, RIxml, projID, error ) )  return false;
+
+   US_ConvertIO::DiskRun& run   = *staged_runs.value( entity.guid );
+   US_Experiment&         exper = run.experiment;
+
+   if ( projID == 0 )
+   {
+      US_Project project;
+      project.projectGUID = exper.project.projectGUID;
+      project.projectDesc = exper.project.projectDesc;
+
+      if ( ! createProjectDb( project, error ) )  return false;
+
+      projID = project.projectID;
+
+      // The next run that names it finds it
+      QString key = US_DataPub::typeKey( US_DataPub::Project ) + ":"
+                    + project.projectGUID;
+      guid_missing.remove( key );
+      guid_found.insert( key, qMakePair( QString::number( projID ),
+                                         project.projectDesc ) );
+
+      // ... and it is the investigator's (a listing not read yet will hold
+      // it when it is read)
+      if ( owned.contains( int( US_DataPub::Project ) ) )
+         owned[ int( US_DataPub::Project ) ].ids << QString::number( projID );
+   }
+
+   // ---- the run ID, once more, inside the transaction ---------------------
+   QStringList check;
+   check << "get_experiment_info_by_runID" << name
+         << QString::number( US_Settings::us_inv_ID() );
+   dbase->query( check );
+
+   if ( lookupFailed( tr( "run %1" ).arg( name ) ) )
+   {
+      error = lookup_error;
+      return false;
+   }
+
+   if ( dbase->next() )
+   {
+      error = tr( "The run ID %1 was taken in the target database while the"
+                  " import ran; import the bundle again to have the run"
+                  " renamed" ).arg( name );
+      return false;
+   }
 
    // ---- the experiment row, as US_Experiment::saveToDB() writes it, minus
    //      the project update and the local disk copy that call makes -------
@@ -5165,8 +6003,8 @@ bool US_DataPubImporter::createSolutionDb( const US_DataPubEntity& entity,
    rawData rows and blobs, the cell rows and the experiment-solution links,
    each written once per run the way the rest of UltraScan writes them.
 */
-bool US_DataPubImporter::writeRunRawData( const QString& expGUID,
-                                          QString& error )
+bool US_DataPubImporter::prepareRunRawData( const QString& expGUID,
+                                            QString& error )
 {
    if ( ! staged_runs.contains( expGUID ) )
    {
@@ -5194,16 +6032,30 @@ bool US_DataPubImporter::writeRunRawData( const QString& expGUID,
       QString                 sname;
 
       // writeRawDataToDB() would create a solution it cannot find, through
-      // US_Solution::saveToDB() and its local disk copy; it has to find it
-      if ( newSol.isEmpty()  ||
-           ! findByGuid( US_DataPub::Solution, newSol, sid, sname ) )
+      // US_Solution::saveToDB() and its local disk copy; it has to find it.
+      // A dry run's solution of the bundle is not written, but would be.
+      bool pending = opts.dryRun  &&  guidMap.contains( oldSol );
+
+      if ( ! pending  &&
+           ( newSol.isEmpty()  ||
+             ! findByGuid( US_DataPub::Solution, newSol, sid, sname ) ) )
       {
          error = lookup_error.isEmpty()
                  ? tr( "The solution %1 of triple %2 is not in the target" )
                    .arg( oldSol ).arg( triple.tripleDesc )
                  : lookup_error;
+
+         if ( guid_foreign.contains( US_DataPub::typeKey(
+                                     US_DataPub::Solution ) + ":" + newSol ) )
+            error = foreignText( US_DataPub::Solution, newSol );
+
          return false;
       }
+
+      // ... and one of the investigator's own when the bundle has not got it
+      if ( ! pending  &&  ! guidMap.contains( oldSol )  &&
+           ! checkOwner( US_DataPub::Solution, newSol, sid, error ) )
+         return false;
 
       triple.solution.solutionGUID = newSol;
 
@@ -5225,6 +6077,16 @@ bool US_DataPubImporter::writeRunRawData( const QString& expGUID,
          triple.centerpiece = 0;
       }
    }
+
+   return true;
+}
+
+bool US_DataPubImporter::writeRunRawData( const QString& expGUID,
+                                          QString& error )
+{
+   if ( ! prepareRunRawData( expGUID, error ) )  return false;
+
+   US_ConvertIO::DiskRun& run = *staged_runs.value( expGUID );
 
    run.experiment.expID = mappedId( expGUID ).toInt();
    run.experiment.invID = US_Settings::us_inv_ID();
@@ -5254,6 +6116,210 @@ bool US_DataPubImporter::writeRunRawData( const QString& expGUID,
    }
 
    return true;
+}
+
+/* What a dry run into a database decides about one record.
+
+   The writers decide a few things as they go: whether a calibration's rotor
+   is there (or the calibration is left out), the hardware and project of a
+   run, whether a solution and a time state have a run of this import,
+   whether each triple's solution is there.  A dry run makes the same
+   decisions here, in the staging directory and from what the preflight
+   read, and stops short of the writes -- so a dry run that succeeds is an
+   import that would, short of what only the writes can find (a constraint
+   the database enforces, a lost connection, a record someone else wrote in
+   the meantime).
+*/
+bool US_DataPubImporter::checkDryDb( const US_DataPubEntity& entity,
+                                     const QString& workPath,
+                                     const QString& name, bool& omitted,
+                                     QString& error )
+{
+   omitted = false;
+
+   if ( opts.target != US_DataPub::TargetDb )  return true;
+
+   QString expGUID = entity.depend( US_DataPub::Experiment );
+
+   switch ( entity.type )
+   {
+      case US_DataPub::RotorCalibration:
+      {
+         US_Rotor::RotorCalibration calibration;
+         int                        rotorID = 0;
+
+         if ( ! US_DataPubRecords::readCalibration( workPath, calibration ) )
+         {
+            error = tr( "The rotor calibration payload could not be read" );
+            return false;
+         }
+
+         if ( ! rotorIdOf( calibration.rotorGUID, rotorID ) )
+         {
+            error = lookup_error;
+            return false;
+         }
+
+         if ( rotorID > 0 )  return true;
+
+         if ( ! warn( tr( "Rotor %1 is not in the target database, so the"
+                          " rotor calibration \"%2\" would not be imported" )
+                      .arg( calibration.rotorGUID ).arg( name ), error ) )
+            return false;
+
+         record( entity, US_DataPub::ResolvedOmitted, QString(), name,
+                 QString( "-1" ), tr( "the target does not have its rotor" ) );
+         omitted = true;
+         return true;
+      }
+
+      case US_DataPub::Buffer:
+      {
+         US_Buffer buffer;
+         QMap< double, double > spectrum;
+
+         if ( ! buffer.readFromDisk( workPath )  ||
+              ! payloadSpectrum( entity, workPath, spectrum, error ) )
+         {
+            if ( error.isEmpty() )
+               error = tr( "The buffer payload could not be read" );
+            return false;
+         }
+
+         // A component the target lacks would be added with the buffer
+         for ( int ii = 0; ii < buffer.componentIDs.size(); ii++ )
+            if ( buffer.componentIDs[ ii ].startsWith( "new:" ) )
+               note( tr( "Buffer component %1 of \"%2\" would be added to the"
+                         " target's component table" )
+                     .arg( buffer.componentIDs[ ii ].mid( 4 ) ).arg( name ) );
+
+         return true;
+      }
+
+      case US_DataPub::Analyte:
+      {
+         US_Analyte analyte;
+         QMap< double, double > spectrum;
+
+         if ( analyte.readFromFile( workPath ) != IUS_DB2::OK  ||
+              ! payloadSpectrum( entity, workPath, spectrum, error ) )
+         {
+            if ( error.isEmpty() )
+               error = tr( "The analyte payload could not be read" );
+            return false;
+         }
+
+         return true;
+      }
+
+      case US_DataPub::Solution:
+      {
+         US_Solution solution;
+
+         if ( solution.readFromFile( workPath, false ) != IUS_DB2::OK )
+         {
+            error = tr( "The solution payload could not be read" );
+            return false;
+         }
+
+         if ( ! guidMap.contains( expGUID ) )
+         {
+            error = tr( "The solution \"%1\" belongs to no run of this import" )
+                    .arg( name );
+            return false;
+         }
+
+         if ( ! created_exps.contains( expGUID ) )
+         {
+            error = tr( "run %1 is already in the target database without the"
+                        " solution \"%2\"; the import does not add a solution"
+                        " to a run it did not create" )
+                    .arg( mappedName( expGUID ) ).arg( name );
+            return false;
+         }
+
+         return true;
+      }
+
+      case US_DataPub::Experiment:
+      {
+         QByteArray RIxml;
+         int        projID = 0;
+
+         return prepareRunDb( entity, name, RIxml, projID, error );
+      }
+
+      case US_DataPub::RawData:
+      {
+         if ( ! created_exps.contains( expGUID ) )
+         {
+            error = tr( "The experiment of %1 was not imported" )
+                    .arg( entity.filename );
+            return false;
+         }
+
+         // The triples of a run are checked once, as they are written once
+         if ( raw_checked.contains( expGUID ) )  return true;
+
+         raw_checked << expGUID;
+
+         return prepareRunRawData( expGUID, error );
+      }
+
+      case US_DataPub::TimeState:
+      {
+         if ( ! created_exps.contains( expGUID ) )
+         {
+            error = tr( "The experiment of the time state was not imported" );
+            return false;
+         }
+
+         return stageTimeStateDefs( entity, workPath, error );
+      }
+
+      case US_DataPub::EditedData:
+      {
+         // Its raw data comes with the bundle, or is the investigator's
+         QString          rawGUID = entity.depend( US_DataPub::RawData );
+         US_DataPubEntity raw;
+
+         if ( mani.entity( US_DataPub::RawData, rawGUID, raw ) )  return true;
+
+         if ( availableAs( US_DataPub::RawData, rawGUID, error ) )  return true;
+
+         error = tr( "%1: %2" ).arg( entity.label() ).arg( error );
+         return false;
+      }
+
+      case US_DataPub::Model:
+      {
+         US_Model model;
+
+         if ( model.load( workPath ) != IUS_DB2::OK )
+         {
+            error = tr( "The model payload could not be read" );
+            return false;
+         }
+
+         return true;
+      }
+
+      case US_DataPub::Noise:
+      {
+         US_Noise noise;
+
+         if ( noise.load( workPath ) != IUS_DB2::OK )
+         {
+            error = tr( "The noise payload could not be read" );
+            return false;
+         }
+
+         return true;
+      }
+
+      default:
+         return true;
+   }
 }
 
 bool US_DataPubImporter::createDb( const US_DataPubEntity& entity,
@@ -5300,20 +6366,14 @@ bool US_DataPubImporter::createDb( const US_DataPubEntity& entity,
             return false;
          }
 
-         QStringList query;
-         query << "get_rotorID_from_GUID" << calibration.rotorGUID;
-         dbase->query( query );
+         // Looked up in the preflight
+         int rotorID = 0;
 
-         if ( lookupFailed( tr( "rotor %1" ).arg( calibration.rotorGUID ) ) )
+         if ( ! rotorIdOf( calibration.rotorGUID, rotorID ) )
          {
             error = lookup_error;
             return false;
          }
-
-         int rotorID = 0;
-
-         if ( dbase->next() )
-            rotorID = dbase->value( 0 ).toString().toInt();
 
          if ( rotorID < 1 )
          {
@@ -5343,6 +6403,7 @@ bool US_DataPubImporter::createDb( const US_DataPubEntity& entity,
          }
 
          newID = QString::number( calibration.ID );
+         created_cals.insert( calibration.ID, rotorID );
          return true;
       }
 
@@ -5369,10 +6430,14 @@ bool US_DataPubImporter::createDb( const US_DataPubEntity& entity,
          }
 
          // The rows US_Buffer::saveToDB() writes for a new buffer, in its
-         // order and with its formats -- the buffer, its components and its
-         // extinction profile -- but not the copy that call always writes
-         // into the local disk store.  The library writes the profile only
-         // for a spectrum it was told is new; every imported one is.
+         // order and with its formats: the buffer, its components and its
+         // extinction profile.  Since it learnt to join a caller's
+         // transaction (and then to leave out its local disk copy) it could
+         // almost be used, but not quite: it updates whatever buffer of
+         // that GUID the database holds, whoever owns it, where the import
+         // only ever creates; and it writes the profile only for a spectrum
+         // it was told is new, from the spectrum it read, where the import
+         // stores the one the payload holds.
          QString descrip = buffer.description;
          int     manx    = descrip.indexOf( "  [M]" );
 
@@ -5423,14 +6488,19 @@ bool US_DataPubImporter::createDb( const US_DataPubEntity& entity,
             }
          }
 
-         if ( ! buffer.extinction.isEmpty() )
+         // The spectrum the payload holds, and nothing else
+         QMap< double, double > spectrum;
+
+         if ( ! payloadSpectrum( entity, workPath, spectrum, error ) )
+            return false;
+
+         if ( ! spectrum.isEmpty() )
          {
             QString compType( "Buffer" );
             QString valType ( "molarExtinction" );
 
             if ( US_ExtProfile::create_eprofile( dbase, bufID, compType,
-                                                 valType,
-                                                 buffer.extinction ) < 1 )
+                                                 valType, spectrum ) < 1 )
             {
                error = tr( "The extinction profile of buffer \"%1\" could"
                            " not be written: %2" ).arg( name )
@@ -5454,23 +6524,32 @@ bool US_DataPubImporter::createDb( const US_DataPubEntity& entity,
          }
 
          // The rows US_Analyte::write_db() writes for a new analyte, in its
-         // order and with its formats -- the analyte, a nucleotide's
-         // details and the extinction profile -- but not the copy that call
-         // always writes into the local disk store.  The library writes the
-         // profile only for a spectrum it was told is new; every imported
-         // one is.
+         // order and with its formats: the analyte, a nucleotide's details
+         // and the extinction profile.  Like US_Buffer::saveToDB() it joins
+         // a caller's transaction now, and leaves out its disk copy there,
+         // but it updates an analyte of that GUID whoever owns it, and
+         // stores the spectrum the reader holds -- with the 280 nm value it
+         // computed from a protein's sequence.
          QString atype = ( analyte.type == US_Analyte::PROTEIN ) ? "Protein"
                        : ( analyte.type == US_Analyte::DNA     ) ? "DNA"
                        : ( analyte.type == US_Analyte::RNA     ) ? "RNA"
                                                                  : "Other";
+         // The extinction values the payload holds: the reader adds the 280
+         // nm value it computes from a protein's sequence, which is not part
+         // of the record and is never stored as if it were measured
+         QMap< double, double > extinction;
+
+         if ( ! payloadSpectrum( entity, workPath, extinction, error ) )
+            return false;
+
          QString spectrum;
          double  lambda1 = 0.0;
          double  coeff1  = 0.0;
 
-         if ( ! analyte.extinction.isEmpty() )
+         if ( ! extinction.isEmpty() )
          {
-            lambda1 = analyte.extinction.firstKey();
-            coeff1  = analyte.extinction.first();
+            lambda1 = extinction.firstKey();
+            coeff1  = extinction.first();
          }
 
          else if ( ! analyte.refraction.isEmpty() )
@@ -5537,14 +6616,13 @@ bool US_DataPubImporter::createDb( const US_DataPubEntity& entity,
             }
          }
 
-         if ( ! analyte.extinction.isEmpty() )
+         if ( ! extinction.isEmpty() )
          {
             QString compType( "Analyte" );
             QString valType ( "molarExtinction" );
 
             if ( US_ExtProfile::create_eprofile( dbase, anaID, compType,
-                                                 valType,
-                                                 analyte.extinction ) < 1 )
+                                                 valType, extinction ) < 1 )
             {
                error = tr( "The extinction profile of analyte \"%1\" could"
                            " not be written: %2" ).arg( name )
@@ -5706,34 +6784,106 @@ bool US_DataPubImporter::createDb( const US_DataPubEntity& entity,
 
       case US_DataPub::Noise:
       {
-         US_Noise noise;
+         // Written with the procedure US_Noise::write() uses, but neither
+         // with the lookups that call makes inside the transaction (the
+         // model's ID, the investigator's whole model listing for its edit,
+         // the noise's own ID) nor with its update of a noise record that
+         // happens to have this GUID: the import only ever creates.  The
+         // noise is stored as the payload's own text, which the import has
+         // already pointed at the target's model.
+         US_Noise   noise;
+         QByteArray contents;
 
-         if ( noise.load( workPath ) != IUS_DB2::OK )
+         if ( noise.load( workPath ) != IUS_DB2::OK  ||
+              ! read_capped( workPath, contents, error ) )
          {
             error = tr( "The noise payload could not be read" );
             return false;
          }
 
-         if ( noise.write( dbase ) != IUS_DB2::OK )
+         // The model, and the edit it was fitted to: the import's own, or
+         // the investigator's model the preflight listed
+         QString modelID;
+         QString editID;
+         QString modelName;
+         US_DataPubEntity model;
+
+         if ( ! findByGuid( US_DataPub::Model, noise.modelGUID, modelID,
+                            modelName ) )
          {
-            error = tr( "The noise record \"%1\" could not be written to"
-                        " the database: %2" ).arg( name ).arg( noise.message );
+            error = lookup_error.isEmpty()
+                    ? tr( "The model %1 of the noise record \"%2\" is not in"
+                          " the target" ).arg( noise.modelGUID ).arg( name )
+                    : lookup_error;
             return false;
          }
+
+         bool imported = false;
+         QList< US_DataPubEntity > models = mani.section( US_DataPub::Model );
+
+         for ( int ii = 0; ii < models.size()  &&  ! imported; ii++ )
+         {
+            if ( mappedGuid( models[ ii ].guid ) != noise.modelGUID )
+               continue;
+
+            imported = true;
+            model    = models[ ii ];
+         }
+
+         if ( imported )
+         {
+            US_Model fitted;
+            QString  mpath = payloadPath( model );
+
+            if ( fitted.load( mpath ) != IUS_DB2::OK )
+            {
+               error = tr( "The model of the noise record \"%1\" could not"
+                           " be read" ).arg( name );
+               return false;
+            }
+
+            editID = guidMap.contains( fitted.editGUID )
+                     ? mappedId( fitted.editGUID ) : QString();
+
+            if ( editID.isEmpty()  ||  editID.toInt() < 1 )
+            {
+               QString ename;
+               findByGuid( US_DataPub::EditedData, mappedGuid( fitted.editGUID ),
+                           editID, ename );
+            }
+         }
+
+         else if ( readOwned( US_DataPub::Model ) )
+            editID = owned[ int( US_DataPub::Model ) ].edits
+                     .value( noise.modelGUID.toLower() );
+
+         if ( ! lookup_error.isEmpty() )
+         {
+            error = lookup_error;
+            return false;
+         }
+
+         if ( editID.isEmpty() )  editID = QString( "0" );
 
          QStringList query;
-         query << "get_noiseID" << noise.noiseGUID;
-         dbase->query( query );
+         query << "new_noise" << noise.noiseGUID << editID << modelID
+               << noise.modelGUID
+               << QString( ( noise.type == US_Noise::TI ) ? "ti_noise"
+                                                          : "ri_noise" )
+               << name << QString::fromUtf8( contents );
 
-         if ( lookupFailed( tr( "noise %1" ).arg( noise.noiseGUID ) )  ||
-              ! dbase->next() )
+         int status  = dbase->statusQuery( query );
+         int noiseID = ( status == IUS_DB2::OK ) ? dbase->lastInsertID() : 0;
+
+         if ( status != IUS_DB2::OK  ||  noiseID < 1 )
          {
-            error = tr( "The noise record \"%1\" was written but cannot be"
-                        " found" ).arg( name );
+            error = tr( "The noise record \"%1\" could not be written to"
+                        " the database (status %2): %3" ).arg( name )
+                    .arg( status ).arg( dbase->lastError() );
             return false;
          }
 
-         newID = dbase->value( 0 ).toString();
+         newID = QString::number( noiseID );
          return true;
       }
 

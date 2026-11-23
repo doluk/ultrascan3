@@ -265,7 +265,10 @@ whichever the selector at the top of the Import tab says. The database
 connection is the one already configured in UltraScan.
 
 **Nothing in the target is ever overwritten.** A record that is already there
-is either pointed at or imported again under a new name.
+is either pointed at or imported again under a new name. A file of a disk
+store's run directory is reused only when it is the file the import would
+write -- a time state only together with the same field definitions -- and
+anything else stops the import.
 
 A bundle is checked as a whole before anything is written, and refused as a
 whole when any check fails: every payload path has to stay inside the bundle;
@@ -279,20 +282,37 @@ time state's field definitions, an RI profile and a buffer's component
 definitions -- its digest, in either case (a payload without one fails too,
 unless the check is switched off); every payload has to parse as its record
 type and carry the GUID the manifest gives it; every buffer and analyte a
-solution names, the model a noise record names and the edit a model names has
-to be in the bundle or the target; and a bundle of the older format, without
-component definitions, is refused when one of its buffers names components.
+solution names, the model a noise record names, the edit a model names, the
+raw data of an edit and the solution of every triple has to be in the bundle
+or the target; and a bundle of the older format, without component
+definitions, is refused when one of its buffers names components.
+
+In a database, a project, solution, raw data, edit, model or noise record the
+import would reuse or attach anything to has to be in the bundle or be one of
+the current investigator's own. The database finds a record of these by its
+GUID whoever owns it (an edit, a model or a noise record always, the others
+for an administrator), so the import checks each against the investigator's
+own list, and someone else's record stops the import before anything is
+written. Buffers and analytes are shared, and reused whoever entered them.
 
 A database import is one transaction: it is committed when every record is
 in and rolled back on any failure, so a failed import leaves the database as
-it was. Every lookup that can be made in advance -- the bundle's runs among
-them -- is made before the transaction opens. Raw data and edits are written
-through ``US_ConvertIO``, the same writer the rest of UltraScan uses, and a
-run keeps its speed profile. Buffers and analytes are written with the
-procedures the library writers use, together with their extinction spectra,
-but without the copy those writers keep in the local disk store: a database
-import writes nothing there. A disk import writes files as it goes; when it
-fails, the error lists those it had already written.
+it was. (A stored procedure that commits by itself would end the transaction
+early; the import then says that some records may have been kept.) Every
+lookup that can be made in advance is made before the transaction opens: the
+records of the bundle, the investigator's lists, the hardware, the buffer
+components and the names a conflict compares with. Inside it run the writes,
+the lookups of what the import has just written, and one last check of each
+new run ID, so that a run of that ID created meanwhile by someone else fails
+the import instead of being duplicated. Raw data and edits are written through
+``US_ConvertIO``, the same writer the rest of UltraScan uses, and a run keeps
+its speed profile. Buffers, analytes, models and noise are written with the
+procedures the library writers use, but without the copy some of those
+writers keep in the local disk store: a database import writes nothing there.
+The extinction profile of a buffer or analyte holds the values its payload
+holds, never the 280 nm value UltraScan computes from a protein's sequence. A
+disk import writes files as it goes; when it fails, the error lists those it
+had already written.
 
 For every record in the bundle, in dependency order:
 
@@ -302,8 +322,11 @@ For every record in the bundle, in dependency order:
   when that does not settle it, in the investigator's experiment list. A run
   that another investigator holds (its raw data is in the database, but it is
   not among the investigator's runs) stops the import: it is neither copied
-  again nor added to. A run the target already had is not added to either:
-  its raw data, solutions and time state have to be there already.
+  again nor added to. One without raw data cannot be seen that way, but the
+  database holds each experiment GUID only once (``experimentGUID`` is
+  ``UNIQUE``), so its second copy is refused and the import rolled back. A run
+  the target already had is not added to either: its raw data, solutions and
+  time state have to be there already.
 * **The name is free.** The record is created, keeping its GUID. A database
   allocates a fresh ID.
 * **The name is taken by a record with a different GUID.** The properties of
@@ -353,6 +376,10 @@ tab cannot be used and the window does not close. Only switching the target
 clears a chosen project; the end of an import does not.
 
 **Dry run** decides everything and writes nothing, not even the target folder.
+Into a database it makes the decisions the import would make as it writes:
+it resolves each run's project and hardware (so a strict import that would
+need a substitute fails its dry run too), leaves out a calibration whose
+rotor the target lacks, and checks every run's triples and solutions.
 **Verify payload digests** checks the whole bundle before the first write; a
 bundle whose payloads do not match their digests, or carry none, is refused.
 
