@@ -13,6 +13,14 @@
 
 /*! \brief This class provides connectivity and convenience functions
            for database access in the US3 system.
+
+    Text goes to the server as UTF-8 and is read back as UTF-8.  Every
+    connection asks for the utf8mb4 connection character set before it
+    connects and checks that it got it, and a connection that cannot have it
+    fails to open: a query in one encoding read by the server in another
+    stores a '?' for a character, or fails on the first accented letter.
+    What a column can hold is still up to its own character set: a latin1
+    column refuses (strict mode) or replaces a character outside Latin-1.
 */
 
 class US_UTIL_EXTERN US_DB2 : public IUS_DB2
