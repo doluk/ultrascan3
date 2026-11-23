@@ -24,6 +24,20 @@ US_DiskScan::US_DiskScan( QObject* parent ) : QThread( parent )
    connect( cat, &US_DataCatalog::message,
             this, &US_DiskScan::message );
 
+   // An experiment a job changed is noted on the worker, as it happens,
+   // and announced on the owning thread once the job is over, when the
+   // catalog can be read; see finished().  One the caller's own read of the
+   // idle catalog changed is announced at once.
+   connect( cat, &US_DataCatalog::runChanged, cat,
+            [ this ]( int index )
+            {
+               if ( QThread::currentThread() == thread() )
+                  emit runChanged( index );
+               else
+                  changed_runs << index;
+            },
+            Qt::DirectConnection );
+
    idle.storeRelease( 1 );      // idle, with a catalog ready to be read
 
    start();
@@ -133,7 +147,13 @@ void US_DiskScan::finished( int a_job, int index )
          abort_flag.storeRelease( 0 );
    }
 
+   const QList< int > changed = changed_runs;
+   changed_runs.clear();
+
    idle.storeRelease( 1 );
+
+   for ( int run : changed )
+      emit runChanged( run );
 
    emit jobDone( a_job, index );
 }
@@ -155,6 +175,7 @@ void US_DiskScan::run( void )
          if ( stopping )  break;
 
          current = job;
+         changed_runs.clear();
          guid    = job_guid;
          index   = job_index;
          job     = JobNone;
