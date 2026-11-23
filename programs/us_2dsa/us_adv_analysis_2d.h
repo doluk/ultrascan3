@@ -19,7 +19,10 @@ class US_AdvAnalysis2D : public US_WidgetsDialog
       //! \param sim_par Pointer to simulation parameters
       //! \param loadDB  Flag for whether loads are from DB
       //! \param p       Pointer to the parent of this widget
-      US_AdvAnalysis2D( US_SimulationParameters*, bool&, QWidget* p = 0 );
+      //! \param raw_first First raw (.auc) radius: default outward scan start
+      //!        (0: property raw_first_radius/raw_last_radius of the parent)
+      //! \param raw_last  Last raw (.auc) radius: default inward scan start
+      US_AdvAnalysis2D( US_SimulationParameters*, bool&, QWidget* p = 0, double raw_first = 0.0, double raw_last = 0.0 );
 
    public slots:
       void get_parameters( int&,  double&, double&, double&,
@@ -52,6 +55,13 @@ class US_AdvAnalysis2D : public US_WidgetsDialog
       QwtCounter*   ct_regufact;
       QwtCounter*   ct_bandload;
       QwtCounter*   ct_spoints;
+      QwtCounter*              ct_scantime;  //!< Seconds per recorded radial point
+      QwtCounter*              ct_scandelay; //!< Delay (s) of the scan start behind the scan time
+      QwtCounter*              ct_scanstart; //!< Scan start radius; 0: first raw radius
+      QComboBox*               cmb_scandir;  //!< Scan direction
+
+      double                   raw_first; //!< First raw radius of the data
+      double                   raw_last;  //!< Last raw radius of the data
 
       QCheckBox*    ck_unifgr;
       QCheckBox*    ck_locugr;

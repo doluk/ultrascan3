@@ -1419,6 +1419,11 @@ void US_2dsa::open_fitcntl()
    }
 
    analcd = new US_AnalysisControl2D( dsets, loadDB, this );
+   if ( drow < rawList.size() && rawList[drow].pointCount() > 0 )
+   { // Raw radial range: the default start of sequentially recorded scans
+      analcd->setProperty( "raw_first_radius", rawList[drow].radius( 0 ) );
+      analcd->setProperty( "raw_last_radius", rawList[drow].radius( rawList[drow].pointCount() - 1 ) );
+   }
    analcd->move( acd_pos );
    analcd->show();
    qApp->processEvents();

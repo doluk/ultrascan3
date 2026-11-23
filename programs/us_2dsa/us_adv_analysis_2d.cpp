@@ -9,8 +9,22 @@
 
 // constructor:  enhanced plot control widget
 US_AdvAnalysis2D::US_AdvAnalysis2D( US_SimulationParameters* sim_par,
-    bool& loadDB, QWidget* p ) : US_WidgetsDialog( p, Qt::WindowFlags() ), loadDB( loadDB )
+                                    bool&                    loadDB,
+                                    QWidget*                 p,
+                                    double                   raw_first,
+                                    double                   raw_last ) :
+    US_WidgetsDialog( p, Qt::WindowFlags() ),
+    loadDB( loadDB ),
+    raw_first( raw_first ),
+    raw_last( raw_last )
 {
+   // Without explicit radii, take the raw radial range that US_2dsa sets
+   // as properties of the parent (the fit control)
+   if ( p != nullptr && raw_first <= 0.0 && raw_last <= 0.0 )
+   {
+      this->raw_first = p->property( "raw_first_radius" ).toDouble();
+      this->raw_last  = p->property( "raw_last_radius" ).toDouble();
+   }
    sparms         = sim_par;
    parentw        = p;
 
@@ -67,6 +81,34 @@ US_AdvAnalysis2D::US_AdvAnalysis2D( US_SimulationParameters* sim_par,
    ct_spoints ->setSingleStep(   10 );
    ct_spoints ->setValue( sparms->simpoints );
    ct_bandload->setEnabled( rb_bandcp->isChecked() );
+
+   // Sequential radial scanning: the point at radius r is recorded at
+   //  t_scan + delay + |r - start| / dr * tau
+   QLabel* lb_scantime  = us_label( tr( "Radial scan time (s/point):" ) );
+   QLabel* lb_scandelay = us_label( tr( "Scan delay (s):" ) );
+   QLabel* lb_scanstart = us_label( tr( "Scan start radius (cm, 0 = raw start):" ) );
+   lb_scantime->setToolTip( tr( "Time to record one radial point; the point at radius r is recorded "
+                                "|r - start| / (radial step) * this value after the start of the scan. "
+                                "0: all points at the scan time." ) );
+   lb_scandelay->setToolTip( tr( "Delay of the start of the scan behind the stored scan time, "
+                                 "e.g. the scan of another channel recorded first." ) );
+   lb_scanstart->setToolTip( tr( "Radius where each scan starts. 0: the first raw radius in scan "
+                                 "direction (%1 cm outward, %2 cm inward)." )
+                                .arg( raw_first, 0, 'f', 4 )
+                                .arg( raw_last, 0, 'f', 4 ) );
+   ct_scantime  = us_counter( 3, 0.0, 10.0, 0.0 );
+   ct_scandelay = us_counter( 3, 0.0, 3600.0, 0.0 );
+   ct_scanstart = us_counter( 3, 0.0, 10.0, 0.0 );
+   ct_scantime->setSingleStep( 0.0001 );
+   ct_scandelay->setSingleStep( 0.1 );
+   ct_scanstart->setSingleStep( 0.001 );
+   ct_scantime->setValue( sparms->radial_scan_time );
+   ct_scandelay->setValue( sparms->scan_time_offset );
+   ct_scanstart->setValue( sparms->scan_start );
+   cmb_scandir = us_comboBox();
+   cmb_scandir->addItem( tr( "Scan direction: outward (meniscus to bottom)" ) );
+   cmb_scandir->addItem( tr( "Scan direction: inward (bottom to meniscus)" ) );
+   cmb_scandir->setCurrentIndex( sparms->scan_outward ? 0 : 1 );
 
    QLayout*  lo_unifgr  =
       us_checkbox( tr( "Uniform Grid"                      ), ck_unifgr, true );
@@ -160,6 +202,13 @@ US_AdvAnalysis2D::US_AdvAnalysis2D( US_SimulationParameters* sim_par,
    simparmsLayout->addWidget( ct_spoints,    row++, 4, 1, 2 );
    simparmsLayout->addWidget( cmb_mesh,      row++, 0, 1, 6 );
    simparmsLayout->addWidget( cmb_moving,    row++, 0, 1, 6 );
+   simparmsLayout->addWidget( lb_scantime, row, 0, 1, 4 );
+   simparmsLayout->addWidget( ct_scantime, row++, 4, 1, 2 );
+   simparmsLayout->addWidget( lb_scandelay, row, 0, 1, 4 );
+   simparmsLayout->addWidget( ct_scandelay, row++, 4, 1, 2 );
+   simparmsLayout->addWidget( lb_scanstart, row, 0, 1, 4 );
+   simparmsLayout->addWidget( ct_scanstart, row++, 4, 1, 2 );
+   simparmsLayout->addWidget( cmb_scandir, row++, 0, 1, 6 );
    simparmsLayout->addWidget( lb_refopts,    row++, 0, 1, 6 );
    //simparmsLayout->addLayout( lo_menisc,     row++, 0, 1, 6 );
    //simparmsLayout->addWidget( lb_menisrng,   row,   0, 1, 4 );
@@ -459,6 +508,19 @@ void US_AdvAnalysis2D::select()
 
    if ( sparms->band_forming  &&  ck_locugr->isChecked() )
       sparms->cp_width     = ct_scfactor->value();
+
+   // Sequential radial scanning (0 and 0: all points at the scan time)
+   sparms->radial_scan_time   = ct_scantime->value();
+   sparms->scan_time_offset   = ct_scandelay->value();
+   sparms->scan_outward       = ( cmb_scandir->currentIndex() == 0 );
+   sparms->scan_offset_points = 0.0;
+   double start               = ct_scanstart->value();
+   if ( start <= 0.0 )
+   { // The raw start in scan direction; without raw data the first
+      //  edited point (scan_start 0)
+      start = sparms->scan_outward ? raw_first : raw_last;
+   }
+   sparms->scan_start = qMax( 0.0, start );
 
    accept();
 }
