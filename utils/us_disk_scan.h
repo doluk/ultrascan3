@@ -119,6 +119,15 @@ class US_UTIL_EXTERN US_DiskScan : public QThread
       //! \param index The experiment it was for, or -1
       void jobDone ( int job, int index );
 
+      //! \brief The job changed an experiment that was loaded already, as
+      //!        US_DataCatalog::runChanged says.  Emitted on the owning
+      //!        thread once the job has finished and the scanner is idle,
+      //!        just before \ref jobDone, so a slot can read \ref catalog;
+      //!        for a read the caller makes itself on the idle catalog, as
+      //!        the catalog emits it.
+      //! \param index The position of the experiment
+      void runChanged ( int index );
+
       //! \brief A human readable note from the catalog
       //! \param message The note
       void message ( const QString& message );
@@ -147,6 +156,9 @@ class US_UTIL_EXTERN US_DiskScan : public QThread
       QAtomicInt       abort_flag;
 
       QString          err_text;   //!< Written by the worker before posting
+      //! The experiments the job changed; written by the worker before
+      //! posting, read and cleared by the owning thread in finished()
+      QList< int >     changed_runs;
       bool             err_ok;     //!< Written by the worker before posting
 
       bool request ( Job job, const QString& guid, int index );

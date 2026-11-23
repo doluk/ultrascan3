@@ -5,6 +5,8 @@
 
 #include <QUuid>
 
+#include <algorithm>
+
 using ::testing::_;
 using ::testing::AtLeast;
 using ::testing::Eq;
@@ -130,93 +132,267 @@ TEST_F( BufferComponentDb, ReplacesExistingValuesIncludingTrueGradientFlag )
    checkRow( "explicit", false );
 }
 
-TEST_F( BufferComponentDb, SaveRoutesMetadataAndPublishesSuccessfulInsertId )
+/* The bufferComponent table and its three procedures, as the server runs
+   them, on a mock.  create_buffer_component inserts with an explicit ID of
+   COUNT(*) + 1, which fails on a taken ID as the primary key does, and
+   lastInsertID() answers what the connection inserted last -- not that
+   row, since an explicit ID does not set LAST_INSERT_ID().  A patched
+   server inserts at MAX + 1 and reports it.  get_buffer_component_desc
+   answers NOROWS for an empty table, get_buffer_component_info NOROWS for
+   a missing ID, as the real procedures do. */
+class ComponentTable
+{
+   public:
+      struct Row
+      {
+            QString unit, name, viscosity, density, range, gradient;
+      };
+
+      QMap<int, Row> rows;
+      int            staleInsertId = 10;  //!< What the connection inserted last
+      bool           patched       = false;
+      bool           insertNothing = false;  //!< A create that answers OK and stores nothing
+      QStringList    created;               //!< The arguments of each create
+
+      void install( ::testing::NiceMock<US_DB2_Mock>& db )
+      {
+         using ::testing::Matcher;
+         ON_CALL( db, query( Matcher<const QStringList&>( _ ) ) )
+            .WillByDefault( Invoke( [this]( const QStringList& q ) { answer( q ); } ) );
+         ON_CALL( db, statusQuery( Matcher<const QStringList&>( _ ) ) )
+            .WillByDefault( Invoke( [this]( const QStringList& q ) { return create( q ); } ) );
+         ON_CALL( db, lastErrno() ).WillByDefault( Invoke( [this]() { return status; } ) );
+         ON_CALL( db, lastError() ).WillByDefault( Invoke( [this]() { return message; } ) );
+         ON_CALL( db, lastInsertID() ).WillByDefault( Invoke( [this]() { return staleInsertId; } ) );
+         ON_CALL( db, next() ).WillByDefault( Invoke( [this]() { return ++cursor < result.size(); } ) );
+         ON_CALL( db, value( _ ) )
+            .WillByDefault( Invoke( [this]( unsigned ix ) { return QVariant( result.value( cursor ).value( ix ) ); } ) );
+      }
+
+      void add( int id, const QString& name )
+      {
+         rows[id] = Row{ "mM", name, "1 0 0 0 0 0", "1 0 0 0 0 0", "", "0" };
+      }
+
+   private:
+      int                status = IUS_DB2::OK;
+      QString            message;
+      QList<QStringList> result;
+      int                cursor = -1;
+
+      void set( int code, const QString& text, const QList<QStringList>& rowsOut = {} )
+      {
+         status  = code;
+         message = text;
+         result  = rowsOut;
+         cursor  = -1;
+      }
+
+      void answer( const QStringList& q )
+      {
+         if ( q.value( 0 ) == "get_buffer_component_desc" )
+         {
+            QList<QStringList> out;
+            for ( auto it = rows.cbegin(); it != rows.cend(); ++it )
+            {
+               out << QStringList{ QString::number( it.key() ), it.value().name };
+            }
+            // Ordered by description, as the procedure orders them
+            std::sort( out.begin(), out.end(), []( const QStringList& a, const QStringList& b ) { return a[1] < b[1]; } );
+            set( out.isEmpty() ? IUS_DB2::NOROWS : IUS_DB2::OK, out.isEmpty() ? "MySQL: no rows returned" : "", out );
+         }
+         else if ( q.value( 0 ) == "get_buffer_component_info" )
+         {
+            const int id = q.value( 1 ).toInt();
+            if ( !rows.contains( id ) )
+            {
+               set( IUS_DB2::NOROWS, "MySQL: no rows returned" );
+               return;
+            }
+            const Row& r = rows[id];
+            set( IUS_DB2::OK, "", { { r.unit, r.name, r.viscosity, r.density, r.range, r.gradient } } );
+         }
+         else
+         {
+            set( IUS_DB2::DBERROR, "unexpected query " + q.value( 0 ) );
+         }
+      }
+
+      int create( const QStringList& q )
+      {
+         if ( q.value( 0 ) != "create_buffer_component" || q.size() != 8 )
+         {
+            set( IUS_DB2::DBERROR, "unexpected call " + q.join( "," ) );
+            return status;
+         }
+         created = q;
+         if ( insertNothing )
+         {
+            set( IUS_DB2::OK, "" );
+            return status;
+         }
+         const int id = patched ? ( rows.isEmpty() ? 1 : rows.lastKey() + 1 ) : rows.size() + 1;
+         if ( rows.contains( id ) )
+         {
+            set( IUS_DB2::DBERROR, QString( "MySQL error: Duplicate entry '%1' for key 'PRIMARY'" ).arg( id ) );
+            return status;
+         }
+         // create_buffer_component( name, unit, range, grad_form, density, viscosity )
+         rows[id] = Row{ q[3], q[2], q[7], q[6], q[4], q[5] };
+         if ( patched )
+         {
+            staleInsertId = id;
+         }
+         set( IUS_DB2::OK, "" );
+         return status;
+      }
+};
+
+class BufferComponentSave : public QtTestBase
+{
+   protected:
+      US_BufferComponent                    component;
+      ::testing::NiceMock<US_DB2_Mock>      db;
+      ComponentTable                        table;
+
+      void SetUp() override
+      {
+         QtTestBase::SetUp();
+         table.install( db );
+         component.componentID = "73";
+         component.name        = "Salt & sugar";
+         component.unit        = "mM";
+         component.range       = "0 to 9";
+         // Coefficients of 1-Propanol from etc/bufferComponents.xml.
+         const double density[]{ 0.99820, 0.0, -1.21245, 2.81044, -7.63148, 53.39717 };
+         const double viscosity[]{ 1.00725, -119.10622, 44.35231, 7.82088, -31.16201, 0.0 };
+         for ( int i = 0; i < 6; ++i )
+         {
+            component.dens_coeff[i] = density[i];
+            component.visc_coeff[i] = viscosity[i];
+         }
+      }
+};
+
+TEST_F( BufferComponentSave, SendsTheDefinitionAndReturnsTheRowItMadeNotTheStaleInsertId )
 {
    for ( bool gradient : { false, true } )
    {
       SCOPED_TRACE( gradient );
+      table.rows.clear();
+      table.add( 1, "Cadmium chloride" );
+      table.add( 2, "Tris" );
+      table.add( 3, "Glycerol" );
+      // The connection's last insert was component 2's -- or anything else
+      table.staleInsertId = 2;
       component.componentID = "73";
-      component.name        = "Salt & sugar";
-      component.unit        = "mM";
-      component.range       = "0 to 9";
       component.grad_form   = gradient;
-      setCoefficients();
-      {
-         InSequence sequence;
-         EXPECT_CALL( db, statusQuery( Matcher<const QStringList&>( _ ) ) )
-            .WillOnce( Invoke(
-               [gradient]( const QStringList& args )
-               {
-                  // create_buffer_component( p_personGUID, p_password, p_componentGUID, p_name, p_unit,
-                  // p_range, p_grad_form, p_density, p_viscosity ): the query layer supplies the
-                  // first two, so the call carries the other seven.
-                  const QString componentGuid = args.value( 1 );
-                  EXPECT_EQ( 36, componentGuid.size() );
-                  EXPECT_FALSE( QUuid( componentGuid ).isNull() );
-                  EXPECT_EQ( ( QStringList{ "create_buffer_component",
-                                            componentGuid,
-                                            "Salt & sugar",
-                                            "mM",
-                                            "0 to 9",
-                                            gradient ? "1" : "0",
-                                            "0.99820 0.00000 -1.21245 2.81044 -7.63148 53.39717",
-                                            "1.00725 -119.10622 44.35231 7.82088 -31.16201 0.00000" } ),
-                             args );
-                  return IUS_DB2::OK;
-               } ) );
-         EXPECT_CALL( db, lastErrno() ).WillOnce( Return( IUS_DB2::OK ) );
-         EXPECT_CALL( db, lastInsertID() ).WillOnce( Return( 456 ) );
-      }
-      EXPECT_EQ( 456, component.saveToDB( &db ) );
-      EXPECT_EQ( QString( "456" ), component.componentID );
-      EXPECT_EQ( QString( "Salt & sugar" ), component.name );
-      EXPECT_EQ( gradient, component.grad_form );
-      ASSERT_TRUE( ::testing::Mock::VerifyAndClearExpectations( &db ) );
+
+      QString error;
+      EXPECT_EQ( 4, component.saveToDB( &db, &error ) ) << error.toStdString();
+      EXPECT_EQ( QString( "4" ), component.componentID );
+
+      // create_buffer_component( p_personGUID, p_password, p_componentGUID, p_name, p_unit,
+      // p_range, p_grad_form, p_density, p_viscosity ): the query layer supplies the
+      // first two, so the call carries the other seven.
+      const QString componentGuid = table.created.value( 1 );
+      EXPECT_FALSE( QUuid( componentGuid ).isNull() );
+      EXPECT_EQ( ( QStringList{ "create_buffer_component", componentGuid, "Salt & sugar", "mM", "0 to 9",
+                                gradient ? "1" : "0", "0.99820 0.00000 -1.21245 2.81044 -7.63148 53.39717",
+                                "1.00725 -119.10622 44.35231 7.82088 -31.16201 0.00000" } ),
+                 table.created );
    }
 }
 
-TEST_F( BufferComponentDb, FailedSavePreservesIdAndNeverFetchesInsertId )
+TEST_F( BufferComponentSave, AnEmptyTableIsNoError )
 {
-   component.componentID = "73";
-   EXPECT_CALL( db, lastInsertID() ).Times( 0 );
-   {
-      InSequence sequence;
-      EXPECT_CALL( db, statusQuery( Matcher<const QStringList&>( _ ) ) ).WillOnce( Return( IUS_DB2::DBERROR ) );
-      // Further reads (e.g. for logging) are allowed; only the insert-ID lookup is forbidden.
-      EXPECT_CALL( db, lastErrno() ).Times( AtLeast( 1 ) ).WillRepeatedly( Return( IUS_DB2::DBERROR ) );
-   }
-   EXPECT_EQ( -1, component.saveToDB( &db ) );
+   QString error;
+   EXPECT_EQ( 1, component.saveToDB( &db, &error ) ) << error.toStdString();
+   EXPECT_EQ( QString( "1" ), component.componentID );
+}
+
+TEST_F( BufferComponentSave, APatchedServerIsReadTheSameWay )
+{
+   table.patched = true;
+   table.add( 1, "Cadmium chloride" );
+   table.add( 5, "Tris" );
+   QString error;
+   EXPECT_EQ( 6, component.saveToDB( &db, &error ) ) << error.toStdString();
+   EXPECT_EQ( QString( "6" ), component.componentID );
+}
+
+// With a gap in the IDs, COUNT(*) + 1 is taken: the server refuses, and
+// that is what the caller hears -- not the ID of the row in the way
+TEST_F( BufferComponentSave, AnIdTheOldProcedureCollidesWithFailsClearly )
+{
+   table.add( 1, "Cadmium chloride" );
+   table.add( 3, "Tris" );
+   QString error;
+   EXPECT_EQ( -1, component.saveToDB( &db, &error ) );
+   EXPECT_EQ( QString( "73" ), component.componentID );
+   EXPECT_TRUE( error.contains( "Duplicate entry '3'" ) ) << error.toStdString();
+   EXPECT_EQ( QString( "Tris" ), table.rows[3].name );
+}
+
+TEST_F( BufferComponentSave, ACreateThatLeavesNoSuchRowFails )
+{
+   table.add( 1, "Cadmium chloride" );
+   table.insertNothing = true;
+   table.staleInsertId = 1;
+   QString error;
+   EXPECT_EQ( -1, component.saveToDB( &db, &error ) );
+   EXPECT_EQ( QString( "73" ), component.componentID );
+   EXPECT_TRUE( error.contains( "no new component" ) ) << error.toStdString();
+}
+
+// A new row that is not this component -- made by someone else meanwhile,
+// or stored other than it was sent -- is not taken for it
+TEST_F( BufferComponentSave, ANewRowWithAnotherDefinitionIsNotTaken )
+{
+   table.add( 1, "Cadmium chloride" );
+   EXPECT_CALL( db, statusQuery( ::testing::Matcher<const QStringList&>( _ ) ) )
+      .WillOnce( Invoke(
+         [this]( const QStringList& )
+         {
+            table.add( 2, "Someone else's" );
+            return IUS_DB2::OK;
+         } ) );
+   QString error;
+   EXPECT_EQ( -1, component.saveToDB( &db, &error ) );
    EXPECT_EQ( QString( "73" ), component.componentID );
 }
 
-TEST_F( BufferComponentDb, SavedCoefficientsReadBackUnchanged )
+TEST_F( BufferComponentSave, ARefusedCreateKeepsTheIdAndSaysWhy )
 {
-   component.name  = "Salt & sugar";
-   component.unit  = "mM";
-   component.range = "0 to 9";
-   setCoefficients();
-   QStringList sent;
-   {
-      InSequence sequence;
-      EXPECT_CALL( db, statusQuery( Matcher<const QStringList&>( _ ) ) )
-         .WillOnce( Invoke(
-            [&sent]( const QStringList& args )
-            {
-               sent = args;
-               return IUS_DB2::OK;
-            } ) );
-      EXPECT_CALL( db, lastErrno() ).WillOnce( Return( IUS_DB2::OK ) );
-      EXPECT_CALL( db, lastInsertID() ).WillOnce( Return( 73 ) );
-   }
-   ASSERT_EQ( 73, component.saveToDB( &db ) );
-   ASSERT_EQ( 8, sent.size() );
-   ASSERT_TRUE( ::testing::Mock::VerifyAndClearExpectations( &db ) );
+   EXPECT_CALL( db, statusQuery( ::testing::Matcher<const QStringList&>( _ ) ) ).WillOnce( Return( IUS_DB2::DBERROR ) );
+   EXPECT_CALL( db, lastErrno() ).WillOnce( Return( IUS_DB2::NOROWS ) ).WillRepeatedly( Return( IUS_DB2::DBERROR ) );
+   EXPECT_CALL( db, lastError() ).WillRepeatedly( Return( QString( "MySQL: you do not have permission" ) ) );
+   EXPECT_CALL( db, lastInsertID() ).Times( 0 );
+   QString error;
+   EXPECT_EQ( -1, component.saveToDB( &db, &error ) );
+   EXPECT_EQ( QString( "73" ), component.componentID );
+   EXPECT_TRUE( error.contains( "permission" ) ) << error.toStdString();
+}
 
-   // The stored procedure takes density before viscosity; the info query returns viscosity first.
+TEST_F( BufferComponentSave, AListThatCannotBeReadIsReported )
+{
+   EXPECT_CALL( db, query( ::testing::Matcher<const QStringList&>( _ ) ) ).WillOnce( Return() );
+   EXPECT_CALL( db, lastErrno() ).WillRepeatedly( Return( IUS_DB2::DBERROR ) );
+   EXPECT_CALL( db, statusQuery( ::testing::Matcher<const QStringList&>( _ ) ) ).Times( 0 );
+   QString error;
+   EXPECT_EQ( -1, component.saveToDB( &db, &error ) );
+   EXPECT_FALSE( error.isEmpty() );
+}
+
+TEST_F( BufferComponentSave, SavedCoefficientsReadBackUnchanged )
+{
+   QString error;
+   ASSERT_EQ( 1, component.saveToDB( &db, &error ) ) << error.toStdString();
+
    US_BufferComponent loaded;
-   loaded.componentID = "73";
-   expectColumns( sent[7], sent[6], sent[4], sent[5] );
+   loaded.componentID = "1";
    ASSERT_TRUE( loaded.getInfoFromDB( &db ) );
+   EXPECT_TRUE( loaded.sameDefinition( component ) );
    for ( int i = 0; i < 6; ++i )
    {
       SCOPED_TRACE( i );
@@ -225,6 +401,30 @@ TEST_F( BufferComponentDb, SavedCoefficientsReadBackUnchanged )
    }
    EXPECT_EQ( QString( "0 to 9" ), loaded.range );
 }
+
+TEST( BufferComponentDefinition, ComparesWhatIsStored )
+{
+   US_BufferComponent a;
+   a.name = "Tris";
+   a.unit = "mM";
+   a.dens_coeff[0] = 0.998201;
+   US_BufferComponent b = a;
+   b.componentID = "9";
+   b.dens_coeff[0] = 0.998202;  // the same to five decimals
+   EXPECT_TRUE( a.sameDefinition( b ) );
+   b.dens_coeff[0] = 0.99830;
+   EXPECT_FALSE( a.sameDefinition( b ) );
+   b = a;
+   b.range = "0-1 M";
+   EXPECT_FALSE( a.sameDefinition( b ) );
+   b = a;
+   b.grad_form = true;
+   EXPECT_FALSE( a.sameDefinition( b ) );
+   b = a;
+   b.unit = "M";
+   EXPECT_FALSE( a.sameDefinition( b ) );
+}
+
 
 TEST_F( BufferComponentDb, ToleratesExtraSpacesBetweenCoefficients )
 {

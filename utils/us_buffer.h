@@ -40,10 +40,41 @@ class US_UTIL_EXTERN US_BufferComponent
       //!         finds no row or the row lacks six numeric coefficients per field.
       bool        getInfoFromDB( IUS_DB2* = 0 );
 
-      //! \brief Write a new buffer to the DB.
-      //! \param db An open database connection
-      //! \return The buffercomponentID of the new buffer component
-      int saveToDB( IUS_DB2* = 0);
+      /*! \brief Create this component in the DB, and find the row that made.
+
+          create_buffer_component cannot be trusted to say which row it
+          inserted: the procedure servers have run for years inserts with an
+          explicit ID of COUNT(*) + 1 and then reports LAST_INSERT_ID(),
+          which an explicit ID does not set, so it gives whatever the
+          connection inserted last -- another table's row, or an unrelated
+          component.  So the component list is read before and after the
+          call, and the component is the new row whose definition (name,
+          unit, range, gradient flag and the coefficients as stored) is this
+          one's.  With several such rows -- another client creating the same
+          component at once -- the highest ID is taken; they are the same
+          component.
+
+          On the old procedure an ID gap in the table makes COUNT(*) + 1 an
+          ID that is taken, and the create fails with a duplicate key; that
+          is reported, not worked around.
+          \param db    An open database connection
+          \param error If not null, receives the reason when the save fails
+          \return The bufferComponentID of the new row, also put in
+                  \ref componentID; -1 when the create failed, the list could
+                  not be read, or no new row has this definition -- then
+                  componentID is unchanged */
+      int saveToDB( IUS_DB2* = 0, QString* error = nullptr );
+
+      //! \brief True when \a other is the same component as stored: the
+      //!        same name, unit, range and gradient flag, and the same
+      //!        coefficients to the five decimals the DB keeps
+      bool sameDefinition( const US_BufferComponent& other ) const;
+
+      //! \brief The IDs of every component in the DB, as
+      //!        get_buffer_component_desc lists them
+      //! \return False, with \a error filled in, when the list cannot be read;
+      //!         an empty table is an empty list
+      static bool listIDs( IUS_DB2* db, QStringList& ids, QString* error = nullptr );
 
    private:
       static void component( QXmlStreamReader&, QMap< QString, US_BufferComponent >& );
@@ -84,6 +115,14 @@ class US_UTIL_EXTERN US_Buffer
 
       // Constructor of a null buffer
       US_Buffer();
+
+      //! \brief The IDs of the buffer's components, in the order of
+      //!        \ref concentration
+      //!
+      //! A buffer read from the database or built in the buffer dialog has
+      //! \ref component, and its IDs are those; one read from disk has only
+      //! \ref componentIDs.  Every writer counts the components this way.
+      QStringList componentIdList( void ) const;
 
       //! \brief Write the buffer to a disk file
       //!

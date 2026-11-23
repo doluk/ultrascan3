@@ -17,6 +17,8 @@
 
 #include <QtCore>
 
+#include <iostream>
+
 #include "us_data_catalog.h"
 #include "us_db2.h"
 #include "us_crypto.h"
@@ -655,4 +657,174 @@ TEST_F( TestUSDataCatalogDb, AMissingProcedureIsReportedAsAnError )
    EXPECT_TRUE( db->lastErrno() == US_DB2::OK  ||
                 db->lastErrno() == US_DB2::NOROWS )
       << db->lastErrno() << ": " << db->lastError().toStdString();
+}
+
+/* Where noise is counted, on a real server (see catalog_noise_counts in
+   us_data_catalog.h).  On top of us3_db_fixture.sql this adds, and removes
+   again:
+
+   - a second experiment of the investigator, Global_second_run, with one
+     triple and one edit;
+   - a global-fit model on the UNASSIGNED edit (editedDataID 1), whose noise
+     is recorded against the fixture run's edit 200;
+   - noise of the fixture run's model 300 recorded against the second
+     run's edit.
+
+   An experiment read alone must then have the noise of its models, wherever
+   that noise was recorded -- what the server counts when it counts noise by
+   its model's experiment -- and the global-fit model must come back as an
+   orphan with its noise.
+*/
+class TestUSDataCatalogDbNoise : public TestUSDataCatalogDb
+{
+   protected:
+      bool madeEdit1 = false;
+      bool made      = false;
+
+      void SetUp() override
+      {
+         TestUSDataCatalogDb::SetUp();
+         if ( IsSkipped()  ||  HasFatalFailure() )  return;
+
+         db->rawQuery( "SELECT COUNT(*) FROM model WHERE modelID = 300 AND editedDataID = 200" );
+         if ( ! db->next()  ||  db->value( 0 ).toInt() != 1 )
+            GTEST_SKIP() << "the database does not hold us3_db_fixture.sql";
+
+         removeRows();
+         db->rawQuery( "SELECT COUNT(*) FROM editedData WHERE editedDataID = 1" );
+         ASSERT_TRUE( db->next() );
+         if ( db->value( 0 ).toInt() == 0 )
+         {  // the special record us3.sql makes
+            run( "INSERT INTO editedData ( editedDataID, rawDataID, editGUID, label, data, comment ) "
+                 "VALUES ( 1, NULL, '00000000-0000-0000-0000-000000000000', 'UNASSIGNED', '', 'unassigned' )" );
+            madeEdit1 = true;
+         }
+
+         made = true;
+         run( "INSERT INTO experiment ( experimentID, projectID, runID, labID, instrumentID, operatorID, "
+              "rotorID, rotorCalibrationID, experimentGUID, type, runType, dateBegin, runTemp, label, comment ) "
+              "VALUES ( 913, 5, 'Global_second_run', 1, 1, 2, NULL, NULL, "
+              "'aaaaaaaa-0000-4000-8000-000000000913', 'velocity', 'RA', CURDATE(), 20.0, 'second', 'c' )" );
+         run( "INSERT INTO experimentPerson ( experimentID, personID ) VALUES ( 913, 2 )" );
+         run( "INSERT INTO rawData ( rawDataID, rawDataGUID, label, filename, data, comment, experimentID, "
+              "solutionID, channelID ) VALUES ( 913, 'aaaaaaaa-0000-4000-8000-000000000a13', 'Global_second_run', "
+              "'Global_second_run.RA.1.A.280.auc', X'00', 'c', 913, 7, 1 )" );
+         run( "INSERT INTO editedData ( editedDataID, rawDataID, editGUID, label, data, filename, comment ) "
+              "VALUES ( 914, 913, 'aaaaaaaa-0000-4000-8000-000000000914', 'Global_second_run', '<x/>', "
+              "'Global_second_run.2401011200.RA.1.A.280.xml', 'c' )" );
+         run( "INSERT INTO model ( modelID, editedDataID, modelGUID, meniscus, MCIteration, variance, "
+              "description, xml, globalType ) VALUES ( 915, 1, 'aaaaaaaa-0000-4000-8000-000000000915', 5.85, 1, "
+              "0.001, 'Global.e1_a2_2DSA-GL_i01.model', '<x/>', 'GLOBAL' )" );
+         run( "INSERT INTO modelPerson ( modelID, personID ) VALUES ( 915, 2 )" );
+         run( "INSERT INTO noise ( noiseID, noiseGUID, editedDataID, modelID, modelGUID, noiseType, "
+              "description, xml ) VALUES "
+              "( 916, 'aaaaaaaa-0000-4000-8000-000000000916', 200, 915, "
+              "'aaaaaaaa-0000-4000-8000-000000000915', 'ti_noise', 'Global.ti_noise', '<x/>' ), "
+              "( 917, 'aaaaaaaa-0000-4000-8000-000000000917', 914, 300, "
+              "'aaaaaaaa-0000-4000-8000-000000000300', 'ri_noise', 'Cross.ri_noise', '<x/>' )" );
+      }
+
+      void TearDown() override
+      {
+         if ( made )  removeRows();
+         TestUSDataCatalogDb::TearDown();
+      }
+
+      void run( const QString& statement )
+      {
+         db->rawQuery( statement );
+         ASSERT_TRUE( db->lastError().isEmpty() ) << db->lastError().toStdString();
+      }
+
+      void removeRows()
+      {
+         db->rawQuery( "DELETE FROM noise WHERE noiseID IN ( 916, 917 )" );
+         db->rawQuery( "DELETE FROM modelPerson WHERE modelID = 915" );
+         db->rawQuery( "DELETE FROM model WHERE modelID = 915" );
+         db->rawQuery( "DELETE FROM editedData WHERE editedDataID = 914" );
+         db->rawQuery( "DELETE FROM rawData WHERE rawDataID = 913" );
+         db->rawQuery( "DELETE FROM experimentPerson WHERE experimentID = 913" );
+         db->rawQuery( "DELETE FROM experiment WHERE experimentID = 913" );
+         if ( madeEdit1 )
+            db->rawQuery( "DELETE FROM editedData WHERE editedDataID = 1" );
+      }
+
+      //! The investigator's noise per experiment, counted by its model's
+      //! experiment, as the server's own tables say
+      QHash< QString, int > noiseByModel()
+      {
+         QHash< QString, int > counts;
+         db->rawQuery( QString( "SELECT r.experimentID, COUNT(*) FROM noise n "
+                                "JOIN model m ON m.modelID = n.modelID "
+                                "JOIN editedData d ON d.editedDataID = m.editedDataID "
+                                "JOIN rawData r ON r.rawDataID = d.rawDataID "
+                                "JOIN modelPerson mp ON mp.modelID = n.modelID AND mp.personID = %1 "
+                                "GROUP BY r.experimentID" ).arg( personID ) );
+         while ( db->next() )
+            counts.insert( db->value( 0 ).toString(), db->value( 1 ).toInt() );
+         return counts;
+      }
+};
+
+TEST_F( TestUSDataCatalogDbNoise, AnExperimentReadAloneHasTheNoiseOfItsModels )
+{
+   if ( ! hasTier( US_DataCatalog::ListingTier ) )
+      GTEST_SKIP() << "an old server's listing gives no counts to go by";
+
+   const QHash< QString, int > expected = noiseByModel();
+   ASSERT_EQ( expected.value( "10" ), 2 );   // noise 400, and 917 recorded elsewhere
+   ASSERT_EQ( expected.value( "913" ), 0 );
+
+   US_DataCatalog listing;
+   QString        error;
+   ASSERT_TRUE( listing.attach( db, error ) ) << error.toStdString();
+   ASSERT_TRUE( listing.loadRuns( error ) ) << error.toStdString();
+   const bool byModel = listing.run( listing.indexOfRun( "MWL_demo_run" ) ).noiseCount == 2  &&
+                        listing.run( listing.indexOfRun( "Global_second_run" ) ).noiseCount == 0;
+
+   for ( const QString& runID : { QString( "MWL_demo_run" ), QString( "Global_second_run" ) } )
+   {
+      SCOPED_TRACE( runID.toStdString() );
+      US_DataCatalog catalog;
+      ASSERT_TRUE( catalog.attach( db, error ) ) << error.toStdString();
+      ASSERT_TRUE( catalog.loadRuns( error ) ) << error.toStdString();
+      const int index  = catalog.indexOfRun( runID );
+      ASSERT_GE( index, 0 );
+      const int listed = catalog.run( index ).noiseCount;
+
+      ASSERT_TRUE( catalog.loadRunDetail( index, error ) ) << error.toStdString();
+      EXPECT_EQ( catalog.run( index ).noiseCount, expected.value( catalog.run( index ).id ) );
+
+      // A server that counts by the model's experiment lists what loading
+      // finds; the first catalog procedures count by edit
+      if ( byModel )
+         EXPECT_EQ( catalog.run( index ).noiseCount, listed );
+   }
+
+   if ( ! byModel )
+      std::cout << "[ NOTE     ] get_experiment_summary counts noise by edit here;"
+                   " listing and loaded counts were not compared\n";
+}
+
+TEST_F( TestUSDataCatalogDbNoise, AGlobalFitModelIsAnOrphanWithItsNoise )
+{
+   US_DataCatalog catalog;
+   QString        error;
+   ASSERT_TRUE( catalog.attach( db, error ) ) << error.toStdString();
+   ASSERT_TRUE( catalog.loadRuns( error ) ) << error.toStdString();
+   ASSERT_TRUE( catalog.loadAll( error ) ) << error.toStdString();
+
+   const QHash< QString, int > expected = noiseByModel();
+   for ( const US_DataCatalog::Run& run : catalog.runs() )
+      EXPECT_EQ( run.noiseCount, expected.value( run.id ) ) << run.runID.toStdString();
+
+   const US_DataCatalog::Model* global = nullptr;
+   for ( const US_DataCatalog::Model& model : catalog.orphans().models )
+      if ( model.guid == "aaaaaaaa-0000-4000-8000-000000000915" )  global = &model;
+
+   ASSERT_NE( global, nullptr );
+   EXPECT_EQ( global->editID, QString( "1" ) );
+   ASSERT_EQ( global->noises.size(), 1 );
+   EXPECT_EQ( global->noises[ 0 ].guid, QString( "aaaaaaaa-0000-4000-8000-000000000916" ) );
+   EXPECT_EQ( catalog.noisesOfModel( global->guid, error ).size(), 1 );
 }

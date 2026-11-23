@@ -280,37 +280,137 @@ void US_BufferComponent::putAllToHD(
    file.close();
 }
 
-int US_BufferComponent::saveToDB(IUS_DB2 * db) {
-   QStringList q;
-   // construct density and viscosity
+namespace
+{
+// A coefficient as create_buffer_component is given it, and so as it is stored
+QString stored_coefficient( double value )
+{
+   return QString::number( value, 'f', 5 );
+}
+}
+
+bool US_BufferComponent::sameDefinition( const US_BufferComponent& other ) const
+{
+   if ( name != other.name || unit != other.unit || range != other.range || grad_form != other.grad_form )
+   {
+      return false;
+   }
+
+   for ( int i = 0; i < 6; i++ )
+   {
+      if ( stored_coefficient( dens_coeff[i] ) != stored_coefficient( other.dens_coeff[i] ) ||
+           stored_coefficient( visc_coeff[i] ) != stored_coefficient( other.visc_coeff[i] ) )
+      {
+         return false;
+      }
+   }
+   return true;
+}
+
+bool US_BufferComponent::listIDs( IUS_DB2* db, QStringList& ids, QString* error )
+{
+   ids.clear();
+   db->query( QStringList( "get_buffer_component_desc" ) );
+   const int status = db->lastErrno();
+   // An empty table answers NOROWS
+   if ( status == IUS_DB2::NOROWS )
+   {
+      return true;
+   }
+   if ( status != IUS_DB2::OK )
+   {
+      if ( error != nullptr )
+      {
+         *error = QObject::tr( "The buffer components could not be listed: %1" ).arg( db->lastError() );
+      }
+      return false;
+   }
+
+   while ( db->next() )
+   {
+      ids << db->value( 0 ).toString();
+   }
+   return true;
+}
+
+int US_BufferComponent::saveToDB( IUS_DB2* db, QString* error )
+{
    // Six space-separated coefficients per field, as getInfoFromDB reads them.
    QStringList density;
    QStringList viscosity;
    for ( int i = 0; i < 6; i++ )
    {
-      density << QString::number( dens_coeff[i], 'f', 5 );
-      viscosity << QString::number( visc_coeff[i], 'f', 5 );
+      density << stored_coefficient( dens_coeff[i] );
+      viscosity << stored_coefficient( visc_coeff[i] );
+   }
+
+   // What is there already, so the new row can be told from the others
+   QStringList before;
+   if ( !listIDs( db, before, error ) )
+   {
+      return -1;
    }
 
    // The procedure takes a component GUID before the name; the query layer adds the
    // person GUID and password in front of these arguments.
-   q.clear();
+   QStringList q;
    q << "create_buffer_component" << US_Util::new_guid() << name << unit << range << US_Util::bool_string( grad_form )
      << density.join( " " ) << viscosity.join( " " );
 
-   db->statusQuery(q);
+   db->statusQuery( q );
 
-   if (db->lastErrno() != IUS_DB2::OK) {
-      qDebug() << "create_buffer_component error=" << db->lastErrno();
+   if ( db->lastErrno() != IUS_DB2::OK )
+   {
+      if ( error != nullptr )
+      {
+         *error = QObject::tr( "The buffer component \"%1\" could not be created: %2" ).arg( name, db->lastError() );
+      }
       return -1;
    }
 
-   int idBufferComponent = db->lastInsertID();
+   // Not lastInsertID(): see the header
+   QStringList after;
+   QString     listError;
+   if ( !listIDs( db, after, &listError ) )
+   {
+      if ( error != nullptr )
+      {
+         *error = QObject::tr( "The buffer component \"%1\" was created, but which row it is could not be read "
+                               "back: %2" )
+                     .arg( name, listError );
+      }
+      return -1;
+   }
 
-   qDebug() << "buffer_component_ID for new buffer component: " << idBufferComponent;
-   componentID = QString::number(idBufferComponent);
+   int found = -1;
+   for ( const QString& id : after )
+   {
+      if ( before.contains( id ) || id.toInt() <= found )
+      {
+         continue;
+      }
 
-   return idBufferComponent;
+      US_BufferComponent created;
+      created.componentID = id;
+      if ( created.getInfoFromDB( db ) && created.sameDefinition( *this ) )
+      {
+         found = id.toInt();
+      }
+   }
+
+   if ( found < 1 )
+   {
+      if ( error != nullptr )
+      {
+         *error = QObject::tr( "The buffer component \"%1\" was created, but no new component in the database has "
+                               "its definition, so which one it is cannot be told" )
+                     .arg( name );
+      }
+      return -1;
+   }
+
+   componentID = QString::number( found );
+   return found;
 }
 
 //-------------  US_Buffer
@@ -410,12 +510,29 @@ void US_Buffer::putSpectrum( IUS_DB2* db, const QString& type ) const
    }
 }
 
+QStringList US_Buffer::componentIdList( void ) const
+{
+   if ( component.isEmpty() )
+   {
+      return componentIDs;
+   }
+
+   QStringList ids;
+   for ( const US_BufferComponent& bc : component )
+   {
+      ids << bc.componentID;
+   }
+   return ids;
+}
+
 bool US_Buffer::writeToDisk( const QString& filename ) const
 {
+   const QStringList ids = componentIdList();
+
    // Every component needs its concentration.  Writing 0 for a missing one
    // would save a different buffer than this one, which reads back as
    // valid; so such a buffer is refused, before the file is touched.
-   if ( concentration.size() < qMax( componentIDs.size(), component.size() ) )
+   if ( concentration.size() < ids.size() )
    {
       qDebug() << "Cannot write buffer" << GUID << "to" << filename
                << ": a component has no concentration";
@@ -447,15 +564,9 @@ bool US_Buffer::writeToDisk( const QString& filename ) const
    xml.writeAttribute( "compressibility", exact_number( compressibility ) );
    xml.writeAttribute( "manual"     , US_Util::bool_string( manual ) );
 
-   // A buffer read from disk has its component IDs and no component
-   // details, and one built from the components may have only those, so
-   // the components are counted by whichever of the two is filled.
-   const int ncomp = qMax( componentIDs.size(), component.size() );
-
-   for ( int i = 0; i < ncomp; i++ )
+   for ( int i = 0; i < ids.size(); i++ )
    {
-      const QString id = ( i < componentIDs.size() ) ? componentIDs[ i ]
-                                                     : component[ i ].componentID;
+      const QString id = ids[ i ];
       const double  cc = concentration[ i ];
 
       xml.writeStartElement( "component" );
@@ -575,7 +686,6 @@ int US_Buffer::saveToDB( IUS_DB2* db, const QString private_buffer, QString* err
    q << "get_bufferID" << GUID;
    db->query( q );
 
-   int     ncomp    = component.size();
    int     status   = db->lastErrno();
    QString descrip  = description;
    int     manx     = descrip.indexOf( "  [M]" );
@@ -592,6 +702,21 @@ int US_Buffer::saveToDB( IUS_DB2* db, const QString private_buffer, QString* err
       }
       qDebug() << "get_bufferID error=" << status;
       return -9;
+   }
+
+   // A buffer read from disk has only componentIDs; its components are
+   // stored all the same.  One without a concentration for each is not
+   // this buffer, and is refused before anything is written.
+   const QStringList ids = componentIdList();
+   if ( concentration.size() < ids.size() )
+   {
+      if ( error != nullptr )
+      {
+         *error = QObject::tr( "The buffer has %1 components but %2 concentrations." )
+                     .arg( ids.size() )
+                     .arg( concentration.size() );
+      }
+      return -4;
    }
 
    // Transaction control drains query results: capture the existing ID first.
@@ -706,12 +831,12 @@ int US_Buffer::saveToDB( IUS_DB2* db, const QString private_buffer, QString* err
 
    qDebug() << "bufferID before adding components called: " << bufferID;
 
-   for ( int i = 0; i < ncomp; i++ )
+   for ( int i = 0; i < ids.size(); i++ )
    {
       q.clear();
       q << "add_buffer_component"
         << bufferID
-        << component[ i ].componentID
+        << ids[ i ]
         << QString::number( concentration[ i ], 'f', 5 );
       db->statusQuery( q );
 
@@ -855,8 +980,11 @@ void US_Buffer::readBuffer( QXmlStreamReader& xml )
    viscosity       = a.value( "viscosity"   ).toString().toDouble();
    manual          = US_Util::bool_flag( a.value( "manual" ).toString() );
 
+   // A buffer object used before keeps nothing of what it held: the
+   // components of another buffer would be counted with these IDs
    concentration.clear();
    componentIDs .clear();
+   component    .clear();
 
    while ( ! xml.atEnd() )
    {

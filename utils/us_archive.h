@@ -28,11 +28,21 @@
 //!   declare more than \ref maxTotalBytes;
 //! - would be written through a symbolic link that is already in the
 //!   destination, or to a place that is not below the destination once
-//!   links are resolved.
+//!   links are resolved;
+//! - would land on something already in the destination that it cannot
+//!   replace: a directory where it writes a file, a file where it needs a
+//!   directory, a file that cannot be written, or a directory that cannot
+//!   be written in.  Finding that out halfway through would stop the
+//!   extraction with part of the archive written.
+//! An entry that names the destination itself -- ".", "./", which GNU tar
+//! writes for "tar -C dir -cf x.tar ." -- is a directory that is already
+//! there, and is passed over without a note.
 //! The sizes are enforced again on what is actually decompressed, since a
-//! header can understate them; an extraction stopped that way, or by a
-//! failed write, removes the file it was writing and leaves the files it
-//! had already written.
+//! header can understate them.  Each file is written aside and put in place
+//! once it is complete, so an extraction stopped by that, or by a failed
+//! write, leaves no part of the file it was writing: a new one is not
+//! there, and one that was already there is as it was.  The files it had
+//! already written stay.
 //!
 //! \section archive_links Skipping links
 //! Archives made by older UltraScan versions and by hand can carry symbolic
@@ -47,10 +57,12 @@
 //! their files after run IDs and record files, which the rules accept.
 //! Refusing the archive is the default.
 //!
-//! An extracted file that is already in the destination is overwritten and
-//! keeps its permissions; a new one is created with the process's default
-//! permissions.  Paths are opened in a form that holds any Unicode name on
-//! every platform (the wide-character calls on Windows).
+//! An extracted file that is already in the destination is replaced and
+//! keeps its permissions; a new one is created with the permissions
+//! QSaveFile gives a new file.  Paths are opened in a form that holds any
+//! Unicode name on every platform (the wide-character calls on Windows),
+//! and \ref compress stores entry names as UTF-8 (from wide names on
+//! Windows).
 class US_UTIL_EXTERN US_Archive : public QObject
 {
     Q_OBJECT
@@ -141,6 +153,14 @@ private:
     //!        \a root would go through a link already on disk
     bool unsafe_on_disk( const QString& root, const QString& target,
                          const QString& name );
+
+    //! \brief True when the entry \a parts can be written below \a root as
+    //!        the destination is now; false, with \ref error set, when
+    //!        something already there is in the way: a file where a
+    //!        directory goes, a directory where a file goes, a file that
+    //!        cannot be replaced or a directory that cannot be written in
+    bool writable_on_disk( const QString& root, const QStringList& parts,
+                           bool isDir, const QString& name );
 
     //! \brief First pass of \ref extract: check every entry, write nothing.
     bool check_entries( const QString& filename, const QDir& dir );

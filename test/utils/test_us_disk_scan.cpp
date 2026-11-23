@@ -522,3 +522,28 @@ TEST_F( TestUSDiskScan, ANoiseLookupOnAnUnbuiltIndexIsAnError )
    EXPECT_EQ  ( catalog.noisesOfEdit( editOneGUID, QString(), error ).size(), 1 );
    EXPECT_TRUE( error.isEmpty() ) << error.toStdString();
 }
+
+// The catalog's runChanged reaches the scanner's own users, on the owning
+// thread and with the catalog readable
+TEST_F( TestUSDiskScan, ACatalogRunChangeIsForwarded )
+{
+   US_DiskScan scan;
+   settle( scan );
+   ASSERT_TRUE( scan.list() );
+   settle( scan );
+
+   QList< int > seen;
+   bool         readable = true;
+   QObject::connect( &scan, &US_DiskScan::runChanged, [ & ]( int index )
+   {
+      seen << index;
+      readable = readable  &&  scan.catalog() != nullptr;
+   } );
+
+   US_DataCatalog* catalog = scan.catalog();
+   ASSERT_NE( catalog, nullptr );
+   emit catalog->runChanged( 1 );
+
+   EXPECT_EQ  ( seen, QList< int >() << 1 );
+   EXPECT_TRUE( readable );
+}

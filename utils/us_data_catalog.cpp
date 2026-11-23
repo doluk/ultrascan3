@@ -116,6 +116,25 @@ namespace
       return id.toInt() > 0;
    }
 
+   // A database ID as the catalog gives it: the ID, or "-1" for none --
+   // the procedures give NULL or 0 for none, which read as "" and "0"
+   QString db_id( const QVariant& value )
+   {
+      const QString text = value.toString().trimmed();
+      return real_id( text ) ? text : QString( "-1" );
+   }
+
+   // A noise record written with no description takes its model's, with
+   // the noise type in place of ".model" -- the name UltraScan gives it
+   QString noise_description_of( const QString& modelDescription,
+                                 const QString& noiseType )
+   {
+      if ( modelDescription.isEmpty() )  return QString();
+
+      QString ntype = ( noiseType == "ri" ) ? "ri_noise" : "ti_noise";
+      return QString( modelDescription ).replace( ".model", "." + ntype );
+   }
+
    // The base name of a path the database recorded, whichever separator
    QString base_name( const QString& path )
    {
@@ -501,11 +520,11 @@ namespace
    Model model_row( IUS_DB2* db )
    {
       Model model;
-      model.id          = db->value( 0 ).toString();
+      model.id          = db_id( db->value( 0 ) );
       model.guid        = db->value( 1 ).toString();
       model.description = db->value( 2 ).toString();
       model.editGUID    = db->value( 5 ).toString();
-      model.editID      = db->value( 6 ).toString();
+      model.editID      = db_id( db->value( 6 ) );
       model.lastUpdated = US_DataCatalog::utcText( db->value( 7 ) );
       model.checksum    = db->value( 8 ).toString();
       model.size        = db->value( 9 ).toString();
@@ -521,9 +540,9 @@ namespace
    Noise noise_row( IUS_DB2* db )
    {
       Noise noise;
-      noise.id          = db->value( 0 ).toString();
+      noise.id          = db_id( db->value( 0 ) );
       noise.guid        = db->value( 1 ).toString();
-      noise.modelID     = db->value( 3 ).toString();
+      noise.modelID     = db_id( db->value( 3 ) );
       noise.noiseType   = db->value( 4 ).toString().left( 2 );
       noise.modelGUID   = db->value( 5 ).toString();
       noise.lastUpdated = US_DataCatalog::utcText( db->value( 6 ) );
@@ -540,12 +559,12 @@ namespace
    Raw raw_row( IUS_DB2* db )
    {
       Raw raw;
-      raw.id           = db->value(  0 ).toString();
+      raw.id           = db_id( db->value(  0 ) );
       raw.guid         = db->value(  1 ).toString();
       raw.filename     = base_name( db->value( 3 ).toString() );
       raw.description  = db->value(  4 ).toString();
-      raw.experimentID = db->value(  5 ).toString();
-      raw.solutionID   = db->value(  6 ).toString();
+      raw.experimentID = db_id( db->value(  5 ) );
+      raw.solutionID   = db_id( db->value(  6 ) );
       raw.lastUpdated  = US_DataCatalog::utcText( db->value( 8 ) );
       raw.checksum     = db->value(  9 ).toString();
       raw.size         = db->value( 10 ).toString();
@@ -560,8 +579,8 @@ namespace
    Edit edit_row( IUS_DB2* db )
    {
       Edit edit;
-      edit.id          = db->value( 0 ).toString();
-      edit.rawID       = db->value( 1 ).toString();
+      edit.id          = db_id( db->value( 0 ) );
+      edit.rawID       = db_id( db->value( 1 ) );
       edit.rawGUID     = db->value( 2 ).toString();
       edit.guid        = db->value( 3 ).toString();
       edit.filename    = base_name( db->value( 5 ).toString() );
@@ -750,10 +769,13 @@ QList< US_DataCatalog::Noise > US_DataCatalog::noisesOfModel(
    // by model, so the investigator's noise records are listed once and kept
    if ( ! cacheNoise( error ) )  return list;
 
-   list = noise_cache.value( modelGUID );
-
-   // The edit is known when the model is one the catalog has read
-   QString editGUID;
+   // Which model a record is of is worked out now, from the models read by
+   // now: by modelID, as the chain attaches it, when that model has been
+   // read, else by the record's modelGUID.  Models read after the noise
+   // was listed count too.
+   QHash< QString, QString > descs = knownModelDescriptions();
+   QString                   editGUID;
+   QString                   modelDesc = descs.value( modelGUID );
 
    for ( int ii = 0; ii < run_list.size()  &&  editGUID.isEmpty(); ii++ )
       for ( const Raw& raw : run_list[ ii ].raws )
@@ -764,8 +786,23 @@ QList< US_DataCatalog::Noise > US_DataCatalog::noisesOfModel(
    for ( const Model& model : orphan_list.models )
       if ( model.guid == modelGUID )  editGUID = model.editGUID;
 
-   for ( int ii = 0; ii < list.size(); ii++ )
-      list[ ii ].editGUID = editGUID;
+   for ( Noise noise : noise_cache )
+   {
+      QString owner = real_id( noise.modelID )
+                      ? descs.value( "guid-of:" + noise.modelID ) : QString();
+
+      if ( owner.isEmpty() )  owner = noise.modelGUID;
+
+      if ( owner.isEmpty()  ||  owner != modelGUID )  continue;
+
+      noise.modelGUID = modelGUID;
+      noise.editGUID  = editGUID;
+
+      if ( noise.description.isEmpty() )
+         noise.description = noise_description_of( modelDesc, noise.noiseType );
+
+      list << noise;
+   }
 
    return list;
 }
@@ -784,23 +821,12 @@ bool US_DataCatalog::cacheNoise( QString& error )
    while ( dbase->next() )
       noises << noise_row( dbase );
 
-   QHash< QString, QString > modelDescs = knownModelDescriptions();
-   repairNoises( noises, modelDescs );
+   // Descriptions that were cut are read in full now; one that is missing
+   // is given its model's when it is looked up, since the model may not
+   // have been read yet
+   repairNoises( noises, QHash< QString, QString >() );
 
-   QHash< QString, QList< Noise > > cache;
-
-   for ( Noise noise : noises )
-   {  // A record with no model GUID is still of a model the server knows,
-      // by its modelID; it is found by GUID when that model has been read
-      if ( noise.modelGUID.isEmpty() )
-         noise.modelGUID = modelDescs.value( "guid-of:" + noise.modelID );
-
-      if ( noise.modelGUID.isEmpty() )  continue;
-
-      cache[ noise.modelGUID ] << noise;
-   }
-
-   noise_cache  = cache;
+   noise_cache  = noises;
    noise_cached = true;
 
    return true;
@@ -1298,13 +1324,13 @@ bool US_DataCatalog::loadRunsDbBulk( QList< Run >& runs, QString& error )
    while ( dbase->next() )
    {
       Run run;
-      run.id          = dbase->value(  0 ).toString();
+      run.id          = db_id( dbase->value(  0 ) );
       run.guid        = dbase->value(  1 ).toString();
       run.runID       = dbase->value(  2 ).toString();
       run.expType     = dbase->value(  3 ).toString();
       run.runType     = dbase->value(  4 ).toString();
       run.label       = dbase->value(  5 ).toString();
-      run.projectID   = dbase->value(  6 ).toString();
+      run.projectID   = db_id( dbase->value(  6 ) );
       run.projectGUID = dbase->value(  7 ).toString();
       run.projectDesc = dbase->value(  8 ).toString();
       run.date        = utcText( dbase->value( 9 ) );
@@ -1356,7 +1382,7 @@ bool US_DataCatalog::loadRunsDbLegacy( QList< Run >& runs, QString& error )
    while ( dbase->next() )
    {
       Run run;
-      run.id      = dbase->value( 0 ).toString();
+      run.id      = db_id( dbase->value( 0 ) );
       run.runID   = dbase->value( 1 ).toString();
       run.expType = dbase->value( 2 ).toString();
       run.runType = dbase->value( 3 ).toString();
@@ -1387,14 +1413,13 @@ bool US_DataCatalog::loadRunsDbLegacy( QList< Run >& runs, QString& error )
          QString date  = utcText( dbase->value( 13 ) );
 
          run.guid      = dbase->value(  0 ).toString();
-         run.projectID = dbase->value(  1 ).toString();
+         run.projectID = db_id( dbase->value(  1 ) );
 
          if ( ! type .isEmpty() )  run.expType = type;
          if ( ! label.isEmpty() )  run.label   = label;
          if ( ! date .isEmpty() )  run.date    = date;
       }
 
-      if ( run.projectID.isEmpty() )  run.projectID = "-1";
 
       if ( ! projGUIDs.contains( run.projectID ) )
       {
@@ -1785,7 +1810,8 @@ bool US_DataCatalog::loadRunDetail( int index, QString& error )
 
    dropChecksums( raws );
 
-   Run& run     = run_list[ index ];
+   Run&      run         = run_list[ index ];
+   const int listedNoise = run.noiseCount;
    run.raws     = raws;
    run.verified = do_checksums;
    pending.removeAll( index );
@@ -1794,6 +1820,28 @@ bool US_DataCatalog::loadRunDetail( int index, QString& error )
    // noise this one read that is of a model elsewhere
    placeForeignNoise( run, foreign_noise );
    finishRun( run );
+
+   // The listing counts noise by its model's experiment (see
+   // catalog_noise_counts), and so does the chain; a per-experiment
+   // listing of noise by the edit it was recorded against misses the noise
+   // of a model here recorded against an edit of another experiment.  When
+   // the counts say something is missing, the investigator's noise listing
+   // -- read once, and kept -- has it.
+   if ( isDb()  &&  listedNoise >= 0  &&  run.noiseCount != listedNoise )
+   {
+      QString cacheError;
+
+      if ( cacheNoise( cacheError ) )
+      {
+         QList< Noise > all = noise_cache;
+
+         if ( placeForeignNoise( run, all ) )  finishRun( run );
+      }
+
+      else
+         emit message( tr( "The noise records of %1 could not all be read: %2" )
+                       .arg( run.runID, cacheError ) );
+   }
 
    QList< int > changed;
 
@@ -1851,6 +1899,11 @@ void US_DataCatalog::finishRun( Run& run )
 
 bool US_DataCatalog::loadAll( QString& error )
 {
+   // A listing read for another investigator is dropped here, and then
+   // there is none: the records read now would be the new one's, hung
+   // under the old one's experiments
+   refreshInvestigator();
+
    // Without a listing every record would read as an orphan, and a program
    // that cleans up would offer to delete what is attached
    if ( ! listed )
@@ -1997,18 +2050,14 @@ bool US_DataCatalog::loadAllDb( QList< Run >& runs, Orphans& orphans,
    // ---- attach them ------------------------------------------------------
    flat.assemble( &orphans );
 
-   // The noise of every model, for noisesOfModel; attaching gave a record
-   // with no model GUID its model's
-   QHash< QString, QList< Noise > > cache;
+   // Every noise record, for noisesOfModel; attaching gave a record with
+   // no model GUID its model's
+   QList< Noise > cache;
 
    for ( const Model& model : flat.models )
-      if ( ! model.guid.isEmpty() )
-         for ( const Noise& noise : model.noises )
-            cache[ model.guid ] << noise;
+      cache << model.noises;
 
-   for ( const Noise& noise : orphans.noises )
-      if ( ! noise.modelGUID.isEmpty() )
-         cache[ noise.modelGUID ] << noise;
+   cache << orphans.noises;
 
    QHash< QString, int > runById;
 
@@ -2016,15 +2065,15 @@ bool US_DataCatalog::loadAllDb( QList< Run >& runs, Orphans& orphans,
    {
       runs[ ii ].raws.clear();
 
-      if ( ! runs[ ii ].id.isEmpty() )
+      if ( real_id( runs[ ii ].id ) )
          runById.insert( runs[ ii ].id, ii );
    }
 
    for ( int ii = 0; ii < flat.raws.size(); ii++ )
    {
       Raw raw = flat.raws[ ii ];
-      int rx  = raw.experimentID.isEmpty()
-                ? -1 : runById.value( raw.experimentID, -1 );
+      int rx  = real_id( raw.experimentID )
+                ? runById.value( raw.experimentID, -1 ) : -1;
 
       if ( rx < 0 )
       {
@@ -2124,10 +2173,10 @@ bool US_DataCatalog::loadStoreDbLegacy( QList< Raw >& raws,
    while ( dbase->next() )
    {
       Raw raw;
-      raw.id           = dbase->value(  0 ).toString();
+      raw.id           = db_id( dbase->value(  0 ) );
       raw.filename     = base_name( dbase->value( 2 ).toString() );
-      raw.experimentID = dbase->value(  3 ).toString();
-      raw.solutionID   = dbase->value(  4 ).toString();
+      raw.experimentID = db_id( dbase->value(  3 ) );
+      raw.solutionID   = db_id( dbase->value(  4 ) );
       raw.lastUpdated  = utcText( dbase->value( 5 ) );
       raw.checksum     = dbase->value(  6 ).toString();
       raw.size         = dbase->value(  7 ).toString();
@@ -2148,7 +2197,7 @@ bool US_DataCatalog::loadStoreDbLegacy( QList< Raw >& raws,
    while ( dbase->next() )
    {
       Edit edit;
-      edit.id          = dbase->value( 0 ).toString();
+      edit.id          = db_id( dbase->value( 0 ) );
       edit.filename    = base_name( dbase->value( 2 ).toString() );
       edit.lastUpdated = utcText( dbase->value( 5 ) );
       edit.checksum    = dbase->value( 6 ).toString();
@@ -2156,7 +2205,7 @@ bool US_DataCatalog::loadStoreDbLegacy( QList< Raw >& raws,
       edit.guid        = dbase->value( 9 ).toString();
 
       // This procedure names the triple by its ID, not its GUID
-      edit.rawID       = dbase->value( 3 ).toString();
+      edit.rawID       = db_id( dbase->value( 3 ) );
       edit.rawGUID     = guidOfRaw.value( edit.rawID );
       edit_names( edit );
 
@@ -2434,7 +2483,10 @@ bool US_DataCatalog::verifyRunDb( Run& run, QString& error )
    if ( ( tiers() & ExperimentTier ) == 0 )
       return verifyRunDbLegacy( run, error );
 
-   QHash< QString, QPair< QString, QString > > digests;   // GUID -> md5, size
+   // md5 and size, by "raw:" or "edit:" and then the GUID, and by "raw-id:"
+   // or "edit-id:" and the ID: a record attached by ID, for want of a GUID,
+   // is found by ID here too
+   QHash< QString, QPair< QString, QString > > digests;
 
    QStringList query;
    query << "get_rawData_by_experiment" << run.id;
@@ -2448,9 +2500,15 @@ bool US_DataCatalog::verifyRunDb( Run& run, QString& error )
    }
 
    while ( dbase->next() )
-      digests.insert( dbase->value( 1 ).toString(),
-                      qMakePair( dbase->value(  9 ).toString(),
-                                 dbase->value( 10 ).toString() ) );
+   {
+      const QPair< QString, QString > digest( dbase->value(  9 ).toString(),
+                                              dbase->value( 10 ).toString() );
+      const QString guid = dbase->value( 1 ).toString();
+
+      if ( ! guid.isEmpty() )  digests.insert( "raw:" + guid, digest );
+
+      digests.insert( "raw-id:" + db_id( dbase->value( 0 ) ), digest );
+   }
 
    query.clear();
    query << "get_editedData_by_experiment" << run.id;
@@ -2464,29 +2522,57 @@ bool US_DataCatalog::verifyRunDb( Run& run, QString& error )
    }
 
    while ( dbase->next() )
-      digests.insert( dbase->value( 3 ).toString(),
-                      qMakePair( dbase->value( 8 ).toString(),
-                                 dbase->value( 9 ).toString() ) );
+   {
+      const QPair< QString, QString > digest( dbase->value( 8 ).toString(),
+                                              dbase->value( 9 ).toString() );
+      const QString guid = dbase->value( 3 ).toString();
+
+      if ( ! guid.isEmpty() )  digests.insert( "edit:" + guid, digest );
+
+      digests.insert( "edit-id:" + db_id( dbase->value( 0 ) ), digest );
+   }
+
+   // By GUID where the record has one, as it was attached, else by ID.  A
+   // record found neither way is no longer in the experiment, and the run
+   // cannot be called verified with its checksum missing.
+   auto lookup = [ & ]( const QString& kind, const QString& guid,
+                        const QString& id, QString& checksum, QString& size )
+   {
+      QString key = guid.isEmpty() ? QString() : kind + ":" + guid;
+
+      if ( key.isEmpty()  ||  ! digests.contains( key ) )
+         key = real_id( id ) ? kind + "-id:" + id : QString();
+
+      if ( key.isEmpty()  ||  ! digests.contains( key ) )  return false;
+
+      checksum = digests.value( key ).first;
+      size     = digests.value( key ).second;
+      return true;
+   };
 
    for ( int ii = 0; ii < run.raws.size(); ii++ )
    {
       Raw& raw = run.raws[ ii ];
 
-      if ( ! raw.guid.isEmpty()  &&  digests.contains( raw.guid ) )
+      if ( ! lookup( "raw", raw.guid, raw.id, raw.checksum, raw.size ) )
       {
-         raw.checksum = digests.value( raw.guid ).first;
-         raw.size     = digests.value( raw.guid ).second;
+         error = tr( "The raw data %1 of %2 is no longer in the database;"
+                     " read the experiment again" )
+                 .arg( raw.filename, run.runID );
+         return false;
       }
 
       for ( int jj = 0; jj < raw.edits.size(); jj++ )
       {
          Edit& edit = raw.edits[ jj ];
 
-         if ( edit.guid.isEmpty()  ||  ! digests.contains( edit.guid ) )
-            continue;
-
-         edit.checksum = digests.value( edit.guid ).first;
-         edit.size     = digests.value( edit.guid ).second;
+         if ( ! lookup( "edit", edit.guid, edit.id, edit.checksum, edit.size ) )
+         {
+            error = tr( "The edit %1 of %2 is no longer in the database;"
+                        " read the experiment again" )
+                    .arg( edit.filename, run.runID );
+            return false;
+         }
       }
    }
 
@@ -2678,6 +2764,11 @@ bool US_DataCatalog::placeForeignNoise( Run& run, QList< Noise >& noises )
 
                if ( noise.modelGUID.isEmpty() )  noise.modelGUID = model.guid;
 
+               // Its own experiment's read had no model to name it after
+               if ( noise.description.isEmpty() )
+                  noise.description = noise_description_of( model.description,
+                                                            noise.noiseType );
+
                noise.editGUID = model.editGUID;
                model.noises << noise;
                added = true;
@@ -2788,7 +2879,7 @@ bool US_DataCatalog::loadDetailDbLegacy( const Run& run, QList< Raw >& raws,
 
    while ( dbase->next() )
    {
-      rawIDs   << dbase->value( 0 ).toString();
+      rawIDs   << db_id( dbase->value( 0 ) );
       rawNames << base_name( dbase->value( 2 ).toString() );
    }
 
@@ -2819,7 +2910,7 @@ bool US_DataCatalog::loadDetailDbLegacy( const Run& run, QList< Raw >& raws,
       {
          raw.guid        = dbase->value( 0 ).toString();
          raw.description = dbase->value( 3 ).toString();
-         raw.solutionID  = dbase->value( 5 ).toString();
+         raw.solutionID  = db_id( dbase->value( 5 ) );
          raw.lastUpdated = utcText( dbase->value( 7 ) );
          raw.checksum    = dbase->value( 8 ).toString();
          raw.size        = dbase->value( 9 ).toString();
@@ -2833,7 +2924,7 @@ bool US_DataCatalog::loadDetailDbLegacy( const Run& run, QList< Raw >& raws,
       if ( ! queryOk( query, error ) )  return false;
 
       while ( dbase->next() )
-         edtIDs << dbase->value( 0 ).toString();
+         edtIDs << db_id( dbase->value( 0 ) );
 
       for ( int jj = 0; jj < edtIDs.size(); jj++ )
       {
@@ -3008,10 +3099,7 @@ void US_DataCatalog::repairNoises( QList< Noise >& noises,
          if ( mdesc.isEmpty()  &&  ! noise.modelGUID.isEmpty() )
             mdesc = modelDescs.value( noise.modelGUID );
 
-         QString ntype = ( noise.noiseType == "ri" ) ? "ri_noise" : "ti_noise";
-
-         if ( ! mdesc.isEmpty() )
-            noise.description = QString( mdesc ).replace( ".model", "." + ntype );
+         noise.description = noise_description_of( mdesc, noise.noiseType );
       }
    }
 }

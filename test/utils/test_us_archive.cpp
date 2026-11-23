@@ -11,6 +11,9 @@
 #include <csignal>
 #include <sys/resource.h>
 #endif
+#ifdef Q_OS_UNIX
+#include <unistd.h>
+#endif
 
 #include "archive.h"
 #include "archive_entry.h"
@@ -545,4 +548,139 @@ TEST_F( TestUSArchive, ANonAsciiNameRoundTrips )
    ASSERT_EQ  ( files.size(), 1 );
    EXPECT_TRUE( QFile::exists( root + "/out/src/" + name ) )
       << contentsOf( root + "/out" ).join( ", " ).toStdString();
+}
+
+// GNU tar writes the directory it was pointed at as "./", and every name
+// below it as "./name".  That entry is the destination itself: it is passed
+// over, and the rest is extracted.
+TEST_F( TestUSArchive, AGnuTarOfADirectoryIsExtracted )
+{
+   const QString src = root + "/job";
+   QDir().mkpath( src + "/sub" );
+   for ( const QString& name : { QString( "hpcrequest.xml" ), QString( "sub/run.auc" ) } )
+   {
+      QFile ff( src + "/" + name );
+      ASSERT_TRUE( ff.open( QIODevice::WriteOnly ) );
+      ff.write( name.toUtf8() );
+   }
+
+   const QString tar = root + "/job.tar";
+   QProcess      gnutar;
+   gnutar.start( "tar", QStringList() << "-C" << src << "-cf" << tar << "." );
+   if ( !gnutar.waitForFinished( 30000 ) || gnutar.exitCode() != 0 )
+   {
+      GTEST_SKIP() << "no working tar command";
+   }
+
+   US_Archive  archive;
+   QStringList files;
+   ASSERT_TRUE( archive.extract( tar, root + "/out", &files ) ) << archive.getError().toStdString();
+   EXPECT_EQ( contentsOf( root + "/out" ), QStringList() << "hpcrequest.xml" << "sub" << "sub/run.auc" );
+   EXPECT_EQ( files.size(), 2 );
+   EXPECT_TRUE( archive.skippedEntries().isEmpty() );
+}
+
+TEST_F( TestUSArchive, EntriesNamingTheDestinationArePassedOver )
+{
+   Entry dot;
+   dot.name         = ".";
+   dot.type         = AE_IFDIR;
+   Entry dotSlash   = dot;
+   dotSlash.name    = "./";
+   Entry dotSlashes = dot;
+   dotSlashes.name  = ".//./";
+
+   QString    tar = makeTar( "dots.tar", QList< Entry >() << dotSlash << dot << dotSlashes << file( "./a.txt", "a" ) );
+   US_Archive archive;
+   ASSERT_TRUE( archive.extract( tar, root + "/out" ) ) << archive.getError().toStdString();
+   EXPECT_EQ( contentsOf( root + "/out" ), QStringList() << "a.txt" );
+   QDir( root + "/out" ).removeRecursively();
+
+   // Only a directory: a file cannot be the destination
+   expectRefused( QList< Entry >() << file( "./", "x" ), "a file named ./" );
+   expectRefused( QList< Entry >() << file( ".", "x" ), "a file named ." );
+}
+
+// What is in the destination already is checked before anything is
+// written, so an archive that cannot be extracted in full writes nothing
+TEST_F( TestUSArchive, SomethingInTheWayRefusesTheArchiveBeforeAnythingIsWritten )
+{
+   const QString dest = root + "/out";
+   QDir().mkpath( dest + "/b.txt" );  // a directory where a file goes
+   QString tar = makeTar( "dir-in-way.tar", QList< Entry >() << file( "a.txt", "a" ) << file( "b.txt", "b" ) );
+
+   US_Archive archive;
+   EXPECT_FALSE( archive.extract( tar, dest ) );
+   EXPECT_TRUE( archive.getError().contains( "b.txt" ) ) << archive.getError().toStdString();
+   EXPECT_FALSE( QFile::exists( dest + "/a.txt" ) );
+
+   QDir( dest + "/b.txt" ).removeRecursively();
+   QFile in( dest + "/run" );  // a file where a directory goes
+   ASSERT_TRUE( in.open( QIODevice::WriteOnly ) );
+   in.close();
+   tar = makeTar( "file-in-way.tar", QList< Entry >() << file( "a.txt", "a" ) << file( "run/x.auc", "x" ) );
+   EXPECT_FALSE( archive.extract( tar, dest ) );
+   EXPECT_TRUE( archive.getError().contains( "run" ) ) << archive.getError().toStdString();
+   EXPECT_FALSE( QFile::exists( dest + "/a.txt" ) );
+}
+
+TEST_F( TestUSArchive, AFileThatCannotBeReplacedRefusesTheArchiveBeforeAnythingIsWritten )
+{
+#ifdef Q_OS_UNIX
+   if ( geteuid() == 0 )
+   {
+      GTEST_SKIP() << "root can write any file";
+   }
+#endif
+   const QString dest = root + "/out";
+   QDir().mkpath( dest );
+   QFile locked( dest + "/b.txt" );
+   ASSERT_TRUE( locked.open( QIODevice::WriteOnly ) );
+   locked.write( "locked" );
+   locked.close();
+   ASSERT_TRUE( QFile::setPermissions( dest + "/b.txt", QFileDevice::ReadOwner ) );
+
+   QString    tar = makeTar( "locked.tar", QList< Entry >() << file( "a.txt", "a" ) << file( "b.txt", "b" ) );
+   US_Archive archive;
+   EXPECT_FALSE( archive.extract( tar, dest ) );
+   EXPECT_FALSE( QFile::exists( dest + "/a.txt" ) );
+   QFile::setPermissions( dest + "/b.txt", QFileDevice::ReadOwner | QFileDevice::WriteOwner );
+}
+
+// An entry that fails leaves a file that was already there as it was; it
+// used to be truncated, then removed
+TEST_F( TestUSArchive, AFailedEntryLeavesTheFileThatWasThere )
+{
+#ifdef Q_OS_LINUX
+   const QString dest = root + "/out";
+   QDir().mkpath( dest );
+   QFile old( dest + "/big.bin" );
+   ASSERT_TRUE( old.open( QIODevice::WriteOnly ) );
+   old.write( "old contents" );
+   old.close();
+
+   QString tar = makeTar( "big.tar", QList< Entry >() << file( "big.bin", QByteArray( 256 * 1024, 'z' ) ) );
+
+   struct rlimit saved;
+   ASSERT_EQ( getrlimit( RLIMIT_FSIZE, &saved ), 0 );
+   auto          oldHandler = signal( SIGXFSZ, SIG_IGN );
+   struct rlimit small      = saved;
+   small.rlim_cur           = 64 * 1024;
+   ASSERT_EQ( setrlimit( RLIMIT_FSIZE, &small ), 0 );
+
+   US_Archive archive;
+   const bool ok = archive.extract( tar, dest );
+
+   setrlimit( RLIMIT_FSIZE, &saved );
+   signal( SIGXFSZ, oldHandler );
+
+   EXPECT_FALSE( ok );
+   ASSERT_TRUE( old.open( QIODevice::ReadOnly ) );
+   EXPECT_EQ( old.readAll(), QByteArray( "old contents" ) );
+   old.close();
+   // and nothing written aside is left behind
+   EXPECT_EQ( contentsOf( dest ), QStringList() << "big.bin" );
+#else
+   GTEST_SKIP() << "needs RLIMIT_FSIZE";
+#endif
 }

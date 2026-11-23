@@ -261,7 +261,7 @@ TEST_P( AnalyteXml, WriterProducesIndependentStructureValuesAndWrapping )
          }
          if ( name == "sequence" )
          {
-            EXPECT_EQ( "\n" + QString( 80, 'A' ) + "\nA\n", xml.readElementText() );
+            EXPECT_EQ( QString( 81, 'A' ), xml.readElementText() );
          }
          if ( name == "extinction" )
          {
@@ -456,19 +456,21 @@ TEST_P( AnalyteXml, LaterAnalyteElementsCannotOverwriteSelectedIdentityOrSpectra
    EXPECT_EQ( ( QMap<double, double>{ { 250, 1 } } ), a.extinction );
 }
 
-TEST_P( AnalyteXml, WriterSequenceLineBoundariesIncludeEmptyFinalLine )
+// The sequence is written as it is: the line breaks an older writer put
+// around it and into it were read back as part of it
+TEST_P( AnalyteXml, WriterStoresTheSequenceAsItIs )
 {
    struct Example
    {
          int     length;
          QString expected;
    };
-   const Example examples[] = { { 0, "\n\n" },
-                                { 1, "\nA\n" },
-                                { 79, "\n" + QString( 79, 'A' ) + "\n" },
-                                { 80, "\n" + QString( 80, 'A' ) + "\n\n" },
-                                { 81, "\n" + QString( 80, 'A' ) + "\nA\n" },
-                                { 160, "\n" + QString( 80, 'A' ) + "\n" + QString( 80, 'A' ) + "\n\n" } };
+   const Example examples[] = { { 0, "" },
+                                { 1, "A" },
+                                { 79, QString( 79, 'A' ) },
+                                { 80, QString( 80, 'A' ) },
+                                { 81, QString( 81, 'A' ) },
+                                { 160, QString( 160, 'A' ) } };
    for ( const auto& example : examples )
    {
       SCOPED_TRACE( example.length );
@@ -554,7 +556,7 @@ TEST_P( AnalyteXml, WriterEscapesUnicodeAndOmitsMemoryOnlyFields )
       if ( xml.name() == "sequence" )
       {
          ++sequences;
-         EXPECT_EQ( QString( "\nA<&B\n" ), xml.readElementText() );
+         EXPECT_EQ( QString( "A<&B" ), xml.readElementText() );
       }
    }
    EXPECT_FALSE( xml.hasError() );
@@ -835,4 +837,52 @@ TEST_P( AnalyteXml, NumbersAreKeptAtFullPrecision )
    }
 }
 
+}
+
+// The line breaks the writer puts around and into a sequence are not read
+// back as part of it: a sequence written and read is the sequence, and
+// writing and reading it again gives it once more.  It used to grow by two line breaks
+// with every round trip.
+TEST_P( AnalyteXml, ASequenceSurvivesRepeatedRoundTrips )
+{
+   for ( const QString& sequence : { QString(), QString( "MKV" ), QString( 80, 'A' ), QString( 81, 'C' ),
+                                     QString( 160, 'G' ) + "TTT" } )
+   {
+      SCOPED_TRACE( sequence.size() );
+      US_Analyte a;
+      a.type        = US_Analyte::PROTEIN;
+      a.description = "round trip";
+      a.analyteGUID = "fixture";
+      a.mw          = 1000;
+      a.sequence    = sequence;
+
+      QByteArray first;
+      ASSERT_NO_FATAL_FAILURE( write( a, first ) );
+      US_Analyte once;
+      ASSERT_NO_FATAL_FAILURE( read( once, first ) );
+      EXPECT_EQ( sequence, once.sequence );
+
+      QByteArray second;
+      ASSERT_NO_FATAL_FAILURE( write( once, second ) );
+      US_Analyte twice;
+      ASSERT_NO_FATAL_FAILURE( read( twice, second ) );
+      EXPECT_EQ( sequence, twice.sequence );
+   }
+}
+
+// A file an older writer wrapped reads as it always did, and is then
+// written as read: it does not grow any further
+TEST_P( AnalyteXml, AnOlderWrappedSequenceGrowsNoMore )
+{
+   US_Analyte a;
+   ASSERT_NO_FATAL_FAILURE( read( a, "<analyte analyteGUID='fixture' type='PROTEIN' description='wrapped' mw='1000'>"
+                                     "<sequence>\nMKVL\nAAGG\n</sequence></analyte>" ) );
+   EXPECT_EQ( QString( "\nmkvl\naagg\n" ).toUpper(), a.sequence.toUpper() );
+   const QString read1 = a.sequence;
+
+   QByteArray bytes;
+   ASSERT_NO_FATAL_FAILURE( write( a, bytes ) );
+   US_Analyte b;
+   ASSERT_NO_FATAL_FAILURE( read( b, bytes ) );
+   EXPECT_EQ( read1, b.sequence );
 }

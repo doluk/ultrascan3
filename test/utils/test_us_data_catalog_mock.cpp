@@ -76,6 +76,11 @@ namespace
          QSet< QString >       refused;   // answer NOTPERMITTED, as for a
                                           //  record of another investigator
          int                   caller = kInv;   // who is connected
+
+         // How get_experiment_summary counts noise: by the experiment of its
+         // model, as the catalog files it (the current procedure), or by the
+         // edit it was recorded against (the first version)
+         bool                  countNoiseByEdit = false;
          QMap< QString, int >  failOn;    // fail the n-th call; 0 = every call
          QMap< QString, int >  knt;       // calls so far, by procedure
          QStringList           calls;     // procedure names, in order
@@ -163,7 +168,15 @@ namespace
 
             current.rows = rowsOf( name, q.mid( 1 ) );
 
-            if ( current.rows.isEmpty() )
+            // Most procedures answer NOROWS for nothing; these answer OK
+            // with an empty set, as us3_catalog_procs.sql writes them
+            static const QSet< QString > emptyIsOk{ "get_experiment_summary",
+                                                     "get_model_desc_by_experiment",
+                                                     "get_noise_desc_by_experiment",
+                                                     "get_rawData_by_person",
+                                                     "get_editedData_by_person" };
+
+            if ( current.rows.isEmpty()  &&  ! emptyIsOk.contains( name ) )
             {
                current.status = IUS_DB2::NOROWS;
                current.error  = "no rows";
@@ -187,6 +200,14 @@ namespace
             for ( const FEdit& ed : edits )
                if ( ed.id == editID )
                   return rawById( ed.rawID ) ? rawById( ed.rawID )->expID : QString();
+            return QString();
+         }
+
+         QString expOfModel( const QString& modelID ) const
+         {
+            for ( const FModel& mm : models )
+               if ( ! mm.id.isEmpty()  &&  mm.id == modelID )
+                  return expOfEdit( mm.editID );
             return QString();
          }
 
@@ -272,7 +293,10 @@ namespace
                   for ( const FRaw& rr : raws )   if ( rr.expID == ee.id )  nr++;
                   for ( const FEdit& ed : edits ) if ( rawById( ed.rawID ) && rawById( ed.rawID )->expID == ee.id ) ne++;
                   for ( const FModel& mm : models ) if ( expOfEdit( mm.editID ) == ee.id  &&  modelOf( mm.id, a.value( 0 ) ) ) nm++;
-                  for ( const FNoise& no : noises ) if ( expOfEdit( no.editID ) == ee.id  &&  modelOf( no.modelID, a.value( 0 ) ) ) nn++;
+                  for ( const FNoise& no : noises )
+                     if ( ( countNoiseByEdit ? expOfEdit( no.editID ) : expOfModel( no.modelID ) ) == ee.id  &&
+                          modelOf( no.modelID, a.value( 0 ) ) )
+                        nn++;
                   rows << ( QVariantList() << ee.id << ee.guid << ee.runID << "velocity" << "RA"
                                            << ee.runID + " label" << ee.projID << ee.projGUID
                                            << ee.projDesc << kDate << nr << ne << nm << nn );
@@ -1522,8 +1546,11 @@ TEST_F( TestUSDataCatalogMock, StrayNoiseIsSortedAsTheWholeStoreReadSortsIt )
          EXPECT_EQ( one.run( 1 ).noiseCount, whole.run( 1 ).noiseCount );
          EXPECT_EQ( shape( one ), shape( whole ) );
 
-         // RunB read first is changed by reading RunA, and says so
-         if ( forward )
+         // RunB read first has the count the listing gave it, and so
+         // finds its noise recorded against RunA at once.  An old server's
+         // listing gives no count: RunB is then changed by reading RunA,
+         // and says so.
+         if ( forward  ||  tiers != 0 )
             EXPECT_EQ( changed.count(), 0 );
          else
          {
@@ -1555,7 +1582,9 @@ TEST_F( TestUSDataCatalogMock, AWholeStoreReadGivesLoadedRunsTheirLateNoise )
       catalog.setTiers( tiers );
       attachAndList( catalog );
       ASSERT_TRUE( catalog.loadRunDetail( 0, error ) ) << error.toStdString();
-      ASSERT_EQ  ( catalog.run( 0 ).noiseCount, 1 );
+      // The listing counts it, so the catalog procedures' read finds it at
+      // once; an old server's listing gives no count to go by
+      ASSERT_EQ  ( catalog.run( 0 ).noiseCount, tiers ? 2 : 1 );
 
       QSignalSpy changed( &catalog, &US_DataCatalog::runChanged );
       ASSERT_TRUE( catalog.loadAll( error ) ) << error.toStdString();
@@ -1563,8 +1592,13 @@ TEST_F( TestUSDataCatalogMock, AWholeStoreReadGivesLoadedRunsTheirLateNoise )
       EXPECT_EQ( catalog.run( 0 ).noiseCount, 2 );
       EXPECT_EQ( catalog.run( 0 ).noiseCount, reference.run( 0 ).noiseCount );
       EXPECT_EQ( shape( catalog ), shape( reference ) );
-      ASSERT_EQ( changed.count(), 1 );
-      EXPECT_EQ( changed.at( 0 ).at( 0 ).toInt(), 0 );
+      if ( tiers )
+         EXPECT_EQ( changed.count(), 0 );
+      else
+      {
+         ASSERT_EQ( changed.count(), 1 );
+         EXPECT_EQ( changed.at( 0 ).at( 0 ).toInt(), 0 );
+      }
 
       // and a second read does not add it again
       changed.clear();
@@ -1896,4 +1930,252 @@ TEST_F( TestUSDataCatalogMock, AModelWithNoEditGuidKeepsItsNoise )
    // and the empty description was given the model's
    EXPECT_EQ( catalog.orphans().models[ 0 ].noises[ 0 ].description, QString( "Lone.ti_noise" ) );
    EXPECT_TRUE( catalog.orphans().noises.isEmpty() );
+}
+
+// ------------------------------------------------- where noise is counted
+
+/* Global fits: noise recorded against an edit of RunA whose model is on the
+   UNASSIGNED edit (editedDataID 1, which belongs to no experiment), and
+   noise recorded against RunA whose model is in RunB.  The listing counts
+   noise by its model's experiment, the catalog files it under its model,
+   so no read order changes a count, and the UNASSIGNED model's noise is
+   counted under no experiment but kept with its model in the orphans. */
+class TestUSDataCatalogNoiseCounts : public TestUSDataCatalogMock
+{
+   protected:
+      void SetUp() override
+      {
+         TestUSDataCatalogMock::SetUp();
+         server.models << FModel{ "303", "model-3", "RunB.2B260.e1_a2_2DSA_i01.model", "edit-3", "203" }
+                       << FModel{ "309", "model-global", "Global.e1_a2_2DSA-GL_i01.model",
+                                  "00000000-0000-0000-0000-000000000000", "1" };
+         server.noises << FNoise{ "421", "noise-g1", "201", "309", "model-global", "ti_noise", "g1" }
+                       << FNoise{ "422", "noise-g2", "203", "309", "model-global", "ti_noise", "g2" }
+                       << FNoise{ "423", "noise-b", "201", "303", "model-3", "ri_noise", "b" };
+      }
+
+      QList< int > listedNoise( US_DataCatalog& catalog )
+      {
+         QList< int > counts;
+         for ( int ii = 0; ii < catalog.runCount(); ii++ )
+            counts << catalog.run( ii ).noiseCount;
+         return counts;
+      }
+};
+
+TEST_F( TestUSDataCatalogNoiseCounts, LoadingChangesNoNoiseCount )
+{
+   for ( bool forward : { true, false } )
+   {
+      SCOPED_TRACE( forward ? "RunA first" : "RunB first" );
+      US_DataCatalog catalog;
+      attachAndList( catalog );
+      const QList< int > listed = listedNoise( catalog );
+      // noise-1 and noise-b's model are in RunA and RunB; the global
+      // model's noise is in neither
+      EXPECT_EQ( listed, QList< int >() << 1 << 1 );
+
+      QString error;
+      ASSERT_TRUE( catalog.loadRunDetail( forward ? 0 : 1, error ) ) << error.toStdString();
+      ASSERT_TRUE( catalog.loadRunDetail( forward ? 1 : 0, error ) ) << error.toStdString();
+      EXPECT_EQ( listedNoise( catalog ), listed );
+
+      US_DataCatalog whole;
+      attachAndList( whole );
+      ASSERT_TRUE( whole.loadAll( error ) ) << error.toStdString();
+      EXPECT_EQ( listedNoise( whole ), listed );
+      EXPECT_EQ( shape( catalog ), shape( whole ) );
+   }
+}
+
+// One experiment read alone has the count the listing gave it, even when
+// noise of its models is recorded against another experiment's edits,
+// which the per-experiment listing does not return with it
+TEST_F( TestUSDataCatalogNoiseCounts, AnExperimentReadAloneKeepsItsCount )
+{
+   for ( int index : { 0, 1 } )
+   {
+      SCOPED_TRACE( index );
+      US_DataCatalog catalog;
+      attachAndList( catalog );
+      const int listed = catalog.run( index ).noiseCount;
+      QString   error;
+      ASSERT_TRUE( catalog.loadRunDetail( index, error ) ) << error.toStdString();
+      EXPECT_EQ( catalog.run( index ).noiseCount, listed );
+   }
+
+   // RunB's model-3 has noise-b, recorded against RunA
+   US_DataCatalog catalog;
+   attachAndList( catalog );
+   QString error;
+   ASSERT_TRUE( catalog.loadRunDetail( 1, error ) ) << error.toStdString();
+   EXPECT_EQ( guids( catalog.run( 1 ).raws[ 0 ].edits[ 0 ].models[ 0 ].noises ), QStringList() << "noise-b" );
+}
+
+TEST_F( TestUSDataCatalogNoiseCounts, AGlobalFitModelIsAnOrphanWithItsNoise )
+{
+   US_DataCatalog catalog;
+   attachAndList( catalog );
+   QString error;
+   ASSERT_TRUE( catalog.loadAll( error ) ) << error.toStdString();
+
+   ASSERT_EQ( guids( catalog.orphans().models ), QStringList() << "model-global" );
+   const US_DataCatalog::Model& global = catalog.orphans().models[ 0 ];
+   EXPECT_EQ( global.editID, QString( "1" ) );
+   EXPECT_EQ( guids( global.noises ), QStringList() << "noise-g1" << "noise-g2" );
+   EXPECT_TRUE( catalog.orphans().noises.isEmpty() );
+
+   EXPECT_EQ( guids( catalog.noisesOfModel( "model-global", error ) ),
+              QStringList() << "noise-g1" << "noise-g2" );
+}
+
+// The first catalog procedures counted noise by the edit it was recorded
+// against; there a count changes on loading, as documented
+TEST_F( TestUSDataCatalogNoiseCounts, TheFirstSummaryCountedByEdit )
+{
+   server.countNoiseByEdit = true;
+   US_DataCatalog catalog;
+   attachAndList( catalog );
+   // RunA's edit holds noise-1, noise-g1 and noise-b; RunB's noise-g2
+   EXPECT_EQ( listedNoise( catalog ), QList< int >() << 3 << 1 );
+
+   QString error;
+   ASSERT_TRUE( catalog.loadRunDetail( 0, error ) ) << error.toStdString();
+   ASSERT_TRUE( catalog.loadRunDetail( 1, error ) ) << error.toStdString();
+   EXPECT_EQ( listedNoise( catalog ), QList< int >() << 1 << 1 );
+}
+
+// ---------------------------------------------------------- fixes, round 4
+
+// A record attached by ID, for want of a GUID, is verified by ID too; it
+// used to keep no checksum while the experiment was called verified
+TEST_F( TestUSDataCatalogMock, VerifyFindsARecordWithNoGuidByItsId )
+{
+   server.raws  << FRaw { "104", "", "RunA.RA.2.A.280.auc", "11", "", "" };
+   server.edits << FEdit{ "204", "", "104", "RunA.2401011500.RA.2.A.280.xml" };
+
+   US_DataCatalog catalog;
+   catalog.setChecksums( false );
+   attachAndList( catalog );
+   QString error;
+   ASSERT_TRUE( catalog.loadRunDetail( 0, error ) ) << error.toStdString();
+   ASSERT_TRUE( catalog.verifyRun( 0, error ) ) << error.toStdString();
+
+   bool found = false;
+   for ( const US_DataCatalog::Raw& raw : catalog.run( 0 ).raws )
+   {
+      EXPECT_FALSE( raw.checksum.isEmpty() ) << raw.id.toStdString();
+      for ( const US_DataCatalog::Edit& edit : raw.edits )
+         EXPECT_FALSE( edit.checksum.isEmpty() ) << edit.id.toStdString();
+      found = found  ||  raw.id == "104";
+   }
+   EXPECT_TRUE( found );
+}
+
+// A record the server no longer lists cannot be verified
+TEST_F( TestUSDataCatalogMock, VerifyFailsForARecordThatIsGone )
+{
+   US_DataCatalog catalog;
+   catalog.setChecksums( false );
+   attachAndList( catalog );
+   QString error;
+   ASSERT_TRUE( catalog.loadRunDetail( 0, error ) ) << error.toStdString();
+
+   server.edits.removeAt( 1 );   // edit-2 is deleted meanwhile
+   EXPECT_FALSE( catalog.verifyRun( 0, error ) );
+   EXPECT_TRUE( error.contains( "RunA.2401011300" ) ) << error.toStdString();
+   EXPECT_FALSE( catalog.isRunVerified( 0 ) );
+}
+
+// The noise listing is read once, but which model each record is of is
+// worked out when it is asked: a model read after it counts too
+TEST_F( TestUSDataCatalogMock, TheNoiseOfAModelReadLaterIsFound )
+{
+   server.noises << FNoise{ "402", "noise-2", "202", "302", "", "ri_noise", "" };
+
+   US_DataCatalog catalog;
+   attachAndList( catalog );
+   QString error;
+   EXPECT_EQ( catalog.noisesOfModel( "model-1", error ).size(), 1 );
+
+   ASSERT_TRUE( catalog.loadRunDetail( 0, error ) ) << error.toStdString();
+   QList< US_DataCatalog::Noise > noises = catalog.noisesOfModel( "model-2", error );
+   ASSERT_EQ( noises.size(), 1 );
+   EXPECT_EQ( noises[ 0 ].guid,        QString( "noise-2" ) );
+   EXPECT_EQ( noises[ 0 ].modelGUID,   QString( "model-2" ) );
+   EXPECT_EQ( noises[ 0 ].editGUID,    QString( "edit-2" ) );
+   EXPECT_EQ( noises[ 0 ].description, QString( "RunA.1A280.e2401011300_a2401021400_GA_i01.ri_noise" ) );
+   EXPECT_EQ( server.count( "get_noise_desc" ), 1 );
+}
+
+// Noise read with one experiment and hung under a model of another takes
+// that model's description when it has none, as noise read with its model
+// does
+TEST_F( TestUSDataCatalogMock, ForeignNoiseIsDescribedAfterItsModel )
+{
+   server.models << FModel{ "303", "model-3", "RunB.2B260.e1_a2_2DSA_i01.model", "edit-3", "203" };
+   server.noises << FNoise{ "413", "noise-s3", "201", "303", "model-3", "ti_noise", "" };
+
+   for ( int tiers : { int( US_DataCatalog::AllTiers ), 0 } )
+      for ( bool forward : { true, false } )
+      {
+         SCOPED_TRACE( QString( "%1, %2 first" )
+                          .arg( tiers ? "catalog procedures" : "old procedures" )
+                          .arg( forward ? "RunA" : "RunB" )
+                          .toStdString() );
+         US_DataCatalog catalog;
+         catalog.setTiers( tiers );
+         attachAndList( catalog );
+         QString error;
+         ASSERT_TRUE( catalog.loadRunDetail( forward ? 0 : 1, error ) ) << error.toStdString();
+         ASSERT_TRUE( catalog.loadRunDetail( forward ? 1 : 0, error ) ) << error.toStdString();
+
+         const US_DataCatalog::Model& model = catalog.run( 1 ).raws[ 0 ].edits[ 0 ].models[ 0 ];
+         ASSERT_EQ( model.noises.size(), 1 );
+         EXPECT_EQ( model.noises[ 0 ].description, QString( "RunB.2B260.e1_a2_2DSA_i01.ti_noise" ) );
+      }
+}
+
+// A change of investigator since the listing drops it, and loadAll then
+// refuses, as it says it does
+TEST_F( TestUSDataCatalogMock, AWholeStoreReadAfterAChangeOfInvestigatorIsRefused )
+{
+   US_DataCatalog catalog;
+   attachAndList( catalog );
+
+   InvestigatorGuard other( kInv + 1 );
+   server.calls.clear();
+   QString error;
+   EXPECT_FALSE( catalog.loadAll( error ) );
+   EXPECT_FALSE( error.isEmpty() );
+   EXPECT_EQ( catalog.runCount(), 0 );
+   EXPECT_TRUE( server.calls.isEmpty() ) << server.calls.join( "," ).toStdString();
+}
+
+// An ID the server gives as NULL or 0 is "-1", as on disk
+TEST_F( TestUSDataCatalogMock, AMissingIdIsMinusOne )
+{
+   addOrphans();
+   server.models << FModel{ "310", "model-10", "Zero.model", "", "0" };
+
+   for ( int tiers : { int( US_DataCatalog::AllTiers ), 0 } )
+   {
+      SCOPED_TRACE( tiers ? "catalog procedures" : "old procedures" );
+      US_DataCatalog catalog;
+      catalog.setTiers( tiers );
+      attachAndList( catalog );
+      QString error;
+      ASSERT_TRUE( catalog.loadAll( error ) ) << error.toStdString();
+
+      for ( const US_DataCatalog::Model& model : catalog.orphans().models )
+      {
+         if ( model.guid == "model-7" || model.guid == "model-10" )
+            EXPECT_EQ( model.editID, QString( "-1" ) ) << model.guid.toStdString();
+      }
+      for ( const US_DataCatalog::Raw& raw : catalog.orphans().raws )
+         if ( raw.guid == "raw-9" )
+            EXPECT_EQ( raw.solutionID, QString( "-1" ) );
+      for ( const US_DataCatalog::Edit& edit : catalog.orphans().edits )
+         EXPECT_TRUE( edit.rawID.toInt() > 0 || edit.rawID == "-1" ) << edit.rawID.toStdString();
+   }
 }

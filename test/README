@@ -354,6 +354,29 @@ them an export of the fixture's run with its whole chain (skipped on a
 database that is not the fixture), and the `DataPubDbImport` cases export the
 synthetic disk store the tests build and import it into the scratch target.
 
+### What the database tests write
+
+Some cases add rows to the fixture database and remove them again, each
+with IDs or GUIDs of its own, so run one `test_us_utils_db` at a time
+against one database:
+
+- `test_us_db2_roundtrip.cpp` sends accented Latin, the micro sign, Greek,
+  CJK and an emoji through procedures of its own (utf8mb4 parameters) and
+  through the real login, project and blob paths, as a person it adds with
+  a non-ASCII password.  On a latin1 column (MariaDB's default for the
+  schema) only the Latin-1 values must arrive, and the others must be
+  refused rather than stored as `?`.
+- `test_us_buffer_component_live.cpp` creates components through the real
+  `create_buffer_component` after setting the connection's
+  `LAST_INSERT_ID()` to an existing component, and once with a gap in the
+  IDs; it passes against the old procedure (which inserts at `COUNT(*)+1`)
+  and the patched one (`MAX+1`).
+- `test_us_data_catalog_db.cpp` (`TestUSDataCatalogDbNoise`) adds a second
+  experiment, a global-fit model on the UNASSIGNED edit (`editedDataID` 1,
+  inserted when the schema lacks it) and noise recorded across experiments.
+  Against catalog procedures that count noise by its model's experiment it
+  also checks that the listing's noise counts are what loading finds.
+
 ### Testing the fall-back
 
 The catalog prefers stored procedures added for it and falls back on the ones

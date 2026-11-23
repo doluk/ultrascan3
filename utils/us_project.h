@@ -79,7 +79,10 @@ public:
     /*! \brief    Method to write the current project to a specific XML file
 
         \param    filename The full path of the project XML file to write
-        \return   True if the file could be written, false otherwise
+        \return   True if the file could be written, false otherwise --
+                  also when the write or the final flush fails; the file is
+                  written aside and replaced only when complete, so on
+                  false a file that was there is unchanged
     */
     bool saveToFile( const QString& filename ) const;
 
