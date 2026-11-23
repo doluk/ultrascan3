@@ -914,6 +914,106 @@ TEST( DataPubManifest, AnyTextRoundTrips )
    EXPECT_EQ( back.toYaml(), yaml );
 }
 
+// Outside YAML's printable set there are more than control characters:
+// U+FFFE and U+FFFF, and a surrogate without its pair, which UTF-8 cannot
+// hold at all (it would be written as '?').  Those, and the noncharacters,
+// go escaped -- "\UXXXXXXXX" beyond the first plane -- while ordinary text
+// beyond it, an emoji, stays as it is.
+TEST( DataPubManifest, TextOutsideYamlsPrintableSetIsEscaped )
+{
+   QString text = "a";
+   text += QChar( 0xfffe );
+   text += QChar( 0xffff );
+   text += QChar( 0xfdd0 );
+   text += QChar( 0xd800 );                     // a lone high surrogate
+   text += "b";
+   text += QChar( 0xdc00 );                     // a lone low surrogate
+   text += QChar( QChar::highSurrogate( 0x1fffe ) );  // a noncharacter of
+   text += QChar( QChar::lowSurrogate ( 0x1fffe ) );  // plane 1
+   text += QString::fromUtf8( "\xF0\x9F\x98\x80" );    // U+1F600, kept raw
+   text += QChar( 0xd83d );                     // a high surrogate at the end
+
+   US_DataPubManifest mani = sampleManifest();
+   mani.comment = text;
+
+   QList< US_DataPubEntity > projects = mani.section( US_DataPub::Project );
+   projects[ 0 ].name = text;
+   mani.setSection( US_DataPub::Project, projects );
+
+   QString yaml = mani.toYaml();
+
+   EXPECT_TRUE( yaml.contains( "\\ufffe\\uffff\\ufdd0\\ud800b\\udc00"
+                               "\\U0001fffe" ) ) << yaml.toStdString();
+   EXPECT_TRUE( yaml.contains( QString::fromUtf8( "\xF0\x9F\x98\x80" )
+                               + "\\ud83d\"" ) ) << yaml.toStdString();
+
+   QTemporaryDir dir;
+   ASSERT_TRUE( dir.isValid() );
+   QString path = dir.path() + "/manifest.yaml";
+   QString error;
+   ASSERT_TRUE( mani.write( path, error ) ) << error.toStdString();
+
+   // What is in the file is all printable for YAML: c-printable is TAB, LF,
+   // CR, 0x20-0x7E, 0x85, 0xA0-0xD7FF, 0xE000-0xFFFD and 0x10000-0x10FFFF
+   QFile file( path );
+   ASSERT_TRUE( file.open( QIODevice::ReadOnly ) );
+   QByteArray raw = file.readAll();
+   file.close();
+
+   QString decoded = QString::fromUtf8( raw );
+   ASSERT_EQ( decoded.toUtf8(), raw ) << "the file is not valid UTF-8";
+
+   QVector< uint > codes = decoded.toUcs4();
+
+   for ( int ii = 0; ii < codes.size(); ii++ )
+   {
+      uint code = codes[ ii ];
+      bool printable = code == 0x09  ||  code == 0x0a  ||  code == 0x0d  ||
+                       ( code >= 0x20  &&  code <= 0x7e )  ||  code == 0x85  ||
+                       ( code >= 0xa0  &&  code <= 0xd7ff )  ||
+                       ( code >= 0xe000  &&  code <= 0xfffd )  ||
+                       ( code >= 0x10000  &&  code <= 0x10ffff );
+      EXPECT_TRUE( printable ) << "code point " << code << " at " << ii;
+   }
+
+   US_DataPubManifest back;
+   ASSERT_TRUE( back.read( path, error ) ) << error.toStdString();
+   EXPECT_EQ( back.comment, text );
+   EXPECT_EQ( back.section( US_DataPub::Project ).value( 0 ).name, text );
+   EXPECT_EQ( back.toYaml(), yaml );
+
+   // A real YAML reader, when there is one, reads the same text back
+   QProcess python;
+   QString  script =
+      "import sys, yaml\n"
+      "d = yaml.safe_load(open(sys.argv[1], encoding='utf-8'))\n"
+      "sys.stdout.write(d['comment'].encode('utf-16-le',"
+      " 'surrogatepass').hex())\n";
+   python.start( "python3", QStringList() << "-I" << "-c" << script << path );
+
+   if ( ! python.waitForFinished( 30000 )  ||
+        python.exitStatus() != QProcess::NormalExit )
+      GTEST_SKIP() << "no python3 to read the manifest with";
+
+   if ( python.exitCode() != 0  &&
+        python.readAllStandardError().contains( "No module named" ) )
+      GTEST_SKIP() << "python3 has no yaml module";
+
+   ASSERT_EQ( python.exitCode(), 0 )
+      << python.readAllStandardError().toStdString();
+
+   QByteArray utf16;                            // little-endian
+
+   for ( int ii = 0; ii < text.size(); ii++ )
+   {
+      ushort unit = text.at( ii ).unicode();
+      utf16.append( char( unit & 0xff ) );
+      utf16.append( char( unit >> 8 ) );
+   }
+
+   EXPECT_EQ( python.readAllStandardOutput(), utf16.toHex() );
+}
+
 // A NUL in the file does not end what is read: the text after it is still
 // parsed (and here refused), not silently dropped
 TEST( DataPubManifest, ANulInTheFileDoesNotEndIt )

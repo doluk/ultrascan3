@@ -112,7 +112,7 @@ two installations only arrive at the same GUID for the same record:
 | Record                                | Derived from                                   |
 |---------------------------------------|------------------------------------------------|
 | time state                            | `timeState:<experimentGUID>`                   |
-| rotor calibration without a GUID      | `rotorCalibration:<rotorGUID>:<calibrationID>:<coeff1>:<coeff2>:<yyyy-MM-dd>` (coefficients with six significant digits, `'e'`, 5) |
+| rotor calibration without a GUID      | `rotorCalibration:<rotorGUID>:<calibrationID>:<coeff1>:<coeff2>` (coefficients with six significant digits, `'e'`, 5) |
 | centerpiece without a GUID            | `centerpiece:<serial>:<name>:<material>:<channels>:<shape>:<maxRPM>:<angle>:<width>` followed by `:<pathlen>:<bottom>` for each row (numbers with 17 significant digits) |
 
 "Without a GUID" includes a GUID column that holds something other than a
@@ -120,11 +120,15 @@ GUID. A calibration's identity only uses what its database record and its
 local copy agree on, so that it is the same whichever the export reads: the
 local file keeps six digits of each coefficient (and both are read as floats),
 and the database does not return the calibration experiment's GUID, which is
-therefore not part of it. The date is written with ASCII digits whatever the
-locale (Qt 5 formats dates with the system locale). For example the
-calibration 3 of rotor `44444444-4444-4444-4444-444444444444` with
-coefficients `1.25e-5` and `3.5e-10`, dated 2024-01-01, is always
-`fb9d594e-cff1-5bab-9ed1-1e961d368e16`.
+therefore not part of it. Nor is the date: the database's is when the row was
+last written, the local file's when it was copied, so the two sources of the
+same calibration would disagree on it. Leaving it out costs no uniqueness that
+matters: within one installation the ID alone tells calibrations apart, and
+across installations two records only share a GUID when they name the same
+rotor and ID and agree on both coefficients to six digits — the same
+measurement, copied. For example the calibration 3 of rotor
+`44444444-4444-4444-4444-444444444444` with coefficients `1.25e-5` and
+`3.5e-10` is always `116899ce-6150-5f54-bdf6-795320a03ae9`, whatever its date.
 
 Bundles written before these rules derived the two from other fields; an
 import of an older bundle therefore does not recognise the same calibration
@@ -396,8 +400,11 @@ exported run whose channels it fills (`experimentGUID`, `experimentGUID_2`,
 
 Every value is written as a double-quoted YAML scalar. `\`, `"`, newline,
 carriage return and tab are escaped as `\\`, `\"`, `\n`, `\r` and `\t`; every
-other control character (C0, DEL, C1) and the Unicode line and paragraph
-separators as `\uXXXX`. A description of any kind — non-ASCII, quoted, over
+other control character (C0, DEL, C1), the Unicode line and paragraph
+separators, U+FFFE and U+FFFF, every other noncharacter (U+FDD0–U+FDEF and the
+last two code points of each plane) and a surrogate without its pair as
+`\uXXXX`, or `\UXXXXXXXX` beyond the first plane. Everything else is written
+as UTF-8, so the file holds only what YAML calls printable. A description of any kind — non-ASCII, quoted, over
 several lines, with a NUL in it — therefore reads back as it was written; an
 export reads the manifest it wrote back and refuses to pack one that does
 not.

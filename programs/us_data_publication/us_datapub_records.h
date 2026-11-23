@@ -61,17 +61,20 @@ class US_DataPubRecords
 
           Its own GUID, when that is one (US_DataPub::guidIsUsable()); an
           old calibration without a usable one gets a GUID derived from
-          what it is -- its rotor's GUID, its ID, both coefficients and its
-          date -- so exporting it twice gives the same GUID, and two
-          installations only arrive at the same GUID for the same
-          calibration, not for two that happen to share an ID.
+          what it is -- its rotor's GUID, its ID and both coefficients --
+          so exporting it twice gives the same GUID, and two installations
+          only arrive at the same GUID for the same calibration, not for
+          two that happen to share an ID.
 
           Only what a database record and its local copy agree on goes into
           it, so that the same calibration gets the same GUID whether it is
           exported from the database or from disk: the coefficients to six
           significant digits (what the local file keeps of them; both are
-          read as floats), the date as ASCII digits, and not the GUID of the
-          calibration experiment, which the database does not return.
+          read as floats), and neither the GUID of the calibration
+          experiment, which the database does not return, nor the date,
+          which is when the row or the file was last written.  Two records
+          then share a GUID only when they name the same rotor and ID and
+          agree on both coefficients: the same measurement, copied.
           \param calibration The calibration record
       */
       static QString calibrationGuid(
