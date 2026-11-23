@@ -178,6 +178,27 @@ TEST_F( ReadDiskRunTest, RefusesADirectoryNameThatCannotBeARunId )
    EXPECT_EQ( error, QString( US_ConvertIO::invalidRunIdMessage ).arg( "not a run id" ) );
 }
 
+// A run directory named for a Windows device holds real data here, but is
+// refused before any of it is read: the run could not be carried to Windows
+TEST_F( ReadDiskRunTest, RefusesARunNamedForAWindowsDevice )
+{
+   for ( const char* name : { "COM1", "nul", "Lpt9" } )
+   {
+      SCOPED_TRACE( name );
+      const DiskRun fixture = us3test::writeDiskRun( parentDir(), name, "RA", { DatasetSpec{ 1, 'A', "280" } } );
+      ASSERT_FALSE( fixture.dir.isEmpty() );
+
+      EXPECT_EQ( read( fixture ), US_Convert::BAD_RUNID );
+      EXPECT_EQ( error, QString( US_ConvertIO::invalidRunIdMessage ).arg( name ) );
+      EXPECT_TRUE( run.rawData.isEmpty() );
+   }
+
+   // a name that only starts with one is an ordinary run
+   const DiskRun console = us3test::writeDiskRun( parentDir(), "CONSOLE", "RA", { DatasetSpec{ 1, 'A', "280" } } );
+   ASSERT_FALSE( console.dir.isEmpty() );
+   EXPECT_EQ( read( console ), US_Convert::OK ) << error.toStdString();
+}
+
 TEST_F( ReadDiskRunTest, ReportsADirectoryWithNoData )
 {
    const QString empty = parentDir() + "/empty-run/";
