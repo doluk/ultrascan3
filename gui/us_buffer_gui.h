@@ -118,7 +118,8 @@ class US_GUI_EXTERN US_BufferGuiSelect: public US_Widgets
       void accept_buffer   ( void );
       void select_buffer   ( QListWidgetItem* );
       void select_buffer   ( );
-      void read_from_disk  ( QListWidgetItem* );
+      void show_no_buffers( void );
+      bool read_from_disk( QListWidgetItem* );
       bool read_from_db( QListWidgetItem* );
       bool read_from_db( const QString& );
       void search          ( const QString& = QString() );
@@ -176,6 +177,9 @@ class US_GUI_EXTERN US_BufferGuiNew : public US_Widgets
       US_Buffer*    buffer;
       bool          cosed;
       QGridLayout*  main;
+      //! GUID of the buffer being created; kept across failed saves so a
+      //!   retry updates anything already stored instead of adding a second buffer
+      QString                             pendingGUID;
 
       QPushButton*  pb_accept;
       QPushButton*  pb_spectrum;
@@ -238,8 +242,8 @@ class US_GUI_EXTERN US_BufferGuiNew : public US_Widgets
       void spectrum_class  ( void );
       void newAccepted     ( void );
       void newCanceled     ( void );
-      void write_db        ( void );
-      void write_disk      ( void );
+      bool write_db( void );
+      bool write_disk( void );
       void update_db_disk  ( bool );
 
       void calc_visc_dent_temp ( void );
@@ -301,8 +305,8 @@ class US_GUI_EXTERN US_BufferGuiEdit : public US_Widgets
       void spectrum_class    ( void );
       void editAccepted( void );
       void editCanceled( void );
-      void write_db    ( void );
-      void write_disk  ( void );
+      bool write_db( void );
+      bool write_disk( void );
       void help( void ) { showHelp.show_help( "buffer/buffer_edit.html" ); };
       
       void change_spectrum( void );

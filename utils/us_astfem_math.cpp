@@ -21,7 +21,8 @@
 #endif
 
 //----------------------------------------------------------------------
-// Load a speed profile from the speed steps, through a private timestate
+// Templates for the private timestate directory: one under the base
+// directory, then one under the fallback when it differs; empty ones skipped
 //----------------------------------------------------------------------
 QStringList US_AstfemMath::timestate_dir_templates( const QString& base, const QString& fallback )
 {
@@ -38,6 +39,8 @@ QStringList US_AstfemMath::timestate_dir_templates( const QString& base, const Q
    return templates;
 }
 
+//----------------------------------------------------------------------
+// Load a speed profile from the speed steps, through a private timestate
 //----------------------------------------------------------------------
 int US_AstfemMath::timestate_from_speedsteps( US_SimulationParameters& simparams, US_DataIO::RawData& sim_data )
 {
@@ -2622,6 +2625,7 @@ void US_AstfemMath::initSimData( US_DataIO::RawData& simdata,
       sscan.plateau          = escan->plateau;
       sscan.delta_r          = escan->delta_r;
       sscan.interpolated     = escan->interpolated;
+      sscan.nz_stddev        = false; // a simulation has no standard deviations
 
       sscan.rvalues.fill( rvalue, nconc );
 
