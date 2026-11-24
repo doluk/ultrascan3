@@ -638,6 +638,33 @@ class US_DataPubImporter : public QObject
       //! The server did not tell its time: the local clock stands in
       bool                       clock_local;
 
+      //! \brief The target's us3_catalog_version(), asked once: 0 for a
+      //!        server without it
+      int     catalogVersion( void );
+
+      //! \brief Note something of the source a target whose procedures
+      //!        are older than version 2 cannot keep
+      void    cannotKeep( const QString& what );
+
+      //! \brief One warning naming everything cannotKeep() was told of
+      void    unkeptWarning( void );
+
+      //! \brief The NULL fields a run's manifest entry names ("nullFields":
+      //!        centrifugeProtocol, RIProfile)
+      void    nullFieldsOf( const US_DataPubEntity& entity, bool& protocol,
+                            bool& riProfile ) const;
+
+      //! \brief What cannotKeep() is told of NULL fields of a run
+      QString unkeptFields( const QString& run, bool protocol,
+                            bool riProfile ) const;
+
+      //! \brief What cannotKeep() is told of a calibration's date
+      QString unkeptDate( const QString& name, const QString& guid,
+                          const QDate& date ) const;
+
+      //! What a target older than version 2 cannot keep, for unkeptWarning()
+      QStringList                unkept;
+
       //! The target's us3_catalog_version(): 0 for a server without it,
       //! -1 before it was asked
       int                        catalog_version;

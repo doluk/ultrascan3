@@ -70,6 +70,8 @@
  * - information_schema.ROUTINES lists the routines of `routines`, with the
  *   definition a test gave (empty: NULL, as anyone but the definer and an
  *   administrator reads it).
+ * - clear_experiment_fields and set_rotor_calibration_date exist from
+ *   catalogVersion 2 on, with the procedures' permission rules
  * - SELECT us3_catalog_version() answers catalogVersion; 0 is a server
  *   without the function, where the statement fails (1305).
  * - Experiment 1 is "the magic ID that anyone can use temporarily"
@@ -181,6 +183,12 @@ class DataPubFakeDb
 
             // "procedure:id" -> the bytes uploaded
             QMap< QString, QByteArray > blobs;
+
+            // Experiment ID -> the fields clear_experiment_fields set to
+            // NULL; calibration ID -> the date set_rotor_calibration_date
+            // gave it
+            QMap< int, QStringList > nulled;
+            QMap< int, QString >     calibrationDates;
       };
 
       State state;
@@ -958,6 +966,48 @@ class DataPubFakeDb
             }
             else
                status = IUS_DB2::NOROWS;
+
+            return;
+         }
+
+         // The procedures of us3_catalog_version() 2; a server older than
+         // that has none of them
+         if ( proc == "clear_experiment_fields"  ||
+              proc == "set_rotor_calibration_date" )
+         {
+            int id = q.value( 1 ).toInt();
+
+            if ( catalogVersion < 2 )
+               status = IUS_DB2::DBERROR;
+
+            else if ( proc == "clear_experiment_fields" )
+            {
+               if ( ! state.experiments.contains( id ) )
+                  status = IUS_DB2::NO_EXPERIMENT;
+               else if ( ! admin  &&  state.experiments[ id ].owner != person )
+                  status = IUS_DB2::NOTPERMITTED;
+               else
+               {
+                  if ( q.value( 2 ) != "0" )
+                     state.nulled[ id ] << "centrifugeProtocol";
+                  if ( q.value( 3 ) != "0" )
+                     state.nulled[ id ] << "RIProfile";
+                  status = IUS_DB2::OK;
+               }
+            }
+
+            else if ( level() < 3 )
+               status = IUS_DB2::NOTPERMITTED;
+
+            else if ( ! state.registry.value( "calibration" ).values()
+                         .contains( id ) )
+               status = IUS_DB2::NO_CALIB;
+
+            else
+            {
+               state.calibrationDates.insert( id, q.value( 2 ) );
+               status = IUS_DB2::OK;
+            }
 
             return;
          }

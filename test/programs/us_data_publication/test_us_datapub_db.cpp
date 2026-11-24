@@ -1374,6 +1374,104 @@ TEST_F( DataPubDbRules, ACalibrationIsAddedByAnAdministratorOnly )
    EXPECT_EQ( stored.calibrationExperimentID, -1 );
 }
 
+/* A run whose centrifugeProtocol and RIProfile were NULL in the source
+   (the bundle says so in "nullFields") and a calibration's date: a target
+   whose procedures are of us3_catalog_version() 2 or later keeps them; an
+   older one stores '' and the day of the import, and the import and its dry
+   run say so in one warning. */
+TEST_F( DataPubDbRules, NullFieldsAndTheCalibrationDateSurviveTheDatabase )
+{
+   QString rotor = targetRotorGUID();
+   ASSERT_FALSE( rotor.isEmpty() ) << "the target database has no rotor";
+
+   if ( ! loginAs( qEnvironmentVariable( "US3_TEST_DB_ADMIN_GUID" ),
+                   qEnvironmentVariable( "US3_TEST_DB_ADMIN_PW" ),
+                   qEnvironmentVariable( "US3_TEST_DB_PERSON_ID" ).toInt() ) )
+      GTEST_SKIP() << "no administrator login configured";
+
+   rebuildKeepingChemistry();
+   calibrateTargetRotor( rotor );
+
+   QString bundle = recraft( exportStore( "nulls" ),
+                             []( US_DataPubManifest& m, const QString& )
+   {
+      QList< US_DataPubEntity > runs = m.section( US_DataPub::Experiment );
+      ASSERT_EQ( runs.size(), 1 );
+      runs[ 0 ].attrs.insert( "nullFields", "centrifugeProtocol RIProfile" );
+      m.setSection( US_DataPub::Experiment, runs );
+   } );
+
+   db->rawQuery( "SELECT us3_catalog_version()" );
+   int version = db->next() ? db->value( 0 ).toInt() : 0;
+
+   QString error;
+   QString expID;
+   QString calID;
+
+   for ( int dry = 1; dry >= 0; dry-- )
+   {
+      US_DataPubImporter importer;
+      ASSERT_TRUE( importer.inspect( bundle, error ) ) << error.toStdString();
+      ASSERT_TRUE( importer.runImport( options( dry == 1 ), error ) )
+         << error.toStdString() << "\n"
+         << importer.log().join( "\n" ).toStdString();
+
+      QStringList about;
+
+      for ( const QString& text : importer.warnings() )
+         if ( text.contains( "us3_catalog_version()" ) )  about << text;
+
+      if ( version >= 2 )
+      {
+         EXPECT_TRUE( about.isEmpty() ) << about.join( "\n" ).toStdString();
+      }
+
+      else
+      {
+         ASSERT_EQ( about.size(), 1 );
+         EXPECT_TRUE( about[ 0 ].contains( "centrifugeProtocol" )  &&
+                      about[ 0 ].contains( "2024-01-01" ) )
+            << about[ 0 ].toStdString();
+      }
+
+      if ( dry == 1 )  continue;
+
+      const US_DataPubImporter::Result* run =
+            resultOf( importer.results(), US_DataPub::Experiment );
+      const US_DataPubImporter::Result* cal =
+            resultOf( importer.results(), US_DataPub::RotorCalibration );
+      ASSERT_NE( run, nullptr );
+      ASSERT_NE( cal, nullptr );
+      expID = run->targetID;
+      calID = cal->targetID;
+   }
+
+   ASSERT_GT( expID.toInt(), 0 );
+   ASSERT_GT( calID.toInt(), 0 );
+
+   db->rawQuery( "SELECT centrifugeProtocol IS NULL, RIProfile IS NULL"
+                 " FROM experiment WHERE experimentID = " + expID );
+   ASSERT_TRUE( db->next() );
+   bool kept = ( version >= 2 );
+   EXPECT_EQ( db->value( 0 ).toInt() == 1, kept );
+   EXPECT_EQ( db->value( 1 ).toInt() == 1, kept );
+
+   db->rawQuery( "SELECT DATE( dateUpdated ) FROM rotorCalibration"
+                 " WHERE rotorCalibrationID = " + calID );
+   ASSERT_TRUE( db->next() );
+   QDate date = db->value( 0 ).toDate();
+
+   if ( kept )
+   {
+      EXPECT_EQ( date, QDate( 2024, 1, 1 ) );
+   }
+
+   else
+   {
+      EXPECT_NE( date, QDate( 2024, 1, 1 ) );
+   }
+}
+
 /* A second investigator imports a bundle whose buffer and analyte the first
    one's import put in the database.  The analyte is not theirs to use (the
    server refuses it in new_solutionAnalyte, half way through the import)
@@ -4097,6 +4195,93 @@ TEST_F( DataPubMockRules, EveryTextALatin1TargetRefusesIsFoundUpFront )
    ASSERT_TRUE ( dry.inspect( bundlePath, error ) );
    EXPECT_FALSE( dry.runImport( options, error ) );
    EXPECT_TRUE ( error.contains( "U+0080" ) ) << error.toStdString();
+}
+
+/* The source's NULL centrifugeProtocol and RIProfile (named by the run's
+   "nullFields") and its calibration's date: a target with the procedures
+   of us3_catalog_version() 2 keeps them (clear_experiment_fields,
+   set_rotor_calibration_date, inside the transaction); an older one cannot,
+   and the import -- and the dry run -- says so in one warning naming what
+   is lost. */
+TEST_F( DataPubMockRules, NullFieldsAndTheCalibrationDateNeedVersionTwo )
+{
+   craft( []( US_DataPubManifest& m, const QString& )
+   {
+      QList< US_DataPubEntity > runs = m.section( US_DataPub::Experiment );
+      ASSERT_EQ( runs.size(), 1 );
+      runs[ 0 ].attrs.insert( "nullFields", "centrifugeProtocol RIProfile" );
+      m.setSection( US_DataPub::Experiment, runs );
+   } );
+
+   US_DataPubImporter probe;
+   QString            error;
+   ASSERT_TRUE( probe.inspect( bundlePath, error ) );
+   QList< US_DataPubEntity > cals =
+         probe.manifest().section( US_DataPub::RotorCalibration );
+   ASSERT_EQ( cals.size(), 1 );
+
+   for ( int version : { 1, 2 } )
+   {
+      SCOPED_TRACE( version );
+      DataPubFakeDb target;
+      target.addHardware( "DEMO-1" );
+      target.registry[ "rotor" ].insert( cals[ 0 ].attrs.value( "rotorGUID" ),
+                                         3 );
+      target.admin          = true;
+      target.catalogVersion = version;
+
+      for ( int dry = 1; dry >= 0; dry-- )
+      {
+         US_DataPubImporter          importer;
+         US_DataPubImporter::Options options = dbOptions();
+         options.dryRun = ( dry == 1 );
+         importer.setDatabase( target.db() );
+         ASSERT_TRUE( importer.inspect( bundlePath, error ) );
+         ASSERT_TRUE( importer.runImport( options, error ) )
+            << error.toStdString();
+
+         QStringList about;
+
+         for ( const QString& text : importer.warnings() )
+            if ( text.contains( "us3_catalog_version()" ) )  about << text;
+
+         if ( version >= 2 )
+         {
+            EXPECT_TRUE( about.isEmpty() ) << about.join( "\n" ).toStdString();
+            continue;
+         }
+
+         ASSERT_EQ( about.size(), 1 ) << importer.warnings().join( "\n" )
+                                          .toStdString();
+         EXPECT_TRUE( about[ 0 ].contains( "centrifugeProtocol and RIProfile" )
+                      &&  about[ 0 ].contains( "2024-01-01" )
+                      &&  about[ 0 ].contains( runID ) )
+            << about[ 0 ].toStdString();
+      }
+
+      QList< QStringList > clears = target.callsOf( "clear_experiment_fields" );
+      QList< QStringList > dates  = target.callsOf( "set_rotor_calibration_date" );
+
+      if ( version < 2 )
+      {
+         EXPECT_TRUE( clears.isEmpty() );
+         EXPECT_TRUE( dates .isEmpty() );
+         continue;
+      }
+
+      int expID = target.registry[ "experiment" ].value( probe.manifest()
+                     .section( US_DataPub::Experiment )[ 0 ].guid );
+      int calID = target.registry[ "calibration" ].value( cals[ 0 ].guid );
+
+      ASSERT_EQ( clears.size(), 1 );
+      EXPECT_EQ( clears[ 0 ].value( 1 ), QString::number( expID ) );
+      EXPECT_EQ( target.state.nulled.value( expID ),
+                 QStringList() << "centrifugeProtocol" << "RIProfile" );
+      ASSERT_EQ( dates.size(), 1 );
+      EXPECT_EQ( target.state.calibrationDates.value( calID ),
+                 QString( "2024-01-01 00:00:00" ) );
+      EXPECT_EQ( target.commits, 1 );
+   }
 }
 
 // A number that is not finite is refused by the preflight of a database

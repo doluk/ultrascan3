@@ -995,6 +995,7 @@ without them as it always did:
 | `comment` | edit | `editedData.comment` | empty (as `us_edit` stores an edit) |
 | `label`, `comment` | raw data | `rawData.label`, `rawData.comment` | the run's label and comment, as `us_convert` writes raw data |
 | `spectrum` (may be empty) | analyte | the analyte row's `spectrum` column | its first extinction (or refraction, fluorescence) point, as `US_Analyte` writes it |
+| `nullFields` (space-separated: `centrifugeProtocol`, `RIProfile`) | experiment | those columns of the experiment row set to NULL with `clear_experiment_fields` (see below) | `''`, as `new_experiment` stores an empty value |
 
 An export from a database writes them from the source's rows
 (`get_buffer_info`'s `private`, `get_rawData`'s `label` and `comment`,
@@ -1005,6 +1006,20 @@ disk leaves the attributes out.
 The raw data rows of a run are written in one call (`US_ConvertIO`), which
 gives all of them one label and comment: the run's raw data records have to
 agree on theirs, or they are written with the run's, and the log says so.
+
+Two things of the source no procedure the LIMS calls can write: a NULL
+`centrifugeProtocol` or `RIProfile` of an experiment (`new_experiment` and
+`update_experiment` store `''`) and a calibration's date
+(`add_rotor_calibration` stores the time of the call). The procedures of
+`us3_catalog_version()` 2 add `clear_experiment_fields` and
+`set_rotor_calibration_date` for them, and the import calls them in its
+transaction right after the record is written, when `SELECT
+us3_catalog_version()` answers 2 or more. A target with older procedures keeps
+`''` and the day of the import; the import — and its dry run — then gives one
+warning that names every run and calibration concerned and says to load the
+updated procedures. A disk store keeps the calibration's date in its file, and
+has no NULL to keep: the run's XML holds the bundle's (empty) protocol and the
+RI profile file is there or not.
 
 A **dry run** reads the target and decides everything, but opens no
 transaction and writes nothing — not even the output directory. Like the
@@ -1023,7 +1038,7 @@ opens, the rules the server would otherwise enforce only on the writes:
 
 | Rule of the server | What the import does |
 |---|---|
-| `add_rotor_calibration` takes an administrator (user level 3) | A calibration the person logged in may not add is left out with a warning (`--strict-hardware` refuses it); an administrator's import records "no calibration experiment" as `-1`. The procedure dates the row itself (`NOW()`): the source's date is not kept |
+| `add_rotor_calibration` takes an administrator (user level 3) | A calibration the person logged in may not add is left out with a warning (`--strict-hardware` refuses it); an administrator's import records "no calibration experiment" as `-1`. The procedure dates the row itself (`NOW()`); the import then sets the source's date (the calibration payload's `lastUpdated`, at midnight) with `set_rotor_calibration_date` (see below) |
 | `create_buffer_component` takes user level 2 | A buffer component the target lacks is refused below that level |
 | `new_solutionAnalyte` takes the investigator's own analyte (`analytePerson`), or an administrator | Another investigator's analyte of the bundle's GUID is not reused: the import makes a copy under a GUID of its own. One the bundle does not carry is refused |
 | (none: no procedure checks it) | Another investigator's *private* buffer is not linked either: the import makes a copy. A public one, or the investigator's own, is reused |

@@ -74,6 +74,7 @@ US_DataPubImporter::US_DataPubImporter( QObject* parent ) : QObject( parent )
    user_level  = -1;
    catalog_version = -1;
    clock_local     = false;
+   unkept.clear();
 }
 
 // ------------------------------------------------------ the import tab state
@@ -1662,20 +1663,94 @@ bool US_DataPubImporter::checkServerRules( QString& error )
    have run for years inserts with COUNT(*) + 1; the updated one counts
    nothing.  Asked once per import.
 */
+/* The target's us3_catalog_version(): 0 for a server without it (which
+   refuses the statement: no row), asked once per import.
+*/
+int US_DataPubImporter::catalogVersion( void )
+{
+   if ( dbase == nullptr )  return 0;
+
+   if ( catalog_version < 0 )
+   {
+      // rawQuery() does not set lastErrno(): a failed query has no row
+      dbase->rawQuery( "SELECT us3_catalog_version()" );
+
+      catalog_version = dbase->next() ? qMax( 0, dbase->value( 0 ).toInt() )
+                                      : 0;
+   }
+
+   return catalog_version;
+}
+
+/* What a target whose procedures are older than us3_catalog_version() 2
+   cannot keep of the source -- a NULL centrifugeProtocol or RIProfile, a
+   calibration's date -- is noted as it comes up, and said once at the end
+   (unkeptWarning()).
+*/
+void US_DataPubImporter::cannotKeep( const QString& what )
+{
+   if ( ! unkept.contains( what ) )  unkept << what;
+}
+
+void US_DataPubImporter::unkeptWarning( void )
+{
+   if ( unkept.isEmpty() )  return;
+
+   QString text = tr( "The target database's procedures are older than"
+                      " us3_catalog_version() 2 (it answers %1), which add"
+                      " clear_experiment_fields and"
+                      " set_rotor_calibration_date, so the import %2 not keep:"
+                      " %3.  Load the updated procedures (us3_sql) into the"
+                      " target to keep them" )
+                  .arg( catalogVersion() )
+                  .arg( opts.dryRun ? tr( "would" ) : tr( "did" ) )
+                  .arg( unkept.join( "; " ) );
+
+   warnlist << text;
+   note( tr( "Warning: " ) + text );
+   unkept.clear();
+}
+
+/* The NULL fields of a run's experiment row, which a bundle names in the
+   experiment's "nullFields" (space-separated column names); new_experiment
+   stores '' for them.
+*/
+void US_DataPubImporter::nullFieldsOf( const US_DataPubEntity& entity,
+                                       bool& protocol, bool& riProfile ) const
+{
+   QStringList nulls = entity.attrs.value( "nullFields" )
+                       .split( ' ', Qt::SkipEmptyParts );
+
+   protocol  = nulls.contains( "centrifugeProtocol", Qt::CaseInsensitive );
+   riProfile = nulls.contains( "RIProfile",          Qt::CaseInsensitive );
+}
+
+QString US_DataPubImporter::unkeptFields( const QString& run, bool protocol,
+                                          bool riProfile ) const
+{
+   QStringList fields;
+
+   if ( protocol  )  fields << "centrifugeProtocol";
+   if ( riProfile )  fields << "RIProfile";
+
+   return tr( "the NULL %1 of run %2 (stored as '')" )
+          .arg( fields.join( tr( " and " ) ) ).arg( run );
+}
+
+QString US_DataPubImporter::unkeptDate( const QString& name,
+                                        const QString& guid,
+                                        const QDate& date ) const
+{
+   return tr( "the date %1 of rotor calibration %2 (dated the day of the"
+              " import)" ).arg( date.toString( "yyyy-MM-dd" ) )
+          .arg( calibration_text( name, guid ) );
+}
+
 bool US_DataPubImporter::componentIdsMayBeCounted( void )
 {
    if ( dbase == nullptr )  return true;
 
-   if ( catalog_version < 0 )
-   {
-      dbase->rawQuery( "SELECT us3_catalog_version()" );
-
-      catalog_version = ( dbase->lastErrno() == IUS_DB2::OK  &&
-                          dbase->next() )
-                        ? qMax( 0, dbase->value( 0 ).toInt() ) : 0;
-   }
-
-   if ( catalog_version >= 1 )  return false;
+   if ( catalogVersion() >= 1 )  return false;
 
    dbase->rawQuery(
       "SELECT ROUTINE_DEFINITION FROM information_schema.ROUTINES"
@@ -4020,6 +4095,7 @@ bool US_DataPubImporter::runImport( const Options& options, QString& error )
    user_level = -1;
    catalog_version = -1;
    clock_local     = false;
+   unkept.clear();
    fresh_guids.clear();
    cal_refused.clear();
    shared_ok.clear();
@@ -4198,6 +4274,8 @@ bool US_DataPubImporter::runImport( const Options& options, QString& error )
    }
 
    if ( ! sequenceDone  &&  ! writeSequence() )  return false;
+
+   unkeptWarning();
 
    if ( ! commitWrite( error ) )
    {
@@ -7636,6 +7714,36 @@ bool US_DataPubImporter::createExperimentDb( const US_DataPubEntity& entity,
 
    exper.expID = expID;
 
+   // A NULL centrifugeProtocol or RIProfile of the source, which
+   // new_experiment stores as ''
+   bool nullProtocol  = false;
+   bool nullRiProfile = false;
+   nullFieldsOf( entity, nullProtocol, nullRiProfile );
+
+   if ( nullProtocol  ||  nullRiProfile )
+   {
+      if ( catalogVersion() >= 2 )
+      {
+         QStringList clear;
+         clear << "clear_experiment_fields" << QString::number( expID )
+               << QString( nullProtocol  ? "1" : "0" )
+               << QString( nullRiProfile ? "1" : "0" );
+
+         int cstat = dbase->statusQuery( clear );
+
+         if ( cstat != IUS_DB2::OK )
+         {
+            error = tr( "The NULL fields of run %1 could not be kept (status"
+                        " %2): %3" ).arg( name ).arg( cstat )
+                    .arg( dbase->lastError() );
+            return false;
+         }
+      }
+
+      else
+         cannotKeep( unkeptFields( name, nullProtocol, nullRiProfile ) );
+   }
+
    for ( int ii = 0; ii < run.speedSteps.size(); ii++ )
    {
       int sstat = US_SimulationParameters::speedstepToDB( dbase, expID,
@@ -8012,6 +8120,12 @@ bool US_DataPubImporter::checkDryDb( const US_DataPubEntity& entity,
                omitted = true;
             }
 
+            // Written, it would be dated the day of the import
+            else if ( calibration.lastUpdated.isValid()  &&
+                      catalogVersion() < 2 )
+               cannotKeep( unkeptDate( name, entity.guid,
+                                       calibration.lastUpdated ) );
+
             return true;
          }
 
@@ -8115,7 +8229,18 @@ bool US_DataPubImporter::checkDryDb( const US_DataPubEntity& entity,
          QByteArray RIxml;
          int        projID = 0;
 
-         return prepareRunDb( entity, name, RIxml, projID, error );
+         if ( ! prepareRunDb( entity, name, RIxml, projID, error ) )
+            return false;
+
+         // What the procedures cannot keep, as the import would find it
+         bool nullProtocol  = false;
+         bool nullRiProfile = false;
+         nullFieldsOf( entity, nullProtocol, nullRiProfile );
+
+         if ( ( nullProtocol  ||  nullRiProfile )  &&  catalogVersion() < 2 )
+            cannotKeep( unkeptFields( name, nullProtocol, nullRiProfile ) );
+
+         return true;
       }
 
       case US_DataPub::RawData:
@@ -8288,6 +8413,34 @@ bool US_DataPubImporter::createDb( const US_DataPubEntity& entity,
                     .arg( calibration_text( name, entity.guid ) )
                     .arg( dbase->lastError() );
             return false;
+         }
+
+         // add_rotor_calibration dates the row with the time of the call
+         if ( calibration.lastUpdated.isValid() )
+         {
+            if ( catalogVersion() >= 2 )
+            {
+               QStringList when;
+               when << "set_rotor_calibration_date"
+                    << QString::number( calibration.ID )
+                    << calibration.lastUpdated.toString( "yyyy-MM-dd" )
+                       + " 00:00:00";
+
+               int dstat = dbase->statusQuery( when );
+
+               if ( dstat != IUS_DB2::OK )
+               {
+                  error = tr( "The date of rotor calibration %1 could not be"
+                              " kept (status %2): %3" )
+                          .arg( calibration_text( name, entity.guid ) )
+                          .arg( dstat ).arg( dbase->lastError() );
+                  return false;
+               }
+            }
+
+            else
+               cannotKeep( unkeptDate( name, entity.guid,
+                                       calibration.lastUpdated ) );
          }
 
          newID = QString::number( calibration.ID );
