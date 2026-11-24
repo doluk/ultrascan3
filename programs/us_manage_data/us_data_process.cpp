@@ -792,7 +792,7 @@ US_DataProcess::EditFailure US_DataProcess::failure_kind(
                error.contains( QString( "error %1:" ).arg( code ) ) );
    };
 
-   if ( US_DataModel::connection_lost( serverErrno ) )
+   if ( US_DataModel::connection_lost( serverErrno )  ||  ! db->isConnected() )
    {
       conn_lost = true;
       return EDIT_LOST;
@@ -859,6 +859,15 @@ QString US_DataProcess::read_back_advice( void ) const
    return tr( "Scan again before acting on these records." );
 }
 
+// Whether the connection to the database is gone now: the last error says
+// so, or the connection does
+bool US_DataProcess::lost_now( void )
+{
+   return db != NULL  &&
+          ( US_DataModel::connection_lost( db->lastServerErrno() )  ||
+            ! db->isConnected() );
+}
+
 // What to do once the connection to the database is lost
 QString US_DataProcess::lost_text( void ) const
 {
@@ -873,7 +882,7 @@ int US_DataProcess::note_lost( int stat )
 {
    if ( stat == 0  ||  stat == IN_SYNC  ||  db == NULL )   return stat;
 
-   if ( US_DataModel::connection_lost( db->lastServerErrno() ) )
+   if ( lost_now() )
       conn_lost = true;
 
    if ( conn_lost  &&  ! errMsg.contains( lost_text() ) )
@@ -897,7 +906,7 @@ int US_DataProcess::db_has( const QString& proc, int id, int gone )
    if ( status == gone  ||  status == IUS_DB2::NOROWS )
       return 0;
 
-   if ( US_DataModel::connection_lost( db->lastServerErrno() ) )
+   if ( lost_now() )
       conn_lost = true;
 
    return -1;
@@ -1041,7 +1050,7 @@ int US_DataProcess::written_record_id( const QString& proc,
    }
 
    conn_lost = conn_lost  ||
-               US_DataModel::connection_lost( db->lastServerErrno() );
+               lost_now();
    errMsg = tr( "%1 was written to the database, but its database ID could"
                 " not be read (%2: %3).  %4" )
             .arg( cdesc.label ).arg( proc ).arg( db->lastError() )

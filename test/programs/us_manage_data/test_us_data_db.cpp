@@ -13,8 +13,9 @@
 // test_us_data_db_live.cpp checks the parts that matter against a real
 // one): a procedure that is missing or may not be run fails the CALL with
 // server error 1305 or 1370, a lost connection with a client error (2013,
-// or 2055 as a broken TLS connection reports it) -- and stays lost, as
-// US_DB2 does not connect again: every call after it fails with 2006 --
+// or 2026 or 2055 as a cut TLS connection reports it) -- and stays lost, as
+// US_DB2 does not connect again: isConnected() says so, and every call
+// after it fails with 2006 --
 // a lock wait with 1205, and "no rows" is a procedure status with no server
 // error at all -- or OK with an empty set, for the procedures that answer
 // so.  The investigator is an ordinary user: the listings hold their own
@@ -199,7 +200,8 @@ namespace
 
          void wire( NiceMock< US_DB2_Mock >& db )
          {
-            ON_CALL( db, isConnected() ).WillByDefault( Return( true ) );
+            ON_CALL( db, isConnected() )
+               .WillByDefault( Invoke( [ this ]() { return ! lost; } ) );
             ON_CALL( db, query( An< const QStringList& >() ) )
                .WillByDefault( Invoke( [ this ]( const QStringList& q ) { call( q ); } ) );
             ON_CALL( db, next() )
@@ -2552,12 +2554,12 @@ TEST_F( TestUSDataDb, AModelIsDownloadedAsUtf8 )
 
 // A side that cannot read an experiment is not merged as if it held
 // nothing: the local records would read as local only.  A lost connection
-// -- also as a broken TLS connection reports it (2055) -- is not tried
+// -- also as a cut TLS connection reports it (2026, 2055) -- is not tried
 // again, since US_DB2 does not connect again, and the message says what
 // will help: opening the experiment later fails the same way
 TEST_F( TestUSDataDb, AnExperimentADatabaseReadFailedOnIsNotShownAsLocal )
 {
-   for ( int lostErrno : { 2013, 2055 } )
+   for ( int lostErrno : { 2013, 2026, 2055 } )
    {
       SCOPED_TRACE( lostErrno );
       TearDown();
@@ -2566,6 +2568,7 @@ TEST_F( TestUSDataDb, AnExperimentADatabaseReadFailedOnIsNotShownAsLocal )
 
       server.failing << "get_rawData_by_experiment";
       server.lostErrno = lostErrno;
+      EXPECT_TRUE( US_DataModel::connection_lost( lostErrno ) );   // by itself
 
       US_DataModel model;
       prepare( model, runA );
@@ -3659,4 +3662,46 @@ TEST_F( TestUSDataDb, AModelWithCrlfLineEndsInBothPlacesIsNotUploaded )
    EXPECT_EQ( win.proc.record_upload( row ), (int)US_DataProcess::IN_SYNC )
       << win.proc.lastError().toStdString();
    EXPECT_EQ( server.count( "update_model" ), 0 );
+}
+
+// ------------------------------------------------------------ investigator
+
+// The investigator changed after the experiments were listed: the database
+// catalog drops what it read for the previous one, and nothing of it is
+// merged or compared; the model says so, and the scan stops
+TEST_F( TestUSDataDb, AListingDroppedForAnotherInvestigatorIsNotShown )
+{
+   US_DataModel model;
+   prepare( model );
+
+   int dropped = 0;
+   QObject::connect( &model, &US_DataModel::listingDropped, [ & ]() { dropped++; } );
+   QMetaObject::Connection change =
+      QObject::connect( &model, &US_DataModel::runsListed,
+                        [ & ]() { US_Settings::set_us_inv_ID( kOther ); } );
+
+   model.scan_data();
+   QObject::disconnect( change );
+
+   EXPECT_EQ( dropped, 1 );
+   EXPECT_TRUE( model.listing_dropped() );
+   EXPECT_TRUE( model.scan_stopped() );
+   for ( int rr = 0; rr < model.recCount(); rr++ )    // no record merged
+      if ( model.run_of_row( rr ) >= 0  &&
+           model.row_datadesc( rr ).recType > US_DataModel::EXPERIMENT )
+      {
+         EXPECT_EQ( model.row_datadesc( rr ).recState & US_DataModel::REC_DB, 0 ) << rr;
+      }
+   for ( int ii = 0; ii < model.runCount(); ii++ )
+   {
+      EXPECT_FALSE( model.scan_run( ii ) );
+      EXPECT_FALSE( model.run_entry( ii ).loaded );
+   }
+   EXPECT_FALSE( model.pump_once() );
+
+   // a new scan lists the new investigator's experiments
+   US_Settings::set_us_inv_ID( kInv );
+   model.scan_data();
+   EXPECT_FALSE( model.listing_dropped() );
+   EXPECT_NE( stateOf( model, editG ) & US_DataModel::REC_DB, 0 );
 }

@@ -317,9 +317,14 @@ class US_DataModel : public QObject
         void removed_from_db( int recType, int recordID );
 
         //! \brief Whether a client error number says the connection to
-        //!        the database server is gone (2006, 2013, 2055): the
-        //!        window does not connect again
+        //!        the database server is gone, as US_DB2::isConnectionLoss
+        //!        has it (2006, 2013, 2026 -- a TLS connection that was cut
+        //!        --, 2055, ...): the window does not connect again
         static bool connection_lost( int serverErrno );
+
+        //! \brief True once the database listing was dropped since the
+        //!        last scan; see \ref listingDropped
+        bool listing_dropped( void ) const;
 
         //! \brief Read the first layer: one record per experiment
         //!
@@ -710,6 +715,17 @@ class US_DataModel : public QObject
         //! \param index The position of the experiment
         void runReloaded( int index );
 
+        /*! \brief The database listing was dropped: the investigator was
+                   changed since it was read (US_DataCatalog::listingDropped)
+
+            Everything shown of the database was read for the previous
+            investigator, and the experiments' positions in the listing mean
+            nothing now: the scan is stopped, nothing more is read or merged
+            from it, and whoever shows the tree clears it.  A new scan lists
+            the new investigator's experiments.
+        */
+        void listingDropped( void );
+
     private:
         IUS_DB2*      db;               //!< Pointer to opened DB connection
         US_DataCatalog* cat_db;         //!< Catalog of the database records
@@ -723,6 +739,7 @@ class US_DataModel : public QObject
         bool          use_db;           //!< True when the database is scanned
         bool          use_lo;           //!< True when the local disk is scanned
         bool          db_failed;        //!< The database could not be listed
+        bool          db_dropped = false; //!< The listing was dropped
         bool          scanning;         //!< True while scan_data runs
         bool          stop_req;         //!< stop_scan() was called
         bool          stopped;          //!< The last scan was stopped
@@ -815,6 +832,9 @@ class US_DataModel : public QObject
         //! \brief The database catalog changed an experiment it had read
         //! \param dbIndex The experiment's position in that catalog
         void catalog_run_changed( int dbIndex );
+
+        //! \brief The database catalog dropped its listing
+        void catalog_dropped( void );
 
     private:
         //! \brief Put a note on the status line, cut to what it can show

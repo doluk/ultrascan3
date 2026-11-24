@@ -265,6 +265,11 @@ class US_DataProcess : public QObject
         //!        the window again
         QString     read_back_advice( void ) const;
 
+        //! \brief Whether the connection to the database is gone: the last
+        //!        error says so (US_DB2::isConnectionLoss), or the
+        //!        connection does
+        bool        lost_now( void );
+
         //! \brief What to do once the connection to the database is lost
         QString     lost_text( void ) const;
 

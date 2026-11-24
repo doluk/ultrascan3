@@ -688,6 +688,14 @@ TEST_F( TestUSDataDbLive, ARemovalOnALostConnectionSaysToOpenTheWindowAgain )
 
    EXPECT_NE( win.remove( ed.editG ), 0 );
    QString error = win.proc.lastError();
+
+   // What the client library really says for a killed connection (2013, or
+   // 2026 over TLS with libmariadb): it reads as a lost one
+   int serr = inv->lastServerErrno();
+   RecordProperty( "client_errno", serr );
+   EXPECT_TRUE( US_DB2::isConnectionLoss( serr ) ) << serr << " " << error.toStdString();
+   EXPECT_TRUE( US_DataModel::connection_lost( serr ) ) << serr;
+   EXPECT_FALSE( inv->isConnected() );
    EXPECT_TRUE( error.contains( "close it and open it again" ) ) << error.toStdString();
    EXPECT_FALSE( error.contains( "Scan again" ) ) << error.toStdString();
 
