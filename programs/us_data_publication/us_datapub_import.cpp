@@ -14,12 +14,6 @@
 #include "us_datapub_export.h"
 
 #include <functional>
-#include <csignal>
-
-#if defined( Q_OS_UNIX )
-#include <unistd.h>
-#include <sys/wait.h>
-#endif
 
 #include "us_settings.h"
 #include "us_util.h"
@@ -76,7 +70,6 @@ US_DataPubImporter::US_DataPubImporter( QObject* parent ) : QObject( parent )
    cp_read     = false;
    step_count  = 0;
    user_level  = -1;
-   stage_lock  = nullptr;
 }
 
 // ------------------------------------------------------ the import tab state
@@ -152,8 +145,7 @@ US_DataPubImporter::~US_DataPubImporter()
    if ( in_txn )  abortWrite( tr( "the importer was destroyed" ) );
 
    closeTarget();
-   releaseStaging();
-   bundle.cleanup();
+   bundle.cleanup();               // The tree, then its lock
 }
 
 void US_DataPubImporter::setResolver( US_DataPubConflictResolver* a_resolver )
@@ -459,76 +451,6 @@ namespace
    // A staging directory without a lock that has not changed for this long
    // belongs to no running importer or exporter
    const qint64 stale_unlocked_secs = 2 * 24 * 3600;
-
-   // The staging directories of this process's live importers, kept where a
-   // signal handler can read them without allocating: fixed slots of
-   // NUL-terminated paths, each in use or not
-   const int  max_stages      = 32;
-   const int  max_stage_path  = 4096;
-   char       stage_paths[ max_stages ][ max_stage_path ];
-   volatile sig_atomic_t stage_used[ max_stages ];
-
-   void register_stage( const QString& path )
-   {
-      QByteArray local = QFile::encodeName( path );
-
-      if ( local.isEmpty()  ||  local.size() >= max_stage_path )  return;
-
-      for ( int ii = 0; ii < max_stages; ii++ )
-      {
-         if ( stage_used[ ii ] )  continue;
-
-         memcpy( stage_paths[ ii ], local.constData(), local.size() + 1 );
-         stage_used[ ii ] = 1;
-         return;
-      }
-   }
-
-   void unregister_stage( const QString& path )
-   {
-      QByteArray local = QFile::encodeName( path );
-
-      for ( int ii = 0; ii < max_stages; ii++ )
-         if ( stage_used[ ii ]  &&  local == stage_paths[ ii ] )
-            stage_used[ ii ] = 0;
-   }
-
-   // Remove the registered directories, then let the signal do what it
-   // does.  Only async-signal-safe calls: fork, execv, waitpid, _exit,
-   // signal and raise.
-   extern "C" void stop_signal_cleanup( int sig )
-   {
-#if defined( Q_OS_UNIX )
-      for ( int ii = 0; ii < max_stages; ii++ )
-      {
-         if ( ! stage_used[ ii ] )  continue;
-
-         pid_t pid = fork();
-
-         if ( pid == 0 )
-         {
-            char  prog[]   = "/bin/rm";
-            char  flags[]  = "-rf";
-            char  dashes[] = "--";
-            char* argv[]   = { prog, flags, dashes, stage_paths[ ii ],
-                               nullptr };
-            execv( prog, argv );
-            _exit( 127 );
-         }
-
-         if ( pid > 0 )
-         {
-            int status = 0;
-            waitpid( pid, &status, 0 );
-         }
-
-         stage_used[ ii ] = 0;
-      }
-#endif
-
-      signal( sig, SIG_DFL );
-      raise( sig );
-   }
 }
 
 int US_DataPubImporter::sweepStaleStaging( void )
@@ -573,66 +495,43 @@ int US_DataPubImporter::sweepStaleStaging( void )
    return removed;
 }
 
-void US_DataPubImporter::installSignalCleanup( void )
+/* The old writer framed a sequence S as "\n", then S in pieces of 80
+   characters each followed by "\n", then what is left of S (fewer than 80
+   characters) and a last "\n".  The pieces are counted in characters,
+   whatever they hold -- a line break of S's own included -- so the framing
+   is taken off by counting too, and only when the text is exactly such a
+   framing; any other text is S itself.
+*/
+QString US_DataPubImporter::unframedSequence( const QString& fileText )
 {
-   signal( SIGTERM, stop_signal_cleanup );
-   signal( SIGINT,  stop_signal_cleanup );
-#if defined( SIGHUP )
-   signal( SIGHUP,  stop_signal_cleanup );
-#endif
-}
+   QString text = fileText;
 
-void US_DataPubImporter::holdStaging( void )
-{
-   releaseStaging();
-
-   if ( bundle.workPath().isEmpty() )  return;
-
-   QString base = QFileInfo( bundle.workPath() ).absolutePath();
-
-   stage_lock = new QLockFile( base + "/" + stage_lock_name );
-   stage_lock->setStaleLockTime( 0 );
-
-   if ( ! stage_lock->tryLock( 0 ) )
+   for ( ;; )
    {
-      delete stage_lock;
-      stage_lock = nullptr;
+      if ( text.size() < 2  ||
+           ! text.startsWith( '\n' )  ||  ! text.endsWith( '\n' ) )
+         return text;
+
+      QString inner;
+      int     pos  = 1;
+      int     size = text.size();
+
+      // The full pieces: 80 characters and a line break, with at least the
+      // last line break still to come
+      while ( size - pos >= 82  &&  text[ pos + 80 ] == '\n' )
+      {
+         inner += text.mid( pos, 80 );
+         pos   += 81;
+      }
+
+      // What is left: fewer than 80 characters, then the last line break
+      int left = size - pos - 1;
+
+      if ( left < 0  ||  left >= 80 )  return text;
+
+      inner += text.mid( pos, left );
+      text   = inner;
    }
-
-   register_stage( base );
-}
-
-void US_DataPubImporter::releaseStaging( void )
-{
-   if ( ! bundle.workPath().isEmpty() )
-      unregister_stage( QFileInfo( bundle.workPath() ).absolutePath() );
-
-   delete stage_lock;
-   stage_lock = nullptr;
-}
-
-QString US_DataPubImporter::storedSequence( const QString& fileText )
-{
-   // The newlines the writer puts before and after the sequence -- as many
-   // as the round trips it went through, each of which added two
-   QString text = fileText.trimmed();
-
-   // ... and the one it puts after every 80 characters.  A sequence whose
-   // lines are all no longer than that is joined again: its line breaks
-   // are the writer's (and a residue's letters mean nothing else with a
-   // line break in between).  One with longer lines keeps them.
-   QStringList lines = text.split( '\n' );
-
-   if ( lines.size() < 2 )  return text;
-
-   for ( int ii = 0; ii < lines.size(); ii++ )
-   {
-      lines[ ii ] = lines[ ii ].trimmed();
-
-      if ( lines[ ii ].size() > 80 )  return text;
-   }
-
-   return lines.join( QString() );
 }
 
 // --------------------------------------------------------- reading a bundle
@@ -652,11 +551,12 @@ bool US_DataPubImporter::inspect( const QString& bundlePath, QString& error )
       note( tr( "%1 staging directories left behind by importers that are"
                 " no longer running were removed" ).arg( swept ) );
 
-   releaseStaging();
+   // The bundle takes the lock in its staging directory as soon as it is
+   // made, before anything is unpacked into it, and lets go of it only
+   // when everything else has been removed
+   bundle.setStagingLock( stage_lock_name );
 
    if ( ! bundle.unpack( bundlePath, error ) )  return false;
-
-   holdStaging();
 
    QString manifestPath = bundle.rootPath() + "/"
                           + US_DataPubBundle::manifestName();
@@ -946,6 +846,12 @@ bool US_DataPubImporter::preflight( QString& error )
    // What the server lets the person logged in do decides some of what
    // follows: which analytes they may use, which hardware they may add
    if ( ! readUserLevel( error ) )  return false;
+
+   // The character sets the target's text goes into, which the payloads'
+   // text is checked against
+   type_charsets.clear();
+
+   if ( opts.target == US_DataPub::TargetDb )  readTargetCharsets();
 
    for ( int ii = 0; ii < entities.size(); ii++ )
    {
@@ -2418,6 +2324,362 @@ bool US_DataPubImporter::payloadSpectrum( const US_DataPubEntity& entity,
    return true;
 }
 
+// ------------------------------------- values the target can store at all
+
+namespace
+{
+   // How much of Unicode a MySQL character set holds: 4 all of it, 3 the
+   // basic multilingual plane, 2 latin1 (cp1252, as MySQL has it), 1 ASCII,
+   // 0 a set this does not know (only ASCII is taken as safe); -1 binary,
+   // which holds bytes and has no say
+   int charset_rank( const QString& charset )
+   {
+      QString cs = charset.trimmed().toLower();
+
+      if ( cs.isEmpty()  ||  cs == "binary" )                   return -1;
+      if ( cs.startsWith( "utf8mb4" )  ||  cs.startsWith( "utf16" )  ||
+           cs.startsWith( "utf32" ) )                            return 4;
+      if ( cs == "utf8"  ||  cs == "utf8mb3"  ||  cs == "ucs2" )  return 3;
+      if ( cs == "latin1" )                                      return 2;
+      if ( cs == "ascii" )                                       return 1;
+
+      return 0;
+   }
+
+   // The characters MySQL's latin1 (Windows-1252, with the five codes it
+   // leaves undefined passed through) holds beyond U+00A0..U+00FF
+   bool cp1252_holds( uint code )
+   {
+      static const uint extra[] =
+      {
+         0x20AC, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6,
+         0x2030, 0x0160, 0x2039, 0x0152, 0x017D, 0x2018, 0x2019, 0x201C,
+         0x201D, 0x2022, 0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A,
+         0x0153, 0x017E, 0x0178, 0x0081, 0x008D, 0x008F, 0x0090, 0x009D
+      };
+
+      if ( code < 0x80  ||  ( code >= 0xA0  &&  code <= 0xFF ) )  return true;
+
+      for ( uint ii = 0; ii < sizeof( extra ) / sizeof( uint ); ii++ )
+         if ( extra[ ii ] == code )  return true;
+
+      return false;
+   }
+
+   // A character as a message shows it: itself and its code point
+   QString char_text( const QString& ch )
+   {
+      QVector< uint > codes = ch.toUcs4();
+      uint            code  = codes.isEmpty() ? 0 : codes[ 0 ];
+
+      return QString( "\"%1\" (U+%2)" ).arg( ch )
+             .arg( QString::number( code, 16 ).toUpper()
+                   .rightJustified( 4, QChar( '0' ) ) );
+   }
+}
+
+QString US_DataPubImporter::unstorableCharacter( const QString& charset,
+                                                 const QString& text )
+{
+   int rank = charset_rank( charset );
+
+   if ( rank < 0  ||  rank >= 4 )  return QString();
+
+   QVector< uint > codes = text.toUcs4();
+
+   for ( int ii = 0; ii < codes.size(); ii++ )
+   {
+      uint code = codes[ ii ];
+      bool fits = ( rank == 3 ) ? ( code <= 0xFFFF  &&
+                                    ! ( code >= 0xD800  &&  code <= 0xDFFF ) )
+                : ( rank == 2 ) ? cp1252_holds( code )
+                                : ( code < 0x80 );
+
+      if ( ! fits )
+      {
+         char32_t one = char32_t( code );
+         return QString::fromUcs4( &one, 1 );
+      }
+   }
+
+   return QString();
+}
+
+/* The character sets the target stores a record type's text in.
+
+   A procedure's text parameters have the character set the schema had
+   when the procedure was made (latin1 for us3.sql's), whatever the
+   connection's is, and the columns have their own; text that either of
+   them cannot hold is refused in strict mode ("Incorrect string value",
+   1366) -- in the middle of the import, unless the preflight finds it.
+   So the narrowest set among the parameters of the procedures and the
+   columns of the tables a record type is written with is what its text
+   has to fit.  When information_schema says nothing (a server that does
+   not show it), the schema's default stands in, which is what parameters
+   take; when that cannot be read either, latin1, the default of us3.sql.
+*/
+namespace
+{
+   struct TypeStore
+   {
+      US_DataPub::EntityType type;
+      const char*            procs;
+      const char*            tables;
+   };
+
+   const TypeStore type_stores[] =
+   {
+      { US_DataPub::Project,          "new_project new_project2 update_project"
+                                      " update_project2",
+                                      "project" },
+      { US_DataPub::Experiment,       "new_experiment new_speedstep new_project",
+                                      "experiment speedstep project" },
+      { US_DataPub::RawData,          "new_rawData",
+                                      "rawData" },
+      { US_DataPub::RotorCalibration, "add_rotor_calibration",
+                                      "rotorCalibration" },
+      { US_DataPub::Centerpiece,      "",
+                                      "abstractCenterpiece" },
+      { US_DataPub::Buffer,           "new_buffer update_buffer"
+                                      " add_buffer_component"
+                                      " create_buffer_component new_spectrum",
+                                      "buffer bufferComponent spectrum"
+                                      " extinctionProfile" },
+      { US_DataPub::Analyte,          "new_analyte update_analyte"
+                                      " set_nucleotide_info new_spectrum",
+                                      "analyte spectrum extinctionProfile" },
+      { US_DataPub::Solution,         "new_solution update_solution"
+                                      " new_solutionBuffer new_solutionAnalyte"
+                                      " new_experiment_solution",
+                                      "solution" },
+      { US_DataPub::EditedData,       "new_editedData update_editedData",
+                                      "editedData" },
+      { US_DataPub::Model,            "new_model update_model",
+                                      "model" },
+      { US_DataPub::Noise,            "new_noise update_noise",
+                                      "noise" },
+      { US_DataPub::TimeState,        "new_timestate update_timestate",
+                                      "timestate" }
+   };
+
+   const int ntype_stores = int( sizeof( type_stores ) / sizeof( TypeStore ) );
+}
+
+bool US_DataPubImporter::readTargetCharsets( void )
+{
+   target_charsets.clear();
+   type_charsets  .clear();
+
+   if ( dbase == nullptr )  return false;
+
+   QStringList procs;
+   QStringList tables;
+
+   for ( int ii = 0; ii < ntype_stores; ii++ )
+   {
+      procs  << QString( type_stores[ ii ].procs  ).split( ' ',
+                                                    Qt::SkipEmptyParts );
+      tables << QString( type_stores[ ii ].tables ).split( ' ',
+                                                    Qt::SkipEmptyParts );
+   }
+
+   procs .removeDuplicates();
+   tables.removeDuplicates();
+
+   // Only names of the lists above: nothing of the bundle goes in here
+   QString inProcs  = "'" + procs .join( "','" ) + "'";
+   QString inTables = "'" + tables.join( "','" ) + "'";
+
+   dbase->rawQuery(
+      "SELECT 'p', LOWER( SPECIFIC_NAME ), CHARACTER_SET_NAME"
+      " FROM information_schema.PARAMETERS"
+      " WHERE SPECIFIC_SCHEMA = DATABASE()"
+      " AND CHARACTER_SET_NAME IS NOT NULL"
+      " AND SPECIFIC_NAME IN ( " + inProcs + " )"
+      " GROUP BY SPECIFIC_NAME, CHARACTER_SET_NAME"
+      " UNION ALL"
+      " SELECT 't', LOWER( TABLE_NAME ), CHARACTER_SET_NAME"
+      " FROM information_schema.COLUMNS"
+      " WHERE TABLE_SCHEMA = DATABASE()"
+      " AND CHARACTER_SET_NAME IS NOT NULL"
+      " AND TABLE_NAME IN ( " + inTables + " )"
+      " GROUP BY TABLE_NAME, CHARACTER_SET_NAME" );
+
+   while ( dbase->next() )
+   {
+      QString key = dbase->value( 0 ).toString() + ":"
+                    + dbase->value( 1 ).toString();
+      QString cs  = dbase->value( 2 ).toString();
+      QString had = target_charsets.value( key );
+
+      // The narrowest of a procedure's parameters, of a table's columns
+      if ( had.isEmpty()  ||  charset_rank( cs ) < charset_rank( had ) )
+         target_charsets.insert( key, cs );
+   }
+
+   // For a type information_schema says nothing of: the schema's default
+   dbase->rawQuery( "SELECT @@character_set_database" );
+
+   QString dbcs    = dbase->next() ? dbase->value( 0 ).toString() : QString();
+   default_charset = dbcs.isEmpty() ? QString( "latin1" ) : dbcs;
+
+   for ( int ii = 0; ii < ntype_stores; ii++ )
+   {
+      QStringList names;
+      QString     narrowest;
+
+      for ( const QString& name : QString( type_stores[ ii ].procs ).split( ' ',
+                                                    Qt::SkipEmptyParts ) )
+         names << "p:" + name.toLower();
+
+      for ( const QString& name : QString( type_stores[ ii ].tables ).split(
+                                                    ' ', Qt::SkipEmptyParts ) )
+         names << "t:" + name.toLower();
+
+      for ( int jj = 0; jj < names.size(); jj++ )
+      {
+         QString cs = target_charsets.value( names[ jj ] );
+
+         if ( cs.isEmpty()  ||  charset_rank( cs ) < 0 )  continue;
+
+         if ( narrowest.isEmpty()  ||
+              charset_rank( cs ) < charset_rank( narrowest ) )
+            narrowest = cs;
+      }
+
+      if ( narrowest.isEmpty() )  narrowest = default_charset;
+
+      type_charsets.insert( int( type_stores[ ii ].type ), narrowest );
+   }
+
+   return true;
+}
+
+/* The values of a record the target has to be able to take: no number of
+   it is NaN or infinite (the server would store what such text becomes,
+   or refuse it, and a disk store would hold "nan"), and, in a database,
+   no text of it holds a character the columns and procedure parameters it
+   goes through cannot store.  The record's XML is read whole: attributes
+   and text are what the library writers pass on, apart from an edit's and
+   a time state's XML, which go into a BLOB as they are.
+*/
+bool US_DataPubImporter::checkValues( const US_DataPubEntity& entity,
+                                      const QString& file,
+                                      const QByteArray& data,
+                                      QString& error )
+{
+   bool    toDb    = ( opts.target == US_DataPub::TargetDb );
+   QString charset = toDb ? type_charsets.value( int( entity.type ) )
+                          : QString();
+   bool    blob    = ( entity.type == US_DataPub::EditedData  ||
+                       entity.type == US_DataPub::TimeState   ||
+                       entity.type == US_DataPub::RawData );
+   QString fname   = QFileInfo( file ).fileName();
+
+   auto unstorable = [ & ]( const QString& text, const QString& field )
+   {
+      if ( charset.isEmpty()  ||  blob )  return false;
+
+      QString ch = unstorableCharacter( charset, text );
+
+      if ( ch.isEmpty() )  return false;
+
+      error = tr( "%1: %2 holds the character %3, which the target database"
+                  " cannot store -- the text of this record goes into"
+                  " columns and procedure parameters of character set %4."
+                  "  The import is refused before anything is written" )
+              .arg( entity.label() ).arg( field ).arg( char_text( ch ) )
+              .arg( charset );
+      return true;
+   };
+
+   if ( data.isNull() )
+   {  // The manifest's own fields of the record
+      QStringList keys = entity.attrs.keys();
+
+      if ( unstorable( entity.name, tr( "its name in the manifest" ) ) )
+         return false;
+
+      for ( int ii = 0; ii < keys.size(); ii++ )
+      {
+         if ( US_DataPub::isPayloadKey( keys[ ii ] )  ||
+              keys[ ii ].toLower().contains( "sha256" ) )
+            continue;
+
+         QString value = entity.attrs.value( keys[ ii ] );
+         QString field = tr( "the manifest field \"%1\"" ).arg( keys[ ii ] );
+
+         if ( ! US_DataPub::isTextAttribute( QString(), keys[ ii ] )  &&
+              US_DataPub::isNonFiniteNumber( value ) )
+         {
+            error = tr( "%1: %2 is \"%3\", which is not a finite number;"
+                        " the bundle is refused" )
+                    .arg( entity.label() ).arg( field ).arg( value );
+            return false;
+         }
+
+         if ( unstorable( value, field ) )  return false;
+      }
+
+      return true;
+   }
+
+   // The numbers: the check the export makes of what it writes
+   QString nonFinite = US_DataPub::nonFiniteNumberInXml( data );
+
+   if ( ! nonFinite.isEmpty() )
+   {
+      error = tr( "%1: %2 in %3 is not a finite number; the bundle is"
+                  " refused" ).arg( entity.label() ).arg( nonFinite )
+              .arg( fname );
+      return false;
+   }
+
+   QXmlStreamReader xml( data );
+
+   while ( ! xml.atEnd() )
+   {
+      xml.readNext();
+
+      if ( xml.isStartElement() )
+      {
+         QString                elem  = xml.name().toString();
+         QXmlStreamAttributes   attrs = xml.attributes();
+
+         for ( int ii = 0; ii < attrs.size(); ii++ )
+         {
+            QString name  = attrs[ ii ].name().toString();
+            QString value = attrs[ ii ].value().toString();
+            QString field = tr( "the attribute \"%1\" of <%2> in %3" )
+                            .arg( name ).arg( elem ).arg( fname );
+
+            if ( unstorable( value, field ) )  return false;
+         }
+
+         elements << elem;
+      }
+
+      else if ( xml.isEndElement() )
+      {
+         if ( ! elements.isEmpty() )  elements.removeLast();
+      }
+
+      else if ( xml.isCharacters()  &&  ! xml.isWhitespace() )
+      {
+         QString field = tr( "the text of <%1> in %2" )
+                         .arg( elements.isEmpty() ? QString()
+                                                  : elements.last() )
+                         .arg( fname );
+
+         if ( unstorable( xml.text().toString(), field ) )  return false;
+      }
+   }
+
+   elements.clear();
+
+   return true;
+}
+
 bool US_DataPubImporter::checkPayload( const US_DataPubEntity& entity,
                                        QString& error )
 {
@@ -2470,7 +2732,13 @@ bool US_DataPubImporter::checkPayload( const US_DataPubEntity& entity,
                  .arg( QFileInfo( xpath ).fileName() ).arg( label ).arg( bad );
          return false;
       }
+
+      // Values the target cannot take, found before anything is written
+      if ( ! checkValues( entity, xpath, data, error ) )  return false;
    }
+
+   // ... and the manifest's own fields of the record
+   if ( ! checkValues( entity, path, QByteArray(), error ) )  return false;
 
    QString found;                  // The GUID inside the payload
    QString what;                   // What the payload failed to parse as
@@ -4370,9 +4638,10 @@ QString US_DataPubImporter::copyNote( const US_DataPubEntity& entity ) const
 
 /* The fingerprint of the record the import would write, in the terms the
    target's copy is written out in (targetFingerprint()).  An analyte is
-   compared as the values it is stored with: its sequence without the line
-   breaks US_Analyte's files add, and the extinction values the import
-   stores (payloadSpectrum()) -- the target's copy holds its stored profile,
+   compared as the values it is stored with: its sequence without the
+   framing US_Analyte's old writer put around it (unframedSequence()), and
+   the extinction values the import stores (payloadSpectrum()) -- the
+   target's copy holds its stored profile,
    where a payload written from a disk store also holds the 280 nm value
    US_Analyte computes from a protein's sequence.
 */
@@ -4414,7 +4683,9 @@ QString US_DataPubImporter::ourFingerprint( const US_DataPubEntity& entity,
 
 /* The fingerprint of an analyte as it is stored, whichever way it was read.
 
-   The sequence loses the line breaks US_Analyte's files add, and a
+   The sequence loses the framing US_Analyte's old writer added (only that:
+   it is stored as the bundle holds it, and an analyte stored by an older
+   UltraScan holds the framing its file gave it), and a
    protein's extinction loses the value at 280 nm that US_Analyte's file
    reader computes from the sequence, when that is the value there: a copy
    of the analyte read from a file holds it, one read from a database or
@@ -4425,7 +4696,7 @@ QString US_DataPubImporter::ourFingerprint( const US_DataPubEntity& entity,
 QString US_DataPubImporter::analyteFingerprint( US_Analyte& analyte,
                                                 const QString& fileName )
 {
-   analyte.sequence = storedSequence( analyte.sequence );
+   analyte.sequence = unframedSequence( analyte.sequence );
 
    if ( analyte.type == US_Analyte::PROTEIN  &&
         analyte.extinction.contains( 280.0 ) )
@@ -7748,11 +8019,12 @@ bool US_DataPubImporter::createDb( const US_DataPubEntity& entity,
             spectrum = QString::number( lambda1 ) + "/"
                        + QString::number( coeff1 );
 
-         // The sequence as the record holds it, without the line breaks
-         // the analyte file put around and into it
+         // The sequence exactly as the payload holds it -- a FASTA header,
+         // residue numbers and line breaks are the analyte's own -- which
+         // is also what a disk import keeps
          QStringList query;
          query << "new_analyte" << targetGuidOf( entity ) << atype
-               << storedSequence( analyte.sequence )
+               << analyte.sequence
                << QString::number( analyte.vbar20 )
                << analyte.description
                << spectrum

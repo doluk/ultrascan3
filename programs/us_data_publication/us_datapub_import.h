@@ -336,8 +336,11 @@ class US_DataPubImporter : public QObject
 
           An importer unpacks a bundle into a private directory under
           US_Settings::tmpDir() and holds a lock file in it while it lives.
-          A process that was killed (SIGKILL, a crash, a power cut) cannot
-          remove its directory, so the next \ref inspect sweeps every one
+          A process that was killed (by any signal, a crash, a power cut)
+          cannot remove its directory -- no handler tries to: removing a
+          tree is not something a signal handler can do safely, and a
+          handler would override a signal the process was started with
+          ignored (nohup) -- so the next \ref inspect sweeps every one
           whose lock is stale -- its process is gone -- and every one
           without a lock that has not changed for two days.  A directory of
           a running importer or exporter is never touched.
@@ -345,33 +348,35 @@ class US_DataPubImporter : public QObject
       */
       static int sweepStaleStaging( void );
 
-      /*! \brief Remove this process's staging directories when it is told
-                 to stop
+      /*! \brief The first character of a text that a MySQL character set
+                 cannot store
 
-          Installs handlers for SIGTERM and SIGINT (and SIGHUP where there is
-          one) that remove the staging directory of every importer of this
-          process that is still alive, then let the signal take its usual
-          course.  The removal is made with nothing but async-signal-safe
-          calls.  A database import's transaction needs nothing: the server
-          rolls back a transaction whose connection goes away.  For the
-          command line; a program with an event loop of its own may call it
-          too.
+          latin1 is MySQL's (Windows-1252), utf8/utf8mb3 and ucs2 hold the
+          basic multilingual plane, utf8mb4, utf16 and utf32 everything,
+          ascii ASCII; of a set this does not know only ASCII is taken as
+          safe.  binary, or no set at all, holds anything.
+          \param charset The character set, as information_schema names it
+          \param text    The text to check
+          \returns The character (one code point), or an empty string when
+                   the whole text fits
       */
-      static void installSignalCleanup( void );
+      static QString unstorableCharacter( const QString& charset,
+                                          const QString& text );
 
-      /*! \brief A sequence as the record holds it, from the text US_Analyte
-                 reads out of an analyte file
+      /*! \brief A sequence without the framing US_Analyte's old writer
+                 put around and into it, for comparing analytes only
 
-          US_Analyte writes a sequence as a newline, the sequence in lines of
-          80 characters and a newline, and reads back all of that, so a
-          sequence grows two newlines -- an empty one becomes "\n\n" -- each
-          time it goes through a file.  This takes off the newlines around
-          it, however many round trips added them, and joins lines no
-          longer than 80 characters; a sequence with longer lines keeps its
-          line breaks.  Leading and trailing white space is never part of a
-          sequence.
+          That writer wrote a sequence as a newline, the sequence in pieces
+          of 80 characters each followed by a newline, and a last newline,
+          and its reader read all of that back, so a sequence grew with
+          each round trip through a file.  Text that is exactly such a
+          framing -- however many round trips made it -- loses it; any other
+          text, a FASTA header, residue numbers and line breaks of its own
+          included, comes back unchanged.  An import stores the sequence as
+          the bundle holds it; this serves the fingerprints that decide
+          whether a target's analyte is the bundle's.
       */
-      static QString storedSequence( const QString& fileText );
+      static QString unframedSequence( const QString& fileText );
 
       /*! \brief The order the record types of a bundle are replayed in
 
@@ -474,6 +479,19 @@ class US_DataPubImporter : public QObject
       //! True once the bundle's experiments were looked up in the target
       bool                       exp_resolved;
 
+      //! The narrowest character set of the target's text parameters and
+      //! columns: "p:procedure" or "t:table" -> set
+      QMap< QString, QString >   target_charsets;
+
+      //! The set each record type's text has to fit, by type
+      QMap< int, QString >       type_charsets;
+
+      //! The schema's default, when information_schema said nothing
+      QString                    default_charset;
+
+      //! The element path of the XML checkValues() reads
+      QStringList                elements;
+
       //! What the target's run ID lookup said: run ID -> ( ID, GUID ) of the
       //! investigator's run of that ID, both empty when there is none
       QHash< QString, QPair< QString, QString > > run_lookup;
@@ -548,9 +566,6 @@ class US_DataPubImporter : public QObject
       //! Projects a dry run would create from what a run names
       QSet< QString >            implicit_projs;
 
-      //! The lock an importer holds on its staging directory while it lives
-      QLockFile*                 stage_lock;
-
       //! \brief Read the user level of the person logged in
       bool    readUserLevel( QString& error );
 
@@ -610,11 +625,6 @@ class US_DataPubImporter : public QObject
       //!        which no record of the bundle stands for
       void    recordImplicitProject( const QString& guid, const QString& desc,
                                      const QString& id, const QString& run );
-
-      //! \brief Take a lock on the staging directory and register it for
-      //!        removal on a signal
-      void    holdStaging( void );
-      void    releaseStaging( void );
 
       //! \brief Read the target database's hardware into the caches
       bool    readHardwareDb( void );
@@ -759,6 +769,21 @@ class US_DataPubImporter : public QObject
                             QString& error ) const;
       bool    preflight   ( QString& error );
       bool    checkPayload( const US_DataPubEntity&, QString& error );
+
+      //! \brief Read the character sets of what the import writes into
+      bool    readTargetCharsets( void );
+
+      /*! \brief Refuse a record with a number that is not finite, or, for a
+                 database, text the target cannot store
+          \param entity The record
+          \param file   The XML payload read, or the main payload's path
+          \param data   Its contents; a null array checks the manifest's
+                        fields of the record instead
+          \param error  Names the record, the field and the value or
+                        character when the record is refused
+      */
+      bool    checkValues ( const US_DataPubEntity& entity, const QString& file,
+                            const QByteArray& data, QString& error );
       bool    availableAs ( US_DataPub::EntityType, const QString& guid,
                             QString& error );
 

@@ -36,6 +36,7 @@
 #include "us_crypto.h"
 #include "us_settings.h"
 #include "us_time_state.h"
+#include "us_analyte.h"
 
 class DataPubDb : public ::testing::Test
 {
@@ -1563,6 +1564,149 @@ TEST_F( DataPubDbRules, AMissingChannelFailsBeforeTheImport )
    EXPECT_EQ  ( db->statusQuery( "SELECT IF( COUNT(*) > 0, 0, 301 ) FROM"
                                  " channel WHERE channelID = 1" ),
                 int( IUS_DB2::OK ) ) << "channel 1 was not put back";
+}
+
+// The store's analyte with another description and sequence
+static void rewriteStoreAnalyte( const QString& description,
+                                 const QString& sequence )
+{
+   QString    path = US_Settings::dataDir() + "/analytes/A0000001.xml";
+   US_Analyte analyte;
+   ASSERT_EQ( analyte.readFromFile( path ), IUS_DB2::OK );
+   analyte.description = description;
+   analyte.sequence    = sequence;
+   QFile::remove( path );
+   ASSERT_EQ( analyte.write( false, path ), IUS_DB2::OK );
+}
+
+/* Text the target's latin1 columns and procedure parameters cannot hold
+   fails the dry run, as it fails the import -- before anything is
+   written, naming the record, field and character.  Text latin1 holds
+   goes in, and comes back as it was. */
+TEST_F( DataPubDbRules, TextTheTargetCannotStoreFailsTheDryRun )
+{
+   db->rawQuery( "SELECT CHARACTER_SET_NAME FROM information_schema.PARAMETERS"
+                 " WHERE SPECIFIC_SCHEMA = DATABASE()"
+                 " AND SPECIFIC_NAME = 'new_analyte'"
+                 " AND PARAMETER_NAME = 'p_description'" );
+   QString charset = db->next() ? db->value( 0 ).toString() : QString();
+
+   if ( charset != "latin1" )
+      GTEST_SKIP() << "the target's analyte text is not latin1 ("
+                   << charset.toStdString() << ")";
+
+   QString alpha = QString::fromUtf8( "Prot\xC3\xA9ine \xCE\xB1" );
+   QString acute = QString::fromUtf8( "Prot\xC3\xA9ine \xC3\xA9 " )
+                   + US_Util::new_guid().left( 8 );
+
+   rewriteStoreAnalyte( alpha, QString() );
+   QString bundle = exportStore( "alpha" );
+   QString error;
+
+   for ( int dry = 1; dry >= 0; dry-- )
+   {
+      US_DataPubImporter importer;
+      ASSERT_TRUE ( importer.inspect( bundle, error ) ) << error.toStdString();
+      EXPECT_FALSE( importer.runImport( options( dry == 1 ), error ) )
+         << ( dry ? "dry run" : "import" );
+      EXPECT_TRUE ( error.contains( QString::fromUtf8( "\xCE\xB1" ) )  &&
+                    error.contains( "description" )                    &&
+                    error.contains( "latin1" ) ) << error.toStdString();
+
+      if ( dry == 0 )
+      {
+         EXPECT_EQ( importer.outcome(), QString( "Nothing was written" ) );
+      }
+   }
+
+   QStringList q;
+   q << "get_analyteID" << analyteGUID;
+   db->query( q );
+   EXPECT_FALSE( db->next() ) << "the analyte was written";
+
+   // ... and text latin1 holds
+   rewriteStoreAnalyte( acute, QString() );
+   bundle = exportStore( "acute" );
+
+   US_DataPubImporter dry;
+   ASSERT_TRUE( dry.inspect( bundle, error ) ) << error.toStdString();
+   ASSERT_TRUE( dry.runImport( options( true ), error ) )
+      << error.toStdString();
+
+   US_DataPubImporter importer;
+   ASSERT_TRUE( importer.inspect( bundle, error ) ) << error.toStdString();
+   ASSERT_TRUE( importer.runImport( options(), error ) )
+      << error.toStdString() << "\n"
+      << importer.log().join( "\n" ).toStdString();
+
+   const US_DataPubImporter::Result* ana = resultOf( importer.results(),
+                                                     US_DataPub::Analyte );
+   ASSERT_NE( ana, nullptr );
+   q.clear();
+   q << "get_analyte_info" << ana->targetID;
+   db->query( q );
+   ASSERT_TRUE( db->next() );
+   EXPECT_EQ( db->value( 4 ).toString(), acute );
+}
+
+/* A sequence is stored exactly as the bundle holds it -- FASTA header,
+   residue numbers, line breaks -- in a database as on disk, and the same
+   bundle imported again finds the stored analyte the same one. */
+TEST_F( DataPubDbRules, ASequenceIsStoredAsTheBundleHoldsIt )
+{
+   QString fasta =
+      ">sp|P02768|ALBU_HUMAN Serum albumin OS=Homo sapiens\n"
+      "1 MKWVTFISLL FLFSSAYSRG VFRRDAHKSE VAHRFKDLGE ENFKALVLIA FAQYLQQCPF\n"
+      "61 EDHVKLVNEV TEFAKTCVAD ESAENCDKSL HTLFGDKLCT VATLRETYGE MADCCAKQEP\n";
+
+   rewriteStoreAnalyte( "Fasta analyte " + US_Util::new_guid().left( 8 ),
+                        fasta );
+   QString bundle = exportStore( "fasta" );
+   QString error;
+
+   US_DataPubImporter importer;
+   ASSERT_TRUE( importer.inspect( bundle, error ) ) << error.toStdString();
+   ASSERT_TRUE( importer.runImport( options(), error ) )
+      << error.toStdString() << "\n"
+      << importer.log().join( "\n" ).toStdString();
+
+   const US_DataPubImporter::Result* ana = resultOf( importer.results(),
+                                                     US_DataPub::Analyte );
+   ASSERT_NE( ana, nullptr );
+   QStringList q;
+   q << "get_analyte_info" << ana->targetID;
+   db->query( q );
+   ASSERT_TRUE( db->next() );
+   EXPECT_EQ( db->value( 2 ).toString().toUtf8(), fasta.toUtf8() );
+
+   // On disk the same
+   US_DataPubImporter          disk;
+   US_DataPubImporter::Options dopts = options();
+   dopts.target    = US_DataPub::TargetDisk;
+   dopts.outputDir = root + "/fasta_disk";
+   QDir().mkpath( dopts.outputDir );
+   ASSERT_TRUE( disk.inspect( bundle, error ) ) << error.toStdString();
+   ASSERT_TRUE( disk.runImport( dopts, error ) ) << error.toStdString();
+
+   QStringList files = QDir( dopts.outputDir + "/data/analytes" )
+                       .entryList( QStringList( "*.xml" ), QDir::Files );
+   ASSERT_EQ( files.size(), 1 );
+   US_Analyte onDisk;
+   ASSERT_EQ( onDisk.readFromFile( dopts.outputDir + "/data/analytes/"
+                                   + files[ 0 ] ), IUS_DB2::OK );
+   EXPECT_EQ( onDisk.sequence.toUtf8(), fasta.toUtf8() );
+
+   // ... and the stored analyte is the bundle's to a second import
+   US_DataPubImporter again;
+   ASSERT_TRUE( again.inspect( bundle, error ) ) << error.toStdString();
+   ASSERT_TRUE( again.runImport( options(), error ) )
+      << error.toStdString() << "\n"
+      << again.log().join( "\n" ).toStdString();
+   const US_DataPubImporter::Result* reused = resultOf( again.results(),
+                                                        US_DataPub::Analyte );
+   ASSERT_NE( reused, nullptr );
+   EXPECT_EQ( reused->resolution, US_DataPub::ResolvedReused );
+   EXPECT_EQ( reused->targetID,   ana->targetID );
 }
 
 // ------------------------------------------- importing into a mock database
@@ -3610,32 +3754,138 @@ TEST_F( DataPubMockRules, AnOldBundlesComputedPointIsNotStored )
    EXPECT_EQ( fake.callsOf( "new_analyte" ).value( 0 ).value( 6 ), QString() );
 }
 
-// A sequence goes in as the record holds it: US_Analyte's files frame it
-// in newlines, which are not part of it -- an empty one stays empty
-TEST_F( DataPubMockRules, ASequenceGoesInWithoutItsLineBreaks )
+// A sequence goes in exactly as the bundle holds it -- a FASTA header,
+// residue numbers and line breaks are the analyte's own -- as a disk
+// import keeps it; and the target's copy is the same analyte to a second
+// import of the bundle
+TEST_F( DataPubMockRules, ASequenceGoesInAsTheBundleHoldsIt )
 {
+   QString fasta =
+      ">sp|P02768|ALBU_HUMAN Serum albumin OS=Homo sapiens\n"
+      "1 MKWVTFISLL FLFSSAYSRG VFRRDAHKSE VAHRFKDLGE ENFKALVLIA FAQYLQQCPF\n"
+      "61 EDHVKLVNEV TEFAKTCVAD ESAENCDKSL HTLFGDKLCT VATLRETYGE MADCCAKQEP\n";
+   QString escaped = fasta;
+   escaped.replace( ">", "&gt;" );
+
+   editAnalyteXml( [ & ]( QString& text )
+   {
+      text.replace( QRegularExpression( "<sequence>\\s*</sequence>" ),
+                    "<sequence>" + escaped + "</sequence>" );
+   }, false );
+
    US_DataPubImporter importer;
    QString            error;
    ASSERT_TRUE( importOnce( importer, error, dbOptions() ) )
       << error.toStdString();
-   EXPECT_EQ( fake.callsOf( "new_analyte" ).value( 0 ).value( 3 ), QString() );
+   ASSERT_EQ( fake.callsOf( "new_analyte" ).size(), 1 );
+   EXPECT_EQ( fake.callsOf( "new_analyte" )[ 0 ].value( 3 ), fasta );
 
-   QString seq = QString( "MKWVTFISLL" ).repeated( 9 );     // 90 letters
+   // A second import finds the stored row, sequence and all, the same
+   US_DataPubImporter probe;
+   ASSERT_TRUE( probe.inspect( bundlePath, error ) );
+   US_Analyte source;
+   ASSERT_EQ( source.readFromFile( probe.bundleRoot() + "/"
+                 + probe.manifest().section( US_DataPub::Analyte )
+                   .value( 0 ).payload ), IUS_DB2::OK );
 
    DataPubFakeDb other;
    other.addHardware( "DEMO-1" );
-   editAnalyteXml( [ & ]( QString& text )
-   {
-      text.replace( QRegularExpression( "<sequence>\\s*</sequence>" ),
-                    "<sequence>\n" + seq.left( 80 ) + "\n" + seq.mid( 80 )
-                    + "\n</sequence>" );
-   }, false );
+   QString copy = US_Util::new_guid();
+   other.addRecord( "analyte", copy, 40, 2, "Demo analyte" );
+   other.cannedFor.insert( "get_analyte_info:40", QList< QVariantList >()
+      << ( QVariantList() << copy << "Protein" << fasta
+                          << QString::number( source.vbar20, 'g', 17 )
+                          << "Demo analyte" << ""
+                          << QString::number( source.mw, 'g', 17 ) << "0" ) );
 
    US_DataPubImporter second;
    second.setDatabase( other.db() );
    ASSERT_TRUE( second.inspect( bundlePath, error ) );
    ASSERT_TRUE( second.runImport( dbOptions(), error ) ) << error.toStdString();
-   EXPECT_EQ  ( other.callsOf( "new_analyte" ).value( 0 ).value( 3 ), seq );
+   EXPECT_EQ( other.callsOf( "new_analyte" ).size(), 0 );
+   EXPECT_EQ( resolutionOf( second.results(), US_DataPub::Analyte ),
+              US_DataPub::ResolvedReused );
+}
+
+// Text a latin1 target cannot store is refused by the preflight -- by the
+// dry run as by the import, before anything is written -- naming the
+// record, the field and the character; text latin1 holds goes in
+TEST_F( DataPubMockRules, TextTheTargetCannotStoreIsRefusedUpFront )
+{
+   QString alpha = QString::fromUtf8( "Prot\xC3\xA9ine \xCE\xB1" );
+   QString acute = QString::fromUtf8( "Prot\xC3\xA9ine \xC3\xA9" );
+
+   editAnalyteXml( [ & ]( QString& text )
+   {
+      text.replace( "description=\"Demo analyte\"",
+                    "description=\"" + alpha + "\"" );
+   }, false );
+
+   for ( bool shown : { true, false } )
+   {
+      SCOPED_TRACE( shown ? "information_schema" : "the schema's default" );
+      DataPubFakeDb latin;
+      latin.addHardware( "DEMO-1" );
+      latin.charset    = "latin1";
+      latin.infoSchema = shown;
+
+      for ( int dry = 1; dry >= 0; dry-- )
+      {
+         US_DataPubImporter          importer;
+         US_DataPubImporter::Options options = dbOptions();
+         options.dryRun = ( dry == 1 );
+         QString                     error;
+
+         importer.setDatabase( latin.db() );
+         ASSERT_TRUE ( importer.inspect( bundlePath, error ) );
+         EXPECT_FALSE( importer.runImport( options, error ) )
+            << ( dry ? "dry run" : "import" );
+         EXPECT_TRUE ( error.contains( QString::fromUtf8( "\xCE\xB1" ) )  &&
+                       error.contains( "U+03B1" )                         &&
+                       error.contains( "description" )                    &&
+                       error.contains( "nalyte" )                         &&
+                       error.contains( "latin1" ) ) << error.toStdString();
+      }
+
+      EXPECT_EQ( latin.begins,   0 );
+      EXPECT_EQ( latin.writes(), 0 );
+   }
+
+   // A target that holds it takes it
+   US_DataPubImporter wide;
+   QString            error;
+   ASSERT_TRUE( importOnce( wide, error, dbOptions() ) ) << error.toStdString();
+   EXPECT_EQ( fake.callsOf( "new_analyte" ).value( 0 ).value( 5 ), alpha );
+
+   // ... and latin1 holds an acute accent
+   editAnalyteXml( [ & ]( QString& text )
+   {
+      text.replace( "description=\"" + alpha + "\"",
+                    "description=\"" + acute + "\"" );
+   }, false );
+
+   DataPubFakeDb latin;
+   latin.addHardware( "DEMO-1" );
+   latin.charset = "latin1";
+
+   US_DataPubImporter plain;
+   plain.setDatabase( latin.db() );
+   ASSERT_TRUE( plain.inspect( bundlePath, error ) );
+   ASSERT_TRUE( plain.runImport( dbOptions(), error ) ) << error.toStdString();
+   EXPECT_EQ( latin.callsOf( "new_analyte" ).value( 0 ).value( 5 ), acute );
+}
+
+// A number that is not finite is refused by the preflight of a database
+// import too
+TEST_F( DataPubMockRules, ANumberThatIsNotFiniteIsRefusedUpFront )
+{
+   editAnalyteXml( []( QString& text )
+   {
+      text.replace( QRegularExpression( "vbar20=\"[^\"]*\"" ),
+                    "vbar20=\"inf\"" );
+   }, false );
+
+   expectRefusedEarly( fake, "vbar20" );
 }
 
 // A protein the bundle carries from a disk store holds the 280 nm value
@@ -3881,37 +4131,98 @@ TEST_F( DataPubMockImport, StaleStagingDirectoriesAreSwept )
    EXPECT_FALSE( QFile::exists( liveDir ) );
 }
 
-// An importer told to stop by a signal removes its staging directory
-// before the signal ends the process
-TEST_F( DataPubMockImport, AStopSignalRemovesTheStagingDirectory )
+// An importer stopped by a signal leaves its staging directory to the
+// sweep: no handler removes it (a signal handler cannot do that safely),
+// the signal ends the process as it would anyway, and the directory keeps
+// the lock of a process that is gone, so the next import removes it
+TEST_F( DataPubMockImport, AStoppedImportersDirectoryIsSweptNextTime )
 {
-   US_DataPubImporter importer;
-   QString            error;
-   ASSERT_TRUE( importer.inspect( bundlePath, error ) ) << error.toStdString();
-   QString stage = QFileInfo( importer.bundleRoot() ).path();
-   ASSERT_TRUE( QFile::exists( stage ) );
-
+   QString     parent = US_Settings::tmpDir() + "/us_datapub";
+   QStringList before = QDir( parent ).entryList( QStringList( "bundle_*" ),
+                                                  QDir::Dirs
+                                                  | QDir::NoDotAndDotDot );
    fflush( nullptr );
    pid_t pid = fork();
    ASSERT_GE( pid, 0 );
 
    if ( pid == 0 )
-   {  // The child shares the importer's registration; it only signals
-      US_DataPubImporter::installSignalCleanup();
+   {
+      US_DataPubImporter importer;
+      QString            error;
+
+      if ( ! importer.inspect( bundlePath, error ) )  _exit( 2 );
+
       raise( SIGTERM );
       _exit( 3 );                     // Not reached
    }
 
    int status = 0;
    ASSERT_EQ( waitpid( pid, &status, 0 ), pid );
-   EXPECT_TRUE( WIFSIGNALED( status ) );
+   ASSERT_TRUE( WIFSIGNALED( status ) ) << "exit " << WEXITSTATUS( status );
+   EXPECT_EQ( WTERMSIG( status ), SIGTERM );
 
-   if ( WIFSIGNALED( status ) )
-   {
-      EXPECT_EQ( WTERMSIG( status ), SIGTERM );
-   }
+   QStringList after = QDir( parent ).entryList( QStringList( "bundle_*" ),
+                                                 QDir::Dirs
+                                                 | QDir::NoDotAndDotDot );
+   QStringList left;
 
+   for ( const QString& dir : after )
+      if ( ! before.contains( dir ) )  left << dir;
+
+   ASSERT_EQ( left.size(), 1 );
+   QString stage = parent + "/" + left[ 0 ];
+   EXPECT_TRUE( QFile::exists( stage + "/import.lock" ) );
+
+   EXPECT_GE  ( US_DataPubImporter::sweepStaleStaging(), 1 );
    EXPECT_FALSE( QFile::exists( stage ) );
+}
+
+// The lock is in the staging directory from the moment it is made -- a
+// sweep never finds a live directory without it -- and it is the last
+// thing removed
+TEST_F( DataPubMockImport, TheStagingDirectoryIsLockedFromTheStart )
+{
+   US_DataPubBundle bundle;
+   QString          error;
+   bundle.setStagingLock( "import.lock" );
+   ASSERT_TRUE( bundle.createStaging( error ) ) << error.toStdString();
+
+   QString base = QFileInfo( bundle.stagingPath() ).path();
+   EXPECT_TRUE( bundle.stagingLocked() );
+   ASSERT_TRUE( QFile::exists( base + "/import.lock" ) );
+
+   // Held: a probe cannot take it, and the sweep leaves the directory
+   QLockFile probe( base + "/import.lock" );
+   probe.setStaleLockTime( 0 );
+   EXPECT_FALSE( probe.tryLock( 0 ) );
+
+   // ... even one that has not changed for days
+   QDateTime past = QDateTime::currentDateTimeUtc().addDays( -3 );
+   struct timeval times[ 2 ];
+   times[ 0 ].tv_sec  = time_t( past.toSecsSinceEpoch() );
+   times[ 0 ].tv_usec = 0;
+   times[ 1 ]         = times[ 0 ];
+   ASSERT_EQ( utimes( QFile::encodeName( base ).constData(), times ), 0 );
+   US_DataPubImporter::sweepStaleStaging();
+   EXPECT_TRUE( QFile::exists( bundle.stagingPath() ) );
+
+   bundle.cleanup();
+   EXPECT_FALSE( bundle.stagingLocked() );
+   EXPECT_FALSE( QFile::exists( base ) );
+
+   // A bundle that fails to unpack leaves nothing either
+   QString junk = root + "/junk.tar.gz";
+   QFile   file( junk );
+   ASSERT_TRUE( file.open( QIODevice::WriteOnly ) );
+   file.write( "not an archive" );
+   file.close();
+
+   QStringList before = QDir( US_Settings::tmpDir() + "/us_datapub" )
+                        .entryList( QDir::Dirs | QDir::NoDotAndDotDot );
+   US_DataPubImporter importer;
+   EXPECT_FALSE( importer.inspect( junk, error ) );
+   EXPECT_EQ( QDir( US_Settings::tmpDir() + "/us_datapub" )
+              .entryList( QDir::Dirs | QDir::NoDotAndDotDot ), before );
 }
 #endif
 

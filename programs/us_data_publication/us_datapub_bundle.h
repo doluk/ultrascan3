@@ -26,9 +26,27 @@ class US_DataPubBundle
       static QString manifestName( void );
 
       //! \brief Create a private staging directory for a new bundle
+      //!
+      //! With a lock name set (\ref setStagingLock), the lock is taken in
+      //! the new directory before this returns.
       //! \param error Filled in with a message when the directory fails
       //! \returns True when the staging directory is ready
       bool    createStaging( QString& error );
+
+      /*! \brief Hold a lock file of this name in every staging directory
+
+          The lock is taken as soon as the directory exists, before anything
+          is put into it, and held until \ref cleanup has removed everything
+          else: what a process that is still running stages is never found
+          without its lock.  A sweep for directories left behind by a killed
+          process (US_DataPubImporter::sweepStaleStaging) tells them by a
+          lock whose process is gone.
+          \param name The base name of the lock file; empty for no lock
+      */
+      void    setStagingLock( const QString& name );
+
+      //! \brief True when the staging directory's lock is held
+      bool    stagingLocked( void ) const;
 
       //! \brief The staging directory, or an empty string when there is none
       QString stagingPath( void ) const;
@@ -98,7 +116,12 @@ class US_DataPubBundle
       //! \param keep True to keep the directory
       void    setKeepStaging( bool keep );
 
-      //! \brief Remove the staging directory now
+      /*! \brief Remove the staging directory now
+
+          The tree goes first and the lock, if one is held, after it: the
+          directory is never left without its lock while anything of the
+          bundle is still in it.
+      */
       void    cleanup( void );
 
    private:
@@ -107,6 +130,8 @@ class US_DataPubBundle
       QString work;       //!< Scratch space beside it
       QString root;
       bool    keep;
+      QString lock_name;  //!< The lock file's base name; empty for none
+      QLockFile* lock;    //!< The lock held in base, or null
 
       bool    verifyEscapes( QString& error ) const;
 

@@ -867,9 +867,13 @@ computed point included: a lone point at 280 nm in such a bundle's analyte
 XML is taken for that computed value and not stored (a measured 280 nm value
 inside a spectrum of more points is kept). Its values have to be finite
 numbers, or the bundle is refused before anything is written. A sequence is
-stored without the newlines `US_Analyte`'s files put around and into it.
-When an analyte is compared with one of the target, both are put in those
-terms: the sequence without the file's line breaks, and the extinction
+stored exactly as the bundle holds it — a FASTA header, residue numbers and
+line breaks are the analyte's own — in a database as on disk.
+When an analyte is compared with one of the target, both are put in the same
+terms: the sequence without the framing `US_Analyte`'s old writer put around
+it (a newline, pieces of 80 characters each with a newline, a last newline —
+taken off only when the text is exactly that, however many round trips
+piled it up), and the extinction
 without the 280 nm value computed from the sequence where that is the value
 held. A buffer's component concentrations are taken at full
 precision from the `concentration` of each component in its
@@ -884,11 +888,15 @@ A disk import writes files as it goes. When it fails part way, the files it
 already wrote stay, and the error lists them.
 
 An import unpacks the bundle into a private staging directory under the
-temporary directory, and holds a lock file there while it lives. The command
-line removes the directory when it is stopped by SIGTERM, SIGINT or SIGHUP;
-the next import sweeps every staging directory whose lock belongs to a
-process that is gone (after SIGKILL, a crash) and every one without a lock
-that has not changed for two days.
+temporary directory, and holds a lock file there from the moment the
+directory is made until everything else in it has been removed. The import
+installs no signal handlers: a signal that stops it (SIGTERM, SIGINT, SIGHUP,
+SIGKILL, a crash) stops it as it would any program, a signal the process was
+started with ignored stays ignored (`nohup` protects an import), and a
+database import's open transaction is rolled back by the server when the
+connection goes. The directory of a stopped import keeps the lock of a
+process that is gone, and the next import sweeps it, together with every
+staging directory without a lock that has not changed for two days.
 
 A model's variance and meniscus are columns of its database row as well as
 attributes of its XML. When the XML has neither, a `variance` and `meniscus`
@@ -897,7 +905,10 @@ the database the values of the model's row (which the stored XML need not
 hold), from disk those of the model file.
 
 A **dry run** reads the target and decides everything, but opens no
-transaction and writes nothing — not even the output directory. Into a
+transaction and writes nothing — not even the output directory. Like the
+import, it refuses a bundle with a number that is not finite (`nan`, `inf`)
+in any attribute of a record or field of the manifest, naming the record,
+the field and the value — whatever the target. Into a
 database it makes the decisions the writers make as they go: it stages each
 run and checks its triples against the bundle, reads its RI profile, resolves
 its project and its hardware (so `--strict-hardware` fails a dry run that
@@ -917,6 +928,7 @@ opens, the rules the server would otherwise enforce only on the writes:
 | Raw data and solution rows name channel 1 (foreign keys) | A target without channel 1 is refused (when the channel table cannot be read, the log says the check could not be made) |
 | `new_noise` needs an edit | A noise record that comes to no edit the bundle carries or the target holds is refused, never written with edit 0 |
 | `new_experiment` takes an operator with a permit for the instrument | An operator without one is stood in for by the current investigator, or another operator who holds one, with a warning; with no permit holder at all the run is refused |
+| Text goes into columns and procedure parameters of a character set (`latin1` in `us3.sql`'s schema, whatever the connection's), and a strict server refuses a character they cannot hold ("Incorrect string value") | The character set of every text parameter of the procedures and every text column of the tables a record type is written with is read from `information_schema` (the schema's default when it shows nothing), and a record whose text — any attribute or text of its XML, apart from an edit's and a time state's, which go into a BLOB, and its fields in the manifest — holds a character the narrowest of them cannot store is refused, naming the record, the field and the character (`α` into a `latin1` target, for instance; `é` fits) |
 
 So a dry run that succeeds is an import that succeeds, short of what only the
 writes can find: a lost connection, a record another session writes in the

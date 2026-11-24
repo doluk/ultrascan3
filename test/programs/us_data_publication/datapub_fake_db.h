@@ -77,6 +77,12 @@
  *
  * A failure can be injected for one procedure (or blob procedure); the call
  * then reports DBERROR, as US_DB2 does for any MySQL error.
+ *
+ * Text goes into columns and procedure parameters of the character set
+ * `charset` (utf8mb4 unless a test says otherwise), which information_schema
+ * and @@character_set_database report (raw queries).  With latin1, a write
+ * whose text holds a character beyond U+00FF is refused with DBERROR, as a
+ * strict server refuses it ("Incorrect string value", 1366).
  */
 class DataPubFakeDb
 {
@@ -101,6 +107,9 @@ class DataPubFakeDb
       // new_experiment refuses any other operator (BADOPERATOR)
       QList< int > operators;
       bool channelRow1 = true;   // The channel table has channel 1
+
+      QString charset = "utf8mb4"; // Of the target's text columns and parameters
+      bool    infoSchema = true; // information_schema shows the charsets
 
       QString failOn;            // A procedure that fails with DBERROR
       QString implicitCommitOn;  // A procedure that commits implicitly
@@ -174,6 +183,9 @@ class DataPubFakeDb
          ON_CALL( mock, statusQuery( An< const QString& >() ) )
             .WillByDefault( Invoke( [ this ]( const QString& sql )
                                     { return handleSql( sql ); } ) );
+         ON_CALL( mock, rawQuery( _ ) )
+            .WillByDefault( Invoke( [ this ]( const QString& sql )
+                                    { handleSql( sql ); } ) );
          ON_CALL( mock, next() )
             .WillByDefault( Invoke( [ this ]()
                                     { return ++cursor <= rows.size(); } ) );
@@ -586,6 +598,34 @@ class DataPubFakeDb
          if ( sql.contains( "FROM channel" ) )
             status = channelRow1 ? int( IUS_DB2::OK )
                                  : int( IUS_DB2::NOROWS );
+
+         // The character sets of the procedures and tables asked about
+         else if ( sql.contains( "information_schema" ) )
+         {
+            static const QRegularExpression quoted( "'([A-Za-z_0-9]+)'" );
+            int split = sql.indexOf( "UNION" );
+            QRegularExpressionMatchIterator it = quoted.globalMatch( sql );
+
+            while ( infoSchema  &&  it.hasNext() )
+            {
+               QRegularExpressionMatch match = it.next();
+               QString name = match.captured( 1 );
+
+               if ( name == "p"  ||  name == "t" )  continue;
+
+               rows << ( QVariantList()
+                         << ( match.capturedStart() < split ? "p" : "t" )
+                         << name.toLower() << charset );
+            }
+
+            status = IUS_DB2::OK;
+         }
+
+         else if ( sql.contains( "@@character_set_database" ) )
+         {
+            rows << ( QVariantList() << charset );
+            status = IUS_DB2::OK;
+         }
          else
             status = IUS_DB2::DBERROR;
 
@@ -596,6 +636,18 @@ class DataPubFakeDb
       // write was refused, with the status set
       bool refuses( const QString& proc, const QStringList& q )
       {
+         // Text a latin1 column or parameter cannot hold
+         if ( charset == "latin1" )
+         {
+            for ( int ii = 1; ii < q.size(); ii++ )
+               for ( const QChar& ch : q[ ii ] )
+                  if ( ch.unicode() > 0xFF )
+                  {
+                     status = IUS_DB2::DBERROR;
+                     return true;
+                  }
+         }
+
          if ( proc == "add_rotor_calibration" )
          {
             if ( level() < 3 )

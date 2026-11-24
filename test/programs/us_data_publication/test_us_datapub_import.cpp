@@ -9,11 +9,14 @@
 #include "us_datapub_hash.h"
 #include "us_datapub_bundle.h"
 #include "us_datapub_cli.h"
+#include "us_analyte.h"
 
 #include <functional>
 
 #if defined( Q_OS_UNIX )
 #include <cstdio>
+#include <csignal>
+#include <cstring>
 #include <unistd.h>
 #endif
 
@@ -1273,6 +1276,44 @@ TEST_F( DataPubCliImport, ADiskImportSucceedsAndAFailedOneSaysSo )
                    << "--output-dir" << targetDir ), 1 );
 }
 
+#if defined( Q_OS_UNIX )
+// An import started with a hang-up ignored (nohup) keeps it ignored, and
+// leaves the other stop signals as it found them: no handler of the
+// importer's takes their place
+TEST_F( DataPubCliImport, AnIgnoredHangUpStaysIgnored )
+{
+   const int sigs[] = { SIGHUP, SIGINT, SIGTERM };
+   struct sigaction saved[ 3 ];
+
+   struct sigaction ignore;
+   memset( &ignore, 0, sizeof( ignore ) );
+   ignore.sa_handler = SIG_IGN;
+   sigemptyset( &ignore.sa_mask );
+   ASSERT_EQ( sigaction( SIGHUP, &ignore, &saved[ 0 ] ), 0 );
+
+   for ( int ii = 1; ii < 3; ii++ )
+      ASSERT_EQ( sigaction( sigs[ ii ], nullptr, &saved[ ii ] ), 0 );
+
+   int rc = run( QStringList() << "--mode" << "import" << "--bundle"
+                 << bundlePath << "--target" << "disk" << "--output-dir"
+                 << targetDir << "--dry-run" );
+
+   struct sigaction now[ 3 ];
+
+   for ( int ii = 0; ii < 3; ii++ )
+      sigaction( sigs[ ii ], nullptr, &now[ ii ] );
+
+   sigaction( SIGHUP, &saved[ 0 ], nullptr );
+   for ( int ii = 1; ii < 3; ii++ )
+      sigaction( sigs[ ii ], &saved[ ii ], nullptr );
+
+   EXPECT_EQ( rc, 0 );
+   EXPECT_TRUE( now[ 0 ].sa_handler == SIG_IGN ) << "SIGHUP";
+   EXPECT_TRUE( now[ 1 ].sa_handler == saved[ 1 ].sa_handler ) << "SIGINT";
+   EXPECT_TRUE( now[ 2 ].sa_handler == saved[ 2 ].sa_handler ) << "SIGTERM";
+}
+#endif
+
 // ------------------------------------------- the manifest and extra payloads
 
 // The manifest is checked against manifest.sha256 like any payload
@@ -1880,43 +1921,221 @@ TEST_F( DataPubDiskAgain, AnRiProfileIsNotTakenForTheExperiment )
    }
 }
 
-// A sequence comes out of an analyte file framed in the newlines
-// US_Analyte's writer adds (one before, one after, one every 80
-// characters), and grows two of them each time it goes through a file.
-// What the record holds is the sequence without them.
-TEST( DataPubImportUnit, ASequenceLosesTheLineBreaksItsFileAdded )
+namespace
+{
+   // What US_Analyte's old writer made of a sequence in a file: a newline,
+   // pieces of 80 characters each with a newline, the rest and a newline
+   QString old_framing( const QString& seq )
+   {
+      QString text = "\n";
+      int     full = seq.size() / 80;
+
+      for ( int ii = 0; ii < full; ii++ )
+         text += seq.mid( ii * 80, 80 ) + "\n";
+
+      if ( seq.size() % 80 > 0 )
+         text += seq.mid( full * 80 );
+
+      return text + "\n";
+   }
+
+   // A sequence as a person pastes it: a FASTA header and numbered lines
+   const char* const fasta =
+      ">sp|P02768|ALBU_HUMAN Serum albumin OS=Homo sapiens\n"
+      "1 MKWVTFISLL FLFSSAYSRG VFRRDAHKSE VAHRFKDLGE ENFKALVLIA FAQYLQQCPF\n"
+      "61 EDHVKLVNEV TEFAKTCVAD ESAENCDKSL HTLFGDKLCT VATLRETYGE MADCCAKQEP\n";
+}
+
+// The old writer's framing -- however many round trips piled it up -- is
+// what the fingerprints take off a sequence, and nothing else: a FASTA
+// header, residue numbers and the sequence's own line breaks stay
+TEST( DataPubImportUnit, OnlyTheOldWritersFramingIsTakenOffASequence )
 {
    QString seq = QString( "MKWVTFISLL" ).repeated( 17 );        // 170 letters
 
-   US_Analyte analyte;
-   analyte.type        = US_Analyte::PROTEIN;
-   analyte.vbar20      = 0.72;
-   analyte.analyteGUID = US_Util::new_guid();
-   analyte.sequence    = seq;
-
-   QTemporaryDir dir;
-   ASSERT_TRUE( dir.isValid() );
-   QString path = dir.path() + "/A.xml";
-
-   // Three round trips through a file, as the library makes them
-   for ( int ii = 0; ii < 3; ii++ )
+   for ( const QString& one : { seq, QString( fasta ), QString(),
+                                QString( "MKWVTFISLL" ).repeated( 8 ) } )
    {
-      QFile::remove( path );
-      ASSERT_EQ( analyte.write( false, path ), IUS_DB2::OK );
+      QString text = one;
 
-      US_Analyte again;
-      ASSERT_EQ( again.readFromFile( path ), IUS_DB2::OK );
-      EXPECT_EQ( US_DataPubImporter::storedSequence( again.sequence ), seq )
-         << "round trip " << ii;
-
-      analyte.sequence = again.sequence;
+      for ( int ii = 0; ii < 3; ii++ )
+      {
+         text = old_framing( text );
+         EXPECT_EQ( US_DataPubImporter::unframedSequence( text ), one )
+            << "round trip " << ii << ": " << one.toStdString();
+      }
    }
 
-   EXPECT_EQ( US_DataPubImporter::storedSequence( "\n\n" ),     QString() );
-   EXPECT_EQ( US_DataPubImporter::storedSequence( "\n\n\n\n" ), QString() );
-   EXPECT_EQ( US_DataPubImporter::storedSequence( "ACGT" ),     QString( "ACGT" ) );
+   // Text no writer framed comes back as it is
+   EXPECT_EQ( US_DataPubImporter::unframedSequence( fasta ), QString( fasta ) );
+   EXPECT_EQ( US_DataPubImporter::unframedSequence( "ACGT" ), QString( "ACGT" ) );
+   EXPECT_EQ( US_DataPubImporter::unframedSequence( "\nACGT" ),
+              QString( "\nACGT" ) );
 
-   // A line longer than the writer's keeps the sequence's own breaks
-   QString longLines = QString( "A" ).repeated( 90 ) + "\n" + "CC";
-   EXPECT_EQ( US_DataPubImporter::storedSequence( longLines ), longLines );
+   // Lines of its own, of any length, inside a newline at either end: not
+   // the old writer's pieces of 80
+   QString own = "\n" + QString( "A" ).repeated( 90 ) + "\nCC\n";
+   EXPECT_EQ( US_DataPubImporter::unframedSequence( own ), own );
+   QString shortLines = "\nMKWV\nTFIS\n";
+   EXPECT_EQ( US_DataPubImporter::unframedSequence( shortLines ),
+              QString( "MKWV\nTFIS" ) )
+      << "a short sequence with a line break of its own, framed once";
+}
+
+// What a MySQL character set can store, as a strict server decides it
+TEST( DataPubImportUnit, TheCharactersACharsetCannotStoreAreFound )
+{
+   QString alpha = QString::fromUtf8( "Prot\xC3\xA9ine \xCE\xB1" );  // é, α
+   QString euro  = QString::fromUtf8( "Prot\xC3\xA9ine \xE2\x82\xAC" ); // é, €
+   QString smile = QString::fromUtf8( "ok \xF0\x9F\x98\x80" );       // U+1F600
+
+   EXPECT_EQ( US_DataPubImporter::unstorableCharacter( "latin1", alpha ),
+              QString::fromUtf8( "\xCE\xB1" ) );
+   EXPECT_EQ( US_DataPubImporter::unstorableCharacter( "latin1", euro ),
+              QString() );
+   EXPECT_EQ( US_DataPubImporter::unstorableCharacter( "latin1", "plain" ),
+              QString() );
+   EXPECT_EQ( US_DataPubImporter::unstorableCharacter( "utf8mb3", alpha ),
+              QString() );
+   EXPECT_EQ( US_DataPubImporter::unstorableCharacter( "utf8", smile ),
+              QString::fromUtf8( "\xF0\x9F\x98\x80" ) );
+   EXPECT_EQ( US_DataPubImporter::unstorableCharacter( "utf8mb4", smile ),
+              QString() );
+   EXPECT_EQ( US_DataPubImporter::unstorableCharacter( "ascii", euro ),
+              QString::fromUtf8( "\xC3\xA9" ) );
+   EXPECT_EQ( US_DataPubImporter::unstorableCharacter( "binary", smile ),
+              QString() );
+   // A set this does not know: only ASCII is safe
+   EXPECT_EQ( US_DataPubImporter::unstorableCharacter( "koi8r", alpha ),
+              QString::fromUtf8( "\xC3\xA9" ) );
+}
+
+// A sequence goes into a disk store as the bundle holds it, and the same
+// bundle imported again finds it the same analyte
+TEST_F( DataPubCrafted, ASequenceIsKeptAsItIsOnDisk )
+{
+   QString path = craft( "fasta", [ & ]( US_DataPubManifest& m,
+                                         const QString& stage )
+   {
+      editEntity( m, US_DataPub::Analyte, [ & ]( US_DataPubEntity& entity )
+      {
+         QString    file = stage + "/" + entity.payload;
+         US_Analyte analyte;
+         ASSERT_EQ( analyte.readFromFile( file ), IUS_DB2::OK );
+         analyte.sequence = fasta;
+         QFile::remove( file );
+         ASSERT_EQ( analyte.write( false, file ), IUS_DB2::OK );
+         entity.sha256 = US_DataPubHash::fileHash( file );
+      } );
+   } );
+   ASSERT_FALSE( path.isEmpty() );
+
+   US_DataPubImporter importer;
+   QString            error;
+   ASSERT_TRUE( importer.inspect  ( path, error ) ) << error.toStdString();
+   ASSERT_TRUE( importer.runImport( diskOptions(), error ) )
+      << error.toStdString();
+
+   QStringList files = QDir( targetDir + "/data/analytes" )
+                       .entryList( QStringList( "*.xml" ), QDir::Files );
+   ASSERT_EQ( files.size(), 1 );
+   US_Analyte stored;
+   ASSERT_EQ( stored.readFromFile( targetDir + "/data/analytes/" + files[ 0 ] ),
+              IUS_DB2::OK );
+   EXPECT_EQ( stored.sequence.toUtf8(), QByteArray( fasta ) );
+
+   US_DataPubImporter again;
+   ASSERT_TRUE( again.inspect  ( path, error ) ) << error.toStdString();
+   ASSERT_TRUE( again.runImport( diskOptions(), error ) )
+      << error.toStdString();
+
+   for ( const US_DataPubImporter::Result& result : again.results() )
+   {
+      if ( result.type == US_DataPub::Analyte )
+      {
+         EXPECT_EQ( result.resolution, US_DataPub::ResolvedReused );
+      }
+   }
+}
+
+// A number that is not finite -- an old or foreign bundle's -- is refused
+// before anything is written, by the dry run as by the import: a disk
+// store would hold "nan", a database what its column makes of it
+TEST_F( DataPubCrafted, ANumberThatIsNotFiniteIsRefusedByTheDryRunToo )
+{
+   struct Case
+   {
+      US_DataPub::EntityType type;
+      const char*            pattern;
+      const char*            value;
+      const char*            field;
+   };
+
+   const Case cases[] =
+   {
+      { US_DataPub::Buffer,  "density=\"[^\"]*\"", "density=\"nan\"",
+        "density" },
+      { US_DataPub::Analyte, "vbar20=\"[^\"]*\"",  "vbar20=\"inf\"",
+        "vbar20" },
+      { US_DataPub::Model,   "wavelength=\"[^\"]*\"", "wavelength=\"-inf\"",
+        "wavelength" }
+   };
+
+   for ( const Case& one : cases )
+   {
+      SCOPED_TRACE( one.field );
+      QDir( targetDir ).removeRecursively();
+      QDir().mkpath( targetDir );
+
+      QString path = craft( QString( "nonfinite_" ) + US_DataPub::typeKey(
+                               one.type ),
+                            [ & ]( US_DataPubManifest& m, const QString& stage )
+      {
+         editEntity( m, one.type, [ & ]( US_DataPubEntity& entity )
+         {
+            QString file = stage + "/" + entity.payload;
+            QFile   xml( file );
+            ASSERT_TRUE( xml.open( QIODevice::ReadOnly ) );
+            QString text = QString::fromUtf8( xml.readAll() );
+            xml.close();
+            ASSERT_TRUE( text.contains( QRegularExpression( one.pattern ) ) );
+            text.replace( QRegularExpression( one.pattern ), one.value );
+            ASSERT_TRUE( xml.open( QIODevice::WriteOnly | QIODevice::Truncate ) );
+            xml.write( text.toUtf8() );
+            xml.close();
+            entity.sha256 = US_DataPubHash::fileHash( file );
+         } );
+      } );
+      ASSERT_FALSE( path.isEmpty() );
+
+      for ( int dry = 1; dry >= 0; dry-- )
+      {
+         US_DataPubImporter          importer;
+         US_DataPubImporter::Options options = diskOptions();
+         options.dryRun = ( dry == 1 );
+         QString                     error;
+
+         ASSERT_TRUE ( importer.inspect( path, error ) ) << error.toStdString();
+         EXPECT_FALSE( importer.runImport( options, error ) )
+            << ( dry ? "dry run" : "import" );
+         EXPECT_TRUE ( error.contains( "finite" )  &&
+                       error.contains( one.field ) ) << error.toStdString();
+         EXPECT_EQ   ( filesIn( targetDir ), 0 );
+      }
+   }
+}
+
+// ... and so is one among the manifest's own fields of a record
+TEST_F( DataPubCrafted, AManifestNumberThatIsNotFiniteIsRefused )
+{
+   QString path = craft( "nonfinite_manifest", [ & ]( US_DataPubManifest& m,
+                                                      const QString& )
+   {
+      editEntity( m, US_DataPub::Model, [ & ]( US_DataPubEntity& entity )
+      {
+         entity.attrs.insert( "variance", "nan" );
+      } );
+   } );
+
+   expectImportFails( path, "finite" );
 }
