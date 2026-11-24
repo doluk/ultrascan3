@@ -585,3 +585,33 @@ This assumes the naming convention:
 Source file: utils/us_example.cpp \
 Test file: test/utils/test_us_example.cpp \
 You can run this from the root of the repository.
+
+## US_DB2 live tests added in fix round 7
+
+These belong with the suites described under "Database Integration Tests"
+(`test_us_utils_db`) and need the same `US3_TEST_DB_*` settings.
+
+- `test_us_db2_blob_read_live.cpp` creates a procedure of its own that gives
+  every shape of result a blob download can give: no status set, the status
+  set alone, the status and the data, and an OK status followed by no data
+  set, an empty data set, NULL data, a wrong checksum or an error.
+  `readBlobFromDB` must return the status with a reason, write no file on a
+  failure and keep the connection (it used to crash on the status set
+  alone).  With `US3_TEST_DB_PERSON_GUID`, `US3_TEST_DB_PERSON_PW` and
+  `US3_TEST_DB_PERSON_ID` (an investigator who is not an administrator) it
+  also calls the real `download_aucData` and `download_editData` with an ID
+  that does not exist and with raw data of another investigator, directly
+  and through `US_ConvertIO::downloadRawDataBlob`.  A lone UTF-16 surrogate
+  in the password is refused before anything is sent.
+- `test_us_db2_limits_live.cpp` now also sends a blob whose statement is
+  exactly `@@max_allowed_packet - 2` bytes (the longest the server takes: it
+  counts the command byte, and refuses a packet of the limit or more),
+  which must arrive, and one byte more, which must be refused before it is
+  sent.  It checks that 4031 keeps a MariaDB connection (there it is a
+  statement error, raised with `SIGNAL`), and that a connection idle past
+  its `wait_timeout` (set to 1 s for the session) is no longer connected on
+  either server.
+- `test_us_db2_transactions.cpp` kills a connection inside a transaction
+  (`KILL` from the test's second connection) and checks that the commit and
+  the rollback say the server rolled the transaction back, whether the loss
+  is noticed at the commit, at the rollback or by a statement before them.
