@@ -454,9 +454,10 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
       //!          for the database, whose records belong to one person at a
       //!          time.  The listing read for the previous person is then
       //!          dropped, as by \ref clear, so nothing of theirs is shown
-      //!          as the new person's.  The local results directory holds
-      //!          the same work whoever is selected, so nothing there goes
-      //!          stale and nothing is dropped.
+      //!          as the new person's, and \ref listingDropped says so.  The
+      //!          local results directory holds the same work whoever is
+      //!          selected, so nothing there goes stale and nothing is
+      //!          dropped.
       bool refreshInvestigator( void );
 
       //! \brief Read the first layer: one entry per experiment
@@ -515,7 +516,9 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
           listed, every record would look like an orphan, and the read is
           refused.  The investigator is checked first, as by
           \ref refreshInvestigator, so a change made since the listing is
-          caught here.
+          caught here: the listing is dropped, \ref listingDropped is
+          emitted, and the error says that the investigator changed and the
+          experiments have to be listed again.
           \param error Filled in with a message when the scan fails
           \returns True when every experiment now has its records; on false
                    nothing has changed
@@ -771,6 +774,14 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
       //!        was hung under one of its models and its counts changed
       //! \param index The position of the experiment
       void runChanged  ( int index );
+
+      //! \brief The listing was dropped because a different investigator
+      //!        is selected now (\ref refreshInvestigator, which \ref loadRuns
+      //!        and \ref loadAll call): \ref runCount is 0, every experiment
+      //!        position given before means nothing, and nothing is listed
+      //!        until \ref loadRuns succeeds again.  Not emitted by \ref clear,
+      //!        which the caller asks for itself.
+      void listingDropped( void );
 
       //! \brief A human readable note about what the catalog is doing
       //! \param message The note

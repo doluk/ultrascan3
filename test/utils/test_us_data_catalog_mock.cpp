@@ -2191,13 +2191,25 @@ TEST_F( TestUSDataCatalogMock, AWholeStoreReadAfterAChangeOfInvestigatorIsRefuse
    US_DataCatalog catalog;
    attachAndList( catalog );
 
+   QSignalSpy dropped( &catalog, &US_DataCatalog::listingDropped );
    InvestigatorGuard other( kInv + 1 );
    server.calls.clear();
    QString error;
    EXPECT_FALSE( catalog.loadAll( error ) );
-   EXPECT_FALSE( error.isEmpty() );
+   EXPECT_TRUE( error.contains( "different investigator" ) ) << error.toStdString();
    EXPECT_EQ( catalog.runCount(), 0 );
    EXPECT_TRUE( server.calls.isEmpty() ) << server.calls.join( "," ).toStdString();
+
+   // The listing is emptied out loud, once
+   EXPECT_EQ( dropped.count(), 1 );
+   EXPECT_FALSE( catalog.loadAll( error ) );
+   EXPECT_EQ( dropped.count(), 1 ) << "nothing more was dropped";
+   EXPECT_FALSE( error.contains( "different investigator" ) ) << error.toStdString();
+
+   // clear() is the caller's own doing, and is not announced
+   ASSERT_TRUE( catalog.loadRuns( error ) ) << error.toStdString();
+   catalog.clear();
+   EXPECT_EQ( dropped.count(), 1 );
 }
 
 // An ID the server gives as NULL or 0 is "-1", as on disk
