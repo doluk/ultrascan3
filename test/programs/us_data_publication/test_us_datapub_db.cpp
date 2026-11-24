@@ -753,79 +753,10 @@ TEST_F( DataPubDb, TheExportedTimeStateCarriesItsDefinitions )
    person matching US3_TEST_DB_PERSON_GUID, and the lab, instrument, rotor
    and operator permit an experiment record needs.
 */
-class DataPubDbImport : public DataPubTestEnv
+// The scratch import database (test/README, section 4): the target of the
+// import cases below
+class DataPubDbImport : public DataPubDbTargetEnv
 {
-   protected:
-      QString     master;
-      QStringList savedDB;
-      int         savedInv  = 0;
-      bool        restore   = false;
-      US_DB2*     db        = nullptr;
-
-      void SetUp() override
-      {
-         QString host = qEnvironmentVariable( "US3_TEST_DB_HOST" );
-         QString name = qEnvironmentVariable( "US3_TEST_DB_IMPORT_NAME" );
-         QString user = qEnvironmentVariable( "US3_TEST_DB_USER" );
-         QString guid = qEnvironmentVariable( "US3_TEST_DB_PERSON_GUID" );
-
-         if ( host.isEmpty()  ||  name.isEmpty()  ||
-              user.isEmpty()  ||  guid.isEmpty() )
-            GTEST_SKIP() << "no scratch import database configured";
-
-         master = "us3-datapub-import";
-
-         QStringList dbCipher   = US_Crypto::encrypt(
-               qEnvironmentVariable( "US3_TEST_DB_PASS" ), master );
-         QStringList userCipher = US_Crypto::encrypt(
-               qEnvironmentVariable( "US3_TEST_DB_PERSON_PW" ), master );
-
-         QStringList entry;
-         entry << "us3 import database" << user << name << host
-               << dbCipher.at( 0 ) << dbCipher.at( 1 )
-               << qEnvironmentVariable( "US3_TEST_DB_EMAIL" )
-               << userCipher.at( 0 ) << userCipher.at( 1 ) << guid;
-
-         savedDB  = US_Settings::defaultDB();
-         savedInv = US_Settings::us_inv_ID();
-         restore  = true;
-
-         US_Settings::set_defaultDB( entry );
-         US_Settings::set_us_inv_ID(
-               qEnvironmentVariable( "US3_TEST_DB_PERSON_ID" ).toInt() );
-
-         db = new US_DB2();
-         QString error;
-
-         if ( ! db->connect( master, error ) )
-         {
-            delete db;
-            db = nullptr;
-            US_Settings::set_defaultDB( savedDB );
-            restore = false;
-            GTEST_SKIP() << "cannot reach the import database: "
-                         << error.toStdString();
-         }
-
-         // The store on disk comes last: it moves workBaseDir, and the
-         // settings above have to be in place whether or not it is built
-         DataPubTestEnv::SetUp();
-      }
-
-      void TearDown() override
-      {
-         delete db;
-         db = nullptr;
-
-         if ( restore )
-         {
-            US_Settings::set_defaultDB ( savedDB  );
-            US_Settings::set_us_inv_ID ( savedInv );
-            restore = false;
-
-            DataPubTestEnv::TearDown();
-         }
-      }
 };
 
 /* A time state comes back out of the database it was imported into.
@@ -4168,7 +4099,7 @@ TEST_F( DataPubMockImport, StaleStagingDirectoriesAreSwept )
    // ... and one that changed a moment ago
    ASSERT_TRUE( QDir().mkpath( parent + "/bundle_new" ) );
 
-   EXPECT_EQ  ( US_DataPubImporter::sweepStaleStaging(), 2 );
+   EXPECT_EQ  ( US_DataPubBundle::sweepStaleStaging(), 2 );
    EXPECT_FALSE( QFile::exists( parent + "/bundle_old" ) );
    EXPECT_TRUE ( QFile::exists( parent + "/bundle_new" ) );
    EXPECT_FALSE( QFile::exists( parent + "/bundle_dead" ) );
@@ -4221,8 +4152,37 @@ TEST_F( DataPubMockImport, AStoppedImportersDirectoryIsSweptNextTime )
    QString stage = parent + "/" + left[ 0 ];
    EXPECT_TRUE( QFile::exists( stage + "/import.lock" ) );
 
-   EXPECT_GE  ( US_DataPubImporter::sweepStaleStaging(), 1 );
+   EXPECT_GE  ( US_DataPubBundle::sweepStaleStaging(), 1 );
    EXPECT_FALSE( QFile::exists( stage ) );
+}
+
+// The sweep an import starts with is the bundle's, which honours any
+// process's lock: the staging directory of an export that is still
+// running -- holding export.lock, not import.lock -- is never removed,
+// however long it has not changed
+TEST_F( DataPubMockImport, AnImportLeavesARunningExportsStagingAlone )
+{
+   US_DataPubBundle exporting;
+   QString          error;
+   exporting.setStagingLock( "export.lock" );
+   ASSERT_TRUE( exporting.createStaging( error ) ) << error.toStdString();
+
+   QString base = QFileInfo( exporting.stagingPath() ).path();
+   ASSERT_TRUE( QFile::exists( base + "/export.lock" ) );
+
+   QDateTime past = QDateTime::currentDateTimeUtc().addDays( -3 );
+   struct timeval times[ 2 ];
+   times[ 0 ].tv_sec  = time_t( past.toSecsSinceEpoch() );
+   times[ 0 ].tv_usec = 0;
+   times[ 1 ]         = times[ 0 ];
+   ASSERT_EQ( utimes( QFile::encodeName( base ).constData(), times ), 0 );
+
+   US_DataPubImporter importer;
+   ASSERT_TRUE( importer.inspect( bundlePath, error ) ) << error.toStdString();
+   EXPECT_TRUE( QFile::exists( exporting.stagingPath() ) );
+   EXPECT_TRUE( exporting.stagingLocked() );
+
+   exporting.cleanup();
 }
 
 // The lock is in the staging directory from the moment it is made -- a
@@ -4251,7 +4211,7 @@ TEST_F( DataPubMockImport, TheStagingDirectoryIsLockedFromTheStart )
    times[ 0 ].tv_usec = 0;
    times[ 1 ]         = times[ 0 ];
    ASSERT_EQ( utimes( QFile::encodeName( base ).constData(), times ), 0 );
-   US_DataPubImporter::sweepStaleStaging();
+   US_DataPubBundle::sweepStaleStaging();
    EXPECT_TRUE( QFile::exists( bundle.stagingPath() ) );
 
    bundle.cleanup();
@@ -5014,4 +4974,153 @@ TEST_F( DataPubDbImport, ARunKeepsItsCalibrationThroughADiskStore )
          again.manifest().section( US_DataPub::RotorCalibration );
    ASSERT_EQ( back.size(), 1 );
    EXPECT_EQ( back[ 0 ].guid, cals[ 0 ].guid );
+}
+
+// A model that borrows a noise record is written after it: a database
+// tells a borrowing model by a lastUpdated not earlier than the noise's
+// timeEntered
+TEST_F( DataPubMockImport, ABorrowingModelIsWrittenAfterItsNoise )
+{
+   QString  laterGUID = US_Util::new_guid();
+   US_Model later;
+   later.modelGUID   = laterGUID;
+   later.editGUID    = editGUID;
+   later.description = runID + ".1A280.2dsa-mc.model";
+   later.write( US_Settings::dataDir() + "/models/M0000002.xml" );
+
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection;
+   selection.fromDb = false;
+   selection.scope  = US_DataPub::ScopeNoise;
+   selection.runIDs << runID;
+
+   QString error;
+   ASSERT_TRUE( exporter.exportBundle( selection, bundlePath, error ) )
+      << error.toStdString();
+
+   US_DataPubEntity noise;
+   ASSERT_TRUE( exporter.manifest().entity( US_DataPub::Noise, noiseGUID,
+                                            noise ) );
+   ASSERT_EQ( noise.attrs.value( "borrowedByModelGUIDs" ), laterGUID );
+
+   US_DataPubImporter importer;
+   ASSERT_TRUE( importOnce( importer, error, dbOptions() ) )
+      << error.toStdString();
+
+   int fitted   = -1;
+   int borrower = -1;
+   int noiseAt  = -1;
+
+   for ( int ii = 0; ii < fake.calls.size(); ii++ )
+   {
+      const QStringList& call = fake.calls[ ii ];
+
+      if ( call.value( 0 ) == "new_model"  &&  call.value( 1 ) == modelGUID )
+         fitted = ii;
+      if ( call.value( 0 ) == "new_model"  &&  call.value( 1 ) == laterGUID )
+         borrower = ii;
+      if ( call.value( 0 ) == "new_noise"  &&  call.value( 1 ) == noiseGUID )
+         noiseAt = ii;
+   }
+
+   ASSERT_GE( fitted,   0 );
+   ASSERT_GE( borrower, 0 );
+   ASSERT_GE( noiseAt,  0 );
+   EXPECT_LT( fitted,  noiseAt );
+   EXPECT_GT( borrower, noiseAt );
+   EXPECT_EQ( fake.commits, 1 );
+}
+
+
+/* A wrong master password is said to be wrong before the import opens the
+   database, not reported as the server's refusal of a login without a
+   password. */
+TEST_F( DataPubDbImport, AWrongMasterPasswordIsSaidToBeWrong )
+{
+   US_DataPubImporter::Options options;
+   options.target       = US_DataPub::TargetDb;
+   options.dbPassword   = master + "-wrong";
+   options.verifyHashes = true;
+   options.dryRun       = true;
+
+   US_DataPubImporter importer;
+   QString            error;
+   QString            bundle = root + "/master.tar.gz";
+
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection;
+   selection.fromDb = false;
+   selection.scope  = US_DataPub::ScopeNoise;
+   selection.runIDs << runID;
+   ASSERT_TRUE( exporter.exportBundle( selection, bundle, error ) )
+      << error.toStdString();
+
+   ASSERT_TRUE ( importer.inspect( bundle, error ) ) << error.toStdString();
+   EXPECT_FALSE( importer.runImport( options, error ) );
+   EXPECT_TRUE ( error.contains( "master password is wrong" ) )
+      << error.toStdString();
+   EXPECT_FALSE( error.contains( "using password" ) ) << error.toStdString();
+}
+
+/* A model that borrows the noise of its edit is told by its time stamp:
+   not older than the noise.  Imported into a database -- the borrowing
+   model written after the noise -- and exported from it again, the noise
+   still travels with it. */
+TEST_F( DataPubDbImport, ABorrowingModelKeepsItsNoiseThroughTheDatabase )
+{
+   QString  laterGUID = US_Util::new_guid();
+   US_Model later;
+   later.modelGUID   = laterGUID;
+   later.editGUID    = editGUID;
+   later.description = runID + ".1A280.2dsa-mc.model";
+   later.write( US_Settings::dataDir() + "/models/M0000002.xml" );
+
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection;
+   selection.fromDb = false;
+   selection.scope  = US_DataPub::ScopeNoise;
+   selection.runIDs << runID;
+
+   QString bundle = root + "/borrowing.tar.gz";
+   QString error;
+   ASSERT_TRUE( exporter.exportBundle( selection, bundle, error ) )
+      << error.toStdString();
+
+   US_DataPubEntity noise;
+   ASSERT_TRUE( exporter.manifest().entity( US_DataPub::Noise, noiseGUID,
+                                            noise ) );
+   ASSERT_EQ( noise.attrs.value( "borrowedByModelGUIDs" ), laterGUID );
+
+   US_DataPubImporter::Options options;
+   options.target       = US_DataPub::TargetDb;
+   options.dbPassword   = master;
+   options.verifyHashes = true;
+   options.dryRun       = false;
+   options.policy       = US_DataPub::PolicyRename;
+
+   US_DataPubImporter importer;
+   ASSERT_TRUE( importer.inspect( bundle, error ) ) << error.toStdString();
+   ASSERT_TRUE( importer.runImport( options, error ) )
+      << error.toStdString() << "\n" << importer.log().join( "\n" ).toStdString();
+
+   QString newRun;
+
+   for ( const US_DataPubImporter::Result& result : importer.results() )
+      if ( result.type == US_DataPub::Experiment )  newRun = result.targetName;
+
+   ASSERT_FALSE( newRun.isEmpty() );
+
+   // Exported from the database again
+   US_DataPubExporter            again;
+   US_DataPubExporter::Selection fromDb;
+   fromDb.fromDb     = true;
+   fromDb.dbPassword = master;
+   fromDb.scope      = US_DataPub::ScopeNoise;
+   fromDb.runIDs << newRun;
+   ASSERT_TRUE( again.exportBundle( fromDb, root + "/again.tar.gz", error ) )
+      << error.toStdString() << "\n" << again.log().join( "\n" ).toStdString();
+
+   US_DataPubEntity back;
+   ASSERT_TRUE( again.manifest().entity( US_DataPub::Noise, noiseGUID, back ) );
+   EXPECT_EQ( back.attrs.value( "borrowedByModelGUIDs" ), laterGUID );
 }

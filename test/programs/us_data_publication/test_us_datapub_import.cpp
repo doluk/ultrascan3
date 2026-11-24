@@ -10,6 +10,7 @@
 #include "us_datapub_bundle.h"
 #include "us_datapub_cli.h"
 #include "us_analyte.h"
+#include "us_crypto.h"
 
 #include <functional>
 
@@ -2219,4 +2220,223 @@ TEST_F( DataPubCrafted, AManifestNumberThatIsNotFiniteIsRefused )
    } );
 
    expectImportFails( path, "finite" );
+}
+
+// ------------------------------------------------- round six, follow-up
+
+namespace
+{
+   // The value of an attribute of the first element of that name
+   QString first_attribute( const QString& path, const QString& element,
+                            const QString& attr )
+   {
+      QFile file( path );
+
+      if ( ! file.open( QIODevice::ReadOnly ) )  return QString();
+
+      QXmlStreamReader reader( &file );
+
+      while ( ! reader.atEnd() )
+      {
+         reader.readNext();
+
+         if ( reader.isStartElement()  &&  reader.name().toString() == element )
+            return reader.attributes().value( attr ).toString();
+      }
+
+      return QString();
+   }
+}
+
+// A wrong master password is said to be wrong before the database is
+// opened, not reported as the server's refusal of a login without one
+TEST_F( DataPubImport, AWrongMasterPasswordIsSaidToBeWrong )
+{
+   QStringList savedDB   = US_Settings::defaultDB();
+   QByteArray  savedHash = US_Settings::UltraScanPW();
+
+   QStringList cipher = US_Crypto::encrypt( "dbpw", "right master" );
+   QStringList entry;
+   entry << "a database" << "us3" << "us3_somewhere" << "127.0.0.1:9"
+         << cipher.at( 0 ) << cipher.at( 1 ) << "me@example.org"
+         << cipher.at( 0 ) << cipher.at( 1 ) << US_Util::new_guid();
+   US_Settings::set_defaultDB( entry );
+   US_Settings::set_UltraScanPW( QByteArray() );
+
+   US_DataPubImporter::Options options;
+   options.target     = US_DataPub::TargetDb;
+   options.dbPassword = "wrong";
+   options.dryRun     = true;
+
+   US_DataPubImporter importer;
+   QString            error;
+   ASSERT_TRUE ( importer.inspect( bundlePath, error ) ) << error.toStdString();
+   EXPECT_FALSE( importer.runImport( options, error ) );
+   EXPECT_TRUE ( error.contains( "master password is wrong" ) )
+      << error.toStdString();
+   EXPECT_FALSE( error.contains( "using password" ) ) << error.toStdString();
+
+   US_Settings::set_defaultDB   ( savedDB   );
+   US_Settings::set_UltraScanPW( savedHash );
+}
+
+// A disk store keeps a model's variance and meniscus in its XML only: the
+// manifest's, at full precision, go into it when the XML says something
+// else -- a model the database stored need not hold them at all
+TEST_F( DataPubCrafted, ADiskModelTakesTheManifestsVarianceAndMeniscus )
+{
+   const double variance = 1.0 / 3.0e5;
+   const double meniscus = 5.8712345678901;
+
+   QString crafted = craft( "variance", [ & ]( US_DataPubManifest& m,
+                                               const QString& )
+   {
+      QList< US_DataPubEntity > list = m.section( US_DataPub::Model );
+      ASSERT_EQ( list.size(), 1 );
+      list[ 0 ].attrs.insert( "variance", QString::number( variance, 'g', 17 ) );
+      list[ 0 ].attrs.insert( "meniscus", QString::number( meniscus, 'g', 17 ) );
+      m.setSection( US_DataPub::Model, list );
+   } );
+
+   US_DataPubImporter importer;
+   QString            error;
+   ASSERT_TRUE( importer.inspect  ( crafted, error ) ) << error.toStdString();
+   ASSERT_TRUE( importer.runImport( diskOptions(), error ) )
+      << error.toStdString();
+
+   QStringList models = QDir( targetDir + "/data/models" )
+                        .entryList( QStringList( "M*.xml" ), QDir::Files );
+   ASSERT_EQ( models.size(), 1 );
+   QString path = targetDir + "/data/models/" + models[ 0 ];
+
+   EXPECT_EQ( first_attribute( path, "model", "variance" ).toDouble(), variance )
+      << first_attribute( path, "model", "variance" ).toStdString();
+   EXPECT_EQ( first_attribute( path, "model", "meniscus" ).toDouble(), meniscus )
+      << first_attribute( path, "model", "meniscus" ).toStdString();
+
+   // ... and a second import finds the model it wrote the same
+   US_DataPubImporter again;
+   ASSERT_TRUE( again.inspect  ( crafted, error ) ) << error.toStdString();
+   ASSERT_TRUE( again.runImport( diskOptions(), error ) ) << error.toStdString();
+
+   for ( const US_DataPubImporter::Result& result : again.results() )
+   {
+      if ( result.type == US_DataPub::Model )
+      {
+         EXPECT_EQ( result.resolution, US_DataPub::ResolvedReused );
+      }
+   }
+}
+
+// A model with no noise of its own borrows the noise of its edit that is
+// not newer than it.  The import writes it after that noise, so the store
+// it went into still says so: exported again, the noise travels with it.
+TEST_F( DataPubImport, ABorrowingModelKeepsItsNoiseThroughAnImport )
+{
+   QString  laterGUID = US_Util::new_guid();
+   US_Model later;
+   later.modelGUID   = laterGUID;
+   later.editGUID    = editGUID;
+   later.description = runID + ".1A280.2dsa-mc.model";
+   later.write( US_Settings::dataDir() + "/models/M0000002.xml" );
+
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection;
+   selection.fromDb = false;
+   selection.scope  = US_DataPub::ScopeNoise;
+   selection.runIDs << runID;
+
+   QString error;
+   QString bundle = root + "/borrowing.tar.gz";
+   ASSERT_TRUE( exporter.exportBundle( selection, bundle, error ) )
+      << error.toStdString();
+
+   US_DataPubEntity noise;
+   ASSERT_TRUE( exporter.manifest().entity( US_DataPub::Noise, noiseGUID,
+                                            noise ) );
+   ASSERT_EQ( noise.attrs.value( "borrowedByModelGUIDs" ), laterGUID );
+
+   US_DataPubImporter importer;
+   ASSERT_TRUE( importer.inspect  ( bundle, error ) ) << error.toStdString();
+   ASSERT_TRUE( importer.runImport( diskOptions(), error ) )
+      << error.toStdString();
+
+   // The borrowing model's file is not older than the noise's
+   QString laterFile;
+   QString noiseFile;
+   QDir    mdir( targetDir + "/data/models" );
+   QDir    ndir( targetDir + "/data/noises" );
+
+   for ( const QString& name : mdir.entryList( QStringList( "M*.xml" ) ) )
+      if ( first_attribute( mdir.filePath( name ), "model", "modelGUID" )
+           == laterGUID )
+         laterFile = mdir.filePath( name );
+
+   for ( const QString& name : ndir.entryList( QStringList( "N*.xml" ) ) )
+      if ( first_attribute( ndir.filePath( name ), "noise", "noiseGUID" )
+           == noiseGUID )
+         noiseFile = ndir.filePath( name );
+
+   ASSERT_FALSE( laterFile.isEmpty() );
+   ASSERT_FALSE( noiseFile.isEmpty() );
+   EXPECT_GE( QFileInfo( laterFile ).lastModified(),
+              QFileInfo( noiseFile ).lastModified() );
+
+   // ... so exported from the store again, the noise is still borrowed
+   US_Settings::set_workBaseDir( targetDir );
+
+   US_DataPubExporter again;
+   ASSERT_TRUE( again.exportBundle( selection, root + "/again.tar.gz", error ) )
+      << error.toStdString();
+
+   US_DataPubEntity back;
+   ASSERT_TRUE( again.manifest().entity( US_DataPub::Noise, noiseGUID, back ) );
+   EXPECT_EQ( back.attrs.value( "borrowedByModelGUIDs" ), laterGUID );
+}
+
+// A calibration the target already has under another GUID is named by that
+// GUID in the run's XML, as by its ID
+TEST_F( DataPubImport, AReusedCalibrationIsNamedByItsTargetGuid )
+{
+   // The bundle's calibration, under another GUID and ID
+   US_DataPubImporter probe;
+   QString            perror;
+   ASSERT_TRUE( probe.inspect( bundlePath, perror ) ) << perror.toStdString();
+   QList< US_DataPubEntity > cals =
+         probe.manifest().section( US_DataPub::RotorCalibration );
+   ASSERT_EQ( cals.size(), 1 );
+
+   US_Rotor::RotorCalibration same;
+   ASSERT_TRUE( US_DataPubRecords::readCalibration(
+                probe.bundleRoot() + "/" + cals[ 0 ].payload, same ) );
+
+   QString theirs = US_Util::new_guid();
+   same.GUID    = theirs;
+   same.ID      = 5;
+   same.rotorID = -1;
+
+   QString rotors = targetDir + "/data/rotors";
+   QDir().mkpath( rotors );
+   ASSERT_TRUE( US_DataPubRecords::writeCalibration( same,
+                                                      rotors + "/C0000001.xml" ) );
+
+   US_DataPubImporter importer;
+   QString            error;
+   ASSERT_TRUE( importer.inspect  ( bundlePath, error ) );
+   ASSERT_TRUE( importer.runImport( diskOptions(), error ) )
+      << error.toStdString();
+
+   bool reused = false;
+
+   for ( const US_DataPubImporter::Result& result : importer.results() )
+      if ( result.type == US_DataPub::RotorCalibration )
+         reused = ( result.resolution == US_DataPub::ResolvedReused  &&
+                    result.targetGUID == theirs );
+
+   ASSERT_TRUE( reused ) << importer.log().join( "\n" ).toStdString();
+
+   QString xml = targetDir + "/results/" + runID + "/" + runID + "."
+                 + runType + ".xml";
+   EXPECT_EQ( first_attribute( xml, "calibration", "id" ),   QString( "5" ) );
+   EXPECT_EQ( first_attribute( xml, "calibration", "guid" ), theirs );
 }

@@ -331,22 +331,6 @@ class US_DataPubImporter : public QObject
       //!        including the ones this importer adds
       static QString resolutionText( US_DataPub::Resolution resolution );
 
-      /*! \brief Remove the staging directories that importers which are no
-                 longer running left behind
-
-          An importer unpacks a bundle into a private directory under
-          US_Settings::tmpDir() and holds a lock file in it while it lives.
-          A process that was killed (by any signal, a crash, a power cut)
-          cannot remove its directory -- no handler tries to: removing a
-          tree is not something a signal handler can do safely, and a
-          handler would override a signal the process was started with
-          ignored (nohup) -- so the next \ref inspect sweeps every one
-          whose lock is stale -- its process is gone -- and every one
-          without a lock that has not changed for two days.  A directory of
-          a running importer or exporter is never touched.
-          \returns The number of directories removed
-      */
-      static int sweepStaleStaging( void );
 
       /*! \brief The first character of a text that a MySQL character set
                  cannot store
@@ -609,6 +593,15 @@ class US_DataPubImporter : public QObject
           that cannot be told apart.
       */
       bool    componentIdsMayBeCounted( void );
+
+      /*! \brief The models of the bundle that borrow one of its noise
+                 records (borrowedByModelGUIDs)
+
+          A catalog tells a borrowing model by its time stamp, which is not
+          older than the noise record's, so the import writes them after
+          the noise.  A model a noise record was fitted to is never one.
+      */
+      QSet< QString > borrowingModels( void ) const;
 
       //! The target's us3_catalog_version(): 0 for a server without it,
       //! -1 before it was asked

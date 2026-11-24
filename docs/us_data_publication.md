@@ -934,7 +934,10 @@ started with ignored stays ignored (`nohup` protects an import), and a
 database import's open transaction is rolled back by the server when the
 connection goes. The directory of a stopped import keeps the lock of a
 process that is gone, and the next import sweeps it, together with every
-staging directory without a lock that has not changed for two days.
+staging directory without a lock that has not changed for two days. The sweep
+is the bundle's (`US_DataPubBundle::sweepStaleStaging()`), which an export
+runs too: it honours every lock (`import.lock`, `export.lock`), so the staging
+directory of a running export is never removed, however old.
 
 An export (and a preview or dry run) stages in a directory of the same kind,
 locked with `export.lock` from the moment it is made, and sweeps first: a
@@ -947,7 +950,21 @@ attributes of its XML, where `US_Model` writes six significant digits. A
 `variance` and `meniscus` attribute of the model's manifest entry win over the
 XML's and are written with all their digits; without them the XML's values are
 used. An export writes both: from the database the values of the model's row
-(which the stored XML need not hold), from disk those of the model file.
+(which the stored XML need not hold), from disk those of the model file. A
+disk store keeps them in the model's XML only, so a disk import writes the
+manifest's into it (all digits) when the XML holds another value or none — a
+zero, which `US_Model` leaves out, stays out.
+
+A model with no noise of its own borrows the noise of its edit by time stamp:
+the newest one not newer than the model. The noise record names such models
+(`borrowedByModelGUIDs`; an older bundle's `borrowedByModelGUID`), and the
+import writes them after the noise record — in a database after its row, on
+disk after its file — so the target says the same: exported from it again, the
+noise still travels with them.
+
+A run's experiment XML names its rotor calibration by ID and, in a bundle, by
+GUID (`<calibration guid="…">`); a disk import points both at the target's
+calibration when the bundle's was matched to one of another GUID.
 
 A few columns of the source's rows have no place in a payload. The import
 writes them from optional attributes of the record's manifest entry, and
@@ -1248,7 +1265,9 @@ us_data_publication --mode import --bundle <file.tar.gz> [options]
 
 A database import settles the master password first, before the bundle is
 unpacked; without one it stops with a single error that names the ways to
-give it (`--db-password-file`, `US3_DB_PASSWORD`).
+give it (`--db-password-file`, `US3_DB_PASSWORD`). A wrong one is said to be
+wrong before the database is opened (`US_DataPub::masterPasswordProblem()`),
+also by the import tab and a dry run.
 
 The closing line counts the records created, reused, renamed, substituted and
 not imported; warnings go to the error output. A failed import says what it

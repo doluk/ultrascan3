@@ -339,9 +339,9 @@ case, which wants the fall-back database, `US_DB2_LiveHandshake`, which wants
 a server of its own (below), and the two `BufferComponentSeedDb` cases, which
 run only with `US3_TEST_LIVE_DB=1` against a seeded database of their own (see
 the head of `test/utils/test_us_buffer_component_live.cpp`).  The
-`DataPubDb*` cases pass 31 on MariaDB with both scratch databases (against
-the unpatched and the patched procedures alike; 30 and one skipped without
-`US3_TEST_DB_IMPORT2_NAME`), or 12 on MySQL 8, where the 19 cases that
+`DataPubDb*` cases pass 33 on MariaDB with both scratch databases (against
+the unpatched and the patched procedures alike; 32 and one skipped without
+`US3_TEST_DB_IMPORT2_NAME`), or 12 on MySQL 8, where the 21 cases that
 import into a database (`DataPubDbImport`, `DataPubDbRules`,
 `DataPubDbFields`, `DataPubDbExport`) skip.
 These are the counts of the branch as these lines were written; run the
@@ -469,7 +469,7 @@ US3_TEST_DB_NAME=us3old ./bin/test_us_datapub --gtest_filter='DataPubDb*'
 (MySQL 8's `mysqldump` also dumps a MariaDB database; add
 `--column-statistics=0`.)  Against it `test_us_utils_db` passes 34 and skips
 8 -- the three cases about the fast path skip, the old-server case runs -- and
-the `DataPubDb*` cases pass as against the fixture (31 on MariaDB, 12 on
+the `DataPubDb*` cases pass as against the fixture (33 on MariaDB, 12 on
 MySQL 8).
 
 The cases that are about the fast path ask the server what it has and skip;

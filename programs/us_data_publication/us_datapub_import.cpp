@@ -456,52 +456,6 @@ namespace
 {
    // The name of the lock an importer holds in its staging directory
    const char* const stage_lock_name = "import.lock";
-
-   // A staging directory without a lock that has not changed for this long
-   // belongs to no running importer or exporter
-   const qint64 stale_unlocked_secs = 2 * 24 * 3600;
-}
-
-int US_DataPubImporter::sweepStaleStaging( void )
-{
-   QString     parent  = US_Settings::tmpDir() + "/us_datapub";
-   QStringList dirs    = QDir( parent ).entryList( QStringList( "bundle_*" ),
-                                                   QDir::Dirs
-                                                   | QDir::NoDotAndDotDot );
-   int         removed = 0;
-   QDateTime   now     = QDateTime::currentDateTimeUtc();
-
-   for ( int ii = 0; ii < dirs.size(); ii++ )
-   {
-      QString path = parent + "/" + dirs[ ii ];
-      QString lock = path + "/" + stage_lock_name;
-      bool    gone = false;
-
-      if ( QFile::exists( lock ) )
-      {
-         // Stale only when the process that took it is not running: the
-         // lock of a live importer, however old, is never taken over
-         QLockFile probe( lock );
-         probe.setStaleLockTime( 0 );
-
-         if ( ! probe.tryLock( 0 ) )  continue;
-
-         probe.unlock();
-         gone = true;
-      }
-
-      else
-      {
-         QDateTime changed = QFileInfo( path ).lastModified().toUTC();
-
-         gone = changed.isValid()  &&
-                changed.secsTo( now ) > stale_unlocked_secs;
-      }
-
-      if ( gone  &&  QDir( path ).removeRecursively() )  removed++;
-   }
-
-   return removed;
 }
 
 /* The old writer framed a sequence S as "\n", then S in pieces of 80
@@ -553,12 +507,14 @@ bool US_DataPubImporter::inspect( const QString& bundlePath, QString& error )
    reslist.clear();
    outcome_text.clear();
 
-   // What importers that were killed left behind
-   int swept = sweepStaleStaging();
+   // What importers and exporters that were killed left behind: the
+   // bundle's sweep, which honours any process's lock (export.lock too)
+   int swept = US_DataPubBundle::sweepStaleStaging();
 
    if ( swept > 0 )
-      note( tr( "%1 staging directories left behind by importers that are"
-                " no longer running were removed" ).arg( swept ) );
+      note( tr( "%1 staging directories left behind by importers or"
+                " exporters that are no longer running were removed" )
+            .arg( swept ) );
 
    // The bundle takes the lock in its staging directory as soon as it is
    // made, before anything is unpacked into it, and lets go of it only
@@ -3176,6 +3132,28 @@ bool US_DataPubImporter::rewriteWork( const US_DataPubEntity& entity,
             {
                remapRef( values, "editGUID", QString(), QString() );
 
+               // A disk store keeps a model's variance and meniscus only
+               // in its XML, which a model the database stored need not
+               // hold (or holds with US_Model's six digits): the
+               // manifest's, the source row's, go in with all their digits
+               // when the XML says something else
+               for ( const char* key : { "variance", "meniscus" } )
+               {
+                  bool   ok    = false;
+                  double value = entity.attrs.value( key ).toDouble( &ok );
+
+                  if ( ! disk  ||  ! ok  ||  ! qIsFinite( value ) )  continue;
+
+                  bool   had   = false;
+                  double held  = values.value( key ).toDouble( &had );
+
+                  // US_Model leaves a zero out
+                  if ( ! had  &&  value == 0.0 )  continue;
+
+                  if ( ! had  ||  held != value )
+                     values.insert( key, QString::number( value, 'g', 17 ) );
+               }
+
                QString desc = values.value( "description" );
 
                if ( oldRun != newRun  &&  desc.startsWith( oldRun + "." ) )
@@ -3683,6 +3661,16 @@ bool US_DataPubImporter::openTarget( QString& error )
       return true;
    }
 
+   // A wrong master password would otherwise be reported as the server's
+   // refusal of a login without a password ("using password: NO")
+   QString problem = US_DataPub::masterPasswordProblem( opts.dbPassword );
+
+   if ( ! problem.isEmpty() )
+   {
+      error = problem;
+      return false;
+   }
+
    US_DB2* db = new US_DB2( opts.dbPassword );
 
    if ( db->lastErrno() != US_DB2::OK )
@@ -4039,12 +4027,14 @@ bool US_DataPubImporter::runImport( const Options& options, QString& error )
 
    emit steps( mani.total() );
 
-   // The manifest lists the records in the declared section order; they are
-   // replayed in the order that satisfies the target's own dependencies.
-   for ( int ii = 0; ii < types.size(); ii++ )
-   {
-      QList< US_DataPubEntity > entities = mani.section( types[ ii ] );
+   // A model that borrows a noise record of its edit is told to do so only
+   // by its time stamp: it is not older than the noise.  So it is written
+   // after the noise, whatever the order of the record types.
+   QSet< QString > borrowers = borrowingModels();
+   bool            deferred  = false;
 
+   auto writeAll = [ & ]( const QList< US_DataPubEntity >& entities ) -> bool
+   {
       for ( int jj = 0; jj < entities.size(); jj++ )
       {
          if ( importEntity( entities[ jj ], error )  &&
@@ -4058,7 +4048,41 @@ bool US_DataPubImporter::runImport( const Options& options, QString& error )
          closeTarget();
          return false;
       }
+
+      return true;
+   };
+
+   // The borrowing models of the bundle, in its order
+   QList< US_DataPubEntity > later;
+   QList< US_DataPubEntity > models = mani.section( US_DataPub::Model );
+
+   for ( int jj = 0; jj < models.size(); jj++ )
+      if ( borrowers.contains( models[ jj ].guid ) )  later << models[ jj ];
+
+   // The manifest lists the records in the declared section order; they are
+   // replayed in the order that satisfies the target's own dependencies.
+   for ( int ii = 0; ii < types.size(); ii++ )
+   {
+      QList< US_DataPubEntity > entities = mani.section( types[ ii ] );
+
+      if ( types[ ii ] == US_DataPub::Model )
+      {
+         for ( int jj = entities.size() - 1; jj >= 0; jj-- )
+            if ( borrowers.contains( entities[ jj ].guid ) )
+               entities.removeAt( jj );
+      }
+
+      if ( ! writeAll( entities ) )  return false;
+
+      if ( types[ ii ] == US_DataPub::Noise  &&  ! deferred )
+      {
+         deferred = true;
+
+         if ( ! writeAll( later ) )  return false;
+      }
    }
+
+   if ( ! deferred  &&  ! writeAll( later ) )  return false;
 
    if ( ! commitWrite( error ) )
    {
@@ -4087,6 +4111,33 @@ bool US_DataPubImporter::runImport( const Options& options, QString& error )
    note( outcome_text );
 
    return true;
+}
+
+/* The models of the bundle that borrow one of its noise records: those a
+   noise record names in borrowedByModelGUIDs (space-separated; an older
+   bundle's borrowedByModelGUID names one), apart from a model a noise
+   record of the bundle was fitted to, which has to be there before it.
+*/
+QSet< QString > US_DataPubImporter::borrowingModels( void ) const
+{
+   QSet< QString >           found;
+   QSet< QString >           fitted;
+   QList< US_DataPubEntity > noises = mani.section( US_DataPub::Noise );
+
+   for ( int ii = 0; ii < noises.size(); ii++ )
+   {
+      fitted << noises[ ii ].depend( US_DataPub::Model );
+
+      QStringList named =
+         ( noises[ ii ].attrs.value( "borrowedByModelGUIDs" ) + " "
+           + noises[ ii ].attrs.value( "borrowedByModelGUID" ) )
+         .split( ' ', Qt::SkipEmptyParts );
+
+      for ( const QString& guid : named )
+         if ( mani.contains( US_DataPub::Model, guid ) )  found << guid;
+   }
+
+   return found - fitted;
 }
 
 /* Look up the project the import was told to attach the runs to.
@@ -5908,6 +5959,7 @@ namespace
          QMap< QString, QString > solutionIDs;    // new GUID -> new ID
          QMap< QString, QString > centerpieceIDs; // old serial -> new serial
          QString calibrationID;    // The rotor calibration ID in the target
+         QString calibrationGUID;  // Its GUID in the target, when mapped
          QString rotorID;          // The rotor ID in the target
    };
 
@@ -5937,6 +5989,12 @@ namespace
          {
             if ( ! remap.calibrationID.isEmpty() )
                values.insert( "id", remap.calibrationID );
+
+            // The calibration's GUID, which an export tags the element
+            // with, names the target's calibration too
+            if ( ! remap.calibrationGUID.isEmpty()  &&
+                 values.contains( "guid" ) )
+               values.insert( "guid", remap.calibrationGUID );
          }
 
          else if ( ename == "rotor" )
@@ -6250,6 +6308,9 @@ bool US_DataPubImporter::createDisk( const US_DataPubEntity& entity,
          remap.calibrationID = ( ! calGUID.isEmpty()  &&
                                  guidMap.contains( calGUID ) )
                                ? mappedId( calGUID ) : QString( "-1" );
+
+         if ( ! calGUID.isEmpty()  &&  guidMap.contains( calGUID ) )
+            remap.calibrationGUID = mappedGuid( calGUID );
          remap.rotorID       = QString( "-1" );
 
          QList< US_DataPubEntity > sols = mani.section( US_DataPub::Solution );
