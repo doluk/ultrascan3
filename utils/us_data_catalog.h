@@ -643,15 +643,22 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
           every field the listing has, and Noise::editGUID when the model is
           one the catalog has read; on disk the checksum only when
           \ref checksums is on.  The database listing is read once and kept
-          until the catalog is cleared or relisted, but which model each
-          record is of is worked out at every call -- by modelID when that
-          model has been read, as the chain attaches noise, else by the
-          record's modelGUID -- so models read since count too.
+          until the catalog is cleared or relisted.  Which model each record
+          is of -- by modelID when that model has been read, as the chain
+          attaches noise, else by the record's modelGUID -- is worked out
+          once for all records and kept, with an index of the models read,
+          until models are read again (\ref loadRuns, \ref loadRunDetail,
+          \ref loadAll, a verify, \ref clear), so models read since count
+          too.  A call then costs the noise of that model, not the catalog.
           \param modelGUID The GUID of the model whose noise is wanted
           \param error     Filled in with a message when the lookup fails
       */
       QList< Noise > noisesOfModel( const QString& modelGUID,
                                     QString& error );
+
+      //! \brief How many times the index of models read, which
+      //!        \ref noisesOfModel uses, has been built; for tests
+      int modelIndexBuilds( void ) const;
 
       /*! \brief The noise records of one edit profile
 
@@ -811,6 +818,30 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
       //! out whose each one is when it is asked
       QList< Noise > noise_cache;
       bool         noise_cached;
+
+      //! What noisesOfModel needs of the models read, built when first
+      //! asked for after a change (see modelsChanged())
+      struct ModelIndex
+      {
+         //! As knownModelDescriptions() gives them
+         QHash< QString, QString > descs;
+         //! The editGUID of each model, by modelGUID
+         QHash< QString, QString > editOf;
+         //! The positions in noise_cache of each model's noise, by the
+         //! model's GUID, once noise_cache is read
+         QHash< QString, QList< int > > noiseOf;
+         bool                           built      = false;
+         bool                           noiseBuilt = false;
+      };
+      ModelIndex   model_index;
+      int          model_index_builds = 0;
+
+      //! \brief Drop the model index: the models read have changed
+      void modelsChanged( void );
+      //! \brief Drop the noise part of it: noise_cache has changed
+      void noiseCacheChanged( void );
+      //! \brief The model index, built if it is not
+      const ModelIndex& modelIndex( void );
 
       bool loadAllDb  ( QList< Run >&, Orphans&, QString& );
       bool loadAllDisk( QList< Run >&, Orphans&, QString& );
