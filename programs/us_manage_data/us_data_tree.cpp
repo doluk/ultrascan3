@@ -887,7 +887,9 @@ void US_DataTree::dtree_help()
       tr( "          investigator's noise keeps the edit; then nothing\n" ) +
       tr( "          is removed, and the message says why.  After a\n" ) +
       tr( "          failure what the database holds is read back, and\n" ) +
-      tr( "          the rows show it.\n" ) +
+      tr( "          the rows show it.  When a record is not removed,\n" ) +
+      tr( "          nothing under it is removed either, and the\n" ) +
+      tr( "          message lists what was and was not removed.\n" ) +
       tr( "    \"remove from local\"\n" ) +
       tr( "       -> Remove this record from local disk.\n" ) +
       tr( "    \"remove both\"\n" ) +
@@ -1565,41 +1567,69 @@ DbgLv(1) << "ITEM do_actions" << narows << item_exs << item_act;
 
    if ( remove && frDB )
    {                                  // REMOVE from DB
-      // The database removes the descendants of a record with it, so a
-      // descendant of a record just removed is only marked as gone
-      QSet< int > cascaded;
+      // Parents go before their descendants: the database removes the
+      // descendants of a record with it, so a descendant of a record just
+      // removed is only marked as gone.  A record whose removal failed
+      // keeps its descendants -- they are not removed one by one instead,
+      // which would leave just the partial removal the database refused --
+      // and the message says what was removed and what was not.
+      QSet< int >  cascaded;
+      QSet< int >  kept;
+      QStringList  errors;
+      QStringList  removed;
+      QStringList  notRemoved;
 
-      for ( int jj = 0; jj < narows; jj++ )
+      for ( int ii = US_DataModel::EDIT; ii <= US_DataModel::NOISE; ii++ )
       {
-         int irow   = actrows[ jj ];
-         US_DataModel::DataDesc ddesc = da_model->row_datadesc( irow );
-
-         if ( ( ddesc.recState & US_DataModel::REC_DB ) == 0 )   continue;
-
-         if ( cascaded.contains( irow ) )
+         for ( int jj = 0; jj < narows; jj++ )
          {
-            da_process->mark_removed_from_db( irow );
-            continue;
-         }
+            int irow   = actrows[ jj ];
+            US_DataModel::DataDesc ddesc = da_model->row_datadesc( irow );
 
-         nacted++;
-         int stat1  = da_process->record_remove_db( irow );
+            if ( ddesc.recType != ii )                              continue;
+            if ( ( ddesc.recState & US_DataModel::REC_DB ) == 0 )   continue;
+
+            if ( kept.contains( irow ) )
+            {
+               notRemoved << ddesc.label;
+               continue;
+            }
+
+            if ( cascaded.contains( irow ) )
+            {
+               da_process->mark_removed_from_db( irow );
+               removed << ddesc.label;
+               continue;
+            }
+
+            nacted++;
+            int stat1  = da_process->record_remove_db( irow );
 DbgLv(1) << "RMV_REC: irow stat1" << irow << stat1;
-
-         if ( stat1 != 0 )
-         {
-            naerrs++;
-            istat      = stat1;
-         }
-
-         else
-         {
             QVector< int > drows = da_model->descendant_rows( irow );
 
-            for ( int kk = 0; kk < drows.size(); kk++ )
-               cascaded << drows[ kk ];
+            if ( stat1 != 0 )
+            {
+               naerrs++;
+               istat      = stat1;
+               errors << da_process->lastError();
+
+               for ( int kk = 0; kk < drows.size(); kk++ )
+                  kept << drows[ kk ];
+            }
+
+            else
+            {
+               removed << ddesc.label;
+
+               for ( int kk = 0; kk < drows.size(); kk++ )
+                  cascaded << drows[ kk ];
+            }
          }
       }
+
+      if ( naerrs > 0 )
+         da_process->setError( removal_report( errors, notRemoved,
+                                               removed ) );
    }
 
    if ( remove && frLoc )
@@ -1721,6 +1751,41 @@ DbgLv(1) << "RMV_REC: irow stat1" << irow << stat1;
    }
 
    return istat;
+}
+
+// What a removal from the database that failed somewhere did, and did not
+QString US_DataTree::removal_report( const QStringList& errors,
+                                     const QStringList& notRemoved,
+                                     const QStringList& removed )
+{
+   const int nshow = 20;
+   QString   text  = errors.join( "\n\n" );
+
+   if ( ! notRemoved.isEmpty() )
+   {
+      text += tr( "\n\nThese selected records belong to a record that was"
+                  " not removed, and were not removed either:\n  %1" )
+              .arg( notRemoved.mid( 0, nshow ).join( "\n  " ) );
+
+      if ( notRemoved.size() > nshow )
+         text += tr( "\n  ... and %1 more" ).arg( notRemoved.size() - nshow );
+   }
+
+   if ( removed.isEmpty() )
+      text += tr( "\n\nNone of the selected records was removed from the"
+                  " database." );
+
+   else
+   {
+      text += tr( "\n\nThese selected records were removed from the"
+                  " database:\n  %1" )
+              .arg( removed.mid( 0, nshow ).join( "\n  " ) );
+
+      if ( removed.size() > nshow )
+         text += tr( "\n  ... and %1 more" ).arg( removed.size() - nshow );
+   }
+
+   return text;
 }
 
 /* Create lists of selected rows and implied action rows.

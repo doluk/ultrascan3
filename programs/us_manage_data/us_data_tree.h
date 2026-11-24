@@ -295,6 +295,16 @@ class US_DataTree : public QObject
         //! \param modelInfos The JSON model descriptions
         static QStringList parse_models_desc_json( const QStringList& modelInfos );
 
+        //! \brief The message of a removal from the database that failed
+        //!        somewhere: why, and what was and was not removed
+        //! \param errors     The message of each record that failed
+        //! \param notRemoved The selected records kept with a record that
+        //!                   failed
+        //! \param removed    The selected records removed
+        QString removal_report( const QStringList& errors,
+                                const QStringList& notRemoved,
+                                const QStringList& removed );
+
         //! \brief Get the action text
         //! \param action Action to perform
         //! \param text Action text

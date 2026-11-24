@@ -99,6 +99,10 @@ class US_DataProcess : public QObject
         //! \return Last error message
         QString lastError( void );
 
+        //! \brief Replace the last error message
+        //! \param message The message
+        void setError( const QString& message );
+
         //! \brief Handle partial errors
         //! \param errCode Error code
         //! \param errCount Error count

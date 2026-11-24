@@ -1001,6 +1001,12 @@ QString US_DataProcess::lastError( )
    return errMsg;
 }
 
+// Replace the last error message
+void US_DataProcess::setError( const QString& message )
+{
+   errMsg = message;
+}
+
 // Append to last error message a notice of errors on some actions
 void US_DataProcess::partialError( int nacterrs, int nactions )
 {

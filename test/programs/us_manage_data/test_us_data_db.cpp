@@ -1887,6 +1887,113 @@ TEST_F( TestUSDataDb, AnEditAnotherInvestigatorsNoiseKeepsLosesNothing )
    }
 }
 
+// The same, through the tree: the selection of the edit takes its model and
+// noise along, and a refused edit keeps them -- they are not removed one by
+// one instead -- and the message says what was not removed
+TEST_F( TestUSDataDb, ARefusedEditKeepsItsSubtreeThroughTheTree )
+{
+   QString edit2  = US_Util::new_guid();
+   QString model2 = US_Util::new_guid();
+   server.edits  << FEdit { "22", edit2, "11", runA + ".2401021200.RA.1.A.280.xml" };
+   FModel theirs { "34", model2, "other.model", edit2, "22", "<model/>" };
+   theirs.owner = kOther;
+   server.models << theirs;
+   server.noises << FNoise{ "48", US_Util::new_guid(), "21", "34", model2,
+                            "ti_noise", "hidden.ti_noise", "<noise/>" };
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   win.select( itemOfRow( win.tw, rowOf( model, editG ) ) );
+   ASSERT_EQ( win.tree.action_row_list().size(), 3 );
+   EXPECT_EQ( win.tree.act_on_selection( "Database only", "DB-only remove" ), 2012 );
+
+   EXPECT_EQ( server.changes, QStringList() << "delete_editedData 21" )
+      << server.changes.join( "\n" ).toStdString();
+   EXPECT_NE( server.modelById( "31" ), nullptr );
+   EXPECT_NE( server.noiseById( "41" ), nullptr );
+   EXPECT_EQ( server.edits.size(), 2 );
+
+   for ( const QString& guid : { editG, modelG, noiseG } )
+      EXPECT_NE( stateOf( model, guid ) & US_DataModel::REC_DB, 0 ) << guid.toStdString();
+
+   QString error = win.proc.lastError();
+   EXPECT_TRUE( error.contains( "Nothing was removed" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "not removed either" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( model.row_datadesc( rowOf( model, modelG ) ).label ) )
+      << error.toStdString();
+   EXPECT_TRUE( error.contains( model.row_datadesc( rowOf( model, noiseG ) ).label ) )
+      << error.toStdString();
+}
+
+// A server that refuses the edit outright changes nothing, and nothing
+// under the edit is removed instead
+TEST_F( TestUSDataDb, AnEditTheServerRefusesKeepsItsSubtree )
+{
+   server.refusing[ "delete_editedData" ] = IUS_DB2::NOTPERMITTED;
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   win.select( itemOfRow( win.tw, rowOf( model, editG ) ) );
+   EXPECT_EQ( win.tree.act_on_selection( "Database only", "DB-only remove" ), 2012 );
+
+   EXPECT_EQ( server.changes, QStringList() << "delete_editedData 21" )
+      << server.changes.join( "\n" ).toStdString();
+   EXPECT_EQ( server.models.size(), 1 );
+   EXPECT_EQ( server.noises.size(), 1 );
+   for ( const QString& guid : { editG, modelG, noiseG } )
+      EXPECT_NE( stateOf( model, guid ) & US_DataModel::REC_DB, 0 ) << guid.toStdString();
+}
+
+// A model the server keeps keeps its noise too; what else was selected is
+// removed, and the message names both
+TEST_F( TestUSDataDb, AModelTheServerKeepsKeepsItsNoise )
+{
+   QString model2 = US_Util::new_guid();
+   QString noise2 = US_Util::new_guid();
+   server.models << FModel{ "32", model2, runA + ".1A280.e2401011200_a2_2DSA_i01.model",
+                            editG, "21", "<model/>" };
+   server.noises << FNoise{ "42", noise2, "21", "32", model2, "ti_noise",
+                            runA + ".1A280.e2401011200_a2_2DSA_i01.ti_noise", "<noise/>" };
+   server.refusing[ "delete_model" ] = IUS_DB2::NOTPERMITTED;
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   // the model, its noise, and the other model's noise
+   win.tw.clearSelection();
+   itemOfRow( win.tw, rowOf( model, modelG ) )->setSelected( true );
+   itemOfRow( win.tw, rowOf( model, noise2 ) )->setSelected( true );
+   ASSERT_EQ( win.tree.action_row_list().size(), 3 );
+
+   EXPECT_EQ( win.tree.act_on_selection( "Database only", "DB-only remove" ), 2013 );
+   EXPECT_EQ( server.changes, QStringList() << "delete_model 31" << "delete_noise 42" )
+      << server.changes.join( "\n" ).toStdString();
+   EXPECT_NE( server.noiseById( "41" ), nullptr );
+   EXPECT_EQ( server.noiseById( "42" ), nullptr );
+   EXPECT_NE( stateOf( model, noiseG ) & US_DataModel::REC_DB, 0 );
+   EXPECT_EQ( stateOf( model, noise2 ) & US_DataModel::REC_DB, 0 );
+
+   QString error = win.proc.lastError();
+   EXPECT_TRUE( error.contains( "permission" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "not removed either" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( model.row_datadesc( rowOf( model, noiseG ) ).label ) )
+      << error.toStdString();
+   EXPECT_TRUE( error.contains( "were removed" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( model.row_datadesc( rowOf( model, noise2 ) ).label ) )
+      << error.toStdString();
+}
+
 // Where the transaction cannot give back what an older delete_editedData
 // removed -- the server ended it -- what is gone is read back, the rows of
 // those records say so, and the message names them
