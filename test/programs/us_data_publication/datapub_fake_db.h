@@ -49,7 +49,8 @@
  * - get_buffer_info answers for the person's own buffers, public ones and
  *   anyone's for an admin, with the owner and the private flag in columns
  *   7 and 8; someone else's private buffer is NOTPERMITTED.  A buffer the
- *   import writes is private, as new_buffer is told.
+ *   import writes is private or public as new_buffer is told (its private
+ *   argument, "0" for public).
  * - The raw data and solution rows name channel 1 (fk_rawData_channelID,
  *   fk_experimentSolutionChannel_channelID): without channelRow1 they fail,
  *   and the import's check of the channel table answers NOROWS.
@@ -63,7 +64,18 @@
  *   connection's last insert ID as it was, as the unpatched procedure does
  *   (LAST_INSERT_ID() is not set by an explicit ID).  The components are
  *   listed and read (get_buffer_component_desc/_info) from the table,
- *   unless a test canned those listings.
+ *   unless a test canned those listings.  With patchedComponents it is the
+ *   updated procedure instead: the highest ID plus one, and that ID as the
+ *   insert ID.
+ * - information_schema.ROUTINES lists the routines of `routines`, with the
+ *   definition a test gave (empty: NULL, as anyone but the definer and an
+ *   administrator reads it).
+ * - SELECT us3_catalog_version() answers catalogVersion; 0 is a server
+ *   without the function, where the statement fails (1305).
+ * - Experiment 1 is "the magic ID that anyone can use temporarily"
+ *   (verify_experiment_permission): its raw data is found by
+ *   get_rawDataID_from_GUID whoever asks, as the procedure does.  The
+ *   listings stay the owner's.
  *
  * Transactions behave as InnoDB's do: what is written inside one is gone
  * after a rollback, and also when the connection is dropped without a
@@ -112,6 +124,17 @@ class DataPubFakeDb
       bool    infoSchema = true; // information_schema shows the charsets
 
       QString failOn;            // A procedure that fails with DBERROR
+
+      // create_buffer_component is the updated procedure: the highest ID
+      // plus one, reported as the insert ID
+      bool patchedComponents = false;
+
+      // us3_catalog_version(): 0 is a server without it
+      int catalogVersion = 0;
+
+      // information_schema.ROUTINES: name -> definition (empty: NULL)
+      QMap< QString, QString > routines { { "create_buffer_component",
+                                            QString() } };
       QString implicitCommitOn;  // A procedure that commits implicitly
 
       // Called as a transaction begins, to change the database between an
@@ -142,6 +165,9 @@ class DataPubFakeDb
 
             QMap< int, Experiment > experiments;
             QMap< int, int >        timestates;
+
+            // Raw data GUID -> the experiment ID new_rawData named
+            QMap< QString, int >    rawExperiments;
 
             // Buffers that are public (private = 0), by GUID; any other is
             // private
@@ -599,6 +625,27 @@ class DataPubFakeDb
             status = channelRow1 ? int( IUS_DB2::OK )
                                  : int( IUS_DB2::NOROWS );
 
+         else if ( sql.contains( "us3_catalog_version()" ) )
+         {
+            if ( catalogVersion > 0 )
+               rows << ( QVariantList() << catalogVersion );
+
+            status = ( catalogVersion > 0 ) ? int( IUS_DB2::OK )
+                                            : int( IUS_DB2::DBERROR );
+         }
+
+         else if ( sql.contains( "information_schema.ROUTINES" ) )
+         {
+            for ( auto it = routines.constBegin(); it != routines.constEnd();
+                  ++it )
+               if ( sql.contains( "'" + it.key() + "'" ) )
+                  rows << ( QVariantList()       // ROUTINE_DEFINITION
+                            << ( it.value().isEmpty() ? QVariant()
+                                                      : QVariant( it.value() ) ) );
+
+            status = IUS_DB2::OK;
+         }
+
          // The character sets of the procedures and tables asked about
          else if ( sql.contains( "information_schema" ) )
          {
@@ -731,6 +778,10 @@ class DataPubFakeDb
 
          int id = state.components.size() + 1;
 
+         if ( patchedComponents )
+            id = state.components.isEmpty()
+                 ? 1 : state.components.lastKey() + 1;
+
          if ( state.components.contains( id ) )
          {
             status = IUS_DB2::DBERROR;      // Duplicate entry for the key
@@ -743,6 +794,9 @@ class DataPubFakeDb
                                       << q.value( 2 ) << q.value( 7 )
                                       << q.value( 6 ) << q.value( 4 )
                                       << q.value( 5 ) );
+
+         if ( patchedComponents )  insertID = id;
+
          status = IUS_DB2::OK;
       }
 
@@ -858,8 +912,12 @@ class DataPubFakeDb
 
             if ( state.registry.value( family ).contains( guid ) )
             {
-               // The permission-checked lookups refuse someone else's
-               if ( scopedLookup( proc )  &&  ! admin  &&
+               // The permission-checked lookups refuse someone else's --
+               // apart from the raw data of experiment 1
+               bool magic = ( proc == "get_rawDataID_from_GUID" )  &&
+                            state.rawExperiments.value( guid ) == 1;
+
+               if ( scopedLookup( proc )  &&  ! admin  &&  ! magic  &&
                     state.owners.value( family ).value( guid, person )
                     != person )
                {
@@ -926,6 +984,17 @@ class DataPubFakeDb
 
             if ( proc == "new_timestate" )
                state.timestates.insert( q.value( 1 ).toInt(), insertID );
+
+            if ( proc == "new_rawData" )
+               state.rawExperiments.insert( q.value( 1 ), q.value( 5 ).toInt() );
+
+            if ( proc == "new_buffer" )
+            {
+               if ( q.value( 8 ) == "0" )
+                  state.publicBuffers.insert( q.value( 1 ) );
+               else
+                  state.publicBuffers.remove( q.value( 1 ) );
+            }
 
             return;
          }

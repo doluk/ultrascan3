@@ -1168,6 +1168,87 @@ TEST_F( DataPubImport, ADiskImportCarriesNoSourceIds )
    EXPECT_FALSE( content.contains( "id=\"21\"" ) ) << content.toStdString();
 }
 
+// A disk store finds a run's rotor calibration by the ID its XML names: the
+// calibration the import writes gets an ID no calibration of the store
+// has, and the run names it -- so that the run, exported from the store
+// again, still has its calibration
+TEST_F( DataPubImport, ADiskImportNamesTheCalibrationItWrote )
+{
+   QString error;
+
+   // The store already holds a calibration of the ID the bundle's has
+   QString rotors = targetDir + "/data/rotors";
+   QDir().mkpath( rotors );
+   US_Rotor::RotorCalibration other;
+   other.ID          = 21;
+   other.GUID        = US_Util::new_guid();
+   other.rotorGUID   = US_Util::new_guid();
+   other.coeff1      = 2.0e-5;
+   other.label       = "Another calibration";
+   other.lastUpdated = QDate( 2023, 5, 1 );
+   ASSERT_TRUE( US_DataPubRecords::writeCalibration( other,
+                                                      rotors + "/C0000001.xml" ) );
+
+   US_DataPubImporter importer;
+   ASSERT_TRUE( importer.inspect  ( bundlePath, error ) );
+   ASSERT_TRUE( importer.runImport( diskOptions(), error ) )
+      << error.toStdString();
+
+   QStringList files = QDir( rotors ).entryList( QStringList( "C*.xml" ),
+                                                 QDir::Files, QDir::Name );
+   ASSERT_EQ( files.size(), 2 );
+
+   US_Rotor::RotorCalibration written;
+   ASSERT_TRUE( US_DataPubRecords::readCalibration( rotors + "/" + files[ 1 ],
+                                                    written ) );
+   EXPECT_EQ( written.GUID, calGUID );
+   EXPECT_EQ( written.ID,   22 );
+   EXPECT_EQ( written.label, QString( "Demo calibration" ) );
+
+   // The run names it
+   QFile xml( targetDir + "/results/" + runID + "/" + runID + "." + runType
+              + ".xml" );
+   ASSERT_TRUE( xml.open( QIODevice::ReadOnly ) );
+   QXmlStreamReader reader( &xml );
+   QString          named;
+
+   while ( ! reader.atEnd() )
+   {
+      reader.readNext();
+
+      if ( reader.isStartElement()  &&  reader.name().toString() == "calibration" )
+         named = reader.attributes().value( "id" ).toString();
+   }
+
+   xml.close();
+   EXPECT_EQ( named, QString::number( written.ID ) );
+
+   for ( const US_DataPubImporter::Result& result : importer.results() )
+   {
+      if ( result.type == US_DataPub::RotorCalibration )
+      {
+         EXPECT_EQ( result.targetID, QString::number( written.ID ) );
+      }
+   }
+
+   // ... and the store's run comes out with it
+   US_Settings::set_workBaseDir( targetDir );
+
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection;
+   selection.fromDb = false;
+   selection.scope  = US_DataPub::ScopeNoise;
+   selection.runIDs << runID;
+   QString again = root + "/again.tar.gz";
+   ASSERT_TRUE( exporter.exportBundle( selection, again, error ) )
+      << error.toStdString();
+
+   QList< US_DataPubEntity > cals =
+         exporter.manifest().section( US_DataPub::RotorCalibration );
+   ASSERT_EQ( cals.size(), 1 );
+   EXPECT_EQ( cals[ 0 ].guid, calGUID );
+}
+
 // ------------------------------------------------------ the command line
 
 class DataPubCliImport : public DataPubImport

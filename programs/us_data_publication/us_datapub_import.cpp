@@ -70,6 +70,7 @@ US_DataPubImporter::US_DataPubImporter( QObject* parent ) : QObject( parent )
    cp_read     = false;
    step_count  = 0;
    user_level  = -1;
+   catalog_version = -1;
 }
 
 // ------------------------------------------------------ the import tab state
@@ -229,6 +230,14 @@ QString US_DataPubImporter::resolutionText( US_DataPub::Resolution resolution )
 
 namespace
 {
+   // A rotor calibration as a message names it: its label in quotes, or,
+   // for a calibration without one, its GUID
+   QString calibration_text( const QString& label, const QString& guid )
+   {
+      return label.trimmed().isEmpty() ? guid
+                                       : QString( "\"%1\"" ).arg( label );
+   }
+
    // Read a whole (XML) file, refusing one larger than the fingerprint cap
    bool read_capped( const QString& path, QByteArray& data, QString& error )
    {
@@ -994,26 +1003,25 @@ bool US_DataPubImporter::resolveExperiments( QString& error )
 
          if ( ! foreign  &&  ! dbase->next() )  continue;
 
-         // Found, and permitted: the investigator's own raw data, under
-         // another of their runs -- for an admin, whose it is is what the
-         // investigator's listing says
+         // Found, and permitted: whose it is is what the investigator's
+         // listing says.  Permitted is not the investigator's own: an
+         // admin may read anyone's, and the raw data of experiment 1 --
+         // the "magic" ID verify_experiment_permission lets anyone use --
+         // is found for everyone, although it is the run of whoever's
+         // first run it became
          if ( ! foreign )
          {
             QString rawID = dbase->value( 0 ).toString();
-            bool    mine  = ! isAdmin();
 
-            if ( isAdmin() )
+            if ( ! readOwned( US_DataPub::RawData ) )
             {
-               if ( ! readOwned( US_DataPub::RawData ) )
-               {
-                  error = lookup_error;
-                  return false;
-               }
-
-               const Owned& list = owned[ int( US_DataPub::RawData ) ];
-               mine = list.ids.contains( rawID )  ||
-                      list.guids.contains( raws[ jj ].guid.toLower() );
+               error = lookup_error;
+               return false;
             }
+
+            const Owned& list = owned[ int( US_DataPub::RawData ) ];
+            bool         mine = list.ids.contains( rawID )  ||
+                                list.guids.contains( raws[ jj ].guid.toLower() );
 
             if ( mine )
             {
@@ -1265,34 +1273,6 @@ bool US_DataPubImporter::checkReuse( QString& error )
    }
 
    return true;
-}
-
-namespace
-{
-   // Two buffer component definitions describe the same component: the
-   // same name, unit, range and gradient forming, and coefficients that
-   // agree to the precision the database and the component table store
-   // them at
-   bool same_component( const US_BufferComponent& one,
-                        const US_BufferComponent& two )
-   {
-      if ( one.name != two.name  ||  one.unit != two.unit )  return false;
-
-      if ( one.range.trimmed() != two.range.trimmed() )      return false;
-
-      if ( one.grad_form != two.grad_form )                  return false;
-
-      for ( int ii = 0; ii < 6; ii++ )
-      {
-         if ( QString::number( one.dens_coeff[ ii ], 'f', 5 ) !=
-              QString::number( two.dens_coeff[ ii ], 'f', 5 ) )  return false;
-
-         if ( QString::number( one.visc_coeff[ ii ], 'f', 5 ) !=
-              QString::number( two.visc_coeff[ ii ], 'f', 5 ) )  return false;
-      }
-
-      return true;
-   }
 }
 
 // ------------------------------------------- what the server allows the person
@@ -1594,10 +1574,12 @@ bool US_DataPubImporter::checkServerRules( QString& error )
          return false;
       }
 
-      if ( ! warn( tr( "Rotor calibration \"%1\" is not imported: only an"
+      if ( ! warn( tr( "Rotor calibration %1 is not imported: only an"
                        " administrator may add a rotor calibration to the"
                        " target database (user level 3; the person logged in"
-                       " has level %2)" ).arg( entity.name ).arg( user_level ),
+                       " has level %2)" )
+                   .arg( calibration_text( entity.name, entity.guid ) )
+                   .arg( user_level ),
                    error ) )
          return false;
 
@@ -1624,11 +1606,9 @@ bool US_DataPubImporter::checkServerRules( QString& error )
 
       for ( int jj = 0; jj < keys.size(); jj++ )
       {
-         bool             have = false;
-         QList< QString > ids  = tcomps.keys();
-
-         for ( int kk = 0; kk < ids.size()  &&  ! have; kk++ )
-            have = same_component( tcomps[ ids[ kk ] ], defs[ keys[ jj ] ] );
+         bool have = ! US_BufferComponent::matchingID( tcomps,
+                                                      defs[ keys[ jj ] ] )
+                        .isEmpty();
 
          QString label = QString( "\"%1\"" ).arg( defs[ keys[ jj ] ].name );
 
@@ -1656,18 +1636,15 @@ bool US_DataPubImporter::checkServerRules( QString& error )
          if ( tcomp_ids.contains( QString::number( count + jj ) ) )
             taken << QString::number( count + jj );
 
-      if ( ! taken.isEmpty() )
-      {
-         QString text = tr( "The target's component table has %1 rows but"
-                            " already uses the IDs %2: a server whose"
-                            " create_buffer_component has not been updated"
-                            " gives a new component the ID of the row count"
-                            " plus one, and fails there, which fails the"
-                            " import (it is then rolled back)" )
-                        .arg( count ).arg( taken.join( ", " ) );
-         warnlist << text;
-         note( tr( "Warning: " ) + text );
-      }
+      if ( ! taken.isEmpty()  &&  componentIdsMayBeCounted()  &&
+           ! warn( tr( "The target's component table has %1 rows but"
+                       " already uses the IDs %2: unless its"
+                       " create_buffer_component has been updated, the"
+                       " server gives a new component the ID of the row"
+                       " count plus one, and fails there, which fails the"
+                       " import (it is then rolled back)" )
+                   .arg( count ).arg( taken.join( ", " ) ), error ) )
+         return false;
    }
 
    // ---- the channel the raw data and solution rows name ------------------
@@ -1715,94 +1692,72 @@ bool US_DataPubImporter::checkServerRules( QString& error )
    return true;
 }
 
-/* A buffer component the target lacks, added to its table.
+/* Whether create_buffer_component may count rows to pick a new ID.
 
-   The ID create_buffer_component answers with is not used: the procedure
-   inserts with an ID of its own choosing and reports LAST_INSERT_ID(),
-   which an explicit ID does not set -- the connection's previous insert ID
-   comes back, and the buffer would be linked to some other component.  So
-   the table is listed again and the new row found by what it is: the one
-   row the preflight's listing did not have whose definition is this one.
+   A server says which procedures it runs in two ways a client can read.
+   The updated procedures come with a version marker: "SELECT
+   us3_catalog_version()" answers 1 or more there, and fails elsewhere (no
+   such function, 1305, or no right to execute it, 1370), which is version
+   0.  And information_schema shows a routine's definition to its definer
+   and an administrator (anyone else reads NULL).  The procedure servers
+   have run for years inserts with COUNT(*) + 1; the updated one counts
+   nothing.  Asked once per import.
+*/
+bool US_DataPubImporter::componentIdsMayBeCounted( void )
+{
+   if ( dbase == nullptr )  return true;
+
+   if ( catalog_version < 0 )
+   {
+      dbase->rawQuery( "SELECT us3_catalog_version()" );
+
+      catalog_version = ( dbase->lastErrno() == IUS_DB2::OK  &&
+                          dbase->next() )
+                        ? qMax( 0, dbase->value( 0 ).toInt() ) : 0;
+   }
+
+   if ( catalog_version >= 1 )  return false;
+
+   dbase->rawQuery(
+      "SELECT ROUTINE_DEFINITION FROM information_schema.ROUTINES"
+      " WHERE ROUTINE_SCHEMA = DATABASE()"
+      " AND ROUTINE_NAME = 'create_buffer_component'" );
+
+   QString definition = dbase->next() ? dbase->value( 0 ).toString()
+                                      : QString();
+
+   if ( definition.trimmed().isEmpty() )  return true;    // Cannot tell
+
+   return definition.contains( "COUNT(", Qt::CaseInsensitive );
+}
+
+/* A buffer component the target lacks, added to its table, through
+   US_BufferComponent::saveToDB(): the library's one way of creating a
+   component, which finds the new row by its definition rather than by the
+   ID create_buffer_component answers with (on the procedure servers have
+   run for years, the connection's previous insert ID).  The row joins the
+   target's table as the import knows it, so that a second buffer naming
+   the same component is pointed at it.
 */
 bool US_DataPubImporter::createComponentDb( const US_BufferComponent& want,
                                             QString& newID, QString& error )
 {
    newID.clear();
 
-   QStringList density;
-   QStringList viscosity;
+   US_BufferComponent comp = want;
+   QString            why;
+   int                id   = comp.saveToDB( dbase, &why );
 
-   for ( int ii = 0; ii < 6; ii++ )
-   {
-      density   << QString::number( want.dens_coeff[ ii ], 'f', 5 );
-      viscosity << QString::number( want.visc_coeff[ ii ], 'f', 5 );
-   }
-
-   QStringList query;
-   query << "create_buffer_component" << US_Util::new_guid() << want.name
-         << want.unit << want.range << US_Util::bool_string( want.grad_form )
-         << density.join( " " ) << viscosity.join( " " );
-
-   int status = dbase->statusQuery( query );
-
-   if ( status != IUS_DB2::OK )
+   if ( id < 1 )
    {
       error = tr( "Buffer component \"%1\" could not be added to the"
-                  " database (status %2): %3" ).arg( want.name ).arg( status )
-              .arg( dbase->lastError() );
+                  " database: %2" ).arg( want.name ).arg( why );
       return false;
    }
 
-   query.clear();
-   query << "get_buffer_component_desc";
-   dbase->query( query );
-
-   if ( lookupFailed( tr( "its buffer components" ) ) )
-   {
-      error = lookup_error;
-      return false;
-   }
-
-   QStringList fresh;
-
-   while ( dbase->next() )
-   {
-      QString id = dbase->value( 0 ).toString();
-
-      if ( ! tcomp_ids.contains( id ) )  fresh << id;
-   }
-
-   for ( int ii = 0; ii < fresh.size(); ii++ )
-   {
-      tcomp_ids << fresh[ ii ];
-
-      US_BufferComponent comp;
-      comp.componentID = fresh[ ii ];
-
-      if ( ! comp.getInfoFromDB( dbase ) )
-      {
-         if ( lookupFailed( tr( "buffer component %1" ).arg( fresh[ ii ] ) ) )
-         {
-            error = lookup_error;
-            return false;
-         }
-
-         continue;
-      }
-
-      tcomps.insert( fresh[ ii ], comp );
-
-      if ( newID.isEmpty()  &&  same_component( comp, want ) )
-         newID = fresh[ ii ];
-   }
-
-   if ( newID.isEmpty() )
-   {
-      error = tr( "Buffer component \"%1\" was added to the database, but no"
-                  " new row of its definition is in the component table" )
-              .arg( want.name );
-      return false;
-   }
+   newID = QString::number( id );
+   tcomp_ids << newID;
+   tcomps.insert( newID, comp );
 
    return true;
 }
@@ -3288,9 +3243,9 @@ bool US_DataPubImporter::rewriteWork( const US_DataPubEntity& entity,
             }
 
             if ( rotorID == "-1" )
-               note( tr( "The rotor of calibration \"%1\" is not in the target"
+               note( tr( "The rotor of calibration %1 is not in the target"
                          " disk store; the calibration names no rotor ID" )
-                     .arg( entity.name ) );
+                     .arg( calibration_text( entity.name, entity.guid ) ) );
          }
 
          edit = [ disk, rotorID ]( const QString& element,
@@ -3367,18 +3322,18 @@ bool US_DataPubImporter::targetComponents( QString& error )
       return true;
    }
 
-   QStringList query( "get_buffer_component_desc" );
    QStringList ids;
-   dbase->query( query );
+   QString     why;
 
-   if ( lookupFailed( tr( "its buffer components" ) ) )
+   if ( ! US_BufferComponent::listIDs( dbase, ids, &why ) )
    {
+      if ( lookup_error.isEmpty() )
+         lookup_error = tr( "The target database could not be asked about its"
+                            " buffer components: %1" ).arg( why );
+
       error = lookup_error;
       return false;
    }
-
-   while ( dbase->next() )
-      ids << dbase->value( 0 ).toString();
 
    // Every row, parsed or not: the row a creation adds is the one that is
    // not among these
@@ -3486,17 +3441,13 @@ bool US_DataPubImporter::checkComponents( const US_DataPubEntity& entity,
    if ( ! targetComponents( error ) )  return false;
 
    QStringList missing;
-   QList< QString > ids = tcomps.keys();
 
    for ( int ii = 0; ii < buffer.componentIDs.size(); ii++ )
    {
       const US_BufferComponent& want = defs[ buffer.componentIDs[ ii ] ];
-      bool                      have = false;
 
-      for ( int jj = 0; jj < ids.size()  &&  ! have; jj++ )
-         have = same_component( tcomps[ ids[ jj ] ], want );
-
-      if ( ! have )  missing << QString( "\"%1\"" ).arg( want.name );
+      if ( US_BufferComponent::matchingID( tcomps, want ).isEmpty() )
+         missing << QString( "\"%1\"" ).arg( want.name );
    }
 
    if ( missing.isEmpty() )  return true;
@@ -3563,13 +3514,13 @@ bool US_DataPubImporter::mapComponents( const US_DataPubEntity& entity,
 
       if ( ! targetComponents( failure ) )  return;
 
-      QList< QString > ids = tcomps.keys();
+      // The library's rule: the same definition, and of several such rows
+      // the highest ID
+      QString match = US_BufferComponent::matchingID( tcomps, want );
 
-      for ( int ii = 0; ii < ids.size(); ii++ )
+      if ( ! match.isEmpty() )
       {
-         if ( ! same_component( tcomps[ ids[ ii ] ], want ) )  continue;
-
-         values.insert( "id", ids[ ii ] );
+         values.insert( "id", match );
          return;
       }
 
@@ -4015,6 +3966,7 @@ bool US_DataPubImporter::runImport( const Options& options, QString& error )
    raw_checked.clear();
    tcomp_ids.clear();
    user_level = -1;
+   catalog_version = -1;
    fresh_guids.clear();
    cal_refused.clear();
    shared_ok.clear();
@@ -6466,7 +6418,42 @@ bool US_DataPubImporter::createDisk( const US_DataPubEntity& entity,
       return false;
    }
 
-   if ( ! QFile::copy( workPath, path ) )
+   if ( type == US_DataPub::RotorCalibration )
+   {
+      // A disk store finds a calibration by its ID (US_Rotor reads the
+      // file whose "id" is the one a run's XML names), so the calibration
+      // gets one that no calibration of the store has, and the runs of
+      // the bundle name it: without one the run would name -1 and lose its
+      // calibration
+      US_Rotor::RotorCalibration calibration;
+
+      if ( ! US_DataPubRecords::readCalibration( workPath, calibration ) )
+      {
+         error = tr( "The rotor calibration payload could not be read" );
+         return false;
+      }
+
+      int         top  = 0;
+      QStringList held = QDir( dir ).entryList(
+                         QStringList( "C???????.xml" ), QDir::Files );
+
+      for ( int ii = 0; ii < held.size(); ii++ )
+         top = qMax( top, first_attributes( dir + "/" + held[ ii ],
+                                            "Calibration" )
+                          .value( "id" ).toInt() );
+
+      calibration.ID = top + 1;
+
+      if ( ! US_DataPubRecords::writeCalibration( calibration, path ) )
+      {
+         error = tr( "Cannot write %1" ).arg( path );
+         return false;
+      }
+
+      newID = QString::number( calibration.ID );
+   }
+
+   else if ( ! QFile::copy( workPath, path ) )
    {
       error = tr( "Cannot write %1" ).arg( path );
       return false;
@@ -6584,8 +6571,10 @@ bool US_DataPubImporter::resolveHardware( US_Experiment& exper,
       calID = cals[ 0 ].ID;
 
       if ( ! warn( tr( "The rotor calibration of run %1 is not in the target"
-                       " database; calibration \"%2\" is recorded instead" )
-                   .arg( exper.runID ).arg( cals[ 0 ].label ), error ) )
+                       " database; calibration %2 is recorded instead" )
+                   .arg( exper.runID )
+                   .arg( calibration_text( cals[ 0 ].label, cals[ 0 ].GUID ) ),
+                   error ) )
          return false;
    }
 
@@ -7423,6 +7412,42 @@ bool US_DataPubImporter::prepareRunRawData( const QString& expGUID,
    return true;
 }
 
+bool US_DataPubImporter::rawFieldOfRun( const QString& expGUID,
+                                        const QString& key, QString& value )
+{
+   QList< US_DataPubEntity > raws = mani.section( US_DataPub::RawData );
+   QSet< QString >           values;
+   bool                      every = true;
+   bool                      any   = false;
+
+   for ( int ii = 0; ii < raws.size(); ii++ )
+   {
+      if ( raws[ ii ].depend( US_DataPub::Experiment ) != expGUID )  continue;
+
+      if ( raws[ ii ].attrs.contains( key ) )
+      {
+         any = true;
+         values << raws[ ii ].attrs.value( key );
+      }
+      else
+         every = false;
+   }
+
+   if ( ! any )  return false;
+
+   if ( every  &&  values.size() == 1 )
+   {
+      value = *values.constBegin();
+      return true;
+   }
+
+   note( tr( "The raw data records of run %1 do not share one %2; they are"
+             " written with the run's" ).arg( mappedName( expGUID ) )
+         .arg( key ) );
+
+   return false;
+}
+
 bool US_DataPubImporter::writeRunRawData( const QString& expGUID,
                                           QString& error )
 {
@@ -7433,9 +7458,29 @@ bool US_DataPubImporter::writeRunRawData( const QString& expGUID,
    run.experiment.expID = mappedId( expGUID ).toInt();
    run.experiment.invID = US_Settings::us_inv_ID();
 
+   // writeRawDataToDB() gives every rawData row the experiment's label and
+   // comment, as us_convert writes a run.  The source's rows may hold
+   // others (the manifest's "label" and "comment" of a raw data record):
+   // the one label and comment all of the run's records agree on is
+   // written instead.  Rows that differ among themselves cannot each keep
+   // theirs through that call, and are written as it writes them.
+   QString label    = run.experiment.label;
+   QString comments = run.experiment.comments;
+   QString rawLabel;
+   QString rawComment;
+
+   if ( rawFieldOfRun( expGUID, "label", rawLabel ) )
+      run.experiment.label = rawLabel;
+
+   if ( rawFieldOfRun( expGUID, "comment", rawComment ) )
+      run.experiment.comments = rawComment;
+
    QString werror = US_ConvertIO::writeRawDataToDB( run.experiment,
                                                     run.triples,
                                                     run.directory, dbase );
+
+   run.experiment.label    = label;
+   run.experiment.comments = comments;
 
    if ( ! werror.isEmpty() )
    {
@@ -7519,9 +7564,10 @@ bool US_DataPubImporter::checkDryDb( const US_DataPubEntity& entity,
 
          if ( rotorID > 0 )
          {  // Not foreseen in the preflight: the writer refuses it all the same
-            if ( ! warn( tr( "Rotor calibration \"%1\" would not be imported:"
+            if ( ! warn( tr( "Rotor calibration %1 would not be imported:"
                              " only an administrator may add one" )
-                         .arg( name ), error ) )
+                         .arg( calibration_text( name, entity.guid ) ),
+                         error ) )
                return false;
 
             record( entity, US_DataPub::ResolvedOmitted, QString(), name,
@@ -7532,8 +7578,9 @@ bool US_DataPubImporter::checkDryDb( const US_DataPubEntity& entity,
          }
 
          if ( ! warn( tr( "Rotor %1 is not in the target database, so the"
-                          " rotor calibration \"%2\" would not be imported" )
-                      .arg( calibration.rotorGUID ).arg( name ), error ) )
+                          " rotor calibration %2 would not be imported" )
+                      .arg( calibration.rotorGUID )
+                      .arg( calibration_text( name, entity.guid ) ), error ) )
             return false;
 
          record( entity, US_DataPub::ResolvedOmitted, QString(), name,
@@ -7742,8 +7789,10 @@ bool US_DataPubImporter::createDb( const US_DataPubEntity& entity,
          if ( rotorID < 1 )
          {
             if ( ! warn( tr( "Rotor %1 is not in the target database, so the"
-                             " rotor calibration \"%2\" is not imported" )
-                         .arg( calibration.rotorGUID ).arg( name ), error ) )
+                             " rotor calibration %2 is not imported" )
+                         .arg( calibration.rotorGUID )
+                         .arg( calibration_text( name, entity.guid ) ),
+                         error ) )
                return false;
 
             record( entity, US_DataPub::ResolvedOmitted, QString(), name,
@@ -7757,8 +7806,9 @@ bool US_DataPubImporter::createDb( const US_DataPubEntity& entity,
          if ( ! isAdmin() )
          {
             if ( ! cal_refused.contains( entity.guid )  &&
-                 ! warn( tr( "Rotor calibration \"%1\" is not imported: only"
-                             " an administrator may add one" ).arg( name ),
+                 ! warn( tr( "Rotor calibration %1 is not imported: only"
+                             " an administrator may add one" )
+                         .arg( calibration_text( name, entity.guid ) ),
                          error ) )
                return false;
 
@@ -7780,8 +7830,9 @@ bool US_DataPubImporter::createDb( const US_DataPubEntity& entity,
          if ( calibration.saveDB( rotorID, dbase ) != IUS_DB2::OK  ||
               calibration.ID < 1 )
          {
-            error = tr( "The rotor calibration \"%1\" could not be written"
-                        " to the database: %2" ).arg( name )
+            error = tr( "The rotor calibration %1 could not be written"
+                        " to the database: %2" )
+                    .arg( calibration_text( name, entity.guid ) )
                     .arg( dbase->lastError() );
             return false;
          }
@@ -7827,6 +7878,14 @@ bool US_DataPubImporter::createDb( const US_DataPubEntity& entity,
 
          if ( manx > 0 )  descrip = descrip.left( manx ).simplified();
 
+         // Private unless the manifest says the source's buffer was public
+         // (its "private" attribute, "0"): a public buffer stays one, so
+         // that other investigators can use it as they could at the
+         // source.  A buffer of a disk store has no such flag and is
+         // private, as US_Buffer::saveToDB() makes a buffer by default.
+         QString priv = entity.attrs.value( "private" ).trimmed().toLower();
+         bool    pub  = ( priv == "0"  ||  priv == "false" );
+
          QStringList query;
          query << "new_buffer"
                << targetGuidOf( entity )
@@ -7836,7 +7895,7 @@ bool US_DataPubImporter::createDb( const US_DataPubEntity& entity,
                << QString::number( buffer.density        , 'f', 6 )
                << QString::number( buffer.viscosity      , 'f', 5 )
                << US_Util::bool_string( buffer.manual )
-               << QString( "1" )                           // Private
+               << QString( pub ? "0" : "1" )               // Private
                << QString::number( US_Settings::us_inv_ID() );
 
          int status = dbase->statusQuery( query );
@@ -8019,6 +8078,12 @@ bool US_DataPubImporter::createDb( const US_DataPubEntity& entity,
             spectrum = QString::number( lambda1 ) + "/"
                        + QString::number( coeff1 );
 
+         // The source row's own spectrum column, when the manifest carries
+         // it (its "spectrum" attribute, empty for an empty column): what
+         // the column held is kept, rather than made up from the profile
+         if ( entity.attrs.contains( "spectrum" ) )
+            spectrum = entity.attrs.value( "spectrum" );
+
          // The sequence exactly as the payload holds it -- a FASTA header,
          // residue numbers and line breaks are the analyte's own -- which
          // is also what a disk import keeps
@@ -8173,9 +8238,10 @@ bool US_DataPubImporter::createDb( const US_DataPubEntity& entity,
          rec.label     = runIdFor( entity );
          rec.filename  = renamedFile( entity );
 
-         // No comment, as us_edit and us_import_run store an edit: the
-         // triple is in the file name already
-         rec.comment.clear();
+         // The source row's comment when the manifest carries it (its
+         // "comment" attribute); otherwise none, as us_edit and
+         // us_import_run store an edit: the triple is in the file name
+         rec.comment = entity.attrs.value( "comment" );
 
          int editID = 0;
 
@@ -8216,24 +8282,25 @@ bool US_DataPubImporter::createDb( const US_DataPubEntity& entity,
 
          // The variance and meniscus are columns of the model row as well
          // as attributes of its XML, which a model the database stored
-         // need not have: a bundle may carry them in the manifest
+         // need not have, and which US_Model writes with six digits.  The
+         // manifest carries the source row's values at full precision:
+         // they win, and the XML's stand in for a bundle without them.
+         // Either is written with all its digits.
          double variance = model.variance;
          double meniscus = model.meniscus;
          bool   ok       = false;
          double value    = entity.attrs.value( "variance" ).toDouble( &ok );
 
-         if ( variance == 0.0  &&  ok  &&  qIsFinite( value ) )
-            variance = value;
+         if ( ok  &&  qIsFinite( value ) )  variance = value;
 
          value = entity.attrs.value( "meniscus" ).toDouble( &ok );
 
-         if ( meniscus == 0.0  &&  ok  &&  qIsFinite( value ) )
-            meniscus = value;
+         if ( ok  &&  qIsFinite( value ) )  meniscus = value;
 
          QStringList query;
          query << "new_model" << entity.guid << name << QString( contents )
-               << QString::number( variance )
-               << QString::number( meniscus )
+               << QString::number( variance, 'g', 17 )
+               << QString::number( meniscus, 'g', 17 )
                << model.editGUID
                << QString::number( US_Settings::us_inv_ID() );
 
