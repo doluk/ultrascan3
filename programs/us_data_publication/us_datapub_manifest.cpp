@@ -1022,6 +1022,25 @@ bool US_DataPubManifest::validate( QString& error ) const
 
       seen.insert( entity.guid );
 
+      // What a few development builds of format 1 wrote for a noise
+      // record carried for another model: it is listed under the model
+      // that borrows it, but its payload names the model it was fitted
+      // to, and so it cannot be imported as it is
+      if ( version < 2  &&  entity.type == US_DataPub::Noise  &&
+           entity.attrs.contains( "fittedToModelGUID" ) )
+      {
+         error = QObject::tr( "The noise record %1 is listed under model %2"
+                              " but was fitted to model %3: the bundle was"
+                              " written by a development build of"
+                              " us_data_publication that recorded borrowed"
+                              " noise this way, and cannot be imported.  Export"
+                              " the data again with this version" )
+                 .arg( entity.guid )
+                 .arg( entity.depend( US_DataPub::Model ) )
+                 .arg( entity.attrs.value( "fittedToModelGUID" ) );
+         return false;
+      }
+
       QList< QString > dkeys = entity.depends.keys();
 
       for ( int jj = 0; jj < dkeys.size(); jj++ )

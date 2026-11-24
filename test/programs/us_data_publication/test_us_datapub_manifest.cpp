@@ -1104,3 +1104,53 @@ TEST( DataPubDefs, EveryResolutionHasItsOwnText )
    EXPECT_EQ( US_DataPub::resolutionText( US_DataPub::ResolvedFailed ),
               QString( "failed" ) );
 }
+
+/* Some development builds of format 1 listed noise carried for a model
+   without its own under that model and named the model it was fitted to
+   in fittedToModelGUID.  The payload names the other model, so the bundle
+   cannot be imported; it is refused with a message that says why, not
+   with one about a payload that does not match.  Format 2 never writes
+   the attribute.
+*/
+TEST( DataPubManifest, AFormatOneBundleOfBorrowedNoiseIsRefusedPrecisely )
+{
+   QString borrower = "aaaaaaaa-0000-4000-8000-000000000011";
+   QString fitted   = "aaaaaaaa-0000-4000-8000-000000000012";
+
+   US_DataPubManifest mani;
+   US_DataPubEntity   model( US_DataPub::Model );
+   model.guid    = borrower;
+   model.name    = "borrower";
+   model.payload = "models/" + borrower + ".xml";
+   mani.add( model );
+
+   US_DataPubEntity noise( US_DataPub::Noise );
+   noise.guid    = "aaaaaaaa-0000-4000-8000-000000000013";
+   noise.name    = "borrowed";
+   noise.payload = "noises/" + noise.guid + ".xml";
+   noise.setDepend( US_DataPub::Model, borrower );
+   noise.attrs.insert( "fittedToModelGUID", fitted );
+   mani.add( noise );
+
+   QString error;
+   mani.version = 1;
+   EXPECT_FALSE( mani.validate( error ) );
+   EXPECT_TRUE( error.contains( "development build" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( fitted ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( borrower ) ) << error.toStdString();
+
+   // The same manifest read back from its text
+   US_DataPubManifest parsed;
+   ASSERT_TRUE( parsed.fromYaml( mani.toYaml(), error ) ) << error.toStdString();
+   EXPECT_EQ( parsed.version, 1 );
+   EXPECT_FALSE( parsed.validate( error ) );
+   EXPECT_TRUE( error.contains( "development build" ) ) << error.toStdString();
+
+   // Without the attribute a format-1 manifest is valid
+   noise.attrs.remove( "fittedToModelGUID" );
+   US_DataPubManifest plain;
+   plain.version = 1;
+   plain.add( model );
+   plain.add( noise );
+   EXPECT_TRUE( plain.validate( error ) ) << error.toStdString();
+}
