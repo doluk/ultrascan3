@@ -2473,21 +2473,33 @@ bool US_DataPubImporter::readTargetCharsets( void )
    it is NaN or infinite (the server would store what such text becomes,
    or refuse it, and a disk store would hold "nan"), and, in a database,
    no text of it holds a character the columns and procedure parameters it
-   goes through cannot store.  The record's XML is read whole: attributes
-   and text are what the library writers pass on, apart from an edit's and
-   a time state's XML, which go into a BLOB as they are.
+   goes through cannot store.  What reaches the target's text is checked:
+   the manifest's fields of every record; the attributes and text of an
+   XML payload, which is what the library writers pass on; the whole text
+   of a payload stored as it is (a model's and a noise record's XML, a time
+   state's field definitions) -- comments and processing instructions go in
+   with it; and nothing of the main payload of an edit, raw data or a time
+   state, which go into a BLOB as they are.
 */
 bool US_DataPubImporter::checkValues( const US_DataPubEntity& entity,
                                       const QString& file,
                                       const QByteArray& data,
+                                      const QString& key,
                                       QString& error )
 {
    bool    toDb    = ( opts.target == US_DataPub::TargetDb );
    QString charset = toDb ? type_charsets.value( int( entity.type ) )
                           : QString();
-   bool    blob    = ( entity.type == US_DataPub::EditedData  ||
+   bool    main    = ( key == "payload" );
+   bool    blob    = ! data.isNull()  &&  main  &&
+                     ( entity.type == US_DataPub::EditedData  ||
                        entity.type == US_DataPub::TimeState   ||
                        entity.type == US_DataPub::RawData );
+   bool    whole   = ! data.isNull()  &&  toDb  &&
+                     ( ( main  &&  ( entity.type == US_DataPub::Model  ||
+                                     entity.type == US_DataPub::Noise ) )  ||
+                       ( entity.type == US_DataPub::TimeState  &&
+                         key == "definitionsPayload" ) );
    QString fname   = QFileInfo( file ).fileName();
 
    auto unstorable = [ & ]( const QString& text, const QString& field )
@@ -2587,9 +2599,56 @@ bool US_DataPubImporter::checkValues( const US_DataPubEntity& entity,
 
          if ( unstorable( xml.text().toString(), field ) )  return false;
       }
+
+      // The rest of a payload stored as it is goes in with it
+      else if ( whole  &&  xml.isComment() )
+      {
+         if ( unstorable( xml.text().toString(),
+                          tr( "a comment (line %1) of %2, which is stored"
+                              " with the XML" ).arg( xml.lineNumber() )
+                          .arg( fname ) ) )
+            return false;
+      }
+
+      else if ( whole  &&  xml.isProcessingInstruction() )
+      {
+         if ( unstorable( xml.processingInstructionTarget().toString() + " "
+                          + xml.processingInstructionData().toString(),
+                          tr( "a processing instruction (line %1) of %2,"
+                              " which is stored with the XML" )
+                          .arg( xml.lineNumber() ).arg( fname ) ) )
+            return false;
+      }
+
+      else if ( whole  &&  xml.isDTD() )
+      {
+         if ( unstorable( xml.text().toString(),
+                          tr( "the document type declaration of %1, which"
+                              " is stored with the XML" ).arg( fname ) ) )
+            return false;
+      }
    }
 
    elements.clear();
+
+   // ... and whatever else of its text the reader does not hand back as a
+   // token (an entity reference, the XML declaration): the whole of it, as
+   // the import sends it
+   if ( whole )
+   {
+      QString text = QString::fromUtf8( data );
+      QString ch   = charset.isEmpty() ? QString()
+                     : unstorableCharacter( charset, text );
+
+      if ( ! ch.isEmpty() )
+      {
+         int at   = text.indexOf( ch );
+         int line = text.left( qMax( 0, at ) ).count( QChar( '\n' ) ) + 1;
+
+         return ! unstorable( ch, tr( "line %1 of %2, which is stored as it"
+                                      " is" ).arg( line ).arg( fname ) );
+      }
+   }
 
    return true;
 }
@@ -2648,11 +2707,13 @@ bool US_DataPubImporter::checkPayload( const US_DataPubEntity& entity,
       }
 
       // Values the target cannot take, found before anything is written
-      if ( ! checkValues( entity, xpath, data, error ) )  return false;
+      if ( ! checkValues( entity, xpath, data, pkeys[ jj ], error ) )
+         return false;
    }
 
    // ... and the manifest's own fields of the record
-   if ( ! checkValues( entity, path, QByteArray(), error ) )  return false;
+   if ( ! checkValues( entity, path, QByteArray(), QString(), error ) )
+      return false;
 
    QString found;                  // The GUID inside the payload
    QString what;                   // What the payload failed to parse as
@@ -4412,7 +4473,8 @@ qint64 US_DataPubImporter::targetSecond( void )
    {
       dbase->rawQuery( "SELECT UNIX_TIMESTAMP( NOW() )" );
 
-      if ( dbase->lastErrno() == IUS_DB2::OK  &&  dbase->next() )
+      // rawQuery() does not set lastErrno(): a failed query has no row
+      if ( dbase->next() )
       {
          bool   ok  = false;
          qint64 now = dbase->value( 0 ).toLongLong( &ok );
@@ -8575,9 +8637,18 @@ bool US_DataPubImporter::createDb( const US_DataPubEntity& entity,
 
          if ( tmstID < 1 )
          {
+            // US_TimeState gives -2 and -3 for its local files and -4 for
+            // anything the database refused, whose own words say what
+            QString why = ( tmstID == -2 )
+               ? tr( "the binary or its field definitions is missing" )
+               : ( tmstID == -3 )
+               ? tr( "the field definitions could not be read" )
+               : tr( "the database refused it (%1): %2" )
+                 .arg( dbase->lastErrno() ).arg( dbase->lastError() );
+
             error = tr( "The time state of run %1 could not be written to"
-                        " the database (status %2)" )
-                    .arg( runIdFor( entity ) ).arg( tmstID );
+                        " the database (US_TimeState status %2): %3" )
+                    .arg( runIdFor( entity ) ).arg( tmstID ).arg( why );
             return false;
          }
 

@@ -1581,6 +1581,119 @@ TEST_F( DataPubDbRules, TextTheTargetCannotStoreFailsTheDryRun )
    EXPECT_EQ( db->value( 4 ).toString(), acute );
 }
 
+/* The rule the import judges latin1 text by is the server's: of U+0080 ..
+   U+00FF and the characters cp1252 adds, a latin1 column takes exactly
+   those unstorableCharacter() lets through (the euro sign among them, U+0080
+   not). */
+TEST_F( DataPubDbRules, TheLatin1RuleIsTheServers )
+{
+   db->rawQuery( "CREATE TEMPORARY TABLE latin_probe"
+                 " ( c VARCHAR(4) CHARACTER SET latin1 ) ENGINE=InnoDB" );
+   db->rawQuery( "SELECT COUNT(*) FROM latin_probe" );
+   ASSERT_TRUE( db->next() ) << db->lastError().toStdString();
+
+   QList< uint > codes;
+
+   for ( uint code = 0x7E; code <= 0xFF; code++ )  codes << code;
+
+   codes << 0x20AC << 0x201A << 0x0192 << 0x2122 << 0x0153 << 0x0178
+         << 0x0100 << 0x03B1 << 0xFFFD << 0x1F600;
+
+   int differ = 0;
+   int stored = 0;
+
+   for ( uint code : codes )
+   {
+      char32_t one  = char32_t( code );
+      QString  ch   = QString::fromUcs4( &one, 1 );
+      bool     ours = US_DataPubImporter::unstorableCharacter( "latin1", ch )
+                      .isEmpty();
+
+      // rawQuery() leaves lastErrno() as it was: count the rows instead
+      db->rawQuery( "INSERT INTO latin_probe VALUES ( '"
+                    + QString( ch ).replace( "\\", "\\\\" ).replace( "'", "''" )
+                    + "' )" );
+      db->rawQuery( "SELECT COUNT(*) FROM latin_probe" );
+      int  rows   = db->next() ? db->value( 0 ).toInt() : -1;
+      bool server = ( rows > stored );
+      stored      = qMax( stored, rows );
+
+      EXPECT_EQ( ours, server ) << QString::number( code, 16 ).toStdString();
+
+      if ( ours != server )  differ++;
+   }
+
+   EXPECT_EQ( differ, 0 );
+   db->rawQuery( "DROP TEMPORARY TABLE latin_probe" );
+}
+
+/* What a latin1 target cannot store anywhere a record's text reaches it --
+   a comment of a model's XML, which is stored whole, or a raw data label --
+   fails the dry run as it fails the import, before anything is written. */
+TEST_F( DataPubDbRules, TextOutsideTheValuesALatin1TargetRefusesFailsTheDryRun )
+{
+   db->rawQuery( "SELECT CHARACTER_SET_NAME FROM information_schema.COLUMNS"
+                 " WHERE TABLE_SCHEMA = DATABASE()"
+                 " AND TABLE_NAME = 'model' AND COLUMN_NAME = 'xml'" );
+   QString charset = db->next() ? db->value( 0 ).toString() : QString();
+
+   if ( charset != "latin1" )
+      GTEST_SKIP() << "the target's model XML is not latin1 ("
+                   << charset.toStdString() << ")";
+
+   QString alpha = QString::fromUtf8( "\xCE\xB1" );
+   QString plain = exportStore( "latin" );
+
+   QString inComment = recraft( plain, [ & ]( US_DataPubManifest& m,
+                                              const QString& stage )
+   {
+      QList< US_DataPubEntity > list = m.section( US_DataPub::Model );
+      ASSERT_FALSE( list.isEmpty() );
+      QString path = stage + "/" + list[ 0 ].payload;
+      QFile   file( path );
+      ASSERT_TRUE( file.open( QIODevice::ReadOnly ) );
+      QString content = QString::fromUtf8( file.readAll() );
+      file.close();
+      content.insert( content.indexOf( "?>" ) + 2,
+                      "\n<!-- fitted by " + alpha + " -->" );
+      ASSERT_TRUE( file.open( QIODevice::WriteOnly | QIODevice::Truncate ) );
+      file.write( content.toUtf8() );
+      file.close();
+      list[ 0 ].sha256 = US_DataPubHash::fileHash( path );
+      m.setSection( US_DataPub::Model, list );
+   } );
+
+   QString inLabel = recraft( plain, [ & ]( US_DataPubManifest& m,
+                                            const QString& )
+   {
+      QList< US_DataPubEntity > list = m.section( US_DataPub::RawData );
+      ASSERT_FALSE( list.isEmpty() );
+      list[ 0 ].attrs.insert( "label", "Cell " + alpha );
+      m.setSection( US_DataPub::RawData, list );
+   } );
+
+   QStringList bundles;
+   bundles << inComment << inLabel;
+
+   for ( const QString& bundle : bundles )
+   {
+      for ( int dry = 1; dry >= 0; dry-- )
+      {
+         US_DataPubImporter importer;
+         QString            error;
+         ASSERT_TRUE ( importer.inspect( bundle, error ) ) << error.toStdString();
+         EXPECT_FALSE( importer.runImport( options( dry == 1 ), error ) )
+            << ( dry ? "dry run" : "import" ) << " " << bundle.toStdString();
+         EXPECT_TRUE ( error.contains( "U+03B1" )  &&
+                       error.contains( "latin1" )  &&
+                       ( error.contains( "comment" )  ||
+                         error.contains( "label" ) ) ) << error.toStdString();
+         EXPECT_TRUE ( error.contains( "before anything is written" ) )
+            << error.toStdString();
+      }
+   }
+}
+
 /* A sequence is stored exactly as the bundle holds it -- FASTA header,
    residue numbers, line breaks -- in a database as on disk, and the same
    bundle imported again finds the stored analyte the same one. */
@@ -1927,6 +2040,22 @@ TEST_F( DataPubMockImport, AFailedNoiseWriteRollsBackTheWholeRun )
    EXPECT_FALSE( importOnce( importer, error, dbOptions() ) );
    EXPECT_EQ   ( fake.commits,   0 );
    EXPECT_EQ   ( fake.rollbacks, 1 );
+}
+
+// A time state the database refuses is reported with the server's words,
+// not only US_TimeState's status -4
+TEST_F( DataPubMockImport, ARefusedTimeStateSaysWhy )
+{
+   fake.failOn = "new_timestate";
+
+   US_DataPubImporter importer;
+   QString            error;
+
+   EXPECT_FALSE( importOnce( importer, error, dbOptions() ) );
+   EXPECT_TRUE ( error.contains( "time state" )  &&
+                 error.contains( "refused" )     &&
+                 error.contains( "fake error" ) ) << error.toStdString();
+   EXPECT_EQ   ( fake.commits, 0 );
 }
 
 // A lookup that fails is not taken for "not there": that would create a
@@ -3807,6 +3936,167 @@ TEST_F( DataPubMockRules, TextTheTargetCannotStoreIsRefusedUpFront )
    ASSERT_TRUE( plain.inspect( bundlePath, error ) );
    ASSERT_TRUE( plain.runImport( dbOptions(), error ) ) << error.toStdString();
    EXPECT_EQ( latin.callsOf( "new_analyte" ).value( 0 ).value( 5 ), acute );
+}
+
+/* Everything of a record that reaches a latin1 target's text is checked
+   before anything is written, by a dry run as by the import, with a
+   message that says where: the raw data's and the edit's label and comment
+   (columns, not the BLOB their payloads go into), and the whole text of a
+   payload stored as it is -- a model's and a noise record's XML, a time
+   state's field definitions -- comments and processing instructions too.
+   The main payloads of raw data and edits go into a BLOB and are not
+   checked; text cp1252 holds (the euro sign) goes in. */
+TEST_F( DataPubMockRules, EveryTextALatin1TargetRefusesIsFoundUpFront )
+{
+   QString alpha    = QString::fromUtf8( "\xCE\xB1" );
+   QString original = bundlePath;
+
+   // The first record of a type: its payload (by manifest key) and fields
+   auto edit = [ & ]( US_DataPub::EntityType type, const QString& key,
+                      std::function< void( QString& ) > text,
+                      std::function< void( US_DataPubEntity& ) > fields )
+   {
+      bundlePath = original;
+      craft( [ & ]( US_DataPubManifest& m, const QString& stage )
+      {
+         QList< US_DataPubEntity > list = m.section( type );
+         ASSERT_FALSE( list.isEmpty() );
+
+         if ( text )
+         {
+            QString rel  = ( key == "payload" ) ? list[ 0 ].payload
+                                                : list[ 0 ].attrs.value( key );
+            QString path = stage + "/" + rel;
+            QFile   file( path );
+            ASSERT_TRUE( file.open( QIODevice::ReadOnly ) ) << path.toStdString();
+            QString content = QString::fromUtf8( file.readAll() );
+            file.close();
+
+            text( content );
+
+            ASSERT_TRUE( file.open( QIODevice::WriteOnly | QIODevice::Truncate ) );
+            file.write( content.toUtf8() );
+            file.close();
+
+            if ( key == "payload" )
+               list[ 0 ].sha256 = US_DataPubHash::fileHash( path );
+            else
+               list[ 0 ].attrs.insert( US_DataPub::digestKeyOf( key ),
+                                       US_DataPubHash::fileHash( path ) );
+         }
+
+         if ( fields )  fields( list[ 0 ] );
+
+         m.setSection( type, list );
+      } );
+   };
+
+   // After the XML declaration
+   auto comment = [ & ]( const QString& what )
+   {
+      return [ what ]( QString& content )
+      {
+         int at = content.indexOf( "?>" );
+         content.insert( at < 0 ? 0 : at + 2, "\n" + what );
+      };
+   };
+
+   struct Case
+   {
+      const char*            name;
+      US_DataPub::EntityType type;
+      QString                key;
+      bool                   text;      // in the payload, else a field
+      QString                insert;    // what goes into the payload
+      QString                field;     // or the manifest field set
+      QString                where;     // what the message has to say
+   };
+
+   QList< Case > cases;
+   cases << Case{ "model comment",   US_DataPub::Model, "payload", true,
+                  "<!-- fitted by " + alpha + " -->", "", "comment" }
+         << Case{ "noise instruction", US_DataPub::Noise, "payload", true,
+                  "<?note " + alpha + "?>", "", "processing instruction" }
+         << Case{ "time state definitions", US_DataPub::TimeState,
+                  "definitionsPayload", true,
+                  "<!-- " + alpha + " -->", "", "comment" }
+         << Case{ "raw data label", US_DataPub::RawData, "payload", false,
+                  "", "label", "label" }
+         << Case{ "raw data comment", US_DataPub::RawData, "payload", false,
+                  "", "comment", "comment" }
+         << Case{ "edit comment", US_DataPub::EditedData, "payload", false,
+                  "", "comment", "comment" };
+
+   for ( const Case& cc : cases )
+   {
+      SCOPED_TRACE( cc.name );
+
+      if ( cc.text )
+         edit( cc.type, cc.key, comment( cc.insert ), nullptr );
+      else
+         edit( cc.type, cc.key, nullptr, [ & ]( US_DataPubEntity& entity )
+         {
+            entity.attrs.insert( cc.field, "noted by " + alpha );
+         } );
+
+      DataPubFakeDb latin;
+      latin.addHardware( "DEMO-1" );
+      latin.charset = "latin1";
+
+      for ( int dry = 1; dry >= 0; dry-- )
+      {
+         US_DataPubImporter          importer;
+         US_DataPubImporter::Options options = dbOptions();
+         options.dryRun = ( dry == 1 );
+         QString                     error;
+
+         importer.setDatabase( latin.db() );
+         ASSERT_TRUE ( importer.inspect( bundlePath, error ) )
+            << error.toStdString();
+         EXPECT_FALSE( importer.runImport( options, error ) )
+            << ( dry ? "dry run" : "import" );
+         EXPECT_TRUE ( error.contains( "U+03B1" )  &&
+                       error.contains( cc.where )  &&
+                       error.contains( "latin1" ) ) << error.toStdString();
+      }
+
+      EXPECT_EQ( latin.begins,   0 );
+      EXPECT_EQ( latin.writes(), 0 );
+   }
+
+   // The euro sign is cp1252's, and so latin1's: in a model's comment it
+   // goes in, as the whole payload
+   edit( US_DataPub::Model, "payload",
+         comment( QString::fromUtf8( "<!-- 5 \xE2\x82\xAC -->" ) ), nullptr );
+
+   DataPubFakeDb latin;
+   latin.addHardware( "DEMO-1" );
+   latin.charset = "latin1";
+
+   US_DataPubImporter importer;
+   QString            error;
+   importer.setDatabase( latin.db() );
+   ASSERT_TRUE( importer.inspect( bundlePath, error ) );
+   ASSERT_TRUE( importer.runImport( dbOptions(), error ) ) << error.toStdString();
+   EXPECT_TRUE( latin.callsOf( "new_model" ).value( 0 ).value( 3 )
+                .contains( QString::fromUtf8( "\xE2\x82\xAC" ) ) );
+
+   // ... and U+0080, which cp1252 puts the euro sign in the place of, does
+   // not
+   edit( US_DataPub::Model, "payload",
+         comment( QString::fromUtf8( "<!-- \xC2\x80 -->" ) ), nullptr );
+
+   DataPubFakeDb refusing;
+   refusing.addHardware( "DEMO-1" );
+   refusing.charset = "latin1";
+
+   US_DataPubImporter dry;
+   US_DataPubImporter::Options options = dbOptions();
+   options.dryRun = true;
+   dry.setDatabase( refusing.db() );
+   ASSERT_TRUE ( dry.inspect( bundlePath, error ) );
+   EXPECT_FALSE( dry.runImport( options, error ) );
+   EXPECT_TRUE ( error.contains( "U+0080" ) ) << error.toStdString();
 }
 
 // A number that is not finite is refused by the preflight of a database

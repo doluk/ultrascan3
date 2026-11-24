@@ -826,15 +826,27 @@ class US_DataPubImporter : public QObject
 
       /*! \brief Refuse a record with a number that is not finite, or, for a
                  database, text the target cannot store
+
+          What is checked follows what reaches the target's text: the
+          manifest's fields of every record (also raw data and edits, whose
+          label and comment are columns); the attributes and text of an XML
+          payload the library writers pass on; the whole text of a payload
+          the database stores as it is (a model's and a noise record's XML,
+          a time state's field definitions), comments and processing
+          instructions included; and nothing of the main payload of an edit,
+          raw data or time state, which go into a BLOB.
           \param entity The record
           \param file   The XML payload read, or the main payload's path
           \param data   Its contents; a null array checks the manifest's
                         fields of the record instead
-          \param error  Names the record, the field and the value or
-                        character when the record is refused
+          \param key    The manifest key that names the payload ("payload"
+                        for the main one, "definitionsPayload", ...)
+          \param error  Names the record, the field, its place and the value
+                        or character when the record is refused
       */
       bool    checkValues ( const US_DataPubEntity& entity, const QString& file,
-                            const QByteArray& data, QString& error );
+                            const QByteArray& data, const QString& key,
+                            QString& error );
       bool    availableAs ( US_DataPub::EntityType, const QString& guid,
                             QString& error );
 
