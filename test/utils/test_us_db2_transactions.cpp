@@ -281,6 +281,52 @@ TEST_F( US_DB2_LiveTransaction, CommitAfterLockWaitTimeoutKeepsEarlierWrites )
    EXPECT_EQ( scalar( *first, QString( "SELECT v FROM %1 WHERE id = 2" ).arg( table ) ), "0" );
 }
 
+// A transaction whose connection is lost is rolled back by the server: that
+// is known, and the commit and rollback say so instead of "some rows may
+// have been kept".  Three ways the client learns of it: at the commit, at
+// the rollback, or from a statement before either.
+TEST_F( US_DB2_LiveTransaction, ALostConnectionSaysTheServerRolledTheTransactionBack )
+{
+   enum Notice { AtCommit, AtRollback, AtStatement };
+   for ( Notice notice : { AtCommit, AtRollback, AtStatement } )
+   {
+      SCOPED_TRACE( "noticed " + std::to_string( int( notice ) ) );
+      const LiveDb live = liveDb();
+      US_DB2       lost;
+      QString      error;
+      ASSERT_TRUE( lost.connect( live.host, live.name, live.user, live.password, error ) ) << error.toStdString();
+
+      ASSERT_TRUE( lost.beginTransaction( error ) ) << error.toStdString();
+      lost.rawQuery( QString( "UPDATE %1 SET v = 7 WHERE id = 1" ).arg( table ) );
+      ASSERT_FALSE( lost.lastError().startsWith( "MySQL error" ) ) << lost.lastError().toStdString();
+      const QString id = scalar( lost, "SELECT CONNECTION_ID()" );
+
+      second->rawQuery( "KILL " + id );
+      ASSERT_FALSE( second->lastError().startsWith( "MySQL error" ) ) << second->lastError().toStdString();
+
+      if ( notice == AtStatement )
+      {
+         lost.query( "SELECT 41 + 1" );
+         EXPECT_FALSE( lost.isConnected() ) << lost.lastServerErrno() << " " << lost.lastError().toStdString();
+      }
+
+      if ( notice != AtRollback )
+      {
+         EXPECT_FALSE( lost.commitTransaction( error ) );
+         EXPECT_EQ( error, QObject::tr( US_DB2::connectionLostRollbackMessage ) ) << error.toStdString();
+      }
+
+      EXPECT_FALSE( lost.rollbackTransaction( error ) );
+      EXPECT_EQ( error, QObject::tr( US_DB2::connectionLostRollbackMessage ) ) << error.toStdString();
+      EXPECT_FALSE( error.contains( "may have been kept" ) ) << error.toStdString();
+      EXPECT_FALSE( lost.isConnected() );
+      EXPECT_FALSE( lost.transactionActive() );
+
+      // And it was: the row is as it was
+      EXPECT_EQ( scalar( *second, QString( "SELECT v FROM %1 WHERE id = 1" ).arg( table ) ), "0" );
+   }
+}
+
 TEST_F( US_DB2_LiveTransaction, UnmatchedTransactionCallsAreRefused )
 {
    QString error;

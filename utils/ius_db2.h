@@ -111,12 +111,15 @@ public:
 
         On false the transaction is still treated as open, so the caller rolls
         it back.  If the connection was lost during the commit, \p error says
-        that whether the commit took effect is unknown.  If the transaction
-        had already ended, the commit is refused, since a COMMIT then would
-        succeed without committing anything.  \p error names a deadlock when
-        the client saw one, and otherwise says only that some rows may have
-        been kept: a procedure that caught the deadlock or rolled back itself
-        looks the same as an implicit commit.
+        that whether the commit took effect is unknown.  If it was lost
+        before the COMMIT was sent, \p error says that the server rolled the
+        transaction back, as it does with any transaction whose connection
+        ends, so nothing written in it was kept.  If the transaction had
+        already ended otherwise, the commit is refused, since a COMMIT then
+        would succeed without committing anything.  \p error names a
+        deadlock when the client saw one, and otherwise says only that some
+        rows may have been kept: a procedure that caught the deadlock or
+        rolled back itself looks the same as an implicit commit.
 
         \param error Set to the reason when the commit fails, cleared otherwise.
         \return true if the commit took effect; false if there was no open
@@ -131,8 +134,11 @@ public:
         \param error Set to the reason when the rollback fails, cleared otherwise.
         \return true if everything written since the begin was undone; false if
                  there was no open transaction, the rollback failed, or the
-                 transaction had already ended.  \p error then names a
-                 deadlock when the client saw one, and otherwise says only
+                 transaction had already ended.  \p error then says that
+                 the server rolled the transaction back when the connection
+                 was lost (nothing was kept); that whether the commit took
+                 effect is unknown when it was lost during the commit; names
+                 a deadlock when the client saw one; and otherwise says only
                  that some rows may have been kept.
     */
     virtual bool                 rollbackTransaction( QString& error ) = 0;
@@ -181,6 +187,92 @@ public:
         answer 0.
     */
     virtual int lastServerErrno() { return 0; }
+
+    /*! \brief The server's version as it gave it on connecting
+               (mysql_get_server_info(): "8.0.46-...", "10.11.14-MariaDB-..."),
+               or an empty string when it is not known.
+
+        It is kept after the connection is lost, so that the error that
+        lost it can still be read for the server that gave it.
+    */
+    virtual QString serverVersion() { return QString(); }
+
+    /*! \brief True when \p serverErrno, a statement's error
+               (lastServerErrno(), mysql_errno()), means the connection is
+               gone, on the server whose version is \p serverVersion.
+
+        This is the one rule for it; US_DB2 goes by it, and so should every
+        caller that asks whether the connection is gone.
+
+        The server went away (2006) or was lost during a query (2013, and
+        2055 from MySQL's client library); a TLS connection the server
+        closed (2026 -- what a killed or timed-out connection gives over
+        TLS, which every US_DB2 connection uses); a stream that can no
+        longer be read or written (2027, 5013, 5014); the server shutting
+        down (1053); a statement over max_allowed_packet, after which the
+        server closes the connection (1153); a killed connection (1927,
+        MariaDB).
+
+        4031 depends on the server.  MySQL 8 sends it before it closes an
+        idle connection that timed out (ER_CLIENT_INTERACTION_TIMEOUT), so
+        there it is a loss.  MariaDB uses the number for a statement error
+        (ER_REFERENCED_TRG_DOES_NOT_EXIST), after which the connection is
+        fine, so there it is not -- nor when the server is not known (an
+        empty \p serverVersion): a MySQL connection that did time out
+        fails its next statement with 2006 or 2013 anyway.
+
+        Other client errors (20xx) are not losses: 2014, commands out of
+        sync, is a statement out of order on a working connection.
+    */
+    static bool isConnectionLoss( int serverErrno, const QString& serverVersion )
+    {
+       switch ( serverErrno )
+       {
+          case 2006:   // CR_SERVER_GONE_ERROR
+          case 2013:   // CR_SERVER_LOST
+          case 2026:   // CR_SSL_CONNECTION_ERROR: a TLS connection the server closed
+          case 2027:   // CR_MALFORMED_PACKET: the stream can no longer be read
+          case 2055:   // CR_SERVER_LOST_EXTENDED (MySQL's client library)
+          case 5013:   // CR_ERR_NET_READ (MariaDB Connector/C)
+          case 5014:   // CR_ERR_NET_WRITE (MariaDB Connector/C)
+          case 1053:   // ER_SERVER_SHUTDOWN
+          case 1153:   // ER_NET_PACKET_TOO_LARGE: the server closes the connection
+          case 1927:   // ER_CONNECTION_KILLED (MariaDB)
+             return true;
+          case 4031:   // ER_CLIENT_INTERACTION_TIMEOUT on MySQL 8 only
+             return serverIsMySQL( serverVersion );
+          default:
+             return false;
+       }
+    }
+
+    //! \brief isConnectionLoss() for a server that is not known: 4031 is
+    //!        not taken as a loss.  Prefer the form that names the server.
+    static bool isConnectionLoss( int serverErrno )
+    {
+       return isConnectionLoss( serverErrno, QString() );
+    }
+
+    //! \brief True when the error of the last statement means the connection
+    //!        is gone: isConnectionLoss() of lastServerErrno() on serverVersion()
+    bool lastErrorIsConnectionLoss()
+    {
+       return isConnectionLoss( lastServerErrno(), serverVersion() );
+    }
+
+    //! \brief True for a MariaDB server's version string; MariaDB puts its
+    //!        name in it ("10.11.14-MariaDB-...", "5.5.5-10.4.6-MariaDB")
+    static bool serverIsMariaDB( const QString& serverVersion )
+    {
+       return serverVersion.contains( "MariaDB", Qt::CaseInsensitive );
+    }
+
+    //! \brief True for a MySQL server's version string: a known version
+    //!        that is not MariaDB's
+    static bool serverIsMySQL( const QString& serverVersion )
+    {
+       return !serverVersion.trimmed().isEmpty() && !serverIsMariaDB( serverVersion );
+    }
 
     //! Server error numbers lastServerErrno() is compared against
     enum ServerErrno

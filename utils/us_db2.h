@@ -157,6 +157,11 @@ public:
     static constexpr const char* transactionEndedMessage =
        "the transaction had already ended, by an implicit commit or a rollback by the server, "
        "so some rows written in it may have been kept";
+    //! The connection was lost before a COMMIT was sent: the server rolls
+    //! back a transaction whose connection ends, so this outcome is known
+    static constexpr const char* connectionLostRollbackMessage =
+       "the connection to the database was lost before the transaction was committed, so the server "
+       "rolled it back and nothing written in it was kept";
 
     bool transactionActive() const final
     {
@@ -179,7 +184,11 @@ public:
         UTF-16 surrogate, which is no character and has no UTF-8 form, is
         not sent at all (see \ref loneSurrogateProblem): the query fails
         with DBERROR and lastError() says why, rather than the server
-        storing a '?' in its place.  This holds for every query of US_DB2.
+        storing a '?' in its place.  This holds for every statement of
+        US_DB2 that carries text: rawQuery(), query(), statusQuery(),
+        functionQuery(), and the guid and password writeBlobToDB() and
+        readBlobFromDB() send.  The transaction statements (START
+        TRANSACTION, COMMIT, ROLLBACK) are fixed text and carry none.
 
         \param sqlQuery    A string containing the US3 query to execute.
     */
@@ -261,27 +270,19 @@ public:
         or returns FALSE otherwise.
 
         It goes false when a statement finds the connection gone, as
-        \ref isConnectionLoss tells from the error: the server went away or
+        IUS_DB2::isConnectionLoss tells from the error and this server's
+        version (serverVersion()): the server went away or
         closed the connection.  No further statement can succeed on it
         then, and an open transaction is lost with it.  connect() may be
         called again; it opens a new connection.
     */
     bool isConnected() override;
 
-    /*! \brief True when \p serverErrno, the error of a statement
-               (lastServerErrno(), mysql_errno()), means the connection is
-               gone.
-
-        The server went away (2006) or was lost during a query (2013, and
-        2055 from MySQL's client library); a TLS connection the server
-        closed (2026 -- what a killed or timed-out connection gives over
-        TLS, which every US_DB2 connection uses); a stream that can no
-        longer be read or written (2027, 5013, 5014); the server shutting
-        down (1053); a statement over max_allowed_packet, after which the
-        server closes the connection (1153); a killed connection (1927,
-        MariaDB) or an idle one timed out (4031, MySQL 8).
+    /*! \brief The server's version as it gave it on connecting; kept
+        after the connection is lost.  See IUS_DB2::serverVersion().
+        isConnectionLoss() reads the errors of this connection by it.
     */
-    static bool isConnectionLoss( int serverErrno );
+    QString serverVersion() override;
 
     /*! \brief What commitTransaction() reports when the COMMIT fails.
 
@@ -292,8 +293,10 @@ public:
         the server gave it.
         \param serverErrno   mysql_errno() of the failed COMMIT
         \param serverMessage mysql_error() of it
+        \param serverVersion the server's version, see serverVersion()
     */
-    static QString commitErrorText( int serverErrno, const QString& serverMessage );
+    static QString commitErrorText( int serverErrno, const QString& serverMessage,
+                                    const QString& serverVersion = QString() );
 
     /*! \brief Returns the number of rows returned in the current result
         set.
@@ -364,9 +367,11 @@ public:
         \param tableID The integer primary-key index of the record that the
                raw binary data should be written to.
 
-        The data travels in one statement, which the server accepts only up
-        to its max_allowed_packet.  That limit is read from the server
-        first, and a file whose statement would exceed it is refused before
+        The data travels in one statement, which the server accepts only
+        while the packet that carries it -- a command byte and the
+        statement -- is smaller than its max_allowed_packet: a statement of
+        at most max_allowed_packet - 2 bytes.  That limit is read from the
+        server first, and a file whose statement would exceed it is refused before
         anything is sent -- with DBERROR, a message giving both sizes, and
         the connection left open -- instead of the server closing the
         connection ("server has gone away").  The statement is built in
@@ -396,6 +401,18 @@ public:
 
         \param tableID The integer primary-key index of the record that
                contains the raw binary data.
+
+        The procedure first returns a status set.  When that status is not
+        OK -- a missing record (NOROWS), one the caller may not read
+        (NOTPERMITTED) -- it is all the procedure returns, and that status
+        is returned, with lastError() saying what the procedure recorded.
+        A procedure that returns before its status set gives the status it
+        recorded in @US3_LAST_ERRNO.  An OK status without a data set, a
+        data set without a row (NOROWS), a NULL blob, or the server failing
+        part way is a failure too (DBERROR unless said otherwise), and
+        nothing is written to \p filename.  A guid or password holding a lone
+        UTF-16 surrogate is refused before anything is sent, as every query
+        is.  lastServerErrno() is the server's error for the CALL.
     */
     int readBlobFromDB( const QString& filename, const QString& procedure, const int tableID ) override;
 
@@ -503,8 +520,9 @@ public:
 
         Text goes to the server as UTF-8, and a lone UTF-16 surrogate --
         half of a pair, from a cut string or a malformed file -- has no
-        UTF-8 form: it would arrive as '?'.  Every US_DB2 query refuses
-        such text with this message, before anything is sent.
+        UTF-8 form: it would arrive as '?'.  Every US_DB2 statement that
+        carries text (see rawQuery()) refuses such text with this message,
+        before anything is sent.
     */
     static QString loneSurrogateProblem( const QString& text );
 
@@ -572,6 +590,9 @@ public:
     bool       inTransaction        = false;
     //! A deadlock in the open transaction, after which the server rolled it back.
     bool       rolledBackByDeadlock = false;
+    //! What commitTransaction() said when the connection was lost during
+    //! the COMMIT, so that whether it took effect is unknown; empty otherwise
+    QString    lostCommitError;
 #ifndef NO_DB
     MYSQL*     db;
     MYSQL_RES* result;
@@ -581,6 +602,8 @@ public:
 #endif
     //! The server dropped the connection; connect() opens a new one
     bool       connection_lost = false;
+    //! mysql_get_server_info() at the last connect; see serverVersion()
+    QString    server_version;
     QString    email;
     QString    userPW;
     QString    guid;
@@ -623,11 +646,16 @@ public:
     //!          lastError()
     bool           refuseUnsendable( const QString& statement );
 
+    //! \brief What the last procedure recorded in @US3_LAST_ERROR
+    //!        (last_error()), or an empty string
+    QString        recordedErrorText();
+
     //! \brief The server's max_allowed_packet, or 0 when it cannot be read
     qint64         maxAllowedPacket();
 
-    //! \brief Why the transaction ended before commit or rollback: the
-    //!        deadlock if one was recorded, otherwise that rows may have been kept.
+    //! \brief Why the transaction ended before commit or rollback: a lost
+    //!        connection (the server rolled it back), the deadlock if one was
+    //!        recorded, otherwise that rows may have been kept.
     QString        transactionEndedText() const;
 
     //! \brief "MySQL error: " and the error of the last statement, led by

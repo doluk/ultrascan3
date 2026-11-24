@@ -6,6 +6,7 @@
 
 #include "qt_test_base.h"
 #include "us_db2.h"
+#include "mock_us_db2.h"
 
 #include <QFile>
 #include <QString>
@@ -221,10 +222,52 @@ TEST( UsDb2Text, EveryQueryRefusesALoneSurrogateBeforeSending )
 // The errors after which a connection is gone, and some after which it is not
 TEST( UsDb2Connection, TheErrorsOfALostConnectionAreKnown )
 {
-   for ( int code : { 2006, 2013, 2026, 2027, 2055, 5013, 5014, 1053, 1153, 1927, 4031 } )
-      EXPECT_TRUE( US_DB2::isConnectionLoss( code ) ) << code;
-   for ( int code : { 0, 1062, 1205, 1213, 1305, 1366, 1451, 2014 } )
-      EXPECT_FALSE( US_DB2::isConnectionLoss( code ) ) << code;
+   const QString mysql   = "8.0.46-0ubuntu0.24.04.5";
+   const QString mariadb = "10.11.14-MariaDB-0ubuntu0.24.04.1";
+   for ( const QString& version : { mysql, mariadb, QString() } )
+   {
+      for ( int code : { 2006, 2013, 2026, 2027, 2055, 5013, 5014, 1053, 1153, 1927 } )
+         EXPECT_TRUE( US_DB2::isConnectionLoss( code, version ) ) << code << " " << version.toStdString();
+      for ( int code : { 0, 1062, 1205, 1213, 1305, 1366, 1451, 2000, 2014 } )
+         EXPECT_FALSE( US_DB2::isConnectionLoss( code, version ) ) << code << " " << version.toStdString();
+   }
+   EXPECT_TRUE( US_DB2::isConnectionLoss( 2013 ) );
+   EXPECT_FALSE( US_DB2::isConnectionLoss( 2014 ) );
+}
+
+// 4031 is MySQL's idle timeout, sent as it closes the connection; MariaDB
+// uses the number for a statement error (ER_REFERENCED_TRG_DOES_NOT_EXIST)
+// after which the connection is fine
+TEST( UsDb2Connection, Error4031IsALossOnlyOnMySQL )
+{
+   EXPECT_TRUE ( US_DB2::isConnectionLoss( 4031, "8.0.46-0ubuntu0.24.04.5" ) );
+   EXPECT_TRUE ( US_DB2::isConnectionLoss( 4031, "8.4.3" ) );
+   EXPECT_FALSE( US_DB2::isConnectionLoss( 4031, "10.11.14-MariaDB-0ubuntu0.24.04.1" ) );
+   EXPECT_FALSE( US_DB2::isConnectionLoss( 4031, "5.5.5-10.4.6-MariaDB-log" ) );
+   EXPECT_FALSE( US_DB2::isConnectionLoss( 4031, QString() ) ) << "an unknown server";
+   EXPECT_FALSE( US_DB2::isConnectionLoss( 4031 ) ) << "an unknown server";
+
+   EXPECT_TRUE ( US_DB2::serverIsMariaDB( "10.11.14-MariaDB-0ubuntu0.24.04.1" ) );
+   EXPECT_FALSE( US_DB2::serverIsMariaDB( "8.0.46" ) );
+   EXPECT_FALSE( US_DB2::serverIsMySQL( "" ) );
+
+   // The commit that failed with it: unknown on MySQL, the server's error on MariaDB
+   EXPECT_EQ( US_DB2::commitErrorText( 4031, "boom", "8.0.46" ),
+              QObject::tr( US_DB2::commitUnknownMessage ).arg( "boom" ) );
+   EXPECT_EQ( US_DB2::commitErrorText( 4031, "boom", "10.11.14-MariaDB" ), QString( "boom" ) );
+}
+
+// The interface asks the connection: its last error, on its server
+TEST( UsDb2Connection, TheInterfaceReadsTheLastErrorForItsServer )
+{
+   ::testing::NiceMock< US_DB2_Mock > db;
+   ON_CALL( db, lastServerErrno() ).WillByDefault( ::testing::Return( 4031 ) );
+   ON_CALL( db, serverVersion() ).WillByDefault( ::testing::Return( QString( "10.11.14-MariaDB" ) ) );
+   EXPECT_FALSE( db.lastErrorIsConnectionLoss() );
+   ON_CALL( db, serverVersion() ).WillByDefault( ::testing::Return( QString( "8.0.46" ) ) );
+   EXPECT_TRUE( db.lastErrorIsConnectionLoss() );
+   ON_CALL( db, lastServerErrno() ).WillByDefault( ::testing::Return( 2014 ) );
+   EXPECT_FALSE( db.lastErrorIsConnectionLoss() );
 }
 
 // A COMMIT that fails with the connection may have taken effect: every

@@ -27,6 +27,7 @@
 #include <QRandomGenerator>
 #include <QString>
 #include <QTemporaryDir>
+#include <QThread>
 
 namespace
 {
@@ -167,6 +168,93 @@ TEST_F( US_DB2_LiveLimits, ABlobOverMaxAllowedPacketIsRefusedBeforeItIsSent )
    EXPECT_TRUE( db.lastError().contains( "max_allowed_packet" ) ) << db.lastError().toStdString();
    EXPECT_TRUE( db.isConnected() );
    EXPECT_TRUE( answers( db ) ) << "the connection was lost: " << db.lastError().toStdString();
+}
+
+// The server measures the packet -- a command byte and the statement -- and
+// refuses one of max_allowed_packet bytes or more, closing the connection.
+// So the longest statement it takes is max_allowed_packet - 2 bytes.  The
+// check let a statement of max_allowed_packet - 1 bytes through, and that
+// one killed the connection
+TEST_F( US_DB2_LiveLimits, ABlobStatementAtTheExactLimitArrivesAndOneByteMoreIsRefused )
+{
+   createBlobProcedure();
+   const qint64 packet = maxAllowedPacket();
+   ASSERT_GT( packet, 0 );
+   ASSERT_LE( packet, qint64( 256 ) * 1024 * 1024 ) << "too large a limit to test here";
+
+   // The statement around the data, with no guid or password: the head
+   // writeBlobToDB() builds, then "', '", the MD5 in hex, "')"
+   const qint64 around  = QString( "CALL %1('', '', 1, _binary'" ).arg( blobProcedure ).toUtf8().size() + 4 + 32 + 2;
+   const qint64 longest = packet - 2;
+
+   // Bytes that need no escaping, so the statement is exactly this long
+   const QString atLimit = writeFile( "at.bin", QByteArray( int( longest - around ), 'A' ) );
+   EXPECT_EQ( db.writeBlobToDB( atLimit, blobProcedure, 1 ), IUS_DB2::OK ) << db.lastError().toStdString();
+   EXPECT_TRUE( db.isConnected() );
+   EXPECT_TRUE( answers( db ) ) << "the connection was lost: " << db.lastError().toStdString();
+
+   const QString over = writeFile( "over.bin", QByteArray( int( longest - around + 1 ), 'A' ) );
+   EXPECT_EQ( db.writeBlobToDB( over, blobProcedure, 1 ), IUS_DB2::DBERROR );
+   EXPECT_TRUE( db.lastError().contains( "max_allowed_packet" ) ) << db.lastError().toStdString();
+   EXPECT_TRUE( db.lastError().contains( QString( "at most %1 bytes" ).arg( longest ) ) )
+      << db.lastError().toStdString();
+   EXPECT_EQ( db.lastServerErrno(), 0 ) << "it was sent: " << db.lastError().toStdString();
+   EXPECT_TRUE( db.isConnected() );
+   EXPECT_TRUE( answers( db ) ) << "the connection was lost: " << db.lastError().toStdString();
+
+   // One byte that escapes to two, at the limit: refused while it is escaped
+   QByteArray escaped( int( longest - around ), 'A' );
+   escaped[ 0 ] = '\'';
+   const QString grown = writeFile( "grown.bin", escaped );
+   EXPECT_EQ( db.writeBlobToDB( grown, blobProcedure, 1 ), IUS_DB2::DBERROR );
+   EXPECT_TRUE( db.lastError().contains( "max_allowed_packet" ) ) << db.lastError().toStdString();
+   EXPECT_TRUE( answers( db ) ) << "the connection was lost: " << db.lastError().toStdString();
+}
+
+// The connection knows its server, as the server names itself
+TEST_F( US_DB2_LiveLimits, TheConnectionKnowsItsServer )
+{
+   db.rawQuery( "SELECT VERSION()" );
+   ASSERT_TRUE( db.next() );
+   const QString version = db.value( 0 ).toString();
+   EXPECT_EQ( db.serverVersion(), version );
+   EXPECT_NE( US_DB2::serverIsMariaDB( db.serverVersion() ), US_DB2::serverIsMySQL( db.serverVersion() ) );
+}
+
+// MariaDB uses 4031 for a statement error, after which the connection is
+// fine; it used to be taken for MySQL's idle timeout, and the connection
+// for gone
+TEST_F( US_DB2_LiveLimits, Error4031OnMariaDBKeepsTheConnection )
+{
+   if ( !US_DB2::serverIsMariaDB( db.serverVersion() ) )
+   {
+      GTEST_SKIP() << "on MySQL 4031 is the idle timeout; see the next test";
+   }
+
+   db.query( "SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO = 4031" );
+   EXPECT_EQ( db.lastErrno(), IUS_DB2::DBERROR );
+   EXPECT_EQ( db.lastServerErrno(), 4031 ) << db.lastError().toStdString();
+   EXPECT_FALSE( db.lastErrorIsConnectionLoss() );
+   EXPECT_TRUE( db.isConnected() );
+   EXPECT_TRUE( answers( db ) ) << db.lastError().toStdString();
+}
+
+// An idle connection the server timed out is gone on either server:
+// MySQL 8 says so with 4031, MariaDB with a lost connection
+TEST_F( US_DB2_LiveLimits, AConnectionTheServerTimedOutIsNoLongerConnected )
+{
+   db.rawQuery( "SET SESSION wait_timeout = 1" );
+   ASSERT_FALSE( db.lastError().startsWith( "MySQL error" ) ) << db.lastError().toStdString();
+   QThread::msleep( 3000 );
+
+   db.query( "SELECT 41 + 1" );
+   EXPECT_EQ( db.lastErrno(), IUS_DB2::DBERROR );
+   EXPECT_TRUE( db.lastErrorIsConnectionLoss() ) << db.lastServerErrno() << " " << db.lastError().toStdString();
+   EXPECT_FALSE( db.isConnected() ) << db.lastServerErrno() << " " << db.lastError().toStdString();
+
+   QString error;
+   ASSERT_TRUE( db.connect( host, name, user, password, error ) ) << error.toStdString();
+   EXPECT_TRUE( answers( db ) ) << db.lastError().toStdString();
 }
 
 // Just below the limit everything arrives: random bytes, each special byte,

@@ -61,6 +61,7 @@ public:
     MOCK_METHOD(QString, lastError, (), (override));
     MOCK_METHOD(int, lastErrno, (), (override));
     MOCK_METHOD(int, lastServerErrno, (), (override));
+    MOCK_METHOD(QString, serverVersion, (), (override));
     MOCK_METHOD(int, lastInsertID, (), (override));
     MOCK_METHOD(QString, lastDebug, (), (override));
 
