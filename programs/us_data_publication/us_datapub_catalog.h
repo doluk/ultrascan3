@@ -165,6 +165,11 @@ class US_DataPubCatalog
       */
       void setBulkQueries( bool on );
 
+      //! \brief A flag that, once set, makes the catalog's reads of the
+      //!        chain stop with an error (US_DataCatalog::setCancelFlag);
+      //!        it has to outlive the catalog's use of it
+      void setCancelFlag( const QAtomicInt* flag );
+
       //! \brief The open database connection, or null for a disk catalog
       IUS_DB2* db( void );
 
@@ -177,12 +182,28 @@ class US_DataPubCatalog
       //! \param error       Filled in with a message when the scan fails
       QList< Run > runs( const QString& projectGUID, QString& error );
 
-      //! \brief Look up one run by its run identifier
-      //! \param runID The run identifier to look for
-      //! \param found Filled in with the run header when it was found
-      //! \param error Filled in with a message when the scan fails
-      //! \returns True when the run exists in the source
-      bool runByID( const QString& runID, Run& found, QString& error );
+      /*! \brief Look up one run by its run identifier
+
+          A local store can hold a run ID in more than one directory: a
+          "Copy of ..." or "Backup_..." directory made by hand holds the
+          same files under the same names.  Which of them is the run cannot
+          be told, so the catalog marks every one of them as not usable
+          (Run::usable), and so does a run whose directory is not named
+          after it.  The one run that is usable among those of the run ID
+          is the one found; when there is none, or more than one, the run
+          is refused with a message naming every directory, and
+          \a unusable says that it is the run that is at fault, not the
+          source.
+          \param runID    The run identifier to look for
+          \param found    Filled in with the run header when it was found
+          \param error    Filled in with a message when the scan fails or
+                          the run cannot be used
+          \param unusable When given, set to true when the run is there but
+                          is not one to act on
+          \returns True when exactly one usable run has the run ID
+      */
+      bool runByID( const QString& runID, Run& found, QString& error,
+                    bool* unusable = nullptr );
 
       //! \brief Fill in the raw-data triples and edits of a run
       //!
@@ -286,8 +307,12 @@ class US_DataPubCatalog
       //! \param run   The run whose experiment information is wanted
       //! \param info  Filled in with the experiment information
       //! \param error Filled in with a message when the read fails
+      //! \param runFault When given, set to true when the failure is the
+      //!        run's own -- its experiment XML is missing or is not XML,
+      //!        or its record is gone -- rather than the source's
       //! \returns True when the information could be read
-      bool expInfo( const Run& run, ExpInfo& info, QString& error );
+      bool expInfo( const Run& run, ExpInfo& info, QString& error,
+                    bool* runFault = nullptr );
 
       //! \brief The path of the experiment XML file of a run on disk
       //! \param run The run whose experiment XML file is wanted
@@ -304,6 +329,15 @@ class US_DataPubCatalog
 
       //! \brief Drop what was listed when the investigator has changed
       void syncInvestigator( void );
+
+      //! \brief The catalog positions of the runs of a run ID: the exact
+      //!        matches, or failing those, the runs of the spelling the
+      //!        source's own comparison finds (see indexOfRun())
+      QList< int > indexesOfRun( const QString& runID ) const;
+
+      //! \brief The catalog position of a run looked up before: the one of
+      //!        its run ID in its directory, or -1
+      int indexOfListedRun( const Run& run ) const;
 
       //! \brief Make sure the first layer of the shared catalog is read
       //! \param projectGUID When not empty, only runs of that project

@@ -119,10 +119,21 @@ concentrations, an analyte's vbar20 or molecular weight, a solution's common
 vbar20, storage temperature or amounts. A missing project file on disk is
 reported with the hint to leave the project out.
 
+A run picked by name that the local results directory holds in more than one
+directory -- a ``Copy of ...`` or ``Backup_...`` directory made by hand holds
+the same files under the same names -- is refused, with a message naming every
+directory: which of them is the run cannot be told, so keep only the directory
+named after the run in the results directory. A run whose experiment XML
+names a rotor calibration by an ID that, in the local rotor directory, belongs
+to a calibration with another GUID is refused too, unless the calibration it
+names by GUID is there: the other calibration's coefficients are not passed
+off as the run's.
+
 When the runs come with a project rather than by name, a run whose own records
 do not hold together -- one of those problems, a channel without a solution,
 a rotor calibration or centerpiece it names that is not there, a time state
-without its definitions, or an experiment, raw data or edit another run already brought into the
+without its definitions, an experiment XML that is missing or is not XML, a
+run ID held in more than one directory, or an experiment, raw data or edit another run already brought into the
 bundle (a run directory copied under another name, GUIDs and all) -- is left
 out with a warning instead, and the rest of the project is exported. Its
 models and their noise go with it, unless their edit is in the bundle after
@@ -139,7 +150,8 @@ line writes each warning to the error output, ``--verbose`` or not, and adds
 ``(left out: N run(s), M other record(s); see the warnings)`` to its last
 line. The preview and a ``--dry-run`` are the export without the bundle: they
 read, stage and check every record as the export does, so they list -- and
-leave out -- exactly what the export would.
+leave out -- exactly what the export would. The warnings count the runs left
+out of a project once, whichever check left each one out.
 
 A run's rotor calibration survives a trip through a disk store (database,
 bundle, disk, bundle): the exported experiment XML names the calibration's
@@ -235,12 +247,15 @@ The Export tab works from the top down.
   records. **Details...** shows the manifest that would be written, with what
   would be left out: every record is read and checked as the export does it,
   in a staging directory that is removed afterwards, so it takes as long as
-  the export.
+  the export. Its progress is shown as the export's is, the window is locked
+  meanwhile, and **Cancel** stops it. A preview that fails says "The export
+  would fail" with the reason and the warnings.
 
 **Export Bundle**
   Writes the bundle. While the export runs the tab cannot be changed, the
   Import tab cannot be opened, and a request to close the window is carried
-  out once the export is done. An existing file of the same name is replaced
+  out once the export is done. **Cancel** stops the export at the next record;
+  nothing is written. An existing file of the same name is replaced
   only once the new bundle is complete and has been read back and compared,
   file by file, with what was staged. The UltraScan ``tmp`` directory needs
   room for about twice the data plus the bundle while this happens.
@@ -290,6 +305,12 @@ keeps a wavelength to 0.1 nm and a value to five digits, an analyte file a
 value to six, and a solution file has no place for its extinction profile.
 ``manifest.sha256`` holds the digest of the manifest in the format
 ``sha256sum -c`` checks.
+
+Bundles are written in manifest format ``2``; format ``1`` bundles are read
+too. A few development builds of format ``1`` listed a noise record carried
+for a model without noise of its own under that model (with
+``fittedToModelGUID``); such a bundle cannot be imported, and the import says
+so and asks for the data to be exported again.
 
 The manifest is a small subset of YAML in UTF-8: a block of scalar header keys
 (``version``, ``created``, ``generator``, ``source``, ``scope``,
@@ -585,8 +606,9 @@ Common options
                                 on the error output without echoing; a
                                 non-interactive run stops, and so does a Windows run
                                 whose input is not a console. ``US3_DB_PASSWORD``
-                                set to nothing is an empty password (exit 1), and a
-                                wrong master password is said to be wrong
+                                set to nothing is an empty password (exit 1), as is
+                                ``--db-password ''``, and a wrong master password is
+                                said to be wrong
 ``--dry-run``                   Decide everything, write nothing
 ``--non-interactive``           Never prompt; fail instead of asking
 ``--verbose``                   Report every step

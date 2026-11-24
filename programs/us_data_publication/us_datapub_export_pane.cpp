@@ -26,6 +26,7 @@ US_DataPubExportPane::US_DataPubExportPane( QWidget* parent )
    catalog_open = false;
    updating     = false;
    busy         = false;
+   running      = nullptr;
 
    setPalette( US_GuiSettings::frameColor() );
 
@@ -210,8 +211,10 @@ US_DataPubExportPane::US_DataPubExportPane( QWidget* parent )
    QPushButton* pb_help = us_pushbutton( tr( "Help" ) );
    pb_reset  = us_pushbutton( tr( "Reset" ) );
    pb_export = us_pushbutton( tr( "Export Bundle" ) );
+   pb_cancel = us_pushbutton( tr( "Cancel" ), false );
    buttons->addWidget( pb_help );
    buttons->addWidget( pb_reset );
+   buttons->addWidget( pb_cancel );
    buttons->addWidget( pb_export );
    main->addLayout( buttons );
 
@@ -221,6 +224,8 @@ US_DataPubExportPane::US_DataPubExportPane( QWidget* parent )
             this,      &US_DataPubExportPane::reset );
    connect( pb_export, &QPushButton::clicked,
             this,      &US_DataPubExportPane::run_export );
+   connect( pb_cancel, &QPushButton::clicked,
+            this,      &US_DataPubExportPane::cancel_export );
 
    updateSummary();
 }
@@ -1316,23 +1321,38 @@ void US_DataPubExportPane::show_details( void )
    US_DataPubExporter::Selection sel = selection();
    QString                       error;
 
-   // The preview reads the same records the export does
+   // The preview reads and stages the same records the export does, which
+   // takes as long: it shows its progress and can be cancelled the same way
    if ( sel.fromDb )
       sel.dbPassword = password();
 
-   QApplication::setOverrideCursor( QCursor( Qt::WaitCursor ) );
-   bool ok = exporter.previewManifest( sel, error );
-   QApplication::restoreOverrideCursor();
+   bool ok = runExporter( exporter,
+                          [ & ]( QString& err )
+                          { return exporter.previewManifest( sel, err ); },
+                          error );
 
-   QString warned = exporter.warningReport( 1000 );
+   QString warned = exporter.warningReport();
 
    if ( ! ok )
    {
-      QMessageBox::warning( this, tr( "Preview Problem" ),
-                            warned.isEmpty() ? error
-                            : error + "\n\n" + exporter.warningReport() );
+      QString title = exporter.wasCancelled() ? tr( "Preview Cancelled" )
+                                              : tr( "Preview Failed" );
+      QString text  = exporter.wasCancelled()
+                      ? error
+                      : tr( "The export would fail: %1" ).arg( error );
+
+      te_status->append( text );
+      QMessageBox::warning( this, title,
+                            warned.isEmpty() ? text : text + "\n\n" + warned );
+      emit status( title );
+      emit busyChanged( false );
       return;
    }
+
+   pgb_progress->setValue( pgb_progress->maximum() );
+
+   // Every warning in the window, not only the first few
+   warned = exporter.warningReport( 1000 );
 
    QString text = tr( "Manifest preview -- every record was read and checked"
                       " as the export does it; no bundle was written.\n\n" )
@@ -1348,6 +1368,7 @@ void US_DataPubExportPane::show_details( void )
                               US_GuiSettings::fontSize() ) );
    editor->e->setText( text );
    editor->show();
+   emit busyChanged( false );
 }
 
 void US_DataPubExportPane::browse_bundle( void )
@@ -1395,6 +1416,72 @@ void US_DataPubExportPane::exporter_step( int step )
    qApp->processEvents();
 }
 
+bool US_DataPubExportPane::runExporter( US_DataPubExporter& exporter,
+      const std::function< bool( QString& ) >& work, QString& error )
+{
+   connect( &exporter, &US_DataPubExporter::message,
+            this,      &US_DataPubExportPane::exporter_note );
+   connect( &exporter, &US_DataPubExporter::steps,
+            this,      &US_DataPubExportPane::exporter_steps );
+   connect( &exporter, &US_DataPubExporter::stepDone,
+            this,      &US_DataPubExportPane::exporter_step );
+
+   te_status->clear();
+   pgb_progress->setValue( 0 );
+
+   // Events are processed while it runs, so nothing here may be touched
+   // until it is done; the window refuses to close meanwhile.  Only the
+   // Cancel button is live.
+   QList< QWidget* > controls = findChildren< QWidget* >();
+   QList< QWidget* > disabled;
+
+   for ( int ii = 0; ii < controls.size(); ii++ )
+   {
+      QWidget* control = controls[ ii ];
+
+      if ( control == te_status  ||  control == pgb_progress  ||
+           control == pb_cancel  ||  ! control->isEnabled()  ||
+           ( qobject_cast< QAbstractButton* >( control ) == nullptr  &&
+             qobject_cast< QLineEdit*       >( control ) == nullptr  &&
+             qobject_cast< QComboBox*       >( control ) == nullptr  &&
+             qobject_cast< QTreeWidget*     >( control ) == nullptr ) )
+         continue;
+
+      control->setEnabled( false );
+      disabled << control;
+   }
+
+   busy    = true;
+   running = &exporter;
+   pb_cancel->setEnabled( true );
+   emit busyChanged( true );
+   QApplication::setOverrideCursor( QCursor( Qt::WaitCursor ) );
+   qApp->processEvents();
+
+   bool ok = work( error );
+
+   QApplication::restoreOverrideCursor();
+   pb_cancel->setEnabled( false );
+   running = nullptr;
+   busy    = false;
+
+   for ( int ii = 0; ii < disabled.size(); ii++ )
+      disabled[ ii ]->setEnabled( true );
+
+   updateSummary();
+
+   return ok;
+}
+
+void US_DataPubExportPane::cancel_export( void )
+{
+   if ( running == nullptr )  return;
+
+   running->cancel();
+   pb_cancel->setEnabled( false );
+   te_status->append( tr( "Cancelling..." ) );
+}
+
 void US_DataPubExportPane::run_export( void )
 {
    QString path = le_bundle->text().trimmed();
@@ -1423,56 +1510,25 @@ void US_DataPubExportPane::run_export( void )
       sel.dbPassword = password();
 
    US_DataPubExporter exporter;
-   connect( &exporter, &US_DataPubExporter::message,
-            this,      &US_DataPubExportPane::exporter_note );
-   connect( &exporter, &US_DataPubExporter::steps,
-            this,      &US_DataPubExportPane::exporter_steps );
-   connect( &exporter, &US_DataPubExporter::stepDone,
-            this,      &US_DataPubExportPane::exporter_step );
-
-   te_status->clear();
-   pgb_progress->setValue( 0 );
-
-   // Events are processed while the export runs, so nothing here may be
-   // touched until it is done; the window refuses to close meanwhile
-   QList< QWidget* > controls = findChildren< QWidget* >();
-   QList< QWidget* > disabled;
-
-   for ( int ii = 0; ii < controls.size(); ii++ )
-   {
-      QWidget* control = controls[ ii ];
-
-      if ( control == te_status  ||  control == pgb_progress  ||
-           ! control->isEnabled()  ||
-           ( qobject_cast< QAbstractButton* >( control ) == nullptr  &&
-             qobject_cast< QLineEdit*       >( control ) == nullptr  &&
-             qobject_cast< QComboBox*       >( control ) == nullptr  &&
-             qobject_cast< QTreeWidget*     >( control ) == nullptr ) )
-         continue;
-
-      control->setEnabled( false );
-      disabled << control;
-   }
-
-   busy = true;
-   emit busyChanged( true );
-   QApplication::setOverrideCursor( QCursor( Qt::WaitCursor ) );
-
-   QString error;
-   bool    ok = exporter.exportBundle( sel, path, error );
-
-   QApplication::restoreOverrideCursor();
-   busy = false;
-
-   for ( int ii = 0; ii < disabled.size(); ii++ )
-      disabled[ ii ]->setEnabled( true );
-
-   updateSummary();
+   QString            error;
+   bool               ok = runExporter( exporter,
+                           [ & ]( QString& err )
+                           { return exporter.exportBundle( sel, path, err ); },
+                           error );
 
    // The other tab is unlocked -- and a close asked for meanwhile carried
    // out -- only once the result has been shown
    // What was left out is said in the box, not only in the status log
    QString warned = exporter.warningReport();
+
+   if ( ! ok  &&  exporter.wasCancelled() )
+   {
+      te_status->append( error );
+      QMessageBox::information( this, tr( "Export Cancelled" ), error );
+      emit status( tr( "Export cancelled" ) );
+      emit busyChanged( false );
+      return;
+   }
 
    if ( ! ok )
    {

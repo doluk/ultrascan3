@@ -2,6 +2,8 @@
 #ifndef US_DATAPUB_EXPORT_PANE_H
 #define US_DATAPUB_EXPORT_PANE_H
 
+#include <functional>
+
 #include "us_widgets.h"
 #include "us_help.h"
 #include "us_project.h"
@@ -68,6 +70,7 @@ class US_DataPubExportPane : public US_Widgets
       QPushButton*  pb_details;
       QPushButton*  pb_reset;
       QPushButton*  pb_export;
+      QPushButton*  pb_cancel;
 
       QLineEdit*    le_project;
       QLineEdit*    le_runs;
@@ -91,6 +94,9 @@ class US_DataPubExportPane : public US_Widgets
       bool              catalog_open;
       bool              updating;
       bool              busy;
+
+      //! The export or preview that is running, for the Cancel button
+      US_DataPubExporter* running;
 
       QString           project_guid;
       QString           project_id;
@@ -128,6 +134,18 @@ class US_DataPubExportPane : public US_Widgets
 
       US_DataPubExporter::Selection selection( void ) const;
 
+      /*! Run an export or a preview with the window locked, its progress
+          shown and the Cancel button live.  Events are processed while it
+          runs, so nothing else may be touched until it is done.
+          \param exporter The exporter, its signals not yet connected
+          \param work     What to run: the export or the preview
+          \param error    Filled in with a message when it fails
+          \returns What \a work returned
+      */
+      bool runExporter( US_DataPubExporter& exporter,
+                        const std::function< bool( QString& ) >& work,
+                        QString& error );
+
    private slots:
       void source_changed ( bool );
       void select_project ( void );
@@ -150,6 +168,7 @@ class US_DataPubExportPane : public US_Widgets
       void show_details   ( void );
       void reset          ( void );
       void run_export     ( void );
+      void cancel_export  ( void );
       void exporter_note  ( const QString& );
       void exporter_steps ( int );
       void exporter_step  ( int );

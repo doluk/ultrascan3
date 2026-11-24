@@ -325,6 +325,11 @@ void US_DataPubCatalog::setBulkQueries( bool on )
    cat->setBulkQueries( on );
 }
 
+void US_DataPubCatalog::setCancelFlag( const QAtomicInt* flag )
+{
+   cat->setCancelFlag( flag );
+}
+
 IUS_DB2* US_DataPubCatalog::db( void )
 {
    return dbase;
@@ -467,22 +472,53 @@ QList< US_DataPubCatalog::Run > US_DataPubCatalog::runs(
    return cat->runs();
 }
 
-bool US_DataPubCatalog::runByID( const QString& runID, Run& found,
-                                 QString& error )
+QList< int > US_DataPubCatalog::indexesOfRun( const QString& runID ) const
 {
+   QList< int > found;
+   int          first = cat->indexOfRun( runID );
+
+   if ( first < 0 )  return found;
+
+   // Every run of the spelling that was found: a local store can hold it
+   // in more than one directory
+   QString spelling = cat->run( first ).runID;
+
+   for ( int ii = 0; ii < cat->runCount(); ii++ )
+      if ( cat->run( ii ).runID == spelling )
+         found << ii;
+
+   return found;
+}
+
+int US_DataPubCatalog::indexOfListedRun( const Run& run ) const
+{
+   QList< int > found = indexesOfRun( run.runID );
+
+   for ( int ii = 0; ii < found.size(); ii++ )
+      if ( from_db  ||  cat->run( found[ ii ] ).dirPath == run.dirPath )
+         return found[ ii ];
+
+   return -1;
+}
+
+bool US_DataPubCatalog::runByID( const QString& runID, Run& found,
+                                 QString& error, bool* unusable )
+{
+   if ( unusable != nullptr )  *unusable = false;
+
    if ( ! ensureListed( listed ? listed_project : QString(), error ) )
       return false;
 
-   int index = cat->indexOfRun( runID );
+   QList< int > indexes = indexesOfRun( runID );
 
-   if ( index < 0  &&  ! listed_project.isEmpty() )
+   if ( indexes.isEmpty()  &&  ! listed_project.isEmpty() )
    {  // Not in the project that was listed; look through all of them
       if ( ! ensureListed( QString(), error ) )  return false;
 
-      index = cat->indexOfRun( runID );
+      indexes = indexesOfRun( runID );
    }
 
-   if ( index < 0 )
+   if ( indexes.isEmpty() )
    {
       error = QObject::tr( "No run \"%1\" was found in the %2" ).arg( runID )
               .arg( from_db ? QObject::tr( "database" )
@@ -490,10 +526,48 @@ bool US_DataPubCatalog::runByID( const QString& runID, Run& found,
       return false;
    }
 
-   found = cat->run( index );
-   error.clear();
+   // The one usable run of the run ID, whichever position it has: a stray
+   // copy listed before it is not taken for it
+   QList< int > usable;
 
-   return true;
+   for ( int ii = 0; ii < indexes.size(); ii++ )
+      if ( cat->run( indexes[ ii ] ).usable )
+         usable << indexes[ ii ];
+
+   if ( usable.size() == 1 )
+   {
+      found = cat->run( usable[ 0 ] );
+      error.clear();
+      return true;
+   }
+
+   if ( unusable != nullptr )  *unusable = true;
+
+   if ( indexes.size() > 1 )
+   {
+      QStringList dirs;
+
+      for ( int ii = 0; ii < indexes.size(); ii++ )
+         dirs << QDir::toNativeSeparators( cat->run( indexes[ ii ] ).dirPath );
+
+      dirs.sort();
+
+      error = QObject::tr( "Run %1 is in %2 directories: %3.  Which of them"
+                           " is the run cannot be told; keep only the"
+                           " directory named after the run in the results"
+                           " directory, and move the copies elsewhere" )
+              .arg( runID ).arg( dirs.size() ).arg( dirs.join( ", " ) );
+      return false;
+   }
+
+   const Run& run = cat->run( indexes[ 0 ] );
+
+   error = QObject::tr( "Run %1 cannot be used as it stands: %2" )
+           .arg( runID )
+           .arg( run.problem.isEmpty() ? QObject::tr( "the catalog marks it"
+                                                      " as not usable" )
+                                       : run.problem );
+   return false;
 }
 
 QString US_DataPubCatalog::expFilePath( const Run& run )
@@ -510,13 +584,14 @@ bool US_DataPubCatalog::loadRunDetails( Run& run, QString& error )
    if ( ! ensureListed( listed ? listed_project : QString(), error ) )
       return false;
 
-   int index = cat->indexOfRun( run.runID );
+   // The run in its own directory, not another one of its run ID
+   int index = indexOfListedRun( run );
 
    if ( index < 0  &&  ! listed_project.isEmpty() )
    {
       if ( ! ensureListed( QString(), error ) )  return false;
 
-      index = cat->indexOfRun( run.runID );
+      index = indexOfListedRun( run );
    }
 
    if ( index < 0 )
@@ -656,13 +731,18 @@ QList< US_DataPubCatalog::Noise > US_DataPubCatalog::noises(
 // -------------------------------------------------------- experiment info
 
 bool US_DataPubCatalog::expInfo( const Run& run, ExpInfo& info,
-                                 QString& error )
+                                 QString& error, bool* runFault )
 {
    syncInvestigator();
+
+   if ( runFault != nullptr )  *runFault = false;
 
    if ( ! from_db )
    {
       QString fpath = expFilePath( run );
+
+      // The run's own files are wrong; the store as such is fine
+      if ( runFault != nullptr )  *runFault = true;
 
       if ( fpath.isEmpty()  ||  ! QFile( fpath ).exists() )
       {
@@ -674,9 +754,12 @@ bool US_DataPubCatalog::expInfo( const Run& run, ExpInfo& info,
       if ( ! info.readFromFile( fpath ) )
       {
          error = QObject::tr( "The experiment XML file of run %1 could"
-                              " not be read" ).arg( run.runID );
+                              " not be read: %2" ).arg( run.runID )
+                 .arg( QDir::toNativeSeparators( fpath ) );
          return false;
       }
+
+      if ( runFault != nullptr )  *runFault = false;
 
       error.clear();
       return true;
@@ -713,6 +796,9 @@ bool US_DataPubCatalog::expInfo( const Run& run, ExpInfo& info,
    {
       error = QObject::tr( "Run %1 was not found in the database" )
               .arg( run.runID );
+
+      if ( runFault != nullptr )  *runFault = true;
+
       return false;
    }
 

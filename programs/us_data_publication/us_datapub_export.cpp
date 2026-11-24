@@ -122,6 +122,27 @@ US_DataPubExporter::US_DataPubExporter( QObject* parent ) : QObject( parent )
    // A staging directory is never without its lock, so a sweep can tell
    // the directory of an export that was killed from one still running
    bundle.setStagingLock( stagingLockName() );
+
+   cancel_flag.storeRelease( 0 );
+   catalog.setCancelFlag( &cancel_flag );
+}
+
+void US_DataPubExporter::cancel( void )
+{
+   cancel_flag.storeRelease( 1 );
+}
+
+bool US_DataPubExporter::wasCancelled( void ) const
+{
+   return cancel_flag.loadAcquire() != 0;
+}
+
+bool US_DataPubExporter::cancelledError( QString& error ) const
+{
+   if ( ! wasCancelled() )  return false;
+
+   error = tr( "The export was cancelled; no bundle was written" );
+   return true;
 }
 
 QString US_DataPubExporter::stagingLockName( void )
@@ -370,6 +391,8 @@ bool US_DataPubExporter::finishEntity( US_DataPubEntity& entity,
    step_count++;
    emit stepDone( step_count );
 
+   if ( cancelledError( error ) )  return false;
+
    error.clear();
 
    QString why;
@@ -482,6 +505,8 @@ bool US_DataPubExporter::previewManifest( const Selection& selection,
 {
    bool staged = stageBundle( selection, error );
 
+   if ( ! staged )  cancelledError( error );
+
    bundle.cleanup();
 
    return staged;
@@ -498,6 +523,13 @@ bool US_DataPubExporter::exportBundle( const Selection& selection,
    }
 
    if ( ! stageBundle( selection, error ) )
+   {
+      cancelledError( error );
+      bundle.cleanup();
+      return false;
+   }
+
+   if ( cancelledError( error ) )
    {
       bundle.cleanup();
       return false;
@@ -592,6 +624,7 @@ bool US_DataPubExporter::build( const Selection& selection, QString& error )
    run_fault      = false;
    listed_models.clear();
    noise_borrowers.clear();
+   cancel_flag.storeRelease( 0 );
 
    US_DataPub::Scope scope = selection.effectiveScope();
    exp_scope       = scope;
@@ -667,10 +700,28 @@ bool US_DataPubExporter::build( const Selection& selection, QString& error )
    for ( int ii = 0; ii < runs.size(); ii++ )
    {
       US_DataPubCatalog::ExpInfo info;
+      bool                       fault = false;
 
-      if ( ! catalog.expInfo( runs[ ii ], info, error ) )  return false;
+      if ( catalog.expInfo( runs[ ii ], info, error, &fault ) )
+      {
+         infos << info;
+         continue;
+      }
 
-      infos << info;
+      // An experiment XML that is missing or is not XML is the run's
+      // fault: a project export goes on without the run
+      if ( ! from_project  ||  ! fault )  return false;
+
+      leaveOutRun( runs[ ii ].runID, error );
+      error.clear();
+      runs.removeAt( ii-- );
+   }
+
+   if ( runs.isEmpty()  &&  ! left_out_runs.isEmpty() )
+   {
+      error = tr( "None of the %1 runs of the project can be exported; see"
+                  " the warnings" ).arg( left_out_runs.size() );
+      return false;
    }
 
    // The models are known before anything is staged, so the number of
@@ -737,9 +788,16 @@ bool US_DataPubExporter::build( const Selection& selection, QString& error )
 
       run_fault = false;
 
+      if ( cancelledError( error ) )  return false;
+
       if ( stageRun( selection, runs[ ii ], infos[ ii ], error ) )  continue;
 
-      if ( ! from_project  ||  ! run_fault )  return false;
+      // A cancelled export is not a run that failed
+      if ( ! from_project  ||  ! run_fault  ||  wasCancelled() )
+      {
+         cancelledError( error );
+         return false;
+      }
 
       QString why = error;
 
@@ -775,18 +833,17 @@ bool US_DataPubExporter::build( const Selection& selection, QString& error )
                                  runs[ ii ].runID );
    }
 
-   if ( leftOut > 0 )
+   if ( leftOut > 0  &&  leftOut == runs.size() )
    {
-      if ( leftOut == runs.size() )
-      {
-         error = tr( "None of the %1 runs of the project can be exported; see"
-                     " the warnings" ).arg( leftOut );
-         return false;
-      }
-
-      warn( tr( "%1 run(s) of the project are left out of the"
-                " bundle" ).arg( leftOut ) );
+      error = tr( "None of the %1 runs of the project can be exported; see"
+                  " the warnings" ).arg( left_out_runs.size() );
+      return false;
    }
+
+   // One count of every run left out, whichever check left it out
+   if ( ! left_out_runs.isEmpty() )
+      warn( tr( "%1 run(s) of the project are left out of the bundle: %2" )
+            .arg( left_out_runs.size() ).arg( left_out_runs.join( ", " ) ) );
 
    // The models of a left-out run, and their noise, go with it -- those
    // whose edit is not in the bundle after all.  An edit of a left-out run
@@ -1164,8 +1221,21 @@ bool US_DataPubExporter::gatherRuns( const Selection& selection,
       }
 
       US_DataPubCatalog::Run run;
+      bool                   unusable = false;
 
-      if ( ! catalog.runByID( runIDs[ ii ], run, error ) )  return false;
+      // A run the catalog says not to act on -- a run directory copied by
+      // hand holds the same run ID -- is never read in place of the run
+      if ( ! catalog.runByID( runIDs[ ii ], run, error, &unusable ) )
+      {
+         if ( ! unusable  ||  ! fromProject )  return false;
+
+         left_out_runs << runIDs[ ii ];
+         warn( tr( "run \"%1\" of the project is left out: %2" )
+               .arg( runIDs[ ii ] ).arg( error ) );
+         error.clear();
+         skipped++;
+         continue;
+      }
 
       if ( ! catalog.loadRunDetails( run, error ) )         return false;
 
@@ -1245,17 +1315,13 @@ bool US_DataPubExporter::gatherRuns( const Selection& selection,
       runs << run;
    }
 
-   if ( skipped > 0 )
+   // The count of the runs left out is given once, by build(), when the
+   // staging may have left out more
+   if ( skipped > 0  &&  runs.isEmpty() )
    {
-      if ( runs.isEmpty() )
-      {
-         error = tr( "None of the %1 runs of the project can be exported; see"
-                     " the warnings" ).arg( skipped );
-         return false;
-      }
-
-      warn( tr( "%1 run(s) of the project are left out of the"
-                " bundle" ).arg( skipped ) );
+      error = tr( "None of the %1 runs of the project can be exported; see"
+                  " the warnings" ).arg( skipped );
+      return false;
    }
 
    // A GUID that was asked for by name and matches nothing is a mistake
@@ -2170,14 +2236,32 @@ bool US_DataPubExporter::addCalibration(
       // GUID the experiment XML names is what says which one it is
       US_Rotor::RotorCalibration byGuid;
 
+      bool otherByID = status == US_Rotor::ROTOR_OK  &&
+                       US_DataPub::guidIsUsable( calGUID )  &&
+                       US_DataPubRecords::calibrationGuid( calibration )
+                          != calGUID;
+
       if ( US_DataPub::guidIsUsable( calGUID )  &&
-           ( status != US_Rotor::ROTOR_OK  ||
-             US_DataPubRecords::calibrationGuid( calibration ) != calGUID )  &&
+           ( status != US_Rotor::ROTOR_OK  ||  otherByID )  &&
            findDiskCalibration( calGUID, byGuid ) )
       {
          calibration = byGuid;
          status      = US_Rotor::ROTOR_OK;
       }
+
+      // The calibration of the ID is another one than the run was made
+      // with, and the one it was made with is not there: its coefficients
+      // would be passed off as the run's
+      else if ( otherByID )
+         return runFault( error, tr( "Run %1 cannot be exported: it was"
+                                     " made with the rotor calibration %2,"
+                                     " which is not in the local rotor"
+                                     " directory; the calibration %3 there"
+                                     " has the GUID %4" )
+                                 .arg( info.runID ).arg( calGUID )
+                                 .arg( calID )
+                                 .arg( US_DataPubRecords::calibrationGuid(
+                                          calibration ) ) );
    }
 
    if ( calID < 1  &&  status == US_Rotor::NOT_FOUND )

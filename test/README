@@ -585,3 +585,27 @@ This assumes the naming convention:
 Source file: utils/us_example.cpp \
 Test file: test/utils/test_us_example.cpp \
 You can run this from the root of the repository.
+
+## Database import targets on MySQL 8
+
+The import cases skip on MySQL 8 (section 4) only because
+`get_instrument_info_new` -- which the import calls to read the target's
+labs -- reaches `DECODE()` for an instrument without a radial calibration,
+and MySQL 8.0.3 removed that function.  The call then fails with
+"FUNCTION <db>.DECODE does not exist": the server looks for a stored function
+of that name in the procedure's database.  A stand-in in each MySQL 8 import
+target (`US3_TEST_DB_IMPORT_NAME`, `US3_TEST_DB_IMPORT2_NAME`, never a
+production database) lets them run:
+
+```sql
+CREATE FUNCTION DECODE( p_text BLOB, p_key VARCHAR(255) )
+   RETURNS VARCHAR(255) DETERMINISTIC RETURN NULL;
+```
+
+It only stands in for the Optima database password, which no test reads.
+With it, the `DataPubDbExport` cases -- among them the row attributes of
+`TheSourcesFieldsTravelToAnotherDatabase` and `AModelRowTravelsWithEveryDigit`
+-- and the other `DataPubDb*` import cases run on MySQL 8 as on MariaDB, with
+the unpatched and the patched procedures; `DataPubDbRules.
+TextTheTargetCannotStoreFailsTheDryRun` still skips there when the target's
+default character set is utf8mb4 rather than latin1.

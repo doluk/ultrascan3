@@ -3708,3 +3708,405 @@ TEST_F( DataPubExport, AnExportStoppedBySigtermIsSweptByTheNext )
    EXPECT_TRUE( next.log().join( "\n" ).contains( "left behind" ) );
 }
 #endif
+
+// ---------------------------------------------------------------- round 7
+
+namespace
+{
+   // A copy of the run directory under another name, every file as it is:
+   // what a user who copies a run directory by hand gets
+   bool copy_dir_as_is( const QString& from, const QString& to )
+   {
+      if ( ! QDir().mkpath( to ) )  return false;
+
+      QStringList names = QDir( from ).entryList( QDir::Files );
+
+      for ( int ii = 0; ii < names.size(); ii++ )
+         if ( ! QFile::copy( from + "/" + names[ ii ], to + "/" + names[ ii ] ) )
+            return false;
+
+      return true;
+   }
+
+   bool set_mtime( const QString& path, const QDateTime& when )
+   {
+      QFile file( path );
+
+      if ( ! file.open( QIODevice::ReadWrite ) )  return false;
+
+      bool ok = file.setFileTime( when, QFileDevice::FileModificationTime );
+      file.close();
+
+      return ok;
+   }
+}
+
+/* A "Copy of ..." or "Backup_..." directory holding the run's files under
+   their own names is never read in place of the run, wherever it sorts:
+   the catalog cannot tell which of the two is the run, so a named run is
+   refused with a message that names both directories.  The export used to
+   read whichever directory the catalog listed first.
+*/
+TEST_F( DataPubExport, AStrayCopyOfTheRunDirectoryIsNotReadForTheRun )
+{
+   const QStringList copies = { "Copy of demo_run", "Backup_demo_run",
+                                "zz_demo_run" };
+
+   for ( const QString& name : copies )
+   {
+      SCOPED_TRACE( name.toStdString() );
+      QString copy = US_Settings::resultDir() + "/" + name;
+      ASSERT_TRUE( copy_dir_as_is( runDir(), copy ) );
+
+      US_DataPubCatalog      catalog;
+      US_DataPubCatalog::Run run;
+      QString                error;
+      bool                   unusable = false;
+      ASSERT_TRUE( catalog.open( false, QString(), error ) );
+      EXPECT_FALSE( catalog.runByID( runID, run, error, &unusable ) );
+      EXPECT_TRUE( unusable );
+
+      US_DataPubExporter exporter;
+      QString            bundle = root + "/stray.tar.gz";
+      EXPECT_FALSE( exporter.exportBundle( baseSelection(
+                    US_DataPub::ScopeNoise ), bundle, error ) );
+      EXPECT_FALSE( QFile::exists( bundle ) );
+      EXPECT_TRUE( error.contains( QDir::toNativeSeparators( copy ) ) )
+         << error.toStdString();
+      EXPECT_TRUE( error.contains( QDir::toNativeSeparators( runDir() ) ) )
+         << error.toStdString();
+
+      ASSERT_TRUE( QDir( copy ).removeRecursively() );
+   }
+
+   // Without the copies the run is exported as ever
+   US_DataPubExporter exporter;
+   QString            error;
+   EXPECT_TRUE( exporter.previewManifest( baseSelection(
+                US_DataPub::ScopeNoise ), error ) ) << error.toStdString();
+}
+
+/* In a project export such a run is left out with a warning that names
+   the directories, and the rest of the project is exported.
+*/
+TEST_F( DataPubExportTwoRuns, AProjectExportLeavesOutARunHeldInTwoDirectories )
+{
+   addRun( "demo_run2" );
+   QString copy = US_Settings::resultDir() + "/Backup_demo_run";
+   ASSERT_TRUE( copy_dir_as_is( runDir(), copy ) );
+
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection;
+   selection.fromDb      = false;
+   selection.scope       = US_DataPub::ScopeNoise;
+   selection.projectGUID = projectGUID;
+   QString error;
+
+   ASSERT_TRUE( exporter.exportBundle( selection, root + "/proj.tar.gz",
+                                       error ) )
+      << error.toStdString() << "\n"
+      << exporter.log().join( "\n" ).toStdString();
+
+   const US_DataPubManifest& mani = exporter.manifest();
+   EXPECT_EQ( mani.count( US_DataPub::Experiment ), 1 );
+   EXPECT_TRUE( mani.contains( US_DataPub::Experiment, expGUID2 ) );
+   EXPECT_FALSE( mani.contains( US_DataPub::Model, modelGUID ) );
+   EXPECT_EQ( exporter.leftOutRuns(), QStringList() << runID1 );
+
+   QString warned = exporter.warnings().join( "\n" );
+   EXPECT_TRUE( warned.contains( QDir::toNativeSeparators( copy ) ) )
+      << warned.toStdString();
+   EXPECT_EQ( warned.count( "run(s) of the project are left out" ), 1 )
+      << warned.toStdString();
+}
+
+/* An experiment XML that is not XML is the fault of its run: a project
+   export leaves that run out and exports the others, as it does for the
+   run's other records.  It used to fail the whole export.  Named, the run
+   still fails it.
+*/
+TEST_F( DataPubExportTwoRuns, ACorruptExperimentXmlLeavesOutOnlyItsRun )
+{
+   addRun( "demo_run2" );
+   QString xml2 = US_Settings::resultDir() + "/" + runID2 + "/" + runID2
+                  + "." + runType + ".xml";
+
+   // Broken at its end, so that the listing still sees its project
+   QString text = read_text( xml2 );
+   int     cut  = text.lastIndexOf( "</" );
+   ASSERT_GT( cut, 0 );
+   QFile file( xml2 );
+   ASSERT_TRUE( file.open( QIODevice::WriteOnly | QIODevice::Truncate ) );
+   file.write( ( text.left( cut ) + "<<< not xml" ).toUtf8() );
+   file.close();
+
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection;
+   selection.fromDb      = false;
+   selection.scope       = US_DataPub::ScopeNoise;
+   selection.projectGUID = projectGUID;
+   QString error;
+
+   ASSERT_TRUE( exporter.exportBundle( selection, root + "/proj.tar.gz",
+                                       error ) )
+      << error.toStdString() << "\n"
+      << exporter.log().join( "\n" ).toStdString();
+
+   EXPECT_EQ( exporter.manifest().count( US_DataPub::Experiment ), 1 );
+   EXPECT_TRUE( exporter.manifest().contains( US_DataPub::Experiment,
+                                              expGUID1 ) );
+   EXPECT_EQ( exporter.leftOutRuns(), QStringList() << runID2 );
+   EXPECT_TRUE( exporter.warnings().join( "\n" ).contains( "could not be"
+                " read" ) ) << exporter.warnings().join( "\n" ).toStdString();
+
+   US_DataPubExporter            named;
+   US_DataPubExporter::Selection one = baseSelection( US_DataPub::ScopeNoise );
+   one.runIDs = QStringList() << runID2;
+   EXPECT_FALSE( named.previewManifest( one, error ) );
+   EXPECT_TRUE( error.contains( runID2 ) ) << error.toStdString();
+}
+
+/* Runs left out before staging and runs left out while staging are
+   counted in one warning.  There used to be one of each, each with a
+   part of the count.
+*/
+TEST_F( DataPubExportTwoRuns, OneWarningCountsEveryRunLeftOut )
+{
+   addRun( "bad run" );
+   addRun( "demo_run3" );
+
+   QString xml3 = US_Settings::resultDir() + "/demo_run3/demo_run3."
+                  + runType + ".xml";
+   ASSERT_TRUE( replace_in_file( xml3, solutionGUID, US_Util::new_guid() ) );
+
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection;
+   selection.fromDb      = false;
+   selection.scope       = US_DataPub::ScopeNoise;
+   selection.projectGUID = projectGUID;
+   QString error;
+
+   ASSERT_TRUE( exporter.previewManifest( selection, error ) )
+      << error.toStdString() << "\n"
+      << exporter.log().join( "\n" ).toStdString();
+
+   EXPECT_EQ( exporter.manifest().count( US_DataPub::Experiment ), 1 );
+   EXPECT_EQ( exporter.leftOutRuns().size(), 2 );
+
+   QStringList counts =
+      exporter.warnings().filter( "run(s) of the project are left out" );
+   ASSERT_EQ( counts.size(), 1 ) << exporter.warnings().join( "\n" )
+                                    .toStdString();
+   EXPECT_TRUE( counts[ 0 ].startsWith( "2 run(s)" ) )
+      << counts[ 0 ].toStdString();
+   EXPECT_TRUE( counts[ 0 ].contains( "bad run" ) );
+   EXPECT_TRUE( counts[ 0 ].contains( "demo_run3" ) );
+}
+
+/* The experiment XML names the calibration by ID and, once it has been
+   through an import, by GUID.  When the calibration of that ID in the
+   local rotor directory has another GUID and none has the run's, the run
+   was made with a calibration the store does not have: its coefficients
+   are not passed off as the run's.  They used to be, without a word.
+*/
+TEST_F( DataPubExport, ACalibrationOfTheRunsIdButAnotherGuidIsNotUsed )
+{
+   QString expXml = runDir() + "/" + runID + "." + runType + ".xml";
+   QString other  = US_Util::new_guid();
+   ASSERT_TRUE( replace_in_file( expXml, "<calibration id=\"21\"",
+                                 "<calibration id=\"21\" guid=\"" + other
+                                 + "\"" ) );
+
+   US_DataPubExporter exporter;
+   QString            error;
+   EXPECT_FALSE( exporter.previewManifest( baseSelection(
+                 US_DataPub::ScopeNoise ), error ) );
+   EXPECT_TRUE( error.contains( other ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( calGUID ) ) << error.toStdString();
+
+   // With the calibration it was made with in the store, that one goes
+   QString cal = file_with_guid( dataDir( "rotors" ), calGUID );
+   ASSERT_FALSE( cal.isEmpty() );
+   QString copy = dataDir( "rotors" ) + "/C0000002.xml";
+   ASSERT_TRUE( QFile::copy( cal, copy ) );
+   ASSERT_TRUE( replace_in_file( copy, calGUID, other ) );
+   ASSERT_TRUE( set_xml_attribute( copy, "Calibration", "id", "-1" ) );
+
+   US_DataPubExporter again;
+   ASSERT_TRUE( again.previewManifest( baseSelection(
+                US_DataPub::ScopeNoise ), error ) ) << error.toStdString();
+   EXPECT_TRUE( again.manifest().contains( US_DataPub::RotorCalibration,
+                                           other ) );
+   EXPECT_FALSE( again.manifest().contains( US_DataPub::RotorCalibration,
+                                            calGUID ) );
+}
+
+/* An export or a preview can be cancelled while it runs: it fails with an
+   error that says so, writes no bundle and leaves no staging directory.
+   The same exporter then exports as ever.
+*/
+TEST_F( DataPubExport, AnExportCanBeCancelled )
+{
+   QString     parent = US_Settings::tmpDir() + "/us_datapub";
+   QStringList before = QDir( parent ).entryList( QDir::Dirs
+                                                  | QDir::NoDotAndDotDot );
+
+   for ( int pass = 0; pass < 2; pass++ )
+   {
+      SCOPED_TRACE( pass == 0 ? "export" : "preview" );
+      US_DataPubExporter exporter;
+      bool               armed = true;
+      QMetaObject::Connection conn = QObject::connect(
+         &exporter, &US_DataPubExporter::message,
+         [ &exporter, &armed ]( const QString& text )
+         {
+            if ( armed  &&  text.startsWith( "Experiment:" ) )
+               exporter.cancel();
+         } );
+
+      QString bundle = root + "/cancelled.tar.gz";
+      QString error;
+      bool    ok = ( pass == 0 )
+                   ? exporter.exportBundle( baseSelection(
+                        US_DataPub::ScopeNoise ), bundle, error )
+                   : exporter.previewManifest( baseSelection(
+                        US_DataPub::ScopeNoise ), error );
+
+      EXPECT_FALSE( ok );
+      EXPECT_TRUE( exporter.wasCancelled() );
+      EXPECT_TRUE( error.contains( "cancelled" ) ) << error.toStdString();
+      EXPECT_FALSE( QFile::exists( bundle ) );
+      EXPECT_EQ( QDir( parent ).entryList( QDir::Dirs
+                                           | QDir::NoDotAndDotDot ), before );
+
+      armed = false;
+      QObject::disconnect( conn );
+      ASSERT_TRUE( exporter.exportBundle( baseSelection(
+                   US_DataPub::ScopeNoise ), bundle, error ) )
+         << error.toStdString();
+      EXPECT_FALSE( exporter.wasCancelled() );
+      QFile::remove( bundle );
+   }
+}
+
+/* Every bundle is written in manifest format 2. */
+TEST_F( DataPubExport, BundlesAreWrittenInFormatTwo )
+{
+   US_DataPubExporter exporter;
+   QString            error;
+   ASSERT_TRUE( exporter.previewManifest( baseSelection(
+                US_DataPub::ScopeNoise ), error ) ) << error.toStdString();
+   EXPECT_EQ( exporter.manifest().version, 2 );
+   EXPECT_EQ( US_DataPubManifest::currentVersion, 2 );
+}
+
+/* An edit with more than one noise record of a type and models without
+   noise of their own: each of those models borrows the newest record of
+   each type that was there when it was made, and the bundle names it in
+   that record's borrowedByModelGUIDs -- and in no other.  The import
+   reproduces the borrowing from these names.
+
+     t+0  model M1                 (the fixture's)
+     t+10 noise N1 (ti) of M1      (the fixture's)
+     t+20 model B1, no noise       -> borrows N1
+     t+30 model M2
+     t+40 noise N2 (ti) of M2
+     t+50 noise N3 (ri) of M2
+     t+60 model B2, no noise       -> borrows N2 and N3
+*/
+TEST_F( DataPubExport, EachBorrowerIsNamedInTheNoiseItWasRunWith )
+{
+   QDateTime base = QDateTime::currentDateTimeUtc().addDays( -2 );
+   base.setTime( QTime( 12, 0, 0 ) );
+
+   auto write_model = [ & ]( const QString& file, const QString& desc )
+   {
+      US_Model model;
+      model.modelGUID   = US_Util::new_guid();
+      model.editGUID    = editGUID;
+      model.description = desc;
+      EXPECT_EQ( model.write( dataDir( "models" ) + "/" + file ),
+                 IUS_DB2::OK );
+      return model.modelGUID;
+   };
+
+   auto write_noise = [ & ]( const QString& file, const QString& model,
+                             US_Noise::NoiseType type, const QString& desc )
+   {
+      US_Noise noise;
+      noise.noiseGUID   = US_Util::new_guid();
+      noise.modelGUID   = model;
+      noise.description = desc;
+      noise.type        = type;
+      noise.values << 0.001 << 0.002;
+      noise.count       = 2;
+      EXPECT_EQ( noise.write( dataDir( "noises" ) + "/" + file ),
+                 IUS_DB2::OK );
+      return noise.noiseGUID;
+   };
+
+   QString b1 = write_model( "M0000011.xml", "demo_run.1A280.e1_a1_2DSA-B1.model" );
+   QString m2 = write_model( "M0000012.xml", "demo_run.1A280.e1_a1_2DSA-M2.model" );
+   QString n2 = write_noise( "N0000012.xml", m2, US_Noise::TI,
+                             "demo_run.1A280.e1_a1_2DSA-M2.ti_noise" );
+   QString n3 = write_noise( "N0000013.xml", m2, US_Noise::RI,
+                             "demo_run.1A280.e1_a1_2DSA-M2.ri_noise" );
+   QString b2 = write_model( "M0000013.xml", "demo_run.1A280.e1_a1_2DSA-B2.model" );
+
+   const QList< QPair< QString, int > > times =
+   {
+      { file_with_guid( dataDir( "models" ), modelGUID ),  0 },
+      { file_with_guid( dataDir( "noises" ), noiseGUID ), 10 },
+      { file_with_guid( dataDir( "models" ), b1 ),        20 },
+      { file_with_guid( dataDir( "models" ), m2 ),        30 },
+      { file_with_guid( dataDir( "noises" ), n2 ),        40 },
+      { file_with_guid( dataDir( "noises" ), n3 ),        50 },
+      { file_with_guid( dataDir( "models" ), b2 ),        60 },
+   };
+
+   for ( const auto& tt : times )
+   {
+      ASSERT_FALSE( tt.first.isEmpty() );
+      ASSERT_TRUE( set_mtime( tt.first, base.addSecs( tt.second ) ) );
+   }
+
+   US_DataPubExporter exporter;
+   QString            error;
+   ASSERT_TRUE( exporter.exportBundle( baseSelection( US_DataPub::ScopeNoise ),
+                                       root + "/borrowers.tar.gz", error ) )
+      << error.toStdString() << "\n"
+      << exporter.log().join( "\n" ).toStdString();
+
+   const US_DataPubManifest& mani = exporter.manifest();
+   EXPECT_EQ( mani.count( US_DataPub::Model ), 4 );
+   ASSERT_EQ( mani.count( US_DataPub::Noise ), 3 );
+
+   struct Expect { QString noise; QString fitted; QString borrowers; };
+   const QList< Expect > expected =
+   {
+      { noiseGUID, modelGUID, b1 },
+      { n2,        m2,        b2 },
+      { n3,        m2,        b2 },
+   };
+
+   for ( const Expect& ex : expected )
+   {
+      US_DataPubEntity noise;
+      ASSERT_TRUE( mani.entity( US_DataPub::Noise, ex.noise, noise ) );
+      EXPECT_EQ( noise.depend( US_DataPub::Model ), ex.fitted );
+      EXPECT_EQ( noise.attrs.value( "borrowedByModelGUIDs" ), ex.borrowers )
+         << ex.noise.toStdString();
+   }
+
+   // A borrower picked alone takes the records it was run with along
+   US_DataPubExporter::Selection one = baseSelection( US_DataPub::ScopeNoise );
+   one.setModels( QStringList() << b1 );
+   US_DataPubExporter single;
+   ASSERT_TRUE( single.previewManifest( one, error ) ) << error.toStdString();
+   ASSERT_EQ( single.manifest().count( US_DataPub::Noise ), 1 );
+
+   US_DataPubEntity noise;
+   ASSERT_TRUE( single.manifest().entity( US_DataPub::Noise, noiseGUID,
+                                          noise ) );
+   EXPECT_EQ( noise.attrs.value( "borrowedByModelGUIDs" ), b1 );
+}

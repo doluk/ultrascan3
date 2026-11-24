@@ -216,6 +216,20 @@ class US_DataPubExporter : public QObject
       //! \brief Remove the staging directory of the last export
       void cleanup( void );
 
+      /*! \brief Ask the export or preview that is running to stop
+
+          It stops at the next record, or while the catalog reads the
+          chain, and fails with an error that says it was cancelled; no
+          bundle is written and the staging directory is removed.  It is
+          meant to be called from a slot connected to \ref message() or
+          \ref stepDone(), or from another thread; the next export starts
+          afresh.
+      */
+      void cancel( void );
+
+      //! \brief True when the last export or preview was cancelled
+      bool wasCancelled( void ) const;
+
    signals:
       //! \brief A human readable note about the export's progress
       //! \param message The note
@@ -288,6 +302,12 @@ class US_DataPubExporter : public QObject
       //! hold together -- rather than the export's (a database or a disk
       //! that fails); only the former lets a project export go on
       bool               run_fault;
+
+      //! Set by cancel(); the catalog reads it too
+      QAtomicInt         cancel_flag;
+
+      //! \brief True, with \a error filled in, once cancel() was called
+      bool cancelledError( QString& error ) const;
 
       //! Every model the catalog lists for the runs, also those that were
       //! not selected: noise carried for one model may have been fitted to
