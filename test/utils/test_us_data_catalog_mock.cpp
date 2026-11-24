@@ -2108,6 +2108,54 @@ TEST_F( TestUSDataCatalogMock, TheNoiseOfAModelReadLaterIsFound )
    EXPECT_EQ( server.count( "get_noise_desc" ), 1 );
 }
 
+// An export asks for the noise of hundreds of models.  Working out whose
+// each noise record is, from every model read, is done once and kept, not
+// at every call; reading more models drops it, so their noise is found.
+TEST_F( TestUSDataCatalogMock, TheNoiseOfAModelIsLookedUpWithoutRebuildingTheIndex )
+{
+   server.models << FModel{ "303", "model-3", "RunB.2B260.e2401011400_a2401021500_2DSA_i01.model", "edit-3", "203" };
+   // named by its modelID only, so it is found once model-3 is read
+   server.noises << FNoise{ "403", "noise-3", "203", "303", "", "ti_noise", "n3" };
+
+   US_DataCatalog catalog;
+   attachAndList( catalog );
+   QString error;
+   ASSERT_TRUE( catalog.loadRunDetail( 0, error ) ) << error.toStdString();
+   EXPECT_EQ( catalog.modelIndexBuilds(), 0 );
+
+   for ( int ii = 0; ii < 200; ii++ )
+   {
+      QList< US_DataCatalog::Noise > noises = catalog.noisesOfModel( "model-1", error );
+      ASSERT_EQ( noises.size(), 1 );
+      EXPECT_EQ( noises[ 0 ].editGUID, QString( "edit-1" ) );
+      EXPECT_TRUE( catalog.noisesOfModel( "model-2", error ).isEmpty() );
+      EXPECT_TRUE( catalog.noisesOfModel( "model-3", error ).isEmpty() );
+   }
+   EXPECT_EQ( catalog.modelIndexBuilds(), 1 );
+   EXPECT_EQ( server.count( "get_noise_desc" ), 1 );
+
+   // RunB read: model-3 is known now, and so is whose noise-3 is
+   ASSERT_TRUE( catalog.loadRunDetail( 1, error ) ) << error.toStdString();
+   for ( int ii = 0; ii < 200; ii++ )
+   {
+      QList< US_DataCatalog::Noise > noises = catalog.noisesOfModel( "model-3", error );
+      ASSERT_EQ( noises.size(), 1 );
+      EXPECT_EQ( noises[ 0 ].guid,      QString( "noise-3" ) );
+      EXPECT_EQ( noises[ 0 ].modelGUID, QString( "model-3" ) );
+      EXPECT_EQ( noises[ 0 ].editGUID,  QString( "edit-3" ) );
+      EXPECT_EQ( catalog.noisesOfModel( "model-1", error ).size(), 1 );
+   }
+   EXPECT_EQ( catalog.modelIndexBuilds(), 2 );
+
+   // A whole-store read and a clear drop it as well
+   ASSERT_TRUE( catalog.loadAll( error ) ) << error.toStdString();
+   EXPECT_EQ( catalog.noisesOfModel( "model-3", error ).size(), 1 );
+   EXPECT_EQ( catalog.modelIndexBuilds(), 3 );
+   catalog.clear();
+   EXPECT_TRUE( catalog.noisesOfModel( "model-3", error ).isEmpty() );
+   EXPECT_EQ( catalog.modelIndexBuilds(), 4 );
+}
+
 // Noise read with one experiment and hung under a model of another takes
 // that model's description when it has none, as noise read with its model
 // does

@@ -343,6 +343,7 @@ The variables, and who reads them:
 | `US3_TEST_DB_OTHER_ID` | the second investigator, by ID: the tests that switch investigators, `TestUSDataDbLive` |
 | `US3_TEST_DB_OTHER_GUID`, `_OTHER_PW` | the second investigator's own login: `DataPubDbRules`' case of another investigator's import (skips without) |
 | `US3_TEST_DB_IMPORT_NAME` | `test_us_datapub`'s `DataPubDbImport` and `DataPubDbRules`: a scratch database they write into |
+| `US3_TEST_DB_NOHANDSHAKE_HOST` | `US_DB2_LiveHandshake` in `test_us_db2_roundtrip.cpp`: host:port of a server that ignores the client's character set (see below), with a database named `US3_TEST_DB_NAME` that `US3_TEST_DB_USER` may change |
 
 `test_us_manage_data` has live cases of its own, `TestUSDataDbLive`
 (`test/programs/us_manage_data/test_us_data_db_live.cpp`).  They read the
@@ -378,6 +379,18 @@ against one database:
   a non-ASCII password.  On a latin1 column (MariaDB's default for the
   schema) only the Latin-1 values must arrive, and the others must be
   refused rather than stored as `?`.
+  `US_DB2_LiveHandshake` needs a server of its own that ignores the
+  character set a client proposes, as one started with
+  `skip-character-set-client-handshake` and `character-set-server=latin1`
+  (or with `init_connect='SET NAMES latin1'`) does; never change the global
+  settings of a shared server for it.  It checks that the connection still
+  reads and stores UTF-8.
+- `test_us_text_live.cpp` writes an analyte whose sequence has CR LF line
+  ends and checks that the database and the disk copy both hold it with LF;
+  writes an analyte with a Greek letter in its description, which a latin1
+  database must refuse with a message that names the letter and a utf8mb4
+  one must store; and saves a buffer whose component the local component
+  table lacks, which must keep its component ID.
 - `test_us_buffer_component_live.cpp` creates components through the real
   `create_buffer_component` after setting the connection's
   `LAST_INSERT_ID()` to an existing component, and once with a gap in the

@@ -375,5 +375,56 @@ TEST_F( US_DB2_LiveUnicodeUs3, EveryConnectPathUsesUtf8mb4 )
    // test_db_connection() asks for it too, but connects without TLS, which
    // an account that requires TLS refuses, so it is not tried here
 }
+
+/* A server that ignores the character set the client proposes: started
+   with skip-character-set-client-handshake (or with an init_connect that
+   runs SET NAMES), it keeps its own, latin1 here, and the client library
+   still reports the utf8mb4 it asked for.  Every query was then read as
+   Latin-1, and text stored as mojibake.  US_DB2 now sets the character set
+   on the session and checks it.
+
+   The shared test servers honour the handshake, so this needs a server of
+   its own, set by
+     US3_TEST_DB_NOHANDSHAKE_HOST   host:port of such a server
+   with a database of US3_TEST_DB_NAME that US3_TEST_DB_USER may change.
+*/
+TEST( US_DB2_LiveHandshake, AServerThatIgnoresTheHandshakeStillReadsUtf8 )
+{
+   const QString host     = qEnvironmentVariable( "US3_TEST_DB_NOHANDSHAKE_HOST" );
+   const QString name     = qEnvironmentVariable( "US3_TEST_DB_NAME" );
+   const QString user     = qEnvironmentVariable( "US3_TEST_DB_USER" );
+   const QString password = qEnvironmentVariable( "US3_TEST_DB_PASSWORD" );
+   if ( host.isEmpty() || name.isEmpty() || user.isEmpty() )
+   {
+      GTEST_SKIP() << "US3_TEST_DB_NOHANDSHAKE_HOST, US3_TEST_DB_NAME and US3_TEST_DB_USER not set";
+   }
+
+   US_DB2  db;
+   QString error;
+   ASSERT_TRUE( db.connect( host, name, user, password, error ) ) << error.toStdString();
+   EXPECT_EQ( kUtf8mb4Everywhere, connectionCharsets( db ) );
+
+   db.rawQuery( "DROP TABLE IF EXISTS us3_test_handshake" );
+   db.rawQuery( "CREATE TABLE us3_test_handshake ( id INT AUTO_INCREMENT PRIMARY KEY, "
+                "v TEXT CHARACTER SET utf8mb4 ) DEFAULT CHARSET = utf8mb4" );
+   ASSERT_TRUE( db.lastError().isEmpty() ) << db.lastError().toStdString();
+
+   for ( const QString& value : kUnicode )
+   {
+      SCOPED_TRACE( value.toStdString() );
+      db.rawQuery( "DELETE FROM us3_test_handshake" );
+      QString literal = value;
+      literal.replace( "\\", "\\\\" ).replace( "'", "\\'" );
+      db.rawQuery( "INSERT INTO us3_test_handshake ( v ) VALUES ( '" + literal + "' )" );
+      ASSERT_TRUE( db.lastError().isEmpty() ) << db.lastError().toStdString();
+      db.rawQuery( "SELECT v, HEX( v ) FROM us3_test_handshake" );
+      ASSERT_TRUE( db.next() );
+      // The bytes stored are the text's UTF-8, not its UTF-8 read as Latin-1
+      EXPECT_EQ( QString::fromLatin1( value.toUtf8().toHex().toUpper() ), db.value( 1 ).toString() );
+      EXPECT_EQ( value, db.value( 0 ).toString() );
+   }
+
+   db.rawQuery( "DROP TABLE IF EXISTS us3_test_handshake" );
+}
 #endif
 } // namespace

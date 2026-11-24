@@ -711,6 +711,7 @@ void US_DataCatalog::clear( void )
    desc_tried  .clear();
    noise_cached = false;
    listed       = false;
+   modelsChanged();
 
    if ( disk_index != nullptr )
       disk_index->clear();
@@ -769,32 +770,18 @@ QList< US_DataCatalog::Noise > US_DataCatalog::noisesOfModel(
    // by model, so the investigator's noise records are listed once and kept
    if ( ! cacheNoise( error ) )  return list;
 
-   // Which model a record is of is worked out now, from the models read by
-   // now: by modelID, as the chain attaches it, when that model has been
-   // read, else by the record's modelGUID.  Models read after the noise
-   // was listed count too.
-   QHash< QString, QString > descs = knownModelDescriptions();
-   QString                   editGUID;
-   QString                   modelDesc = descs.value( modelGUID );
+   // Which model a record is of is worked out from the models read by now:
+   // by modelID, as the chain attaches it, when that model has been read,
+   // else by the record's modelGUID.  Models read after the noise was
+   // listed count too: reading them drops the index, which is built again
+   // here, once, and not at every call.
+   const ModelIndex& index     = modelIndex();
+   const QString     editGUID  = index.editOf.value( modelGUID );
+   const QString     modelDesc = index.descs.value( modelGUID );
 
-   for ( int ii = 0; ii < run_list.size()  &&  editGUID.isEmpty(); ii++ )
-      for ( const Raw& raw : run_list[ ii ].raws )
-         for ( const Edit& edit : raw.edits )
-            for ( const Model& model : edit.models )
-               if ( model.guid == modelGUID )  editGUID = model.editGUID;
-
-   for ( const Model& model : orphan_list.models )
-      if ( model.guid == modelGUID )  editGUID = model.editGUID;
-
-   for ( Noise noise : noise_cache )
+   for ( int nx : index.noiseOf.value( modelGUID ) )
    {
-      QString owner = real_id( noise.modelID )
-                      ? descs.value( "guid-of:" + noise.modelID ) : QString();
-
-      if ( owner.isEmpty() )  owner = noise.modelGUID;
-
-      if ( owner.isEmpty()  ||  owner != modelGUID )  continue;
-
+      Noise noise     = noise_cache[ nx ];
       noise.modelGUID = modelGUID;
       noise.editGUID  = editGUID;
 
@@ -828,6 +815,7 @@ bool US_DataCatalog::cacheNoise( QString& error )
 
    noise_cache  = noises;
    noise_cached = true;
+   noiseCacheChanged();
 
    return true;
 }
@@ -893,7 +881,7 @@ QList< US_DataCatalog::Noise > US_DataCatalog::noisesOfEdit(
    for ( const Noise& noise : list )
       if ( noise.description.isEmpty() )  needModels = true;
 
-   repairNoises( list, needModels ? knownModelDescriptions()
+   repairNoises( list, needModels ? modelIndex().descs
                                   : QHash< QString, QString >() );
 
    return list;
@@ -1279,6 +1267,7 @@ bool US_DataCatalog::loadRuns( const QString& projectGUID, QString& error )
    desc_tried  .clear();
    noise_cached = false;
    listed       = true;
+   modelsChanged();
 
    for ( int ii = 0; ii < run_list.size(); ii++ )
       pending << ii;
@@ -1813,6 +1802,7 @@ bool US_DataCatalog::loadRunDetail( int index, QString& error )
    Run&      run         = run_list[ index ];
    const int listedNoise = run.noiseCount;
    run.raws     = raws;
+   modelsChanged();
    run.verified = do_checksums;
    pending.removeAll( index );
 
@@ -1962,6 +1952,8 @@ bool US_DataCatalog::loadAll( QString& error )
    else
       orphan_list.clear();
 
+   modelsChanged();
+
    // The whole store placed every noise record by its model
    foreign_noise.clear();
 
@@ -2099,6 +2091,7 @@ bool US_DataCatalog::loadAllDb( QList< Run >& runs, Orphans& orphans,
 
    noise_cache  = cache;
    noise_cached = true;
+   noiseCacheChanged();
 
    error.clear();
 
@@ -2450,7 +2443,11 @@ bool US_DataCatalog::verifyRun( int index, QString& error )
 
       ok = isDb() ? verifyRunDb( copy, error ) : verifyRunDisk( copy, error );
 
-      if ( ok )  run_list[ index ] = copy;
+      if ( ok )
+      {
+         run_list[ index ] = copy;
+         modelsChanged();
+      }
    }
 
    verify_queue.removeAll( index );
@@ -2987,6 +2984,67 @@ bool US_DataCatalog::loadDetailDbLegacy( const Run& run, QList< Raw >& raws,
    raws = list;
 
    return true;
+}
+
+int US_DataCatalog::modelIndexBuilds( void ) const
+{
+   return model_index_builds;
+}
+
+void US_DataCatalog::modelsChanged( void )
+{
+   model_index = ModelIndex();
+}
+
+void US_DataCatalog::noiseCacheChanged( void )
+{
+   model_index.noiseOf.clear();
+   model_index.noiseBuilt = false;
+}
+
+const US_DataCatalog::ModelIndex& US_DataCatalog::modelIndex( void )
+{
+   if ( ! model_index.built )
+   {
+      model_index_builds++;
+      model_index.descs = knownModelDescriptions();
+
+      // The edit of a model: from the first experiment that has it, unless
+      // it is an orphan
+      for ( const Run& run : run_list )
+         for ( const Raw& raw : run.raws )
+            for ( const Edit& edit : raw.edits )
+               for ( const Model& model : edit.models )
+                  if ( ! model.guid.isEmpty()  &&  ! model_index.editOf.contains( model.guid ) )
+                     model_index.editOf.insert( model.guid, model.editGUID );
+
+      for ( const Model& model : orphan_list.models )
+         if ( ! model.guid.isEmpty() )
+            model_index.editOf.insert( model.guid, model.editGUID );
+
+      model_index.built      = true;
+      model_index.noiseBuilt = false;
+      model_index.noiseOf.clear();
+   }
+
+   if ( ! model_index.noiseBuilt  &&  noise_cached )
+   {
+      for ( int ii = 0; ii < noise_cache.size(); ii++ )
+      {
+         const Noise& noise = noise_cache[ ii ];
+         QString      owner = real_id( noise.modelID )
+                              ? model_index.descs.value( "guid-of:" + noise.modelID ) : QString();
+
+         if ( owner.isEmpty() )  owner = noise.modelGUID;
+         if ( owner.isEmpty() )  continue;
+
+         model_index.noiseOf[ owner ] << ii;
+      }
+
+      model_index.noiseBuilt = true;
+   }
+
+   return model_index;
 }
 
 // The description of every model the catalog has read, for a noise record

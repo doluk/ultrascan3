@@ -208,12 +208,8 @@ bool US_BufferGuiSelect::load_buffer(const QString& load_init, US_Buffer& buffer
             {
                return false;
             }
-            buffer.component.clear();
-
-            for (const auto& index : buffer.componentIDs)
-            {
-               buffer.component << component_list[ index ];
-            }
+            // A component the local table lacks keeps its ID
+            buffer.attachComponents( component_list );
          }
          // check if buffer is properly loaded
          if ( buffer.description == descriptions[i] ) {
@@ -333,8 +329,11 @@ DbgLv(1) << "BufS-item: desc" << buffer->description
 // Show each component for the current buffer
 void US_BufferGuiSelect::show_component( const QString& componentID, double conc )
 {
-   QString name  = component_list[ componentID ].name;
-   QString unit  = component_list[ componentID ].unit;
+   // value(), not []: a component the local table lacks must not be added
+   // to it as an empty one
+   const US_BufferComponent bc = component_list.value( componentID );
+   QString name  = bc.name.isEmpty() ? tr( "component %1" ).arg( componentID ) : bc.name;
+   QString unit  = bc.unit;
 
    QString sconc = QString::number( conc, 'f', 1 );
 
@@ -364,13 +363,9 @@ bool US_BufferGuiSelect::read_from_disk( QListWidgetItem* item )
       return false;
    }
 
-   loaded.component.clear();
-
-   for ( int ii = 0; ii < loaded.componentIDs.size(); ii++ )
-   {
-      QString index = loaded.componentIDs[ii];
-      loaded.component << component_list[index];
-   }
+   // A component the local table lacks keeps its ID, and the table is not
+   // given an empty entry for it
+   loaded.attachComponents( component_list );
    *buffer = loaded;
    return true;
 }
@@ -1370,7 +1365,7 @@ DbgLv(1) << "BufN:SL: add_component()";
    // Get selected component
    QListWidgetItem* item    = lw_allcomps->currentItem();
    QString compID  = QString::number( item->type() );
-   US_BufferComponent bcomp = component_list[ compID ];
+   US_BufferComponent bcomp = component_list.value( compID );
 DbgLv(1) << "BufN:SL: adco:" << item->text();
 
    // Verify that concentration is within a valid range
@@ -1555,7 +1550,7 @@ void US_BufferGuiNew::select_bcomp( )
    }
    le_concen->setEnabled(true);
    QString compID  = QString::number( item->type() );
-   US_BufferComponent bcomp = component_list[ compID ];
+   US_BufferComponent bcomp = component_list.value( compID );
    //int bcx         = lw_allcomps->currentRow();
 DbgLv(1) << "BufN:SL: select_bcomp()" << item->text();
    QString bctext  = item->text();
