@@ -649,15 +649,7 @@ bool US_DB2::commitTransaction( QString& transaction_error )
    {
       // The server may have committed before the connection dropped; only a
       // lost connection leaves that open, so only then is the outcome unknown.
-      const unsigned int code = mysql_errno( db );
-      if ( code == CR_SERVER_LOST || code == CR_SERVER_GONE_ERROR )
-      {
-         transaction_error = QObject::tr( commitUnknownMessage ).arg( mysql_error( db ) );
-      }
-      else
-      {
-         transaction_error = mysql_error( db );
-      }
+      transaction_error = commitErrorText( int( mysql_errno( db ) ), QString::fromUtf8( mysql_error( db ) ) );
       noteConnectionLoss();
 
       // Still open as far as the caller is concerned: it rolls back next.
@@ -1339,6 +1331,18 @@ qint64 US_DB2::maxAllowedPacket()
    return packet;
 }
 #endif
+
+QString US_DB2::commitErrorText( int serverErrno, const QString& serverMessage )
+{
+   // The server may have committed before the connection dropped; only a
+   // lost connection leaves that open, so only then is the outcome unknown.
+   // Any error isConnectionLoss() knows is one: 2055, which MySQL's client
+   // library gives for a lost connection, and 2026, which a TLS connection
+   // gives, as well as 2006 and 2013.
+   if ( isConnectionLoss( serverErrno ) )
+      return QObject::tr( commitUnknownMessage ).arg( serverMessage );
+   return serverMessage;
+}
 
 bool US_DB2::isConnectionLoss( int serverErrno )
 {

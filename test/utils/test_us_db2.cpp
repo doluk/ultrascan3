@@ -227,6 +227,18 @@ TEST( UsDb2Connection, TheErrorsOfALostConnectionAreKnown )
       EXPECT_FALSE( US_DB2::isConnectionLoss( code ) ) << code;
 }
 
+// A COMMIT that fails with the connection may have taken effect: every
+// error of a lost connection says the outcome is unknown, 2055 (MySQL's
+// client library) and 2026 (TLS) as well as 2006 and 2013
+TEST( UsDb2Connection, ACommitLostWithTheConnectionHasAnUnknownOutcome )
+{
+   const QString unknown = QObject::tr( US_DB2::commitUnknownMessage ).arg( "boom" );
+   for ( int code : { 2006, 2013, 2055, 2026 } )
+      EXPECT_EQ( US_DB2::commitErrorText( code, "boom" ), unknown ) << code;
+   for ( int code : { 1213, 1205, 1180 } )
+      EXPECT_EQ( US_DB2::commitErrorText( code, "boom" ), QString( "boom" ) ) << code;
+}
+
 TEST( UsDb2Query, AnEmptyArgumentIsStillPassedAsAnEmptyLiteral )
 {
    EXPECT_EQ( call( QStringList() << "p" << "" << "z" ), QString( "CALL p('%1', '%2', '', 'z')" ).arg( kGuid ).arg( kPw ) );

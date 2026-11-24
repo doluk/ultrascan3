@@ -283,6 +283,18 @@ public:
     */
     static bool isConnectionLoss( int serverErrno );
 
+    /*! \brief What commitTransaction() reports when the COMMIT fails.
+
+        After an error that means the connection is gone
+        (\ref isConnectionLoss -- 2006, 2013, 2055, 2026, ...) the server
+        may or may not have committed, and the message says the outcome is
+        unknown (\ref commitUnknownMessage); any other error is reported as
+        the server gave it.
+        \param serverErrno   mysql_errno() of the failed COMMIT
+        \param serverMessage mysql_error() of it
+    */
+    static QString commitErrorText( int serverErrno, const QString& serverMessage );
+
     /*! \brief Returns the number of rows returned in the current result
         set.
     */
