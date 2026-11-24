@@ -595,8 +595,11 @@ bool US_DataProcess::foreign_noise_of_edit( int editID,
 
    The edit is removed in a transaction, and the database is asked first as
    it is.  A patched delete_editedData removes all noise recorded against the
-   edit with it -- another investigator's too -- and changes nothing when it
-   fails (it uses a savepoint in the caller's transaction).  An older one
+   edit with it, and changes nothing when it fails (it uses a savepoint in
+   the caller's transaction); unless the caller is an administrator it
+   refuses (EDIT_KEPT) when that would take along records of another
+   investigator or records the GMP framework refers to, and that refusal is
+   not tried again.  An older one
    removes the edit's models and their noise, and only then fails on noise
    of another edit's model still recorded against the edit
    (fk_noise_editDataID): the rollback gives the models and noise back.
@@ -621,7 +624,12 @@ int US_DataProcess::remove_edit( int row )
    bool    clean = true;           // a failure was rolled back as a whole
    int     stat  = edit_attempt( editID, QList< ForeignNoise >(), why, clean );
 
-   if ( stat == 2012  &&  clean  &&  ! foreign.isEmpty() )
+   // A refusal that removing the investigator's own noise first cannot
+   // change -- the edit is not theirs, or the database keeps it for noise
+   // of another investigator or of the GMP framework -- is not tried again
+   bool    noRetry = ( edit_status == EDIT_KEPT );
+
+   if ( stat == 2012  &&  clean  &&  ! noRetry  &&  ! foreign.isEmpty() )
    {  // An older database: the noise of other edits' models goes first
       why.clear();
       stat = edit_attempt( editID, foreign, why, clean );
@@ -654,7 +662,8 @@ int US_DataProcess::edit_attempt( int editID,
    QStringList query;
    QString     terr;
 
-   clean = true;
+   clean       = true;
+   edit_status = IUS_DB2::OK;
 
    if ( ! db->beginTransaction( terr ) )
    {
@@ -693,6 +702,7 @@ int US_DataProcess::edit_attempt( int editID,
 DbgLv(1) << "EDT_RMV:" << query;
 
       int est = db->statusQuery( query );
+      edit_status = est;
 
       if ( est != IUS_DB2::OK )
       {
@@ -700,7 +710,17 @@ DbgLv(1) << "EDT_RMV:   stat" << est << db->lastError() << db->lastErrno();
          why  = tr( "the database refused it (delete_editedData status %1:"
                     " %2)." ).arg( est ).arg( db->lastError() );
 
-         if ( db->lastServerErrno() == 1451  ||  est == 404 )
+         if ( est == EDIT_KEPT )
+            why += tr( "\nThe database keeps the edit when it is not yours,"
+                       " or when removing it would take along records of"
+                       " another investigator -- noise computed from it for"
+                       " that investigator's model of another edit, or that"
+                       " investigator's models of it -- or records the GMP"
+                       " framework refers to; its message says which.  Only"
+                       " that investigator (or an administrator) can remove"
+                       " those records, and nothing was changed." );
+
+         else if ( db->lastServerErrno() == 1451  ||  est == 404 )
             why += tr( "\nAnother record still refers to the edit.  On an"
                        " older database that may be noise computed from it"
                        " for a model of another investigator, which this"

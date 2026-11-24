@@ -225,9 +225,10 @@ class TestUSDataDbLive : public ::testing::Test
 
    An older delete_editedData removes the edit's model and noise, then fails
    on that noise (fk_noise_editDataID), keeping what it removed unless the
-   caller's transaction gives it back; a patched one removes that noise too,
-   all or nothing.  Either way the database never loses part of the edit,
-   and the rows say what it holds.
+   caller's transaction gives it back; a patched one refuses before it
+   deletes anything, as another investigator's records may only go when an
+   administrator asks.  Either way the database loses nothing, the message
+   says why, and the rows say what it holds.
 */
 TEST_F( TestUSDataDbLive, AnEditRemovalLosesNothingItDoesNotReport )
 {
@@ -301,26 +302,20 @@ TEST_F( TestUSDataDbLive, AnEditRemovalLosesNothingItDoesNotReport )
    int hasNoise = present( "get_noise_info", noiseID, IUS_DB2::NO_NOISE );
    int hasTheir = present( "get_noise_info", othN,    IUS_DB2::NO_NOISE );
 
-   if ( stat == 0 )
-   {  // a delete_editedData that removes the noise recorded against the edit
-      EXPECT_EQ( hasEdit,  0 );
-      EXPECT_EQ( hasModel, 0 );
-      EXPECT_EQ( hasNoise, 0 );
-      EXPECT_EQ( hasTheir, 0 );
-   }
-
-   else
-   {  // the older one: refused, and nothing is lost
-      EXPECT_EQ( stat, 2012 ) << proc.lastError().toStdString();
-      EXPECT_TRUE( proc.lastError().contains( "fk_noise_editDataID" ) )
-         << proc.lastError().toStdString();
-      EXPECT_TRUE( proc.lastError().contains( "Nothing was removed" ) )
-         << proc.lastError().toStdString();
-      EXPECT_EQ( hasEdit,  1 );
-      EXPECT_EQ( hasModel, 1 );
-      EXPECT_EQ( hasNoise, 1 );
-      EXPECT_EQ( hasTheir, 1 );
-   }
+   // Refused, and nothing is lost: the older procedure on that noise
+   // (fk_noise_editDataID), the patched one before it deletes anything
+   // (another investigator's records go only when an administrator asks)
+   error = proc.lastError();
+   EXPECT_EQ( stat, 2012 ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "fk_noise_editDataID" )  ||
+                error.contains( QString( "status %1" ).arg( US_DataProcess::EDIT_KEPT ) ) )
+      << error.toStdString();
+   EXPECT_TRUE( error.contains( "another investigator" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "Nothing was removed" ) ) << error.toStdString();
+   EXPECT_EQ( hasEdit,  1 );
+   EXPECT_EQ( hasModel, 1 );
+   EXPECT_EQ( hasNoise, 1 );
+   EXPECT_EQ( hasTheir, 1 );
 
    // Every row says what the database holds
    for ( const QString& guid : { editG, modelG, noiseG } )
@@ -332,7 +327,6 @@ TEST_F( TestUSDataDbLive, AnEditRemovalLosesNothingItDoesNotReport )
    }
 
    // The other investigator's noise goes first now, and the edit with it
-   if ( stat != 0 )
    {
       EXPECT_EQ( admin->statusQuery( QStringList() << "delete_noise"
                                      << QString::number( othN ) ), IUS_DB2::OK );
@@ -402,6 +396,8 @@ TEST_F( TestUSDataDbLive, AnEditTheDatabaseKeepsKeepsItsSubtree )
    EXPECT_EQ( hasModel, 1 ) << error.toStdString();
    EXPECT_EQ( hasNoise, 1 ) << error.toStdString();
    EXPECT_EQ( hasTheir, 1 );
+   EXPECT_TRUE( error.contains( "another investigator" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "Nothing was removed" ) ) << error.toStdString();
    EXPECT_TRUE( error.contains( "not removed either" ) ) << error.toStdString();
    EXPECT_TRUE( error.contains( "None of the selected records was removed" ) )
       << error.toStdString();

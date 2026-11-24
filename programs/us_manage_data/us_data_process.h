@@ -24,6 +24,14 @@ class US_DataProcess : public QObject
                                 //!< database already holds the file
         };
 
+        //! \brief The status of a delete_editedData that keeps the edit
+        //!        and has changed nothing: the edit is not the caller's,
+        //!        or, unless the caller is an administrator, removing it
+        //!        would take along records of another investigator (noise
+        //!        computed from it for their model of another edit, say) or
+        //!        records the GMP framework refers to
+        static const int EDIT_KEPT = IUS_DB2::NOTPERMITTED;
+
         //! \brief Constructor for US_DataProcess
         //! \param model Pointer to US_DataModel object
         //! \param parent Optional parent widget
@@ -69,7 +77,10 @@ class US_DataProcess : public QObject
 
             An edit is removed in a transaction.  A patched
             delete_editedData removes with it all noise recorded against it,
-            whoever's, and changes nothing when it fails.  An older one does
+            and changes nothing when it fails; unless the caller is an
+            administrator it refuses (\ref EDIT_KEPT) when that would take
+            along records of another investigator, or records the GMP
+            framework refers to, and that is not tried again.  An older one does
             not remove noise of another edit's model recorded against the
             edit (a global fit, say): it removes the edit's models and noise
             and then fails on that noise (fk_noise_editDataID).  The rollback
@@ -209,6 +220,8 @@ class US_DataProcess : public QObject
         //! \brief Mark as gone every noise row of a database ID
         void mark_noise_removed( int noiseID );
 
+        int                     edit_status = 0;  //!< delete_editedData's
+                                                  //!< status, last try
         QString                 errMsg;     //!< Message from the last error
         QWidget*                parentw;    //!< Parent widget
         IUS_DB2*                db;         //!< Pointer to database connection

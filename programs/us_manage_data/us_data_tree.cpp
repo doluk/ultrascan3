@@ -883,9 +883,9 @@ void US_DataTree::dtree_help()
       tr( "          apply to it too); an older database keeps the edit\n" ) +
       tr( "          while that noise refers to it, and your own such\n" ) +
       tr( "          noise is then removed first.  It is all done in\n" ) +
-      tr( "          transactions.  On an older database another\n" ) +
-      tr( "          investigator's noise keeps the edit; then nothing\n" ) +
-      tr( "          is removed, and the message says why.  After a\n" ) +
+      tr( "          transactions.  Such noise of another investigator,\n" ) +
+      tr( "          or of the GMP framework, keeps the edit; then\n" ) +
+      tr( "          nothing is removed, and the message says why.  After a\n" ) +
       tr( "          failure what the database holds is read back, and\n" ) +
       tr( "          the rows show it.  When a record is not removed,\n" ) +
       tr( "          nothing under it is removed either, and the\n" ) +
@@ -1116,9 +1116,41 @@ QString US_DataTree::action_text( QString exstext, QString acttext )
                  :  tr( "These items exists on %1.<br>"
                         "Are you sure you want to proceed with %2s?<ul>" )
                     .arg( exstext ).arg( acttext );
-   return lines +
-           tr( "<li><b>No </b> to cancel the action;</li>"
-               "<li><b>Yes</b> to proceed with the action.</li></ul>" );
+   lines += tr( "<li><b>No </b> to cancel the action;</li>"
+                "<li><b>Yes</b> to proceed with the action.</li></ul>" );
+
+   // An edit removed from the database takes along more than the rows
+   // under it: that is said before it is done
+   bool frDB = exstext.contains( "Datab" )  ||  exstext.contains( "DB " )
+            || exstext.contains( "both" );
+
+   if ( acttext.contains( "remove" )  &&  frDB )
+   {
+      action_rows();
+      int nedits = 0;
+
+      for ( int jj = 0; jj < actrows.size(); jj++ )
+      {
+         US_DataModel::DataDesc ddesc = da_model->row_datadesc( actrows[ jj ] );
+
+         if ( ddesc.recType == US_DataModel::EDIT  &&
+              ( ddesc.recState & US_DataModel::REC_DB ) != 0 )
+            nedits++;
+      }
+
+      if ( nedits > 0 )
+         lines += tr( "<p>Removing an edit from the database also removes"
+                      " its models and their noise, and the noise computed"
+                      " from it for models of other edits (a global fit,"
+                      " say), wherever that noise is shown in the tree.</p>"
+                      "<p>Such noise of another investigator's model, or"
+                      " of a model or run of the GMP framework, keeps the"
+                      " edit: then nothing of it is removed, and you are"
+                      " told why.  Only that investigator, or an"
+                      " administrator, can remove that noise.</p>" );
+   }
+
+   return lines;
 }
 
 // report the result of an item action

@@ -124,6 +124,17 @@ class US_DataTree : public QObject
         void setPrompter(
             std::function< bool( int, const QString&, const QString& ) > func );
 
+        /*! \brief The question asked before an action on the selection
+
+            A removal from the database that takes an edit says what goes
+            with it beyond the rows under it: the noise of other edits'
+            models computed from it.
+            \param action Where the records exist ("Database only", ...)
+            \param text   The action ("EditedData DB-only remove", ...)
+            \return The question, as rich text
+        */
+        QString action_text( QString action, QString text );
+
         //! \brief The rows the selection acts on
         //!
         //! The selected records and every descendant of them, in tree
@@ -305,11 +316,6 @@ class US_DataTree : public QObject
                                 const QStringList& notRemoved,
                                 const QStringList& removed );
 
-        //! \brief Get the action text
-        //! \param action Action to perform
-        //! \param text Action text
-        //! \return Action text
-        QString action_text( QString action, QString text );
 
         //! \brief Handle the result of an action
         //! \param result Result code

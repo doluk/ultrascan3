@@ -154,6 +154,12 @@ namespace
          // fk_noise_editDataID, keeping what went.
          bool                     patchedEditDelete = false;
 
+         // With patchedEditDelete, the status the procedure refuses with
+         // (@NOTPERMITTED), changing nothing, while noise of another
+         // investigator's model or of a model GMP made is recorded against
+         // the edit (0: it removes that noise too, as the first patch did)
+         int                      noiseKeepsEdit = 0;
+
          // The patched catalog procedures place a noise record with the
          // experiment of its model, not of the edit it was recorded against;
          // noise of a model on edit 1 belongs to no experiment
@@ -486,6 +492,21 @@ namespace
                                          "MySQL: the associated experiment does not exist" );
                if ( ! editMine( edit ) )           return refuse( IUS_DB2::NOTPERMITTED,
                                          "MySQL: you do not have permission to view or modify this experiment" );
+
+               if ( patchedEditDelete  &&  noiseKeepsEdit != 0 )
+                  for ( const FNoise& nn : noises )
+                     if ( nn.editID == edit  &&
+                          ( ! noiseMine( nn )  ||
+                            autoflowModels.contains( nn.modelID ) ) )
+                        return refuse( noiseKeepsEdit,
+                                       autoflowModels.contains( nn.modelID )
+                                       ? "MySQL: the edit was not deleted: it would take along"
+                                         " records the GMP framework refers to (noise of such"
+                                         " models " + nn.id + ")"
+                                       : "MySQL: the edit was not deleted: it would take along"
+                                         " records of another investigator, which only an"
+                                         " administrator may delete (noise of such models "
+                                         + nn.id + ")" );
 
                // Every model of the edit, whoever's, and its noise wherever
                // it was recorded
@@ -1927,6 +1948,111 @@ TEST_F( TestUSDataDb, ARefusedEditKeepsItsSubtreeThroughTheTree )
       << error.toStdString();
    EXPECT_TRUE( error.contains( model.row_datadesc( rowOf( model, noiseG ) ).label ) )
       << error.toStdString();
+}
+
+// The question asked before an edit is removed from the database says that
+// noise of other edits' models computed from it goes too, and that another
+// investigator's such noise keeps it; a model's removal says nothing of it
+TEST_F( TestUSDataDb, TheQuestionBeforeAnEditRemovalNamesTheNoiseOfOtherEdits )
+{
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   auto pick = [ & ]( QTreeWidgetItem* item )
+   {
+      win.select( item );
+      return win.tree.context_selection( item );
+   };
+
+   ASSERT_TRUE( pick( itemOfRow( win.tw, rowOf( model, editG ) ) ) );
+   QString text = win.tree.action_text( "Database only", "EditedData DB-only remove" );
+   EXPECT_TRUE( text.contains( "noise computed from it for models of other edits" ) )
+      << text.toStdString();
+   EXPECT_TRUE( text.contains( "another investigator's model" ) ) << text.toStdString();
+
+   // the same from the experiment, which takes the edit along
+   ASSERT_TRUE( pick( win.tw.topLevelItem( 0 ) ) );
+   text = win.tree.action_text( "both DB and Local", "Experiment DB+Local remove" );
+   EXPECT_TRUE( text.contains( "models of other edits" ) ) << text.toStdString();
+
+   // not for a model, nor for a removal from local disk
+   ASSERT_TRUE( pick( itemOfRow( win.tw, rowOf( model, modelG ) ) ) );
+   text = win.tree.action_text( "Database only", "Model DB-only remove" );
+   EXPECT_FALSE( text.contains( "other edits" ) ) << text.toStdString();
+
+   ASSERT_TRUE( pick( itemOfRow( win.tw, rowOf( model, editG ) ) ) );
+   text = win.tree.action_text( "Local disk only", "EditedData Local-only remove" );
+   EXPECT_FALSE( text.contains( "other edits" ) ) << text.toStdString();
+   EXPECT_TRUE( server.changes.isEmpty() );
+}
+
+// Noise of another investigator's model computed from the edit is never
+// removed without a word.  An older database refuses the edit on it
+// (fk_noise_editDataID), after the investigator's own such noise was tried
+// first; a current one refuses it with a status of its own, which removing
+// that own noise first cannot change, so it is not tried.  Either way
+// nothing is removed, and the message says why
+TEST_F( TestUSDataDb, AnotherInvestigatorsNoiseOnTheEditKeepsAllOfIt )
+{
+   for ( int patched = 0; patched < 2; patched++ )
+   {
+      SCOPED_TRACE( patched ? "patched" : "older" );
+      TearDown();
+      server = FakeServer();
+      SetUp();
+
+      QString edit2  = US_Util::new_guid();
+      QString model2 = US_Util::new_guid();
+      QString mine   = US_Util::new_guid();
+      QString theirM = US_Util::new_guid();
+      server.edits  << FEdit { "22", edit2, "11", runA + ".2401021200.RA.1.A.280.xml" };
+      server.models << FModel{ "34", model2, runA + ".1A280.e2401021200_a1_2DSA_i01.model",
+                               edit2, "22", "<model/>" };
+      server.noises << FNoise{ "47", mine, "21", "34", model2, "ti_noise",
+                               runA + ".1A280.e2401021200_a1_2DSA_i01.ti_noise", "<noise/>" };
+      FModel theirs { "35", theirM, "other.model", edit2, "22", "<model/>" };
+      theirs.owner = kOther;
+      server.models << theirs;
+      server.noises << FNoise{ "48", US_Util::new_guid(), "21", "35", theirM,
+                               "ti_noise", "hidden.ti_noise", "<noise/>" };
+      server.patchedEditDelete = ( patched != 0 );
+      server.noiseKeepsEdit    = patched ? US_DataProcess::EDIT_KEPT : 0;
+
+      US_DataModel model;
+      prepare( model );
+      Window       win( model );
+      model.scan_data();
+      win.tree.build_dtree();
+
+      win.select( itemOfRow( win.tw, rowOf( model, editG ) ) );
+      EXPECT_EQ( win.tree.act_on_selection( "Database only", "DB-only remove" ), 2012 );
+
+      QStringList asked;
+      asked << "delete_editedData 21";
+      if ( ! patched )
+         asked << "delete_noise 47" << "delete_editedData 21";
+      EXPECT_EQ( server.changes, asked ) << server.changes.join( "\n" ).toStdString();
+
+      EXPECT_EQ( server.edits.size(), 2 );
+      EXPECT_EQ( server.models.size(), 3 );
+      EXPECT_EQ( server.noises.size(), 3 );
+      for ( const QString& guid : { editG, modelG, noiseG, mine } )
+         EXPECT_NE( stateOf( model, guid ) & US_DataModel::REC_DB, 0 ) << guid.toStdString();
+
+      QString error = win.proc.lastError();
+      EXPECT_TRUE( error.contains( "another investigator" ) ) << error.toStdString();
+      EXPECT_TRUE( error.contains( "Nothing was removed" ) ) << error.toStdString();
+      EXPECT_TRUE( error.contains( "not removed either" ) ) << error.toStdString();
+      if ( patched )
+      {
+         EXPECT_TRUE( error.contains( "noise computed from it for"
+                                      " that investigator's model" ) )
+            << error.toStdString();
+      }
+   }
 }
 
 // A server that refuses the edit outright changes nothing, and nothing
