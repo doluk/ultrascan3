@@ -15,12 +15,24 @@
            for database access in the US3 system.
 
     Text goes to the server as UTF-8 and is read back as UTF-8.  Every
-    connection asks for the utf8mb4 connection character set before it
-    connects and checks that it got it, and a connection that cannot have it
-    fails to open: a query in one encoding read by the server in another
-    stores a '?' for a character, or fails on the first accented letter.
-    What a column can hold is still up to its own character set: a latin1
-    column refuses (strict mode) or replaces a character outside Latin-1.
+    connection proposes the utf8mb4 character set in its handshake, then,
+    once connected, sets it on the session (SET NAMES, which a server that
+    ignores the handshake -- skip-character-set-client-handshake, or an
+    init_connect that sets other names -- still obeys) and reads back
+    \@\@character_set_client, \@\@character_set_connection and
+    \@\@character_set_results.  Unless all three are utf8mb4 the
+    connection fails to open: a query in one encoding read by the server in
+    another stores mojibake or a '?' for a character, or fails on the first
+    accented letter.
+
+    What a column can hold is still up to its own character set.  Most US3
+    tables are latin1 on a server whose default is latin1 (MariaDB's), and
+    under a strict sql_mode such a column refuses a character outside
+    Latin-1 (error 1366) instead of storing '?'.  US_DB2 reports that, and
+    the other character-set errors (1267, 1271, 1300), with a message that
+    says which character could not be stored (see \ref charsetErrorText);
+    \ref textFitsServer and \ref nonLatin1Characters let a program check
+    text before it writes it.
 */
 
 class US_UTIL_EXTERN US_DB2 : public IUS_DB2
@@ -415,6 +427,85 @@ public:
     */
     static int                   writeBlobFile( const QString& filename, const QByteArray& data, QString& error );
 
+    /*! \name Text a latin1 column can hold
+
+        Most tables of a US3 database on a server whose default character
+        set is latin1 (MariaDB's) store their text as latin1, and so do the
+        text parameters of its procedures.  Under a strict sql_mode the
+        server refuses a character such a column cannot hold (error 1366)
+        and the whole statement fails; without one it stores '?'.  These
+        let a program check text before it writes it, and say what to do.
+
+        The server's latin1 is Windows-1252, not ISO 8859-1: besides
+        U+0000-U+007F and U+00A0-U+00FF it holds the 27 characters
+        Windows-1252 places at 0x80-0x9F (the euro sign, curly quotes,
+        dashes, ...) and the five control characters U+0081, U+008D,
+        U+008F, U+0090 and U+009D; it does not hold the other C1 controls.
+    */
+    //!@{
+
+    //! \brief True when every character of \p text fits a latin1 column
+    static bool    fitsLatin1( const QString& text );
+
+    //! \brief The characters of \p text that do not fit a latin1 column,
+    //!        each once, in the order they first appear; empty if all fit
+    static QString nonLatin1Characters( const QString& text );
+
+    //! \brief True when \p text fits a column of character set \p charset
+    //!        as information_schema names it (latin1, ascii, utf8mb3 or
+    //!        utf8, utf8mb4, ...).  A character set not known here is
+    //!        taken to hold everything.
+    static bool    textFitsCharset( const QString& text, const QString& charset );
+
+    /*! \brief What to tell a user whose \p text a latin1 column cannot
+               hold, or an empty string when it fits.
+        \param field A name for the field the user knows it by
+        \param text  The text to check
+    */
+    static QString latin1Problem( const QString& field, const QString& text );
+
+    /*! \brief Whether \p text can be written to \p table.\p column of the
+               database \p db is connected to.
+
+        Text written through a US3 procedure passes through the procedure's
+        parameter, declared in the database's default character set, and is
+        stored in the column, in the column's.  Both are read from the
+        server (\@\@character_set_database and information_schema.COLUMNS)
+        and the text must fit both.  When they cannot be read -- no
+        connection, no such column -- latin1, the narrowest character set
+        a US3 schema uses, is assumed.  This runs a query, so it must not
+        be called while the results of another are still being read.
+
+        \param db      The connection, which must be open
+        \param text    The text to check
+        \param table   A table of the US3 schema, such as "analyte"
+        \param column  A column of it, such as "description"
+        \param problem When not null, set to what to tell the user when the
+                       text does not fit (see \ref latin1Problem), and
+                       cleared when it does
+        \return True when the text fits
+    */
+    static bool    textFitsServer( IUS_DB2* db, const QString& text, const QString& table,
+                                   const QString& column, QString* problem = nullptr );
+
+    /*! \brief A message for a user for a character-set error of the
+               server, or an empty string for any other error.
+
+        Error 1366 (ER_TRUNCATED_WRONG_VALUE_FOR_FIELD, "Incorrect string
+        value: '\\xCE\\xB1...' for column ...") names the column and the
+        bytes it could not store; the message says which character that is
+        and in which field.  1267, 1271 (illegal mix of collations) and
+        1300 (invalid character string) get a message on the same cause.
+        Every query of US_DB2 reports these errors with this message,
+        followed by the server's own, so lastError() carries both.
+
+        \param serverErrno   mysql_errno() of the failed statement
+        \param serverMessage mysql_error() of it
+    */
+    static QString charsetErrorText( int serverErrno, const QString& serverMessage );
+
+    //!@}
+
  private:
     bool       connected;
     bool       inTransaction        = false;
@@ -456,6 +547,10 @@ public:
     //! \brief Why the transaction ended before commit or rollback: the
     //!        deadlock if one was recorded, otherwise that rows may have been kept.
     QString        transactionEndedText() const;
+
+    //! \brief "MySQL error: " and the error of the last statement, led by
+    //!        \ref charsetErrorText when it is a character-set error
+    QString        serverErrorText();
 
     //! \brief Escapes \p value for use inside a single-quoted SQL literal.
     static QString escapeLiteral( QString value );
