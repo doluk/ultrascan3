@@ -2,6 +2,8 @@
 #include "us_datapub_defs.h"
 
 #include <QtCore>
+#include <cmath>
+#include <cstdlib>
 
 #include "us_convertio.h"
 
@@ -407,6 +409,68 @@ QString US_DataPub::unusableGuidInXml( const QByteArray& xml )
          if ( isGuidAttribute( ename, aname )  &&  ! value.isEmpty()  &&
               ! guidIsUsable( value ) )
             return value;
+      }
+   }
+
+   return QString();
+}
+
+bool US_DataPub::isTextAttribute( const QString& element,
+                                  const QString& attribute )
+{
+   static const QStringList text = QStringList()
+      << "name" << "description" << "desc" << "comment" << "label"
+      << "title" << "notes" << "runid" << "filename" << "serial" << "unit";
+
+   if ( isGuidAttribute( element, attribute ) )  return true;
+
+   if ( text.contains( attribute.toLower() ) )   return true;
+
+   return attribute == "value"  &&  text.contains( element.toLower() );
+}
+
+bool US_DataPub::isNonFiniteNumber( const QString& value )
+{
+   static const QRegularExpression special(
+      QRegularExpression::anchoredPattern( "[+-]?(nan|inf|infinity)" ),
+      QRegularExpression::CaseInsensitiveOption );
+   static const QRegularExpression decimal(
+      QRegularExpression::anchoredPattern(
+         "[+-]?([0-9]+\\.?[0-9]*|\\.[0-9]+)([eE][+-]?[0-9]+)?" ) );
+
+   QString trimmed = value.trimmed();
+
+   if ( special.match( trimmed ).hasMatch() )  return true;
+
+   if ( ! decimal.match( trimmed ).hasMatch() )  return false;
+
+   QByteArray latin = trimmed.toLatin1();
+
+   return ! std::isfinite( std::strtod( latin.constData(), nullptr ) );
+}
+
+QString US_DataPub::nonFiniteNumberInXml( const QByteArray& xml )
+{
+   QXmlStreamReader reader( xml );
+
+   while ( ! reader.atEnd() )
+   {
+      reader.readNext();
+
+      if ( ! reader.isStartElement() )  continue;
+
+      QString              ename = reader.name().toString();
+      QXmlStreamAttributes attrs = reader.attributes();
+
+      for ( int ii = 0; ii < attrs.size(); ii++ )
+      {
+         QString aname = attrs.at( ii ).name().toString();
+         QString value = attrs.at( ii ).value().toString();
+
+         if ( ! isTextAttribute( ename, aname )  &&
+              isNonFiniteNumber( value ) )
+            return QString( "%1/@%2=\"%3\"" ).arg( ename ).arg( aname )
+                   .arg( value );
       }
    }
 

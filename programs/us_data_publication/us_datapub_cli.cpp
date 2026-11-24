@@ -358,6 +358,27 @@ void US_DataPubCLI::fail( const QString& text )
    err.flush();
 }
 
+void US_DataPubCLI::exportWarnings( const US_DataPubExporter& exporter )
+{
+   QStringList warnings = exporter.warnings();
+
+   for ( int ii = 0; ii < warnings.size(); ii++ )
+      err << QObject::tr( "Warning: " ) << warnings[ ii ] << "\n";
+
+   err.flush();
+}
+
+QString US_DataPubCLI::leftOutText( const US_DataPubExporter& exporter )
+{
+   int runs    = exporter.leftOutRuns().size();
+   int records = exporter.leftOutRecords();
+
+   if ( runs == 0  &&  records == 0 )  return QString();
+
+   return QObject::tr( " (left out: %1 run(s), %2 other record(s); see the"
+                       " warnings)" ).arg( runs ).arg( records );
+}
+
 void US_DataPubCLI::onMessage( const QString& text )
 {
    if ( verbose )  print( "  " + text );
@@ -942,17 +963,22 @@ int US_DataPubCLI::runExport( void )
 
    if ( args.dryRun )
    {
-      if ( ! exporter.previewManifest( selection, error ) )
+      bool previewed = exporter.previewManifest( selection, error );
+
+      exportWarnings( exporter );
+
+      if ( ! previewed )
       {
          fail( error );
          return 1;
       }
 
-      print( args.bundle.isEmpty()
-             ? tr( "Dry run: %1 records would be exported" )
-               .arg( exporter.manifest().total() )
-             : tr( "Dry run: %1 records would be exported to %2" )
-               .arg( exporter.manifest().total() ).arg( args.bundle ) );
+      print( ( args.bundle.isEmpty()
+               ? tr( "Dry run: %1 records would be exported" )
+                 .arg( exporter.manifest().total() )
+               : tr( "Dry run: %1 records would be exported to %2" )
+                 .arg( exporter.manifest().total() ).arg( args.bundle ) )
+             + leftOutText( exporter ) );
       print( exporter.manifest().summary() );
 
       if ( verbose )  print( exporter.manifest().toYaml() );
@@ -960,14 +986,20 @@ int US_DataPubCLI::runExport( void )
       return 0;
    }
 
-   if ( ! exporter.exportBundle( selection, args.bundle, error ) )
+   bool exported = exporter.exportBundle( selection, args.bundle, error );
+
+   // What was left out, also of an export that failed in the end
+   exportWarnings( exporter );
+
+   if ( ! exported )
    {
       fail( error );
       return 1;
    }
 
    print( tr( "Wrote %1 records to %2" )
-          .arg( exporter.manifest().total() ).arg( args.bundle ) );
+          .arg( exporter.manifest().total() ).arg( args.bundle )
+          + leftOutText( exporter ) );
    print( exporter.manifest().summary() );
 
    return 0;

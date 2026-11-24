@@ -126,7 +126,16 @@ class US_DataPubExporter : public QObject
           without a solution, a payload of another GUID, an experiment XML
           of another run ID or GUID, a spectrum that is not all numbers --
           is left out with a warning instead, and what was staged for it is
-          taken back.  Noise carried for a model with none of its own
+          taken back.  So is a run whose experiment, raw data or edit
+          another run already brought into the bundle (a copied run
+          directory), and one with a value that is not a finite number in a
+          record (US_DataPub::nonFiniteNumberInXml()).  The models of a
+          left-out run, and their noise, go with it unless their edit is in
+          the bundle after all; one asked for by GUID fails the export.  A
+          model or noise record with a value that is not finite is left out
+          with a warning, or fails the export when asked for by GUID.  What
+          was left out is in \ref warnings(), \ref leftOutRuns() and
+          \ref leftOutRecords().  Noise carried for a model with none of its own
           brings the model it was fitted to along.  Next to
           \c manifest.yaml the bundle carries \c manifest.sha256, the
           digest of the manifest file in \c sha256sum format.
@@ -157,6 +166,38 @@ class US_DataPubExporter : public QObject
 
       //! \brief The messages of the last export or preview
       QStringList log( void ) const;
+
+      /*! \brief The warnings of the last export or preview
+
+          What was left out of the bundle and why, and what it holds that
+          an importer should know about, without the "Warning: " the log
+          puts before each.  A warning about a run that was left out after
+          all replaces those the run's own records gave while it was
+          staged.  They are part of \ref log() as well; a caller that does
+          not show the log has to show these.
+      */
+      QStringList warnings( void ) const;
+
+      //! \brief The runs the last export or preview left out of the bundle
+      QStringList leftOutRuns( void ) const;
+
+      /*! \brief The records the last export or preview left out
+
+          The models and noise records that would have been exported but
+          were left out -- with a run that was left out, for a record they
+          need that is not in the bundle, or for a value that cannot be
+          imported -- not counting the left-out runs' own records.
+      */
+      int leftOutRecords( void ) const;
+
+      /*! \brief What the last export or preview left out, for a person
+
+          Empty when there were no warnings.  Otherwise the runs left out,
+          by run ID, the number of other records left out, and the
+          warnings, one per line -- at most \a maxWarnings of them, with
+          the number of those that are not shown.
+      */
+      QString warningReport( int maxWarnings = 20 ) const;
 
       //! \brief Remove the staging directory of the last export
       void cleanup( void );
@@ -207,6 +248,9 @@ class US_DataPubExporter : public QObject
       US_DataPubBundle   bundle;
       US_DataPubCatalog  catalog;
       QStringList        logtext;
+      QStringList        warntext;
+      QStringList        left_out_runs;
+      int                left_out_records;
       bool               stage_payloads;
       int                step_count;
 
@@ -215,6 +259,9 @@ class US_DataPubExporter : public QObject
 
       //! The noise records that were asked for by GUID
       QStringList        explicit_noises;
+
+      //! The models that were asked for by GUID
+      QStringList        explicit_models;
 
       //! Whether the runs came with the project rather than by name: a run
       //! that cannot be exported is then left out instead of failing it
@@ -303,6 +350,12 @@ class US_DataPubExporter : public QObject
       static bool spectraAreFinite(
             const QMap< QString, QMap< double, double > >&, QString& why );
 
+      /*! Whether every number of an XML payload is finite: false with
+          the first one that is not in \a what, or with \a what empty when
+          the file cannot be read
+      */
+      static bool numbersAreFinite( const QString& path, QString& what );
+
       //! Whether an edit payload carries its GUID and its raw data's
       static bool checkEditGuids( const QString& path, const QString& editGUID,
                                   const QString& rawGUID, QString& error );
@@ -360,5 +413,9 @@ class US_DataPubExporter : public QObject
       bool copyPayload ( const QString& source, const QString& staged,
                          QString& error );
       void note        ( const QString& );
+      //! A note that is also one of the \ref warnings()
+      void warn        ( const QString& );
+      //! Leave a run out of the bundle, with a warning
+      void leaveOutRun ( const QString& runID, const QString& why );
 };
 #endif

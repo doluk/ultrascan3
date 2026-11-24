@@ -145,6 +145,72 @@ class DataPubTestEnv : public ::testing::Test
 
       // ---- the store ----------------------------------------------------
 
+      /*! Copy the run directory to one of \a newRunID, every file renamed
+          to start with it, but with the same GUIDs in it: what a user who
+          copies a run directory gets.  With \a renameInXml the experiment
+          XML names the copy's run ID, so the copy holds together on its
+          own; without, it still names the original run.
+      */
+      bool copyRunDir( const QString& newRunID, bool renameInXml )
+      {
+         QString     target = US_Settings::resultDir() + "/" + newRunID;
+         QStringList names  = QDir( runDir() ).entryList( QDir::Files );
+
+         if ( ! QDir().mkpath( target ) )  return false;
+
+         for ( int ii = 0; ii < names.size(); ii++ )
+         {
+            QString name = names[ ii ];
+            QString copy = target + "/" + newRunID + name.mid( runID.length() );
+
+            if ( ! name.startsWith( runID + "." )  ||
+                 ! QFile::copy( runDir() + "/" + name, copy ) )
+               return false;
+         }
+
+         if ( ! renameInXml )  return true;
+
+         return set_xml_attribute( target + "/" + newRunID + "." + runType
+                                   + ".xml", "experiment", "runID",
+                                   newRunID );
+      }
+
+   public:
+      /*! Set the attribute \a attr of the first element \a element of an
+          XML file to \a value, as it is written: no parsing, no escaping
+      */
+      static bool set_xml_attribute( const QString& path,
+                                     const QString& element,
+                                     const QString& attr,
+                                     const QString& value )
+      {
+         QFile file( path );
+
+         if ( ! file.open( QIODevice::ReadOnly ) )  return false;
+
+         QString text = QString::fromUtf8( file.readAll() );
+         file.close();
+
+         QRegularExpression rx( "(<" + element + "\\b[^>]*\\s" + attr
+                                + "=\")[^\"]*(\")" );
+         QRegularExpressionMatch match = rx.match( text );
+
+         if ( ! match.hasMatch() )  return false;
+
+         text.replace( match.capturedStart( 0 ), match.capturedLength( 0 ),
+                       match.captured( 1 ) + value + match.captured( 2 ) );
+
+         if ( ! file.open( QIODevice::WriteOnly | QIODevice::Truncate ) )
+            return false;
+
+         QByteArray bytes = text.toUtf8();
+         bool       ok    = ( file.write( bytes ) == bytes.size() );
+         file.close();
+
+         return ok;
+      }
+
+   protected:
       QString dataDir( const QString& sub )
       {
          QString path = US_Settings::dataDir() + "/" + sub;

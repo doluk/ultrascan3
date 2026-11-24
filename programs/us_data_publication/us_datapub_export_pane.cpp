@@ -1324,14 +1324,19 @@ void US_DataPubExportPane::show_details( void )
    bool ok = exporter.previewManifest( sel, error );
    QApplication::restoreOverrideCursor();
 
+   QString warned = exporter.warningReport( 1000 );
+
    if ( ! ok )
    {
-      QMessageBox::warning( this, tr( "Preview Problem" ), error );
+      QMessageBox::warning( this, tr( "Preview Problem" ),
+                            warned.isEmpty() ? error
+                            : error + "\n\n" + exporter.warningReport() );
       return;
    }
 
    QString text = tr( "Manifest preview -- payload digests are filled in"
                       " when the bundle is written.\n\n" )
+                  + ( warned.isEmpty() ? QString() : warned + "\n\n" )
                   + exporter.manifest().summary() + "\n"
                   + exporter.manifest().toYaml();
 
@@ -1466,10 +1471,15 @@ void US_DataPubExportPane::run_export( void )
 
    // The other tab is unlocked -- and a close asked for meanwhile carried
    // out -- only once the result has been shown
+   // What was left out is said in the box, not only in the status log
+   QString warned = exporter.warningReport();
+
    if ( ! ok )
    {
       te_status->append( tr( "Export failed: " ) + error );
-      QMessageBox::critical( this, tr( "Export Failed" ), error );
+      QMessageBox::critical( this, tr( "Export Failed" ),
+                             warned.isEmpty() ? error
+                                              : error + "\n\n" + warned );
       emit status( tr( "Export failed" ) );
       emit busyChanged( false );
       return;
@@ -1479,10 +1489,15 @@ void US_DataPubExportPane::run_export( void )
    emit status( tr( "Exported %1 records to %2" )
                 .arg( exporter.manifest().total() ).arg( path ) );
 
-   QMessageBox::information( this, tr( "Export Complete" ),
-      tr( "%1 records were written to\n%2\n\n%3" )
-      .arg( exporter.manifest().total() ).arg( path )
-      .arg( exporter.manifest().summary() ) );
+   QString done = tr( "%1 records were written to\n%2\n\n%3" )
+                  .arg( exporter.manifest().total() ).arg( path )
+                  .arg( exporter.manifest().summary() );
+
+   if ( warned.isEmpty() )
+      QMessageBox::information( this, tr( "Export Complete" ), done );
+   else
+      QMessageBox::warning( this, tr( "Export Complete, with Warnings" ),
+                            done + "\n\n" + warned );
 
    emit busyChanged( false );
 }
