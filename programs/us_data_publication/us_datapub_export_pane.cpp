@@ -1334,8 +1334,8 @@ void US_DataPubExportPane::show_details( void )
       return;
    }
 
-   QString text = tr( "Manifest preview -- payload digests are filled in"
-                      " when the bundle is written.\n\n" )
+   QString text = tr( "Manifest preview -- every record was read and checked"
+                      " as the export does it; no bundle was written.\n\n" )
                   + ( warned.isEmpty() ? QString() : warned + "\n\n" )
                   + exporter.manifest().summary() + "\n"
                   + exporter.manifest().toYaml();

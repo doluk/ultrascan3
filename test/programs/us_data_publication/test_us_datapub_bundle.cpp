@@ -313,3 +313,127 @@ TEST_F( DataPubBundle, AnArchiveWithoutAManifestLeavesNothingBehind )
    EXPECT_TRUE ( error.contains( "holds no" ) ) << error.toStdString();
    EXPECT_TRUE ( bundle.stagingPath().isEmpty() );
 }
+
+/* Taking back what was staged since a mark removes what was first staged
+   after it, and the directories that are left empty -- nothing staged
+   before the mark, even when it was handed out again afterwards, and
+   nothing it did not hand out: it looks at what it staged, not at the
+   tree.
+*/
+TEST_F( DataPubBundle, UnstagingTakesBackOnlyWhatWasStagedSinceTheMark )
+{
+   US_DataPubBundle bundle;
+   QString          error;
+   ASSERT_TRUE( bundle.createStaging( error ) ) << error.toStdString();
+
+   auto put = [ & ]( const QString& rel )
+   {
+      QFile file( bundle.stagedPath( rel ) );
+      ASSERT_TRUE( file.open( QIODevice::WriteOnly ) );
+      file.write( rel.toUtf8() );
+      file.close();
+   };
+
+   put( "buffers/shared.xml" );
+
+   int mark = bundle.stagedMark();
+   put( "buffers/shared.xml" );           // Handed out again: still kept
+   put( "rawData/bad_run/bad.auc" );
+   put( "experiments/bad_run.RA.xml" );
+
+   // A file nobody staged is not looked at
+   QFile stray( bundle.stagingPath() + "/experiments/stray.xml" );
+   ASSERT_TRUE( stray.open( QIODevice::WriteOnly ) );
+   stray.close();
+
+   ASSERT_TRUE( bundle.unstageSince( mark, error ) ) << error.toStdString();
+
+   QString top = bundle.stagingPath();
+   EXPECT_TRUE ( QFile::exists( top + "/buffers/shared.xml" ) );
+   EXPECT_FALSE( QFile::exists( top + "/rawData/bad_run/bad.auc" ) );
+   EXPECT_FALSE( QFile::exists( top + "/rawData" ) );
+   EXPECT_FALSE( QFile::exists( top + "/experiments/bad_run.RA.xml" ) );
+   EXPECT_TRUE ( QFile::exists( top + "/experiments/stray.xml" ) );
+   EXPECT_EQ   ( bundle.stagedMark(), mark );
+
+   // What is staged again after that is a stage of its own
+   put( "rawData/good_run/good.auc" );
+   ASSERT_TRUE( bundle.unstageSince( mark, error ) );
+   EXPECT_FALSE( QFile::exists( top + "/rawData/good_run/good.auc" ) );
+   EXPECT_TRUE ( QFile::exists( top + "/buffers/shared.xml" ) );
+}
+
+#if defined( Q_OS_UNIX )
+#include <sys/time.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+namespace
+{
+   void make_old( const QString& path )
+   {
+      QDateTime past = QDateTime::currentDateTimeUtc().addDays( -3 );
+      struct timeval times[ 2 ];
+      times[ 0 ].tv_sec  = time_t( past.toSecsSinceEpoch() );
+      times[ 0 ].tv_usec = 0;
+      times[ 1 ]         = times[ 0 ];
+      ASSERT_EQ( utimes( QFile::encodeName( path ).constData(), times ), 0 );
+   }
+}
+
+/* The sweep removes the staging directories of exporters and importers
+   that were killed -- a lock of a process that is gone, of either name --
+   and directories without a lock that have not changed for days, but never
+   the directory of a process that is still running, however old.
+*/
+TEST_F( DataPubBundle, TheSweepRemovesOnlyWhatNoRunningProcessHolds )
+{
+   QString parent = US_Settings::tmpDir() + "/us_datapub";
+
+   US_DataPubBundle live;
+   QString          error;
+   live.setStagingLock( "export.lock" );
+   ASSERT_TRUE( live.createStaging( error ) ) << error.toStdString();
+   QString liveDir = QFileInfo( live.stagingPath() ).path();
+   make_old( liveDir );
+
+   const QStringList names = { "export.lock", "import.lock" };
+
+   for ( const QString& name : names )
+   {
+      QString dir = parent + "/bundle_dead_" + name.section( '.', 0, 0 );
+      ASSERT_TRUE( QDir().mkpath( dir + "/bundle" ) );
+
+      fflush( nullptr );
+      pid_t pid = fork();
+      ASSERT_GE( pid, 0 );
+
+      if ( pid == 0 )
+      {
+         QLockFile held( dir + "/" + name );
+         held.tryLock( 0 );
+         _exit( held.isLocked() ? 0 : 1 );    // Without unlocking it
+      }
+
+      int status = 0;
+      ASSERT_EQ( waitpid( pid, &status, 0 ), pid );
+      ASSERT_TRUE( WIFEXITED( status )  &&  WEXITSTATUS( status ) == 0 );
+      ASSERT_TRUE( QFile::exists( dir + "/" + name ) );
+   }
+
+   ASSERT_TRUE( QDir().mkpath( parent + "/bundle_old" ) );
+   make_old( parent + "/bundle_old" );
+   ASSERT_TRUE( QDir().mkpath( parent + "/bundle_new" ) );
+
+   EXPECT_EQ   ( US_DataPubBundle::sweepStaleStaging(), 3 );
+   EXPECT_FALSE( QFile::exists( parent + "/bundle_dead_export" ) );
+   EXPECT_FALSE( QFile::exists( parent + "/bundle_dead_import" ) );
+   EXPECT_FALSE( QFile::exists( parent + "/bundle_old" ) );
+   EXPECT_TRUE ( QFile::exists( parent + "/bundle_new" ) );
+   EXPECT_TRUE ( QFile::exists( live.stagingPath() ) );
+
+   live.cleanup();
+   EXPECT_FALSE( QFile::exists( liveDir ) );
+   QDir( parent + "/bundle_new" ).removeRecursively();
+}
+#endif

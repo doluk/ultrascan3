@@ -64,6 +64,8 @@ bool US_DataPubCatalog::ExpInfo::readFromFile( const QString& filename )
          QString calID = attrs.value( "id" ).toString();
 
          if ( ! calID.isEmpty()  &&  calID != "0" )  calibrationID = calID;
+
+         calibrationGUID = attrs.value( "guid" ).toString();
       }
 
       else if ( ename == "dataset" )
@@ -239,6 +241,20 @@ bool US_DataPubCatalog::open( bool fromDb, const QString& dbPassword,
    from_db = fromDb;
    listed  = false;
    listed_project.clear();
+
+   // A wrong master password would otherwise be reported as the server's
+   // refusal of a login without a password
+   if ( fromDb )
+   {
+      QString problem = US_DataPub::masterPasswordProblem( dbPassword );
+
+      if ( ! problem.isEmpty() )
+      {
+         dbase = nullptr;
+         error = problem;
+         return false;
+      }
+   }
 
    if ( ! cat->open( fromDb ? US_DataCatalog::Db : US_DataCatalog::Disk,
                      dbPassword, error ) )
@@ -820,7 +836,7 @@ US_DataPubCatalog::TimeStateStatus US_DataPubCatalog::timeState(
                               " leave the time state out to export the run"
                               " without it" )
                  .arg( run.runID ).arg( QFileInfo( xdefPath ).fileName() );
-         return TimeStateFailed;
+         return TimeStateBroken;
       }
 
       return TimeStateFound;
@@ -860,7 +876,7 @@ US_DataPubCatalog::TimeStateStatus US_DataPubCatalog::timeState(
                            " definitions in the database, so it cannot be"
                            " read; leave the time state out to export the"
                            " run without it" ).arg( run.runID );
-      return TimeStateFailed;
+      return TimeStateBroken;
    }
 
    // The record keeps a file name of its own, but a bundle names a time

@@ -289,7 +289,10 @@ TEST_F( DataPubExport, PayloadDigestsMatchTheStagedFiles )
    }
 }
 
-TEST_F( DataPubExport, PreviewStagesNothing )
+/* A preview is the export without the bundle: the same records with the
+   same digests, and nothing left behind -- no bundle, no staging directory.
+*/
+TEST_F( DataPubExport, APreviewIsTheExportWithoutTheBundle )
 {
    US_DataPubExporter exporter;
    QString            error;
@@ -298,19 +301,35 @@ TEST_F( DataPubExport, PreviewStagesNothing )
                 baseSelection( US_DataPub::ScopeNoise ), error ) )
       << error.toStdString();
 
-   const US_DataPubManifest& mani = exporter.manifest();
+   US_DataPubManifest preview = exporter.manifest();
 
-   EXPECT_GT( mani.total(), 0 );
-   EXPECT_EQ( mani.count( US_DataPub::Model ), 1 );
+   EXPECT_GT( preview.total(), 0 );
+   EXPECT_EQ( preview.count( US_DataPub::Model ), 1 );
 
-   // A preview answers "what would be exported", so the entries name their
-   // payloads but carry no digest: nothing was copied to digest.
-   QList< US_DataPubEntity > entities = mani.all();
+   QString work = US_Settings::tmpDir() + "/us_datapub";
+   EXPECT_TRUE( QDir( work ).entryList( QStringList( "bundle_*" ),
+                                        QDir::Dirs ).isEmpty() );
 
-   for ( int ii = 0; ii < entities.size(); ii++ )
+   US_DataPubExporter written;
+   QString            bundle = root + "/previewed.tar.gz";
+
+   ASSERT_TRUE( written.exportBundle( baseSelection( US_DataPub::ScopeNoise ),
+                                      bundle, error ) )
+      << error.toStdString();
+
+   QList< US_DataPubEntity > seen = preview.all();
+   QList< US_DataPubEntity > made = written.manifest().all();
+
+   ASSERT_EQ( seen.size(), made.size() );
+
+   for ( int ii = 0; ii < seen.size(); ii++ )
    {
-      EXPECT_FALSE( entities[ ii ].payload.isEmpty() );
-      EXPECT_TRUE ( entities[ ii ].sha256 .isEmpty() );
+      EXPECT_EQ( seen[ ii ].guid,    made[ ii ].guid );
+      EXPECT_EQ( seen[ ii ].payload, made[ ii ].payload );
+      EXPECT_FALSE( seen[ ii ].sha256.isEmpty() ) << seen[ ii ].label()
+                                                     .toStdString();
+      EXPECT_EQ( seen[ ii ].sha256,  made[ ii ].sha256 )
+         << seen[ ii ].label().toStdString();
    }
 }
 
@@ -1235,7 +1254,7 @@ TEST_F( DataPubCatalogDb, AFailedTimeStateLookupIsAFailure )
    EXPECT_TRUE( error.contains( "gone" ) ) << error.toStdString();
 }
 
-TEST_F( DataPubCatalogDb, ATimeStateWithoutDefinitionsIsAFailure )
+TEST_F( DataPubCatalogDb, ATimeStateWithoutDefinitionsIsBroken )
 {
    timeStateRow( "demo_run.time_state.tmst", QString() );
 
@@ -1243,7 +1262,7 @@ TEST_F( DataPubCatalogDb, ATimeStateWithoutDefinitionsIsAFailure )
 
    EXPECT_EQ( catalog.timeState( db_run(), work.path(), true, tmst, xdef, id,
                                  error ),
-              US_DataPubCatalog::TimeStateFailed );
+              US_DataPubCatalog::TimeStateBroken );
    EXPECT_TRUE( error.contains( "definitions" ) ) << error.toStdString();
 }
 
@@ -1490,7 +1509,6 @@ class US_DataPubExporterTest
 
       static bool stage( US_DataPubExporter& ex, QString& error )
       {
-         ex.stage_payloads = true;
          return ex.bundle.createStaging( error );
       }
 
@@ -3288,3 +3306,293 @@ TEST_F( DataPubExport, NonFiniteModelsAndNoiseAreLeftOutOrRefused )
       EXPECT_FALSE( QFile::exists( root + "/y.tar.gz" ) );
    }
 }
+
+/* A run whose records turn out not to hold together only when they are
+   staged -- here an experiment XML naming another run ID, which only the
+   staged copy shows -- is left out by the export, and so by the preview:
+   the preview used to list it, records and all (32 records, where the
+   export wrote 18).
+*/
+TEST_F( DataPubExportTwoRuns, APreviewLeavesOutWhatTheExportLeavesOut )
+{
+   addRun( "demo_run2" );
+   QString xml2 = US_Settings::resultDir() + "/" + runID2 + "/" + runID2
+                  + "." + runType + ".xml";
+   ASSERT_TRUE( replace_in_file( xml2, "runID=\"" + runID2 + "\"",
+                                 "runID=\"old_name\"" ) );
+
+   US_DataPubExporter::Selection selection;
+   selection.fromDb      = false;
+   selection.scope       = US_DataPub::ScopeNoise;
+   selection.projectGUID = projectGUID;
+
+   US_DataPubExporter preview;
+   US_DataPubExporter exporter;
+   QString            error;
+
+   ASSERT_TRUE( preview.previewManifest( selection, error ) )
+      << error.toStdString();
+   ASSERT_TRUE( exporter.exportBundle( selection, root + "/two.tar.gz",
+                                       error ) ) << error.toStdString();
+
+   EXPECT_EQ( preview.leftOutRuns(), QStringList() << runID2 );
+   EXPECT_EQ( preview.leftOutRuns(), exporter.leftOutRuns() );
+   EXPECT_EQ( preview.leftOutRecords(), exporter.leftOutRecords() );
+   EXPECT_EQ( preview.warnings(), exporter.warnings() );
+   EXPECT_EQ( preview.manifest().total(), exporter.manifest().total() );
+   EXPECT_FALSE( preview.manifest().contains( US_DataPub::RawData, rawGUID2b ) );
+
+   QList< US_DataPubEntity > seen = preview.manifest().all();
+   QList< US_DataPubEntity > made = exporter.manifest().all();
+
+   ASSERT_EQ( seen.size(), made.size() );
+
+   for ( int ii = 0; ii < seen.size(); ii++ )
+      EXPECT_EQ( seen[ ii ].guid, made[ ii ].guid );
+}
+
+/* A rotor calibration, a centerpiece or a time state a run names but does
+   not have is the run's own fault, as a solution it names but does not
+   have is: a project export leaves the run out, with a warning, and a run
+   named fails the export.  They used to fail every export of the project.
+*/
+TEST_F( DataPubExportTwoRuns, AMissingCalibrationCenterpieceOrTimeStateIsARunFault )
+{
+   addRun( "demo_run2" );
+   QString dir2 = US_Settings::resultDir() + "/" + runID2;
+   QString xml2 = dir2 + "/" + runID2 + "." + runType + ".xml";
+   QString tmst = dir2 + "/" + runID2 + ".time_state.tmst";
+
+   for ( int pass = 0; pass < 3; pass++ )
+   {
+      const char* what[] = { "calibration", "centerpiece", "time state" };
+      SCOPED_TRACE( what[ pass ] );
+
+      QString original = read_text( xml2 );
+
+      if ( pass == 0 )
+         ASSERT_TRUE( DataPubTestEnv::set_xml_attribute( xml2, "calibration",
+                                                         "id", "9999" ) );
+      else if ( pass == 1 )
+         ASSERT_TRUE( DataPubTestEnv::set_xml_attribute( xml2, "centerpiece",
+                                                         "id", "9999" ) );
+      else
+      {
+         ASSERT_TRUE( writeTimeStateFiles( tmst ) );
+         ASSERT_TRUE( QFile::remove( US_DataPub::timeStateDefs( tmst ) ) );
+      }
+
+      US_DataPubExporter::Selection selection;
+      selection.fromDb      = false;
+      selection.scope       = US_DataPub::ScopeNoise;
+      selection.projectGUID = projectGUID;
+
+      US_DataPubExporter exporter;
+      QString            error;
+
+      ASSERT_TRUE( exporter.exportBundle( selection, root + "/two.tar.gz",
+                                          error ) )
+         << error.toStdString() << "\n"
+         << exporter.log().join( "\n" ).toStdString();
+      EXPECT_EQ( exporter.leftOutRuns(), QStringList() << runID2 );
+      EXPECT_TRUE( exporter.manifest().contains( US_DataPub::Experiment,
+                                                 expGUID1 ) );
+      EXPECT_FALSE( exporter.manifest().contains( US_DataPub::Experiment,
+                                                  expGUID2 ) );
+
+      // Named, the run fails the export
+      US_DataPubExporter            named;
+      US_DataPubExporter::Selection one = baseSelection( US_DataPub::ScopeNoise );
+      one.runIDs = QStringList() << runID2;
+
+      EXPECT_FALSE( named.exportBundle( one, root + "/one.tar.gz", error ) );
+      EXPECT_FALSE( error.isEmpty() );
+
+      // Back to a run that holds together
+      QFile file( xml2 );
+      ASSERT_TRUE( file.open( QIODevice::WriteOnly | QIODevice::Truncate ) );
+      file.write( original.toUtf8() );
+      file.close();
+      QFile::remove( tmst );
+   }
+}
+
+/* A run that fails after it has staged records it shares with a run that
+   comes after it -- the solution, its buffer and analyte, the rotor
+   calibration and the centerpiece -- takes them back with it, and the run
+   after it stages them again: the bundle has them, payloads and all, and
+   imports.
+*/
+TEST_F( DataPubExportTwoRuns, ABadRunThatStagesASharedRecordFirstGivesItBack )
+{
+   // "A_..." comes before "demo_run": the bad run is staged first
+   addRun( "A_bad_run" );
+   QString tmst = US_Settings::resultDir() + "/" + runID2 + "/" + runID2
+                  + ".time_state.tmst";
+   ASSERT_TRUE( writeTimeStateFiles( tmst ) );
+   ASSERT_TRUE( QFile::remove( US_DataPub::timeStateDefs( tmst ) ) );
+
+   US_DataPubExporter::Selection selection;
+   selection.fromDb      = false;
+   selection.scope       = US_DataPub::ScopeNoise;
+   selection.projectGUID = projectGUID;
+
+   US_DataPubExporter exporter;
+   QString            bundle = root + "/shared.tar.gz";
+   QString            error;
+
+   ASSERT_TRUE( exporter.exportBundle( selection, bundle, error ) )
+      << error.toStdString();
+   ASSERT_EQ( exporter.leftOutRuns(), QStringList() << runID2 );
+
+   // The bad run was staged first, and had staged the shared records
+   QString log = exporter.log().join( "\n" );
+   int     bad = log.indexOf( "Experiment: " + runID2 );
+   int     good = log.indexOf( "Experiment: " + runID1 );
+   ASSERT_GE( bad, 0 ) << log.toStdString();
+   ASSERT_GT( good, bad ) << log.toStdString();
+
+   const US_DataPubManifest& mani = exporter.manifest();
+   EXPECT_TRUE( mani.contains( US_DataPub::Solution, solutionGUID ) );
+   EXPECT_TRUE( mani.contains( US_DataPub::Buffer,   bufferGUID   ) );
+   EXPECT_TRUE( mani.contains( US_DataPub::Analyte,  analyteGUID  ) );
+   EXPECT_TRUE( mani.contains( US_DataPub::RotorCalibration, calGUID ) );
+   EXPECT_EQ  ( mani.count( US_DataPub::Centerpiece ), 1 );
+
+   // The solution depends on the good run's experiment only
+   US_DataPubEntity solution;
+   ASSERT_TRUE( mani.entity( US_DataPub::Solution, solutionGUID, solution ) );
+   EXPECT_FALSE( solution.depends.values().join( " " ).contains( expGUID2 ) );
+
+   US_DataPubImporter importer;
+   ASSERT_TRUE( importer.inspect( bundle, error ) ) << error.toStdString();
+   EXPECT_TRUE( importer.verifyPayloads().isEmpty() );
+
+   QMap< QString, qint64 > files;
+   QString                 why;
+   ASSERT_TRUE( US_DataPubBundle::listTree( importer.bundleRoot(), files,
+                                            why ) );
+
+   for ( auto it = files.constBegin(); it != files.constEnd(); ++it )
+      EXPECT_FALSE( it.key().contains( runID2 ) ) << it.key().toStdString();
+
+   ASSERT_TRUE( importer.runImport( disk_target( root + "/target" ), error ) )
+      << error.toStdString();
+}
+
+/* The rotor calibration survives a disk store it is imported into.  The
+   store gives it no ID of its own (-1), so the experiment XML that named it
+   by ID named nothing an export of that store could find, and the run came
+   out of it without its calibration.  The exported experiment XML names
+   the calibration's GUID too, and an export from disk finds it by that.
+*/
+TEST_F( DataPubExport, TheCalibrationSurvivesADiskStoreItWasImportedInto )
+{
+   QString first = root + "/first.tar.gz";
+   QString error;
+
+   US_DataPubExporter exporter;
+   ASSERT_TRUE( exporter.exportBundle( baseSelection( US_DataPub::ScopeNoise ),
+                                       first, error ) ) << error.toStdString();
+   ASSERT_TRUE( exporter.manifest().contains( US_DataPub::RotorCalibration,
+                                              calGUID ) );
+
+   US_DataPubImporter importer;
+   QString            target = root + "/target";
+   ASSERT_TRUE( importer.inspect( first, error ) ) << error.toStdString();
+   ASSERT_TRUE( importer.runImport( disk_target( target ), error ) )
+      << error.toStdString();
+
+   // The target's calibration has no ID; the run's XML names its GUID
+   QString cal = file_with_guid( target + "/data/rotors", calGUID );
+   ASSERT_FALSE( cal.isEmpty() );
+   EXPECT_TRUE( read_text( cal ).contains( "id=\"-1\"" ) );
+
+   US_DataPubCatalog::ExpInfo info;
+   ASSERT_TRUE( info.readFromFile( target + "/results/" + runID + "/" + runID
+                                   + "." + runType + ".xml" ) );
+   EXPECT_EQ( info.calibrationGUID, calGUID );
+
+   // Exported again from the target, the run still has its calibration
+   US_Settings::set_workBaseDir( target );
+
+   US_DataPubExporter again;
+   ASSERT_TRUE( again.exportBundle( baseSelection( US_DataPub::ScopeNoise ),
+                                    root + "/second.tar.gz", error ) )
+      << error.toStdString() << "\n" << again.log().join( "\n" ).toStdString();
+
+   EXPECT_TRUE( again.manifest().contains( US_DataPub::RotorCalibration,
+                                           calGUID ) );
+   EXPECT_FALSE( again.warnings().join( "\n" ).contains( "calibration" ) )
+      << again.warnings().join( "\n" ).toStdString();
+
+   US_DataPubEntity exp;
+   ASSERT_TRUE( again.manifest().entity( US_DataPub::Experiment, expGUID,
+                                         exp ) );
+   EXPECT_EQ( exp.depend( US_DataPub::RotorCalibration ), calGUID );
+}
+
+#if defined( Q_OS_UNIX )
+#include <signal.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+/* An export stopped by a signal leaves its staging directory behind, with
+   the lock of a process that is gone; the next export or preview removes
+   it.  It used to hold no lock, and nothing ever removed it.
+*/
+TEST_F( DataPubExport, AnExportStoppedBySigtermIsSweptByTheNext )
+{
+   QString     parent = US_Settings::tmpDir() + "/us_datapub";
+   QStringList before = QDir( parent ).entryList( QStringList( "bundle_*" ),
+                                                  QDir::Dirs
+                                                  | QDir::NoDotAndDotDot );
+   fflush( nullptr );
+   pid_t pid = fork();
+   ASSERT_GE( pid, 0 );
+
+   if ( pid == 0 )
+   {
+      US_DataPubExporter exporter;
+      QString            error;
+
+      // Stopped in the middle of staging the run
+      QObject::connect( &exporter, &US_DataPubExporter::message,
+                        []( const QString& text )
+                        {
+                           if ( text.startsWith( "Experiment:" ) )
+                              raise( SIGTERM );
+                        } );
+
+      exporter.exportBundle( baseSelection( US_DataPub::ScopeNoise ),
+                             root + "/stopped.tar.gz", error );
+      _exit( 3 );                     // Not reached
+   }
+
+   int status = 0;
+   ASSERT_EQ( waitpid( pid, &status, 0 ), pid );
+   ASSERT_TRUE( WIFSIGNALED( status ) ) << "exit " << WEXITSTATUS( status );
+   EXPECT_EQ( WTERMSIG( status ), SIGTERM );
+   EXPECT_FALSE( QFile::exists( root + "/stopped.tar.gz" ) );
+
+   QStringList after = QDir( parent ).entryList( QStringList( "bundle_*" ),
+                                                 QDir::Dirs
+                                                 | QDir::NoDotAndDotDot );
+   QStringList left;
+
+   for ( const QString& dir : after )
+      if ( ! before.contains( dir ) )  left << dir;
+
+   ASSERT_EQ( left.size(), 1 );
+   QString stage = parent + "/" + left[ 0 ];
+   EXPECT_TRUE( QFile::exists( stage + "/"
+                               + US_DataPubExporter::stagingLockName() ) );
+
+   US_DataPubExporter next;
+   QString            error;
+   ASSERT_TRUE( next.previewManifest( baseSelection( US_DataPub::ScopeNoise ),
+                                      error ) ) << error.toStdString();
+   EXPECT_FALSE( QFile::exists( stage ) );
+   EXPECT_TRUE( next.log().join( "\n" ).contains( "left behind" ) );
+}
+#endif

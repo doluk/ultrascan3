@@ -111,7 +111,6 @@ US_DataPub::Scope US_DataPubExporter::Selection::effectiveScope( void ) const
 
 US_DataPubExporter::US_DataPubExporter( QObject* parent ) : QObject( parent )
 {
-   stage_payloads = true;
    step_count     = 0;
    exp_scope      = US_DataPub::ScopeNoise;
    cp_loaded      = false;
@@ -119,6 +118,15 @@ US_DataPubExporter::US_DataPubExporter( QObject* parent ) : QObject( parent )
    from_project   = false;
    run_fault      = false;
    left_out_records = 0;
+
+   // A staging directory is never without its lock, so a sweep can tell
+   // the directory of an export that was killed from one still running
+   bundle.setStagingLock( stagingLockName() );
+}
+
+QString US_DataPubExporter::stagingLockName( void )
+{
+   return QString( "export.lock" );
 }
 
 US_DataPubExporter::~US_DataPubExporter()
@@ -364,8 +372,6 @@ bool US_DataPubExporter::finishEntity( US_DataPubEntity& entity,
 
    error.clear();
 
-   if ( ! stage_payloads )  return true;
-
    QString why;
 
    // A payload that cannot be read to its end has no digest; one of a
@@ -451,8 +457,6 @@ bool US_DataPubExporter::stageSpectra(
                  + ".spectra.xml";
    entity.attrs.insert( "spectraPayload", rel );
 
-   if ( ! stage_payloads )  return true;
-
    QString staged = bundle.stagedPath( rel );
 
    if ( staged.isEmpty()  ||
@@ -468,10 +472,19 @@ bool US_DataPubExporter::stageSpectra(
 
 // --------------------------------------------------------------- entry points
 
+/* A preview is an export that is not packed: every record is read and
+   staged, and every check an export makes is made, so what it lists -- and
+   what it leaves out, a run whose payload turns out not to hold together
+   included -- is what the export would write.
+*/
 bool US_DataPubExporter::previewManifest( const Selection& selection,
                                           QString& error )
 {
-   return build( selection, false, error );
+   bool staged = stageBundle( selection, error );
+
+   bundle.cleanup();
+
+   return staged;
 }
 
 bool US_DataPubExporter::exportBundle( const Selection& selection,
@@ -484,61 +497,7 @@ bool US_DataPubExporter::exportBundle( const Selection& selection,
       return false;
    }
 
-   if ( ! build( selection, true, error ) )
-   {
-      bundle.cleanup();
-      return false;
-   }
-
-   QString manifestPath = bundle.stagedPath( US_DataPubBundle::manifestName() );
-
-   if ( ! mani.write( manifestPath, error ) )
-   {
-      bundle.cleanup();
-      return false;
-   }
-
-   // The manifest as an import will read it: every value has to come back
-   // as it was written, or the bundle would say something else than meant
-   {
-      US_DataPubManifest written;
-      QString            rerror;
-
-      if ( ! written.read( manifestPath, rerror ) )
-      {
-         error = tr( "The manifest just written cannot be read back: %1" )
-                 .arg( rerror );
-         bundle.cleanup();
-         return false;
-      }
-
-      if ( written.toYaml() != mani.toYaml() )
-      {
-         error = tr( "The manifest just written does not read back as the"
-                     " same manifest" );
-         bundle.cleanup();
-         return false;
-      }
-   }
-
-   // The digest of the manifest itself, in the format sha256sum reads, so
-   // that a bundle can be checked with ordinary tools as well
-   QString   digest;
-   bool      digested   = US_DataPub::fileSha256( manifestPath, digest );
-   QString   digestPath = bundle.stagedPath( manifestDigestName() );
-   QSaveFile dfile( digestPath );
-   QByteArray line = ( digest + "  " + US_DataPubBundle::manifestName()
-                       + "\n" ).toUtf8();
-
-   if ( ! digested  ||  ! dfile.open( QIODevice::WriteOnly )  ||
-        dfile.write( line ) != line.size()  ||  ! dfile.commit() )
-   {
-      error = tr( "The manifest digest could not be written" );
-      bundle.cleanup();
-      return false;
-   }
-
-   if ( ! checkStagedTree( error ) )
+   if ( ! stageBundle( selection, error ) )
    {
       bundle.cleanup();
       return false;
@@ -559,10 +518,62 @@ bool US_DataPubExporter::exportBundle( const Selection& selection,
    return true;
 }
 
+/* Everything but the packing: the records, the manifest and its digest,
+   and the check that the staged tree is exactly what the manifest names.
+   The staging directory is left for the caller to pack and remove.
+*/
+bool US_DataPubExporter::stageBundle( const Selection& selection,
+                                      QString& error )
+{
+   if ( ! build( selection, error ) )  return false;
+
+   QString manifestPath = bundle.stagedPath( US_DataPubBundle::manifestName() );
+
+   if ( ! mani.write( manifestPath, error ) )  return false;
+
+   // The manifest as an import will read it: every value has to come back
+   // as it was written, or the bundle would say something else than meant
+   {
+      US_DataPubManifest written;
+      QString            rerror;
+
+      if ( ! written.read( manifestPath, rerror ) )
+      {
+         error = tr( "The manifest just written cannot be read back: %1" )
+                 .arg( rerror );
+         return false;
+      }
+
+      if ( written.toYaml() != mani.toYaml() )
+      {
+         error = tr( "The manifest just written does not read back as the"
+                     " same manifest" );
+         return false;
+      }
+   }
+
+   // The digest of the manifest itself, in the format sha256sum reads, so
+   // that a bundle can be checked with ordinary tools as well
+   QString   digest;
+   bool      digested   = US_DataPub::fileSha256( manifestPath, digest );
+   QString   digestPath = bundle.stagedPath( manifestDigestName() );
+   QSaveFile dfile( digestPath );
+   QByteArray line = ( digest + "  " + US_DataPubBundle::manifestName()
+                       + "\n" ).toUtf8();
+
+   if ( ! digested  ||  ! dfile.open( QIODevice::WriteOnly )  ||
+        dfile.write( line ) != line.size()  ||  ! dfile.commit() )
+   {
+      error = tr( "The manifest digest could not be written" );
+      return false;
+   }
+
+   return checkStagedTree( error );
+}
+
 // --------------------------------------------------------------------- build
 
-bool US_DataPubExporter::build( const Selection& selection, bool payloads,
-                                QString& error )
+bool US_DataPubExporter::build( const Selection& selection, QString& error )
 {
    mani.clear();
    logtext.clear();
@@ -576,7 +587,6 @@ bool US_DataPubExporter::build( const Selection& selection, bool payloads,
    hd_components.clear();
    cp_loaded      = false;
    hd_comp_loaded = false;
-   stage_payloads = payloads;
    step_count     = 0;
    from_project   = false;
    run_fault      = false;
@@ -611,7 +621,15 @@ bool US_DataPubExporter::build( const Selection& selection, bool payloads,
    if ( ! catalog.open( selection.fromDb, selection.dbPassword, error ) )
       return false;
 
-   if ( payloads  &&  ! bundle.createStaging( error ) )  return false;
+   // What exporters that were killed left behind, then a staging directory
+   // of this one's own, locked before anything is put into it
+   int swept = US_DataPubBundle::sweepStaleStaging();
+
+   if ( swept > 0 )
+      note( tr( "%1 staging directories left behind by exports or imports"
+                " that are no longer running were removed" ).arg( swept ) );
+
+   if ( ! bundle.createStaging( error ) )  return false;
 
    mani.version    = US_DataPubManifest::currentVersion;
    mani.created    = QDateTime::currentDateTimeUtc().toString( Qt::ISODate );
@@ -714,12 +732,7 @@ bool US_DataPubExporter::build( const Selection& selection, bool payloads,
       QMap< QString, QString > saveSols  = raw_solutions;
       int                      saveSteps = step_count;
       int                      saveWarns = warntext.size();
-      QMap< QString, qint64 >  saveFiles;
-
-      if ( stage_payloads  &&
-           ! US_DataPubBundle::listTree( bundle.stagingPath(), saveFiles,
-                                         error ) )
-         return false;
+      int                      saveMark  = bundle.stagedMark();
 
       run_fault = false;
 
@@ -739,36 +752,18 @@ bool US_DataPubExporter::build( const Selection& selection, bool payloads,
       while ( warntext.size() > saveWarns )
          warntext.removeLast();
 
-      if ( stage_payloads )
+      // The files staged for it, and only those: a record another run
+      // staged first stays, one this run staged first goes, even when a
+      // run after it is going to stage it again
+      if ( ! bundle.unstageSince( saveMark, error ) )
       {
-         QMap< QString, qint64 > files;
-
-         if ( ! US_DataPubBundle::listTree( bundle.stagingPath(), files,
-                                            error ) )
-            return false;
-
-         for ( auto it = files.constBegin(); it != files.constEnd(); ++it )
-         {
-            if ( saveFiles.contains( it.key() ) )  continue;
-
-            QString path = bundle.stagingPath() + "/" + it.key();
-
-            if ( ! QFile::remove( path ) )
-            {
-               error = tr( "Cannot take back the staged file %1 of run %2" )
-                       .arg( it.key() ).arg( runs[ ii ].runID );
-               return false;
-            }
-
-            // ... and the directories that held nothing else
-            QDir dir = QFileInfo( path ).dir();
-
-            while ( dir.absolutePath() != QDir( bundle.stagingPath() )
-                                          .absolutePath()  &&
-                    dir.isEmpty()  &&  dir.rmdir( dir.absolutePath() ) )
-               dir.cdUp();
-         }
+         error = tr( "Run %1 cannot be taken back out of the bundle: %2" )
+                 .arg( runs[ ii ].runID ).arg( error );
+         return false;
       }
+
+      QDir( bundle.workPath() + "/timestate/" + runs[ ii ].runID )
+         .removeRecursively();
 
       leaveOutRun( runs[ ii ].runID, why );
       leftOut++;
@@ -1419,21 +1414,15 @@ bool US_DataPubExporter::addProject( const QString& guid, const QString& id,
    entity.payload = US_DataPub::payloadDir( US_DataPub::Project ) + "/"
                     + project.projectGUID + ".xml";
 
-   if ( stage_payloads )
+   QString staged = bundle.stagedPath( entity.payload );
+
+   if ( staged.isEmpty()  ||  ! project.saveToFile( staged ) )
    {
-      QString staged = bundle.stagedPath( entity.payload );
-
-      if ( staged.isEmpty()  ||  ! project.saveToFile( staged ) )
-      {
-         error = tr( "The project %1 could not be staged" ).arg( guid );
-         return false;
-      }
-
-      if ( ! finishEntity( entity, staged, error ) )  return false;
+      error = tr( "The project %1 could not be staged" ).arg( guid );
+      return false;
    }
 
-   else
-      finishEntity( entity, QString(), error );
+   if ( ! finishEntity( entity, staged, error ) )  return false;
 
    mani.add( entity );
    note( tr( "Project: %1" ).arg( entity.name ) );
@@ -1858,17 +1847,6 @@ bool US_DataPubExporter::addExperiment( const US_DataPubCatalog::Run& run,
    entity.payload  = expDir + "/" + entity.filename;
    entity.attrs.insert( "runType", runType );
 
-   if ( ! stage_payloads )
-   {  // A preview names the RI profile when it can see one without reading
-      if ( ! catalog.isDb()  &&  ! run.dirPath.isEmpty()  &&
-           QFile::exists( run.dirPath + "/" + ripName ) )
-         entity.attrs.insert( "riProfilePayload", expDir + "/" + ripName );
-
-      finishEntity( entity, QString(), error );
-      mani.add( entity );
-      return true;
-   }
-
    QString staged = bundle.stagedPath( entity.payload );
 
    if ( staged.isEmpty() )
@@ -1985,6 +1963,9 @@ bool US_DataPubExporter::addExperiment( const US_DataPubCatalog::Run& run,
                .arg( run.runID ) );
    }
 
+   if ( ! tagCalibration( staged, cal_guids.value( info.runID ), error ) )
+      return false;
+
    // An import refuses an experiment XML that names another run or GUID
    // than its manifest entry -- a run directory renamed by hand, say
    if ( ! checkExperimentXml( staged, run.runID, entity.guid, error ) )
@@ -2035,45 +2016,39 @@ bool US_DataPubExporter::addRawData( const US_DataPubCatalog::Run& run,
       entity.setDepend( US_DataPub::Experiment, run.guid );
       entity.setDepend( US_DataPub::Solution, solGUID );
 
-      if ( stage_payloads )
+      QString staged = bundle.stagedPath( entity.payload );
+
+      if ( staged.isEmpty() )
       {
-         QString staged = bundle.stagedPath( entity.payload );
-
-         if ( staged.isEmpty() )
-         {
-            error = tr( "The raw data %1 cannot be staged" ).arg( raw.filename );
-            return false;
-         }
-
-         if ( catalog.isDb() )
-         {
-            QString why;
-            int     status = US_ConvertIO::downloadRawDataBlob(
-                             catalog.db(), raw.id.toInt(), staged, why );
-
-            if ( status != IUS_DB2::OK )
-            {
-               error = tr( "The raw data record %1 could not be downloaded"
-                           " (status %2): %3" ).arg( raw.filename )
-                       .arg( status ).arg( why );
-               return false;
-            }
-         }
-
-         else if ( ! copyPayload( raw.path, staged, error ) )
-            return false;
-
-         // An import refuses a payload whose GUID is not its entry's, so
-         // a record that does not hold what the catalog says stops here
-         if ( ! checkRawGuid( staged, raw.guid, error ) )
-            return runFault( error, tr( "The raw data %1: %2" )
-                                    .arg( raw.filename ).arg( error ) );
-
-         if ( ! finishEntity( entity, staged, error ) )  return false;
+         error = tr( "The raw data %1 cannot be staged" ).arg( raw.filename );
+         return false;
       }
 
-      else
-         finishEntity( entity, QString(), error );
+      if ( catalog.isDb() )
+      {
+         QString why;
+         int     status = US_ConvertIO::downloadRawDataBlob(
+                          catalog.db(), raw.id.toInt(), staged, why );
+
+         if ( status != IUS_DB2::OK )
+         {
+            error = tr( "The raw data record %1 could not be downloaded"
+                        " (status %2): %3" ).arg( raw.filename )
+                    .arg( status ).arg( why );
+            return false;
+         }
+      }
+
+      else if ( ! copyPayload( raw.path, staged, error ) )
+         return false;
+
+      // An import refuses a payload whose GUID is not its entry's, so
+      // a record that does not hold what the catalog says stops here
+      if ( ! checkRawGuid( staged, raw.guid, error ) )
+         return runFault( error, tr( "The raw data %1: %2" )
+                                 .arg( raw.filename ).arg( error ) );
+
+      if ( ! finishEntity( entity, staged, error ) )  return false;
 
       mani.add( entity );
    }
@@ -2100,13 +2075,21 @@ bool US_DataPubExporter::addTimeState( const US_DataPubCatalog::Run& run,
    QString tmstID;
 
    US_DataPubCatalog::TimeStateStatus status =
-      catalog.timeState( run, workDir, stage_payloads, tmstPath, xdefPath,
-                         tmstID, error );
+      catalog.timeState( run, workDir, true, tmstPath, xdefPath, tmstID,
+                         error );
 
    if ( status == US_DataPubCatalog::TimeStateNone )
    {
       error.clear();
       return true;                 // A run without a time state is normal
+   }
+
+   // One that is there but incomplete is the run's own fault, as a channel
+   // without its solution is; one that cannot be read is the source's
+   if ( status == US_DataPubCatalog::TimeStateBroken )
+   {
+      run_fault = true;
+      return false;
    }
 
    if ( status == US_DataPubCatalog::TimeStateFailed )  return false;
@@ -2125,23 +2108,17 @@ bool US_DataPubExporter::addTimeState( const US_DataPubCatalog::Run& run,
                         dir + QFileInfo( xdefPath ).fileName() );
    entity.setDepend( US_DataPub::Experiment, run.guid );
 
-   if ( stage_payloads )
-   {
-      QString staged = bundle.stagedPath( entity.payload );
+   QString staged = bundle.stagedPath( entity.payload );
 
-      if ( ! copyPayload( tmstPath, staged, error ) )  return false;
+   if ( ! copyPayload( tmstPath, staged, error ) )  return false;
 
-      if ( ! copyPayload( xdefPath, bundle.stagedPath(
-                          entity.attrs.value( "definitionsPayload" ) ), error ) )
-         return false;
+   if ( ! copyPayload( xdefPath, bundle.stagedPath(
+                       entity.attrs.value( "definitionsPayload" ) ), error ) )
+      return false;
 
-      if ( ! finishEntity( entity, staged, error ) )  return false;
+   if ( ! finishEntity( entity, staged, error ) )  return false;
 
-      QDir( workDir ).removeRecursively();
-   }
-
-   else
-      finishEntity( entity, QString(), error );
+   QDir( workDir ).removeRecursively();
 
    mani.add( entity );
    note( tr( "Time state: %1" ).arg( run.runID ) );
@@ -2154,22 +2131,55 @@ bool US_DataPubExporter::addTimeState( const US_DataPubCatalog::Run& run,
 bool US_DataPubExporter::addCalibration(
       const US_DataPubCatalog::ExpInfo& info, QString& error )
 {
-   int calID = info.calibrationID.toInt();
+   int     calID   = info.calibrationID.toInt();
+   QString calGUID = info.calibrationGUID;
 
-   if ( calID < 1 )
+   US_Rotor::RotorCalibration calibration;
+   US_Rotor::Status           status = US_Rotor::NOT_FOUND;
+
+   if ( catalog.isDb() )
+   {
+      if ( calID > 0 )
+         status = calibration.readDB( calID, catalog.db() );
+   }
+
+   else
+   {
+      if ( calID > 0 )
+         status = calibration.readDisk( calID );
+
+      // A disk store the calibration was imported into gives it no ID of
+      // its own (-1), and another calibration may have taken the ID: the
+      // GUID the experiment XML names is what says which one it is
+      US_Rotor::RotorCalibration byGuid;
+
+      if ( US_DataPub::guidIsUsable( calGUID )  &&
+           ( status != US_Rotor::ROTOR_OK  ||
+             US_DataPubRecords::calibrationGuid( calibration ) != calGUID )  &&
+           findDiskCalibration( calGUID, byGuid ) )
+      {
+         calibration = byGuid;
+         status      = US_Rotor::ROTOR_OK;
+      }
+   }
+
+   if ( calID < 1  &&  status == US_Rotor::NOT_FOUND )
    {
       warn( tr( "run %1 names no rotor calibration, so none is"
                 " exported with it" ).arg( info.runID ) );
       return true;
    }
 
-   US_Rotor::RotorCalibration calibration;
-   US_Rotor::Status           status;
-
-   if ( catalog.isDb() )
-      status = calibration.readDB( calID, catalog.db() );
-   else
-      status = calibration.readDisk( calID );
+   // A calibration the run names that is not there is the run's fault, as
+   // a solution that is not there is; one that cannot be read is not
+   if ( status == US_Rotor::NOT_FOUND )
+      return runFault( error, tr( "Run %1 cannot be exported: its rotor"
+                                  " calibration %2 is not in the %3" )
+                              .arg( info.runID )
+                              .arg( calID > 0 ? QString::number( calID )
+                                              : calGUID )
+                              .arg( catalog.isDb() ? tr( "database" )
+                                    : tr( "local rotor directory" ) ) );
 
    if ( status != US_Rotor::ROTOR_OK )
    {
@@ -2205,27 +2215,96 @@ bool US_DataPubExporter::addCalibration(
    entity.attrs.insert( "coeff2",
                         QString::number( calibration.coeff2, 'g', 17 ) );
 
-   if ( stage_payloads )
+   QString staged = bundle.stagedPath( entity.payload );
+
+   if ( staged.isEmpty()  ||
+        ! US_DataPubRecords::writeCalibration( calibration, staged ) )
    {
-      QString staged = bundle.stagedPath( entity.payload );
-
-      if ( staged.isEmpty()  ||
-           ! US_DataPubRecords::writeCalibration( calibration, staged ) )
-      {
-         error = tr( "The rotor calibration %1 could not be staged" )
-                 .arg( calibration.GUID );
-         return false;
-      }
-
-      if ( ! finishEntity( entity, staged, error ) )  return false;
+      error = tr( "The rotor calibration %1 could not be staged" )
+              .arg( calibration.GUID );
+      return false;
    }
 
-   else
-      finishEntity( entity, QString(), error );
+   if ( ! finishEntity( entity, staged, error ) )  return false;
 
    mani.add( entity );
    note( tr( "Rotor calibration: %1" )
          .arg( entity.name.isEmpty() ? entity.guid : entity.name ) );
+
+   return true;
+}
+
+bool US_DataPubExporter::findDiskCalibration( const QString& guid,
+      US_Rotor::RotorCalibration& calibration )
+{
+   QString     dir   = US_Settings::dataDir() + "/rotors";
+   QStringList names = QDir( dir ).entryList( QStringList( "C*.xml" ),
+                                              QDir::Files, QDir::Name );
+
+   for ( int ii = 0; ii < names.size(); ii++ )
+   {
+      US_Rotor::RotorCalibration found;
+
+      if ( US_DataPubRecords::readCalibration( dir + "/" + names[ ii ], found )
+           &&  US_DataPubRecords::calibrationGuid( found ) == guid )
+      {
+         calibration = found;
+         return true;
+      }
+   }
+
+   return false;
+}
+
+/* The experiment XML names the rotor calibration by its ID, which only
+   means something in the store the run comes from: a disk store the bundle
+   is imported into gives the calibration none.  So the staged XML names
+   its GUID as well, in the same element, which US_Experiment ignores and
+   an export from that store reads (ExpInfo::calibrationGUID).
+*/
+bool US_DataPubExporter::tagCalibration( const QString& path,
+                                         const QString& calGUID,
+                                         QString& error )
+{
+   if ( calGUID.isEmpty() )  return true;
+
+   QFile file( path );
+
+   if ( ! file.open( QIODevice::ReadOnly ) )
+   {
+      error = tr( "The staged experiment XML %1 cannot be read" ).arg( path );
+      return false;
+   }
+
+   QString text = QString::fromUtf8( file.readAll() );
+   file.close();
+
+   // The element is written by US_Experiment, once, with attributes only
+   QRegularExpression      rx( "<calibration\\b([^>]*?)(/?)>" );
+   QRegularExpressionMatch match = rx.match( text );
+
+   if ( ! match.hasMatch()  ||
+        rx.match( text, match.capturedEnd( 0 ) ).hasMatch() )
+      return true;                 // None, or not one: nothing to name
+
+   QString attrs = match.captured( 1 );
+   attrs.remove( QRegularExpression( "\\s+guid\\s*=\\s*(\"[^\"]*\"|'[^']*')" ) );
+
+   QString tag = "<calibration" + attrs + " guid=\"" + calGUID + "\""
+                 + match.captured( 2 ) + ">";
+
+   text.replace( match.capturedStart( 0 ), match.capturedLength( 0 ), tag );
+
+   QSaveFile  out( path );
+   QByteArray bytes = text.toUtf8();
+
+   if ( ! out.open( QIODevice::WriteOnly )  ||
+        out.write( bytes ) != bytes.size()  ||  ! out.commit() )
+   {
+      error = tr( "The staged experiment XML %1 cannot be written" )
+              .arg( path );
+      return false;
+   }
 
    return true;
 }
@@ -2276,12 +2355,12 @@ bool US_DataPubExporter::addCenterpieces( const US_DataPubCatalog::Run& run,
       for ( int jj = 0; jj < cp_table.size(); jj++ )
          if ( cp_table[ jj ].serial_number == serial )  found = jj;
 
+      // A table that cannot be read is the source's failure; a run naming
+      // a centerpiece the table does not have is the run's own
       if ( found < 0 )
-      {
-         error = tr( "Centerpiece %1 of run %2 is not in the centerpiece"
-                     " table" ).arg( serial ).arg( run.runID );
-         return false;
-      }
+         return runFault( error, tr( "Centerpiece %1 of run %2 is not in the"
+                                     " centerpiece table" ).arg( serial )
+                                 .arg( run.runID ) );
 
       const US_AbstractCenterpiece& centerpiece = cp_table[ found ];
       QString guid = US_DataPubRecords::centerpieceGuid( centerpiece );
@@ -2298,24 +2377,18 @@ bool US_DataPubExporter::addCenterpieces( const US_DataPubCatalog::Run& run,
       entity.attrs.insert( "channels",
                            QString::number( centerpiece.channels ) );
 
-      if ( stage_payloads )
+      QString staged = bundle.stagedPath( entity.payload );
+      US_AbstractCenterpiece written = centerpiece;
+      written.guid = guid;
+
+      if ( staged.isEmpty()  ||
+           ! US_DataPubRecords::writeCenterpiece( written, staged ) )
       {
-         QString staged = bundle.stagedPath( entity.payload );
-         US_AbstractCenterpiece written = centerpiece;
-         written.guid = guid;
-
-         if ( staged.isEmpty()  ||
-              ! US_DataPubRecords::writeCenterpiece( written, staged ) )
-         {
-            error = tr( "The centerpiece %1 could not be staged" ).arg( serial );
-            return false;
-         }
-
-         if ( ! finishEntity( entity, staged, error ) )  return false;
+         error = tr( "The centerpiece %1 could not be staged" ).arg( serial );
+         return false;
       }
 
-      else
-         finishEntity( entity, QString(), error );
+      if ( ! finishEntity( entity, staged, error ) )  return false;
 
       mani.add( entity );
    }
@@ -2422,33 +2495,27 @@ bool US_DataPubExporter::addBuffer( US_Buffer& buffer, QString& error )
 
    if ( ! stageSpectra( entity, spectra, error ) )  return false;
 
-   if ( stage_payloads )
+   QString staged = bundle.stagedPath( entity.payload );
+
+   if ( staged.isEmpty()  ||  ! buffer.writeToDisk( staged ) )
    {
-      QString staged = bundle.stagedPath( entity.payload );
-
-      if ( staged.isEmpty()  ||  ! buffer.writeToDisk( staged ) )
-      {
-         error = tr( "The buffer %1 could not be staged" ).arg( buffer.GUID );
-         return false;
-      }
-
-      // ... and its concentrations go with the component definitions at
-      // full precision (older buffer files kept five decimals)
-      if ( ! comps.isEmpty()  &&
-           ! US_DataPubRecords::writeBufferComponents( comps,
-                buffer.concentration,
-                bundle.stagedPath( entity.attrs.value( "componentsPayload" ) ) ) )
-      {
-         error = tr( "The components of buffer %1 could not be staged" )
-                 .arg( buffer.GUID );
-         return false;
-      }
-
-      if ( ! finishEntity( entity, staged, error ) )  return false;
+      error = tr( "The buffer %1 could not be staged" ).arg( buffer.GUID );
+      return false;
    }
 
-   else
-      finishEntity( entity, QString(), error );
+   // ... and its concentrations go with the component definitions at
+   // full precision (older buffer files kept five decimals)
+   if ( ! comps.isEmpty()  &&
+        ! US_DataPubRecords::writeBufferComponents( comps,
+             buffer.concentration,
+             bundle.stagedPath( entity.attrs.value( "componentsPayload" ) ) ) )
+   {
+      error = tr( "The components of buffer %1 could not be staged" )
+              .arg( buffer.GUID );
+      return false;
+   }
+
+   if ( ! finishEntity( entity, staged, error ) )  return false;
 
    mani.add( entity );
 
@@ -2597,22 +2664,16 @@ bool US_DataPubExporter::addSolution( US_Solution& solution,
 
    if ( ! stageSpectra( entity, spectra, error ) )  return false;
 
-   if ( stage_payloads )
+   QString staged = bundle.stagedPath( entity.payload );
+
+   if ( staged.isEmpty()  ||  ! solution.saveToFile( staged ) )
    {
-      QString staged = bundle.stagedPath( entity.payload );
-
-      if ( staged.isEmpty()  ||  ! solution.saveToFile( staged ) )
-      {
-         error = tr( "The solution %1 could not be staged" )
-                 .arg( solution.solutionGUID );
-         return false;
-      }
-
-      if ( ! finishEntity( entity, staged, error ) )  return false;
+      error = tr( "The solution %1 could not be staged" )
+              .arg( solution.solutionGUID );
+      return false;
    }
 
-   else
-      finishEntity( entity, QString(), error );
+   if ( ! finishEntity( entity, staged, error ) )  return false;
 
    mani.add( entity );
    note( tr( "Solution: %1" ).arg( entity.name ) );
@@ -2662,27 +2723,21 @@ bool US_DataPubExporter::addAnalyte( US_Analyte& analyte, QString& error )
 
    if ( ! stageSpectra( entity, spectra, error, true ) )  return false;
 
-   if ( stage_payloads )
+   QString    staged   = bundle.stagedPath( entity.payload );
+   US_Analyte measured = analyte;
+   measured.extinction   = spectra.value( "extinction"   );
+   measured.refraction   = spectra.value( "refraction"   );
+   measured.fluorescence = spectra.value( "fluorescence" );
+
+   if ( staged.isEmpty()  ||
+        measured.write( false, staged ) != IUS_DB2::OK )
    {
-      QString    staged   = bundle.stagedPath( entity.payload );
-      US_Analyte measured = analyte;
-      measured.extinction   = spectra.value( "extinction"   );
-      measured.refraction   = spectra.value( "refraction"   );
-      measured.fluorescence = spectra.value( "fluorescence" );
-
-      if ( staged.isEmpty()  ||
-           measured.write( false, staged ) != IUS_DB2::OK )
-      {
-         error = tr( "The analyte %1 could not be staged" )
-                 .arg( analyte.analyteGUID );
-         return false;
-      }
-
-      if ( ! finishEntity( entity, staged, error ) )  return false;
+      error = tr( "The analyte %1 could not be staged" )
+              .arg( analyte.analyteGUID );
+      return false;
    }
 
-   else
-      finishEntity( entity, QString(), error );
+   if ( ! finishEntity( entity, staged, error ) )  return false;
 
    mani.add( entity );
 
@@ -2721,43 +2776,37 @@ bool US_DataPubExporter::addEdits( const US_DataPubCatalog::Run& run,
          entity.attrs.insert( "triple", edit.triple );
          entity.setDepend( US_DataPub::RawData, raw.guid );
 
-         if ( stage_payloads )
+         QString staged = bundle.stagedPath( entity.payload );
+
+         if ( staged.isEmpty() )
          {
-            QString staged = bundle.stagedPath( entity.payload );
-
-            if ( staged.isEmpty() )
-            {
-               error = tr( "The edit %1 cannot be staged" ).arg( edit.filename );
-               return false;
-            }
-
-            if ( catalog.isDb() )
-            {
-               QString why;
-               int     status = US_ConvertIO::downloadEditedDataBlob(
-                                catalog.db(), edit.id.toInt(), staged, why );
-
-               if ( status != IUS_DB2::OK )
-               {
-                  error = tr( "The edit record %1 could not be downloaded"
-                              " (status %2): %3" ).arg( edit.filename )
-                          .arg( status ).arg( why );
-                  return false;
-               }
-            }
-
-            else if ( ! copyPayload( edit.path, staged, error ) )
-               return false;
-
-            if ( ! checkEditGuids( staged, edit.guid, raw.guid, error ) )
-               return runFault( error, tr( "The edit %1: %2" )
-                                       .arg( edit.filename ).arg( error ) );
-
-            if ( ! finishEntity( entity, staged, error ) )  return false;
+            error = tr( "The edit %1 cannot be staged" ).arg( edit.filename );
+            return false;
          }
 
-         else
-            finishEntity( entity, QString(), error );
+         if ( catalog.isDb() )
+         {
+            QString why;
+            int     status = US_ConvertIO::downloadEditedDataBlob(
+                             catalog.db(), edit.id.toInt(), staged, why );
+
+            if ( status != IUS_DB2::OK )
+            {
+               error = tr( "The edit record %1 could not be downloaded"
+                           " (status %2): %3" ).arg( edit.filename )
+                       .arg( status ).arg( why );
+               return false;
+            }
+         }
+
+         else if ( ! copyPayload( edit.path, staged, error ) )
+            return false;
+
+         if ( ! checkEditGuids( staged, edit.guid, raw.guid, error ) )
+            return runFault( error, tr( "The edit %1: %2" )
+                                    .arg( edit.filename ).arg( error ) );
+
+         if ( ! finishEntity( entity, staged, error ) )  return false;
 
          mani.add( entity );
          knt++;
@@ -2879,76 +2928,70 @@ bool US_DataPubExporter::addModels(
       if ( ! model.filename.isEmpty() )
          entity.filename = model.filename;
 
-      if ( stage_payloads )
+      QString  staged = bundle.stagedPath( entity.payload );
+      US_Model record;
+      int      status;
+
+      if ( catalog.isDb()  &&  model.id.toInt() > 0 )
+         status = record.load( model.id, catalog.db() );
+      else if ( ! catalog.isDb()  &&  ! model.path.isEmpty() )
+         status = record.load( model.path );
+      else if ( ! catalog.isDb()  &&  ! model.filename.isEmpty() )
+         status = record.load( US_Settings::dataDir() + "/models/"
+                               + model.filename );
+      else
+         status = record.load( catalog.isDb(), model.guid, catalog.db() );
+
+      if ( status != IUS_DB2::OK  ||  record.modelGUID != model.guid )
       {
-         QString  staged = bundle.stagedPath( entity.payload );
-         US_Model record;
-         int      status;
-
-         if ( catalog.isDb()  &&  model.id.toInt() > 0 )
-            status = record.load( model.id, catalog.db() );
-         else if ( ! catalog.isDb()  &&  ! model.path.isEmpty() )
-            status = record.load( model.path );
-         else if ( ! catalog.isDb()  &&  ! model.filename.isEmpty() )
-            status = record.load( US_Settings::dataDir() + "/models/"
-                                  + model.filename );
-         else
-            status = record.load( catalog.isDb(), model.guid, catalog.db() );
-
-         if ( status != IUS_DB2::OK  ||  record.modelGUID != model.guid )
-         {
-            error = tr( "The model \"%1\" could not be read (status %2)" )
-                    .arg( model.description ).arg( status );
-            return false;
-         }
-
-         // The variance and meniscus are columns of the database row as
-         // well as attributes of the XML, which a model the database stored
-         // need not have: the manifest carries them, so an import into a
-         // database can give the row what it had
-         double variance = record.variance;
-         double meniscus = record.meniscus;
-
-         if ( catalog.isDb()  &&
-              ! modelRowValues( model, variance, meniscus, error ) )
-            return false;
-
-         if ( qIsFinite( variance ) )
-            entity.attrs.insert( "variance",
-                                 QString::number( variance, 'g', 17 ) );
-
-         if ( qIsFinite( meniscus ) )
-            entity.attrs.insert( "meniscus",
-                                 QString::number( meniscus, 'g', 17 ) );
-
-         if ( staged.isEmpty()  ||  record.write( staged ) != IUS_DB2::OK )
-         {
-            error = tr( "The model \"%1\" could not be staged" )
-                    .arg( model.description );
-            return false;
-         }
-
-         run_fault = false;
-
-         if ( ! finishEntity( entity, staged, error ) )
-         {
-            // A model that cannot be imported stays out, and its noise
-            // with it, unless it was asked for by GUID
-            if ( ! run_fault  ||  explicit_models.contains( model.guid )  ||
-                 ! QFile::remove( staged ) )
-               return false;
-
-            run_fault = false;
-            warn( tr( "model \"%1\" is left out: %2" )
-                  .arg( model.description ).arg( error ) );
-            left_out_records++;
-            error.clear();
-            continue;
-         }
+         error = tr( "The model \"%1\" could not be read (status %2)" )
+                 .arg( model.description ).arg( status );
+         return false;
       }
 
-      else
-         finishEntity( entity, QString(), error );
+      // The variance and meniscus are columns of the database row as
+      // well as attributes of the XML, which a model the database stored
+      // need not have: the manifest carries them, so an import into a
+      // database can give the row what it had
+      double variance = record.variance;
+      double meniscus = record.meniscus;
+
+      if ( catalog.isDb()  &&
+           ! modelRowValues( model, variance, meniscus, error ) )
+         return false;
+
+      if ( qIsFinite( variance ) )
+         entity.attrs.insert( "variance",
+                              QString::number( variance, 'g', 17 ) );
+
+      if ( qIsFinite( meniscus ) )
+         entity.attrs.insert( "meniscus",
+                              QString::number( meniscus, 'g', 17 ) );
+
+      if ( staged.isEmpty()  ||  record.write( staged ) != IUS_DB2::OK )
+      {
+         error = tr( "The model \"%1\" could not be staged" )
+                 .arg( model.description );
+         return false;
+      }
+
+      run_fault = false;
+
+      if ( ! finishEntity( entity, staged, error ) )
+      {
+         // A model that cannot be imported stays out, and its noise
+         // with it, unless it was asked for by GUID
+         if ( ! run_fault  ||  explicit_models.contains( model.guid )  ||
+              ! QFile::remove( staged ) )
+            return false;
+
+         run_fault = false;
+         warn( tr( "model \"%1\" is left out: %2" )
+               .arg( model.description ).arg( error ) );
+         left_out_records++;
+         error.clear();
+         continue;
+      }
 
       mani.add( entity );
    }
@@ -3148,66 +3191,60 @@ bool US_DataPubExporter::addNoises(
       if ( ! noise.filename.isEmpty() )
          entity.filename = noise.filename;
 
-      if ( stage_payloads )
+      QString  staged = bundle.stagedPath( entity.payload );
+      US_Noise record;
+      int      status;
+
+      if ( catalog.isDb()  &&  noise.id.toInt() > 0 )
+         status = record.load( noise.id, catalog.db() );
+      else if ( ! catalog.isDb()  &&  ! noise.path.isEmpty() )
+         status = record.load( noise.path );
+      else if ( ! catalog.isDb()  &&  ! noise.filename.isEmpty() )
+         status = record.load( US_Settings::dataDir() + "/noises/"
+                               + noise.filename );
+      else
+         status = record.load( catalog.isDb(), noise.guid, catalog.db() );
+
+      if ( status != IUS_DB2::OK  ||  record.noiseGUID != noise.guid )
       {
-         QString  staged = bundle.stagedPath( entity.payload );
-         US_Noise record;
-         int      status;
-
-         if ( catalog.isDb()  &&  noise.id.toInt() > 0 )
-            status = record.load( noise.id, catalog.db() );
-         else if ( ! catalog.isDb()  &&  ! noise.path.isEmpty() )
-            status = record.load( noise.path );
-         else if ( ! catalog.isDb()  &&  ! noise.filename.isEmpty() )
-            status = record.load( US_Settings::dataDir() + "/noises/"
-                                  + noise.filename );
-         else
-            status = record.load( catalog.isDb(), noise.guid, catalog.db() );
-
-         if ( status != IUS_DB2::OK  ||  record.noiseGUID != noise.guid )
-         {
-            error = tr( "The noise record %1 could not be read (status %2)" )
-                    .arg( noise.guid ).arg( status );
-            return false;
-         }
-
-         // An import checks the payload's model against its manifest entry
-         if ( record.modelGUID != fitted )
-         {
-            error = tr( "The noise record %1 names the model %2, not %3, the"
-                        " one it is exported for" ).arg( noise.guid )
-                    .arg( record.modelGUID ).arg( fitted );
-            return false;
-         }
-
-         if ( staged.isEmpty()  ||  record.write( staged ) != IUS_DB2::OK )
-         {
-            error = tr( "The noise record %1 could not be staged" )
-                    .arg( noise.guid );
-            return false;
-         }
-
-         run_fault = false;
-
-         if ( ! finishEntity( entity, staged, error ) )
-         {
-            // Noise that cannot be imported stays out, unless it was asked
-            // for by GUID
-            if ( ! run_fault  ||  explicit_noises.contains( noise.guid )  ||
-                 ! QFile::remove( staged ) )
-               return false;
-
-            run_fault = false;
-            warn( tr( "noise %1 is left out: %2" ).arg( noise.guid )
-                  .arg( error ) );
-            left_out_records++;
-            error.clear();
-            continue;
-         }
+         error = tr( "The noise record %1 could not be read (status %2)" )
+                 .arg( noise.guid ).arg( status );
+         return false;
       }
 
-      else
-         finishEntity( entity, QString(), error );
+      // An import checks the payload's model against its manifest entry
+      if ( record.modelGUID != fitted )
+      {
+         error = tr( "The noise record %1 names the model %2, not %3, the"
+                     " one it is exported for" ).arg( noise.guid )
+                 .arg( record.modelGUID ).arg( fitted );
+         return false;
+      }
+
+      if ( staged.isEmpty()  ||  record.write( staged ) != IUS_DB2::OK )
+      {
+         error = tr( "The noise record %1 could not be staged" )
+                 .arg( noise.guid );
+         return false;
+      }
+
+      run_fault = false;
+
+      if ( ! finishEntity( entity, staged, error ) )
+      {
+         // Noise that cannot be imported stays out, unless it was asked
+         // for by GUID
+         if ( ! run_fault  ||  explicit_noises.contains( noise.guid )  ||
+              ! QFile::remove( staged ) )
+            return false;
+
+         run_fault = false;
+         warn( tr( "noise %1 is left out: %2" ).arg( noise.guid )
+               .arg( error ) );
+         left_out_records++;
+         error.clear();
+         continue;
+      }
 
       mani.add( entity );
    }

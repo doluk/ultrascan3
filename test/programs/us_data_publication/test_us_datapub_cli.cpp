@@ -6,6 +6,7 @@
 #include "us_datapub_cli.h"
 #include "us_datapub_bundle.h"
 #include "us_datapub_manifest.h"
+#include "us_crypto.h"
 
 #if defined( Q_OS_UNIX )
 #include <fcntl.h>
@@ -20,21 +21,36 @@
 class DataPubCli : public DataPubTestEnv
 {
    protected:
-      QByteArray savedPassword;
+      QByteArray  savedPassword;
+      bool        passwordSet = false;
+      QStringList savedDB;
+      QByteArray  savedHash;
 
       void SetUp() override
       {
          DataPubTestEnv::SetUp();
 
          // A password in the environment would answer what these cases ask
+         passwordSet   = qEnvironmentVariableIsSet( "US3_DB_PASSWORD" );
          savedPassword = qgetenv( "US3_DB_PASSWORD" );
          qunsetenv( "US3_DB_PASSWORD" );
+
+         savedDB   = US_Settings::defaultDB();
+         savedHash = US_Settings::UltraScanPW();
       }
 
       void TearDown() override
       {
-         if ( ! savedPassword.isEmpty() )
+         if ( passwordSet )
             qputenv( "US3_DB_PASSWORD", savedPassword );
+         else
+            qunsetenv( "US3_DB_PASSWORD" );
+
+         if ( sandboxed )
+         {
+            US_Settings::set_defaultDB   ( savedDB   );
+            US_Settings::set_UltraScanPW( savedHash );
+         }
 
          DataPubTestEnv::TearDown();
       }
@@ -631,5 +647,81 @@ TEST_F( DataPubCli, ANonFiniteValueFailsTheExport )
    EXPECT_TRUE( errText.contains( "not a finite number" ) )
       << errText.toStdString();
    EXPECT_FALSE( QFile::exists( bundle ) );
+}
+
+/* US3_DB_PASSWORD set to nothing is a password given, and an empty one: a
+   failure (1) said once, as for an empty password file -- not a usage error
+   (2), and no prompt either.  It used to be taken for no password at all.
+*/
+TEST_F( DataPubCli, AnEmptyPasswordInTheEnvironmentFailsWithOneError )
+{
+   qputenv( "US3_DB_PASSWORD", QByteArray() );
+   ASSERT_TRUE( qEnvironmentVariableIsSet( "US3_DB_PASSWORD" ) );
+
+   const QStringList modes[] =
+   {
+      { "--mode", "export", "--source", "db", "--experiment-id", "demo_run",
+        "--dry-run", "--non-interactive" },
+      { "--mode", "export", "--source", "db", "--experiment-id", "demo_run",
+        "--dry-run" },
+      { "--mode", "import", "--target", "db", "--bundle",
+        "/nonexistent/bundle.tar.gz", "--dry-run", "--non-interactive" }
+   };
+
+   for ( const QStringList& args : modes )
+   {
+      SCOPED_TRACE( args.join( " " ).toStdString() );
+      QString errText;
+
+      EXPECT_EQ( runCapturing( args, errText ), 1 );
+      EXPECT_EQ( errText.count( "Error:" ), 1 ) << errText.toStdString();
+      EXPECT_TRUE( errText.contains( "US3_DB_PASSWORD is set but holds an"
+                                     " empty password" ) )
+         << errText.toStdString();
+      EXPECT_FALSE( errText.contains( "master password:" ) )
+         << errText.toStdString();
+   }
+}
+
+/* A wrong master password is said to be wrong.  It unlocks nothing, and the
+   server then refused a login without any password: "Access denied ...
+   (using password: NO)", which named neither the master password nor what
+   to do about it.
+*/
+TEST_F( DataPubCli, AWrongMasterPasswordIsSaidToBeWrong )
+{
+   QStringList cipher = US_Crypto::encrypt( "dbpw", "right master" );
+   QStringList entry;
+   entry << "a database" << "us3" << "us3_somewhere" << "127.0.0.1:9"
+         << cipher.at( 0 ) << cipher.at( 1 ) << "me@example.org"
+         << cipher.at( 0 ) << cipher.at( 1 ) << US_Util::new_guid();
+   US_Settings::set_defaultDB( entry );
+   US_Settings::set_UltraScanPW( QByteArray() );
+
+   EXPECT_TRUE ( US_DataPub::masterPasswordProblem( "right master" )
+                 .isEmpty() );
+   EXPECT_FALSE( US_DataPub::masterPasswordProblem( "wrong" ).isEmpty() );
+
+   qputenv( "US3_DB_PASSWORD", "wrong" );
+   QString errText;
+
+   EXPECT_EQ( runCapturing( QStringList() << "--mode" << "export"
+                            << "--source" << "db" << "--experiment-id" << runID
+                            << "--dry-run" << "--non-interactive", errText ),
+              1 );
+   EXPECT_TRUE( errText.contains( "master password is wrong" ) )
+      << errText.toStdString();
+   EXPECT_TRUE( errText.contains( "us3_somewhere" ) ) << errText.toStdString();
+   EXPECT_FALSE( errText.contains( "using password" ) )
+      << errText.toStdString();
+
+   // Against the hash the installation keeps, when it keeps one
+   US_Settings::set_UltraScanPW( QCryptographicHash::hash(
+                                 QByteArray( "right master" ),
+                                 QCryptographicHash::Sha1 ) );
+   EXPECT_TRUE( US_DataPub::masterPasswordProblem( "wrong" )
+                .contains( "not the one set" ) );
+   EXPECT_TRUE( US_DataPub::masterPasswordProblem( "right master" )
+                .isEmpty() );
 }
 #endif

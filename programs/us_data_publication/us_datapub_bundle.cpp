@@ -83,6 +83,8 @@ void US_DataPubBundle::cleanup( void )
    staging.clear();
    work   .clear();
    root   .clear();
+   staged_rels .clear();
+   staged_first.clear();
 }
 
 void US_DataPubBundle::setKeepStaging( bool a_keep )
@@ -183,7 +185,113 @@ QString US_DataPubBundle::stagedPath( const QString& relativePath )
 
    QDir().mkpath( info.absolutePath() );
 
+   if ( ! staged_first.contains( relativePath ) )
+      staged_first.insert( relativePath, staged_rels.size() );
+
+   staged_rels << relativePath;
+
    return path;
+}
+
+int US_DataPubBundle::stagedMark( void ) const
+{
+   return staged_rels.size();
+}
+
+bool US_DataPubBundle::unstageSince( int mark, QString& error )
+{
+   error.clear();
+
+   if ( mark < 0 )  mark = 0;
+
+   QString top = QDir( staging ).absolutePath();
+
+   while ( staged_rels.size() > mark )
+   {
+      QString rel = staged_rels.takeLast();
+
+      // Handed out before the mark too: not this stage's to take back
+      if ( staged_first.value( rel, -1 ) < mark )  continue;
+
+      staged_first.remove( rel );
+
+      QString path = staging + "/" + rel;
+
+      if ( QFileInfo::exists( path )  &&  ! QFile::remove( path ) )
+      {
+         error = QObject::tr( "Cannot take back the staged file %1" )
+                 .arg( rel );
+         return false;
+      }
+
+      // ... and the directories that held nothing else
+      QDir dir = QFileInfo( path ).dir();
+
+      while ( dir.absolutePath().startsWith( top + "/" )  &&
+              dir.exists()  &&  dir.isEmpty()  &&
+              dir.rmdir( dir.absolutePath() ) )
+         dir.cdUp();
+   }
+
+   return true;
+}
+
+namespace
+{
+   // A staging directory without a lock that has not changed for this long
+   // belongs to no running importer or exporter
+   const qint64 stale_unlocked_secs = 2 * 24 * 3600;
+}
+
+int US_DataPubBundle::sweepStaleStaging( void )
+{
+   QString     parent  = US_Settings::tmpDir() + "/us_datapub";
+   QStringList dirs    = QDir( parent ).entryList( QStringList( "bundle_*" ),
+                                                   QDir::Dirs
+                                                   | QDir::NoDotAndDotDot );
+   int         removed = 0;
+   QDateTime   now     = QDateTime::currentDateTimeUtc();
+
+   for ( int ii = 0; ii < dirs.size(); ii++ )
+   {
+      QString     path  = parent + "/" + dirs[ ii ];
+      QStringList locks = QDir( path ).entryList( QStringList( "*.lock" ),
+                                                  QDir::Files | QDir::Hidden );
+      bool        gone  = false;
+
+      if ( ! locks.isEmpty() )
+      {
+         // Stale only when no process that took a lock is running: the
+         // lock of a live exporter or importer, however old, is never
+         // taken over
+         bool held = false;
+
+         for ( int jj = 0; jj < locks.size()  &&  ! held; jj++ )
+         {
+            QLockFile probe( path + "/" + locks[ jj ] );
+            probe.setStaleLockTime( 0 );
+
+            if ( probe.tryLock( 0 ) )
+               probe.unlock();
+            else
+               held = true;
+         }
+
+         gone = ! held;
+      }
+
+      else
+      {
+         QDateTime changed = QFileInfo( path ).lastModified().toUTC();
+
+         gone = changed.isValid()  &&
+                changed.secsTo( now ) > stale_unlocked_secs;
+      }
+
+      if ( gone  &&  QDir( path ).removeRecursively() )  removed++;
+   }
+
+   return removed;
 }
 
 bool US_DataPubBundle::listTree( const QString& dir,
