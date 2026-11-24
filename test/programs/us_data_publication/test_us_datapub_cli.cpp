@@ -554,12 +554,21 @@ TEST_F( DataPubCli, WhatIsLeftOutIsReportedWithoutVerbose )
    EXPECT_TRUE( mani.contains( US_DataPub::Model, modelGUID ) );
    EXPECT_TRUE( mani.contains( US_DataPub::Noise, noiseGUID ) );
 
-   // A dry run says the same
+   // A dry run says the same -- and leaves out the same run: the copy,
+   // which only its staged experiment XML shows to be one.  It used to
+   // keep the copy, which comes first, and leave the original out.
    ASSERT_EQ( runCapturing( QStringList() << "--mode" << "export"
                             << "--project-guid" << projectGUID
                             << "--non-interactive" << "--dry-run",
                             errText, &outText ), 0 );
    EXPECT_TRUE( outText.contains( "left out: " ) ) << outText.toStdString();
+   EXPECT_TRUE( outText.contains( QString( "Dry run: %1 records" )
+                                  .arg( mani.total() ) ) )
+      << outText.toStdString();
+   EXPECT_TRUE( errText.contains( "Warning: run A_copy_run of the project is"
+                                  " left out: " ) ) << errText.toStdString();
+   EXPECT_FALSE( errText.contains( "run " + runID + " of the project is left"
+                                   " out" ) ) << errText.toStdString();
 
    // Nothing left out, nothing said
    QDir( US_Settings::resultDir() + "/A_copy_run" ).removeRecursively();

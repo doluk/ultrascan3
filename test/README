@@ -258,7 +258,7 @@ and a cell table, so that a run can be read and exported whole.
 
 ### 4. The import target
 
-`test_us_datapub`'s `DataPubDbImport` and `DataPubDbRules` cases write into
+`test_us_datapub`'s `DataPubDbImport`, `DataPubDbRules` and `DataPubDbExport` cases write into
 the scratch database named by `US3_TEST_DB_IMPORT_NAME`.  It needs the schema,
 the procedures, the hardware data (a lab, a rotor with a calibration, the
 centerpiece table) and the component table as above, then the same three
@@ -323,13 +323,17 @@ export QT_QPA_PLATFORM=offscreen
 ./bin/test_us_datapub --gtest_filter='DataPubDb*'
 ```
 
-On a fresh fixture `test_us_utils_db` passes 19 cases and skips 5: two that
-want a scratch database (below), the old-server case, which wants the
-fall-back database, and the two `BufferComponentSeedDb` cases, which run only
-with `US3_TEST_LIVE_DB=1` against a seeded database of their own (see the head
-of `test/utils/test_us_buffer_component_live.cpp`).  The `DataPubDb*` cases
-pass 19 on MariaDB, or 11 with the 8 import cases (`DataPubDbImport`,
-`DataPubDbRules`) skipped on MySQL 8.
+On a fresh fixture `test_us_utils_db` passes 30 cases and skips 6, on MySQL 8
+and MariaDB alike: two that want a scratch database (below), the old-server
+case, which wants the fall-back database, `US_DB2_LiveHandshake`, which wants
+a server of its own (below), and the two `BufferComponentSeedDb` cases, which
+run only with `US3_TEST_LIVE_DB=1` against a seeded database of their own (see
+the head of `test/utils/test_us_buffer_component_live.cpp`).  The
+`DataPubDb*` cases pass 25 on MariaDB (against the unpatched and the patched
+procedures alike), or 12 on MySQL 8, where the 13 cases that import into a
+database (`DataPubDbImport`, `DataPubDbRules`, `DataPubDbExport`) skip.
+These are the counts of the branch as these lines were written; run the
+suites and compare the summary lines rather than trusting a number here.
 
 The variables, and who reads them:
 
@@ -342,7 +346,7 @@ The variables, and who reads them:
 | `US3_TEST_DB_ADMIN_GUID`, `_ADMIN_PW` | an administrator's login: the tests that switch investigators, `TestUSDataDbLive`, and `DataPubDbRules`' rotor-calibration case (they skip without) |
 | `US3_TEST_DB_OTHER_ID` | the second investigator, by ID: the tests that switch investigators, `TestUSDataDbLive` |
 | `US3_TEST_DB_OTHER_GUID`, `_OTHER_PW` | the second investigator's own login: `DataPubDbRules`' case of another investigator's import (skips without) |
-| `US3_TEST_DB_IMPORT_NAME` | `test_us_datapub`'s `DataPubDbImport` and `DataPubDbRules`: a scratch database they write into |
+| `US3_TEST_DB_IMPORT_NAME` | `test_us_datapub`'s `DataPubDbImport`, `DataPubDbRules` and `DataPubDbExport`: a scratch database they write into |
 | `US3_TEST_DB_NOHANDSHAKE_HOST` | `US_DB2_LiveHandshake` in `test_us_db2_roundtrip.cpp`: host:port of a server that ignores the client's character set (see below), with a database named `US3_TEST_DB_NAME` that `US3_TEST_DB_USER` may change |
 
 `test_us_manage_data` has live cases of its own, `TestUSDataDbLive`
@@ -366,6 +370,10 @@ created and granted as in step 2, with nothing loaded).
 them an export of the fixture's run with its whole chain (skipped on a
 database that is not the fixture), and the `DataPubDbImport` cases export the
 synthetic disk store the tests build and import it into the scratch target.
+The `DataPubDbExport` cases (`test_us_datapub_export_db.cpp`) import that
+store into the scratch target and export it from there again, also through a
+disk store, and `DataPubDbFixtureExport` takes the fixture's run through a
+disk store without writing to any database (so it runs on MySQL 8 too).
 
 ### What the database tests write
 
@@ -428,9 +436,10 @@ US3_TEST_DB_NAME=us3old ./bin/test_us_datapub --gtest_filter='DataPubDb*'
 ```
 
 (MySQL 8's `mysqldump` also dumps a MariaDB database; add
-`--column-statistics=0`.)  Against it `test_us_utils_db` passes 18 and skips
-6 -- the two cases about the fast path skip, the old-server case runs -- and
-the `DataPubDb*` cases pass as against the fixture.
+`--column-statistics=0`.)  Against it `test_us_utils_db` passes 28 and skips
+8 -- the three cases about the fast path skip, the old-server case runs -- and
+the `DataPubDb*` cases pass as against the fixture (25 on MariaDB, 12 on
+MySQL 8).
 
 The cases that are about the fast path ask the server what it has and skip;
 the rest are expected to pass against either.  A partly upgraded server --

@@ -121,7 +121,8 @@ reported with the hint to leave the project out.
 
 When the runs come with a project rather than by name, a run whose own records
 do not hold together -- one of those problems, a channel without a solution,
-or an experiment, raw data or edit another run already brought into the
+a rotor calibration or centerpiece it names that is not there, a time state
+without its definitions, or an experiment, raw data or edit another run already brought into the
 bundle (a run directory copied under another name, GUIDs and all) -- is left
 out with a warning instead, and the rest of the project is exported. Its
 models and their noise go with it, unless their edit is in the bundle after
@@ -136,7 +137,19 @@ runs left out, the number of other records left out and the warnings (so do
 the manifest preview and the box of an export that failed), and the command
 line writes each warning to the error output, ``--verbose`` or not, and adds
 ``(left out: N run(s), M other record(s); see the warnings)`` to its last
-line.
+line. The preview and a ``--dry-run`` are the export without the bundle: they
+read, stage and check every record as the export does, so they list -- and
+leave out -- exactly what the export would.
+
+A run's rotor calibration survives a trip through a disk store (database,
+bundle, disk, bundle): the exported experiment XML names the calibration's
+GUID as well as its ID, and an export from disk finds it by that GUID. A
+model's variance and meniscus travel with every digit, in the manifest and in
+the model payload. A noise record a model without noise of its own is carried
+with names every such model of the bundle (``borrowedByModelGUIDs``).
+
+An export or preview stopped by a signal leaves its staging directory with a
+lock of a process that is gone; the next export or import removes it.
 
 An export also refuses to write a bundle the import would refuse, and checks
 it with the import's own rules before packing: every GUID of the manifest,
@@ -219,8 +232,10 @@ The Export tab works from the top down.
 
 **Summary** and **Details...**
   The counts of projects, experiments, raw data, edits, models and noise
-  records. **Details...** shows the manifest that would be written, without
-  copying a single byte of experimental data.
+  records. **Details...** shows the manifest that would be written, with what
+  would be left out: every record is read and checked as the export does it,
+  in a staging directory that is removed afterwards, so it takes as long as
+  the export.
 
 **Export Bundle**
   Writes the bundle. While the export runs the tab cannot be changed, the
@@ -563,7 +578,9 @@ Common options
                                 given. Without any of them an interactive run prompts
                                 on the error output without echoing; a
                                 non-interactive run stops, and so does a Windows run
-                                whose input is not a console
+                                whose input is not a console. ``US3_DB_PASSWORD``
+                                set to nothing is an empty password (exit 1), and a
+                                wrong master password is said to be wrong
 ``--dry-run``                   Decide everything, write nothing
 ``--non-interactive``           Never prompt; fail instead of asking
 ``--verbose``                   Report every step

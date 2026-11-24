@@ -123,7 +123,9 @@ class US_DataPubExporter : public QObject
           one asked for, and when any record it needs cannot be read.  When
           the runs come with the project rather than by name, a run whose
           own records do not hold together while it is staged -- a channel
-          without a solution, a payload of another GUID, an experiment XML
+          without a solution, a rotor calibration or centerpiece it names
+          that the source does not have, a time state without its field
+          definitions, a payload of another GUID, an experiment XML
           of another run ID or GUID, a spectrum that is not all numbers --
           is left out with a warning instead, and what was staged for it is
           taken back.  So is a run whose experiment, raw data or edit
