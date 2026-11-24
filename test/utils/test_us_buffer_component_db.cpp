@@ -440,13 +440,13 @@ TEST_F( BufferComponentSave, OfSeveralNewRowsWithTheDefinitionTheHighestIdIsTake
       .WillOnce( Invoke(
          [this]( const QStringList& q )
          {
-            for ( int id : { 9, 10, 3 } )
+            for ( int id : { 19, 200, 3 } )
                table.rows[ id ] = ComponentTable::Row{ q[3], q[2], q[7], q[6], q[4], q[5] };
             return IUS_DB2::OK;
          } ) );
    QString error;
-   EXPECT_EQ( 10, component.saveToDB( &db, &error ) ) << error.toStdString();
-   EXPECT_EQ( QString( "10" ), component.componentID );
+   EXPECT_EQ( 200, component.saveToDB( &db, &error ) ) << error.toStdString();
+   EXPECT_EQ( QString( "200" ), component.componentID );
 }
 
 // The rule every caller that matches a component uses
@@ -472,11 +472,12 @@ TEST( BufferComponentDefinition, MatchingIdIsTheHighestNumericIdWithTheDefinitio
    EXPECT_TRUE( US_BufferComponent::matchingID( table, want ).isEmpty() )
       << "a range that differs in its spaces is another definition";
 
-   // A QMap keeps "10" before "9": the order it is read in is not the rule
-   table.insert( "9", want );
-   table.insert( "10", want );
-   table.insert( "2", want );
-   EXPECT_EQ( QString( "10" ), US_BufferComponent::matchingID( table, want ) );
+   // A QMap keeps "19" before "200" before "3": neither its first nor its
+   // last is the rule
+   table.insert( "3", want );
+   table.insert( "200", want );
+   table.insert( "19", want );
+   EXPECT_EQ( QString( "200" ), US_BufferComponent::matchingID( table, want ) );
 }
 
 TEST( BufferComponentDefinition, ComparesWhatIsStored )
