@@ -1028,6 +1028,10 @@ bool US_DataCatalog::refreshInvestigator( void )
    // previous one describes records the user is no longer looking at
    clear();
 
+   // A caller holding positions into the listing must hear that they are
+   // gone; loadAll() would otherwise empty it without a word
+   emit listingDropped();
+
    return true;
 }
 
@@ -1892,14 +1896,18 @@ bool US_DataCatalog::loadAll( QString& error )
    // A listing read for another investigator is dropped here, and then
    // there is none: the records read now would be the new one's, hung
    // under the old one's experiments
-   refreshInvestigator();
+   const bool dropped = refreshInvestigator();
 
    // Without a listing every record would read as an orphan, and a program
    // that cleans up would offer to delete what is attached
    if ( ! listed )
    {
-      error = tr( "The experiments have not been listed, so their records"
-                  " cannot be read" );
+      error = dropped
+              ? tr( "A different investigator is selected now, so the"
+                    " experiments listed for the previous one were dropped;"
+                    " list the experiments again to read their records" )
+              : tr( "The experiments have not been listed, so their records"
+                    " cannot be read" );
       return false;
    }
 

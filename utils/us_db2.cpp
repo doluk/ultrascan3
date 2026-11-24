@@ -324,6 +324,8 @@ bool US_DB2::connect( const QString& masterPW, QString& err )
 {
    if ( connected ) return true;
 
+   resetLostHandle();
+
    QStringList defaultDB = US_Settings::defaultDB();
    if ( defaultDB.size() < 6 )
    {
@@ -454,6 +456,8 @@ bool US_DB2::connect(
         QString& err )
 {
   if ( connected ) return true;
+
+  resetLostHandle();
 
   const bool config_status = configure_ssl( err ) && request_utf8( db, err );
   if ( ! config_status ) {
@@ -600,6 +604,7 @@ bool US_DB2::beginTransaction( QString& transaction_error )
    if ( mysql_query( db, "START TRANSACTION" ) != 0 )
    {
       transaction_error = mysql_error( db );
+      noteConnectionLoss();
       return false;
    }
 
@@ -653,6 +658,7 @@ bool US_DB2::commitTransaction( QString& transaction_error )
       {
          transaction_error = mysql_error( db );
       }
+      noteConnectionLoss();
 
       // Still open as far as the caller is concerned: it rolls back next.
       return false;
@@ -692,6 +698,7 @@ bool US_DB2::rollbackTransaction( QString& transaction_error )
    if ( mysql_rollback( db ) != 0 )
    {
       transaction_error = mysql_error( db );
+      noteConnectionLoss();
       return false;
    }
 
@@ -715,6 +722,7 @@ bool US_DB2::transactionEndedEarly()
    // that has lost the transaction with it.
    if ( mysql_query( db, "DO 0" ) != 0 )
    {
+      noteConnectionLoss();
       return true;
    }
 
@@ -733,6 +741,37 @@ void US_DB2::noteStatementError()
    {
       rolledBackByDeadlock = true;
    }
+
+   noteConnectionLoss();
+}
+
+void US_DB2::noteConnectionLoss()
+{
+   // Left "connected", a caller would go on sending into a dead connection
+   // and read each failure as a problem with its own statement.
+   if ( isConnectionLoss( int( mysql_errno( db ) ) ) )
+   {
+      connected       = false;
+      connection_lost = true;
+   }
+}
+
+void US_DB2::resetLostHandle()
+{
+   if ( ! connection_lost )
+      return;
+
+   // The old handle may still hold a result, and its connection state is
+   // whatever the library left at the loss; start from a fresh one
+   if ( result )
+      mysql_free_result( result );
+   result      = NULL;
+   row         = NULL;
+   row_lengths = nullptr;
+   mysql_close( db );
+   db              = mysql_init( NULL );
+   connection_lost = false;
+   inTransaction   = false;
 }
 
 QString US_DB2::transactionEndedText() const
@@ -748,6 +787,8 @@ void US_DB2::drainResults()
 #else
 void US_DB2::drainResults()
 {
+   row_lengths = nullptr;
+
    if ( result )
       mysql_free_result( result );
 
@@ -776,6 +817,11 @@ void US_DB2::rawQuery( const QString& sqlQuery )
    //   result sets
    drainResults();
 
+   if ( refuseUnsendable( sqlQuery ) )
+   {
+      return;
+   }
+
    if ( run_utf8( db, sqlQuery ) != 0 )
    {
       error = serverErrorText();
@@ -802,6 +848,11 @@ int US_DB2::statusQuery( const QString& ){ return 0; }
 #else
 int US_DB2::statusQuery( const QString& sqlQuery )
 {
+   if ( refuseUnsendable( sqlQuery ) )
+   {
+      return db_errno;
+   }
+
    db_errno = DBERROR;
 
    this->rawQuery( sqlQuery );
@@ -880,6 +931,11 @@ void US_DB2::query( const QString& ) {}
 #else
 void US_DB2::query( const QString& sqlQuery )
 {
+   if ( refuseUnsendable( sqlQuery ) )
+   {
+      return;
+   }
+
    this->rawQuery( sqlQuery );
 
    // What the server said about the statement itself; the reads of the US3
@@ -1044,11 +1100,15 @@ bool US_DB2::next( void ){ return false; }
 #else
 bool US_DB2::next( void )
 { 
-   row = NULL;
+   row         = NULL;
+   row_lengths = nullptr;
    if ( result )
    {
       if ( ( row = mysql_fetch_row( result ) ) != NULL )
+      {
+         row_lengths = mysql_fetch_lengths( result );
          return true;
+      }
    }
 
    return false;
@@ -1061,7 +1121,15 @@ QVariant US_DB2::value( unsigned ){ return QVariant(); }
 QVariant US_DB2::value( unsigned index )
 {
    if ( row && ( index < mysql_field_count( db ) ) )
+   {
+      // A column is not a C string: it may hold NUL, and only its length
+      // says where it ends.  A NULL column is a null string, as it was.
+      if ( row[ index ] == NULL )
+         return QVariant( QString() );
+      if ( row_lengths != nullptr )
+         return QVariant( QString::fromUtf8( row[ index ], int( row_lengths[ index ] ) ) );
       return QVariant( QString::fromUtf8( row[ index ] ) );
+   }
 
    return QVariant();
 }
@@ -1094,7 +1162,26 @@ int US_DB2::writeBlobToDB( const QString& filename,
       return refuseArguments( QStringList() << procedure );
    }
 
-   // First let's read the file
+   if ( tableID == 0 )
+   {
+      error = QString( "writeBlob: don't know which record data belongs to in " ) + filename;
+      db_errno = DBERROR;
+      return DBERROR;
+   }
+
+   // The text around the data is UTF-8 like every other query; its length
+   // in bytes is not its length in characters once the guid or password
+   // holds anything beyond ASCII.  The escaped data has no NUL left in it,
+   // and _binary keeps the server from reading it as UTF-8 text.
+   const QString queryPart1 = "CALL " + procedure + "('" + escapeLiteral( guid ) + "', '" + escapeLiteral( userPW ) + "', " +
+                              QString::number( tableID ) + ", _binary'";
+   if ( refuseUnsendable( queryPart1 ) )
+   {
+      return db_errno;
+   }
+   const QByteArray stmtHead = queryPart1.toUtf8();
+   const int        stmtTail = 4 + 32 + 2;   // "', '", the MD5 in hex, "')"
+
    QFile fin( filename );
 
    if ( ! fin.open( QIODevice::ReadOnly ) )
@@ -1102,6 +1189,41 @@ int US_DB2::writeBlobToDB( const QString& filename,
       error = QString( "writeBlob: cannot open file " ) + filename;
       db_errno = DBERROR;
       return DBERROR;
+   }
+
+   // The server takes a statement of at most max_allowed_packet bytes, and
+   // answers a larger one by closing the connection.  So a file that cannot
+   // fit is refused here, before it is read, and the statement is checked
+   // again as it is built: escaping makes it longer.  The limit also keeps
+   // every size below in range of an int, since the server's own maximum is
+   // 1 GiB.
+   const qint64 fileSize = fin.size();
+   const qint64 packet   = maxAllowedPacket();
+   if ( packet <= 0 )
+   {
+      fin.close();
+      error    = QString( "writeBlob: the server's max_allowed_packet could not be read, so nothing was sent" ) +
+                 ( error.isEmpty() ? QString() : ": " + error );
+      db_errno = DBERROR;
+      return DBERROR;
+   }
+   const qint64 limit    = qMin( packet, qint64( 0x40000000 ) );
+   const auto   tooLarge = [ & ]( qint64 statement )
+   {
+      error = QString( "writeBlob: %1 is %2 bytes, and the statement that sends it would be at least %3 bytes; "
+                       "the server accepts statements of at most %4 bytes (max_allowed_packet), so nothing "
+                       "was sent.  The database administrator can raise max_allowed_packet." )
+                 .arg( filename ).arg( fileSize ).arg( statement ).arg( packet );
+      db_errno     = DBERROR;
+      server_errno = 0;
+      return DBERROR;
+   };
+
+   // A statement of exactly the limit is refused by the server as well
+   if ( stmtHead.size() + fileSize + stmtTail >= limit )
+   {
+      fin.close();
+      return tooLarge( stmtHead.size() + fileSize + stmtTail );
    }
 
    QByteArray blobData = fin.readAll();
@@ -1114,31 +1236,38 @@ int US_DB2::writeBlobToDB( const QString& filename,
       return DBERROR;
    }
 
-   if ( tableID == 0 )
-   {
-      error = QString( "writeBlob: don't know which record data belongs to in " ) + filename;
-      db_errno = DBERROR;
-      return DBERROR;
-   }
-
-   // Create an escaped version of the data
-   QByteArray blobData_escaped;
-   ulong escaped_length = mysqlEscapeString( blobData_escaped, blobData, blobData.size() );
-
    // Calculate a checksum
-   QByteArray checksum = 
+   const QByteArray checksum =
         QCryptographicHash::hash( blobData, QCryptographicHash::Md5 ).toHex();
 
-   // Now let's start building the query
-   // The text around the data is UTF-8 like every other query; its length
-   // in bytes is not its length in characters once the guid or password
-   // holds anything beyond ASCII.  The escaped data has no NUL left in it,
-   // and _binary keeps the server from reading it as UTF-8 text.
-   const QString queryPart1 = "CALL " + procedure + "('" + escapeLiteral( guid ) + "', '" + escapeLiteral( userPW ) + "', " +
-                              QString::number( tableID ) + ", _binary'";
-   QByteArray sqlQuery = queryPart1.toUtf8();
-   sqlQuery.reserve( sqlQuery.size() + int( escaped_length ) + checksum.size() + 6 );
-   sqlQuery.append( blobData_escaped.constData(), int( escaped_length ) );
+   // Escape the data straight into the statement, a piece at a time, so
+   // that only the data and the statement are held at once -- not a second
+   // escaped copy as well, nor room for every byte to be escaped.  The
+   // connection's character set is utf8mb4, in which no byte of a
+   // multi-byte character is one that needs escaping, so where the pieces
+   // are cut does not change what the server reads.
+   const int  piece = 4 * 1024 * 1024;
+   QByteArray sqlQuery;
+   const qint64 expected = qint64( stmtHead.size() ) + blobData.size() + blobData.size() / 16 + stmtTail;
+   sqlQuery.reserve( int( qMin( limit, expected ) + 2 * piece + 1 ) );
+   sqlQuery.append( stmtHead );
+
+   for ( int offset = 0; offset < blobData.size(); offset += piece )
+   {
+      const int length = qMin( piece, blobData.size() - offset );
+      const int at     = sqlQuery.size();
+      sqlQuery.resize( at + 2 * length + 1 );
+      const unsigned long written = mysql_real_escape_string( db, sqlQuery.data() + at, blobData.constData() + offset,
+                                                              static_cast< unsigned long >( length ) );
+      sqlQuery.resize( at + int( written ) );
+
+      if ( qint64( sqlQuery.size() ) + stmtTail >= limit )
+      {
+         return tooLarge( qint64( sqlQuery.size() ) + stmtTail );
+      }
+   }
+   blobData = QByteArray();
+
    sqlQuery.append( "', '" );
    sqlQuery.append( checksum );
    sqlQuery.append( "')" );
@@ -1148,7 +1277,7 @@ int US_DB2::writeBlobToDB( const QString& filename,
 
    if ( mysql_real_query( db, sqlQuery.constData(), static_cast< unsigned long >( sqlQuery.size() ) ) != 0 )
    {
-     error = serverErrorText(); // ALEXEY: writing huge blob, MySql server has gone away...
+     error = serverErrorText();
      noteStatementError();
 
      db_errno = DBERROR;
@@ -1156,10 +1285,20 @@ int US_DB2::writeBlobToDB( const QString& filename,
    }
 
    result   = mysql_store_result( db );
-   row      = mysql_fetch_row( result );
+   row      = result != NULL ? mysql_fetch_row( result ) : NULL;
+   if ( row == NULL || row[ 0 ] == NULL )
+   {
+      error = QString( "writeBlob: %1 returned no status" ).arg( procedure );
+      if ( mysql_errno( db ) != 0 )
+      {
+         error += ": " + serverErrorText();
+         noteStatementError();
+      }
+      db_errno = DBERROR;
+      return DBERROR;
+   }
    db_errno = atoi( row[ 0 ] );
 
-//qDebug() << "Debug " << lastDebug();
    mysql_free_result( result );
    result = NULL;
 
@@ -1180,6 +1319,84 @@ int US_DB2::writeBlobToDB( const QString& filename,
    return db_errno;
 }
 #endif
+
+#ifdef NO_DB
+qint64 US_DB2::maxAllowedPacket() { return 0; }
+#else
+qint64 US_DB2::maxAllowedPacket()
+{
+   error.clear();
+   rawQuery( "SELECT @@max_allowed_packet" );
+   qint64 packet = 0;
+   if ( result != NULL )
+   {
+      MYSQL_ROW limit = mysql_fetch_row( result );
+      if ( limit != NULL && limit[ 0 ] != NULL )
+         packet = QByteArray( limit[ 0 ] ).toLongLong();
+      mysql_free_result( result );
+      result = NULL;
+   }
+   return packet;
+}
+#endif
+
+bool US_DB2::isConnectionLoss( int serverErrno )
+{
+   // The errors after which the connection is gone: the client library has
+   // closed its end, and every later statement fails with 2006
+   switch ( serverErrno )
+   {
+      case 2006:   // CR_SERVER_GONE_ERROR
+      case 2013:   // CR_SERVER_LOST
+      case 2026:   // CR_SSL_CONNECTION_ERROR: a TLS connection the server closed
+      case 2027:   // CR_MALFORMED_PACKET: the stream can no longer be read
+      case 2055:   // CR_SERVER_LOST_EXTENDED (MySQL's client library)
+      case 5013:   // CR_ERR_NET_READ (MariaDB Connector/C)
+      case 5014:   // CR_ERR_NET_WRITE (MariaDB Connector/C)
+      case 1053:   // ER_SERVER_SHUTDOWN
+      case 1153:   // ER_NET_PACKET_TOO_LARGE: the server closes the connection
+      case 1927:   // ER_CONNECTION_KILLED (MariaDB)
+      case 4031:   // ER_CLIENT_INTERACTION_TIMEOUT (MySQL 8)
+         return true;
+      default:
+         return false;
+   }
+}
+
+QString US_DB2::loneSurrogateProblem( const QString& text )
+{
+   for ( int ii = 0; ii < text.size(); ii++ )
+   {
+      if ( text[ ii ].isHighSurrogate() && ii + 1 < text.size() && text[ ii + 1 ].isLowSurrogate() )
+      {
+         ii++;
+         continue;
+      }
+
+      if ( text[ ii ].isSurrogate() )
+      {
+         return QObject::tr( "The text holds half of a UTF-16 surrogate pair (U+%1) on its own, which is not a "
+                             "character and cannot be sent to the database as UTF-8, so nothing was sent.  The text "
+                             "was probably cut in the middle of a character, or read from a malformed file." )
+            .arg( QString::number( text[ ii ].unicode(), 16 ).toUpper() );
+      }
+   }
+   return QString();
+}
+
+bool US_DB2::refuseUnsendable( const QString& statement )
+{
+   const QString problem = loneSurrogateProblem( statement );
+   if ( problem.isEmpty() )
+      return false;
+
+   // Nothing is sent, so clear what the last query left for next() to read
+   drainResults();
+   db_errno     = DBERROR;
+   server_errno = 0;
+   error        = problem;
+   return true;
+}
 
 int US_DB2::writeBlobFile( const QString& filename, const QByteArray& data, QString& error )
 {

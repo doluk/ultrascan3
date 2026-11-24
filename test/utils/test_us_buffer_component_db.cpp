@@ -6,6 +6,8 @@
 #include <QUuid>
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
 
 using ::testing::_;
 using ::testing::AtLeast;
@@ -400,6 +402,82 @@ TEST_F( BufferComponentSave, SavedCoefficientsReadBackUnchanged )
       EXPECT_DOUBLE_EQ( component.visc_coeff[i], loaded.visc_coeff[i] );
    }
    EXPECT_EQ( QString( "0 to 9" ), loaded.range );
+}
+
+// "nan" or "inf" in the table helps no one: the component is refused
+// before anything is written
+TEST_F( BufferComponentSave, ACoefficientThatIsNotFiniteIsRefusedBeforeTheCreate )
+{
+   table.add( 1, "Cadmium chloride" );
+   const double bad[]{ std::nan( "" ), std::numeric_limits< double >::infinity(),
+                       -std::numeric_limits< double >::infinity() };
+   for ( double value : bad )
+   {
+      for ( bool density : { true, false } )
+      {
+         SCOPED_TRACE( density );
+         US_BufferComponent broken = component;
+         ( density ? broken.dens_coeff : broken.visc_coeff )[ 4 ] = value;
+         EXPECT_CALL( db, statusQuery( ::testing::Matcher<const QStringList&>( _ ) ) ).Times( 0 );
+         QString error;
+         EXPECT_EQ( -1, broken.saveToDB( &db, &error ) );
+         EXPECT_EQ( QString( "73" ), broken.componentID );
+         EXPECT_TRUE( error.contains( "not a finite number" ) ) << error.toStdString();
+         EXPECT_TRUE( error.contains( density ? "density" : "viscosity" ) ) << error.toStdString();
+         EXPECT_TRUE( table.created.isEmpty() );
+         EXPECT_EQ( 1, table.rows.size() );
+         ::testing::Mock::VerifyAndClearExpectations( &db );
+         table.install( db );
+      }
+   }
+}
+
+// Two clients creating the same component at once both find the same row
+TEST_F( BufferComponentSave, OfSeveralNewRowsWithTheDefinitionTheHighestIdIsTaken )
+{
+   table.add( 1, "Cadmium chloride" );
+   EXPECT_CALL( db, statusQuery( ::testing::Matcher<const QStringList&>( _ ) ) )
+      .WillOnce( Invoke(
+         [this]( const QStringList& q )
+         {
+            for ( int id : { 19, 200, 3 } )
+               table.rows[ id ] = ComponentTable::Row{ q[3], q[2], q[7], q[6], q[4], q[5] };
+            return IUS_DB2::OK;
+         } ) );
+   QString error;
+   EXPECT_EQ( 200, component.saveToDB( &db, &error ) ) << error.toStdString();
+   EXPECT_EQ( QString( "200" ), component.componentID );
+}
+
+// The rule every caller that matches a component uses
+TEST( BufferComponentDefinition, MatchingIdIsTheHighestNumericIdWithTheDefinition )
+{
+   US_BufferComponent want;
+   want.name  = "Tris";
+   want.unit  = "mM";
+   want.range = "0-1 M";
+   want.dens_coeff[0] = 0.99820;
+
+   US_BufferComponent other = want;
+   other.name = "Tris base";
+
+   US_BufferComponent spaced = want;
+   spaced.range = "0-1 M ";
+
+   QMap< QString, US_BufferComponent > table;
+   EXPECT_TRUE( US_BufferComponent::matchingID( table, want ).isEmpty() );
+
+   table.insert( "100", other );
+   table.insert( "7", spaced );
+   EXPECT_TRUE( US_BufferComponent::matchingID( table, want ).isEmpty() )
+      << "a range that differs in its spaces is another definition";
+
+   // A QMap keeps "19" before "200" before "3": neither its first nor its
+   // last is the rule
+   table.insert( "3", want );
+   table.insert( "200", want );
+   table.insert( "19", want );
+   EXPECT_EQ( QString( "200" ), US_BufferComponent::matchingID( table, want ) );
 }
 
 TEST( BufferComponentDefinition, ComparesWhatIsStored )

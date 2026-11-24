@@ -18,6 +18,7 @@ static QString exact_number( double value )
 #include "us_datafiles.h"
 #include "us_util.h"
 #include "us_eprofile.h"
+#include <cmath>
 
 bool US_BufferComponent::getAllFromDB( const QString& masterPW, QMap<QString, US_BufferComponent>& componentList, QString* error )
 {
@@ -307,6 +308,30 @@ bool US_BufferComponent::sameDefinition( const US_BufferComponent& other ) const
    return true;
 }
 
+QString US_BufferComponent::matchingID( const QMap< QString, US_BufferComponent >& table,
+                                       const US_BufferComponent&                  want )
+{
+   QString found;
+   qint64  foundNumber = 0;
+   for ( auto it = table.constBegin(); it != table.constEnd(); ++it )
+   {
+      if ( !it.value().sameDefinition( want ) )
+      {
+         continue;
+      }
+
+      // A key that is not a number sorts below every one that is
+      bool         numeric = false;
+      const qint64 number  = it.key().toLongLong( &numeric );
+      if ( found.isEmpty() || ( numeric && number > foundNumber ) )
+      {
+         found       = it.key();
+         foundNumber = numeric ? number : 0;
+      }
+   }
+   return found;
+}
+
 bool US_BufferComponent::listIDs( IUS_DB2* db, QStringList& ids, QString* error )
 {
    ids.clear();
@@ -335,6 +360,22 @@ bool US_BufferComponent::listIDs( IUS_DB2* db, QStringList& ids, QString* error 
 
 int US_BufferComponent::saveToDB( IUS_DB2* db, QString* error )
 {
+   // "nan" or "inf" would be stored, and then neither parsed nor found again
+   for ( int i = 0; i < 6; i++ )
+   {
+      if ( !std::isfinite( dens_coeff[i] ) || !std::isfinite( visc_coeff[i] ) )
+      {
+         if ( error != nullptr )
+         {
+            *error = QObject::tr( "The buffer component \"%1\" has a %2 coefficient that is not a finite number (%3); "
+                                  "nothing was written" )
+                        .arg( name, std::isfinite( dens_coeff[i] ) ? QObject::tr( "viscosity" ) : QObject::tr( "density" ) )
+                        .arg( std::isfinite( dens_coeff[i] ) ? visc_coeff[i] : dens_coeff[i] );
+         }
+         return -1;
+      }
+   }
+
    // Six space-separated coefficients per field, as getInfoFromDB reads them.
    QStringList density;
    QStringList viscosity;
@@ -382,21 +423,23 @@ int US_BufferComponent::saveToDB( IUS_DB2* db, QString* error )
       return -1;
    }
 
-   int found = -1;
+   // The new rows, and of those the one matchingID() takes
+   QMap< QString, US_BufferComponent > fresh;
    for ( const QString& id : after )
    {
-      if ( before.contains( id ) || id.toInt() <= found )
+      if ( before.contains( id ) )
       {
          continue;
       }
 
       US_BufferComponent created;
       created.componentID = id;
-      if ( created.getInfoFromDB( db ) && created.sameDefinition( *this ) )
+      if ( created.getInfoFromDB( db ) )
       {
-         found = id.toInt();
+         fresh.insert( id, created );
       }
    }
+   const int found = matchingID( fresh, *this ).toInt();
 
    if ( found < 1 )
    {

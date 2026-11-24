@@ -401,7 +401,16 @@ against one database:
   `create_buffer_component` after setting the connection's
   `LAST_INSERT_ID()` to an existing component, and once with a gap in the
   IDs; it passes against the old procedure (which inserts at `COUNT(*)+1`)
-  and the patched one (`MAX+1`).
+  and the patched one (`MAX+1`).  It also checks that a component with a
+  coefficient that is not finite writes no row.
+- `test_us_db2_limits_live.cpp` creates a procedure of its own that checks a
+  blob's MD5, and sends it blobs of about `@@max_allowed_packet` bytes (16 MiB
+  on MariaDB 10.11 and 64 MiB on MySQL 8 by default, so the test holds a few
+  times that in memory): one just below the limit must arrive whole, one at
+  the limit must be refused before it is sent.  It also reads a column with
+  a NUL in it, refuses text with a lone UTF-16 surrogate, and kills its own
+  connection from a second one (`KILL`, which a user may do to its own
+  connections) to check that a dropped connection is no longer "connected".
 - `test_us_data_catalog_db.cpp` (`TestUSDataCatalogDbNoise`) adds a second
   experiment, a global-fit model on the UNASSIGNED edit (`editedDataID` 1,
   inserted when the schema lacks it) and noise recorded across experiments.
