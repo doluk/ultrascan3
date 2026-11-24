@@ -25,6 +25,7 @@
 #include <QtCore>
 
 #include "datapub_test_env.h"
+#include "datapub_borrow_scenario.h"
 
 #include "us_datapub_catalog.h"
 #include "us_datapub_export.h"
@@ -5123,4 +5124,63 @@ TEST_F( DataPubDbImport, ABorrowingModelKeepsItsNoiseThroughTheDatabase )
    US_DataPubEntity back;
    ASSERT_TRUE( again.manifest().entity( US_DataPub::Noise, noiseGUID, back ) );
    EXPECT_EQ( back.attrs.value( "borrowedByModelGUIDs" ), laterGUID );
+}
+
+/* Several noise records of a type in one edit and models that borrow them,
+   or none: imported into a database -- the records dated by the server's
+   clock, to the second -- and exported from it again, every noise record
+   names the borrowers it had in the source. */
+TEST_F( DataPubDbImport, EveryBorrowingSurvivesTheDatabase )
+{
+   DataPubBorrowScenario scenario;
+   scenario.write( US_Settings::dataDir() + "/models",
+                   US_Settings::dataDir() + "/noises", runID, editGUID,
+                   noiseGUID );
+
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection;
+   selection.fromDb = false;
+   selection.scope  = US_DataPub::ScopeNoise;
+   selection.runIDs << runID;
+
+   QString bundle = root + "/several.tar.gz";
+   QString error;
+   ASSERT_TRUE( exporter.exportBundle( selection, bundle, error ) )
+      << error.toStdString();
+   ASSERT_EQ( DataPubBorrowScenario::text(
+                 DataPubBorrowScenario::borrowers( exporter.manifest() ) ),
+              DataPubBorrowScenario::text( scenario.expected() ) );
+
+   US_DataPubImporter::Options options;
+   options.target       = US_DataPub::TargetDb;
+   options.dbPassword   = master;
+   options.verifyHashes = true;
+   options.dryRun       = false;
+   options.policy       = US_DataPub::PolicyRename;
+
+   US_DataPubImporter importer;
+   ASSERT_TRUE( importer.inspect( bundle, error ) ) << error.toStdString();
+   ASSERT_TRUE( importer.runImport( options, error ) )
+      << error.toStdString() << "\n" << importer.log().join( "\n" ).toStdString();
+
+   QString newRun;
+
+   for ( const US_DataPubImporter::Result& result : importer.results() )
+      if ( result.type == US_DataPub::Experiment )  newRun = result.targetName;
+
+   ASSERT_FALSE( newRun.isEmpty() );
+
+   US_DataPubExporter            again;
+   US_DataPubExporter::Selection fromDb;
+   fromDb.fromDb     = true;
+   fromDb.dbPassword = master;
+   fromDb.scope      = US_DataPub::ScopeNoise;
+   fromDb.runIDs << newRun;
+   ASSERT_TRUE( again.exportBundle( fromDb, root + "/again.tar.gz", error ) )
+      << error.toStdString() << "\n" << again.log().join( "\n" ).toStdString();
+
+   EXPECT_EQ( DataPubBorrowScenario::text(
+                 DataPubBorrowScenario::borrowers( again.manifest() ) ),
+              DataPubBorrowScenario::text( scenario.expected() ) );
+   EXPECT_TRUE( again.manifest().contains( US_DataPub::Model, scenario.m0 ) );
 }

@@ -14,6 +14,8 @@
 #include "us_datapub_export.h"
 
 #include <functional>
+#include <QElapsedTimer>
+#include <QThread>
 
 #include "us_settings.h"
 #include "us_util.h"
@@ -71,6 +73,7 @@ US_DataPubImporter::US_DataPubImporter( QObject* parent ) : QObject( parent )
    step_count  = 0;
    user_level  = -1;
    catalog_version = -1;
+   clock_local     = false;
 }
 
 // ------------------------------------------------------ the import tab state
@@ -3955,6 +3958,7 @@ bool US_DataPubImporter::runImport( const Options& options, QString& error )
    tcomp_ids.clear();
    user_level = -1;
    catalog_version = -1;
+   clock_local     = false;
    fresh_guids.clear();
    cal_refused.clear();
    shared_ok.clear();
@@ -4027,62 +4031,112 @@ bool US_DataPubImporter::runImport( const Options& options, QString& error )
 
    emit steps( mani.total() );
 
-   // A model that borrows a noise record of its edit is told to do so only
-   // by its time stamp: it is not older than the noise.  So it is written
-   // after the noise, whatever the order of the record types.
-   QSet< QString > borrowers = borrowingModels();
-   bool            deferred  = false;
+   // Which noise a model with none of its own was run with is told by time
+   // stamps only (US_DataPubCatalog::noiseBefore()): the newest noise of
+   // each type of its edit that is not newer than the model.  So the
+   // models without noise of their own and the noise records of the same
+   // edit are written in an order that gives every such model the noise
+   // the bundle says it borrows, and none where it borrows none.
+   QString          seqProblem;
+   QList< FitStep > sequence = fitSequence( seqProblem );
+   QSet< QString >  sequenced;
+
+   if ( ! seqProblem.isEmpty() )  note( seqProblem );
+
+   for ( int jj = 0; jj < sequence.size(); jj++ )
+      if ( ! sequence[ jj ].isNoise )  sequenced << sequence[ jj ].entity.guid;
+
+   auto writeOne = [ & ]( const US_DataPubEntity& entity ) -> bool
+   {
+      if ( importEntity( entity, error )  &&  lookup_error.isEmpty() )
+         return true;
+
+      if ( error.isEmpty() )  error = lookup_error;
+
+      error = tr( "%1: %2" ).arg( entity.label() ).arg( error );
+      abortWrite( error );
+      closeTarget();
+      return false;
+   };
 
    auto writeAll = [ & ]( const QList< US_DataPubEntity >& entities ) -> bool
    {
       for ( int jj = 0; jj < entities.size(); jj++ )
+         if ( ! writeOne( entities[ jj ] ) )  return false;
+
+      return true;
+   };
+
+   // The sequence, with the target's clock moved on wherever two records
+   // have to differ in their time stamps
+   auto writeSequence = [ & ]( void ) -> bool
+   {
+      QHash< QString, qint64 > modelAt;     // edit -> last model's second
+      QHash< QString, qint64 > noiseAt;     // edit/type -> last noise's
+      bool                     timed = ! opts.dryRun;
+
+      for ( int jj = 0; jj < sequence.size(); jj++ )
       {
-         if ( importEntity( entities[ jj ], error )  &&
-              lookup_error.isEmpty() )
-            continue;
+         const FitStep& step = sequence[ jj ];
+         QString        key  = step.editGUID + "/" + step.noiseType;
 
-         if ( error.isEmpty() )  error = lookup_error;
+         if ( timed  &&  step.isNoise )
+         {
+            qint64 after = modelAt.value( step.editGUID, -1 );
 
-         error = tr( "%1: %2" ).arg( entities[ jj ].label() ).arg( error );
-         abortWrite( error );
-         closeTarget();
-         return false;
+            if ( step.borrowed )
+               after = qMax( after, noiseAt.value( key, -1 ) );
+
+            if ( after >= 0  &&  ! waitForClock( after, error ) )
+            {
+               abortWrite( error );
+               closeTarget();
+               return false;
+            }
+         }
+
+         if ( ! writeOne( step.entity ) )  return false;
+
+         if ( ! timed  ||  ! step.timed )  continue;
+
+         qint64 now = targetSecond();
+
+         if ( step.isNoise )
+            noiseAt.insert( key, now );
+         else
+            modelAt.insert( step.editGUID, now );
       }
 
       return true;
    };
 
-   // The borrowing models of the bundle, in its order
-   QList< US_DataPubEntity > later;
-   QList< US_DataPubEntity > models = mani.section( US_DataPub::Model );
-
-   for ( int jj = 0; jj < models.size(); jj++ )
-      if ( borrowers.contains( models[ jj ].guid ) )  later << models[ jj ];
+   bool sequenceDone = false;
 
    // The manifest lists the records in the declared section order; they are
    // replayed in the order that satisfies the target's own dependencies.
    for ( int ii = 0; ii < types.size(); ii++ )
    {
+      if ( types[ ii ] == US_DataPub::Noise )
+      {  // Every noise record is in the sequence
+         if ( ! writeSequence() )  return false;
+
+         sequenceDone = true;
+         continue;
+      }
+
       QList< US_DataPubEntity > entities = mani.section( types[ ii ] );
 
       if ( types[ ii ] == US_DataPub::Model )
       {
          for ( int jj = entities.size() - 1; jj >= 0; jj-- )
-            if ( borrowers.contains( entities[ jj ].guid ) )
+            if ( sequenced.contains( entities[ jj ].guid ) )
                entities.removeAt( jj );
       }
 
       if ( ! writeAll( entities ) )  return false;
-
-      if ( types[ ii ] == US_DataPub::Noise  &&  ! deferred )
-      {
-         deferred = true;
-
-         if ( ! writeAll( later ) )  return false;
-      }
    }
 
-   if ( ! deferred  &&  ! writeAll( later ) )  return false;
+   if ( ! sequenceDone  &&  ! writeSequence() )  return false;
 
    if ( ! commitWrite( error ) )
    {
@@ -4113,31 +4167,293 @@ bool US_DataPubImporter::runImport( const Options& options, QString& error )
    return true;
 }
 
-/* The models of the bundle that borrow one of its noise records: those a
-   noise record names in borrowedByModelGUIDs (space-separated; an older
-   bundle's borrowedByModelGUID names one), apart from a model a noise
-   record of the bundle was fitted to, which has to be there before it.
+/* The order the models without noise of their own and the noise records of
+   their edits are written in.
+
+   A catalog tells which noise such a model was run with by time stamps
+   alone (US_DataPubCatalog::noiseBefore()): of each noise type, the newest
+   record of the model's edit that is not newer than the model.  The bundle
+   says which record that was (borrowedByModelGUIDs, or an older bundle's
+   borrowedByModelGUID); a model no record names borrowed none.  So, edit by
+   edit, a model is written when the noise last written of each type is the
+   one it borrows of that type (none yet, where it borrows none), and a
+   noise record is written only when no model still to come needs the
+   record it follows.  Where a model has to be older than a noise record
+   written after it, or a borrowed record newer than the one of its type
+   before it, the caller moves the target's clock on in between.
+
+   Every noise record of the bundle is in the sequence; models are only
+   those of an edit with noise in the bundle that no noise record of the
+   bundle was fitted to.  A bundle whose borrowing cannot be met (two
+   records of one type borrowed by one model, or orders that exclude each
+   other) gets the rest written as it comes, noise first, and \a problem
+   says so.
 */
-QSet< QString > US_DataPubImporter::borrowingModels( void ) const
+QList< US_DataPubImporter::FitStep > US_DataPubImporter::fitSequence(
+      QString& problem ) const
 {
-   QSet< QString >           found;
-   QSet< QString >           fitted;
+   QList< FitStep >          steps;
    QList< US_DataPubEntity > noises = mani.section( US_DataPub::Noise );
+   QList< US_DataPubEntity > models = mani.section( US_DataPub::Model );
+   QHash< QString, QString > editOf;                 // model GUID -> edit
+   QSet< QString >           fitted;
+   QStringList               edits;                  // in bundle order
+   QStringList               trouble;
+
+   problem.clear();
+
+   for ( int ii = 0; ii < models.size(); ii++ )
+      editOf.insert( models[ ii ].guid,
+                     models[ ii ].depend( US_DataPub::EditedData ) );
+
+   for ( int ii = 0; ii < noises.size(); ii++ )
+      fitted << noises[ ii ].depend( US_DataPub::Model );
+
+   auto noiseEdit = [ & ]( const US_DataPubEntity& noise ) -> QString
+   {
+      QString edit = editOf.value( noise.depend( US_DataPub::Model ) );
+      return edit.isEmpty() ? noise.depend( US_DataPub::EditedData ) : edit;
+   };
 
    for ( int ii = 0; ii < noises.size(); ii++ )
    {
-      fitted << noises[ ii ].depend( US_DataPub::Model );
+      QString edit = noiseEdit( noises[ ii ] );
 
-      QStringList named =
-         ( noises[ ii ].attrs.value( "borrowedByModelGUIDs" ) + " "
-           + noises[ ii ].attrs.value( "borrowedByModelGUID" ) )
-         .split( ' ', Qt::SkipEmptyParts );
-
-      for ( const QString& guid : named )
-         if ( mani.contains( US_DataPub::Model, guid ) )  found << guid;
+      if ( ! edits.contains( edit ) )  edits << edit;
    }
 
-   return found - fitted;
+   for ( int ee = 0; ee < edits.size(); ee++ )
+   {
+      const QString&                     edit = edits[ ee ];
+      QList< US_DataPubEntity >          pendNoise;
+      QList< US_DataPubEntity >          pendModel;
+      QHash< QString, QString >          typeOf;     // noise GUID -> type
+      QHash< QString, QHash< QString, QString > > wants;  // model -> type -> noise
+      QSet< QString >                    borrowed;   // noise GUIDs
+      QSet< QString >                    types;
+      QHash< QString, int >              perType;
+      QHash< QString, QString >          cur;        // type -> last written
+
+      for ( int ii = 0; ii < noises.size(); ii++ )
+      {
+         if ( noiseEdit( noises[ ii ] ) != edit )  continue;
+
+         QString type = noises[ ii ].attrs.value( "noiseType" ).trimmed()
+                        .toLower().left( 2 );
+
+         if ( type.isEmpty() )  type = "ti";
+
+         pendNoise << noises[ ii ];
+         typeOf.insert( noises[ ii ].guid, type );
+         types << type;
+         perType[ type ]++;
+      }
+
+      for ( int ii = 0; ii < models.size(); ii++ )
+         if ( editOf.value( models[ ii ].guid ) == edit  &&
+              ! fitted.contains( models[ ii ].guid ) )
+            pendModel << models[ ii ];
+
+      for ( int ii = 0; ii < pendNoise.size(); ii++ )
+      {
+         const US_DataPubEntity& noise = pendNoise[ ii ];
+         QString                 type  = typeOf.value( noise.guid );
+         QStringList             named =
+            ( noise.attrs.value( "borrowedByModelGUIDs" ) + " "
+              + noise.attrs.value( "borrowedByModelGUID" ) )
+            .split( ' ', Qt::SkipEmptyParts );
+
+         for ( const QString& guid : named )
+         {
+            if ( fitted.contains( guid )  ||  editOf.value( guid ) != edit  ||
+                 ! editOf.contains( guid ) )
+               continue;
+
+            QString had = wants[ guid ].value( type );
+
+            if ( ! had.isEmpty()  &&  had != noise.guid )
+            {
+               trouble << tr( "model %1 is named as the borrower of two %2"
+                              " noise records" ).arg( guid ).arg( type );
+               continue;
+            }
+
+            wants[ guid ].insert( type, noise.guid );
+            borrowed << noise.guid;
+         }
+      }
+
+      // Only an edit with a model of its own noise to tell, or with more
+      // than one record of a type, needs the clock
+      bool timed = ! pendModel.isEmpty();
+
+      for ( auto it = perType.constBegin(); it != perType.constEnd(); ++it )
+         if ( it.value() > 1  &&  ! borrowed.isEmpty() )  timed = true;
+
+      auto want = [ & ]( const QString& model, const QString& type )
+      {
+         return wants.value( model ).value( type );
+      };
+
+      auto ready = [ & ]( const QString& model )
+      {
+         for ( const QString& type : types )
+            if ( want( model, type ) != cur.value( type ) )  return false;
+
+         return true;
+      };
+
+      auto addStep = [ & ]( const US_DataPubEntity& entity, bool isNoise )
+      {
+         FitStep step;
+         step.entity    = entity;
+         step.editGUID  = edit;
+         step.isNoise   = isNoise;
+         step.noiseType = isNoise ? typeOf.value( entity.guid ) : QString();
+         step.borrowed  = isNoise  &&  borrowed.contains( entity.guid );
+         step.timed     = timed;
+         steps << step;
+      };
+
+      while ( ! pendNoise.isEmpty()  ||  ! pendModel.isEmpty() )
+      {
+         // Every model whose noise is the last written
+         for ( int ii = 0; ii < pendModel.size(); )
+         {
+            if ( ready( pendModel[ ii ].guid ) )
+            {
+               addStep( pendModel[ ii ], false );
+               pendModel.removeAt( ii );
+            }
+
+            else
+               ii++;
+         }
+
+         if ( pendNoise.isEmpty() )  break;
+
+         // A noise record no model still to come needs to be the last of
+         // its type; preferably one that completes a model, else one that
+         // is borrowed at all
+         int pick     = -1;
+         int rank     = -1;
+
+         for ( int ii = 0; ii < pendNoise.size(); ii++ )
+         {
+            QString guid = pendNoise[ ii ].guid;
+            QString type = typeOf.value( guid );
+            bool    free = true;
+            int     have = 0;
+
+            for ( int jj = 0; jj < pendModel.size()  &&  free; jj++ )
+            {
+               QString model = pendModel[ jj ].guid;
+
+               if ( want( model, type ) == cur.value( type ) )
+                  free = false;
+
+               if ( want( model, type ) != guid )  continue;
+
+               bool completes = true;
+
+               for ( const QString& other : types )
+                  if ( other != type  &&
+                       want( model, other ) != cur.value( other ) )
+                     completes = false;
+
+               have = qMax( have, completes ? 2 : 1 );
+            }
+
+            if ( free  &&  have > rank )
+            {
+               pick = ii;
+               rank = have;
+            }
+         }
+
+         if ( pick < 0 )  break;
+
+         cur.insert( typeOf.value( pendNoise[ pick ].guid ),
+                     pendNoise[ pick ].guid );
+         addStep( pendNoise[ pick ], true );
+         pendNoise.removeAt( pick );
+      }
+
+      if ( ! pendNoise.isEmpty()  ||  ! pendModel.isEmpty() )
+      {
+         trouble << tr( "the noise records of edit %1 and the models that"
+                        " borrow them cannot all be written in an order that"
+                        " keeps what each model borrows" ).arg( edit );
+
+         for ( int ii = 0; ii < pendNoise.size(); ii++ )
+            addStep( pendNoise[ ii ], true );
+
+         for ( int ii = 0; ii < pendModel.size(); ii++ )
+            addStep( pendModel[ ii ], false );
+      }
+   }
+
+   if ( ! trouble.isEmpty() )
+      problem = tr( "Which noise a model borrows may not survive the import:"
+                    " %1" ).arg( trouble.join( "; " ) );
+
+   return steps;
+}
+
+/* The target's clock, to the second: the server's (SELECT NOW(), the clock
+   the procedures date their rows with) for a database, the local one --
+   which dates the files -- for a disk store.  A server that does not answer
+   is read as the local clock from then on.
+*/
+qint64 US_DataPubImporter::targetSecond( void )
+{
+   if ( opts.target == US_DataPub::TargetDb  &&  dbase != nullptr  &&
+        ! clock_local )
+   {
+      dbase->rawQuery( "SELECT UNIX_TIMESTAMP( NOW() )" );
+
+      if ( dbase->lastErrno() == IUS_DB2::OK  &&  dbase->next() )
+      {
+         bool   ok  = false;
+         qint64 now = dbase->value( 0 ).toLongLong( &ok );
+
+         if ( ok  &&  now > 0 )  return now;
+      }
+
+      clock_local = true;
+   }
+
+   return QDateTime::currentMSecsSinceEpoch() / 1000;
+}
+
+/* Wait until the target's clock is past the given second, so that what is
+   written next is dated later than what was written in that second.  A
+   file is dated by the kernel's coarse clock, which can trail the one read
+   here by a few milliseconds: on disk the wait goes 50 ms beyond.
+*/
+bool US_DataPubImporter::waitForClock( qint64 second, QString& error )
+{
+   QElapsedTimer timer;
+   timer.start();
+
+   while ( timer.elapsed() < 5000 )
+   {
+      if ( opts.target == US_DataPub::TargetDb  &&  ! clock_local )
+      {
+         if ( targetSecond() > second )  return true;
+      }
+
+      else if ( QDateTime::currentMSecsSinceEpoch() >= ( second + 1 ) * 1000
+                                                       + 50 )
+         return true;
+
+      QThread::msleep( 50 );
+   }
+
+   error = tr( "The target's clock did not move on; the models and noise"
+               " records could not be written in an order that keeps which"
+               " noise each model borrows" );
+   return false;
 }
 
 /* Look up the project the import was told to attach the runs to.

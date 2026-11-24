@@ -594,14 +594,47 @@ class US_DataPubImporter : public QObject
       */
       bool    componentIdsMayBeCounted( void );
 
-      /*! \brief The models of the bundle that borrow one of its noise
-                 records (borrowedByModelGUIDs)
+      //! \brief One record of the sequence fitSequence() puts the models
+      //!        without noise of their own and the noise records in
+      class FitStep
+      {
+         public:
+            US_DataPubEntity entity;     //!< The model or noise record
+            QString          editGUID;   //!< The edit it belongs to
+            QString          noiseType;  //!< "ti" or "ri" for noise
+            bool             isNoise;    //!< A noise record, not a model
+            //! A noise record some model of the sequence borrows
+            bool             borrowed;
+            //! Its edit needs the target's clock to tell the records apart
+            bool             timed;
 
-          A catalog tells a borrowing model by its time stamp, which is not
-          older than the noise record's, so the import writes them after
-          the noise.  A model a noise record was fitted to is never one.
+            FitStep() { isNoise = false;  borrowed = false;  timed = false; }
+      };
+
+      /*! \brief The order the models without noise of their own and the
+                 noise records of their edits are written in
+
+          A catalog tells which noise such a model was run with by time
+          stamps alone (US_DataPubCatalog::noiseBefore()); the order makes
+          every model borrow what the bundle says it borrows
+          (borrowedByModelGUIDs), and nothing where it borrows nothing.
+          \param problem Filled in when the bundle's borrowing cannot all
+                         be met, empty otherwise
+          \returns Every noise record of the bundle and those models
       */
-      QSet< QString > borrowingModels( void ) const;
+      QList< FitStep > fitSequence( QString& problem ) const;
+
+      //! \brief The target's clock in seconds since the epoch: the
+      //!        server's for a database, the local one for a disk store
+      qint64  targetSecond( void );
+
+      //! \brief Wait until the target's clock is past \a second (at most
+      //!        five seconds)
+      //! \returns False, with \a error filled in, when it does not get there
+      bool    waitForClock( qint64 second, QString& error );
+
+      //! The server did not tell its time: the local clock stands in
+      bool                       clock_local;
 
       //! The target's us3_catalog_version(): 0 for a server without it,
       //! -1 before it was asked

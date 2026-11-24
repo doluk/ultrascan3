@@ -175,10 +175,29 @@ QList< US_DataCatalog::Noise > US_DataPubCatalog::noiseBefore(
       {
          QDateTime have = latestWhen.value( type );
 
-         if ( have.isValid()  &&  when.isValid()  &&  when <= have )
-            continue;
+         if ( have.isValid()  !=  when.isValid() )
+         {  // One with a time stamp beats one without
+            if ( have.isValid() )  continue;
+         }
 
-         if ( have.isValid()  &&  ! when.isValid() )  continue;
+         else if ( have.isValid()  &&  when != have )
+         {
+            if ( when < have )  continue;
+         }
+
+         else
+         {  // A tie, to the second: the record written last, which in a
+            // database is the higher ID; else the higher GUID -- never the
+            // order the records happen to be listed in
+            const US_DataCatalog::Noise& held = latest[ type ];
+            int  heldID = held .id.toInt();
+            int  thisID = noise.id.toInt();
+            bool later  = ( heldID > 0  &&  thisID > 0 )
+                          ? ( thisID > heldID )
+                          : ( noise.guid > held.guid );
+
+            if ( ! later )  continue;
+         }
       }
 
       latest    .insert( type, noise );

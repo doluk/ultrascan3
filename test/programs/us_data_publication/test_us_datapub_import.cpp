@@ -2,6 +2,7 @@
 #include <gtest/gtest.h>
 
 #include "datapub_test_env.h"
+#include "datapub_borrow_scenario.h"
 
 #include "us_datapub_export.h"
 #include "us_datapub_import.h"
@@ -9,6 +10,7 @@
 #include "us_datapub_hash.h"
 #include "us_datapub_bundle.h"
 #include "us_datapub_cli.h"
+#include "us_datapub_catalog.h"
 #include "us_analyte.h"
 #include "us_crypto.h"
 
@@ -2392,6 +2394,93 @@ TEST_F( DataPubImport, ABorrowingModelKeepsItsNoiseThroughAnImport )
    US_DataPubEntity back;
    ASSERT_TRUE( again.manifest().entity( US_DataPub::Noise, noiseGUID, back ) );
    EXPECT_EQ( back.attrs.value( "borrowedByModelGUIDs" ), laterGUID );
+}
+
+/* Two noise records of a type dated the same second as each other (and as
+   the model) are told apart by a fixed rule, not by the order the catalog
+   lists them in: the higher database ID, else the higher GUID. */
+TEST_F( DataPubImport, NoiseBeforeBreaksATieTheSameWayInEveryOrder )
+{
+   US_DataCatalog::Noise low;
+   low.guid        = "aaaaaaaa-0000-4000-8000-000000000001";
+   low.id          = "7";
+   low.noiseType   = "ti";
+   low.lastUpdated = "2024-01-01 10:00:00 UTC";
+
+   US_DataCatalog::Noise high = low;
+   high.guid = "bbbbbbbb-0000-4000-8000-000000000001";
+   high.id   = "5";
+
+   QString model = "2024-01-01 10:00:00";        // the same second
+
+   for ( int order = 0; order < 2; order++ )
+   {
+      QList< US_DataCatalog::Noise > both;
+      both << ( order == 0 ? low : high ) << ( order == 0 ? high : low );
+
+      // In a database, the higher ID: written last
+      QList< US_DataCatalog::Noise > picked =
+            US_DataPubCatalog::noiseBefore( both, model );
+      ASSERT_EQ( picked.size(), 1 );
+      EXPECT_EQ( picked[ 0 ].guid, low.guid ) << order;
+
+      // On disk (no IDs), the higher GUID
+      both[ 0 ].id = "-1";
+      both[ 1 ].id = "-1";
+      picked = US_DataPubCatalog::noiseBefore( both, model );
+      ASSERT_EQ( picked.size(), 1 );
+      EXPECT_EQ( picked[ 0 ].guid, high.guid ) << order;
+
+      // ... and so with neither dated
+      both[ 0 ].lastUpdated.clear();
+      both[ 1 ].lastUpdated.clear();
+      picked = US_DataPubCatalog::noiseBefore( both, model );
+      ASSERT_EQ( picked.size(), 1 );
+      EXPECT_EQ( picked[ 0 ].guid, high.guid ) << order;
+   }
+}
+
+/* Several noise records of a type in one edit, and models that borrow
+   them or none: what each model borrows is told by time stamps alone, so
+   the import writes the models and noise in an order -- with the clock moved
+   on in between where needed -- that keeps it.  Exported from the store
+   again, every noise record names the same borrowers as in the source, and
+   the model made before any noise borrows none. */
+TEST_F( DataPubImport, EveryBorrowingSurvivesSeveralNoiseRecordsOfAType )
+{
+   DataPubBorrowScenario scenario;
+   scenario.write( US_Settings::dataDir() + "/models",
+                   US_Settings::dataDir() + "/noises", runID, editGUID,
+                   noiseGUID );
+
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection;
+   selection.fromDb = false;
+   selection.scope  = US_DataPub::ScopeNoise;
+   selection.runIDs << runID;
+
+   QString error;
+   QString bundle = root + "/several.tar.gz";
+   ASSERT_TRUE( exporter.exportBundle( selection, bundle, error ) )
+      << error.toStdString();
+   ASSERT_EQ( DataPubBorrowScenario::text(
+                 DataPubBorrowScenario::borrowers( exporter.manifest() ) ),
+              DataPubBorrowScenario::text( scenario.expected() ) );
+
+   US_DataPubImporter importer;
+   ASSERT_TRUE( importer.inspect  ( bundle, error ) ) << error.toStdString();
+   ASSERT_TRUE( importer.runImport( diskOptions(), error ) )
+      << error.toStdString();
+
+   US_Settings::set_workBaseDir( targetDir );
+
+   US_DataPubExporter again;
+   ASSERT_TRUE( again.exportBundle( selection, root + "/again.tar.gz", error ) )
+      << error.toStdString();
+   EXPECT_EQ( DataPubBorrowScenario::text(
+                 DataPubBorrowScenario::borrowers( again.manifest() ) ),
+              DataPubBorrowScenario::text( scenario.expected() ) );
+   EXPECT_TRUE( again.manifest().contains( US_DataPub::Model, scenario.m0 ) );
 }
 
 // A calibration the target already has under another GUID is named by that

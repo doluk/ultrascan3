@@ -956,11 +956,30 @@ manifest's into it (all digits) when the XML holds another value or none — a
 zero, which `US_Model` leaves out, stays out.
 
 A model with no noise of its own borrows the noise of its edit by time stamp:
-the newest one not newer than the model. The noise record names such models
-(`borrowedByModelGUIDs`; an older bundle's `borrowedByModelGUID`), and the
-import writes them after the noise record — in a database after its row, on
-disk after its file — so the target says the same: exported from it again, the
-noise still travels with them.
+of each noise type (`ti`, `ri`), the newest record not newer than the model,
+where a record dated the same second as the model counts as older. Two
+records of a type dated the same second are told apart by a fixed rule, never
+by the order a listing returns them in: in a database the higher ID (the one
+written last) wins, otherwise the higher GUID
+(`US_DataPubCatalog::noiseBefore()`). The target stores no borrowing relation,
+only these time stamps, which the import writes anew. So the bundle names the
+borrowing models in the noise record (`borrowedByModelGUIDs`; an older bundle's
+`borrowedByModelGUID`), and the import writes the models without noise of
+their own and the noise records of their edit in an order that reproduces
+it (`US_DataPubImporter::fitSequence()`): a model is written when the noise
+records last written of each type are those it borrows (none yet, where it
+borrows none), and a noise record only when no model still to come needs the
+one before it. Where a noise record has to be newer than a model written
+before it, or a borrowed record newer than the one of its type before it, the
+import waits until the target's clock has moved on to the next second — the
+server's (`SELECT UNIX_TIMESTAMP( NOW() )`, the clock the procedures date the
+rows with) in a database, the local one (which dates the files) on disk. That
+costs at most a second per such step and is needed only in an edit with a
+model without noise of its own and more than one noise record, or more than
+one of a type. Exported from the target again, every noise record names the
+models it named in the source, and a model made before any noise borrows none.
+A bundle whose borrowing cannot be met (one model named for two records of a
+type) is imported with a note, the rest of its records in the bundle's order.
 
 A run's experiment XML names its rotor calibration by ID and, in a bundle, by
 GUID (`<calibration guid="…">`); a disk import points both at the target's
