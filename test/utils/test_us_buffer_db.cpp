@@ -1088,3 +1088,99 @@ TEST_F( BufferDb, AReusedBufferReadsItsComponentsFromTheFileOnly )
    QFile::remove( file );
    QFile::remove( again );
 }
+
+// The buffer dialogs used to fill component with QMap::operator[] of the
+// local component table, which gives an empty component -- with an empty ID
+// -- for one the table does not know.  componentIDs still holds the ID, and
+// that is what is written.
+TEST_F( BufferDb, AnIdInComponentIdsWinsOverAnEmptyComponent )
+{
+   prepareBuffer();
+   QMap<QString, US_BufferComponent> table;
+   table["5"].componentID = "5";
+   buffer.component.clear();
+   for ( const QString& id : buffer.componentIDs )
+   {
+      buffer.component << table[id];  // what the dialog did: "6" is unknown
+   }
+   ASSERT_TRUE( buffer.component[1].componentID.isEmpty() );
+   EXPECT_EQ( ( QStringList{ "5", "6" } ), buffer.componentIdList() );
+
+   // An empty or missing entry of componentIDs is filled from component
+   buffer.componentIDs             = QStringList{ "", "6" };
+   buffer.component[0].componentID = "5";
+   EXPECT_EQ( ( QStringList{ "5", "6" } ), buffer.componentIdList() );
+   buffer.componentIDs             = QStringList{ "5" };
+   buffer.component[1].componentID = "6";
+   EXPECT_EQ( ( QStringList{ "5", "6" } ), buffer.componentIdList() );
+
+   // so the buffer the dialog built is saved with both components
+   {
+      InSequence sequence;
+      expectLookup( true );
+      EXPECT_CALL( db, next() ).WillOnce( Return( true ) );
+      EXPECT_CALL( db, value( 0 ) ).WillOnce( Return( QVariant( "41" ) ) );
+      expectOwnedBegin();
+      expectStatus( updateArgs() );
+      expectStatus( { "delete_buffer_components", "41" }, IUS_DB2::OK );
+      expectStatus( { "add_buffer_component", "41", "5", "0.15000" } );
+      expectStatus( { "add_buffer_component", "41", "6", "0.02500" } );
+      EXPECT_CALL( db, commitTransaction( _ ) ).WillOnce( Return( true ) );
+   }
+   buffer.componentIDs             = QStringList{ "5", "6" };
+   buffer.component[1]             = US_BufferComponent();
+   EXPECT_EQ( 41, buffer.saveToDB( &db, "1" ) );
+}
+
+// The dialog's path: a buffer file whose second component is not in the
+// local component table is read, its components attached from the table,
+// written to disk and saved to the database.  The unknown component keeps
+// its ID throughout and the table gains no empty entry.
+TEST_F( BufferDb, AComponentTheLocalTableLacksKeepsItsIdOnDiskAndInTheDatabase )
+{
+   prepareBuffer();
+   const QString file = bufferPath() + "/unknown-component.xml";
+   ASSERT_TRUE( buffer.writeToDisk( file ) );
+
+   US_Buffer read;
+   ASSERT_TRUE( read.readFromDisk( file ) );
+
+   QMap<QString, US_BufferComponent> table;
+   US_BufferComponent                known;
+   known.componentID = "5";
+   known.name        = "NaCl";
+   table.insert( "5", known );
+
+   read.attachComponents( table );
+   EXPECT_EQ( 1, table.size() );
+   ASSERT_EQ( 2, read.component.size() );
+   EXPECT_EQ( QString( "NaCl" ), read.component[0].name );
+   EXPECT_EQ( QString( "6" ), read.component[1].componentID );
+   EXPECT_TRUE( read.component[1].name.isEmpty() );
+   EXPECT_EQ( ( QStringList{ "5", "6" } ), read.componentIDs );
+
+   // Written to disk again, the file still has both components
+   const QString again = bufferPath() + "/unknown-component-2.xml";
+   ASSERT_TRUE( read.writeToDisk( again ) );
+   US_Buffer reread;
+   ASSERT_TRUE( reread.readFromDisk( again ) );
+   EXPECT_EQ( ( QStringList{ "5", "6" } ), reread.componentIdList() );
+   EXPECT_EQ( ( QList<double>{ 0.15, 0.025 } ), reread.concentration );
+   QFile::remove( file );
+   QFile::remove( again );
+
+   // and the database gets both
+   {
+      InSequence sequence;
+      expectLookup( true );
+      EXPECT_CALL( db, next() ).WillOnce( Return( true ) );
+      EXPECT_CALL( db, value( 0 ) ).WillOnce( Return( QVariant( "41" ) ) );
+      expectOwnedBegin();
+      expectStatus( updateArgs() );
+      expectStatus( { "delete_buffer_components", "41" }, IUS_DB2::OK );
+      expectStatus( { "add_buffer_component", "41", "5", "0.15000" } );
+      expectStatus( { "add_buffer_component", "41", "6", "0.02500" } );
+      EXPECT_CALL( db, commitTransaction( _ ) ).WillOnce( Return( true ) );
+   }
+   EXPECT_EQ( 41, read.saveToDB( &db, "1" ) );
+}

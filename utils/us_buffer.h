@@ -119,10 +119,22 @@ class US_UTIL_EXTERN US_Buffer
       //! \brief The IDs of the buffer's components, in the order of
       //!        \ref concentration
       //!
-      //! A buffer read from the database or built in the buffer dialog has
-      //! \ref component, and its IDs are those; one read from disk has only
-      //! \ref componentIDs.  Every writer counts the components this way.
+      //! A buffer read from disk has only \ref componentIDs; one read from
+      //! the database or built in the buffer dialog has both, and
+      //! \ref component may then hold a placeholder for an ID the local
+      //! component table does not know.  So the ID at each position is the
+      //! one in \ref componentIDs when that is not empty, else the
+      //! component's.  Every writer counts the components this way.
       QStringList componentIdList( void ) const;
+
+      //! \brief Fill \ref component from a table of known components
+      //!
+      //! Each ID of \ref componentIdList is looked up in \a table.  One
+      //! the table does not have gets an empty component that keeps the
+      //! ID, so the buffer is still written with it; nothing is added to
+      //! the table.  \ref componentIDs is set to the same IDs.
+      //! \param table The known components, by ID
+      void attachComponents( const QMap< QString, US_BufferComponent >& table );
 
       //! \brief Write the buffer to a disk file
       //!

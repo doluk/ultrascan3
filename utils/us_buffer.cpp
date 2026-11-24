@@ -512,17 +512,34 @@ void US_Buffer::putSpectrum( IUS_DB2* db, const QString& type ) const
 
 QStringList US_Buffer::componentIdList( void ) const
 {
-   if ( component.isEmpty() )
-   {
-      return componentIDs;
-   }
-
+   // componentIDs is what a file gave and what the dialog keeps; component
+   // may be a placeholder for an ID the local table does not know.  So an
+   // ID there wins, and component's only fills an empty or missing one.
+   const int   count = qMax( component.size(), componentIDs.size() );
    QStringList ids;
-   for ( const US_BufferComponent& bc : component )
+   for ( int ii = 0; ii < count; ii++ )
    {
-      ids << bc.componentID;
+      QString id = ii < componentIDs.size() ? componentIDs[ ii ] : QString();
+      if ( id.isEmpty() && ii < component.size() )
+      {
+         id = component[ ii ].componentID;
+      }
+      ids << id;
    }
    return ids;
+}
+
+void US_Buffer::attachComponents( const QMap< QString, US_BufferComponent >& table )
+{
+   const QStringList ids = componentIdList();
+   component.clear();
+   for ( const QString& id : ids )
+   {
+      US_BufferComponent bc = table.value( id );
+      bc.componentID        = id;
+      component << bc;
+   }
+   componentIDs = ids;
 }
 
 bool US_Buffer::writeToDisk( const QString& filename ) const
