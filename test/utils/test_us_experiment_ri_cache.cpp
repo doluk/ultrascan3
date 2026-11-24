@@ -230,3 +230,22 @@ TEST( ExperimentCalibration, AMissingCalibrationRowLeavesNoStaleCoefficients )
    EXPECT_FALSE( experiment.rotorUpdated.isValid() );
    EXPECT_TRUE( experiment.rotorName.isEmpty() );
 }
+
+// An investigator with no person row is no investigator: the GUID of the
+// one an earlier read found is not kept, as the operator's is not
+TEST( ExperimentCalibration, AnInvestigatorWithNoPersonRowLeavesNoGuid )
+{
+   NiceMock<US_DB2_Mock>    db;
+   CalibrationServer        server;
+   US_Experiment            experiment;
+   QVector<SP_SPEEDPROFILE> speedsteps;
+   server.wire( db );
+
+   experiment.invGUID      = "aaaaaaaa-0000-4000-8000-00000000dead";   // an earlier read's
+   experiment.operatorGUID = "aaaaaaaa-0000-4000-8000-00000000beef";
+
+   ASSERT_EQ( experiment.readFromDB( "Cal_run", &db, speedsteps, "17", false ), IUS_DB2::OK );
+   EXPECT_TRUE( server.calls.contains( "get_person_info" ) );
+   EXPECT_TRUE( experiment.invGUID.isEmpty() ) << experiment.invGUID.toStdString();
+   EXPECT_TRUE( experiment.operatorGUID.isEmpty() ) << experiment.operatorGUID.toStdString();
+}
