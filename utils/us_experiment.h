@@ -110,6 +110,11 @@ class US_UTIL_EXTERN US_Experiment
           to export it, say -- passes false so that nothing is written into
           the user's results directory.
 
+          A person, instrument or rotor lookup that finds no row leaves the
+          fields it fills (invGUID, operatorGUID, instrumentSerial, the
+          rotor's GUID, name and serial) empty, not as an earlier read left
+          them.
+
           \param runID  The run ID of the experiment.
           \param    db For database access, an open database connection
           \param    speedsteps Reference to vector of experiment speed steps
