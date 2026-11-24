@@ -744,6 +744,50 @@ TEST( DataPubDefs, GuidsInsidePayloadsAreFound )
    EXPECT_FALSE( US_DataPub::isGuidAttribute( "x", "guidance" ) );
 }
 
+// Every value of a payload that would be read as a NaN or an infinity, and
+// none that is text
+TEST( DataPubDefs, NonFiniteNumbersInsidePayloadsAreFound )
+{
+   QStringList bad = QStringList() << "nan" << "NaN" << "-nan" << "inf"
+                                   << "+Inf" << "-inf" << "infinity"
+                                   << " INFINITY " << "1e999" << "-2.5e400";
+
+   for ( int ii = 0; ii < bad.size(); ii++ )
+      EXPECT_TRUE( US_DataPub::isNonFiniteNumber( bad[ ii ] ) )
+         << bad[ ii ].toStdString();
+
+   QStringList good = QStringList() << "0" << "1.0057" << "-4.6e-10"
+                                    << "1e300" << "" << "nano" << "info"
+                                    << "Inf buffer" << "abc";
+
+   for ( int ii = 0; ii < good.size(); ii++ )
+      EXPECT_FALSE( US_DataPub::isNonFiniteNumber( good[ ii ] ) )
+         << good[ ii ].toStdString();
+
+   EXPECT_TRUE( US_DataPub::nonFiniteNumberInXml(
+      "<buffer description=\"Inf\" ph=\"7\" density=\"1.0\">"
+      "<component id=\"1\" name=\"NaN\" concentration=\"150\"/>"
+      "</buffer>" ).isEmpty() );
+   EXPECT_EQ( US_DataPub::nonFiniteNumberInXml(
+      "<buffer ph=\"7\" density=\"nan\"/>" ),
+      QString( "buffer/@density=\"nan\"" ) );
+   EXPECT_EQ( US_DataPub::nonFiniteNumberInXml(
+      "<analyte vbar20=\"inf\" mw=\"1\"/>" ),
+      QString( "analyte/@vbar20=\"inf\"" ) );
+   EXPECT_EQ( US_DataPub::nonFiniteNumberInXml(
+      "<noise><d v=\"0\"/><d v=\"-inf\"/></noise>" ),
+      QString( "d/@v=\"-inf\"" ) );
+
+   // An experiment's name is text; a meniscus is not
+   EXPECT_TRUE( US_DataPub::nonFiniteNumberInXml(
+      "<experiment><name value=\"inf\"/></experiment>" ).isEmpty() );
+   EXPECT_FALSE( US_DataPub::nonFiniteNumberInXml(
+      "<x><meniscus value=\"nan\"/></x>" ).isEmpty() );
+   EXPECT_TRUE( US_DataPub::isTextAttribute( "analyte", "description" ) );
+   EXPECT_TRUE( US_DataPub::isTextAttribute( "x", "runID" ) );
+   EXPECT_FALSE( US_DataPub::isTextAttribute( "buffer", "density" ) );
+}
+
 TEST( DataPubDefs, AFileDigestIsAllOrNothing )
 {
    QTemporaryDir dir;

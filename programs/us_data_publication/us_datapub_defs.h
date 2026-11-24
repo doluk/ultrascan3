@@ -258,6 +258,46 @@ namespace US_DataPub
    */
    QString unusableGuidInXml( const QByteArray& xml );
 
+   /*! \brief Whether an XML attribute holds free text rather than a value
+
+       \c name, \c description, \c desc, \c comment, \c label, \c title,
+       \c notes, \c runID, \c filename, \c serial and \c unit (in any letter
+       case), every GUID (isGuidAttribute()), and the \c value of an element
+       of one of those names (the way an experiment names itself:
+       \c <name value="..."/>).  A buffer may be called "Inf"; its density
+       may not be infinite.
+       \param element   The name of the element carrying the attribute
+       \param attribute The name of the attribute
+   */
+   bool isTextAttribute   ( const QString& element,
+                            const QString& attribute );
+
+   /*! \brief Whether a value is a number that is not finite
+
+       "nan", "inf" or "infinity" (any letter case, with or without a sign),
+       or a decimal number too large for a double ("1e999"): what
+       QString::toDouble() turns into a NaN or an infinity, which a record
+       reader then takes for the value.
+   */
+   bool isNonFiniteNumber ( const QString& value );
+
+   /*! \brief The first attribute of an XML payload whose value is a number
+              that is not finite
+
+       Every attribute but those isTextAttribute() takes for free text is
+       checked with isNonFiniteNumber(): a buffer's density or pH, a
+       component's concentration or coefficients, an analyte's vbar20 or
+       molecular weight, a solution's common vbar20, storage temperature or
+       amounts, a model's variance and meniscus and its components' values,
+       the values of a noise vector, ...  A database cannot store such a
+       value, and a disk import would write it back as "nan".
+       \param xml The content of the payload
+       \returns element/\@attribute="value" of the first one, or an empty
+                string when every value is finite (or the text is not XML
+                at all)
+   */
+   QString nonFiniteNumberInXml( const QByteArray& xml );
+
    /*! \brief Whether a run type can be part of a run's file names
 
        One to eight letters or digits ("RA", "RI", "IP", "FI", "WA", ...),

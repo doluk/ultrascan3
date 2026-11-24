@@ -118,6 +118,7 @@ US_DataPubExporter::US_DataPubExporter( QObject* parent ) : QObject( parent )
    hd_comp_loaded = false;
    from_project   = false;
    run_fault      = false;
+   left_out_records = 0;
 }
 
 US_DataPubExporter::~US_DataPubExporter()
@@ -133,6 +134,50 @@ const US_DataPubManifest& US_DataPubExporter::manifest( void ) const
 QStringList US_DataPubExporter::log( void ) const
 {
    return logtext;
+}
+
+QStringList US_DataPubExporter::warnings( void ) const
+{
+   return warntext;
+}
+
+QStringList US_DataPubExporter::leftOutRuns( void ) const
+{
+   return left_out_runs;
+}
+
+int US_DataPubExporter::leftOutRecords( void ) const
+{
+   return left_out_records;
+}
+
+QString US_DataPubExporter::warningReport( int maxWarnings ) const
+{
+   if ( warntext.isEmpty() )  return QString();
+
+   QString text;
+
+   if ( ! left_out_runs.isEmpty() )
+      text += tr( "Runs left out of the bundle: %1\n" )
+              .arg( left_out_runs.join( ", " ) );
+
+   if ( left_out_records > 0 )
+      text += tr( "Other records left out: %1\n" ).arg( left_out_records );
+
+   if ( ! text.isEmpty() )  text += "\n";
+
+   text += tr( "Warnings:\n" );
+
+   int shown = qMin( warntext.size(), qMax( maxWarnings, 0 ) );
+
+   for ( int ii = 0; ii < shown; ii++ )
+      text += "- " + warntext[ ii ] + "\n";
+
+   if ( shown < warntext.size() )
+      text += tr( "... and %1 more; see the status log\n" )
+              .arg( warntext.size() - shown );
+
+   return text.trimmed();
 }
 
 void US_DataPubExporter::cleanup( void )
@@ -213,6 +258,20 @@ void US_DataPubExporter::note( const QString& text )
    emit message( text );
 }
 
+void US_DataPubExporter::warn( const QString& text )
+{
+   warntext << text;
+   note( tr( "Warning: %1" ).arg( text ) );
+}
+
+void US_DataPubExporter::leaveOutRun( const QString& runID,
+                                      const QString& why )
+{
+   left_out_runs << runID;
+   warn( tr( "run %1 of the project is left out: %2" ).arg( runID )
+         .arg( why ) );
+}
+
 bool US_DataPubExporter::runFault( QString& error, const QString& text )
 {
    error     = text;
@@ -241,6 +300,20 @@ bool US_DataPubExporter::spectraAreFinite(
    why.clear();
 
    return true;
+}
+
+bool US_DataPubExporter::numbersAreFinite( const QString& path, QString& what )
+{
+   QFile file( path );
+
+   what.clear();
+
+   if ( ! file.open( QIODevice::ReadOnly ) )  return false;
+
+   what = US_DataPub::nonFiniteNumberInXml( file.readAll() );
+   file.close();
+
+   return what.isEmpty();
 }
 
 bool US_DataPubExporter::copyPayload( const QString& source,
@@ -305,6 +378,33 @@ bool US_DataPubExporter::finishEntity( US_DataPubEntity& entity,
    }
 
    QStringList keys = entity.payloadKeys();
+
+   // A value that is not a finite number cannot be imported: a database
+   // refuses it, a disk import would write "nan".  It is the record's own
+   // fault, so a project export leaves its run out
+   for ( int ii = 0; ii < keys.size(); ii++ )
+   {
+      QString rel  = ( keys[ ii ] == "payload" ) ? entity.payload
+                     : entity.attrs.value( keys[ ii ] );
+      QString path = ( keys[ ii ] == "payload" ) ? stagedPath
+                     : bundle.stagingPath() + "/" + rel;
+
+      if ( ! rel.endsWith( ".xml", Qt::CaseInsensitive ) )
+         continue;
+
+      if ( ! numbersAreFinite( path, why ) )
+      {
+         if ( ! why.isEmpty() )
+            return runFault( error, tr( "%1 cannot be exported: its %2 holds"
+                                        " %3, which is not a finite number" )
+                                    .arg( entity.label() )
+                                    .arg( keys[ ii ] ).arg( why ) );
+
+         error = tr( "The staged %1 of %2 cannot be read" )
+                 .arg( keys[ ii ] ).arg( entity.label() );
+         return false;
+      }
+   }
 
    for ( int ii = 0; ii < keys.size(); ii++ )
    {
@@ -466,6 +566,9 @@ bool US_DataPubExporter::build( const Selection& selection, bool payloads,
 {
    mani.clear();
    logtext.clear();
+   warntext     .clear();
+   left_out_runs.clear();
+   left_out_records = 0;
    cal_guids    .clear();
    raw_solutions.clear();
    dropped_raws .clear();
@@ -482,6 +585,8 @@ bool US_DataPubExporter::build( const Selection& selection, bool payloads,
    US_DataPub::Scope scope = selection.effectiveScope();
    exp_scope       = scope;
    explicit_noises = selection.noisesExplicit ? selection.noiseGUIDs
+                                              : QStringList();
+   explicit_models = selection.modelsExplicit ? selection.modelGUIDs
                                               : QStringList();
 
    if ( scope == US_DataPub::ScopeNone )
@@ -599,6 +704,7 @@ bool US_DataPubExporter::build( const Selection& selection, bool payloads,
    // -- is left out with a warning, and everything staged for it is taken
    // back; a run the user named fails the export
    QList< US_DataPubCatalog::Model > leftOutModels;
+   QMap< QString, QString >          leftOutEdits;   // edit GUID -> run
    int                               leftOut = 0;
 
    for ( int ii = 0; ii < runs.size(); ii++ )
@@ -607,6 +713,7 @@ bool US_DataPubExporter::build( const Selection& selection, bool payloads,
       QMap< QString, QString > saveCals  = cal_guids;
       QMap< QString, QString > saveSols  = raw_solutions;
       int                      saveSteps = step_count;
+      int                      saveWarns = warntext.size();
       QMap< QString, qint64 >  saveFiles;
 
       if ( stage_payloads  &&
@@ -626,6 +733,11 @@ bool US_DataPubExporter::build( const Selection& selection, bool payloads,
       cal_guids     = saveCals;
       raw_solutions = saveSols;
       step_count    = saveSteps;
+
+      // What its records had to say goes with them: the run's own warning
+      // says why none of them is in the bundle
+      while ( warntext.size() > saveWarns )
+         warntext.removeLast();
 
       if ( stage_payloads )
       {
@@ -658,20 +770,13 @@ bool US_DataPubExporter::build( const Selection& selection, bool payloads,
          }
       }
 
-      note( tr( "Warning: run %1 of the project is left out: %2" )
-            .arg( runs[ ii ].runID ).arg( why ) );
+      leaveOutRun( runs[ ii ].runID, why );
       leftOut++;
-
-      // Its models and their noise go with it
-      QStringList edits;
 
       for ( int jj = 0; jj < runs[ ii ].raws.size(); jj++ )
          for ( int kk = 0; kk < runs[ ii ].raws[ jj ].edits.size(); kk++ )
-            edits << runs[ ii ].raws[ jj ].edits[ kk ].guid;
-
-      for ( int jj = models.size() - 1; jj >= 0; jj-- )
-         if ( edits.contains( models[ jj ].editGUID ) )
-            leftOutModels << models.takeAt( jj );
+            leftOutEdits.insert( runs[ ii ].raws[ jj ].edits[ kk ].guid,
+                                 runs[ ii ].runID );
    }
 
    if ( leftOut > 0 )
@@ -683,8 +788,37 @@ bool US_DataPubExporter::build( const Selection& selection, bool payloads,
          return false;
       }
 
-      note( tr( "Warning: %1 run(s) of the project are left out of the"
+      warn( tr( "%1 run(s) of the project are left out of the"
                 " bundle" ).arg( leftOut ) );
+   }
+
+   // The models of a left-out run, and their noise, go with it -- those
+   // whose edit is not in the bundle after all.  An edit of a left-out run
+   // that another run brought in (a run directory copied, GUIDs and all)
+   // keeps its models.  One asked for by GUID is not quietly dropped.
+   for ( int jj = models.size() - 1; jj >= 0; jj-- )
+   {
+      const US_DataPubCatalog::Model& model = models[ jj ];
+
+      if ( ! leftOutEdits.contains( model.editGUID )  ||
+           mani.contains( US_DataPub::EditedData, model.editGUID ) )
+         continue;
+
+      QString runID = leftOutEdits.value( model.editGUID );
+
+      if ( explicit_models.contains( model.guid ) )
+      {
+         error = tr( "The model \"%1\" (%2) was asked for, but run %3, which"
+                     " holds its edit, is left out of the bundle; see the"
+                     " warnings" ).arg( model.description ).arg( model.guid )
+                 .arg( runID );
+         return false;
+      }
+
+      warn( tr( "model \"%1\" is left out with run %2" )
+            .arg( model.description ).arg( runID ) );
+      left_out_records++;
+      leftOutModels << models.takeAt( jj );
    }
 
    run_fault = false;
@@ -696,6 +830,29 @@ bool US_DataPubExporter::build( const Selection& selection, bool payloads,
    {
       if ( ! collectNoises( selection, models, noises, error, leftOutModels ) )
          return false;
+
+      // The noise of the models left out with their runs goes with them
+      if ( ! leftOutModels.isEmpty() )
+      {
+         QList< US_DataPubCatalog::Noise > gone =
+               catalog.noises( leftOutModels, error );
+         QStringList                       kept;
+         int                               knt = 0;
+
+         if ( ! error.isEmpty() )  return false;
+
+         for ( int jj = 0; jj < noises.size(); jj++ )
+            kept << noises[ jj ].guid;
+
+         for ( int jj = 0; jj < gone.size(); jj++ )
+            if ( ! kept.contains( gone[ jj ].guid ) )  knt++;
+
+         if ( knt > 0 )
+            warn( tr( "%1 noise record(s) of those models are left out with"
+                      " them" ).arg( knt ) );
+
+         left_out_records += knt;
+      }
 
       if ( ! addFittedModels( models, noises, error ) )  return false;
    }
@@ -755,6 +912,66 @@ bool US_DataPubExporter::stageRun( const Selection& selection,
                                    QString& error )
 {
    US_DataPub::Scope scope = exp_scope;
+
+   // A run whose experiment, raw data or edits are already in the bundle,
+   // brought in by another run, is a copy of that run -- a run directory
+   // copied, GUIDs and all.  The copy is left out (or fails the export,
+   // when it was named), and the run that came first keeps its records.
+   QString expGUID = info.expGUID.isEmpty() ? run.guid : info.expGUID;
+   QString other;
+   QString what;
+
+   if ( scope >= US_DataPub::ScopeExperiment  &&  ! expGUID.isEmpty()  &&
+        mani.contains( US_DataPub::Experiment, expGUID ) )
+   {
+      QList< US_DataPubEntity > exps = mani.section( US_DataPub::Experiment );
+
+      for ( int ii = 0; ii < exps.size()  &&  other.isEmpty(); ii++ )
+         if ( exps[ ii ].guid == expGUID )  other = exps[ ii ].name;
+
+      what = tr( "its experiment %1" ).arg( expGUID );
+   }
+
+   for ( int ii = 0; ii < run.raws.size()  &&  what.isEmpty(); ii++ )
+   {
+      const US_DataPubCatalog::Raw& raw = run.raws[ ii ];
+      US_DataPub::EntityType        type;
+      QString                       guid;
+
+      if ( scope >= US_DataPub::ScopeRawData  &&
+           mani.contains( US_DataPub::RawData, raw.guid ) )
+      {
+         type = US_DataPub::RawData;
+         guid = raw.guid;
+         what = tr( "its raw data %1" ).arg( raw.guid );
+      }
+
+      for ( int jj = 0; jj < raw.edits.size()  &&  what.isEmpty(); jj++ )
+      {
+         if ( scope < US_DataPub::ScopeEdits  ||
+              ! mani.contains( US_DataPub::EditedData,
+                               raw.edits[ jj ].guid ) )
+            continue;
+
+         type = US_DataPub::EditedData;
+         guid = raw.edits[ jj ].guid;
+         what = tr( "its edit %1" ).arg( guid );
+      }
+
+      if ( what.isEmpty() )  continue;
+
+      QList< US_DataPubEntity > ents = mani.section( type );
+
+      for ( int jj = 0; jj < ents.size()  &&  other.isEmpty(); jj++ )
+         if ( ents[ jj ].guid == guid )
+            other = ents[ jj ].attrs.value( "runID" );
+   }
+
+   if ( ! what.isEmpty() )
+      return runFault( error, tr( "Run %1 cannot be exported: %2 is already"
+                                  " in the bundle with run %3 -- is one a"
+                                  " copy of the other?" ).arg( run.runID )
+                              .arg( what ).arg( other ) );
 
    if ( scope >= US_DataPub::ScopeRotorCalibration  &&
         ! addCalibration( info, error ) )
@@ -875,8 +1092,9 @@ bool US_DataPubExporter::addFittedModels(
          return false;
       }
 
-      note( tr( "Warning: the noise %1 carried for model %2 is left out: %3" )
+      warn( tr( "the noise %1 carried for model %2 is left out: %3" )
             .arg( noise.guid ).arg( noise.modelGUID ).arg( why ) );
+      left_out_records++;
       noises.removeAt( ii );
    }
 
@@ -937,7 +1155,8 @@ bool US_DataPubExporter::gatherRuns( const Selection& selection,
 
          if ( fromProject )
          {
-            note( tr( "Warning: run \"%1\" of the project is left out: %2" )
+            left_out_runs << runIDs[ ii ];
+            warn( tr( "run \"%1\" of the project is left out: %2" )
                   .arg( runIDs[ ii ] ).arg( why ) );
             skipped++;
             continue;
@@ -1010,8 +1229,7 @@ bool US_DataPubExporter::gatherRuns( const Selection& selection,
       {
          if ( fromProject )
          {
-            note( tr( "Warning: run %1 of the project is left out: %2" )
-                  .arg( run.runID ).arg( why ) );
+            leaveOutRun( run.runID, why );
             skipped++;
             continue;
          }
@@ -1025,7 +1243,7 @@ bool US_DataPubExporter::gatherRuns( const Selection& selection,
       dropped_raws.insert( run.runID, dropped );
 
       if ( run.raws.isEmpty() )
-         note( tr( "Warning: run %1 contributes no raw data to this bundle" )
+         warn( tr( "run %1 contributes no raw data to this bundle" )
                .arg( run.runID ) );
 
       runs << run;
@@ -1040,7 +1258,7 @@ bool US_DataPubExporter::gatherRuns( const Selection& selection,
          return false;
       }
 
-      note( tr( "Warning: %1 run(s) of the project are left out of the"
+      warn( tr( "%1 run(s) of the project are left out of the"
                 " bundle" ).arg( skipped ) );
    }
 
@@ -1326,7 +1544,7 @@ bool US_DataPubExporter::buildTriplesFromDb(
             return runFault( error, tr( "The raw data %1 names no solution" )
                                     .arg( raw.filename ) );
 
-         note( tr( "Warning: the raw data %1 names no solution; the"
+         warn( tr( "the raw data %1 names no solution; the"
                    " experiment XML names none for it" ).arg( raw.filename ) );
       }
 
@@ -1351,7 +1569,7 @@ bool US_DataPubExporter::buildTriplesFromDb(
                return false;
             }
 
-            note( tr( "Warning: %1; the experiment XML names no solution"
+            warn( tr( "%1; the experiment XML names no solution"
                       " for it" ).arg( why ) );
             solution = US_Solution();
          }
@@ -1430,7 +1648,7 @@ bool US_DataPubExporter::stageRiProfile( const US_DataPubCatalog::Run& run,
 
    if ( ! US_DataPubRecords::riProfileIsUsable( xml, &why ) )
    {
-      note( tr( "Warning: the RI intensity profile of run %1 is left out:"
+      warn( tr( "the RI intensity profile of run %1 is left out:"
                 " %2" ).arg( run.runID ).arg( why ) );
       error.clear();
       return false;
@@ -1596,7 +1814,7 @@ bool US_DataPubExporter::stageExperimentXml(
                 " XML" ).arg( run.runID ).arg( leave.size() - missing ) );
 
    if ( missing > 0 )
-      note( tr( "Warning: run %1: %2 triple(s) the experiment XML names have"
+      warn( tr( "run %1: %2 triple(s) the experiment XML names have"
                 " no raw data file and are left out of it" )
             .arg( run.runID ).arg( missing ) );
 
@@ -1680,7 +1898,7 @@ bool US_DataPubExporter::addExperiment( const US_DataPubCatalog::Run& run,
 
          if ( ripFile.size() > US_DataPubManifest::maxManifestBytes  ||
               ! ripFile.open( QIODevice::ReadOnly ) )
-            note( tr( "Warning: the RI intensity profile %1 cannot be read"
+            warn( tr( "the RI intensity profile %1 cannot be read"
                       " and is left out" ).arg( ripSource ) );
 
          else
@@ -1940,7 +2158,7 @@ bool US_DataPubExporter::addCalibration(
 
    if ( calID < 1 )
    {
-      note( tr( "Warning: run %1 names no rotor calibration, so none is"
+      warn( tr( "run %1 names no rotor calibration, so none is"
                 " exported with it" ).arg( info.runID ) );
       return true;
    }
@@ -2632,8 +2850,9 @@ bool US_DataPubExporter::addModels(
 
       if ( model.guid.isEmpty() )
       {
-         note( tr( "Warning: model \"%1\" has no GUID and is left out" )
+         warn( tr( "model \"%1\" has no GUID and is left out" )
                .arg( model.description ) );
+         left_out_records++;
          continue;
       }
 
@@ -2709,7 +2928,23 @@ bool US_DataPubExporter::addModels(
             return false;
          }
 
-         if ( ! finishEntity( entity, staged, error ) )  return false;
+         run_fault = false;
+
+         if ( ! finishEntity( entity, staged, error ) )
+         {
+            // A model that cannot be imported stays out, and its noise
+            // with it, unless it was asked for by GUID
+            if ( ! run_fault  ||  explicit_models.contains( model.guid )  ||
+                 ! QFile::remove( staged ) )
+               return false;
+
+            run_fault = false;
+            warn( tr( "model \"%1\" is left out: %2" )
+                  .arg( model.description ).arg( error ) );
+            left_out_records++;
+            error.clear();
+            continue;
+         }
       }
 
       else
@@ -2820,7 +3055,8 @@ bool US_DataPubExporter::collectNoises(
       if ( ! listed )  unknown << wanted[ ii ];
    }
 
-   // Noise of a run a project export left out went with the run
+   // Noise of a run a project export left out went with the run; one
+   // that was asked for by GUID is not quietly dropped
    if ( ! unknown.isEmpty()  &&  ! leftOut.isEmpty() )
    {
       QList< US_DataPubCatalog::Noise > gone = catalog.noises( leftOut, error );
@@ -2828,7 +3064,14 @@ bool US_DataPubExporter::collectNoises(
       if ( ! error.isEmpty() )  return false;
 
       for ( int ii = 0; ii < gone.size(); ii++ )
-         unknown.removeAll( gone[ ii ].guid );
+      {
+         if ( ! unknown.contains( gone[ ii ].guid ) )  continue;
+
+         error = tr( "The noise record %1 was asked for, but its model %2 is"
+                     " left out of the bundle with its run; see the warnings" )
+                 .arg( gone[ ii ].guid ).arg( gone[ ii ].modelGUID );
+         return false;
+      }
    }
 
    if ( ! unknown.isEmpty() )
@@ -2852,8 +3095,9 @@ bool US_DataPubExporter::addNoises(
 
       if ( noise.guid.isEmpty() )
       {
-         note( tr( "Warning: noise record \"%1\" has no GUID and is left"
+         warn( tr( "noise record \"%1\" has no GUID and is left"
                    " out" ).arg( noise.description ) );
+         left_out_records++;
          continue;
       }
 
@@ -2875,8 +3119,9 @@ bool US_DataPubExporter::addNoises(
             return false;
          }
 
-         note( tr( "Warning: noise %1 belongs to a model that is not in this"
+         warn( tr( "noise %1 belongs to a model that is not in this"
                    " bundle and is left out" ).arg( noise.guid ) );
+         left_out_records++;
          continue;
       }
 
@@ -2942,7 +3187,23 @@ bool US_DataPubExporter::addNoises(
             return false;
          }
 
-         if ( ! finishEntity( entity, staged, error ) )  return false;
+         run_fault = false;
+
+         if ( ! finishEntity( entity, staged, error ) )
+         {
+            // Noise that cannot be imported stays out, unless it was asked
+            // for by GUID
+            if ( ! run_fault  ||  explicit_noises.contains( noise.guid )  ||
+                 ! QFile::remove( staged ) )
+               return false;
+
+            run_fault = false;
+            warn( tr( "noise %1 is left out: %2" ).arg( noise.guid )
+                  .arg( error ) );
+            left_out_records++;
+            error.clear();
+            continue;
+         }
       }
 
       else

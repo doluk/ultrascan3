@@ -146,5 +146,17 @@ class US_DataPubCLI : public QObject
       QString password( bool needed );
       void    print( const QString& );
       void    fail ( const QString& );
+
+      /*! \brief Put an export's warnings on the error output
+
+          Each as a "Warning: ..." line, with or without --verbose: what an
+          export left out of the bundle is never only in the log.
+      */
+      void    exportWarnings( const US_DataPubExporter& );
+
+   public:
+      //! " (left out: N run(s), M other record(s); see the warnings)", or
+      //! nothing when the export left nothing out
+      static QString leftOutText( const US_DataPubExporter& );
 };
 #endif
