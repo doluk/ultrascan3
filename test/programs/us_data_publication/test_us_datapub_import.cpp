@@ -2453,6 +2453,100 @@ TEST_F( DataPubImport, ABorrowingModelKeepsItsNoiseThroughAnImport )
    EXPECT_EQ( back.attrs.value( "borrowedByModelGUIDs" ), laterGUID );
 }
 
+/* Two records of the bundle that share a name -- two models and two noise
+   records here, as two fits of an edit can have -- go into an empty store
+   under that name, as the source holds them: the name is taken by a record
+   the import wrote itself, which is no conflict.  A dry run says the
+   same. */
+TEST_F( DataPubImport, SameNamedRecordsKeepTheirNamesInAnEmptyStore )
+{
+   QString  twinGUID = US_Util::new_guid();
+   US_Model twin;
+   twin.modelGUID   = twinGUID;
+   twin.editGUID    = editGUID;
+   twin.description = "demo_run.1A280.2dsa.model";      // the fixture's
+   twin.write( US_Settings::dataDir() + "/models/M0000002.xml" );
+
+   US_Noise noise;
+   noise.noiseGUID   = US_Util::new_guid();
+   noise.modelGUID   = twinGUID;
+   noise.description = "demo_run.1A280.2dsa.ti_noise";  // the fixture's
+   noise.type        = US_Noise::TI;
+   noise.minradius   = 5.8;
+   noise.maxradius   = 5.95;
+   for ( int ii = 0; ii < 16; ii++ )  noise.values << 0.003 * double( ii );
+   noise.count = noise.values.size();
+   noise.write( US_Settings::dataDir() + "/noises/N0000002.xml" );
+
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection;
+   selection.fromDb = false;
+   selection.scope  = US_DataPub::ScopeNoise;
+   selection.runIDs << runID;
+
+   QString error;
+   QString bundle = root + "/twins.tar.gz";
+   ASSERT_TRUE( exporter.exportBundle( selection, bundle, error ) )
+      << error.toStdString();
+   ASSERT_EQ( exporter.manifest().section( US_DataPub::Model ).size(), 2 );
+   ASSERT_EQ( exporter.manifest().section( US_DataPub::Noise ).size(), 2 );
+
+   for ( int dry = 1; dry >= 0; dry-- )
+   {
+      US_DataPubImporter          importer;
+      US_DataPubImporter::Options options = diskOptions();
+      options.dryRun = ( dry == 1 );
+      ASSERT_TRUE( importer.inspect  ( bundle, error ) ) << error.toStdString();
+      ASSERT_TRUE( importer.runImport( options, error ) ) << error.toStdString();
+
+      for ( const US_DataPubImporter::Result& result : importer.results() )
+      {
+         if ( result.type != US_DataPub::Model  &&
+              result.type != US_DataPub::Noise )
+            continue;
+
+         EXPECT_EQ( result.resolution, US_DataPub::ResolvedCreated )
+            << ( dry ? "dry run " : "import " ) << result.targetName.toStdString();
+         EXPECT_FALSE( result.targetName.contains( "imported" ) )
+            << result.targetName.toStdString();
+      }
+   }
+
+   QStringList models = QDir( targetDir + "/data/models" )
+                        .entryList( QStringList( "M*.xml" ), QDir::Files );
+   ASSERT_EQ( models.size(), 2 );
+
+   for ( const QString& name : models )
+      EXPECT_EQ( first_attribute( targetDir + "/data/models/" + name, "model",
+                                  "description" ),
+                 QString( "demo_run.1A280.2dsa.model" ) );
+
+   // A store that already holds the name is a conflict, though: renamed
+   QString other = root + "/target2";
+   QDir().mkpath( other + "/data/models" );
+   US_Model held;
+   held.modelGUID   = US_Util::new_guid();
+   held.editGUID    = US_Util::new_guid();
+   held.description = "demo_run.1A280.2dsa.model";
+   held.write( other + "/data/models/M0000001.xml" );
+
+   US_DataPubImporter          importer;
+   US_DataPubImporter::Options options = diskOptions();
+   options.outputDir = other;
+   options.policy    = US_DataPub::PolicyRename;
+   ASSERT_TRUE( importer.inspect  ( bundle, error ) ) << error.toStdString();
+   ASSERT_TRUE( importer.runImport( options, error ) ) << error.toStdString();
+
+   int renamed = 0;
+
+   for ( const US_DataPubImporter::Result& result : importer.results() )
+      if ( result.type == US_DataPub::Model  &&
+           result.resolution == US_DataPub::ResolvedRenamed )
+         renamed++;
+
+   EXPECT_EQ( renamed, 2 );
+}
+
 /* Two noise records of a type dated the same second as each other (and as
    the model) are told apart by a fixed rule, not by the order the catalog
    lists them in: the higher database ID, else the higher GUID. */

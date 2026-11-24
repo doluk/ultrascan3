@@ -427,8 +427,10 @@ class US_DataPubImporter : public QObject
             QString id;         //!< The record ID in the target
             QString guid;       //!< The record GUID, once it is known
             bool    resolved;   //!< True when the GUID has been looked up
+            //! A record this import wrote (or, in a dry run, would write)
+            bool    ours;
 
-            Named() { resolved = false; }
+            Named() { resolved = false;  ours = false; }
       };
 
       // bundle GUID -> target GUID / ID / name
@@ -860,8 +862,12 @@ class US_DataPubImporter : public QObject
 
       bool    findByGuid( US_DataPub::EntityType, const QString& guid,
                           QString& id, QString& name );
+      //! \brief The record of a name in the target
+      //! \param ours Set, when given, to whether the record is one this
+      //!             import wrote or (dry run) would write; only records
+      //!             of a type indexed by name are told apart
       bool    findByName( US_DataPub::EntityType, const QString& name,
-                          QString& guid, QString& id );
+                          QString& guid, QString& id, bool* ours = nullptr );
 
       //! \brief Whether a name is taken in the target, without asking which
       //!        record has it

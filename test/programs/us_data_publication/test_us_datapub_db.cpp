@@ -5474,3 +5474,111 @@ TEST_F( DataPubDbImport, EveryBorrowingSurvivesTheDatabase )
               DataPubBorrowScenario::text( scenario.expected() ) );
    EXPECT_TRUE( again.manifest().contains( US_DataPub::Model, scenario.m0 ) );
 }
+
+/* A bundle with two records of one name (two models and their noise
+   records, as two fits of an edit can have): the dry run decides as the
+   import does -- it used to look the first, planned record up by the ID -1
+   and fail with 507 -- and neither renames a record because of the other:
+   the target holds both under the source's name. */
+TEST_F( DataPubDbImport, SameNamedRecordsImportAsTheDryRunSays )
+{
+   QString tag   = US_Util::new_guid().left( 8 );
+   QString mdesc = runID + ".1A280.e1_a" + tag + "_2DSA.model";
+   QString ndesc = runID + ".1A280.e1_a" + tag + "_2DSA.ti_noise";
+
+   for ( int ii = 1; ii <= 2; ii++ )
+   {
+      QString  mguid = ( ii == 1 ) ? modelGUID : US_Util::new_guid();
+      QString  mpath = US_Settings::dataDir() + "/models/M000000"
+                       + QString::number( ii ) + ".xml";
+      US_Model model;
+
+      if ( ii == 1 )
+      {
+         ASSERT_EQ( model.load( mpath ), IUS_DB2::OK );
+      }
+
+      model.modelGUID   = mguid;
+      model.editGUID    = editGUID;
+      model.description = mdesc;
+      QFile::remove( mpath );
+      ASSERT_EQ( model.write( mpath ), IUS_DB2::OK );
+
+      QString  npath = US_Settings::dataDir() + "/noises/N000000"
+                       + QString::number( ii ) + ".xml";
+      US_Noise noise;
+
+      if ( ii == 1 )
+      {
+         ASSERT_EQ( noise.load( npath ), IUS_DB2::OK );
+      }
+
+      else
+      {
+         noise.noiseGUID = US_Util::new_guid();
+         noise.type      = US_Noise::TI;
+         noise.minradius = 5.8;
+         noise.maxradius = 5.95;
+         for ( int jj = 0; jj < 16; jj++ )  noise.values << 0.003 * jj;
+         noise.count     = noise.values.size();
+      }
+
+      noise.modelGUID   = mguid;
+      noise.description = ndesc;
+      QFile::remove( npath );
+      ASSERT_EQ( noise.write( npath ), IUS_DB2::OK );
+   }
+
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection;
+   selection.fromDb = false;
+   selection.scope  = US_DataPub::ScopeNoise;
+   selection.runIDs << runID;
+
+   QString bundle = root + "/twins.tar.gz";
+   QString error;
+   ASSERT_TRUE( exporter.exportBundle( selection, bundle, error ) )
+      << error.toStdString();
+   ASSERT_EQ( exporter.manifest().section( US_DataPub::Model ).size(), 2 );
+
+   US_DataPubImporter::Options options;
+   options.target       = US_DataPub::TargetDb;
+   options.dbPassword   = master;
+   options.verifyHashes = true;
+   options.policy       = US_DataPub::PolicyRename;
+
+   QStringList said[ 2 ];
+
+   for ( int dry = 1; dry >= 0; dry-- )
+   {
+      options.dryRun = ( dry == 1 );
+
+      US_DataPubImporter importer;
+      ASSERT_TRUE( importer.inspect( bundle, error ) ) << error.toStdString();
+      ASSERT_TRUE( importer.runImport( options, error ) )
+         << ( dry ? "dry run: " : "import: " ) << error.toStdString() << "\n"
+         << importer.log().join( "\n" ).toStdString();
+
+      for ( const US_DataPubImporter::Result& result : importer.results() )
+      {
+         if ( result.type != US_DataPub::Model  &&
+              result.type != US_DataPub::Noise )
+            continue;
+
+         said[ dry ] << QString( "%1 %2 %3" ).arg( int( result.type ) )
+                        .arg( int( result.resolution ) ).arg( result.targetName );
+         EXPECT_EQ( result.resolution, US_DataPub::ResolvedCreated )
+            << result.targetName.toStdString();
+         // The run itself may be renamed (the target may hold its ID),
+         // and its records' names with it -- but not one for the other
+         EXPECT_TRUE( result.targetName.endsWith( mdesc.section( '.', 1 ) )  ||
+                      result.targetName.endsWith( ndesc.section( '.', 1 ) ) )
+            << result.targetName.toStdString();
+         EXPECT_FALSE( result.targetName.contains( "(" ) )
+            << result.targetName.toStdString();
+      }
+   }
+
+   EXPECT_EQ( said[ 1 ].join( "\n" ).toStdString(),
+              said[ 0 ].join( "\n" ).toStdString() );
+}

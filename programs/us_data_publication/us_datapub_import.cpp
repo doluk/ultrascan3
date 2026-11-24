@@ -4818,14 +4818,22 @@ bool US_DataPubImporter::importEntity( const US_DataPubEntity& entity,
    QString name     = targetName( entity );
    QString otherGUID;
    QString otherID;
+   bool    ourOwn   = false;
    bool    conflict = ! name.isEmpty()
-                      &&  findByName( type, name, otherGUID, otherID );
+                      &&  findByName( type, name, otherGUID, otherID,
+                                      &ourOwn );
 
    if ( ! lookup_error.isEmpty() )
    {
       error = lookup_error;
       return false;
    }
+
+   // A record of the name that this import wrote is no conflict: the
+   // source held both under the one name, and so does the target.  (A run
+   // ID is not indexed by name, and has to stay unique.)
+   if ( conflict  &&  ourOwn  &&  otherGUID != entity.guid )
+      conflict = false;
 
    US_DataPub::ConflictPolicy policy = opts.policyFor( type );
 
@@ -4850,7 +4858,13 @@ bool US_DataPubImporter::importEntity( const US_DataPubEntity& entity,
       if ( ! workPath.isEmpty()  &&  ourPrint.isEmpty()  &&  ! error.isEmpty() )
          return false;
 
-      QString theirPrint  = targetFingerprint( type, otherGUID, otherID );
+      // Without a fingerprint of ours (a run) there is nothing to compare
+      // the target's with, and a run this import plans (a dry run) has no
+      // record to read, which a real import would have: not read at all,
+      // so that a dry run decides as the import does
+      QString theirPrint  = ourPrint.isEmpty()
+                            ? QString()
+                            : targetFingerprint( type, otherGUID, otherID );
 
       if ( ! lookup_error.isEmpty() )
       {
@@ -5729,10 +5743,12 @@ bool US_DataPubImporter::findByGuid( US_DataPub::EntityType type,
 */
 bool US_DataPubImporter::findByName( US_DataPub::EntityType type,
                                      const QString& name, QString& guid,
-                                     QString& id )
+                                     QString& id, bool* ours )
 {
    guid.clear();
    id  .clear();
+
+   if ( ours != nullptr )  *ours = false;
 
    if ( name.isEmpty() )  return false;
 
@@ -5752,6 +5768,8 @@ bool US_DataPubImporter::findByName( US_DataPub::EntityType type,
 
    guid = it->guid;
    id   = it->id;
+
+   if ( ours != nullptr )  *ours = it->ours;
 
    return true;
 }
@@ -5824,6 +5842,7 @@ void US_DataPubImporter::nameTaken( US_DataPub::EntityType type,
    entry.id       = id;
    entry.guid     = guid;
    entry.resolved = true;
+   entry.ours     = true;
 
    held_names[ key ].insert( name, entry );
 }

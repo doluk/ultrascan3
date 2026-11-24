@@ -1111,6 +1111,14 @@ For every record in the manifest, in dependency order:
      means, so `reuse` is not offered. `fail` still stops the import.
    - A run of the same ID and another GUID is another run; it is always
      renamed.
+   - A record this import has just written (in a dry run: would write) is no
+     conflict: two records of the bundle that share a name — two fits of an
+     edit with the same description, say — go in under that name, as the
+     source holds them, also into an empty target. Only a record the target
+     held before is a conflict. (A run ID is the exception: it has to stay
+     unique, so a second run of a name is renamed.) A dry run decides exactly
+     as the import: a record it plans has no ID yet, and is never looked up by
+     one.
 
 A run that is already in the database is not added to: when its raw data, a
 solution of it or its time state is not there too, the import stops rather
@@ -1122,7 +1130,13 @@ carries the source's (`comment`, above).
 
 Renaming changes the name inside the payload; the GUID is untouched, so the
 record's dependants follow it. Auto-generated names are `<name> (imported)`,
-then `<name> (imported 2)`, and so on until one is free (after a thousand,
+then `<name> (imported 2)`, and so on until one is free. For a model or noise
+record the suffix follows `.model` (`… .model (imported)`): the programs that
+read a model's run, triple and analysis from its description take the
+dot-separated fields counted from the end but one (`section( '.', -2 )`,
+`-3`, …) or look for `.model` (`indexOf`, `lastIndexOf`), which all still find
+them; only a test for a description *ending* in `model` (`us_mwl_spectra`,
+which then falls back to the description itself) does not (after a thousand,
 `<name>-` and eight random hexadecimal digits, checked like the others). A
 buffer is compared and renamed into a database under the description it is
 stored with, without the `  [M]` marker of a manually entered buffer. A run
