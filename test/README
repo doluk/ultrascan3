@@ -357,6 +357,15 @@ of the fixture, never at the fixture itself:
 US3_TEST_DB_NAME=<copy of us3test> ./bin/test_us_manage_data --gtest_filter='TestUSDataDbLive*'
 ```
 
+Run them against a copy with the procedures of `us3_sql` as they are and
+against one with the patched ones loaded (`us3_expdata_procs.sql`,
+`us3_catalog_procs.sql`): they check the window against both.  Besides
+records, they write a row of `autoflowModelsLink` (to make a model GMP's),
+which they delete again; they hold a model row locked from the administrator's
+connection with a two-second `innodb_lock_wait_timeout` on the investigator's,
+and `KILL` the investigator's connection from the administrator's -- both log
+in as `US3_TEST_DB_USER`, which may end its own connections.
+
 Set both password variables to the same value to run everything. The
 scratch-database tests skip when the database already has the US3
 procedures, so point them at an empty one (`US3_TEST_DB_NAME=us3scratch`,
