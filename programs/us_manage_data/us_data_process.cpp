@@ -434,6 +434,7 @@ int US_DataProcess::record_remove_db( int row )
    cdesc            = da_model->row_datadesc( row );
    int     irecID   = cdesc.recordID;
    QString dataID   = QString::number( irecID );
+   unknown_out      = false;
 
    if      ( cdesc.recType == 1 )
    { // remove a Raw record
@@ -471,8 +472,7 @@ DbgLv(1) << "REC_RMV: exp ID" << cdesc.parentID;
 
       if ( ( stat = db->statusQuery( query ) ) != 0 )
       {
-         errMsg = tr( "delete_model status=%1: %2" ).arg( stat )
-                  .arg( db->lastError() );
+         errMsg = removal_error( "delete_model", stat );
 DbgLv(1) << "MOD_RMV:   dataID" << dataID << "errMsg:" << errMsg;
 DbgLv(1) << "MOD_RMV:    lastErr" << db->lastError() << db->lastErrno();
          stat   = 2013;
@@ -488,8 +488,7 @@ DbgLv(1) << "MOD_RMV:    lastErr" << db->lastError() << db->lastErrno();
 
       if ( ( stat = db->statusQuery( query ) ) != 0 )
       {
-         errMsg = tr( "delete_noise status=%1: %2" ).arg( stat )
-                  .arg( db->lastError() );
+         errMsg = removal_error( "delete_noise", stat );
 DbgLv(1) << "NOI_RMV:   dataID" << dataID << "errMsg:" << errMsg;
 DbgLv(1) << "NOI_RMV:    lastErr" << db->lastError() << db->lastErrno();
          stat   = 2014;
@@ -510,6 +509,28 @@ DbgLv(1) << "NOI_RMV:    lastErr" << db->lastError() << db->lastErrno();
    }
 
    return note_lost( stat );
+}
+
+// What a model or noise removal that failed says: which record, and whether
+// it is known to be still there.  Each is one statement the server commits
+// on its own, so when the connection is lost during it, whether it was
+// removed is not known.
+QString US_DataProcess::removal_error( const QString& proc, int status )
+{
+   QString derr = db->lastError();
+
+   if ( lost_now() )
+   {
+      conn_lost   = true;
+      unknown_out = true;
+      return tr( "Whether %1 was removed from the database is not known:"
+                 " the connection to the database was lost while it was"
+                 " being removed (%2: %3)." )
+             .arg( cdesc.label ).arg( proc ).arg( derr );
+   }
+
+   return tr( "%1 was not removed from the database (%2 status %3: %4)." )
+          .arg( cdesc.label ).arg( proc ).arg( status ).arg( derr );
 }
 
 // Mark a row as gone from the database: local only now, or gone altogether
@@ -546,7 +567,9 @@ bool US_DataProcess::foreign_noise_of_edit( int editID,
 {
    noise.clear();
 
-   QString     invID = QString::number( US_Settings::us_inv_ID() );
+   // The investigator the tree shows, not one selected since in another
+   // window: the edit, and what it takes along, are theirs
+   QString     invID = QString::number( da_model->scanned_investigator() );
    QString     edtID = QString::number( editID );
    QStringList query;
    QSet< int > models;
@@ -756,11 +779,25 @@ DbgLv(1) << "EDT_RMV:   stat" << est << derr << serr;
       if ( db->commitTransaction( terr ) )
          return 0;
 
-      // Not confirmed: still open as far as the client knows
+      // Not confirmed: still open as far as the client knows.  A connection
+      // lost at the commit leaves open whether the server committed.
+      bool lost = lost_now();
       QString rerr;
       db->rollbackTransaction( rerr );
-      why   = tr( "the removal could not be committed: %1" ).arg( terr );
       clean = false;
+
+      if ( lost )
+      {
+         conn_lost    = true;
+         edit_failure = EDIT_LOST;
+         why = tr( "the connection to the database was lost while the"
+                   " removal was being committed (%1), so whether it was"
+                   " removed is not known." ).arg( terr );
+      }
+
+      else
+         why = tr( "the removal could not be committed: %1" ).arg( terr );
+
       return 2019;
    }
 
@@ -768,15 +805,46 @@ DbgLv(1) << "EDT_RMV:   stat" << est << derr << serr;
    // it: the rollback here is refused for that, and nothing is left done
    if ( ! db->rollbackTransaction( terr )  &&  edit_failure != EDIT_DEADLOCK )
    {
-      why  += tr( "\nThe database transaction could not be rolled back as a"
-                  " whole: %1" ).arg( terr );
-      clean = false;
+      clean = false;                // what is left is read back
+
+      if ( edit_failure == EDIT_LOST  ||  lost_now() )
+      {  // The server rolls back what its lost connection left uncommitted;
+         // the message already says the connection was lost when it was
+         if ( edit_failure != EDIT_LOST )
+            why += tr( "\nThe connection to the database was lost before the"
+                       " transaction was rolled back; the server rolls back"
+                       " what was not committed." );
+         conn_lost    = true;
+         edit_failure = EDIT_LOST;
+      }
+
+      else if ( ended_by_server( terr ) )
+         why += ( edit_failure == EDIT_TIMEOUT )
+              ? tr( "\nThe database had already ended the transaction itself:"
+                    " after a lock wait timeout it rolls back the whole"
+                    " transaction when innodb_rollback_on_timeout is set." )
+              : tr( "\nThe database had already ended the transaction"
+                    " itself." );
+
+      else
+         why += tr( "\nThe database transaction could not be rolled back as"
+                    " a whole: %1" ).arg( terr );
    }
 
    if ( edit_failure == EDIT_LOST )
       clean = false;                // what the server did is not known
 
    return stat;
+}
+
+// Whether a rollback was refused because the server had already ended the
+// transaction (US_DB2::rollbackTransaction's message for that) -- after a
+// deadlock, after a lock wait timeout with innodb_rollback_on_timeout, or by
+// a commit inside a procedure -- rather than because it failed itself
+bool US_DataProcess::ended_by_server( const QString& error )
+{
+   return error == QObject::tr( US_DB2::transactionEndedMessage )  ||
+          error == QObject::tr( US_DB2::serverRollbackMessage );
 }
 
 // What kind of failure a delete_editedData or delete_noise status says
@@ -992,13 +1060,17 @@ int US_DataProcess::settle_edit( int row, const QList< ForeignNoise >& foreign,
    if ( edit == 0 )
       return 0;                     // removed after all
 
-   errMsg = tr( "%1 was not removed: %2" ).arg( edesc.label ).arg( why );
-
    if ( edit < 0 )
-   {
-      unknown = true;
-      stat    = ( stat == 0 ) ? 2019 : stat;
+   {  // not read back: whether it went is as open as the removal left it
+      unknown     = true;
+      unknown_out = true;
+      stat        = ( stat == 0 ) ? 2019 : stat;
+      errMsg      = tr( "Whether %1 was removed is not known: %2" )
+                    .arg( edesc.label ).arg( why );
    }
+
+   else
+      errMsg = tr( "%1 was not removed: %2" ).arg( edesc.label ).arg( why );
 
    if ( ! gone.isEmpty() )
       errMsg += tr( "\n\nThese records were removed from the database all"

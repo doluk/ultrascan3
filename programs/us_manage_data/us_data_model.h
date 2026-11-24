@@ -326,6 +326,22 @@ class US_DataModel : public QObject
         //!        last scan; see \ref listingDropped
         bool listing_dropped( void ) const;
 
+        /*! \brief Whether the investigator selected now differs from the
+                   one whose database records were read
+
+            Another window can change the investigator at any time, also
+            after the scan.  This checks now: on a change the database
+            listing is dropped, as when it changes during a read (\ref
+            listingDropped), and true is returned -- also when the listing
+            was dropped before.  Nothing may then be done to what the tree
+            shows: it is the previous investigator's.
+        */
+        bool investigator_changed( void );
+
+        //! \brief The investigator whose database records were read (the
+        //!        selected one when no database was read)
+        int scanned_investigator( void ) const;
+
         //! \brief Read the first layer: one record per experiment
         //!
         //! This is what makes the window usable straight away on a store

@@ -1288,6 +1288,26 @@ bool US_DataModel::listing_dropped( void ) const
    return db_dropped;
 }
 
+// Whether the investigator selected now is another than the one whose
+// database records were read.  Another window can change it at any time;
+// the catalog only notices on its next read, so this asks it now: on a
+// change it drops its listing (catalog_dropped), and the window clears the
+// tree.
+bool US_DataModel::investigator_changed( void )
+{
+   if ( db_dropped )        return true;
+   if ( cat_db == NULL )    return false;
+
+   return cat_db->refreshInvestigator()  ||  db_dropped;
+}
+
+// The investigator whose database records were read
+int US_DataModel::scanned_investigator( void ) const
+{
+   return ( cat_db != NULL ) ? cat_db->investigatorID()
+                             : US_Settings::us_inv_ID();
+}
+
 /* The database catalog dropped its listing: the investigator changed.
 
    What was read is the previous investigator's, and the experiments'

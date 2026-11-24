@@ -585,3 +585,19 @@ This assumes the naming convention:
 Source file: utils/us_example.cpp \
 Test file: test/utils/test_us_example.cpp \
 You can run this from the root of the repository.
+
+## us_manage_data: live tests that kill their own connection
+
+`TestUSDataDbLive.AConnectionLostDuringAnEditRemovalIsNotAFailedRollback`
+kills the test's own database connection while `delete_editedData` waits for a
+lock.  Inside a procedure the connection runs as the procedure's definer, so
+the test investigator's login cannot kill it; set `US3_TEST_DB_KILL` to a
+command that kills the connection whose ID is given for `%1` (the test passes
+only its own connection's ID), for example
+
+```bash
+export US3_TEST_DB_KILL="mysql --defaults-file=<root's my.cnf> -e 'KILL %1'"
+```
+
+Without it that test skips.  `AConnectionLostAtTheCommitLeavesTheOutcomeOpen`
+uses the same command when it is set, and the administrator's login otherwise.

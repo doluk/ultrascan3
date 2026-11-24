@@ -10,9 +10,20 @@
 //   US3_TEST_DB_PERSON_GUID=... US3_TEST_DB_PERSON_PW=... US3_TEST_DB_PERSON_ID=2
 //   US3_TEST_DB_ADMIN_GUID=...  US3_TEST_DB_ADMIN_PW=...  US3_TEST_DB_OTHER_ID=3
 //
+// A test that kills its own connection inside a procedure also needs
+//
+//   US3_TEST_DB_KILL="mysql --defaults-file=<root's> -e 'KILL %1'"
+//
+// a command that kills the connection with the ID given for %1 (inside a
+// procedure a connection runs as the procedure's definer, which an ordinary
+// user cannot kill); it skips without it.
+//
 // Without them every test here skips.  The same paths run against the fake
 // server of test_us_data_db.cpp; this is what that fake is checked against.
 #include <gtest/gtest.h>
+#include <gmock/gmock.h>
+
+#include <thread>
 
 #include <QtCore>
 #include <QProgressBar>
@@ -26,6 +37,7 @@
 #include "us_convertio.h"
 #include "us_settings.h"
 #include "us_util.h"
+#include "mock_us_db2.h"
 
 class TestUSDataDbLive : public ::testing::Test
 {
@@ -122,6 +134,42 @@ class TestUSDataDbLive : public ::testing::Test
          if ( status == IUS_DB2::OK )                          return admin->next() ? 1 : 0;
          if ( status == gone  ||  status == IUS_DB2::NOROWS )  return 0;
          return -1;
+      }
+
+      // Kill the test's own connection of this ID, and wait until the
+      // server has ended it: KILL ends it asynchronously.  With
+      // US3_TEST_DB_KILL (see the top), that command kills it; else the
+      // administrator's connection does, which the server refuses while
+      // the connection runs as a procedure's definer -- and MariaDB
+      // sometimes after that.  Returns what went wrong, or nothing.
+      QString killConnection( const QString& conn )
+      {
+         QString cmd = qEnvironmentVariable( "US3_TEST_DB_KILL" );
+
+         if ( cmd.isEmpty() )
+         {
+            admin->rawQuery( "KILL " + conn );
+            if ( ! admin->lastError().isEmpty() )   return admin->lastError();
+         }
+
+         else
+         {
+            QProcess proc;
+            proc.start( "sh", QStringList() << "-c" << cmd.arg( conn ) );
+            if ( ! proc.waitForFinished( 10000 )  ||  proc.exitCode() != 0 )
+               return "the kill command failed: "
+                      + QString::fromLocal8Bit( proc.readAllStandardError() );
+         }
+
+         for ( int ii = 0; ii < 100; ii++ )
+         {
+            admin->rawQuery( "SELECT COUNT(*) FROM information_schema.processlist"
+                             " WHERE ID = " + conn );
+            if ( admin->next()  &&  admin->value( 0 ).toInt() == 0 )   return QString();
+            QThread::msleep( 50 );
+         }
+
+         return "connection " + conn + " is still there";
       }
 
       // A model of an edit, by GUID, owned by someone
@@ -264,7 +312,7 @@ class TestUSDataDbLive : public ::testing::Test
          US_DataTree    tree;
          QStringList    prompts;
 
-         bool prepare( US_DB2* db, const QString& runID )
+         bool prepare( IUS_DB2* db, const QString& runID )
          {
             model.setDatabase( db );
             model.setProgress( &bar, &label );
@@ -272,7 +320,7 @@ class TestUSDataDbLive : public ::testing::Test
             return true;
          }
 
-         Win( US_DB2* db, const QString& runID )
+         Win( IUS_DB2* db, const QString& runID )
             : ready( prepare( db, runID ) ), proc( &model ), tree( &model, &tw )
          {
             tw.setSelectionMode( QAbstractItemView::ExtendedSelection );
@@ -302,6 +350,46 @@ class TestUSDataDbLive : public ::testing::Test
          }
       };
 };
+
+// The database connection's ID on the server
+static QString connectionId( US_DB2* db )
+{
+   db->rawQuery( "SELECT CONNECTION_ID()" );
+   return db->next() ? db->value( 0 ).toString() : QString();
+}
+
+// A connection that passes everything on to a real one: a fault can be
+// injected at one call
+static void passOn( ::testing::NiceMock< US_DB2_Mock >& m, US_DB2* real )
+{
+   using ::testing::_;
+   using ::testing::An;
+   using ::testing::Invoke;
+
+   ON_CALL( m, transactionActive() ).WillByDefault( Invoke( [ real ]() { return real->transactionActive(); } ) );
+   ON_CALL( m, beginTransaction( _ ) ).WillByDefault( Invoke( [ real ]( QString& e ) { return real->beginTransaction( e ); } ) );
+   ON_CALL( m, commitTransaction( _ ) ).WillByDefault( Invoke( [ real ]( QString& e ) { return real->commitTransaction( e ); } ) );
+   ON_CALL( m, rollbackTransaction( _ ) ).WillByDefault( Invoke( [ real ]( QString& e ) { return real->rollbackTransaction( e ); } ) );
+   ON_CALL( m, query( An< const QString& >() ) ).WillByDefault( Invoke( [ real ]( const QString& q ) { real->query( q ); } ) );
+   ON_CALL( m, query( An< const QStringList& >() ) ).WillByDefault( Invoke( [ real ]( const QStringList& q ) { real->query( q ); } ) );
+   ON_CALL( m, statusQuery( An< const QString& >() ) ).WillByDefault( Invoke( [ real ]( const QString& q ) { return real->statusQuery( q ); } ) );
+   ON_CALL( m, statusQuery( An< const QStringList& >() ) ).WillByDefault( Invoke( [ real ]( const QStringList& q ) { return real->statusQuery( q ); } ) );
+   ON_CALL( m, rawQuery( _ ) ).WillByDefault( Invoke( [ real ]( const QString& q ) { real->rawQuery( q ); } ) );
+   ON_CALL( m, functionQuery( _ ) ).WillByDefault( Invoke( [ real ]( const QStringList& q ) { return real->functionQuery( q ); } ) );
+   ON_CALL( m, next() ).WillByDefault( Invoke( [ real ]() { return real->next(); } ) );
+   ON_CALL( m, value( _ ) ).WillByDefault( Invoke( [ real ]( unsigned ii ) { return real->value( ii ); } ) );
+   ON_CALL( m, isConnected() ).WillByDefault( Invoke( [ real ]() { return real->isConnected(); } ) );
+   ON_CALL( m, numRows() ).WillByDefault( Invoke( [ real ]() { return real->numRows(); } ) );
+   ON_CALL( m, lastError() ).WillByDefault( Invoke( [ real ]() { return real->lastError(); } ) );
+   ON_CALL( m, lastErrno() ).WillByDefault( Invoke( [ real ]() { return real->lastErrno(); } ) );
+   ON_CALL( m, lastServerErrno() ).WillByDefault( Invoke( [ real ]() { return real->lastServerErrno(); } ) );
+   ON_CALL( m, lastInsertID() ).WillByDefault( Invoke( [ real ]() { return real->lastInsertID(); } ) );
+   ON_CALL( m, lastDebug() ).WillByDefault( Invoke( [ real ]() { return real->lastDebug(); } ) );
+   ON_CALL( m, readBlobFromDB( _, _, _ ) ).WillByDefault( Invoke( [ real ]( const QString& f, const QString& p, int id )
+                                                                   { return real->readBlobFromDB( f, p, id ); } ) );
+   ON_CALL( m, writeBlobToDB( _, _, _ ) ).WillByDefault( Invoke( [ real ]( const QString& f, const QString& p, int id )
+                                                                  { return real->writeBlobToDB( f, p, id ); } ) );
+}
 
 /* An edit with a model and noise of the investigator's, and noise of
    another investigator's model of another edit recorded against it.
@@ -701,4 +789,128 @@ TEST_F( TestUSDataDbLive, ARemovalOnALostConnectionSaysToOpenTheWindowAgain )
 
    EXPECT_EQ( present( "get_editedData", ed.editID,  IUS_DB2::NO_EDITDATA ), 1 );
    EXPECT_TRUE( win.inDb( ed.editG ) );
+}
+
+/* The connection lost while delete_editedData waits for a lock another
+   session holds: the server rolls back what the connection left open, so
+   the database loses nothing.  The message says the connection was lost --
+   not that the transaction could not be rolled back -- and to open the
+   window again, and the rows still show the records in the database.
+   Only the test's own connection is killed.
+*/
+TEST_F( TestUSDataDbLive, AConnectionLostDuringAnEditRemovalIsNotAFailedRollback )
+{
+   Edit ed;
+   newEdit( ed, false );
+   if ( HasFatalFailure() )   return;
+
+   Win win( inv, runID );
+   ASSERT_GE( rowOf( win.model, ed.editG ), 0 );
+
+   QString conn = connectionId( inv );
+   ASSERT_FALSE( conn.isEmpty() );
+   inv->rawQuery( "SET SESSION innodb_lock_wait_timeout = 20" );
+
+   QString error;
+   ASSERT_TRUE( admin->beginTransaction( error ) ) << error.toStdString();
+   admin->rawQuery( "SELECT modelID FROM model WHERE modelID = "
+                    + QString::number( ed.modelID ) + " FOR UPDATE" );
+   ASSERT_TRUE( admin->next() );
+
+   // The test's connection is killed while it waits for the lock.  Inside
+   // the procedure it runs as the procedure's definer, so only a user who
+   // may kill any connection can: US3_TEST_DB_KILL is a command that kills
+   // the connection whose ID it is given (%1) -- the test's own one only
+   QString killCmd = qEnvironmentVariable( "US3_TEST_DB_KILL" );
+   if ( killCmd.isEmpty() )
+   {
+      QString rerr;
+      admin->rollbackTransaction( rerr );
+      GTEST_SKIP() << "US3_TEST_DB_KILL is not set";
+   }
+   QString killError;
+   std::thread killer( [ & ]()
+   {
+      QThread::msleep( 1500 );
+      QProcess proc;
+      proc.start( "sh", QStringList() << "-c" << killCmd.arg( conn ) );
+      if ( ! proc.waitForFinished( 10000 )  ||  proc.exitCode() != 0 )
+         killError = "the kill command failed: "
+                     + QString::fromLocal8Bit( proc.readAllStandardError() );
+   } );
+
+   QElapsedTimer timer;
+   timer.start();
+   int stat = win.remove( ed.editG );
+   qint64 msecs = timer.elapsed();
+   killer.join();
+   QString rerr;
+   admin->rollbackTransaction( rerr );
+   ASSERT_EQ( killError.toStdString(), std::string() );
+
+   error = win.proc.lastError();
+   EXPECT_LT( msecs, 15000 ) << "the connection was not killed in its lock wait";
+   EXPECT_NE( stat, 0 ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "connection to the database was lost" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "close it and open it again" ) ) << error.toStdString();
+   EXPECT_FALSE( error.contains( "could not be rolled back" ) ) << error.toStdString();
+   EXPECT_FALSE( error.contains( "None of the selected records" ) ) << error.toStdString();
+
+   EXPECT_EQ( present( "get_editedData", ed.editID,  IUS_DB2::NO_EDITDATA ), 1 );
+   EXPECT_EQ( present( "get_model_info", ed.modelID, IUS_DB2::NO_MODEL ), 1 );
+   EXPECT_EQ( present( "get_noise_info", ed.noiseID, IUS_DB2::NO_NOISE ), 1 );
+   for ( const QString& guid : { ed.editG, ed.modelG, ed.noiseG } )
+      EXPECT_TRUE( win.inDb( guid ) ) << guid.toStdString();
+}
+
+/* The connection lost at the commit of an edit removal (killed just before
+   the COMMIT goes out, so the server rolls back): the message says the
+   connection was lost while the removal was being committed and that
+   whether the records were removed is not known -- the client cannot tell
+   -- not that none was.  Only the test's own connection is killed.
+*/
+TEST_F( TestUSDataDbLive, AConnectionLostAtTheCommitLeavesTheOutcomeOpen )
+{
+   Edit ed;
+   newEdit( ed, false );
+   if ( HasFatalFailure() )   return;
+
+   QString conn = connectionId( inv );
+   ASSERT_FALSE( conn.isEmpty() );
+
+   ::testing::NiceMock< US_DB2_Mock > wrap;
+   passOn( wrap, inv );
+   int     commits = 0;
+   QString killError;
+   ON_CALL( wrap, commitTransaction( ::testing::_ ) )
+      .WillByDefault( ::testing::Invoke( [ & ]( QString& e )
+      {
+         commits++;
+         killError = killConnection( conn );
+         return inv->commitTransaction( e );
+      } ) );
+
+   Win win( &wrap, runID );
+   ASSERT_GE( rowOf( win.model, ed.editG ), 0 );
+
+   int stat = win.remove( ed.editG );
+   QString error = win.proc.lastError();
+
+   EXPECT_EQ( commits, 1 );
+   ASSERT_EQ( killError.toStdString(), std::string() );
+   EXPECT_EQ( stat, 2019 ) << error.toStdString();
+   EXPECT_FALSE( inv->isConnected() );
+   EXPECT_TRUE( error.contains( "lost while the removal was being committed" ) )
+      << error.toStdString();
+   EXPECT_TRUE( error.contains( "Whether these selected records were removed from the"
+                                " database is not known" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "close it and open it again" ) ) << error.toStdString();
+   EXPECT_FALSE( error.contains( "None of the selected records" ) ) << error.toStdString();
+   EXPECT_FALSE( error.contains( "could not be rolled back" ) ) << error.toStdString();
+
+   // killed before the COMMIT went out: the server kept everything
+   EXPECT_EQ( present( "get_editedData", ed.editID,  IUS_DB2::NO_EDITDATA ), 1 );
+   EXPECT_EQ( present( "get_model_info", ed.modelID, IUS_DB2::NO_MODEL ), 1 );
+   for ( const QString& guid : { ed.editG, ed.modelG, ed.noiseG } )
+      EXPECT_TRUE( win.inDb( guid ) ) << guid.toStdString();
 }
