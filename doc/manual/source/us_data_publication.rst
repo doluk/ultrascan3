@@ -413,13 +413,19 @@ import's transaction. A disk store's components are the installation's
 ``etc/bufferComponents.xml``, which an import never changes: every component
 of a buffer it creates has to be there already, or the import is refused
 before anything is written. An edit is stored without a comment, as
-``us_edit`` stores one.
+``us_edit`` stores one, unless the bundle carries the source's. The bundle may
+also carry a buffer's private flag (a public buffer stays public, so other
+investigators use it rather than copy it), the raw data's label and comment,
+and an analyte's spectrum column; without them the import writes what
+UltraScan's own programs write.
 
 A record matched to a target record of another GUID is renamed in every
 payload that names it: a solution's buffer and analytes, a model's edit, a
 noise record's model, and the project, solutions, centerpieces and
 calibration of a run's experiment XML. Numeric IDs are never carried over: a
-record written to a disk store carries ``-1``.
+record written to a disk store carries ``-1`` -- apart from a rotor
+calibration, which a disk store finds by its ID: it gets one no calibration of
+the store has, and the runs name it.
 
 With **Ask me each time** set, each conflict opens a dialog that shows whether
 the two records match and offers *Use the Existing Record*, *Import Under a New

@@ -542,7 +542,8 @@ class US_DataPubImporter : public QObject
       QSet< QString >            raw_checked;
 
       //! Every component ID the target's component table listed, parsed or
-      //! not: a component this import creates is the row that is not here
+      //! not, and those this import created: what a server that gives a
+      //! new component the row count plus one would collide with
       QSet< QString >            tcomp_ids;
 
       //! The user level of the person logged in to the target database,
@@ -597,6 +598,30 @@ class US_DataPubImporter : public QObject
       //! \brief Add a buffer component to the database and find its row
       bool    createComponentDb( const US_BufferComponent& want,
                                  QString& newID, QString& error );
+
+      /*! \brief Whether the target's create_buffer_component may be the
+                 one that gives a new row the ID of the row count plus one
+
+          False when the server says it is not: its catalog version marker
+          (SELECT us3_catalog_version()) answers 1 or more, or the
+          procedure's definition is readable and counts no rows.  True
+          otherwise -- the procedure servers have run for years, or one
+          that cannot be told apart.
+      */
+      bool    componentIdsMayBeCounted( void );
+
+      //! The target's us3_catalog_version(): 0 for a server without it,
+      //! -1 before it was asked
+      int                        catalog_version;
+
+      /*! \brief The value of a manifest field every raw data record of a run
+                 carries, the same in all of them
+
+          False when none carries it, or they do not agree (which is
+          noted): the raw data is then written with the run's own.
+      */
+      bool    rawFieldOfRun( const QString& expGUID, const QString& key,
+                             QString& value );
 
       //! \brief The GUID a bundle record is written under in the target
       QString targetGuidOf( const US_DataPubEntity& ) const;
