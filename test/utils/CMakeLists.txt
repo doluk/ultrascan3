@@ -57,6 +57,7 @@ set(DB_TEST_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/test_us_buffer_component_live.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_us_data_catalog_db.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_us_db2_connect_authenticated.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_us_db2_limits_live.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_us_db2_roundtrip.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_us_db2_transactions.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_us_text_live.cpp)
