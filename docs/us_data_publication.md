@@ -966,7 +966,9 @@ A buffer component the import adds is created with
 table by its definition, never by the ID `create_buffer_component` answers
 with: an unpatched server answers with the connection's previous insert ID.
 The components of the bundle are matched to the target's with that class's
-rule (`sameDefinition()`).
+rule (`matchingID()`): the same name, unit, range and gradient flag as stored,
+and coefficients equal to five decimals; of several such rows, the one of the
+highest ID.
 
 ### Which project the data lands in
 
@@ -1055,7 +1057,8 @@ A buffer names its components by the source installation's IDs, which mean
 nothing in the target, so the bundle carries their definitions. Each
 component is matched in the target's component table by name, unit, range,
 gradient forming and coefficients (to the five decimals the tables store), and
-the buffer is pointed at the target's ID. Two buffers that differ only in
+the buffer is pointed at the target's ID -- of several rows of that
+definition, the highest. Two buffers that differ only in
 their components are different buffers: the comparison of a buffer with one
 the target has keeps the component IDs, both in terms of the target's table.
 

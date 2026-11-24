@@ -1606,11 +1606,9 @@ bool US_DataPubImporter::checkServerRules( QString& error )
 
       for ( int jj = 0; jj < keys.size(); jj++ )
       {
-         bool             have = false;
-         QList< QString > ids  = tcomps.keys();
-
-         for ( int kk = 0; kk < ids.size()  &&  ! have; kk++ )
-            have = tcomps[ ids[ kk ] ].sameDefinition( defs[ keys[ jj ] ] );
+         bool have = ! US_BufferComponent::matchingID( tcomps,
+                                                      defs[ keys[ jj ] ] )
+                        .isEmpty();
 
          QString label = QString( "\"%1\"" ).arg( defs[ keys[ jj ] ].name );
 
@@ -3443,17 +3441,13 @@ bool US_DataPubImporter::checkComponents( const US_DataPubEntity& entity,
    if ( ! targetComponents( error ) )  return false;
 
    QStringList missing;
-   QList< QString > ids = tcomps.keys();
 
    for ( int ii = 0; ii < buffer.componentIDs.size(); ii++ )
    {
       const US_BufferComponent& want = defs[ buffer.componentIDs[ ii ] ];
-      bool                      have = false;
 
-      for ( int jj = 0; jj < ids.size()  &&  ! have; jj++ )
-         have = tcomps[ ids[ jj ] ].sameDefinition( want );
-
-      if ( ! have )  missing << QString( "\"%1\"" ).arg( want.name );
+      if ( US_BufferComponent::matchingID( tcomps, want ).isEmpty() )
+         missing << QString( "\"%1\"" ).arg( want.name );
    }
 
    if ( missing.isEmpty() )  return true;
@@ -3520,13 +3514,13 @@ bool US_DataPubImporter::mapComponents( const US_DataPubEntity& entity,
 
       if ( ! targetComponents( failure ) )  return;
 
-      QList< QString > ids = tcomps.keys();
+      // The library's rule: the same definition, and of several such rows
+      // the highest ID
+      QString match = US_BufferComponent::matchingID( tcomps, want );
 
-      for ( int ii = 0; ii < ids.size(); ii++ )
+      if ( ! match.isEmpty() )
       {
-         if ( ! tcomps[ ids[ ii ] ].sameDefinition( want ) )  continue;
-
-         values.insert( "id", ids[ ii ] );
+         values.insert( "id", match );
          return;
       }
 

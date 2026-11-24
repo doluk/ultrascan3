@@ -4386,6 +4386,28 @@ TEST_F( DataPubMockExtras, AnUpdatedServerIsNotWarnedOfComponentIds )
    EXPECT_EQ( fake.callsOf( "add_buffer_component" )[ 0 ].value( 2 ), "4" );
 }
 
+// Of several rows of the same definition, the buffer is linked to the one
+// of the highest ID: the rule of US_BufferComponent::matchingID(), which
+// the library's own lookups follow too
+TEST_F( DataPubMockExtras, OfIdenticalComponentsTheHighestIdIsTaken )
+{
+   exportWithComponent();
+
+   fake.canned.insert( "get_buffer_component_desc", QList< QVariantList >()
+                       << ( QVariantList() << 41 ) << ( QVariantList() << 42 ) );
+   fake.canned.insert( "get_buffer_component_info", QList< QVariantList >()
+                       << componentRow( component ) );
+
+   US_DataPubImporter importer;
+   QString            error;
+   ASSERT_TRUE( importOnce( importer, error, dbOptions() ) )
+      << error.toStdString();
+
+   EXPECT_EQ( fake.callsOf( "create_buffer_component" ).size(), 0 );
+   ASSERT_EQ( fake.callsOf( "add_buffer_component" ).size(), 1 );
+   EXPECT_EQ( fake.callsOf( "add_buffer_component" )[ 0 ].value( 2 ), "42" );
+}
+
 // A rotor calibration without a label is named by its GUID in what the
 // import says, never as ""
 TEST_F( DataPubMockExtras, ACalibrationWithoutALabelIsNamedByItsGuid )
