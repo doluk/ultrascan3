@@ -344,6 +344,10 @@ namespace US_DataPub
        when there is one), or it does not unlock the stored database
        password.
        \param masterPW The master password given
+       An empty stored database password is unlocked by the right master
+       password too, in the current format (an empty ciphertext) as in the
+       old AES-128-CBC one (a block of padding, which decrypts to nothing
+       as a wrong key does, and is told apart from one).
        \returns The reason, or an empty string when the password unlocks
                 the stored database password (or there is none to unlock)
    */

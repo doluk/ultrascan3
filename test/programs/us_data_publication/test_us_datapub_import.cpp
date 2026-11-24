@@ -15,6 +15,7 @@
 #include "us_simparms.h"
 #include "us_dataIO.h"
 #include "us_crypto.h"
+#include <openssl/evp.h>
 
 #include <functional>
 
@@ -2334,6 +2335,81 @@ TEST_F( DataPubImport, AWrongMasterPasswordIsSaidToBeWrong )
    EXPECT_TRUE ( error.contains( "master password is wrong" ) )
       << error.toStdString();
    EXPECT_FALSE( error.contains( "using password" ) ) << error.toStdString();
+
+   US_Settings::set_defaultDB   ( savedDB   );
+   US_Settings::set_UltraScanPW( savedHash );
+}
+
+/* A database password stored empty is unlocked by the right master
+   password too.  In the current format its ciphertext is empty; in the old
+   one (AES-128-CBC) it is one block of padding, which decrypts to nothing
+   as a wrong master password does -- and the right one was refused. */
+TEST_F( DataPubImport, AnEmptyStoredPasswordTakesTheRightMasterPassword )
+{
+   QStringList savedDB   = US_Settings::defaultDB();
+   QByteArray  savedHash = US_Settings::UltraScanPW();
+   US_Settings::set_UltraScanPW( QByteArray() );
+
+   // The old format, as US3 once wrote it: AES-128-CBC with the master
+   // password's first 16 characters as the key, PKCS#7 padding
+   auto legacy = []( const QString& plain, const QString& master,
+                     QString& ivHex ) -> QString
+   {
+      unsigned char key[ 16 ];
+      US_Crypto::deriveLegacyKey_16( master, key );
+      // A fixed vector, so that what a wrong key makes of the block -- a
+      // padding error here -- is the same in every run
+      QByteArray iv( "0123456789abcdef" );
+      QByteArray in  = plain.toLatin1();
+      QByteArray out( in.size() + 32, '\0' );
+      int        len = 0;
+      int        fin = 0;
+
+      EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+      EVP_EncryptInit_ex( ctx, EVP_aes_128_cbc(), nullptr, key,
+                          reinterpret_cast< const unsigned char* >( iv.constData() ) );
+      EVP_EncryptUpdate( ctx, reinterpret_cast< unsigned char* >( out.data() ),
+                         &len,
+                         reinterpret_cast< const unsigned char* >( in.constData() ),
+                         in.size() );
+      EVP_EncryptFinal_ex( ctx, reinterpret_cast< unsigned char* >( out.data() )
+                                + len, &fin );
+      EVP_CIPHER_CTX_free( ctx );
+      out.resize( len + fin );
+      ivHex = QString::fromLatin1( iv.toHex() );
+      return QString::fromLatin1( out.toHex() );
+   };
+
+   auto store = []( const QString& cipher, const QString& iv )
+   {
+      QStringList entry;
+      entry << "a database" << "us3" << "us3_somewhere" << "127.0.0.1:9"
+            << cipher << iv << "me@example.org" << cipher << iv
+            << US_Util::new_guid();
+      US_Settings::set_defaultDB( entry );
+   };
+
+   // Old format, empty
+   QString iv;
+   QString cipher = legacy( QString(), "right master", iv );
+   ASSERT_EQ( cipher.size(), 32 );
+   ASSERT_TRUE( US_Crypto::decrypt( cipher, "right master", iv ).isEmpty() );
+   store( cipher, iv );
+   EXPECT_TRUE ( US_DataPub::masterPasswordProblem( "right master" ).isEmpty() );
+   EXPECT_FALSE( US_DataPub::masterPasswordProblem( "wrong master" ).isEmpty() );
+
+   // Old format, not empty: the rule is unchanged
+   cipher = legacy( "dbpw", "right master", iv );
+   ASSERT_EQ( US_Crypto::decrypt( cipher, "right master", iv ), QString( "dbpw" ) );
+   store( cipher, iv );
+   EXPECT_TRUE ( US_DataPub::masterPasswordProblem( "right master" ).isEmpty() );
+   EXPECT_FALSE( US_DataPub::masterPasswordProblem( "wrong master" ).isEmpty() );
+
+   // The current format, empty
+   QStringList current = US_Crypto::encrypt( QString(), "right master" );
+   ASSERT_EQ( current.size(), 2 );
+   store( current.at( 0 ), current.at( 1 ) );
+   EXPECT_TRUE( US_DataPub::masterPasswordProblem( "right master" ).isEmpty() );
 
    US_Settings::set_defaultDB   ( savedDB   );
    US_Settings::set_UltraScanPW( savedHash );

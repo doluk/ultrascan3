@@ -546,6 +546,35 @@ bool US_DataPub::fileSha256( const QString& path, QString& digest,
    return reason.isEmpty();
 }
 
+namespace
+{
+   /* Whether a password stored in the old format (AES-128-CBC: a 16-byte
+      initialization vector) is the empty one.  It is one block of padding,
+      and US_Crypto::decrypt() gives nothing for it, as it does for a wrong
+      key.  Decrypted under an initialization vector changed so that the
+      padding of an empty password reads "A" followed by valid padding, it
+      gives "A" -- under the right key only (a wrong one hits that block
+      with a chance of 2^-128).
+   */
+   bool legacy_empty( const QString& cipher, const QString& pw,
+                      const QString& iv )
+   {
+      QByteArray ivb = QByteArray::fromHex( iv.toLatin1() );
+
+      if ( cipher.size() != 32  ||  iv.size() != 32  ||  ivb.size() != 16 )
+         return false;
+
+      ivb[ 0 ] = char( ivb[ 0 ] ^ ( 0x10 ^ 'A' ) );
+
+      for ( int ii = 1; ii < 16; ii++ )
+         ivb[ ii ] = char( ivb[ ii ] ^ ( 0x10 ^ 0x0F ) );
+
+      return US_Crypto::decryptLegacy( cipher, pw,
+                                       QString::fromLatin1( ivb.toHex() ) )
+             == QString( "A" );
+   }
+}
+
 QString US_DataPub::masterPasswordProblem( const QString& masterPW )
 {
    QStringList db   = US_Settings::defaultDB();
@@ -561,7 +590,11 @@ QString US_DataPub::masterPasswordProblem( const QString& masterPW )
 
    if ( db.size() < 6  ||  db.at( 4 ).isEmpty() )  return QString();
 
-   if ( US_Crypto::decrypt( db.at( 4 ), masterPW, db.at( 5 ) ).isEmpty() )
+   // An empty database password decrypts to nothing as well: in the
+   // current format its ciphertext is empty (above), in the old one it is
+   // a block of padding
+   if ( US_Crypto::decrypt( db.at( 4 ), masterPW, db.at( 5 ) ).isEmpty()  &&
+        ! legacy_empty( db.at( 4 ), masterPW, db.at( 5 ) ) )
       return QObject::tr( "The master password is wrong: it does not unlock"
                           " the password stored for the database \"%1\"" )
              .arg( name );
