@@ -42,8 +42,10 @@ class TestUSDataDbLive : public ::testing::Test
       const QString rawGUID  = "aaaaaaaa-0000-4000-8000-000000000100";
       const QString othEdit  = "aaaaaaaa-0000-4000-8000-000000000210";
 
-      // What a test wrote, removed again at its end
+      // What a test wrote, removed again at its end: procedure calls, and
+      // statements run first
       QStringList cleanup;
+      QStringList rawCleanup;
 
       void SetUp() override
       {
@@ -85,6 +87,9 @@ class TestUSDataDbLive : public ::testing::Test
       {
          // What is left of what the test wrote, in an order the
          // constraints allow
+         for ( int ii = 0; admin != nullptr  &&  ii < rawCleanup.size(); ii++ )
+            admin->rawQuery( rawCleanup[ ii ] );
+
          for ( int ii = 0; admin != nullptr  &&  ii < cleanup.size(); ii++ )
             admin->statusQuery( cleanup[ ii ].split( " " ) );
 
@@ -149,7 +154,7 @@ class TestUSDataDbLive : public ::testing::Test
          int     editID = -1, modelID = -1, noiseID = -1, othM = -1, othN = -1;
       };
 
-      void newEdit( Edit& ed )
+      void newEdit( Edit& ed, bool withTheirs = true, const QString& tag = "a1" )
       {
          QString stamp = QDateTime::currentDateTimeUtc().toString( "yyMMddhhmmss" );
          ed.editG      = US_Util::new_guid();
@@ -176,8 +181,12 @@ class TestUSDataDbLive : public ::testing::Test
          ed.theirM    = US_Util::new_guid();
          ed.theirN    = US_Util::new_guid();
 
-         ed.modelID = newModel( inv, ed.modelG, ed.editG, base + "_a1_2DSA_i01.model", personID );
-         ed.noiseID = newNoise( inv, ed.noiseG, ed.editID, ed.modelG, base + "_a1_2DSA_i01.ti_noise" );
+         ed.modelID = newModel( inv, ed.modelG, ed.editG, base + "_" + tag + "_2DSA_i01.model", personID );
+         ed.noiseID = newNoise( inv, ed.noiseG, ed.editID, ed.modelG, base + "_" + tag + "_2DSA_i01.ti_noise" );
+         ASSERT_GT( ed.modelID, 0 );
+         ASSERT_GT( ed.noiseID, 0 );
+         if ( ! withTheirs )   return;
+
          ed.othM    = newModel( admin, ed.theirM, othEdit, "Other_run.1A280.global.model", otherID );
          ed.othN    = newNoise( admin, ed.theirN, ed.editID, ed.theirM, "Other_run.1A280.global.ti_noise" );
          ASSERT_GT( ed.modelID, 0 );
@@ -218,6 +227,80 @@ class TestUSDataDbLive : public ::testing::Test
 
          return nullptr;
       }
+
+      // Whether the database has the patched delete_editedData: it says
+      // there is no such edit (510), an older one that there is no such
+      // experiment (508)
+      bool patched( void )
+      {
+         return admin->statusQuery( QStringList() << "delete_editedData"
+                                    << "999999999" ) == IUS_DB2::NO_EDITDATA;
+      }
+
+      // Mark a model as one an autoflow (the GMP framework) produced
+      void gmpModel( int modelID )
+      {
+         QString id = QString::number( 900000 + modelID );
+         admin->rawQuery( "INSERT INTO autoflowModelsLink ( autoflowAnalysisID,"
+                          " modelsDesc, autoflowID ) VALUES ( " + id + ", '{\"2DSA_IT\":"
+                          "[{\"modelID\":\"" + QString::number( modelID ) + "\"}]}', 0 )" );
+         rawCleanup << "DELETE FROM autoflowModelsLink WHERE autoflowAnalysisID = " + id;
+         admin->rawQuery( "SELECT COUNT(*) FROM autoflowModelsLink"
+                          " WHERE autoflowAnalysisID = " + id );
+         ASSERT_TRUE( admin->next() );
+         ASSERT_EQ( admin->value( 0 ).toInt(), 1 ) << admin->lastError().toStdString();
+      }
+
+      // A window on the investigator's run, from the database, its tree
+      // built; the prompts it would show are kept
+      struct Win
+      {
+         QProgressBar   bar;
+         QLabel         label;
+         US_DataModel   model;
+         bool           ready;        // the model has its database
+         QTreeWidget    tw;
+         US_DataProcess proc;         // takes the model's database
+         US_DataTree    tree;
+         QStringList    prompts;
+
+         bool prepare( US_DB2* db, const QString& runID )
+         {
+            model.setDatabase( db );
+            model.setProgress( &bar, &label );
+            model.setFilters( runID, "ALL", "DB Only" );
+            return true;
+         }
+
+         Win( US_DB2* db, const QString& runID )
+            : ready( prepare( db, runID ) ), proc( &model ), tree( &model, &tw )
+         {
+            tw.setSelectionMode( QAbstractItemView::ExtendedSelection );
+            model.setSiblings( &proc, &tree );
+            tree.setPrompter( [ this ]( int, const QString& title, const QString& text )
+                              { prompts << title + ": " + text; return true; } );
+            model.scan_data();
+            tree.build_dtree();
+         }
+
+         // Remove the record of a GUID, and what is under it, from the
+         // database, as the context menu does
+         int remove( const QString& guid )
+         {
+            QTreeWidgetItem* item = itemOfRow( tw, rowOf( model, guid ) );
+            if ( item == nullptr )   return -1;
+            tw.clearSelection();
+            item->setSelected( true );
+            return tree.act_on_selection( "Database only", "DB-only remove" );
+         }
+
+         bool inDb( const QString& guid )
+         {
+            int row = rowOf( model, guid );
+            return row >= 0  &&
+                   ( model.row_datadesc( row ).recState & US_DataModel::REC_DB ) != 0;
+         }
+      };
 };
 
 /* An edit with a model and noise of the investigator's, and noise of
@@ -405,4 +488,209 @@ TEST_F( TestUSDataDbLive, AnEditTheDatabaseKeepsKeepsItsSubtree )
    for ( const QString& guid : { ed.editG, ed.modelG, ed.noiseG } )
       EXPECT_NE( model.row_datadesc( rowOf( model, guid ) ).recState
                  & US_DataModel::REC_DB, 0 ) << guid.toStdString();
+}
+
+/* The investigator's own noise of another edit's model, recorded against
+   the edit (a global fit, say), goes with it.  An older delete_editedData
+   refuses the edit on it (fk_noise_editDataID) after removing the edit's
+   models and noise, the transaction gives that back, and the second try
+   removes that noise first; a patched one removes it with the edit.  The
+   other edit and its model stay, and the rows say what is gone.
+*/
+TEST_F( TestUSDataDbLive, TheInvestigatorsNoiseOfAnotherEditsModelGoesWithTheEdit )
+{
+   Edit ed;
+   Edit other;
+   newEdit( ed, false, "a1" );
+   if ( HasFatalFailure() )   return;
+   newEdit( other, false, "a2" );
+   if ( HasFatalFailure() )   return;
+
+   QString crossG = US_Util::new_guid();
+   int     cross  = newNoise( inv, crossG, ed.editID, other.modelG,
+                              runID + ".1A280.global_a2_2DSA_i01.ti_noise" );
+   ASSERT_GT( cross, 0 );
+   cleanup.prepend( "delete_noise " + QString::number( cross ) );
+
+   Win win( inv, runID );
+   ASSERT_GE( rowOf( win.model, ed.editG ), 0 ) << win.model.scan_errors().join( "\n" ).toStdString();
+
+   EXPECT_EQ( win.remove( ed.editG ), 0 ) << win.proc.lastError().toStdString();
+   EXPECT_TRUE( win.prompts.isEmpty() ) << win.prompts.join( "\n" ).toStdString();
+
+   EXPECT_EQ( present( "get_editedData", ed.editID,  IUS_DB2::NO_EDITDATA ), 0 );
+   EXPECT_EQ( present( "get_model_info", ed.modelID, IUS_DB2::NO_MODEL ), 0 );
+   EXPECT_EQ( present( "get_noise_info", ed.noiseID, IUS_DB2::NO_NOISE ), 0 );
+   EXPECT_EQ( present( "get_noise_info", cross,      IUS_DB2::NO_NOISE ), 0 );
+   EXPECT_EQ( present( "get_editedData", other.editID,  IUS_DB2::NO_EDITDATA ), 1 );
+   EXPECT_EQ( present( "get_model_info", other.modelID, IUS_DB2::NO_MODEL ), 1 );
+
+   for ( const QString& guid : { ed.editG, ed.modelG, ed.noiseG, crossG } )
+      EXPECT_FALSE( win.inDb( guid ) ) << guid.toStdString();
+   EXPECT_TRUE( win.inDb( other.modelG ) );
+}
+
+/* The GMP framework's records are never removed.  A model of the edit an
+   autoflow produced is refused by the window before the database is asked;
+   another investigator's model an autoflow produced, with noise recorded
+   against the edit, is not listed, and the database keeps the edit for it --
+   a patched one before it deletes anything, saying it is GMP's, an older one
+   on the noise's foreign key.  Nothing is removed either way.
+*/
+TEST_F( TestUSDataDbLive, TheGmpFrameworksRecordsKeepTheEdit )
+{
+   Edit ed;
+   newEdit( ed, true );
+   if ( HasFatalFailure() )   return;
+   bool isPatched = patched();
+
+   // the investigator's own model: the window refuses
+   gmpModel( ed.modelID );
+   if ( HasFatalFailure() )   return;
+   {
+      Win win( inv, runID );
+      ASSERT_GE( rowOf( win.model, ed.editG ), 0 );
+
+      EXPECT_EQ( win.remove( ed.editG ), US_DataTree::ACT_REFUSED );
+      ASSERT_EQ( win.prompts.size(), 1 );
+      EXPECT_TRUE( win.prompts[ 0 ].contains( "GMP" ) ) << win.prompts[ 0 ].toStdString();
+      EXPECT_EQ( present( "get_editedData", ed.editID,  IUS_DB2::NO_EDITDATA ), 1 );
+      EXPECT_EQ( present( "get_model_info", ed.modelID, IUS_DB2::NO_MODEL ), 1 );
+   }
+
+   // the other investigator's: the database keeps the edit
+   admin->rawQuery( rawCleanup.takeLast() );
+   gmpModel( ed.othM );
+   if ( HasFatalFailure() )   return;
+   {
+      Win win( inv, runID );
+      ASSERT_GE( rowOf( win.model, ed.editG ), 0 );
+
+      EXPECT_EQ( win.remove( ed.editG ), 2012 );
+      QString error = win.proc.lastError();
+      EXPECT_TRUE( win.prompts.isEmpty() ) << win.prompts.join( "\n" ).toStdString();
+      EXPECT_TRUE( error.contains( "Nothing was removed" ) ) << error.toStdString();
+      if ( isPatched )
+      {
+         EXPECT_TRUE( error.contains( "GMP framework refers to" ) ) << error.toStdString();
+      }
+      else
+      {
+         EXPECT_TRUE( error.contains( "fk_noise_editDataID" ) ) << error.toStdString();
+      }
+
+      EXPECT_EQ( present( "get_editedData", ed.editID,  IUS_DB2::NO_EDITDATA ), 1 );
+      EXPECT_EQ( present( "get_model_info", ed.modelID, IUS_DB2::NO_MODEL ), 1 );
+      EXPECT_EQ( present( "get_noise_info", ed.noiseID, IUS_DB2::NO_NOISE ), 1 );
+      EXPECT_EQ( present( "get_noise_info", ed.othN,    IUS_DB2::NO_NOISE ), 1 );
+      for ( const QString& guid : { ed.editG, ed.modelG, ed.noiseG } )
+         EXPECT_TRUE( win.inDb( guid ) ) << guid.toStdString();
+   }
+}
+
+/* Another session holds a record the removal needs, longer than the server
+   waits for it (a lock wait timeout): an older procedure has the server
+   report it, a patched one reports it in its status.  Nothing is changed,
+   it is not tried again (here the server waits two seconds) -- not even with the investigator's own noise of
+   another edit's model on the edit -- and the message says why.
+*/
+TEST_F( TestUSDataDbLive, ALockWaitChangesNothingAndSaysSo )
+{
+   Edit ed;
+   Edit other;
+   newEdit( ed, false, "a1" );
+   if ( HasFatalFailure() )   return;
+   newEdit( other, false, "a2" );
+   if ( HasFatalFailure() )   return;
+
+   QString crossG = US_Util::new_guid();
+   int     cross  = newNoise( inv, crossG, ed.editID, other.modelG,
+                              runID + ".1A280.global_a2_2DSA_i01.ti_noise" );
+   ASSERT_GT( cross, 0 );
+   cleanup.prepend( "delete_noise " + QString::number( cross ) );
+
+   Win win( inv, runID );
+   ASSERT_GE( rowOf( win.model, ed.editG ), 0 );
+
+   QString error;
+   inv->rawQuery( "SET SESSION innodb_lock_wait_timeout = 2" );
+   ASSERT_TRUE( admin->beginTransaction( error ) ) << error.toStdString();
+   admin->rawQuery( "SELECT modelID FROM model WHERE modelID = "
+                    + QString::number( ed.modelID ) + " FOR UPDATE" );
+   ASSERT_TRUE( admin->next() );
+
+   QElapsedTimer timer;
+   timer.start();
+   int  stat    = win.remove( ed.editG );
+   qint64 msecs = timer.elapsed();
+   error        = win.proc.lastError();
+   QString rerr;
+   admin->rollbackTransaction( rerr );
+
+   // one wait of two seconds: a second try would wait as long again
+   EXPECT_GE( msecs, 1900 );
+   EXPECT_LT( msecs, 3500 ) << error.toStdString();
+
+   EXPECT_EQ( stat, 2012 ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "lock wait timeout" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "Nothing was removed" ) ) << error.toStdString();
+   EXPECT_FALSE( error.contains( "refused" ) ) << error.toStdString();
+
+   EXPECT_EQ( present( "get_editedData", ed.editID,  IUS_DB2::NO_EDITDATA ), 1 );
+   EXPECT_EQ( present( "get_model_info", ed.modelID, IUS_DB2::NO_MODEL ), 1 );
+   EXPECT_EQ( present( "get_noise_info", ed.noiseID, IUS_DB2::NO_NOISE ), 1 );
+   EXPECT_EQ( present( "get_noise_info", cross,      IUS_DB2::NO_NOISE ), 1 );
+   for ( const QString& guid : { ed.editG, ed.modelG, ed.noiseG, crossG } )
+      EXPECT_TRUE( win.inDb( guid ) ) << guid.toStdString();
+}
+
+/* An edit another session removed since the scan: a patched procedure says
+   there is no such edit (510), an older one that its experiment does not
+   exist (508).  What the database holds is read back, and the rows say the
+   edit and what went with it are gone.
+*/
+TEST_F( TestUSDataDbLive, AnEditRemovedElsewhereIsReadBackAsGone )
+{
+   Edit ed;
+   newEdit( ed, false );
+   if ( HasFatalFailure() )   return;
+
+   Win win( inv, runID );
+   ASSERT_GE( rowOf( win.model, ed.editG ), 0 );
+
+   ASSERT_EQ( admin->statusQuery( QStringList() << "delete_editedData"
+                                  << QString::number( ed.editID ) ), IUS_DB2::OK )
+      << admin->lastError().toStdString();
+
+   EXPECT_EQ( win.remove( ed.editG ), 0 ) << win.proc.lastError().toStdString();
+   for ( const QString& guid : { ed.editG, ed.modelG, ed.noiseG } )
+      EXPECT_FALSE( win.inDb( guid ) ) << guid.toStdString();
+}
+
+/* The connection lost before a removal: nothing is removed, and the message
+   says to open the window again -- it does not connect again, so scanning
+   again would not help.
+*/
+TEST_F( TestUSDataDbLive, ARemovalOnALostConnectionSaysToOpenTheWindowAgain )
+{
+   Edit ed;
+   newEdit( ed, false );
+   if ( HasFatalFailure() )   return;
+
+   Win win( inv, runID );
+   ASSERT_GE( rowOf( win.model, ed.editG ), 0 );
+
+   inv->rawQuery( "SELECT CONNECTION_ID()" );
+   ASSERT_TRUE( inv->next() );
+   QString conn = inv->value( 0 ).toString();
+   admin->rawQuery( "KILL " + conn );
+   ASSERT_EQ( admin->lastError(), QString() );
+
+   EXPECT_NE( win.remove( ed.editG ), 0 );
+   QString error = win.proc.lastError();
+   EXPECT_TRUE( error.contains( "close it and open it again" ) ) << error.toStdString();
+   EXPECT_FALSE( error.contains( "Scan again" ) ) << error.toStdString();
+
+   EXPECT_EQ( present( "get_editedData", ed.editID,  IUS_DB2::NO_EDITDATA ), 1 );
+   EXPECT_TRUE( win.inDb( ed.editG ) );
 }

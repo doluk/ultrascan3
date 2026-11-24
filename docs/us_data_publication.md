@@ -943,10 +943,26 @@ stopped by a signal — is removed, a running one's never
 (`US_DataPubBundle::sweepStaleStaging()`).
 
 A model's variance and meniscus are columns of its database row as well as
-attributes of its XML. When the XML has neither, a `variance` and `meniscus`
-attribute of the model's manifest entry are used. An export writes both: from
-the database the values of the model's row (which the stored XML need not
-hold), from disk those of the model file.
+attributes of its XML, where `US_Model` writes six significant digits. A
+`variance` and `meniscus` attribute of the model's manifest entry win over the
+XML's and are written with all their digits; without them the XML's values are
+used. An export writes both: from the database the values of the model's row
+(which the stored XML need not hold), from disk those of the model file.
+
+A few columns of the source's rows have no place in a payload. The import
+writes them from optional attributes of the record's manifest entry, and
+without them as it always did:
+
+| Attribute | Of | Written to | Without it |
+|---|---|---|---|
+| `private` (`0` or `1`) | buffer | the buffer's private flag | private, as `US_Buffer::saveToDB()` makes a buffer |
+| `comment` | edit | `editedData.comment` | empty (as `us_edit` stores an edit) |
+| `label`, `comment` | raw data | `rawData.label`, `rawData.comment` | the run's label and comment, as `us_convert` writes raw data |
+| `spectrum` (may be empty) | analyte | the analyte row's `spectrum` column | its first extinction (or refraction, fluorescence) point, as `US_Analyte` writes it |
+
+The raw data rows of a run are written in one call (`US_ConvertIO`), which
+gives all of them one label and comment: the run's raw data records have to
+agree on theirs, or they are written with the run's, and the log says so.
 
 A **dry run** reads the target and decides everything, but opens no
 transaction and writes nothing — not even the output directory. Like the
@@ -965,7 +981,7 @@ opens, the rules the server would otherwise enforce only on the writes:
 
 | Rule of the server | What the import does |
 |---|---|
-| `add_rotor_calibration` takes an administrator (user level 3) | A calibration the person logged in may not add is left out with a warning (`--strict-hardware` refuses it); an administrator's import records "no calibration experiment" as `-1` |
+| `add_rotor_calibration` takes an administrator (user level 3) | A calibration the person logged in may not add is left out with a warning (`--strict-hardware` refuses it); an administrator's import records "no calibration experiment" as `-1`. The procedure dates the row itself (`NOW()`): the source's date is not kept |
 | `create_buffer_component` takes user level 2 | A buffer component the target lacks is refused below that level |
 | `new_solutionAnalyte` takes the investigator's own analyte (`analytePerson`), or an administrator | Another investigator's analyte of the bundle's GUID is not reused: the import makes a copy under a GUID of its own. One the bundle does not carry is refused |
 | (none: no procedure checks it) | Another investigator's *private* buffer is not linked either: the import makes a copy. A public one, or the investigator's own, is reused |
@@ -978,14 +994,25 @@ So a dry run that succeeds is an import that succeeds, short of what only the
 writes can find: a lost connection, a record another session writes in the
 meantime, and a server whose `create_buffer_component` has not been updated
 and gives a new component a taken ID (it uses the row count plus one; the dry
-run warns when that ID is taken, and the import is then rolled back). The run
+run warns when that ID is taken, and the import is then rolled back). The
+warning is one of the import's warnings, so `--strict-hardware` stops there.
+It is not given when the server says its procedure counts nothing:
+`SELECT us3_catalog_version()`, the version marker the updated procedures come
+with, answers 1 or more (a server without it refuses the statement, which is
+version 0), or the procedure's definition is readable (to its definer and an
+administrator; anyone else reads none) and counts no rows. The run
 hardware decisions (and so the operator check) are made as each run is
 written; a strict import that has to substitute fails there and is rolled
 back.
 
-A buffer component the import adds is found again in the component table by
-its definition, never by the ID `create_buffer_component` answers with: an
-unpatched server answers with the connection's previous insert ID.
+A buffer component the import adds is created with
+`US_BufferComponent::saveToDB()`, which finds the new row in the component
+table by its definition, never by the ID `create_buffer_component` answers
+with: an unpatched server answers with the connection's previous insert ID.
+The components of the bundle are matched to the target's with that class's
+rule (`matchingID()`): the same name, unit, range and gradient flag as stored,
+and coefficients equal to five decimals; of several such rows, the one of the
+highest ID.
 
 ### Which project the data lands in
 
@@ -1048,7 +1075,8 @@ solution of it or its time state is not there too, the import stops rather
 than attach anything to a run it did not create — a dry run says so too.
 
 An edit is stored without a comment, as `us_edit` and `us_import_run` store
-one; its file name already names the triple.
+one (its file name already names the triple), unless its manifest entry
+carries the source's (`comment`, above).
 
 Renaming changes the name inside the payload; the GUID is untouched, so the
 record's dependants follow it. Auto-generated names are `<name> (imported)`,
@@ -1073,7 +1101,8 @@ A buffer names its components by the source installation's IDs, which mean
 nothing in the target, so the bundle carries their definitions. Each
 component is matched in the target's component table by name, unit, range,
 gradient forming and coefficients (to the five decimals the tables store), and
-the buffer is pointed at the target's ID. Two buffers that differ only in
+the buffer is pointed at the target's ID -- of several rows of that
+definition, the highest. Two buffers that differ only in
 their components are different buffers: the comparison of a buffer with one
 the target has keeps the component IDs, both in terms of the target's table.
 
@@ -1102,7 +1131,11 @@ solutions, centerpieces and rotor calibration.
 Numeric IDs are never carried over. A database allocates its own. In a disk
 store a record the import writes carries the ID `-1`, and a reference names the
 ID the target's record has, or `-1`. A rotor calibration written to disk names
-the target's rotor of the same GUID, or none.
+the target's rotor of the same GUID, or none. It is the exception to `-1`: a
+disk store finds a run's calibration by the ID the run's XML names, so the
+calibration gets one no calibration of the store's `rotors` directory has (the
+highest there plus one), and the runs of the bundle name it. Exported from
+the store again, the run still has its calibration.
 
 ### Order of replay
 

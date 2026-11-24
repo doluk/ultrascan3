@@ -124,7 +124,11 @@ class US_UTIL_EXTERN US_DiskScan : public QThread
       //!        thread once the job has finished and the scanner is idle,
       //!        just before \ref jobDone, so a slot can read \ref catalog;
       //!        for a read the caller makes itself on the idle catalog, as
-      //!        the catalog emits it.
+      //!        the catalog emits it.  No disk job emits it today: the disk
+      //!        chain of an experiment already has all the noise of its
+      //!        models, so a later read finds nothing to add.  It is
+      //!        forwarded all the same, so a catalog that does change a
+      //!        loaded experiment is not read while the worker is in it.
       //! \param index The position of the experiment
       void runChanged ( int index );
 

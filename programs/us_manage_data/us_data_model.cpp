@@ -383,6 +383,18 @@ bool US_DataModel::is_busy( void ) const
    return ( busy > 0 );
 }
 
+// Hold off reads and merges while an action asks and runs
+void US_DataModel::begin_hold( void )
+{
+   busy++;
+}
+
+void US_DataModel::end_hold( void )
+{
+   if ( busy > 0 )
+      busy--;
+}
+
 // A read asked for while another is in progress, or while the scan loop
 // runs, is queued: the scan loop, or whoever runs the queue, gets to it
 bool US_DataModel::must_queue( void ) const
@@ -745,6 +757,7 @@ void US_DataModel::scan_runs( )
    stale_runs.clear();
    run_taken.clear();
    acted    .clear();
+   db_gone  .clear();
    errors   .clear();
    db_failed  = false;
    demo       = false;
@@ -1136,6 +1149,8 @@ void US_DataModel::append_row( const DataDesc& desc, int runIndex )
    adescs     << desc;
    row_run    << runIndex;
    row_parent << prnt;
+   row_file   << desc.filename;
+   row_dbid   << desc.recordID;
 }
 
 // Clear the rows, and the indexes kept of them
@@ -1144,6 +1159,8 @@ void US_DataModel::clear_rows( void )
    adescs    .clear();
    row_run   .clear();
    row_parent.clear();
+   row_file  .clear();
+   row_dbid  .clear();
    touched   .clear();
 }
 
@@ -1255,10 +1272,13 @@ int US_DataModel::pending_runs( ) const
 }
 
 // Whether a client error number says the connection to the server is gone:
-// CR_SERVER_GONE_ERROR (2006) or CR_SERVER_LOST (2013)
+// CR_SERVER_GONE_ERROR (2006), CR_SERVER_LOST (2013) or
+// CR_SERVER_LOST_EXTENDED (2055), which is what a TLS connection that breaks
+// reports
 bool US_DataModel::connection_lost( int serverErrno )
 {
-   return ( serverErrno == 2006  ||  serverErrno == 2013 );
+   return ( serverErrno == 2006  ||  serverErrno == 2013  ||
+            serverErrno == 2055 );
 }
 
 // Read the second layer of one experiment and merge it into the whole
@@ -1475,6 +1495,9 @@ bool US_DataModel::do_merge_run( int index )
 
    merging_run = -1;
 
+   // What the database lost since the catalog read it is not there
+   drop_db_gone( ddescs );
+
    kdb_recs      += ddescs.size();
    klo_recs      += ldescs.size();
 
@@ -1490,6 +1513,8 @@ bool US_DataModel::do_merge_run( int index )
       bool     redone = apply_action( desc );
 
       append_row( desc, index );
+      row_file.last() = mdescs.at( ii ).filename;   // what the catalogs say
+      row_dbid.last() = mdescs.at( ii ).recordID;
 
       if ( redone  &&  ( desc.recState & REC_DB ) != 0  &&
            ( desc.recState & REC_LO ) != 0 )
@@ -1743,11 +1768,26 @@ void US_DataModel::record_changed( int row )
 
    const DataDesc& desc = adescs.at( row );
 
-   // Where the action left it, for a merge from the catalogs to come
+   // Where the action left it, for a merge from the catalogs to come: by
+   // the local file and the database record the row was merged with
    QString key = action_key( desc );
 
    if ( ! key.isEmpty() )
-      acted.insert( key, desc );
+   {
+      Acted done;
+      done.desc       = desc;
+      done.mergedFile = row_file.value( row );
+      done.mergedID   = row_dbid.value( row, -1 );
+
+      QList< Acted >& list = acted[ key ];
+
+      for ( int ii = list.size() - 1; ii >= 0; ii-- )
+         if ( list.at( ii ).mergedFile == done.mergedFile  &&
+              list.at( ii ).mergedID   == done.mergedID )
+            list.removeAt( ii );
+
+      list << done;
+   }
 
    if ( ( desc.recState & REC_DB ) != 0  &&
         ( desc.recState & REC_LO ) != 0 )
@@ -1799,7 +1839,25 @@ bool US_DataModel::apply_action( DataDesc& desc ) const
 
    if ( key.isEmpty()  ||  ! acted.contains( key ) )   return false;
 
-   const DataDesc& done = acted[ key ];
+   // The same record: the same local file, or none, and the same database
+   // record, or none, as the acted row was merged with.  A copy of it with
+   // the same GUID -- in a run directory copied under another name, or a
+   // second local file of it -- is another record.  Model and noise files
+   // are not a run's: one file shown in two experiments is one record.
+   const QList< Acted >& list  = acted[ key ];
+   int                   found = -1;
+
+   for ( int ii = list.size() - 1; ii >= 0  &&  found < 0; ii-- )
+   {
+      const Acted& aa = list.at( ii );
+
+      if ( aa.mergedFile == desc.filename  &&  aa.mergedID == desc.recordID )
+         found = ii;
+   }
+
+   if ( found < 0 )   return false;
+
+   const DataDesc& done = list.at( found ).desc;
 
    desc.recordID    = done.recordID;
    desc.recState    = done.recState & ~HV_DET;
@@ -1809,6 +1867,54 @@ bool US_DataModel::apply_action( DataDesc& desc ) const
    desc.contents    = QString();
 
    return true;
+}
+
+// A record is gone from the database: no later merge shows it there
+void US_DataModel::removed_from_db( int recType, int recordID )
+{
+   if ( recordID < 0 )   return;
+
+   db_gone.insert( QString::number( recType ) + ":"
+                   + QString::number( recordID ) );
+}
+
+/* Leave out the catalog's database records that are gone since it read them.
+
+   The catalogs are not read again after an action, so an experiment read
+   after it -- one the scan had not reached, or one merged again -- would
+   show what an action removed from the database as still there, and so
+   would what the database removed with it: an edit's models, and a model's
+   noise, wherever the catalog has them.  Those are the records whose parent
+   (by database ID) is gone; the parents come first in the list, and a
+   record left out takes its own descendants with it.
+*/
+void US_DataModel::drop_db_gone( QVector< DataDesc >& descs )
+{
+   if ( db_gone.isEmpty() )   return;
+
+   auto key = []( int recType, int recordID )
+   {
+      return QString::number( recType ) + ":" + QString::number( recordID );
+   };
+
+   QVector< DataDesc > kept;
+
+   for ( int ii = 0; ii < descs.size(); ii++ )
+   {
+      const DataDesc& desc = descs.at( ii );
+
+      if ( desc.recordID >= 0  &&  desc.recType >= RAW  &&
+           ( db_gone.contains( key( desc.recType, desc.recordID ) )  ||
+             db_gone.contains( key( desc.recType - 1, desc.parentID ) ) ) )
+      {
+         db_gone.insert( key( desc.recType, desc.recordID ) );
+         continue;
+      }
+
+      kept << desc;
+   }
+
+   descs = kept;
 }
 
 // Bring an experiment up to date after records of it changed
@@ -1955,8 +2061,12 @@ bool US_DataModel::db_digest( IUS_DB2* dbP, const DataDesc& desc,
    }
 
    // The server hashes the same XML when it lists these, as MD5 over its
-   // bytes, so the hash of what it returns is the one it would give
+   // bytes, so the hash of what it returns is the one it would give.  Its
+   // line ends are made LF, as the local file's are (local_digest): a
+   // record uploaded from a file with CRLF ones holds those, and is the
+   // same record all the same
    QByteArray xml = dbP->value( xcol ).toString().toUtf8();
+   xml.replace( "\r\n", "\n" );
    digest = QString( QCryptographicHash::hash( xml, QCryptographicHash::Md5 )
                      .toHex() ) + " " + QString::number( xml.size() );
 
@@ -3278,6 +3388,7 @@ void US_DataModel::dummy_data()
    stale_runs.clear();
    run_taken.clear();
    acted    .clear();
+   db_gone  .clear();
    errors   .clear();
    db_failed  = false;
    stopped    = false;

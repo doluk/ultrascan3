@@ -258,7 +258,8 @@ and a cell table, so that a run can be read and exported whole.
 
 ### 4. The import target
 
-`test_us_datapub`'s `DataPubDbImport`, `DataPubDbRules` and `DataPubDbExport` cases write into
+`test_us_datapub`'s `DataPubDbImport`, `DataPubDbRules`, `DataPubDbFields` and `DataPubDbExport`
+cases write into
 the scratch database named by `US3_TEST_DB_IMPORT_NAME`.  It needs the schema,
 the procedures, the hardware data (a lab, a rotor with a calibration, the
 centerpiece table) and the component table as above, then the same three
@@ -298,6 +299,12 @@ The instrument procedures call `DECODE()`, which MySQL 8 no longer has, so
 the import cases need MariaDB (or a MySQL 5.7); against MySQL 8 leave
 `US3_TEST_DB_IMPORT_NAME` unset and they skip.  Each run of them adds
 records, so drop and rebuild the database now and then.
+`DataPubDbFields.TheRunOfExperimentOneIsAnotherInvestigators` needs
+experiment 1 to be a run an import of these suites wrote (the first import
+into a fresh target makes it); it skips on a target whose experiment 1 is
+something else.  `DataPubDbFields.AComponentIdTheTableHasIsForeseen` adds a
+component row past the end of the table for the run of the case (and removes
+it again), so the user needs `INSERT` and `DELETE` on `bufferComponent`.
 
 ### 5. Running the suites
 
@@ -331,7 +338,8 @@ run only with `US3_TEST_LIVE_DB=1` against a seeded database of their own (see
 the head of `test/utils/test_us_buffer_component_live.cpp`).  The
 `DataPubDb*` cases pass 25 on MariaDB (against the unpatched and the patched
 procedures alike), or 12 on MySQL 8, where the 13 cases that import into a
-database (`DataPubDbImport`, `DataPubDbRules`, `DataPubDbExport`) skip.
+database (`DataPubDbImport`, `DataPubDbRules`, `DataPubDbFields`,
+`DataPubDbExport`) skip.
 These are the counts of the branch as these lines were written; run the
 suites and compare the summary lines rather than trusting a number here.
 
@@ -346,7 +354,7 @@ The variables, and who reads them:
 | `US3_TEST_DB_ADMIN_GUID`, `_ADMIN_PW` | an administrator's login: the tests that switch investigators, `TestUSDataDbLive`, and `DataPubDbRules`' rotor-calibration case (they skip without) |
 | `US3_TEST_DB_OTHER_ID` | the second investigator, by ID: the tests that switch investigators, `TestUSDataDbLive` |
 | `US3_TEST_DB_OTHER_GUID`, `_OTHER_PW` | the second investigator's own login: `DataPubDbRules`' case of another investigator's import (skips without) |
-| `US3_TEST_DB_IMPORT_NAME` | `test_us_datapub`'s `DataPubDbImport`, `DataPubDbRules` and `DataPubDbExport`: a scratch database they write into |
+| `US3_TEST_DB_IMPORT_NAME` | `test_us_datapub`'s `DataPubDbImport`, `DataPubDbRules`, `DataPubDbFields` and `DataPubDbExport`: a scratch database they write into |
 | `US3_TEST_DB_NOHANDSHAKE_HOST` | `US_DB2_LiveHandshake` in `test_us_db2_roundtrip.cpp`: host:port of a server that ignores the client's character set (see below), with a database named `US3_TEST_DB_NAME` that `US3_TEST_DB_USER` may change |
 
 `test_us_manage_data` has live cases of its own, `TestUSDataDbLive`
@@ -360,6 +368,15 @@ of the fixture, never at the fixture itself:
 ```bash
 US3_TEST_DB_NAME=<copy of us3test> ./bin/test_us_manage_data --gtest_filter='TestUSDataDbLive*'
 ```
+
+Run them against a copy with the procedures of `us3_sql` as they are and
+against one with the patched ones loaded (`us3_expdata_procs.sql`,
+`us3_catalog_procs.sql`): they check the window against both.  Besides
+records, they write a row of `autoflowModelsLink` (to make a model GMP's),
+which they delete again; they hold a model row locked from the administrator's
+connection with a two-second `innodb_lock_wait_timeout` on the investigator's,
+and `KILL` the investigator's connection from the administrator's -- both log
+in as `US3_TEST_DB_USER`, which may end its own connections.
 
 Set both password variables to the same value to run everything. The
 scratch-database tests skip when the database already has the US3
@@ -403,7 +420,16 @@ against one database:
   `create_buffer_component` after setting the connection's
   `LAST_INSERT_ID()` to an existing component, and once with a gap in the
   IDs; it passes against the old procedure (which inserts at `COUNT(*)+1`)
-  and the patched one (`MAX+1`).
+  and the patched one (`MAX+1`).  It also checks that a component with a
+  coefficient that is not finite writes no row.
+- `test_us_db2_limits_live.cpp` creates a procedure of its own that checks a
+  blob's MD5, and sends it blobs of about `@@max_allowed_packet` bytes (16 MiB
+  on MariaDB 10.11 and 64 MiB on MySQL 8 by default, so the test holds a few
+  times that in memory): one just below the limit must arrive whole, one at
+  the limit must be refused before it is sent.  It also reads a column with
+  a NUL in it, refuses text with a lone UTF-16 surrogate, and kills its own
+  connection from a second one (`KILL`, which a user may do to its own
+  connections) to check that a dropped connection is no longer "connected".
 - `test_us_data_catalog_db.cpp` (`TestUSDataCatalogDbNoise`) adds a second
   experiment, a global-fit model on the UNASSIGNED edit (`editedDataID` 1,
   inserted when the schema lacks it) and noise recorded across experiments.

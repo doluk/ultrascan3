@@ -285,6 +285,7 @@ qDebug() << "Exp:rdDB: ExpInfRun: xmlFile size" << xmlFile.size();
    // leaves its fields empty (or the rotor coefficients 0), not as an earlier
    // read left them; a database error ends the read with its status.
    bool found  = false;
+   invGUID     = QString( "" );
    int  status = lookup_row( db, QStringList{ "get_person_info", QString::number( invID ) }, found );
    if ( status != IUS_DB2::OK )
    {

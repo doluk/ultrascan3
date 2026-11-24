@@ -50,9 +50,13 @@ class US_UTIL_EXTERN US_BufferComponent
           component.  So the component list is read before and after the
           call, and the component is the new row whose definition (name,
           unit, range, gradient flag and the coefficients as stored) is this
-          one's.  With several such rows -- another client creating the same
-          component at once -- the highest ID is taken; they are the same
-          component.
+          one's, as \ref matchingID picks it: with several such rows --
+          another client creating the same component at once -- the highest
+          ID is taken; they are the same component.
+
+          A coefficient that is not a finite number (NaN, infinity) is
+          refused before anything is written: the table would hold "nan",
+          which no reader parses, and the row could not be found again.
 
           On the old procedure an ID gap in the table makes COUNT(*) + 1 an
           ID that is taken, and the create fails with a duplicate key; that
@@ -60,15 +64,33 @@ class US_UTIL_EXTERN US_BufferComponent
           \param db    An open database connection
           \param error If not null, receives the reason when the save fails
           \return The bufferComponentID of the new row, also put in
-                  \ref componentID; -1 when the create failed, the list could
-                  not be read, or no new row has this definition -- then
-                  componentID is unchanged */
+                  \ref componentID; -1 when a coefficient is not finite, the
+                  create failed, the list could not be read, or no new row
+                  has this definition -- then componentID is unchanged */
       int saveToDB( IUS_DB2* = 0, QString* error = nullptr );
 
       //! \brief True when \a other is the same component as stored: the
       //!        same name, unit, range and gradient flag, and the same
       //!        coefficients to the five decimals the DB keeps
+      //!
+      //! The text fields are compared exactly, as stored -- a range of
+      //! "0-1 M " is not one of "0-1 M" -- and each coefficient as the text
+      //! create_buffer_component is given, QString::number( c, 'f', 5 ).
       bool sameDefinition( const US_BufferComponent& other ) const;
+
+      /*! \brief The component of \a table that is \a want
+
+          The one rule for which row of a component table stands for a
+          component, for every caller that matches one: of the rows that
+          have \a want's definition (\ref sameDefinition), the one with
+          the highest numeric ID.  Duplicates of a definition are the same
+          component, so any would do; this makes every caller pick the
+          same one, whatever order the table was read in.
+          \param table The components, by ID
+          \param want  The definition to look for
+          \return Its ID, or an empty string when no row has it
+      */
+      static QString matchingID( const QMap< QString, US_BufferComponent >& table, const US_BufferComponent& want );
 
       //! \brief The IDs of every component in the DB, as
       //!        get_buffer_component_desc lists them
@@ -174,7 +196,9 @@ class US_UTIL_EXTERN US_Buffer
       //!        transaction errors even if rollback changes the DB error state.
       //! \return The bufferID of the new buffer, or a negative error: -9 failed
       //!         lookup, -1 failed insert, -2 failed update, -3 failed component
-      //!         delete, -4 failed component write, -5 failed extinction-profile
+      //!         delete, -4 a component without a concentration (refused before
+      //!         anything is written) or a failed component write (an empty or
+      //!         unknown component ID among them), -5 failed extinction-profile
       //!         write, -6 failed disk copy (DB already committed), -7 failed begin,
       //!         -8 failed commit (rolled back, nothing kept), -10 unconfirmed rollback
       //!         (the error text says whether anything may have been kept).

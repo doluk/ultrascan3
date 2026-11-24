@@ -169,6 +169,76 @@ TEST( UsDb2Query, TheBlobTransfersRefuseAnInvalidProcedureName )
 
 #endif
 
+// Text with half a surrogate pair has no UTF-8 form; Qt would send '?' in
+// its place.  Every query refuses it, before anything is sent -- so an
+// adapter that is not even connected says so, and not that it could not
+// reach the server.
+TEST( UsDb2Text, ALoneSurrogateIsNamed )
+{
+   EXPECT_TRUE( US_DB2::loneSurrogateProblem( QString() ).isEmpty() );
+   EXPECT_TRUE( US_DB2::loneSurrogateProblem( QString::fromUtf8( "café \U0001F600 中" ) ).isEmpty() );
+
+   const QString high = QString( "a" ) + QChar( 0xD83D ) + "b";
+   const QString low  = QString( "a" ) + QChar( 0xDE00 );
+   const QString cut  = QString::fromUtf8( "\U0001F600" ).left( 1 );
+   const QString swap = QString( QChar( 0xDE00 ) ) + QChar( 0xD83D );
+   for ( const QString& text : { high, low, cut, swap } )
+   {
+      const QString problem = US_DB2::loneSurrogateProblem( text );
+      EXPECT_TRUE( problem.contains( "surrogate" ) ) << problem.toStdString();
+      EXPECT_TRUE( problem.contains( "nothing was sent" ) ) << problem.toStdString();
+   }
+   EXPECT_TRUE( US_DB2::loneSurrogateProblem( high ).contains( "U+D83D" ) );
+   EXPECT_TRUE( US_DB2::loneSurrogateProblem( low ).contains( "U+DE00" ) );
+}
+
+#ifndef NO_DB
+TEST( UsDb2Text, EveryQueryRefusesALoneSurrogateBeforeSending )
+{
+   US_DB2        db;
+   const QString lone = QString( "x" ) + QChar( 0xDC00 );
+
+   db.query( QString( "SELECT '" ) + lone + "'" );
+   EXPECT_EQ( db.lastErrno(), IUS_DB2::DBERROR );
+   EXPECT_EQ( db.lastServerErrno(), 0 );
+   EXPECT_TRUE( db.lastError().contains( "surrogate" ) ) << db.lastError().toStdString();
+
+   db.query( QStringList() << "get_person_info" << lone );
+   EXPECT_TRUE( db.lastError().contains( "surrogate" ) ) << db.lastError().toStdString();
+
+   EXPECT_EQ( db.statusQuery( QStringList() << "new_person" << lone ), IUS_DB2::DBERROR );
+   EXPECT_TRUE( db.lastError().contains( "surrogate" ) ) << db.lastError().toStdString();
+
+   EXPECT_EQ( db.functionQuery( QStringList() << "count_people" << lone ), IUS_DB2::DBERROR );
+   EXPECT_TRUE( db.lastError().contains( "surrogate" ) ) << db.lastError().toStdString();
+
+   db.rawQuery( QString( "SELECT '" ) + lone + "'" );
+   EXPECT_TRUE( db.lastError().contains( "surrogate" ) ) << db.lastError().toStdString();
+   EXPECT_FALSE( db.next() );
+}
+#endif
+
+// The errors after which a connection is gone, and some after which it is not
+TEST( UsDb2Connection, TheErrorsOfALostConnectionAreKnown )
+{
+   for ( int code : { 2006, 2013, 2026, 2027, 2055, 5013, 5014, 1053, 1153, 1927, 4031 } )
+      EXPECT_TRUE( US_DB2::isConnectionLoss( code ) ) << code;
+   for ( int code : { 0, 1062, 1205, 1213, 1305, 1366, 1451, 2014 } )
+      EXPECT_FALSE( US_DB2::isConnectionLoss( code ) ) << code;
+}
+
+// A COMMIT that fails with the connection may have taken effect: every
+// error of a lost connection says the outcome is unknown, 2055 (MySQL's
+// client library) and 2026 (TLS) as well as 2006 and 2013
+TEST( UsDb2Connection, ACommitLostWithTheConnectionHasAnUnknownOutcome )
+{
+   const QString unknown = QObject::tr( US_DB2::commitUnknownMessage ).arg( "boom" );
+   for ( int code : { 2006, 2013, 2055, 2026 } )
+      EXPECT_EQ( US_DB2::commitErrorText( code, "boom" ), unknown ) << code;
+   for ( int code : { 1213, 1205, 1180 } )
+      EXPECT_EQ( US_DB2::commitErrorText( code, "boom" ), QString( "boom" ) ) << code;
+}
+
 TEST( UsDb2Query, AnEmptyArgumentIsStillPassedAsAnEmptyLiteral )
 {
    EXPECT_EQ( call( QStringList() << "p" << "" << "z" ), QString( "CALL p('%1', '%2', '', 'z')" ).arg( kGuid ).arg( kPw ) );

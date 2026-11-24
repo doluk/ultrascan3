@@ -247,7 +247,7 @@ DbgLv(2) << "NOISE: filepath" << filepath;
       da_model->record_changed ( row );
    }
 
-   return stat;
+   return note_lost( stat );
 }
 
 // perform a record download from the database to local disk
@@ -423,7 +423,7 @@ int US_DataProcess::record_download( int row )
       da_model->record_changed ( row );
    }
 
-   return stat;
+   return note_lost( stat );
 }
 // perform a record remove from the database
 int US_DataProcess::record_remove_db( int row )
@@ -509,13 +509,17 @@ DbgLv(1) << "NOI_RMV:    lastErr" << db->lastError() << db->lastErrno();
       mark_removed_from_db( row );
    }
 
-   return stat;
+   return note_lost( stat );
 }
 
 // Mark a row as gone from the database: local only now, or gone altogether
 void US_DataProcess::mark_removed_from_db( int row )
 {
    US_DataModel::DataDesc desc = da_model->row_datadesc( row );
+
+   // No later merge from the catalogs shows it, or what went with it
+   if ( ( desc.recState & US_DataModel::REC_DB ) != 0 )
+      da_model->removed_from_db( desc.recType, desc.recordID );
 
    desc.recordID  = -1;
    desc.recState &= ~( US_DataModel::REC_DB | US_DataModel::HV_DET );
@@ -624,12 +628,15 @@ int US_DataProcess::remove_edit( int row )
    bool    clean = true;           // a failure was rolled back as a whole
    int     stat  = edit_attempt( editID, QList< ForeignNoise >(), why, clean );
 
-   // A refusal that removing the investigator's own noise first cannot
-   // change -- the edit is not theirs, or the database keeps it for noise
-   // of another investigator or of the GMP framework -- is not tried again
-   bool    noRetry = ( edit_status == EDIT_KEPT );
-
-   if ( stat == 2012  &&  clean  &&  ! noRetry  &&  ! foreign.isEmpty() )
+   // Only an older database's refusal on the noise of other edits' models
+   // recorded against the edit (fk_noise_editDataID) can change when the
+   // investigator's own such noise goes first.  Any other is not tried
+   // again: the edit is not theirs, the database keeps it for records of
+   // another investigator or of the GMP framework, it is gone, another
+   // session holds what it needs (a lock wait or a deadlock, which a second
+   // try would only wait on again), or the connection is lost.
+   if ( stat == 2012  &&  clean  &&  edit_failure == EDIT_FK  &&
+        ! foreign.isEmpty() )
    {  // An older database: the noise of other edits' models goes first
       why.clear();
       stat = edit_attempt( editID, foreign, why, clean );
@@ -651,6 +658,16 @@ int US_DataProcess::remove_edit( int row )
       return 0;
    }
 
+   // A failure the transaction gave back as a whole changed nothing, and
+   // there is nothing to read back -- unless the database said the edit is
+   // not there, which is what the read back finds out
+   if ( clean  &&  edit_failure != EDIT_MISSING )
+   {
+      errMsg = tr( "%1 was not removed: %2\n\nNothing was removed." )
+               .arg( label ).arg( why );
+      return stat;
+   }
+
    return settle_edit( row, foreign, stat, why );
 }
 
@@ -662,8 +679,9 @@ int US_DataProcess::edit_attempt( int editID,
    QStringList query;
    QString     terr;
 
-   clean       = true;
-   edit_status = IUS_DB2::OK;
+   clean        = true;
+   edit_status  = IUS_DB2::OK;
+   edit_failure = EDIT_REFUSED;
 
    if ( ! db->beginTransaction( terr ) )
    {
@@ -691,6 +709,9 @@ int US_DataProcess::edit_attempt( int editID,
                 .arg( fn.description.isEmpty() ? fn.guid : fn.description )
                 .arg( nst ).arg( db->lastError() );
          stat = 2018;
+         edit_failure = failure_kind( nst, db->lastServerErrno(),
+                                      db->lastError() );
+         why += failure_text( edit_failure );
          break;
       }
    }
@@ -701,31 +722,31 @@ int US_DataProcess::edit_attempt( int editID,
       query << "delete_editedData" << QString::number( editID );
 DbgLv(1) << "EDT_RMV:" << query;
 
-      int est = db->statusQuery( query );
-      edit_status = est;
+      int     est  = db->statusQuery( query );
+      int     serr = db->lastServerErrno();
+      QString derr = db->lastError();
+      edit_status  = est;
 
       if ( est != IUS_DB2::OK )
       {
-DbgLv(1) << "EDT_RMV:   stat" << est << db->lastError() << db->lastErrno();
-         why  = tr( "the database refused it (delete_editedData status %1:"
-                    " %2)." ).arg( est ).arg( db->lastError() );
+DbgLv(1) << "EDT_RMV:   stat" << est << derr << serr;
+         edit_failure = failure_kind( est, serr, derr );
 
-         if ( est == EDIT_KEPT )
-            why += tr( "\nThe database keeps the edit when it is not yours,"
-                       " or when removing it would take along records of"
-                       " another investigator -- noise computed from it for"
-                       " that investigator's model of another edit, or that"
-                       " investigator's models of it -- or records the GMP"
-                       " framework refers to; its message says which.  Only"
-                       " that investigator (or an administrator) can remove"
-                       " those records, and nothing was changed." );
+         if ( edit_failure == EDIT_LOST )
+            why  = tr( "the connection to the database was lost while it"
+                       " was being removed (delete_editedData: %1), so"
+                       " whether it was removed is not known." ).arg( derr );
 
-         else if ( db->lastServerErrno() == 1451  ||  est == 404 )
-            why += tr( "\nAnother record still refers to the edit.  On an"
-                       " older database that may be noise computed from it"
-                       " for a model of another investigator, which this"
-                       " window cannot list; only that investigator (or an"
-                       " administrator) can remove that noise." );
+         else if ( edit_failure == EDIT_DEADLOCK  ||
+                   edit_failure == EDIT_TIMEOUT )
+            why  = tr( "the database gave up on it (delete_editedData status"
+                       " %1: %2)." ).arg( est ).arg( derr );
+
+         else
+            why  = tr( "the database refused it (delete_editedData status"
+                       " %1: %2)." ).arg( est ).arg( derr );
+
+         why += failure_text( edit_failure );
          stat = 2012;
       }
    }
@@ -743,12 +764,120 @@ DbgLv(1) << "EDT_RMV:   stat" << est << db->lastError() << db->lastErrno();
       return 2019;
    }
 
-   if ( ! db->rollbackTransaction( terr ) )
+   // A deadlock ends the transaction on the server, which rolls back all of
+   // it: the rollback here is refused for that, and nothing is left done
+   if ( ! db->rollbackTransaction( terr )  &&  edit_failure != EDIT_DEADLOCK )
    {
       why  += tr( "\nThe database transaction could not be rolled back as a"
                   " whole: %1" ).arg( terr );
       clean = false;
    }
+
+   if ( edit_failure == EDIT_LOST )
+      clean = false;                // what the server did is not known
+
+   return stat;
+}
+
+// What kind of failure a delete_editedData or delete_noise status says
+US_DataProcess::EditFailure US_DataProcess::failure_kind(
+      int status, int serverErrno, const QString& error )
+{
+   // A patched delete_editedData catches what fails inside it and reports
+   // it in its status and message ("... error 1205: ..."), or raises it
+   // again; an older one has the server report it
+   auto says = [ & ]( int code )
+   {
+      return ( serverErrno == code  ||
+               error.contains( QString( "error %1:" ).arg( code ) ) );
+   };
+
+   if ( US_DataModel::connection_lost( serverErrno ) )
+   {
+      conn_lost = true;
+      return EDIT_LOST;
+   }
+
+   if ( says( 1213 ) )                                     return EDIT_DEADLOCK;
+   if ( says( 1205 ) )                                     return EDIT_TIMEOUT;
+   if ( status == EDIT_KEPT )                              return EDIT_KEPT_BY_DB;
+   if ( status == IUS_DB2::NO_EDITDATA  ||
+        status == IUS_DB2::NO_EXPERIMENT )                 return EDIT_MISSING;
+   if ( serverErrno == 1451  ||
+        status == IUS_DB2::CONSTRAINT_FAILED )             return EDIT_FK;
+
+   return EDIT_REFUSED;
+}
+
+// What a kind of failure means for the user
+QString US_DataProcess::failure_text( EditFailure kind )
+{
+   switch ( kind )
+   {
+      case EDIT_KEPT_BY_DB:
+         return tr( "\nThe database keeps the edit when it is not yours,"
+                    " or when removing it would take along records of"
+                    " another investigator -- noise computed from it for"
+                    " that investigator's model of another edit, or that"
+                    " investigator's models of it -- or records the GMP"
+                    " framework refers to; its message says which.  Only"
+                    " that investigator (or an administrator) can remove"
+                    " those records, and nothing was changed." );
+
+      case EDIT_FK:
+         return tr( "\nAnother record still refers to the edit.  On an"
+                    " older database that may be noise computed from it"
+                    " for a model of another investigator, which this"
+                    " window cannot list; only that investigator (or an"
+                    " administrator) can remove that noise." );
+
+      case EDIT_DEADLOCK:
+         return tr( "\nAnother session was changing the same records at"
+                    " the same time (a deadlock), and the database rolled"
+                    " back the whole removal.  Try again." );
+
+      case EDIT_TIMEOUT:
+         return tr( "\nAnother session holds records the removal needs,"
+                    " and the database waited for them too long (a lock"
+                    " wait timeout).  Try again once that work is done." );
+
+      case EDIT_MISSING:
+         return tr( "\nThe database has no such edit, or no experiment for"
+                    " it: another session may have removed it." );
+
+      default:
+         return QString();
+   }
+}
+
+// What to do when what the database holds could not be read back
+QString US_DataProcess::read_back_advice( void ) const
+{
+   if ( conn_lost )
+      return lost_text();
+
+   return tr( "Scan again before acting on these records." );
+}
+
+// What to do once the connection to the database is lost
+QString US_DataProcess::lost_text( void ) const
+{
+   return tr( "The connection to the database was lost, and this window"
+              " does not connect again: close it and open it again, and"
+              " look at these records before acting on them." );
+}
+
+// Say what to do when an action failed on a lost connection: every action
+// after it fails too, since the window does not connect again
+int US_DataProcess::note_lost( int stat )
+{
+   if ( stat == 0  ||  stat == IN_SYNC  ||  db == NULL )   return stat;
+
+   if ( US_DataModel::connection_lost( db->lastServerErrno() ) )
+      conn_lost = true;
+
+   if ( conn_lost  &&  ! errMsg.contains( lost_text() ) )
+      errMsg += "\n\n" + lost_text();
 
    return stat;
 }
@@ -768,12 +897,19 @@ int US_DataProcess::db_has( const QString& proc, int id, int gone )
    if ( status == gone  ||  status == IUS_DB2::NOROWS )
       return 0;
 
+   if ( US_DataModel::connection_lost( db->lastServerErrno() ) )
+      conn_lost = true;
+
    return -1;
 }
 
 // Mark as gone every row of a noise record, wherever it is in the tree
 void US_DataProcess::mark_noise_removed( int noiseID )
 {
+   // Also when the tree does not show it yet: its experiment may be read
+   // later, from what the catalog read before it went
+   da_model->removed_from_db( US_DataModel::NOISE, noiseID );
+
    for ( int nrow = 0; nrow < da_model->recCount(); nrow++ )
    {
       US_DataModel::DataDesc ndesc = da_model->row_datadesc( nrow );
@@ -865,8 +1001,8 @@ int US_DataProcess::settle_edit( int row, const QList< ForeignNoise >& foreign,
 
    if ( unknown )
       errMsg += tr( "\n\nWhat the database holds now could not all be read"
-                    " back (%1); scan again before acting on these records." )
-                .arg( db->lastError() );
+                    " back (%1).  %2" )
+                .arg( db->lastError() ).arg( read_back_advice() );
 
    return stat;
 }
@@ -904,9 +1040,13 @@ int US_DataProcess::written_record_id( const QString& proc,
       }
    }
 
+   conn_lost = conn_lost  ||
+               US_DataModel::connection_lost( db->lastServerErrno() );
    errMsg = tr( "%1 was written to the database, but its database ID could"
-                " not be read (%2: %3); scan again before acting on it." )
-            .arg( cdesc.label ).arg( proc ).arg( db->lastError() );
+                " not be read (%2: %3).  %4" )
+            .arg( cdesc.label ).arg( proc ).arg( db->lastError() )
+            .arg( conn_lost ? read_back_advice()
+                            : tr( "Scan again before acting on it." ) );
    return 3047;
 }
 
@@ -1077,10 +1217,29 @@ int US_DataProcess::same_contents( const US_DataModel::DataDesc& desc )
 {
    QString dbd;
    QString lod;
+   bool    xml = ( desc.recType == US_DataModel::MODEL  ||
+                   desc.recType == US_DataModel::NOISE );
 
    if ( ( desc.recState & US_DataModel::HV_DET ) != 0 )
    {  // Compared already: the database copy is the one compared then
       dbd = desc.contents.section( " ", 0, 1 ).simplified();
+
+      // A model or noise comparison may have been of the bytes as they are
+      // (the catalogs' checksums) or of the XML with LF line ends (one
+      // record at a time): a file whose bytes are what the database holds
+      // is the same either way; any other is compared again, the database
+      // copy as the file is, with LF line ends
+      if ( xml  &&  ! dbd.isEmpty()  &&
+           dbd == US_DataModel::file_digest( desc.filename ) )
+         return 1;
+
+      if ( xml )
+      {
+         QString error;
+
+         if ( ! US_DataModel::db_digest( db, desc, dbd, error ) )
+            dbd.clear();
+      }
    }
 
    else
