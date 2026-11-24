@@ -15,6 +15,8 @@
 #include "us_noise.h"
 #include "us_dataIO.h"
 #include "us_time_state.h"
+#include "us_crypto.h"
+#include "us_db2.h"
 
 #include "us_datapub_records.h"
 
@@ -630,5 +632,95 @@ class DataPubTestEnv : public ::testing::Test
       QString timeStatePath( const QString& ext )
       {
          return runDir() + "/" + runID + ".time_state." + ext;
+      }
+};
+
+/**
+ * The scratch disk store above, with the default database pointed at the
+ * scratch import database (US3_TEST_DB_IMPORT_NAME, see test/README,
+ * section 4) -- or, overriding databaseVariable(), another one -- and a
+ * connection to it in \c db.  Skips without one.  The database settings
+ * and the investigator are put back afterwards.
+ */
+class DataPubDbTargetEnv : public DataPubTestEnv
+{
+   protected:
+      QString     master;
+      QStringList savedDB;
+      int         savedInv  = 0;
+      bool        restore   = false;
+      US_DB2*     db        = nullptr;
+
+      //! The variable naming the database: the scratch import database
+      virtual const char* databaseVariable( void ) const
+      {
+         return "US3_TEST_DB_IMPORT_NAME";
+      }
+
+      void SetUp() override
+      {
+         QString host = qEnvironmentVariable( "US3_TEST_DB_HOST" );
+         QString name = qEnvironmentVariable( databaseVariable() );
+         QString user = qEnvironmentVariable( "US3_TEST_DB_USER" );
+         QString guid = qEnvironmentVariable( "US3_TEST_DB_PERSON_GUID" );
+
+         if ( host.isEmpty()  ||  name.isEmpty()  ||
+              user.isEmpty()  ||  guid.isEmpty() )
+            GTEST_SKIP() << "no database configured in "
+                         << databaseVariable();
+
+         master = "us3-datapub-target";
+
+         QStringList dbCipher   = US_Crypto::encrypt(
+               qEnvironmentVariable( "US3_TEST_DB_PASS" ), master );
+         QStringList userCipher = US_Crypto::encrypt(
+               qEnvironmentVariable( "US3_TEST_DB_PERSON_PW" ), master );
+
+         QStringList entry;
+         entry << "us3 import database" << user << name << host
+               << dbCipher.at( 0 ) << dbCipher.at( 1 )
+               << qEnvironmentVariable( "US3_TEST_DB_EMAIL" )
+               << userCipher.at( 0 ) << userCipher.at( 1 ) << guid;
+
+         savedDB  = US_Settings::defaultDB();
+         savedInv = US_Settings::us_inv_ID();
+         restore  = true;
+
+         US_Settings::set_defaultDB( entry );
+         US_Settings::set_us_inv_ID(
+               qEnvironmentVariable( "US3_TEST_DB_PERSON_ID" ).toInt() );
+
+         db = new US_DB2();
+         QString error;
+
+         if ( ! db->connect( master, error ) )
+         {
+            delete db;
+            db = nullptr;
+            US_Settings::set_defaultDB( savedDB );
+            US_Settings::set_us_inv_ID( savedInv );
+            restore = false;
+            GTEST_SKIP() << "cannot reach the database " << name.toStdString()
+                         << ": " << error.toStdString();
+         }
+
+         // The store on disk comes last: it moves workBaseDir, and the
+         // settings above have to be in place whether or not it is built
+         DataPubTestEnv::SetUp();
+      }
+
+      void TearDown() override
+      {
+         delete db;
+         db = nullptr;
+
+         if ( restore )
+         {
+            US_Settings::set_defaultDB ( savedDB  );
+            US_Settings::set_us_inv_ID ( savedInv );
+            restore = false;
+
+            DataPubTestEnv::TearDown();
+         }
       }
 };

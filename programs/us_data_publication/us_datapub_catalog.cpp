@@ -579,12 +579,15 @@ QList< US_DataPubCatalog::Model > US_DataPubCatalog::models(
 // ------------------------------------------------------------------ noises
 
 QList< US_DataPubCatalog::Noise > US_DataPubCatalog::noises(
-      const QList< Model >& modelList, QString& error )
+      const QList< Model >& modelList, QString& error,
+      QMultiHash< QString, QString >* borrowers )
 {
    QList< Noise > list;
    QStringList    seen;
 
    error.clear();
+
+   if ( borrowers != nullptr )  borrowers->clear();
 
    for ( int ii = 0; ii < modelList.size(); ii++ )
    {
@@ -623,6 +626,13 @@ QList< US_DataPubCatalog::Noise > US_DataPubCatalog::noises(
          Noise noise( found[ jj ] );
 
          if ( noise.guid.isEmpty() )         continue;
+
+         // Every model that borrows it, also one that is not the first
+         // to list it
+         if ( borrowed  &&  borrowers != nullptr  &&
+              ! borrowers->contains( noise.guid, model.guid ) )
+            borrowers->insert( noise.guid, model.guid );
+
          if ( seen.contains( noise.guid ) )  continue;
 
          if ( noise.editGUID.isEmpty() )

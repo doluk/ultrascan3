@@ -2547,7 +2547,7 @@ TEST_F( DataPubExport, BorrowedNoiseTravelsWithItsOwnModelAndImports )
    US_DataPubEntity noise;
    ASSERT_TRUE( mani.entity( US_DataPub::Noise, noiseGUID, noise ) );
    EXPECT_EQ( noise.depend( US_DataPub::Model ), modelGUID );
-   EXPECT_EQ( noise.attrs.value( "borrowedByModelGUID" ), laterGUID );
+   EXPECT_EQ( noise.attrs.value( "borrowedByModelGUIDs" ), laterGUID );
    EXPECT_FALSE( noise.attrs.contains( "fittedToModelGUID" ) );
 
    // The import takes it, and the noise lands on the model it was fitted to
@@ -2596,6 +2596,58 @@ TEST_F( DataPubExport, BorrowedNoiseOfAWholeRunImports )
       << error.toStdString();
    EXPECT_EQ( noise_models( root + "/target/data/noises" ).value( noiseGUID ),
               modelGUID );
+}
+
+/* Every model of the bundle that borrows a noise record is named in it,
+   also when the model it was fitted to is listed first and the record is
+   listed for that one.  Which noise a model without any of its own was run
+   with is otherwise known only from the records' time stamps, which an
+   import that writes the noise after the models does not keep; the bundle
+   used to say nothing of these borrowers at all.
+*/
+TEST_F( DataPubExport, EveryModelThatBorrowsTheNoiseIsNamed )
+{
+   QStringList later;
+
+   for ( int ii = 2; ii <= 3; ii++ )
+   {
+      US_Model model;
+      model.modelGUID   = US_Util::new_guid();
+      model.editGUID    = editGUID;
+      model.description = QString( "demo_run.1A280.2dsa-mc%1.model" ).arg( ii );
+      ASSERT_EQ( model.write( US_Settings::dataDir()
+                              + QString( "/models/M000000%1.xml" ).arg( ii ) ),
+                 IUS_DB2::OK );
+      later << model.modelGUID;
+   }
+
+   std::sort( later.begin(), later.end() );
+
+   US_DataPubExporter exporter;
+   QString            error;
+
+   ASSERT_TRUE( exporter.exportBundle( baseSelection( US_DataPub::ScopeNoise ),
+                                       root + "/borrowers.tar.gz", error ) )
+      << error.toStdString();
+
+   const US_DataPubManifest& mani = exporter.manifest();
+   EXPECT_EQ( mani.count( US_DataPub::Model ), 3 );
+   ASSERT_EQ( mani.count( US_DataPub::Noise ), 1 );
+
+   US_DataPubEntity noise = mani.section( US_DataPub::Noise )[ 0 ];
+   EXPECT_EQ( noise.depend( US_DataPub::Model ), modelGUID );
+   EXPECT_EQ( noise.attrs.value( "borrowedByModelGUIDs" ), later.join( " " ) );
+
+   // Asked for one of them alone, the bundle names only that one
+   US_DataPubExporter::Selection one = baseSelection( US_DataPub::ScopeNoise );
+   one.setModels( QStringList() << later[ 1 ] );
+
+   US_DataPubExporter single;
+   ASSERT_TRUE( single.exportBundle( one, root + "/borrower.tar.gz", error ) )
+      << error.toStdString();
+   ASSERT_TRUE( single.manifest().entity( US_DataPub::Noise, noiseGUID,
+                                          noise ) );
+   EXPECT_EQ( noise.attrs.value( "borrowedByModelGUIDs" ), later[ 1 ] );
 }
 
 // Noise carried for a model whose own model cannot travel -- it is gone --
@@ -2960,6 +3012,62 @@ TEST_F( DataPubExport, AModelsVarianceAndMeniscusAreInTheManifest )
                                             entity ) );
    EXPECT_EQ( entity.attrs.value( "variance" ).toDouble(), model.variance );
    EXPECT_EQ( entity.attrs.value( "meniscus" ).toDouble(), model.meniscus );
+}
+
+/* ... with every digit they have, in the manifest and in the payload, and
+   so in a disk store the bundle is imported into.  US_Model writes six
+   digits, so the payload used to carry a rounded variance and meniscus --
+   or none, for a model whose stored XML had them only in its database row
+   -- and a disk import, which has only the payload, kept that.
+*/
+TEST_F( DataPubExport, AModelsVarianceAndMeniscusTravelWithEveryDigit )
+{
+   QString mpath = US_Settings::dataDir() + "/models/M0000001.xml";
+   US_Model model;
+   ASSERT_EQ( model.load( mpath ), IUS_DB2::OK );
+   model.variance = 1.0;                  // Written, then set by hand
+   model.meniscus = 1.0;
+   ASSERT_EQ( model.write( mpath ), IUS_DB2::OK );
+   ASSERT_TRUE( set_xml_attribute( mpath, "model", "variance",
+                                   "1.2345678901234e-05" ) );
+   ASSERT_TRUE( set_xml_attribute( mpath, "model", "meniscus",
+                                   "5.8512345678901" ) );
+
+   const double variance = 1.2345678901234e-05;
+   const double meniscus = 5.8512345678901;
+
+   US_DataPubExporter exporter;
+   QString            bundle = root + "/digits.tar.gz";
+   QString            error;
+   ASSERT_TRUE( exporter.exportBundle( baseSelection( US_DataPub::ScopeNoise ),
+                                       bundle, error ) ) << error.toStdString();
+
+   US_DataPubEntity entity;
+   ASSERT_TRUE( exporter.manifest().entity( US_DataPub::Model, modelGUID,
+                                            entity ) );
+   EXPECT_EQ( entity.attrs.value( "variance" ).toDouble(), variance );
+   EXPECT_EQ( entity.attrs.value( "meniscus" ).toDouble(), meniscus );
+
+   US_DataPubImporter importer;
+   ASSERT_TRUE( importer.inspect( bundle, error ) ) << error.toStdString();
+
+   US_Model payload;
+   ASSERT_EQ( payload.load( importer.bundleRoot() + "/" + entity.payload ),
+              IUS_DB2::OK );
+   EXPECT_EQ( payload.variance, variance );
+   EXPECT_EQ( payload.meniscus, meniscus );
+
+   QString target = root + "/target";
+   ASSERT_TRUE( importer.runImport( disk_target( target ), error ) )
+      << error.toStdString();
+
+   QString written = file_with_guid( target + "/data/models", modelGUID );
+   ASSERT_FALSE( written.isEmpty() );
+
+   US_Model imported;
+   ASSERT_EQ( imported.load( written ), IUS_DB2::OK );
+   EXPECT_EQ( imported.variance, variance );
+   EXPECT_EQ( imported.meniscus, meniscus );
 }
 
 // From the database they are the row's, whatever the stored XML says

@@ -591,6 +591,7 @@ bool US_DataPubExporter::build( const Selection& selection, QString& error )
    from_project   = false;
    run_fault      = false;
    listed_models.clear();
+   noise_borrowers.clear();
 
    US_DataPub::Scope scope = selection.effectiveScope();
    exp_scope       = scope;
@@ -2975,6 +2976,13 @@ bool US_DataPubExporter::addModels(
          return false;
       }
 
+      // ... and so does the payload, at full precision: US_Model writes
+      // six digits, and a disk import, which has no row, keeps only what
+      // the payload says
+      if ( ! record.monteCarlo  &&
+           ! stageModelValues( staged, variance, meniscus, error ) )
+         return false;
+
       run_fault = false;
 
       if ( ! finishEntity( entity, staged, error ) )
@@ -2998,6 +3006,74 @@ bool US_DataPubExporter::addModels(
 
    if ( ! models.isEmpty() )
       note( tr( "Models: %1" ).arg( models.size() ) );
+
+   return true;
+}
+
+/* The variance and meniscus of a staged model, at full precision: the
+   shortest text that reads back as the same number, in the model element
+   US_Model wrote with six digits (or without the value, when the stored
+   XML did not have it but the database row does).  A zero or a value
+   that is not finite is left as it was written.
+*/
+bool US_DataPubExporter::stageModelValues( const QString& path,
+                                           double variance, double meniscus,
+                                           QString& error )
+{
+   QFile file( path );
+
+   if ( ! file.open( QIODevice::ReadOnly ) )
+   {
+      error = tr( "The staged model %1 cannot be read" ).arg( path );
+      return false;
+   }
+
+   QString text = QString::fromUtf8( file.readAll() );
+   file.close();
+
+   QRegularExpression      rx( "<model\\b([^>]*?)(/?)>" );
+   QRegularExpressionMatch match = rx.match( text );
+
+   if ( ! match.hasMatch() )  return true;
+
+   QString attrs = match.captured( 1 );
+   bool    changed = false;
+
+   auto set = [ & ]( const QString& name, double value )
+   {
+      if ( value == 0.0  ||  ! qIsFinite( value ) )  return;
+
+      QString full = QString::number( value, 'g',
+                                      QLocale::FloatingPointShortest );
+      QRegularExpression have( "(\\s" + name + "\\s*=\\s*\")[^\"]*(\")" );
+      QRegularExpressionMatch found = have.match( attrs );
+
+      if ( found.hasMatch() )
+         attrs.replace( found.capturedStart( 0 ), found.capturedLength( 0 ),
+                        found.captured( 1 ) + full + found.captured( 2 ) );
+      else
+         attrs += " " + name + "=\"" + full + "\"";
+
+      changed = true;
+   };
+
+   set( "variance", variance );
+   set( "meniscus", meniscus );
+
+   if ( ! changed )  return true;
+
+   text.replace( match.capturedStart( 0 ), match.capturedLength( 0 ),
+                 "<model" + attrs + match.captured( 2 ) + ">" );
+
+   QSaveFile  out( path );
+   QByteArray bytes = text.toUtf8();
+
+   if ( ! out.open( QIODevice::WriteOnly )  ||
+        out.write( bytes ) != bytes.size()  ||  ! out.commit() )
+   {
+      error = tr( "The staged model %1 cannot be written" ).arg( path );
+      return false;
+   }
 
    return true;
 }
@@ -3069,7 +3145,7 @@ bool US_DataPubExporter::collectNoises(
 
    if ( ! models.isEmpty() )
    {
-      found = catalog.noises( models, error );
+      found = catalog.noises( models, error, &noise_borrowers );
 
       if ( ! error.isEmpty() )  return false;
    }
@@ -3177,15 +3253,29 @@ bool US_DataPubExporter::addNoises(
       entity.attrs.insert( "noiseType", noise.noiseType );
       entity.setDepend( US_DataPub::Model, fitted );
 
-      if ( ! noise.borrowedFrom.isEmpty()  &&
-           mani.contains( US_DataPub::Model, noise.modelGUID ) )
-      {  // Noise of the edit, carried for a model that has none of its own
-         entity.attrs.insert( "borrowedByModelGUID", noise.modelGUID );
+      // Noise of the edit, carried for the models of the bundle that have
+      // none of their own -- every one of them, also those listed after
+      // the model it was fitted to.  Which noise a model was run with is
+      // otherwise known only from time stamps, which a target that writes
+      // the records anew does not keep.
+      QStringList borrowers = noise_borrowers.values( noise.guid );
+      std::sort( borrowers.begin(), borrowers.end() );
 
-         note( tr( "Model %1 has no noise of its own; the %2 noise of its"
-                   " edit travels with it" ).arg( noise.modelGUID )
+      for ( int jj = borrowers.size() - 1; jj >= 0; jj-- )
+         if ( borrowers[ jj ] == fitted  ||
+              ! mani.contains( US_DataPub::Model, borrowers[ jj ] ) )
+            borrowers.removeAt( jj );
+
+      if ( ! borrowers.isEmpty() )
+      {
+         entity.attrs.insert( "borrowedByModelGUIDs", borrowers.join( " " ) );
+
+         note( tr( "Model(s) %1 have no noise of their own; the %2 noise %3"
+                   " of their edit travels with them" )
+               .arg( borrowers.join( ", " ) )
                .arg( noise.noiseType.isEmpty() ? tr( "latest" )
-                                               : noise.noiseType ) );
+                                               : noise.noiseType )
+               .arg( noise.guid ) );
       }
 
       if ( ! noise.filename.isEmpty() )

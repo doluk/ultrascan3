@@ -198,10 +198,21 @@ class US_DataPubCatalog
       //! \param error Filled in with a message when the scan fails
       QList< Model > models( const QList< Run >& runs, QString& error );
 
-      //! \brief All noise records that belong to the given models
-      //! \param models The models whose noise records are wanted
-      //! \param error  Filled in with a message when the scan fails
-      QList< Noise > noises( const QList< Model >& models, QString& error );
+      /*! \brief All noise records that belong to the given models
+
+          Each record is listed once.  A record a model with no noise of its
+          own is carried with (see \ref noiseBefore()) is listed for the
+          first model that names it, so a model that borrows a record
+          another model of \a models lists already is not seen in the list:
+          \a borrowers names every one.
+          \param models    The models whose noise records are wanted
+          \param error     Filled in with a message when the scan fails
+          \param borrowers When given, filled in with noise GUID -> GUID of
+                           every model of \a models that borrows it
+      */
+      QList< Noise > noises( const QList< Model >& models, QString& error,
+                             QMultiHash< QString, QString >* borrowers
+                                = nullptr );
 
       //! \brief What looking for the time state of a run found
       enum TimeStateStatus

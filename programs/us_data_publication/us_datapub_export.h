@@ -271,6 +271,10 @@ class US_DataPubExporter : public QObject
       //! The noise records that were asked for by GUID
       QStringList        explicit_noises;
 
+      //! noise GUID -> every exported model that borrows it (a model with
+      //! no noise of its own is run with the noise of its edit)
+      QMultiHash< QString, QString > noise_borrowers;
+
       //! The models that were asked for by GUID
       QStringList        explicit_models;
 
@@ -404,6 +408,10 @@ class US_DataPubExporter : public QObject
       //! The variance and meniscus columns of a model's database row
       bool modelRowValues( const US_DataPubCatalog::Model&, double& variance,
                            double& meniscus, QString& error );
+      //! Put the variance and meniscus into a staged model's XML at full
+      //! precision
+      bool stageModelValues( const QString& path, double variance,
+                             double meniscus, QString& error );
       //! \a leftOut are the models of runs a project export left out:
       //! noise of theirs that was asked for by GUID goes with them
       bool collectNoises( const Selection&,
