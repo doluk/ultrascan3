@@ -22,6 +22,9 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
+#include <limits>
+
 #include "us_buffer.h"
 #include "us_crypto.h"
 #include "us_db2.h"
@@ -358,6 +361,31 @@ TEST_F( BufferComponentUs3Db, TheSaveNamesTheRowItMadeWhateverTheConnectionInser
    stored.componentID = component.componentID;
    ASSERT_TRUE( stored.getInfoFromDB( &person ) );
    EXPECT_TRUE( stored.sameDefinition( component ) );
+}
+
+// A coefficient that is not a number used to be stored as "nan", in a row
+// nothing could use; now nothing is written
+TEST_F( BufferComponentUs3Db, ACoefficientThatIsNotFiniteWritesNoRow )
+{
+   if ( idTaken( nextByCount() ) )
+   {
+      GTEST_SKIP() << "bufferComponent has a gap in its IDs; the old procedure cannot insert there";
+   }
+
+   component.dens_coeff[ 2 ] = std::nan( "" );
+   QString error;
+   EXPECT_EQ( -1, component.saveToDB( &person, &error ) );
+   EXPECT_TRUE( error.contains( "not a finite number" ) ) << error.toStdString();
+   EXPECT_TRUE( component.componentID.isEmpty() );
+
+   component.dens_coeff[ 2 ] = 2.5;
+   component.visc_coeff[ 5 ] = std::numeric_limits< double >::infinity();
+   EXPECT_EQ( -1, component.saveToDB( &person, &error ) );
+   EXPECT_TRUE( error.contains( "not a finite number" ) ) << error.toStdString();
+
+   admin.rawQuery( "SELECT COUNT(*) FROM bufferComponent WHERE description = '" + kName + "'" );
+   ASSERT_TRUE( admin.next() );
+   EXPECT_EQ( 0, admin.value( 0 ).toInt() );
 }
 
 // A gap makes the old procedure's COUNT(*) + 1 an ID that is taken.  The
