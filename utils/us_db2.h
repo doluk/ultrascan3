@@ -175,6 +175,12 @@ public:
     /*! \brief Implements a simple query on the active database
         connection, cleaning up any unused results from a previous query.
 
+        Every statement goes to the server as UTF-8.  One holding a lone
+        UTF-16 surrogate, which is no character and has no UTF-8 form, is
+        not sent at all (see \ref loneSurrogateProblem): the query fails
+        with DBERROR and lastError() says why, rather than the server
+        storing a '?' in its place.  This holds for every query of US_DB2.
+
         \param sqlQuery    A string containing the US3 query to execute.
     */
     void rawQuery( const QString& sqlQuery ) override;
@@ -243,14 +249,51 @@ public:
         the QVariant() type in cases where the data type is unknown,
         or if the index is out of bounds. Use next() to advance the row pointer.
 
+        The whole column is returned, as UTF-8 text, NUL characters
+        included: its length is the one the server sent, not where its
+        first NUL is.
+
         \param index   The column number in the current row.
     */
     QVariant value( unsigned index ) override;
 
     /*! \brief Returns TRUE if the US3 system is connected to a database,
         or returns FALSE otherwise.
+
+        It goes false when a statement finds the connection gone, as
+        \ref isConnectionLoss tells from the error: the server went away or
+        closed the connection.  No further statement can succeed on it
+        then, and an open transaction is lost with it.  connect() may be
+        called again; it opens a new connection.
     */
     bool isConnected() override;
+
+    /*! \brief True when \p serverErrno, the error of a statement
+               (lastServerErrno(), mysql_errno()), means the connection is
+               gone.
+
+        The server went away (2006) or was lost during a query (2013, and
+        2055 from MySQL's client library); a TLS connection the server
+        closed (2026 -- what a killed or timed-out connection gives over
+        TLS, which every US_DB2 connection uses); a stream that can no
+        longer be read or written (2027, 5013, 5014); the server shutting
+        down (1053); a statement over max_allowed_packet, after which the
+        server closes the connection (1153); a killed connection (1927,
+        MariaDB) or an idle one timed out (4031, MySQL 8).
+    */
+    static bool isConnectionLoss( int serverErrno );
+
+    /*! \brief What commitTransaction() reports when the COMMIT fails.
+
+        After an error that means the connection is gone
+        (\ref isConnectionLoss -- 2006, 2013, 2055, 2026, ...) the server
+        may or may not have committed, and the message says the outcome is
+        unknown (\ref commitUnknownMessage); any other error is reported as
+        the server gave it.
+        \param serverErrno   mysql_errno() of the failed COMMIT
+        \param serverMessage mysql_error() of it
+    */
+    static QString commitErrorText( int serverErrno, const QString& serverMessage );
 
     /*! \brief Returns the number of rows returned in the current result
         set.
@@ -320,6 +363,14 @@ public:
 
         \param tableID The integer primary-key index of the record that the
                raw binary data should be written to.
+
+        The data travels in one statement, which the server accepts only up
+        to its max_allowed_packet.  That limit is read from the server
+        first, and a file whose statement would exceed it is refused before
+        anything is sent -- with DBERROR, a message giving both sizes, and
+        the connection left open -- instead of the server closing the
+        connection ("server has gone away").  The statement is built in
+        place, so the memory used is about twice the file's size.
     */
     int writeBlobToDB( const QString& filename, const QString& procedure, const int tableID ) override;
 
@@ -447,6 +498,16 @@ public:
     //! \brief True when every character of \p text fits a latin1 column
     static bool    fitsLatin1( const QString& text );
 
+    /*! \brief Why \p text cannot be sent to the server, or an empty
+               string when it can.
+
+        Text goes to the server as UTF-8, and a lone UTF-16 surrogate --
+        half of a pair, from a cut string or a malformed file -- has no
+        UTF-8 form: it would arrive as '?'.  Every US_DB2 query refuses
+        such text with this message, before anything is sent.
+    */
+    static QString loneSurrogateProblem( const QString& text );
+
     //! \brief The characters of \p text that do not fit a latin1 column,
     //!        each once, in the order they first appear; empty if all fit
     static QString nonLatin1Characters( const QString& text );
@@ -515,7 +576,11 @@ public:
     MYSQL*     db;
     MYSQL_RES* result;
     MYSQL_ROW  row;
+    //! The column lengths of \ref row, when next() fetched it
+    unsigned long* row_lengths = nullptr;
 #endif
+    //! The server dropped the connection; connect() opens a new one
+    bool       connection_lost = false;
     QString    email;
     QString    userPW;
     QString    guid;
@@ -543,6 +608,23 @@ public:
     //! \brief Records a failed statement's error if it rolled the open
     //!        transaction back.  Call while the error is still current.
     void           noteStatementError();
+
+    //! \brief Marks the connection as gone when the last error says so.
+    //!        Call while the error is still current.
+    void           noteConnectionLoss();
+
+    //! \brief Before a connect: a handle whose connection was lost is
+    //!        replaced by a fresh one
+    void           resetLostHandle();
+
+    //! \brief Refuses \p statement, sending nothing, when it holds text
+    //!        the server cannot be sent (\ref loneSurrogateProblem)
+    //! \returns True when it was refused: DBERROR, with the reason in
+    //!          lastError()
+    bool           refuseUnsendable( const QString& statement );
+
+    //! \brief The server's max_allowed_packet, or 0 when it cannot be read
+    qint64         maxAllowedPacket();
 
     //! \brief Why the transaction ended before commit or rollback: the
     //!        deadlock if one was recorded, otherwise that rows may have been kept.

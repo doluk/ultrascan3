@@ -547,3 +547,60 @@ TEST_F( TestUSDiskScan, ACatalogRunChangeIsForwarded )
    EXPECT_EQ  ( seen, QList< int >() << 1 );
    EXPECT_TRUE( readable );
 }
+
+// A change the catalog reports while a job runs is reported on the worker
+// thread, while the catalog is the worker's.  It is held until the job is
+// over and handed on by the owning thread, after the scanner is idle and
+// before jobDone -- and only for the job that made it.  The catalog is made
+// to report one from inside the job, at its first note: no disk job changes
+// a loaded experiment today, since the disk chain of an experiment has all
+// the noise of its models.
+TEST_F( TestUSDiskScan, ARunChangedDuringAJobIsAnnouncedOnTheOwningThreadOnceIdle )
+{
+   US_DiskScan scan;
+   ASSERT_TRUE( scan.list() );
+   settle( scan );
+   US_DataCatalog* catalog = scan.catalog();
+   ASSERT_NE( catalog, nullptr );
+
+   QThread* reporter = nullptr;
+   QMetaObject::Connection gate = QObject::connect(
+      catalog, &US_DataCatalog::message, catalog,
+      [ catalog, &reporter ]( const QString& )
+      {
+         if ( reporter != nullptr )  return;
+         reporter = QThread::currentThread();
+         emit catalog->runChanged( 1 );
+      },
+      Qt::DirectConnection );
+
+   QStringList order;
+   bool        idleThen  = false;
+   bool        ownThread = false;
+   QObject::connect( &scan, &US_DiskScan::runChanged, [ & ]( int index )
+   {
+      order << QString( "changed %1" ).arg( index );
+      idleThen  = ! scan.busy()  &&  scan.catalog() != nullptr;
+      ownThread = QThread::currentThread() == scan.thread();
+   } );
+   QObject::connect( &scan, &US_DiskScan::jobDone, [ & ]( int, int )
+   {
+      order << "done";
+   } );
+
+   ASSERT_TRUE( scan.list() );
+   settle( scan );
+   QObject::disconnect( gate );
+
+   ASSERT_NE  ( reporter, nullptr ) << "the job made no note";
+   EXPECT_NE  ( reporter, scan.thread() ) << "the change was not made on the worker";
+   EXPECT_EQ  ( order, QStringList() << "changed 1" << "done" );
+   EXPECT_TRUE( idleThen );
+   EXPECT_TRUE( ownThread );
+
+   // The next job made no change, and none is announced again
+   order.clear();
+   ASSERT_TRUE( scan.list() );
+   settle( scan );
+   EXPECT_EQ( order, QStringList() << "done" );
+}
