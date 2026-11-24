@@ -12,7 +12,9 @@
 // The fake answers the way a server does (us3_sql is the reference, and
 // test_us_data_db_live.cpp checks the parts that matter against a real
 // one): a procedure that is missing or may not be run fails the CALL with
-// server error 1305 or 1370, a lost connection with a client error (2013),
+// server error 1305 or 1370, a lost connection with a client error (2013,
+// or 2055 as a broken TLS connection reports it) -- and stays lost, as
+// US_DB2 does not connect again: every call after it fails with 2006 --
 // a lock wait with 1205, and "no rows" is a procedure status with no server
 // error at all -- or OK with an empty set, for the procedures that answer
 // so.  The investigator is an ordinary user: the listings hold their own
@@ -23,9 +25,11 @@
 // delete_editedData cascades as us3_expdata_procs.sql does and is refused
 // while noise of another edit's model refers to the edit
 // (fk_noise_editDataID is ON DELETE NO ACTION), keeping what it removed
-// before; with patchedEditDelete it is all or nothing and also removes that
-// noise, and commitsInside names writes that end the client's transaction
-// (a COMMIT inside a procedure) -- new_noise
+// before; with patchedEditDelete it is all or nothing, also removes that
+// noise, and says 510 for an edit that is not there (an older one 508),
+// commitsInside names writes that end the client's transaction (a COMMIT
+// inside a procedure), and deadlocking writes the server makes a deadlock's
+// victim (1213, no status), rolling back the whole transaction -- new_noise
 // files noise under edit 1 when the edit may not be used, transactions
 // give back what was written since the begin unless the server ended them,
 // and lastInsertID() never names the record just written.
@@ -127,15 +131,23 @@ namespace
          QMap< int, QByteArray >  blobs;      // editedDataID -> contents
          QSet< QString >          failing;    // procedures whose call loses
                                               // the connection
-         QMap< QString, int >     failTimes;  // ... the next n times only
-         QMap< QString, int >     failAfter;  // ... every time after the
-                                              // first n calls
+         QMap< QString, int >     failAfter;  // ... after the first n calls
+         int                      lostErrno = 2013; // how it is lost
+         bool                     lost      = false; // it is: every call
+                                                     // fails from now on
          QMap< QString, int >     callCount;  // calls so far, by name
          QMap< QString, int >     transient;  // the next n calls wait for a
                                               // lock too long (1205)
+         QMap< QString, int >     waitAfter;  // ... the call after the
+                                              // first n calls
          QSet< QString >          missing;    // procedures the server lacks
          QSet< QString >          denied;     // ... or may not be run
          QMap< QString, int >     refusing;   // writes refused with a status
+         QMap< QString, QString > refusingText; // ... and this message
+         QSet< QString >          deadlocking; // writes the server picks as
+                                               // a deadlock's victim (1213):
+                                               // it rolls back the whole
+                                               // transaction
          QStringList              calls;      // every query, by name
          QStringList              changes;    // every statusQuery
          QStringList              txlog;      // begin, commit, rollback
@@ -223,6 +235,7 @@ namespace
                .WillByDefault( Invoke( [ this ]( const QStringList& q )
                {
                   calls << q.value( 0 );
+                  if ( lost )  return int( IUS_DB2::DBERROR );
                   return autoflowRuns.contains( q.value( 1 ) ) ? 1 : autoflow;
                } ) );
             ON_CALL( db, readBlobFromDB( _, _, _ ) )
@@ -230,6 +243,7 @@ namespace
                                                  const QString& proc, int id )
                {
                   calls << proc;
+                  if ( lost )  return int( IUS_DB2::DBERROR );
                   QFile file( path );
                   if ( ! blobs.contains( id )  ||
                        ! file.open( QIODevice::WriteOnly ) )
@@ -247,6 +261,7 @@ namespace
                {
                   txlog << "begin";
                   error.clear();
+                  if ( lost )      { error = goneText;  return false; }
                   if ( clientTx )  { error = "a transaction is open";  return false; }
                   clientTx = serverTx = true;
                   saved    = data();
@@ -258,6 +273,7 @@ namespace
                   txlog << "commit";
                   error.clear();
                   if ( ! clientTx )  { error = "no transaction";  return false; }
+                  if ( lost )        { error = goneText;  return false; }
                   if ( ! serverTx )
                   {
                      error = "the transaction ended before the commit;"
@@ -274,6 +290,7 @@ namespace
                   error.clear();
                   if ( ! clientTx )  { error = "no transaction";  return false; }
                   clientTx = false;
+                  if ( lost )        { error = goneText;  return false; }
                   if ( ! serverTx )
                   {
                      error = "the transaction ended before the rollback;"
@@ -287,6 +304,8 @@ namespace
          }
 
          int count( const QString& name ) const { return calls.count( name ); }
+
+         static constexpr const char* goneText = "MySQL server has gone away";
 
          QString ck( const QString& guid, int part ) const
          {
@@ -303,19 +322,31 @@ namespace
 
             int ncall = ++callCount[ name ];
 
-            if ( failTimes.value( name ) > 0  ||  failing.contains( name )  ||
-                 ( failAfter.contains( name )  &&  ncall > failAfter.value( name ) ) )
-            {
-               if ( failTimes.value( name ) > 0 )  failTimes[ name ]--;
+            if ( lost )
+            {  // the client does not connect again
                current.status = IUS_DB2::DBERROR;
-               current.server = 2013;
-               current.error  = "Lost connection to MySQL server during query";
+               current.server = 2006;
+               current.error  = goneText;
                return true;
             }
 
-            if ( transient.value( name ) > 0 )
+            if ( failing.contains( name )  ||
+                 ( failAfter.contains( name )  &&  ncall > failAfter.value( name ) ) )
             {
-               transient[ name ]--;
+               lost           = true;
+               current.status = IUS_DB2::DBERROR;
+               current.server = lostErrno;
+               current.error  = ( lostErrno == 2055 )
+                              ? "Lost connection to MySQL server at 'reading"
+                                " authorization packet', system error: 0"
+                              : "Lost connection to MySQL server during query";
+               return true;
+            }
+
+            if ( transient.value( name ) > 0  ||
+                 ( waitAfter.contains( name )  &&  ncall == waitAfter.value( name ) + 1 ) )
+            {
+               if ( transient.value( name ) > 0 )  transient[ name ]--;
                current.status = IUS_DB2::DBERROR;
                current.server = 1205;
                current.error  = "Lock wait timeout exceeded; try restarting transaction";
@@ -454,9 +485,21 @@ namespace
             if ( commitsInside.contains( name ) )
                serverTx = false;
 
+            if ( deadlocking.contains( name ) )
+            {  // as InnoDB does, and a patched procedure raises it again
+               if ( clientTx  &&  serverTx )
+                  restore( saved );
+               serverTx       = false;
+               current.status = IUS_DB2::DBERROR;
+               current.server = 1213;
+               current.error  = "Deadlock found when trying to get lock; try restarting transaction";
+               return;
+            }
+
             if ( refusing.contains( name ) )
             {
-               refuse( refusing.value( name ), "MySQL: you do not have permission" );
+               refuse( refusing.value( name ),
+                       refusingText.value( name, "MySQL: you do not have permission" ) );
                return;
             }
 
@@ -486,6 +529,11 @@ namespace
             else if ( name == "delete_editedData" )
             {
                const QString edit = a.value( 0 );
+
+               // the patched procedure: no such edit
+               if ( patchedEditDelete  &&  ! editById( edit ) )
+                  return refuse( IUS_DB2::NO_EDITDATA,
+                                 "MySQL: no edit profile with that ID exists" );
 
                // verify_editData_permission
                if ( expOfEdit( edit ).isEmpty() )  return refuse( 508,
@@ -1951,8 +1999,9 @@ TEST_F( TestUSDataDb, ARefusedEditKeepsItsSubtreeThroughTheTree )
 }
 
 // The question asked before an edit is removed from the database says that
-// noise of other edits' models computed from it goes too, and that another
-// investigator's such noise keeps it; a model's removal says nothing of it
+// all noise of its models goes too, and the noise of other edits' models
+// computed from it, and that another investigator's such noise or models of
+// it, or GMP's records, keep it; a model's removal says nothing of it
 TEST_F( TestUSDataDb, TheQuestionBeforeAnEditRemovalNamesTheNoiseOfOtherEdits )
 {
    US_DataModel model;
@@ -1972,6 +2021,11 @@ TEST_F( TestUSDataDb, TheQuestionBeforeAnEditRemovalNamesTheNoiseOfOtherEdits )
    EXPECT_TRUE( text.contains( "noise computed from it for models of other edits" ) )
       << text.toStdString();
    EXPECT_TRUE( text.contains( "another investigator's model" ) ) << text.toStdString();
+   EXPECT_TRUE( text.contains( "another investigator's models of the edit, and records"
+                               " the GMP framework refers to keep the edit" ) )
+      << text.toStdString();
+   EXPECT_TRUE( text.contains( "noise of them computed from another edit" ) )
+      << text.toStdString();
 
    // the same from the experiment, which takes the edit along
    ASSERT_TRUE( pick( win.tw.topLevelItem( 0 ) ) );
@@ -2236,7 +2290,7 @@ TEST_F( TestUSDataDb, ForeignNoiseRemovedBeforeARefusedEditIsReported )
                             edit2, "22", "<model/>" };
    server.noises << FNoise{ "47", cross, "21", "34", model2, "ti_noise",
                             runA + ".1A280.e2401021200_a1_2DSA_i01.ti_noise", "<noise/>" };
-   server.refusing[ "delete_editedData" ] = IUS_DB2::DBERROR;
+   server.refusing[ "delete_editedData" ] = IUS_DB2::CONSTRAINT_FAILED;
    server.commitsInside << "delete_noise";
 
    US_DataModel model;
@@ -2498,30 +2552,42 @@ TEST_F( TestUSDataDb, AModelIsDownloadedAsUtf8 )
 
 // A side that cannot read an experiment is not merged as if it held
 // nothing: the local records would read as local only.  A lost connection
-// is not tried again -- US_DB2 does not connect again -- and the message
-// says what will
+// -- also as a broken TLS connection reports it (2055) -- is not tried
+// again, since US_DB2 does not connect again, and the message says what
+// will help: opening the experiment later fails the same way
 TEST_F( TestUSDataDb, AnExperimentADatabaseReadFailedOnIsNotShownAsLocal )
 {
-   server.failing << "get_rawData_by_experiment";
+   for ( int lostErrno : { 2013, 2055 } )
+   {
+      SCOPED_TRACE( lostErrno );
+      TearDown();
+      server = FakeServer();
+      SetUp();
 
-   US_DataModel model;
-   prepare( model, runA );
-   model.scan_data();
+      server.failing << "get_rawData_by_experiment";
+      server.lostErrno = lostErrno;
 
-   ASSERT_EQ( model.runCount(), 1 );
-   EXPECT_FALSE( model.run_entry( 0 ).loaded );
-   EXPECT_EQ( rowOf( model, editG ), -1 );
-   ASSERT_FALSE( model.scan_errors().isEmpty() );
-   EXPECT_TRUE( model.scan_errors().join( "\n" ).contains( "connection to the database was lost" ) )
-      << model.scan_errors().join( "\n" ).toStdString();
-   EXPECT_EQ( server.count( "get_rawData_by_experiment" ), 1 );   // not again
+      US_DataModel model;
+      prepare( model, runA );
+      model.scan_data();
 
-   // opening it later tries again
-   server.failing.clear();
-   EXPECT_TRUE( model.scan_run( 0 ) );
-   EXPECT_TRUE( model.run_entry( 0 ).loaded );
-   EXPECT_EQ( stateOf( model, editG ) & ( US_DataModel::REC_DB | US_DataModel::REC_LO ),
-              US_DataModel::REC_DB | US_DataModel::REC_LO );
+      ASSERT_EQ( model.runCount(), 1 );
+      EXPECT_FALSE( model.run_entry( 0 ).loaded );
+      EXPECT_EQ( rowOf( model, editG ), -1 );
+      ASSERT_FALSE( model.scan_errors().isEmpty() );
+      QString errors = model.scan_errors().join( "\n" );
+      EXPECT_TRUE( errors.contains( "connection to the database was lost" ) )
+         << errors.toStdString();
+      EXPECT_TRUE( errors.contains( "close it and open it again" ) )
+         << errors.toStdString();
+      EXPECT_EQ( server.count( "get_rawData_by_experiment" ), 1 );   // not again
+
+      // opening it later tries again, and the connection is still gone
+      EXPECT_FALSE( model.scan_run( 0 ) );
+      EXPECT_FALSE( model.run_entry( 0 ).loaded );
+      EXPECT_EQ( rowOf( model, editG ), -1 );
+      EXPECT_EQ( server.count( "get_rawData_by_experiment" ), 2 );
+   }
 }
 
 // A read that fails once, on something that passes -- a lock the server
@@ -2551,7 +2617,7 @@ TEST_F( TestUSDataDb, NoiseReadWithALaterExperimentJoinsItsModel )
    server.edits  << FEdit { "22", US_Util::new_guid(), "12", "RunB.2401011200.RA.1.A.280.xml" };
    server.noises << FNoise{ "63", cross, "22", "31", modelG, "ri_noise",
                             runA + ".1A280.e2401011200_a1_2DSA_i01.ri_noise", "<noise/>" };
-   server.failing << "get_rawData_by_person";        // the whole-store read fails
+   server.transient[ "get_rawData_by_person" ] = 1;  // the whole-store read fails
 
    US_DataModel model;
    prepare( model );
@@ -2768,7 +2834,7 @@ class TestUSDataDbRemerge : public TestUSDataDb
          writeModel( US_Settings::dataDir() + "/models/M0000005.xml", loOnly, editG,
                      runA + ".1A280.e2401011200_a6_2DSA_i01.model" );
 
-         server.failing << "get_rawData_by_person";    // one experiment at a time
+         server.transient[ "get_rawData_by_person" ] = 1;  // one experiment at a time
       }
 
       // Scan as far as RunA, and show it; the model is prepared
@@ -3043,9 +3109,23 @@ TEST_F( TestUSDataDb, AWrittenModelWithoutAnIdIsInTheDatabase )
    int row = rowOf( model, newM );
    ASSERT_GE( row, 0 );
 
+   // A lock wait: a new scan reads it
+   server.waitAfter[ "get_modelID" ] = server.count( "get_modelID" ) + 1;
+   EXPECT_EQ( win.proc.record_upload( row ), 3047 );
+   EXPECT_TRUE( win.proc.lastError().contains( "Scan again" ) )
+      << win.proc.lastError().toStdString();
+   EXPECT_LT( model.row_datadesc( row ).recordID, 0 );
+
+   // A lost connection: a new scan in this window cannot, the window has
+   // to be opened again
+   Desc again = model.row_datadesc( row );
+   again.recState &= ~US_DataModel::REC_DB;
+   model.change_datadesc( again, row );
    server.failAfter[ "get_modelID" ] = server.count( "get_modelID" ) + 1;
    EXPECT_EQ( win.proc.record_upload( row ), 3047 );
-   EXPECT_TRUE( win.proc.lastError().contains( "scan again" ) )
+   EXPECT_FALSE( win.proc.lastError().contains( "Scan again" ) )
+      << win.proc.lastError().toStdString();
+   EXPECT_TRUE( win.proc.lastError().contains( "close it and open it again" ) )
       << win.proc.lastError().toStdString();
 
    Desc desc = model.row_datadesc( row );
@@ -3066,7 +3146,7 @@ TEST_F( TestUSDataDb, NoiseListedWithItsModelsExperimentIsShownOnce )
    server.noises << FNoise{ "63", cross, "22", "31", modelG, "ri_noise",
                             runA + ".1A280.e2401011200_a1_2DSA_i01.ri_noise", "<noise/>" };
    server.noiseByModel = true;
-   server.failing << "get_rawData_by_person";        // one experiment at a time
+   server.transient[ "get_rawData_by_person" ] = 1;  // one experiment at a time
 
    US_DataModel model;
    prepare( model );
@@ -3094,4 +3174,489 @@ TEST_F( TestUSDataDb, NoiseListedWithItsModelsExperimentIsShownOnce )
                                                + model.count_records( runa ).db[ 2 ]
                                                + model.count_records( runa ).db[ 3 ]
                                                + model.count_records( runa ).db[ 4 ] );
+}
+
+// ------------------------------------------------------------ while an action runs
+
+// The question before an action, and the questions inside it, are modal, and
+// the window does its queued reads in their event loops.  None is done until
+// the action is: a read could merge the experiment again, and the rows the
+// question was about would be ones left behind.  What was asked for is done
+// after, and keeps what the action did
+TEST_F( TestUSDataDbRemerge, NothingIsReadWhileAnActionAsks )
+{
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   scanRunA( model, win );
+
+   QTreeWidgetItem* nitem = itemOfRow( win.tw, rowOf( model, noiseG, runa ) );
+   ASSERT_NE( nitem, nullptr );
+   win.select( nitem );
+   ASSERT_TRUE( win.tree.context_selection( nitem ) );
+
+   model.request_run( runb );          // reading it merges RunA again
+
+   int asked  = 0;
+   int pumped = 0;
+   win.tree.setPrompter( [ & ]( int kind, const QString&, const QString& )
+   {
+      if ( kind == US_DataTree::PROMPT_CONFIRM )
+      {
+         asked++;
+         pumped += model.pump_once() ? 1 : 0;   // what the window's timer does
+      }
+      return true;
+   } );
+
+   EXPECT_EQ( win.tree.confirm_and_act( "Database only", "DB-only remove" ), 0 )
+      << win.proc.lastError().toStdString();
+   EXPECT_EQ( asked, 1 );
+   EXPECT_EQ( pumped, 0 );
+   EXPECT_FALSE( model.run_entry( runb ).loaded );
+   EXPECT_FALSE( model.is_busy() );
+   EXPECT_EQ( server.noiseById( "41" ), nullptr );
+
+   // done after, and the noise stays removed in the new rows
+   while ( model.pump_once() ) {}
+   EXPECT_TRUE( model.run_entry( runb ).loaded );
+   EXPECT_EQ( stateOf( model, noiseG ) & US_DataModel::REC_DB, 0 );
+   Desc noise = model.row_datadesc( rowOf( model, noiseG, runa ) );
+   EXPECT_EQ( noise.recState & US_DataModel::REC_DB, 0 );
+   EXPECT_NE( noise.recState & US_DataModel::REC_LO, 0 );
+}
+
+// The same for the question an action asks itself, before it removes all
+// the records under a stand-in experiment
+TEST_F( TestUSDataDb, NothingIsReadWhileAnActionAsksAboutAStandIn )
+{
+   server.models << FModel{ "51", US_Util::new_guid(), "G.global.e1_a1_2DSA-GL_i01.model", "", "", "" };
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   int glbs = standIn( model, true );
+   ASSERT_GE( glbs, 0 );
+   win.select( win.tw.topLevelItem( glbs ) );
+
+   int busy = 0;
+   win.tree.setPrompter( [ & ]( int kind, const QString&, const QString& )
+   {
+      if ( kind == US_DataTree::PROMPT_CONFIRM )
+         busy += ( model.is_busy()  &&  ! model.pump_once() ) ? 1 : 0;
+      return true;
+   } );
+
+   EXPECT_EQ( win.tree.act_on_selection( "Database only", "DB-only remove" ), 0 );
+   EXPECT_EQ( busy, 1 );
+   EXPECT_FALSE( model.is_busy() );
+   EXPECT_EQ( server.changes, QStringList() << "delete_model 51" );
+}
+
+// ------------------------------------------------------------ what actions did
+
+// What an action did to a record is put back on that record when its
+// experiment is merged again -- not on a copy of it in another experiment
+// (a run directory copied under another name has the same GUIDs)
+TEST_F( TestUSDataDbRemerge, AnActionIsNotPutBackOnACopyInAnotherExperiment )
+{
+   const QString runC = "RunC";
+   QString dirC  = runDir( runC );
+   QString editC = dirC + "/" + runC + ".2401011200.RA.1.A.280.xml";
+   writeAuc ( dirC + "/" + runC + ".RA.1.A.280.auc", rawG );
+   writeEdit( editC, editG, rawG );
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   scanRunA( model, win );
+
+   int runc = model.index_of_run( runC );
+   ASSERT_GE( runc, 0 );
+   ASSERT_FALSE( model.run_entry( runc ).loaded );
+
+   EXPECT_EQ( win.proc.record_remove_local( rowOf( model, editG, runa ) ), 0 )
+      << win.proc.lastError().toStdString();
+
+   EXPECT_TRUE( model.scan_run( runc ) );
+   int crow = rowOf( model, editG, runc );
+   ASSERT_GE( crow, 0 );
+   Desc copy = model.row_datadesc( crow );
+   EXPECT_NE( copy.recState & US_DataModel::REC_LO, 0 );
+   EXPECT_EQ( copy.recState & US_DataModel::REC_DB, 0 );
+   EXPECT_EQ( copy.filename.toStdString(), editC.toStdString() );
+   EXPECT_TRUE( QFile::exists( editC ) );
+
+   // and RunA's own edit, merged again, is still where the action left it
+   EXPECT_TRUE( model.scan_run( runb ) );
+   Desc edit = model.row_datadesc( rowOf( model, editG, runa ) );
+   EXPECT_EQ( edit.recState & US_DataModel::REC_LO, 0 );
+   EXPECT_NE( edit.recState & US_DataModel::REC_DB, 0 );
+}
+
+// ... nor on a second local file of the same record in the experiment
+TEST_F( TestUSDataDbRemerge, AnActionIsNotPutBackOnAnotherFileOfTheRecord )
+{
+   QString dup = US_Settings::dataDir() + "/models/M0000009.xml";
+   ASSERT_TRUE( QFile::copy( modelPath, dup ) );
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   scanRunA( model, win );
+
+   int drow = -1;
+   for ( int rr = 0; rr < model.recCount(); rr++ )
+   {
+      Desc desc = model.row_datadesc( rr );
+      if ( desc.dataGUID == modelG  &&  model.run_of_row( rr ) == runa  &&
+           ( desc.recState & US_DataModel::REC_DB ) == 0 )
+         drow = rr;
+   }
+   ASSERT_GE( drow, 0 ) << "the second file is a row of its own";
+   QString removed = model.row_datadesc( drow ).filename;
+   QString kept    = ( removed == dup ) ? modelPath : dup;
+
+   EXPECT_EQ( win.proc.record_remove_local( drow ), 0 )
+      << win.proc.lastError().toStdString();
+
+   int reloaded = 0;
+   QObject::connect( &model, &US_DataModel::runReloaded,
+                     [ & ]( int index ) { reloaded += ( index == runa ) ? 1 : 0; } );
+   EXPECT_TRUE( model.scan_run( runb ) );
+   ASSERT_EQ( reloaded, 1 );
+
+   bool found = false;
+   for ( int rr = 0; rr < model.recCount(); rr++ )
+   {
+      Desc desc = model.row_datadesc( rr );
+      if ( desc.dataGUID != modelG  ||  model.run_of_row( rr ) != runa )  continue;
+
+      if ( desc.filename == kept )
+      {
+         found = true;
+         EXPECT_EQ( desc.recState & ( US_DataModel::REC_DB | US_DataModel::REC_LO ),
+                    US_DataModel::REC_DB | US_DataModel::REC_LO );
+      }
+
+      else
+         EXPECT_EQ( desc.recState & US_DataModel::REC_LO, 0 ) << desc.filename.toStdString();
+   }
+   EXPECT_TRUE( found );
+}
+
+// What the database removed with an edit, in an experiment the scan had not
+// reached, does not come back when that experiment is read: the catalog read
+// it before it went.  Here it is the noise recorded against the edit for a
+// model of an edit of that experiment, which the older procedure is asked to
+// remove first and the patched one removes with the edit
+TEST_F( TestUSDataDb, WhatAnEditRemovalTookDoesNotComeBackInALaterExperiment )
+{
+   for ( int patched = 0; patched < 2; patched++ )
+   {
+      SCOPED_TRACE( patched ? "patched" : "older" );
+      TearDown();
+      server = FakeServer();
+      SetUp();
+
+      QString editB  = US_Util::new_guid();
+      QString modelB = US_Util::new_guid();
+      QString cross  = US_Util::new_guid();
+      server.exps   << FExp  { "2", US_Util::new_guid(), "RunB" };
+      server.raws   << FRaw  { "12", US_Util::new_guid(), "RunB.RA.1.A.280.auc", "2" };
+      server.edits  << FEdit { "22", editB, "12", "RunB.2401011200.RA.1.A.280.xml" };
+      server.models << FModel{ "34", modelB, "RunB.1A280.e2401011200_a1_2DSA_i01.model",
+                               editB, "22", "<model/>" };
+      server.noises << FNoise{ "47", cross, "21", "34", modelB, "ti_noise",
+                               "RunB.1A280.e2401011200_a1_2DSA_i01.ti_noise", "<noise/>" };
+      server.patchedEditDelete = ( patched != 0 );
+
+      // The whole store is read, and the scan stopped after RunA
+      US_DataModel model;
+      prepare( model );
+      Window       win( model );
+      QObject::connect( &model, &US_DataModel::runMerged, [ & ]( int index )
+      {
+         if ( model.run_entry( index ).runID == runA )
+            model.stop_scan();
+      } );
+      model.scan_data();
+      win.tree.build_dtree();
+
+      int runb = model.index_of_run( "RunB" );
+      ASSERT_GE( runb, 0 );
+      ASSERT_FALSE( model.run_entry( runb ).loaded );
+
+      win.select( itemOfRow( win.tw, rowOf( model, editG ) ) );
+      EXPECT_EQ( win.tree.act_on_selection( "Database only", "DB-only remove" ), 0 )
+         << win.proc.lastError().toStdString();
+      ASSERT_EQ( server.noiseById( "47" ), nullptr );
+
+      int before = server.calls.size();
+      EXPECT_TRUE( model.scan_run( runb ) );
+      EXPECT_EQ( server.calls.size(), before ) << "read from the catalog";
+
+      int crow = rowOf( model, cross, runb );
+      if ( crow >= 0 )
+      {
+         EXPECT_EQ( model.row_datadesc( crow ).recState & US_DataModel::REC_DB, 0 );
+      }
+      EXPECT_NE( stateOf( model, modelB ) & US_DataModel::REC_DB, 0 );
+      EXPECT_EQ( model.count_records( runb ).db[ US_DataModel::NOISE ], 0 );
+   }
+}
+
+// ------------------------------------------------------------ edit removal outcomes
+
+// A refusal the transaction gave back as a whole changed nothing: nothing
+// is read back, and the message says nothing was removed
+TEST_F( TestUSDataDb, ARefusalRolledBackAsAWholeIsNotReadBack )
+{
+   server.refusing[ "delete_editedData" ] = IUS_DB2::NOTPERMITTED;
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+
+   int before = server.calls.size();
+   EXPECT_EQ( win.proc.record_remove_db( rowOf( model, editG ) ), 2012 );
+   QStringList after = server.calls.mid( before );
+   EXPECT_FALSE( after.contains( "get_editedData" ) ) << after.join( " " ).toStdString();
+   EXPECT_FALSE( after.contains( "get_model_info" ) ) << after.join( " " ).toStdString();
+   EXPECT_FALSE( after.contains( "get_noise_info" ) ) << after.join( " " ).toStdString();
+   EXPECT_EQ( server.txlog, QStringList() << "begin" << "rollback" );
+
+   QString error = win.proc.lastError();
+   EXPECT_TRUE( error.contains( "Nothing was removed" ) ) << error.toStdString();
+   for ( const QString& guid : { editG, modelG, noiseG } )
+      EXPECT_NE( stateOf( model, guid ) & US_DataModel::REC_DB, 0 ) << guid.toStdString();
+}
+
+// A lock wait timeout -- as the older procedure has the server report it,
+// and as the patched one reports it in its status -- is another session's
+// work: it is not tried again, even with the investigator's own noise of
+// another edit's model on the edit, nothing is read back, and the message
+// says what happened
+TEST_F( TestUSDataDb, ALockWaitIsNotTriedAgainAndSaysSo )
+{
+   for ( int patched = 0; patched < 2; patched++ )
+   {
+      SCOPED_TRACE( patched ? "patched" : "older" );
+      TearDown();
+      server = FakeServer();
+      SetUp();
+
+      server.edits  << FEdit { "22", US_Util::new_guid(), "11", runA + ".2401021200.RA.1.A.280.xml" };
+      server.models << FModel{ "34", US_Util::new_guid(), runA + ".1A280.e2401021200_a1_2DSA_i01.model",
+                               server.edits.last().guid, "22", "<model/>" };
+      server.noises << FNoise{ "47", US_Util::new_guid(), "21", "34", server.models.last().guid,
+                               "ti_noise", runA + ".1A280.e2401021200_a1_2DSA_i01.ti_noise", "<noise/>" };
+
+      if ( patched )
+      {
+         server.refusing    [ "delete_editedData" ] = IUS_DB2::DBERROR;
+         server.refusingText[ "delete_editedData" ] =
+            "MySQL: the edit was not deleted, and nothing that depends on it was:"
+            " error 1205: Lock wait timeout exceeded; try restarting transaction";
+      }
+      else
+         server.transient[ "delete_editedData" ] = 1;
+
+      US_DataModel model;
+      prepare( model );
+      Window       win( model );
+      model.scan_data();
+
+      int before = server.calls.size();
+      EXPECT_EQ( win.proc.record_remove_db( rowOf( model, editG ) ), 2012 );
+      EXPECT_EQ( server.changes, QStringList() << "delete_editedData 21" );
+      EXPECT_FALSE( server.calls.mid( before ).contains( "get_editedData" ) );
+
+      QString error = win.proc.lastError();
+      EXPECT_TRUE( error.contains( "lock wait timeout" ) ) << error.toStdString();
+      EXPECT_TRUE( error.contains( "Nothing was removed" ) ) << error.toStdString();
+      EXPECT_FALSE( error.contains( "refused" ) ) << error.toStdString();
+      EXPECT_NE( server.noiseById( "47" ), nullptr );
+      EXPECT_EQ( server.edits.size(), 2 );
+   }
+}
+
+// A deadlock ends the transaction on the server, which rolls back all of it
+// -- also the noise removed first in it -- and the patched procedure raises
+// it again with no status: the client's rollback is refused for that, and
+// nothing is left changed.  The message says so, not that the rollback
+// failed, and nothing is read back or tried again
+TEST_F( TestUSDataDb, ADeadlockChangesNothingAndSaysSo )
+{
+   QString edit2  = US_Util::new_guid();
+   QString model2 = US_Util::new_guid();
+   server.edits  << FEdit { "22", edit2, "11", runA + ".2401021200.RA.1.A.280.xml" };
+   server.models << FModel{ "34", model2, runA + ".1A280.e2401021200_a1_2DSA_i01.model",
+                            edit2, "22", "<model/>" };
+   server.noises << FNoise{ "47", US_Util::new_guid(), "21", "34", model2, "ti_noise",
+                            runA + ".1A280.e2401021200_a1_2DSA_i01.ti_noise", "<noise/>" };
+   server.patchedEditDelete = true;
+   server.deadlocking << "delete_editedData";
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+
+   int before = server.calls.size();
+   EXPECT_EQ( win.proc.record_remove_db( rowOf( model, editG ) ), 2012 );
+   EXPECT_EQ( server.changes, QStringList() << "delete_editedData 21" );
+   EXPECT_FALSE( server.calls.mid( before ).contains( "get_editedData" ) );
+
+   QString error = win.proc.lastError();
+   EXPECT_TRUE( error.contains( "deadlock" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "Nothing was removed" ) ) << error.toStdString();
+   EXPECT_FALSE( error.contains( "could not be rolled back" ) ) << error.toStdString();
+
+   EXPECT_EQ( server.edits.size(), 2 );
+   EXPECT_NE( server.noiseById( "41" ), nullptr );
+   EXPECT_NE( server.noiseById( "47" ), nullptr );
+   for ( const QString& guid : { editG, modelG, noiseG } )
+      EXPECT_NE( stateOf( model, guid ) & US_DataModel::REC_DB, 0 ) << guid.toStdString();
+}
+
+// An edit another session removed since the scan: the patched procedure says
+// there is no such edit (510), an older one that its experiment does not
+// exist (508).  What the database holds is read back, and the edit and what
+// went with it are gone from the database rows
+TEST_F( TestUSDataDb, AnEditAlreadyGoneIsReadBackAsRemoved )
+{
+   for ( int patched = 0; patched < 2; patched++ )
+   {
+      SCOPED_TRACE( patched ? "patched" : "older" );
+      TearDown();
+      server = FakeServer();
+      SetUp();
+      server.patchedEditDelete = ( patched != 0 );
+
+      US_DataModel model;
+      prepare( model );
+      Window       win( model );
+      model.scan_data();
+      win.tree.build_dtree();
+
+      server.edits .clear();             // removed elsewhere, with all of it
+      server.models.clear();
+      server.noises.clear();
+
+      win.select( itemOfRow( win.tw, rowOf( model, editG ) ) );
+      EXPECT_EQ( win.tree.act_on_selection( "Database only", "DB-only remove" ), 0 )
+         << win.proc.lastError().toStdString();
+      EXPECT_EQ( server.changes, QStringList() << "delete_editedData 21" );
+      EXPECT_GE( server.count( "get_editedData" ), 1 );
+
+      for ( const QString& guid : { editG, modelG, noiseG } )
+         EXPECT_EQ( stateOf( model, guid ) & US_DataModel::REC_DB, 0 ) << guid.toStdString();
+   }
+}
+
+// The connection lost while the edit is removed: whether it was removed is
+// not known, nothing can be read back -- the connection stays lost -- and
+// the message says to open the window again, not to scan again
+TEST_F( TestUSDataDb, AConnectionLostDuringAnEditRemovalSaysToOpenTheWindowAgain )
+{
+   server.failing << "delete_editedData";
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+
+   EXPECT_EQ( win.proc.record_remove_db( rowOf( model, editG ) ), 2012 );
+
+   QString error = win.proc.lastError();
+   EXPECT_TRUE( error.contains( "connection to the database was lost" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "not known" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "close it and open it again" ) ) << error.toStdString();
+   EXPECT_FALSE( error.contains( "Scan again" ) ) << error.toStdString();
+   EXPECT_FALSE( error.contains( "refused" ) ) << error.toStdString();
+   EXPECT_FALSE( error.contains( "Nothing was removed" ) ) << error.toStdString();
+
+   // the rows are left as they were: nothing is known to be gone
+   for ( const QString& guid : { editG, modelG, noiseG } )
+      EXPECT_NE( stateOf( model, guid ) & US_DataModel::REC_DB, 0 ) << guid.toStdString();
+}
+
+// Any removal that fails on a lost connection says so, and so does every
+// one after it: the window does not connect again
+TEST_F( TestUSDataDb, ARemovalOnALostConnectionSaysToOpenTheWindowAgain )
+{
+   server.failing << "delete_model";
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+
+   EXPECT_EQ( win.proc.record_remove_db( rowOf( model, modelG ) ), 2013 );
+   EXPECT_TRUE( win.proc.lastError().contains( "close it and open it again" ) )
+      << win.proc.lastError().toStdString();
+
+   EXPECT_EQ( win.proc.record_remove_db( rowOf( model, editG ) ), 2017 );
+   EXPECT_TRUE( win.proc.lastError().contains( "could not be listed" ) )
+      << win.proc.lastError().toStdString();
+   EXPECT_TRUE( win.proc.lastError().contains( "close it and open it again" ) )
+      << win.proc.lastError().toStdString();
+   EXPECT_TRUE( server.txlog.isEmpty() );
+}
+
+// ------------------------------------------------------------ line ends, both ways
+
+// A model the database holds with CRLF line ends -- uploaded from a file
+// written on Windows -- holds what a local file with LF ones holds
+TEST_F( TestUSDataDb, AModelTheDatabaseHoldsWithCrlfLineEndsIsInSync )
+{
+   QString crlf = server.models[ 0 ].xml;
+   ASSERT_FALSE( crlf.contains( '\r' ) );
+   crlf.replace( "\n", "\r\n" );
+   server.models[ 0 ].xml = crlf;
+   server.digest[ modelG ] = FakeServer::md5Of( crlf );
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+
+   int row = rowOf( model, modelG );
+   ASSERT_GE( row, 0 );
+   EXPECT_EQ( US_DataModel::sync_state( model.row_datadesc( row ) ),
+              US_DataModel::SYNC_INSYNC ) << model.row_datadesc( row ).contents.toStdString();
+   EXPECT_EQ( win.proc.record_upload( row ), (int)US_DataProcess::IN_SYNC );
+   EXPECT_EQ( server.count( "update_model" ), 0 );
+}
+
+// ... and with CRLF ones in both places: the catalogs' checksums match, and
+// an upload finds nothing to do
+TEST_F( TestUSDataDb, AModelWithCrlfLineEndsInBothPlacesIsNotUploaded )
+{
+   QByteArray bytes = textOf( modelPath ).toUtf8();
+   bytes.replace( "\n", "\r\n" );
+   QFile file( modelPath );
+   ASSERT_TRUE( file.open( QIODevice::WriteOnly ) );
+   file.write( bytes );
+   file.close();
+   server.models[ 0 ].xml = QString::fromUtf8( bytes );
+   server.digest[ modelG ] = US_Util::md5sum_file( modelPath );
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+
+   int row = rowOf( model, modelG );
+   ASSERT_GE( row, 0 );
+   ASSERT_EQ( US_DataModel::sync_state( model.row_datadesc( row ) ),
+              US_DataModel::SYNC_INSYNC ) << model.row_datadesc( row ).contents.toStdString();
+   EXPECT_EQ( win.proc.record_upload( row ), (int)US_DataProcess::IN_SYNC )
+      << win.proc.lastError().toStdString();
+   EXPECT_EQ( server.count( "update_model" ), 0 );
 }

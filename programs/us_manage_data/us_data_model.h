@@ -287,6 +287,40 @@ class US_DataModel : public QObject
         //! processed, is only queued.
         bool is_busy( void ) const;
 
+        /*! \brief Hold off reads and merges while an action asks and runs
+
+            An action asks its questions in modal dialogs, and the window
+            does its queued reads and comparisons from the event loop those
+            run: a read can merge an experiment again, and the rows the
+            action took would then be ones left behind.  Between this and
+            the matching \ref end_hold the model is busy (\ref is_busy):
+            what is asked for meanwhile is only queued, and done after.
+            Holds nest.
+        */
+        void begin_hold( void );
+
+        //! \brief End a hold; see \ref begin_hold
+        void end_hold( void );
+
+        /*! \brief A record is gone from the database
+
+            Noted by its type and database ID, so that a merge from the
+            catalogs -- which read the store before it went -- does not
+            show it again: the record, and what the database removes with
+            it (an edit's models, a model's noise), are left out of the
+            database side of every merge after this.  This is what keeps
+            the noise an edit removal took along in an experiment not read
+            yet from coming back when that experiment is read.
+            \param recType  The record type
+            \param recordID Its database ID
+        */
+        void removed_from_db( int recType, int recordID );
+
+        //! \brief Whether a client error number says the connection to
+        //!        the database server is gone (2006, 2013, 2055): the
+        //!        window does not connect again
+        static bool connection_lost( int serverErrno );
+
         //! \brief Read the first layer: one record per experiment
         //!
         //! This is what makes the window usable straight away on a store
@@ -732,10 +766,30 @@ class US_DataModel : public QObject
         QHash< int, QList< QPair< int, QString > > > run_taken;
         QList< int >        batch_runs;   //!< Experiments a batch changed
 
+        //! \brief A record as an action left it
+        struct Acted
+        {
+            DataDesc desc;       //!< The record after the action
+            QString  mergedFile; //!< Its local file as it was merged
+            int      mergedID;   //!< Its database ID as it was merged
+        };
+
         //! Every record an action changed since the scan, as the action
         //! left it, by \ref action_key: a merge from the catalogs, which
-        //! actions do not change, puts it back (\ref apply_action)
-        QHash< QString, DataDesc > acted;
+        //! actions do not change, puts it back (\ref apply_action) on the
+        //! same record -- the same local file and the same database
+        //! record -- not on a copy of it with the same GUID elsewhere
+        QHash< QString, QList< Acted > > acted;
+
+        //! The local file and the database ID of each row as it was
+        //! merged, before what an action did was put back on it: what
+        //! \ref acted knows the record by
+        QVector< QString >  row_file;
+        QVector< int >      row_dbid;
+
+        //! Records gone from the database, by "type:ID"; see
+        //! \ref removed_from_db
+        QSet< QString >     db_gone;
         bool                case_set;     //!< setFileNameCase() was called
         Qt::CaseSensitivity file_case;    //!< What setFileNameCase() set
 
@@ -824,8 +878,14 @@ class US_DataModel : public QObject
 
         //! \brief Put back on a record merged from the catalogs what an
         //!        action did to it since the scan
+        //! \param desc The record, as merged
         //! \returns True when an action had changed it
         bool apply_action( DataDesc& desc ) const;
+
+        //! \brief Leave out of a catalog's database records those gone
+        //!        from the database since it read them (\ref db_gone),
+        //!        and what the database removed with them
+        void drop_db_gone( QVector< DataDesc >& descs );
 
         //! \brief Append a row of an experiment
         void append_row( const DataDesc& desc, int runIndex );
@@ -844,10 +904,6 @@ class US_DataModel : public QObject
             \returns False when a side could not be read
         */
         bool load_sides( int index );
-
-        //! \brief Whether a client error number says the connection to
-        //!        the database server is gone (2006, 2013)
-        static bool connection_lost( int serverErrno );
 
         //! \brief One orphan and what hangs off it, as tree records
         typedef QVector< DataDesc > Branch;

@@ -87,12 +87,22 @@ class US_DataProcess : public QObject
             gives them back, and when that noise is the investigator's own it
             is removed first in a second transaction -- it was computed from
             the edit that goes -- and the edit asked for again; another
-            investigator's is not listed, and keeps the edit there.  After
-            any failure, and whenever the outcome is not confirmed, what the
-            database holds is read back -- the edit, its models and noise,
-            and that other noise -- and every row of a record found gone is
-            marked so (\ref mark_removed_from_db).  The message then says
-            what was removed all the same, if anything was.
+            investigator's is not listed, and keeps the edit there.  No
+            other refusal is tried again: not a lock wait timeout or a
+            deadlock, which another session's work caused and a second try
+            would only wait on again, nor a lost connection.  A failure the
+            transaction gave back as a whole -- the rollback succeeded, or
+            the server rolled it back for a deadlock -- changed nothing,
+            and the message says so.  After any other failure, when the
+            outcome is not confirmed, or when the database says the edit is
+            not there (510, or 508 from an older one), what the database
+            holds is read back -- the edit, its models and noise, and that
+            other noise -- and every row of a record found gone is marked so
+            (\ref mark_removed_from_db); an edit found gone is removed.  The
+            message then says what was removed all the same, if anything
+            was, and when it could not all be read back, what to do: scan
+            again, or after a lost connection, which this window does not
+            make anew, close the window and open it again.
             \param recordID The row of the record to be removed
             \return 0, or 2012 (the database kept the edit), 2016 (no
                     database ID), 2017 (the edit's noise could not be
@@ -147,6 +157,10 @@ class US_DataProcess : public QObject
 
         //! \brief Mark a row as no longer in the database, as a removal or
         //!        a removal's cascade leaves it
+        //!
+        //! The model is told too (US_DataModel::removed_from_db), so that
+        //! an experiment read later does not show it, or what the database
+        //! removed with it, from what the catalogs read before.
         //! \param row The row
         void mark_removed_from_db( int row );
 
@@ -196,7 +210,9 @@ class US_DataProcess : public QObject
                            QString& why, bool& clean );
 
         /*! \brief Read back what the database holds after an edit removal
-                   that failed, or whose outcome is not known
+                   that failed and was not given back as a whole, whose
+                   outcome is not known, or of an edit the database says
+                   is not there
 
             Every row of a record found gone -- the edit's own models and
             noise, and the foreign noise -- is marked as gone.
@@ -217,11 +233,51 @@ class US_DataProcess : public QObject
         //! \returns 1 present, 0 gone, -1 when the database did not say
         int  db_has( const QString& proc, int id, int gone );
 
-        //! \brief Mark as gone every noise row of a database ID
+        //! \brief Mark as gone every noise row of a database ID, and the
+        //!        record itself for merges to come, shown yet or not
         void mark_noise_removed( int noiseID );
+
+        //! \brief What kind of failure an edit removal's last write had
+        enum EditFailure
+        {
+            EDIT_REFUSED,      //!< Refused, for no reason of those below
+            EDIT_KEPT_BY_DB,   //!< \ref EDIT_KEPT
+            EDIT_FK,           //!< Another record refers to the edit (an
+                               //!< older database: fk_noise_editDataID)
+            EDIT_MISSING,      //!< No such edit, or no experiment of it
+            EDIT_DEADLOCK,     //!< A deadlock (1213): the server rolled
+                               //!< back the whole transaction
+            EDIT_TIMEOUT,      //!< A lock wait timeout (1205)
+            EDIT_LOST          //!< The connection was lost
+        };
+
+        //! \brief The kind of failure a write's status, the server's error
+        //!        number and the message say -- as an older procedure has
+        //!        the server report it, or a patched one reports it itself
+        EditFailure failure_kind( int status, int serverErrno,
+                                  const QString& error );
+
+        //! \brief What a kind of failure means, to append to the message
+        QString     failure_text( EditFailure kind );
+
+        //! \brief What to do when what the database holds could not be
+        //!        read back: scan again, or, after a lost connection, open
+        //!        the window again
+        QString     read_back_advice( void ) const;
+
+        //! \brief What to do once the connection to the database is lost
+        QString     lost_text( void ) const;
+
+        //! \brief Append \ref lost_text to the message of a failure on a
+        //!        lost connection, or of any failure after one
+        //! \returns \a stat
+        int         note_lost( int stat );
 
         int                     edit_status = 0;  //!< delete_editedData's
                                                   //!< status, last try
+        EditFailure             edit_failure = EDIT_REFUSED; //!< ... its kind
+        bool                    conn_lost = false; //!< The connection was
+                                                   //!< seen lost
         QString                 errMsg;     //!< Message from the last error
         QWidget*                parentw;    //!< Parent widget
         IUS_DB2*                db;         //!< Pointer to database connection

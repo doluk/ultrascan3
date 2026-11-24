@@ -18,6 +18,28 @@ const QColor colorGray(  110, 110, 110 );
 const QColor colorTeal(    0, 120, 140 );
 const QColor colorWhite( 255, 255, 240 );
 
+namespace
+{
+   // Holds off the model's reads and merges for as long as it lives; see
+   // US_DataModel::begin_hold
+   class ReadHold
+   {
+      public:
+         explicit ReadHold( US_DataModel* model ) : da_model( model )
+         {
+            da_model->begin_hold();
+         }
+
+         ~ReadHold()
+         {
+            da_model->end_hold();
+         }
+
+      private:
+         US_DataModel* da_model;
+   };
+}
+
 // class to manage a tree widget, underlying data, and processing
 US_DataTree::US_DataTree( US_DataModel* dmodel, QTreeWidget* treewidg,
       QWidget* parent /*=0*/ ) : QObject( parent )
@@ -198,6 +220,12 @@ bool US_DataTree::ask_user( int kind, const QString& title,
    if ( kind == PROMPT_INFORM )
    {
       QMessageBox::information( parentw, title, text );
+      return true;
+   }
+
+   if ( kind == PROMPT_WARN )
+   {
+      QMessageBox::warning( parentw, title, text );
       return true;
    }
 
@@ -911,31 +939,33 @@ void US_DataTree::dtree_help()
 }
 
 // Ask whether to go ahead with an action, then do it and report
-void US_DataTree::confirm_and_act( QString item_exs, QString item_act )
+//
+// The window's background reads are held off from the question to the end
+// of the action: one could merge an experiment again, and the rows the
+// question was asked about, and the action works on, would be ones left
+// behind.  What was asked for meanwhile is done after.
+int US_DataTree::confirm_and_act( QString item_exs, QString item_act )
 {
-   if ( tw_item == NULL )   return;
+   if ( tw_item == NULL )   return ACT_NOTHING;
 
-   QMessageBox msgBox( parentw );
-   int irow = tw_item->type() - (int)QTreeWidgetItem::UserType;
-   da_model->setCurrent( irow );
-   cdesc    = da_model->current_datadesc();
+   int stat = ACT_CANCELLED;
 
-   record_type( cdesc.recType, item_act );
+   {
+      ReadHold hold( da_model );
 
-   msgBox.setWindowTitle( item_act );
-   msgBox.setTextFormat(  Qt::RichText );
-   msgBox.setText( action_text( item_exs, item_act ) );
-   msgBox.addButton( QMessageBox::No );
-   msgBox.addButton( QMessageBox::Yes );
-   msgBox.setDefaultButton( QMessageBox::No );
+      int irow = tw_item->type() - (int)QTreeWidgetItem::UserType;
+      da_model->setCurrent( irow );
+      cdesc    = da_model->current_datadesc();
 
-   // The background reads run while the question is asked, too: when the
-   // item it was asked about went, nothing is done
-   if ( msgBox.exec() == QMessageBox::Yes  &&  tw_item != NULL )
-      action_result( do_actions( item_exs, item_act ), item_act );
+      record_type( cdesc.recType, item_act );
 
-   else
-      action_result( ACT_CANCELLED, item_act );
+      if ( ask_user( PROMPT_CONFIRM, item_act,
+                     action_text( item_exs, item_act ) ) )
+         stat = do_actions( item_exs, item_act );
+   }
+
+   action_result( stat, item_act );
+   return stat;
 }
 
 // perform item upload action
@@ -1140,14 +1170,20 @@ QString US_DataTree::action_text( QString exstext, QString acttext )
 
       if ( nedits > 0 )
          lines += tr( "<p>Removing an edit from the database also removes"
-                      " its models and their noise, and the noise computed"
-                      " from it for models of other edits (a global fit,"
-                      " say), wherever that noise is shown in the tree.</p>"
-                      "<p>Such noise of another investigator's model, or"
-                      " of a model or run of the GMP framework, keeps the"
-                      " edit: then nothing of it is removed, and you are"
-                      " told why.  Only that investigator, or an"
-                      " administrator, can remove that noise.</p>" );
+                      " its models and all their noise, also the noise of"
+                      " them computed from another edit, and the noise"
+                      " computed from it for models of other edits (a"
+                      " global fit, say), wherever that noise is shown in"
+                      " the tree.</p>"
+                      "<p>Such noise of another investigator's model,"
+                      " another investigator's models of the edit, and"
+                      " records the GMP framework refers to keep the edit:"
+                      " then nothing of it is removed, and you are told"
+                      " why.  Only that investigator, or an administrator,"
+                      " can remove those records.  (An older database"
+                      " removes another investigator's models of the edit"
+                      " with it, and keeps the edit only for such noise of"
+                      " theirs.)</p>" );
    }
 
    return lines;
@@ -1168,7 +1204,7 @@ void US_DataTree::action_result( int stat, QString item_act )
    {  // nothing under the selection could take this action
       text = tr( "\"%1\": nothing to do -- no selected record"
                  " can take this action" ).arg( item_act );
-      QMessageBox::information( parentw, item_act, text );
+      ask_user( PROMPT_INFORM, item_act, text );
    }
 
    else if ( stat == ACT_REFUSED )
@@ -1190,8 +1226,7 @@ void US_DataTree::action_result( int stat, QString item_act )
 
    else
    {  // action got an error
-      QMessageBox::warning( parentw,
-            item_act + tr( " *ERROR*!" ),
+      ask_user( PROMPT_WARN, item_act + tr( " *ERROR*!" ),
             tr( "The \"%1\" action had an error: %2" )
             .arg( item_act ).arg( stat )
             + "\n\n" + ( da_process ? da_process->lastError() : QString() ) );
@@ -1438,6 +1473,11 @@ int US_DataTree::do_actions( QString item_exs, QString item_act )
 {
    if ( da_process == NULL )
       da_process = (US_DataProcess*)da_model->procobj();
+
+   // The questions asked below are modal, and the window does its queued
+   // reads in their event loops: none is done until the action is, so the
+   // action rows stay the rows of the records they were taken for
+   ReadHold hold( da_model );
 
    int narows  = action_rows();
 DbgLv(1) << "ITEM do_actions" << narows << item_exs << item_act;

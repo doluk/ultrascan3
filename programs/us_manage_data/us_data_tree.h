@@ -109,26 +109,45 @@ class US_DataTree : public QObject
         enum PromptKind
         {
             PROMPT_INFORM  = 0,   //!< A message; the answer is ignored
-            PROMPT_CONFIRM = 1    //!< A yes/no question; true for yes
+            PROMPT_CONFIRM = 1,   //!< A yes/no question; true for yes
+            PROMPT_WARN    = 2    //!< An error message; the answer is
+                                  //!< ignored
         };
 
         /*! \brief Replace the message boxes an action shows
 
-            By default an action tells the user why it refused, and asks
-            before it removes everything under a stand-in experiment, with
-            message boxes.  A caller that runs actions without a user -- a
-            test -- answers them here instead.
+            By default an action asks whether to go ahead, tells the user
+            why it refused and how it ended, and asks before it removes
+            everything under a stand-in experiment, with message boxes.  A
+            caller that runs actions without a user -- a test -- answers
+            them here instead.
             \param func Called with the kind, the title and the text; its
                         result is the answer to a PROMPT_CONFIRM
         */
         void setPrompter(
             std::function< bool( int, const QString&, const QString& ) > func );
 
+        /*! \brief Ask for, then perform, one context menu action
+
+            What a context menu action does: the question (\ref
+            action_text), then \ref do_actions on the selection taken for
+            the menu, and the result reported.  The model's background
+            reads and merges are held off from the question to the end of
+            the action (US_DataModel::begin_hold), so the rows the question
+            was about are the rows acted on.
+            \param item_exs Where the records exist ("Database only", ...)
+            \param item_act The action ("DB-only remove", ...)
+            \returns As \ref act_on_selection, or \ref ACT_CANCELLED
+        */
+        int confirm_and_act( QString item_exs, QString item_act );
+
         /*! \brief The question asked before an action on the selection
 
             A removal from the database that takes an edit says what goes
-            with it beyond the rows under it: the noise of other edits'
-            models computed from it.
+            with it beyond the rows under it -- the noise of other edits'
+            models computed from it -- and what keeps it: another
+            investigator's models of it or noise computed from it, and
+            records the GMP framework refers to.
             \param action Where the records exist ("Database only", ...)
             \param text   The action ("EditedData DB-only remove", ...)
             \return The question, as rich text
@@ -261,11 +280,6 @@ class US_DataTree : public QObject
             private:
                 US_DataModel* da_model;
         };
-
-        //! \brief Ask for, then perform, one context menu action
-        //! \param item_exs Where the records exist
-        //! \param item_act The action
-        void confirm_and_act( QString item_exs, QString item_act );
 
         //! \brief Get the action rows
         //! \return Number of action rows
