@@ -779,6 +779,17 @@ qDebug() << "cvio:WrRDB: newExp id solID chnID" << ExpData.expID
 
    if ( error != QString( "" ) )
    {
+      // Inside a transaction of the caller's (us_import_run, the data
+      // import), its rollback undoes the run and everything written here.
+      // Deleting the experiment as well would only add a failure of its
+      // own to the message (delete_experiment refuses, for instance, a run
+      // without the report rows it looks for), which then names a
+      // deletion instead of what failed.
+      if ( db->transactionActive() )
+      {
+         return error;
+      }
+
       // Most likely the data is not in a desirable state in the db, 
       // for instance the raw data record might have been written but 
       // the blob upload failed. So let's delete the experiment and 

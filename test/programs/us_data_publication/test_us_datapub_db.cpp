@@ -1374,6 +1374,38 @@ TEST_F( DataPubDbRules, ACalibrationIsAddedByAnAdministratorOnly )
    EXPECT_EQ( stored.calibrationExperimentID, -1 );
 }
 
+/* Raw data the server refuses (a label longer than the column) fails the
+   import, which is rolled back; the message says what failed -- the raw
+   data -- and not that experiment 1, or any, could not be deleted: the
+   caller's transaction undoes the run, US_ConvertIO does not try to. */
+TEST_F( DataPubDbRules, ARawDataFailureSaysWhatFailed )
+{
+   QString bundle = recraft( exportStore( "longlabel" ),
+                             []( US_DataPubManifest& m, const QString& )
+   {
+      QList< US_DataPubEntity > raws = m.section( US_DataPub::RawData );
+      ASSERT_FALSE( raws.isEmpty() );
+
+      for ( int ii = 0; ii < raws.size(); ii++ )
+         raws[ ii ].attrs.insert( "label", QString( 300, QChar( 'x' ) ) );
+
+      m.setSection( US_DataPub::RawData, raws );
+   } );
+
+   db->rawQuery( "SELECT COUNT(*) FROM experiment" );
+   int before = db->next() ? db->value( 0 ).toInt() : -1;
+
+   US_DataPubImporter importer;
+   QString            error;
+   ASSERT_TRUE ( importer.inspect( bundle, error ) ) << error.toStdString();
+   EXPECT_FALSE( importer.runImport( options(), error ) );
+   EXPECT_FALSE( error.contains( "deleting experiment" ) ) << error.toStdString();
+   EXPECT_TRUE ( error.contains( "raw data" ) ) << error.toStdString();
+
+   db->rawQuery( "SELECT COUNT(*) FROM experiment" );
+   EXPECT_EQ( db->next() ? db->value( 0 ).toInt() : -2, before );
+}
+
 /* A run whose centrifugeProtocol and RIProfile were NULL in the source
    (the bundle says so in "nullFields") and a calibration's date: a target
    whose procedures are of us3_catalog_version() 2 or later keeps them; an
