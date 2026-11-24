@@ -14,7 +14,6 @@
 #include "us_datapub_export.h"
 
 #include <functional>
-#include <cmath>
 
 #include "us_settings.h"
 #include "us_util.h"
@@ -2367,40 +2366,6 @@ namespace
       return false;
    }
 
-   // A value written as a number that is not a finite one: what
-   // QString::number() makes of a NaN or an infinity, in any case
-   bool non_finite_text( const QString& value )
-   {
-      static const QRegularExpression word(
-            "^\\s*[+-]?(nan|inf|infinity)\\s*$",
-            QRegularExpression::CaseInsensitiveOption );
-
-      if ( word.match( value ).hasMatch() )  return true;
-
-      bool   ok     = false;
-      double number = value.toDouble( &ok );
-
-      return ok  &&  ! std::isfinite( number );
-   }
-
-   // An attribute or field that holds free text, not a number: a name,
-   // description, label, comment, serial or file name may be "inf"
-   bool text_field( const QString& name )
-   {
-      static const char* const parts[] =
-      {
-         "desc", "name", "label", "comment", "note", "serial", "file",
-         "runid", "title", "type", "unit", "report", "guid", "date"
-      };
-
-      QString lower = name.toLower();
-
-      for ( uint ii = 0; ii < sizeof( parts ) / sizeof( char* ); ii++ )
-         if ( lower.contains( parts[ ii ] ) )  return true;
-
-      return false;
-   }
-
    // A character as a message shows it: itself and its code point
    QString char_text( const QString& ch )
    {
@@ -2644,7 +2609,8 @@ bool US_DataPubImporter::checkValues( const US_DataPubEntity& entity,
          QString value = entity.attrs.value( keys[ ii ] );
          QString field = tr( "the manifest field \"%1\"" ).arg( keys[ ii ] );
 
-         if ( ! text_field( keys[ ii ] )  &&  non_finite_text( value ) )
+         if ( ! US_DataPub::isTextAttribute( QString(), keys[ ii ] )  &&
+              US_DataPub::isNonFiniteNumber( value ) )
          {
             error = tr( "%1: %2 is \"%3\", which is not a finite number;"
                         " the bundle is refused" )
@@ -2656,6 +2622,17 @@ bool US_DataPubImporter::checkValues( const US_DataPubEntity& entity,
       }
 
       return true;
+   }
+
+   // The numbers: the check the export makes of what it writes
+   QString nonFinite = US_DataPub::nonFiniteNumberInXml( data );
+
+   if ( ! nonFinite.isEmpty() )
+   {
+      error = tr( "%1: %2 in %3 is not a finite number; the bundle is"
+                  " refused" ).arg( entity.label() ).arg( nonFinite )
+              .arg( fname );
+      return false;
    }
 
    QXmlStreamReader xml( data );
@@ -2675,14 +2652,6 @@ bool US_DataPubImporter::checkValues( const US_DataPubEntity& entity,
             QString value = attrs[ ii ].value().toString();
             QString field = tr( "the attribute \"%1\" of <%2> in %3" )
                             .arg( name ).arg( elem ).arg( fname );
-
-            if ( ! text_field( name )  &&  non_finite_text( value ) )
-            {
-               error = tr( "%1: %2 is \"%3\", which is not a finite number;"
-                           " the bundle is refused" )
-                       .arg( entity.label() ).arg( field ).arg( value );
-               return false;
-            }
 
             if ( unstorable( value, field ) )  return false;
          }
