@@ -317,3 +317,128 @@ TEST_F( DataPubDbFixtureExport, TheFixturesCalibrationSurvivesADiskStore )
    EXPECT_EQ( preview.manifest().total(), again.manifest().total() );
    EXPECT_EQ( preview.warnings(), again.warnings() );
 }
+
+namespace
+{
+   // The first column of the first row of a query, or "<none>"
+   QString sql_value( IUS_DB2* db, const QString& sql )
+   {
+      db->rawQuery( sql );
+
+      if ( db->lastErrno() != IUS_DB2::OK  ||  ! db->next() )
+         return QString( "<none>" );
+
+      return db->value( 0 ).toString();
+   }
+}
+
+/* What the source's rows hold beyond the payloads travels from one
+   database to another: database -> bundle -> database.  The export puts
+   the buffer's private flag, the raw data's label and comment, the edit's
+   comment and the analyte's spectrum column (also when it is empty) into
+   the manifest, and the import stores them.  The export used to leave
+   them out, and the target had a private buffer, the run ID for a label,
+   no comments and a spectrum made from the profile.
+
+   The target is a second scratch database, US3_TEST_DB_IMPORT2_NAME, built
+   like the first (test/README, section 4); the case skips without it.
+*/
+TEST_F( DataPubDbExport, TheSourcesFieldsTravelToAnotherDatabase )
+{
+   QString second = qEnvironmentVariable( "US3_TEST_DB_IMPORT2_NAME" );
+
+   if ( second.isEmpty() )
+      GTEST_SKIP() << "no second scratch database (US3_TEST_DB_IMPORT2_NAME)";
+
+   QString dbRunID;
+   QString error;
+   ASSERT_TRUE( storeInDatabase( dbRunID, error ) ) << error.toStdString();
+
+   // An empty spectrum column travels as one
+   db->rawQuery( "UPDATE analyte SET spectrum = '' WHERE analyteGUID = '"
+                 + analyteGUID + "'" );
+   ASSERT_EQ( db->lastErrno(), IUS_DB2::OK ) << db->lastError().toStdString();
+
+   US_DataPubExporter empty;
+   ASSERT_TRUE( exportFromDb( dbRunID, root + "/empty.tar.gz", empty, error ) )
+      << error.toStdString();
+
+   US_DataPubEntity analyte;
+   ASSERT_TRUE( empty.manifest().entity( US_DataPub::Analyte, analyteGUID,
+                                         analyte ) );
+   EXPECT_TRUE( analyte.attrs.contains( "spectrum" ) );
+   EXPECT_EQ  ( analyte.attrs.value( "spectrum" ), QString() );
+
+   // Values of their own in the source's rows
+   const QStringList updates =
+   {
+      "UPDATE bufferPerson bp, buffer b SET bp.private = 0 WHERE"
+      " bp.bufferID = b.bufferID AND b.bufferGUID = '" + bufferGUID + "'",
+      "UPDATE rawData SET label = 'raw label', comment = 'raw comment, \"quoted\""
+      "' WHERE rawDataGUID = '" + rawGUID + "'",
+      "UPDATE editedData SET comment = 'edited by hand' WHERE editGUID = '"
+      + editGUID + "'",
+      "UPDATE analyte SET spectrum = '250/2.5' WHERE analyteGUID = '"
+      + analyteGUID + "'"
+   };
+
+   for ( const QString& sql : updates )
+   {
+      db->rawQuery( sql );
+      ASSERT_EQ( db->lastErrno(), IUS_DB2::OK ) << db->lastError().toStdString()
+                                                 << "\n" << sql.toStdString();
+   }
+
+   US_DataPubExporter fromDb;
+   QString            bundle = root + "/fields.tar.gz";
+   ASSERT_TRUE( exportFromDb( dbRunID, bundle, fromDb, error ) )
+      << error.toStdString();
+
+   const US_DataPubManifest& mani = fromDb.manifest();
+   US_DataPubEntity entity;
+
+   ASSERT_TRUE( mani.entity( US_DataPub::Buffer, bufferGUID, entity ) );
+   EXPECT_EQ( entity.attrs.value( "private" ), QString( "0" ) );
+   ASSERT_TRUE( mani.entity( US_DataPub::RawData, rawGUID, entity ) );
+   EXPECT_EQ( entity.attrs.value( "label" ),   QString( "raw label" ) );
+   EXPECT_EQ( entity.attrs.value( "comment" ),
+              QString( "raw comment, \"quoted\"" ) );
+   ASSERT_TRUE( mani.entity( US_DataPub::EditedData, editGUID, entity ) );
+   EXPECT_EQ( entity.attrs.value( "comment" ), QString( "edited by hand" ) );
+   ASSERT_TRUE( mani.entity( US_DataPub::Analyte, analyteGUID, entity ) );
+   EXPECT_EQ( entity.attrs.value( "spectrum" ), QString( "250/2.5" ) );
+
+   // ... into the second database
+   QStringList source = US_Settings::defaultDB();
+   QStringList other  = source;
+   other.replace( 2, second );
+   US_Settings::set_defaultDB( other );
+
+   US_DataPubImporter importer;
+   bool imported = importer.inspect( bundle, error )  &&
+                   importer.runImport( target( true, QString() ), error );
+
+   US_DB2  tdb;
+   QString cerror;
+   bool    connected = tdb.connect( master, cerror );
+   US_Settings::set_defaultDB( source );
+
+   ASSERT_TRUE( imported ) << error.toStdString() << "\n"
+                           << importer.log().join( "\n" ).toStdString();
+   ASSERT_TRUE( connected ) << cerror.toStdString();
+
+   EXPECT_EQ( sql_value( &tdb, "SELECT bp.private FROM buffer b, bufferPerson bp"
+                         " WHERE b.bufferID = bp.bufferID AND b.bufferGUID = '"
+                         + bufferGUID + "'" ), QString( "0" ) );
+   EXPECT_EQ( sql_value( &tdb, "SELECT label FROM rawData WHERE rawDataGUID = '"
+                         + rawGUID + "'" ), QString( "raw label" ) );
+   EXPECT_EQ( sql_value( &tdb, "SELECT comment FROM rawData WHERE"
+                         " rawDataGUID = '" + rawGUID + "'" ),
+              QString( "raw comment, \"quoted\"" ) );
+   EXPECT_EQ( sql_value( &tdb, "SELECT comment FROM editedData WHERE"
+                         " editGUID = '" + editGUID + "'" ),
+              QString( "edited by hand" ) );
+   EXPECT_EQ( sql_value( &tdb, "SELECT spectrum FROM analyte WHERE"
+                         " analyteGUID = '" + analyteGUID + "'" ),
+              QString( "250/2.5" ) );
+}

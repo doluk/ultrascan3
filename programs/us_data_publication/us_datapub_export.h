@@ -410,6 +410,11 @@ class US_DataPubExporter : public QObject
       //! The variance and meniscus columns of a model's database row
       bool modelRowValues( const US_DataPubCatalog::Model&, double& variance,
                            double& meniscus, QString& error );
+      //! Columns of the row a database query returns; none when it finds
+      //! no row, false when it fails
+      bool rowColumns( const QStringList& query, const QList< int >& columns,
+                       QList< QVariant >& values, QString& error );
+
       //! Put the variance and meniscus into a staged model's XML at full
       //! precision
       bool stageModelValues( const QString& path, double variance,

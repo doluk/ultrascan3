@@ -960,6 +960,12 @@ without them as it always did:
 | `label`, `comment` | raw data | `rawData.label`, `rawData.comment` | the run's label and comment, as `us_convert` writes raw data |
 | `spectrum` (may be empty) | analyte | the analyte row's `spectrum` column | its first extinction (or refraction, fluorescence) point, as `US_Analyte` writes it |
 
+An export from a database writes them from the source's rows
+(`get_buffer_info`'s `private`, `get_rawData`'s `label` and `comment`,
+`get_editedData`'s `comment`, `get_analyte_info`'s `spectrum`, the last also
+when it is empty). A disk store has none of these columns, so an export from
+disk leaves the attributes out.
+
 The raw data rows of a run are written in one call (`US_ConvertIO`), which
 gives all of them one label and comment: the run's raw data records have to
 agree on theirs, or they are written with the run's, and the log says so.

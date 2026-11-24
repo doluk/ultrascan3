@@ -2017,6 +2017,22 @@ bool US_DataPubExporter::addRawData( const US_DataPubCatalog::Run& run,
       entity.setDepend( US_DataPub::Experiment, run.guid );
       entity.setDepend( US_DataPub::Solution, solGUID );
 
+      // The row's label and comment, which the .auc file does not hold
+      if ( catalog.isDb()  &&  raw.id.toInt() > 0 )
+      {
+         QList< QVariant > row;
+
+         if ( ! rowColumns( QStringList() << "get_rawData" << raw.id,
+                            QList< int >() << 1 << 3, row, error ) )
+            return false;
+
+         if ( ! row.isEmpty() )
+         {
+            entity.attrs.insert( "label",   row[ 0 ].toString() );
+            entity.attrs.insert( "comment", row[ 1 ].toString() );
+         }
+      }
+
       QString staged = bundle.stagedPath( entity.payload );
 
       if ( staged.isEmpty() )
@@ -2487,6 +2503,22 @@ bool US_DataPubExporter::addBuffer( US_Buffer& buffer, QString& error )
       entity.attrs.insert( "components", QString::number( comps.size() ) );
    }
 
+   // Whether the buffer is private to its owner (bufferPerson.private): a
+   // public buffer stays public in the target.  A disk store has no flag.
+   if ( catalog.isDb()  &&  buffer.bufferID.toInt() > 0 )
+   {
+      QList< QVariant > row;
+
+      if ( ! rowColumns( QStringList() << "get_buffer_info" << buffer.bufferID,
+                         QList< int >() << 8, row, error ) )
+         return false;
+
+      if ( ! row.isEmpty()  &&  ! row[ 0 ].isNull() )
+         entity.attrs.insert( "private",
+                              row[ 0 ].toInt() != 0 ? QString( "1" )
+                                                    : QString( "0" ) );
+   }
+
    // The bundle carries the spectra whole in a payload of their own: buffer
    // files written before the library kept full precision rounded them
    US_DataPubRecords::Spectra spectra;
@@ -2711,6 +2743,21 @@ bool US_DataPubExporter::addAnalyte( US_Analyte& analyte, QString& error )
       spectra.insert( "extinction",   analyte.extinction   );
       spectra.insert( "refraction",   analyte.refraction   );
       spectra.insert( "fluorescence", analyte.fluorescence );
+
+      // The row's spectrum column as stored, also when it is empty: an
+      // import keeps it rather than making one up from the profile
+      if ( analyte.analyteID.toInt() > 0 )
+      {
+         QList< QVariant > row;
+
+         if ( ! rowColumns( QStringList() << "get_analyte_info"
+                                          << analyte.analyteID,
+                            QList< int >() << 5, row, error ) )
+            return false;
+
+         if ( ! row.isEmpty() )
+            entity.attrs.insert( "spectrum", row[ 0 ].toString() );
+      }
    }
 
    else if ( ! US_DataPubRecords::readAnalyteSpectra(
@@ -2776,6 +2823,19 @@ bool US_DataPubExporter::addEdits( const US_DataPubCatalog::Run& run,
          entity.attrs.insert( "editID", edit.editID );
          entity.attrs.insert( "triple", edit.triple );
          entity.setDepend( US_DataPub::RawData, raw.guid );
+
+         // The row's comment, which the edit file does not hold
+         if ( catalog.isDb()  &&  edit.id.toInt() > 0 )
+         {
+            QList< QVariant > row;
+
+            if ( ! rowColumns( QStringList() << "get_editedData" << edit.id,
+                               QList< int >() << 4, row, error ) )
+               return false;
+
+            if ( ! row.isEmpty() )
+               entity.attrs.insert( "comment", row[ 0 ].toString() );
+         }
 
          QString staged = bundle.stagedPath( entity.payload );
 
@@ -3006,6 +3066,44 @@ bool US_DataPubExporter::addModels(
 
    if ( ! models.isEmpty() )
       note( tr( "Models: %1" ).arg( models.size() ) );
+
+   return true;
+}
+
+/* Columns of the one row a database "get_..._info" procedure returns for a
+   record: what the library's readers leave out, and an import can keep
+   when the manifest carries it.  A record the procedure does not find
+   gives no values (and no attribute); a query that fails fails the export.
+*/
+bool US_DataPubExporter::rowColumns( const QStringList& query,
+                                     const QList< int >& columns,
+                                     QList< QVariant >& values,
+                                     QString& error )
+{
+   IUS_DB2* dbase = catalog.db();
+
+   values.clear();
+
+   if ( dbase == nullptr )  return true;
+
+   dbase->query( query );
+
+   int status = dbase->lastErrno();
+
+   if ( status == IUS_DB2::NOROWS )  return true;
+
+   if ( status != IUS_DB2::OK )
+   {
+      error = tr( "%1 %2 could not be read (status %3): %4" )
+              .arg( query.value( 0 ) ).arg( query.value( 1 ) ).arg( status )
+              .arg( dbase->lastError() );
+      return false;
+   }
+
+   if ( ! dbase->next() )  return true;
+
+   for ( int ii = 0; ii < columns.size(); ii++ )
+      values << dbase->value( columns[ ii ] );
 
    return true;
 }

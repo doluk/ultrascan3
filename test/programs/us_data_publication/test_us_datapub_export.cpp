@@ -3611,14 +3611,18 @@ TEST_F( DataPubExport, TheCalibrationSurvivesADiskStoreItWasImportedInto )
    ASSERT_TRUE( importer.runImport( disk_target( target ), error ) )
       << error.toStdString();
 
-   // The target's calibration has no ID; the run's XML names its GUID
+   // The run's XML names the calibration's GUID.  An import now gives the
+   // calibration an ID of the store, but one made before that gave it none
+   // (-1), and the GUID is what then still names it: make it so here
    QString cal = file_with_guid( target + "/data/rotors", calGUID );
+   QString xml = target + "/results/" + runID + "/" + runID + "." + runType
+                 + ".xml";
    ASSERT_FALSE( cal.isEmpty() );
-   EXPECT_TRUE( read_text( cal ).contains( "id=\"-1\"" ) );
+   ASSERT_TRUE( set_xml_attribute( cal, "Calibration", "id", "-1" ) );
+   ASSERT_TRUE( set_xml_attribute( xml, "calibration", "id", "-1" ) );
 
    US_DataPubCatalog::ExpInfo info;
-   ASSERT_TRUE( info.readFromFile( target + "/results/" + runID + "/" + runID
-                                   + "." + runType + ".xml" ) );
+   ASSERT_TRUE( info.readFromFile( xml ) );
    EXPECT_EQ( info.calibrationGUID, calGUID );
 
    // Exported again from the target, the run still has its calibration
