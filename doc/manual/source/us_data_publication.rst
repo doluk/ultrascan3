@@ -423,8 +423,11 @@ would refuse: a rotor calibration only an administrator may add (it is left
 out, with a warning), a buffer component the target lacks (adding one takes
 user level 2), another investigator's analyte or private buffer (the import
 makes a copy of its own instead), a target without channel 1, a noise record
-without an edit, and an operator without a permit for the instrument
-(another one who holds a permit is recorded, with a warning). A dry run that
+without an edit, an operator without a permit for the instrument
+(another one who holds a permit is recorded, with a warning), and text the
+target's columns cannot store (a character such as "α" in a database whose
+tables are latin1: the record, the field and the character are named). Into
+any target, a number that is not finite ("nan", "inf") is refused. A dry run that
 succeeds is an import that succeeds, short of a lost connection or a record
 someone else writes in the meantime.
 **Verify payload digests** checks the whole bundle before the first write; a

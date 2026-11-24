@@ -9,11 +9,25 @@
 US_DataPubBundle::US_DataPubBundle()
 {
    keep = false;
+   lock = nullptr;
 }
 
 US_DataPubBundle::~US_DataPubBundle()
 {
    if ( ! keep )  cleanup();
+
+   delete lock;                    // A kept directory loses its lock
+   lock = nullptr;
+}
+
+void US_DataPubBundle::setStagingLock( const QString& name )
+{
+   lock_name = name;
+}
+
+bool US_DataPubBundle::stagingLocked( void ) const
+{
+   return lock != nullptr  &&  lock->isLocked();
 }
 
 QString US_DataPubBundle::manifestName( void )
@@ -34,7 +48,37 @@ bool US_DataPubBundle::removeTree( const QString& path )
 
 void US_DataPubBundle::cleanup( void )
 {
-   removeTree( base );
+   if ( lock == nullptr )
+      removeTree( base );
+
+   else
+   {  // Everything but the lock, then the lock, then the directory
+      QString     lockFile = lock_name;
+      QStringList entries  = QDir( base ).entryList( QDir::AllEntries
+                                                     | QDir::Hidden
+                                                     | QDir::System
+                                                     | QDir::NoDotAndDotDot );
+
+      for ( int ii = 0; ii < entries.size(); ii++ )
+      {
+         if ( entries[ ii ] == lockFile )  continue;
+
+         QString   path = base + "/" + entries[ ii ];
+         QFileInfo info( path );
+
+         if ( info.isDir()  &&  ! info.isSymLink() )
+            removeTree( path );
+         else
+            QFile::remove( path );
+      }
+
+      delete lock;                 // Unlocks, and removes the lock file
+      lock = nullptr;
+
+      if ( ! base.isEmpty() )
+         QDir().rmdir( base );
+   }
+
    base   .clear();
    staging.clear();
    work   .clear();
@@ -90,6 +134,25 @@ bool US_DataPubBundle::createStaging( QString& error )
    tdir.setAutoRemove( false );    // cleanup() removes it, unless kept
 
    base    = tdir.path();
+
+   // The lock comes first: a directory of a running process is never
+   // without it
+   if ( ! lock_name.isEmpty() )
+   {
+      lock = new QLockFile( base + "/" + lock_name );
+      lock->setStaleLockTime( 0 );
+
+      if ( ! lock->tryLock( 0 ) )
+      {
+         error = QObject::tr( "Cannot lock the staging directory %1" )
+                 .arg( base );
+         delete lock;
+         lock = nullptr;
+         removeTree( base );
+         base.clear();
+         return false;
+      }
+   }
    staging = base + "/bundle";
    work    = base + "/work";
 
@@ -345,6 +408,23 @@ bool US_DataPubBundle::verifyEscapes( QString& error ) const
                         | QDir::NoDotAndDotDot );
    beside.removeAll( "bundle" );
    beside.removeAll( "work" );
+
+   // The lock, when one is held -- still the regular file this process
+   // wrote, not something an entry of the archive put in its place
+   if ( lock != nullptr  &&  beside.contains( lock_name ) )
+   {
+      QString   path = base + "/" + lock_name;
+      QFileInfo info( path );
+      QFile     file( path );
+      QString   pid;
+
+      if ( ! info.isSymLink()  &&  info.isFile()  &&
+           file.open( QIODevice::ReadOnly ) )
+         pid = QString::fromLatin1( file.readLine( 64 ) ).trimmed();
+
+      if ( pid == QString::number( QCoreApplication::applicationPid() ) )
+         beside.removeAll( lock_name );
+   }
 
    if ( ! beside.isEmpty() )
    {

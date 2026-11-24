@@ -1037,11 +1037,11 @@ int US_DataPubCLI::runImport( void )
       }
    }
 
-   // A command line import told to stop (SIGTERM, Ctrl-C) leaves no staging
-   // directory behind; a database import's open transaction is rolled back
-   // by the server when the connection goes
-   US_DataPubImporter::installSignalCleanup();
-
+   // An import told to stop (SIGTERM, Ctrl-C, a hang-up) stops as the
+   // signal says -- one the process was started with ignored, as nohup
+   // does, stays ignored.  A database import's open transaction is rolled
+   // back by the server when the connection goes; the staging directory
+   // keeps a lock of a process that is gone, which the next import sweeps.
    US_DataPubImporter importer;
    connect( &importer, &US_DataPubImporter::message,
             this,      &US_DataPubCLI::onMessage );
