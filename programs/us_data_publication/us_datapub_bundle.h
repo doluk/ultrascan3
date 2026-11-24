@@ -39,11 +39,26 @@ class US_DataPubBundle
           is put into it, and held until \ref cleanup has removed everything
           else: what a process that is still running stages is never found
           without its lock.  A sweep for directories left behind by a killed
-          process (US_DataPubImporter::sweepStaleStaging) tells them by a
-          lock whose process is gone.
-          \param name The base name of the lock file; empty for no lock
+          process (\ref sweepStaleStaging) tells them by a lock whose
+          process is gone.  The exporter holds \c export.lock, the importer
+          \c import.lock.
+          \param name The base name of the lock file (it has to end in
+                      \c .lock for the sweep to see it); empty for no lock
       */
       void    setStagingLock( const QString& name );
+
+      /*! \brief Remove the staging directories no running process holds
+
+          Every \c bundle_* directory in the work directory of the bundles
+          (\c us_datapub in the UltraScan tmp directory) is removed when it
+          holds lock files (\c *.lock) and none of them is held by a process
+          that is still running, or when it holds no lock and has not
+          changed for two days: what an exporter or importer that was
+          killed left behind.  The directory of a running process -- one
+          whose lock is held, however old -- is never touched.
+          \returns The number of directories removed
+      */
+      static int sweepStaleStaging( void );
 
       //! \brief True when the staging directory's lock is held
       bool    stagingLocked( void ) const;
@@ -56,6 +71,26 @@ class US_DataPubBundle
       //! The parent directories of the payload are created as needed.
       //! \param relativePath The bundle-relative path of the payload
       QString stagedPath( const QString& relativePath );
+
+      /*! \brief A mark of what has been staged so far
+
+          What \ref stagedPath() hands out after it can be taken back with
+          \ref unstageSince().
+      */
+      int     stagedMark( void ) const;
+
+      /*! \brief Take back what was staged since a mark
+
+          Every payload whose path \ref stagedPath() first handed out after
+          \a mark is removed, with the directories it leaves empty; a path
+          that was handed out before the mark as well is kept.  Only those
+          paths are looked at, never the rest of the tree, so taking back
+          one record costs what staging it did.
+          \param mark  A mark from \ref stagedMark()
+          \param error Filled in when a staged file cannot be removed
+          \returns True when everything staged since the mark is gone
+      */
+      bool    unstageSince( int mark, QString& error );
 
       /*! \brief A scratch directory that goes with the staging directory
 
@@ -132,6 +167,11 @@ class US_DataPubBundle
       bool    keep;
       QString lock_name;  //!< The lock file's base name; empty for none
       QLockFile* lock;    //!< The lock held in base, or null
+
+      //! The paths stagedPath() handed out, in order, and the index each
+      //! was first handed out at
+      QStringList           staged_rels;
+      QHash< QString, int > staged_first;
 
       bool    verifyEscapes( QString& error ) const;
 

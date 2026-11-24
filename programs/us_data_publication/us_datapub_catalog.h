@@ -103,6 +103,14 @@ class US_DataPubCatalog
             //! names none (the rotor's first calibration is not assumed)
             QString calibrationID;
 
+            /*! The GUID of that calibration, when the experiment XML names
+                it (the \c guid of its \c calibration element): an export
+                puts it there, so that a disk store the bundle is imported
+                into -- where the calibration has no ID of its own -- still
+                says which calibration the run was made with
+            */
+            QString calibrationGUID;
+
             QStringList centerpieceIDs; //!< Centerpiece serial numbers used
             QStringList solutionIDs;    //!< solutionIDs used by the triples
             QStringList solutionGUIDs;  //!< solutionGUIDs used by the triples
@@ -190,24 +198,40 @@ class US_DataPubCatalog
       //! \param error Filled in with a message when the scan fails
       QList< Model > models( const QList< Run >& runs, QString& error );
 
-      //! \brief All noise records that belong to the given models
-      //! \param models The models whose noise records are wanted
-      //! \param error  Filled in with a message when the scan fails
-      QList< Noise > noises( const QList< Model >& models, QString& error );
+      /*! \brief All noise records that belong to the given models
+
+          Each record is listed once.  A record a model with no noise of its
+          own is carried with (see \ref noiseBefore()) is listed for the
+          first model that names it, so a model that borrows a record
+          another model of \a models lists already is not seen in the list:
+          \a borrowers names every one.
+          \param models    The models whose noise records are wanted
+          \param error     Filled in with a message when the scan fails
+          \param borrowers When given, filled in with noise GUID -> GUID of
+                           every model of \a models that borrows it
+      */
+      QList< Noise > noises( const QList< Model >& models, QString& error,
+                             QMultiHash< QString, QString >* borrowers
+                                = nullptr );
 
       //! \brief What looking for the time state of a run found
       enum TimeStateStatus
       {
          TimeStateNone = 0,   //!< The run has no time state; that is normal
          TimeStateFound,      //!< The time state and its definitions exist
-         TimeStateFailed      //!< There is one, but it cannot be used
+         TimeStateFailed,     //!< It could not be looked up or fetched
+         //! There is one, but without its field definitions: the run's
+         //! own records do not hold together
+         TimeStateBroken
       };
 
       /*! \brief Find the time state of a run
 
           A time state is the binary \c .tmst together with the \c .xml of
           its field definitions; one without the other cannot be read, so a
-          binary without its definitions is a failure, not a time state.
+          binary without its definitions is \ref TimeStateBroken, not a time
+          state.  A source that fails -- a lookup or download that does not
+          work -- is \ref TimeStateFailed.
           For a database catalog the files are downloaded into \a workDir
           when \a fetch is set, always as \c <runID>.time_state.tmst and
           its \c .xml whatever file name the record keeps; for a disk
@@ -219,6 +243,7 @@ class US_DataPubCatalog
           \param xdefPath Filled in with the path of its .xml sibling
           \param tmstID   Filled in with the time state's database ID, or -1
           \param error    Filled in when the result is \ref TimeStateFailed
+                          or \ref TimeStateBroken
       */
       TimeStateStatus timeState( const Run& run, const QString& workDir,
                                  bool fetch, QString& tmstPath,

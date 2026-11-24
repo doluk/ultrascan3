@@ -679,13 +679,16 @@ QString US_DataPubCLI::password( bool needed )
    // UTF-16, and the 8-bit copy loses what the code page cannot hold
    QString fromEnv = qEnvironmentVariable( "US3_DB_PASSWORD" );
 
-   if ( ! fromEnv.isEmpty() )
+   // Set, even to nothing, it is the password given: an empty one is a
+   // failure, not a reason to prompt or a missing password
+   if ( qEnvironmentVariableIsSet( "US3_DB_PASSWORD" ) )
    {
       QString pw = chopLineEnd( fromEnv );
 
       if ( pw.isEmpty() )
       {
-         fail( tr( "US3_DB_PASSWORD holds an empty password" ) );
+         fail( tr( "US3_DB_PASSWORD is set but holds an empty password;"
+                   " set it to the master password, or unset it" ) );
          password_failed = true;
       }
 

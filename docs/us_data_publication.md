@@ -491,7 +491,10 @@ command line exits with `1`, when
   rotor calibration the run names, a centerpiece that is not in the
   centerpiece table, a buffer component that is not defined, a time state
   whose definitions are missing, or any payload; on disk a missing project
-  file says to leave the project out with `--no-project`;
+  file says to leave the project out with `--no-project`. (A calibration,
+  centerpiece, solution or time-state definitions that are not there is the
+  run's own fault: a project export leaves the run out, see below. A
+  database or table that cannot be read fails every export.);
 * a raw data record or an edit downloaded from the database is not the record
   the catalog listed: the GUID in the `.auc` header, or the `editGUID` and
   `rawDataGUID` of the edit, differ from the ones it is exported under (an
@@ -527,7 +530,9 @@ failing the whole export: a project with a run whose run ID, run type, or the
 GUID or file name of one of its triples or edits cannot be exported goes
 without that run, with a warning naming it. So does a run whose records turn
 out not to hold together while they are staged: a channel without a solution
-(or whose solution, buffer or analyte is gone), a payload that does not carry
+(or whose solution, buffer or analyte is gone), a rotor calibration or
+centerpiece the run names that the source does not have, a time state
+without its field definitions, a payload that does not carry
 the GUID the catalog lists it under, an experiment XML that names another run
 ID or GUID than the run (a run directory renamed by hand), a spectrum or
 other value that is not a finite number, or an experiment, raw data or edit
@@ -535,7 +540,11 @@ that another run of the export already brought into the bundle (a run
 directory copied under another name, GUIDs and all: the run that comes
 later is taken for the copy, and the one already staged keeps everything).
 Everything already staged for that run is taken back, and so are the
-warnings its records gave. Its models and their noise stay out with it —
+warnings its records gave: the files it staged first, and only those (the
+staging directory keeps a list of what it hands out, so taking a run back
+costs what staging it did, not a walk of the tree). A record the run shares
+with a run after it — a solution, a calibration — goes too, and the later
+run stages it again. Its models and their noise stay out with it —
 those whose edit is not in the bundle: a model fitted to an edit that
 another run brought in (the same edit GUID, in a copied run directory)
 stays. A model or noise record that was asked for by GUID
@@ -559,7 +568,15 @@ Wrote 16 records to project5.tar.gz (left out: 1 run(s), 0 other record(s); see 
 ```
 
 (A dry run says the same in its "would be exported" line.) Nothing left out,
-no such count. The window's completion box (and the preview, and the box of
+no such count.
+
+**A dry run, and the window's preview, are the export without the bundle.**
+They read and stage every record in a staging directory of their own and make
+every check the export makes — the payload GUIDs, the experiment XML, values
+that are not finite, the staged tree — and remove the directory afterwards, so
+the records they list, their digests and what they leave out (which copy of a
+copied run directory, say) are what the export writes. They take as long as
+the export, less the packing. The window's completion box (and the preview, and the box of
 an export that failed) lists the runs left out, the number of other records
 left out, and the warnings. `US_DataPubExporter::warnings()`,
 `leftOutRuns()`, `leftOutRecords()` and `warningReport()` give the same to a
@@ -569,6 +586,20 @@ A run whose database record names no rotor calibration is exported without
 one; the rotor's first calibration is not assumed in its place, since a rotor
 is recalibrated over the years. (The experiment XML that `US_Experiment`
 writes still names the calibration it reads for such a run.)
+
+The staged experiment XML names the run's rotor calibration by its GUID as
+well as by its ID: `<calibration id="…" guid="…" …/>` (`US_Experiment`
+ignores the attribute). A disk store a bundle is imported into gives the
+calibration no ID of its own (`-1`), so the ID alone named nothing there, and
+a run exported from it again — database → bundle → disk → bundle — lost its
+calibration. An export from disk finds the calibration by that GUID among the
+`C*.xml` files of the rotor directory when the ID does not find it.
+
+A model's variance and meniscus travel with every digit: in the manifest
+(`variance`, `meniscus`, from the database row when the source is a
+database) and in the staged model XML, where `US_Model` writes six digits —
+or none, when the stored XML did not have them. A disk import, which has only
+the payload, keeps what the database row had.
 
 A time state from the database is always staged as
 `<runID>.time_state.tmst` with its `<runID>.time_state.xml`, whatever file
@@ -656,8 +687,13 @@ The Export tab works top to bottom:
    Those rows are marked *(of this edit)* in the tree. The record still
    belongs to the model it was fitted to — its payload names that model — so
    that model travels too (the log says so), the noise depends on it in the
-   manifest (`depends: modelGUID`), and the model it is carried for is in
-   `borrowedByModelGUID`. When the model it was fitted to cannot travel (it is
+   manifest (`depends: modelGUID`), and every model of the bundle it is
+   carried for is in `borrowedByModelGUIDs` (separated by spaces) — also one
+   whose noise is listed first for the model it was fitted to. Which noise a
+   model without any of its own was run with is otherwise known only from the
+   records' time stamps, which a target that writes the records anew need not
+   keep; an import that writes such a model before the noise loses the
+   relation unless it reads this. When the model it was fitted to cannot travel (it is
    gone, or its edit is not in the bundle) the noise stays out with a
    warning, or fails the export when it was asked for by GUID.
 8. **Export up to**, **Include time state**, **Comment**, **Bundle file**.
@@ -666,7 +702,9 @@ The Export tab works top to bottom:
    is no tree to narrow anything down: every run of the project goes, with
    everything it holds up to the scope, as `--project-guid` does on the
    command line, and the summary says so. **Details…** shows the manifest that would be written,
-   without copying a single byte of experimental data. **Latest Edit** ticks
+   with the warnings of what would be left out: it is the export without the
+   bundle (every record is read and checked, in a staging directory that is
+   removed afterwards), so it takes as long as the export. **Latest Edit** ticks
    the edit with the latest edit time stamp of each triple.
 10. **Export Bundle**. While the export runs the tab cannot be changed, the
     Import tab cannot be opened, and closing the window waits: it closes once
@@ -898,6 +936,12 @@ connection goes. The directory of a stopped import keeps the lock of a
 process that is gone, and the next import sweeps it, together with every
 staging directory without a lock that has not changed for two days.
 
+An export (and a preview or dry run) stages in a directory of the same kind,
+locked with `export.lock` from the moment it is made, and sweeps first: a
+staging directory whose locks no running process holds — an export or import
+stopped by a signal — is removed, a running one's never
+(`US_DataPubBundle::sweepStaleStaging()`).
+
 A model's variance and meniscus are columns of its database row as well as
 attributes of its XML, where `US_Model` writes six significant digits. A
 `variance` and `meniscus` attribute of the model's manifest entry win over the
@@ -915,6 +959,12 @@ without them as it always did:
 | `comment` | edit | `editedData.comment` | empty (as `us_edit` stores an edit) |
 | `label`, `comment` | raw data | `rawData.label`, `rawData.comment` | the run's label and comment, as `us_convert` writes raw data |
 | `spectrum` (may be empty) | analyte | the analyte row's `spectrum` column | its first extinction (or refraction, fluorescence) point, as `US_Analyte` writes it |
+
+An export from a database writes them from the source's rows
+(`get_buffer_info`'s `private`, `get_rawData`'s `label` and `comment`,
+`get_editedData`'s `comment`, `get_analyte_info`'s `spectrum`, the last also
+when it is empty). A disk store has none of these columns, so an export from
+disk leaves the attributes out.
 
 The raw data rows of a run are written in one call (`US_ConvertIO`), which
 gives all of them one label and comment: the run's raw data records have to
@@ -1246,7 +1296,12 @@ and all three are read as UTF-8 (the environment variable as the text the
 system holds, so a non-ASCII password survives on Windows too). A password
 file that cannot be read, and an empty password from the file, the environment
 or the prompt, is reported once and the run exits with `1`; no password at all
-is a usage error (`2`). The prompt keeps the terminal quiet
+is a usage error (`2`). `US3_DB_PASSWORD` that is set to nothing
+(`US3_DB_PASSWORD=`) is an empty password, not a missing one: exit `1`, no
+prompt. A wrong master password is said to be wrong — it is checked against
+the hash the installation keeps and against the database password stored for
+the default database before any connection is made — instead of surfacing as
+the server's "Access denied … (using password: NO)". The prompt keeps the terminal quiet
 across Ctrl-Z: a stopped and continued prompt goes on reading without echo,
 and a signal that does not end the program does not leave it echoing either.
 | `--dry-run` | Decide everything, write nothing |

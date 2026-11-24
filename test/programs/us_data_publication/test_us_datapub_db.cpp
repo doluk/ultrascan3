@@ -939,7 +939,7 @@ TEST_F( DataPubDbImport, BorrowedNoiseIsImportedWithItsOwnModel )
    ASSERT_TRUE( exporter.manifest().entity( US_DataPub::Noise, noiseGUID,
                                             noise ) );
    EXPECT_EQ( noise.depend( US_DataPub::Model ), modelGUID );
-   EXPECT_EQ( noise.attrs.value( "borrowedByModelGUID" ), laterGUID );
+   EXPECT_EQ( noise.attrs.value( "borrowedByModelGUIDs" ), laterGUID );
 
    US_DataPubImporter::Options options;
    options.target       = US_DataPub::TargetDb;

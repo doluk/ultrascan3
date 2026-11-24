@@ -333,5 +333,20 @@ namespace US_DataPub
    */
    bool fileSha256        ( const QString& path, QString& digest,
                             QString* why = nullptr );
+
+   /*! \brief Why a master password cannot open the database, if it cannot
+
+       The master password unlocks the database password stored for the
+       default database.  A wrong one unlocks nothing, and the server then
+       refuses a login without a password ("using password: NO"), which
+       says nothing about what is wrong.  This tells it first: the password
+       does not match the one this installation set (US_Settings::UltraScanPW,
+       when there is one), or it does not unlock the stored database
+       password.
+       \param masterPW The master password given
+       \returns The reason, or an empty string when the password unlocks
+                the stored database password (or there is none to unlock)
+   */
+   QString masterPasswordProblem( const QString& masterPW );
 }
 #endif

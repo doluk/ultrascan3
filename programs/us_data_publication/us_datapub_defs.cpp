@@ -6,6 +6,8 @@
 #include <cstdlib>
 
 #include "us_convertio.h"
+#include "us_crypto.h"
+#include "us_settings.h"
 
 namespace
 {
@@ -542,4 +544,27 @@ bool US_DataPub::fileSha256( const QString& path, QString& digest,
    if ( why != nullptr )  *why = reason;
 
    return reason.isEmpty();
+}
+
+QString US_DataPub::masterPasswordProblem( const QString& masterPW )
+{
+   QStringList db   = US_Settings::defaultDB();
+   QString     name = ( db.size() > 2 ) ? db.at( 2 ) : QString();
+   QByteArray  hash = US_Settings::UltraScanPW();
+
+   // The hash is the one US_Passwd checks the password it asks for against
+   if ( ! hash.isEmpty()  &&
+        QCryptographicHash::hash( masterPW.toLatin1(),
+                                  QCryptographicHash::Sha1 ) != hash )
+      return QObject::tr( "The master password is wrong: it is not the one"
+                          " set for this UltraScan installation" );
+
+   if ( db.size() < 6  ||  db.at( 4 ).isEmpty() )  return QString();
+
+   if ( US_Crypto::decrypt( db.at( 4 ), masterPW, db.at( 5 ) ).isEmpty() )
+      return QObject::tr( "The master password is wrong: it does not unlock"
+                          " the password stored for the database \"%1\"" )
+             .arg( name );
+
+   return QString();
 }

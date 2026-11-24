@@ -123,7 +123,9 @@ class US_DataPubExporter : public QObject
           one asked for, and when any record it needs cannot be read.  When
           the runs come with the project rather than by name, a run whose
           own records do not hold together while it is staged -- a channel
-          without a solution, a payload of another GUID, an experiment XML
+          without a solution, a rotor calibration or centerpiece it names
+          that the source does not have, a time state without its field
+          definitions, a payload of another GUID, an experiment XML
           of another run ID or GUID, a spectrum that is not all numbers --
           is left out with a warning instead, and what was staged for it is
           taken back.  So is a run whose experiment, raw data or edit
@@ -150,14 +152,26 @@ class US_DataPubExporter : public QObject
       //! \brief The bundle-relative name of the manifest digest file
       static QString manifestDigestName( void );
 
-      /*! \brief Collect the record list without staging any payload
+      /*! \brief The name of the lock an exporter holds in its staging
+          directory, which US_DataPubBundle::sweepStaleStaging() tells a
+          killed export's directory by.  Every export and preview sweeps
+          before it stages.
+      */
+      static QString stagingLockName( void );
 
-          This is what the user interface shows as the manifest preview: it
-          answers "what would be exported" without copying a single byte of
-          experimental data.
+      /*! \brief Everything an export does, but write no bundle
+
+          This is what the user interface shows as the manifest preview and
+          the command line's \c --dry-run: every record is read and staged
+          in a staging directory that is removed afterwards, and every check
+          of \ref exportBundle() is made, so the records listed, the
+          digests, and what is left out -- a run whose payload turns out
+          not to hold together, a copy of another run -- are what the
+          export would write.  It takes as long as an export, less the
+          packing.
           \param selection What would be exported
-          \param error     Filled in with a message when the scan fails
-          \returns True when the record list could be built
+          \param error     Filled in with a message when the export would fail
+          \returns True when the export would succeed
       */
       bool previewManifest( const Selection& selection, QString& error );
 
@@ -251,7 +265,6 @@ class US_DataPubExporter : public QObject
       QStringList        warntext;
       QStringList        left_out_runs;
       int                left_out_records;
-      bool               stage_payloads;
       int                step_count;
 
       //! The scope the current export runs with
@@ -259,6 +272,10 @@ class US_DataPubExporter : public QObject
 
       //! The noise records that were asked for by GUID
       QStringList        explicit_noises;
+
+      //! noise GUID -> every exported model that borrows it (a model with
+      //! no noise of its own is run with the noise of its edit)
+      QMultiHash< QString, QString > noise_borrowers;
 
       //! The models that were asked for by GUID
       QStringList        explicit_models;
@@ -294,7 +311,13 @@ class US_DataPubExporter : public QObject
       QMap< QString, US_BufferComponent > hd_components;
       bool                                hd_comp_loaded;
 
-      bool build( const Selection&, bool payloads, QString& error );
+      //! Collect and stage the records into a new staging directory
+      bool build( const Selection&, QString& error );
+
+      /*! \ref build(), then the manifest, its digest and the check of the
+          staged tree: everything of an export but the packing
+      */
+      bool stageBundle( const Selection&, QString& error );
 
       /*! Stage the records of one run, within the export's scope: its
           rotor calibration and centerpieces, experiment, solutions, raw
@@ -363,6 +386,14 @@ class US_DataPubExporter : public QObject
                           const US_DataPubCatalog::ExpInfo&, QString& );
       bool addTimeState ( const US_DataPubCatalog::Run&, QString& );
       bool addCalibration( const US_DataPubCatalog::ExpInfo&, QString& );
+
+      //! The calibration of the local rotor directory with this GUID
+      static bool findDiskCalibration( const QString& guid,
+                                       US_Rotor::RotorCalibration& );
+
+      //! Name the rotor calibration's GUID in a staged experiment XML
+      bool tagCalibration( const QString& path, const QString& calGUID,
+                           QString& error );
       bool addCenterpieces( const US_DataPubCatalog::Run&,
                             const US_DataPubCatalog::ExpInfo&, QString& );
       bool addSolutions ( const US_DataPubCatalog::Run&,
@@ -379,6 +410,15 @@ class US_DataPubExporter : public QObject
       //! The variance and meniscus columns of a model's database row
       bool modelRowValues( const US_DataPubCatalog::Model&, double& variance,
                            double& meniscus, QString& error );
+      //! Columns of the row a database query returns; none when it finds
+      //! no row, false when it fails
+      bool rowColumns( const QStringList& query, const QList< int >& columns,
+                       QList< QVariant >& values, QString& error );
+
+      //! Put the variance and meniscus into a staged model's XML at full
+      //! precision
+      bool stageModelValues( const QString& path, double variance,
+                             double meniscus, QString& error );
       //! \a leftOut are the models of runs a project export left out:
       //! noise of theirs that was asked for by GUID goes with them
       bool collectNoises( const Selection&,
