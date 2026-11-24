@@ -1474,11 +1474,10 @@ bool US_DataCatalog::connectionLost( void )
    if ( dbase == nullptr  ||  ! dbase->isConnected() )   return true;
    if ( dbase->lastErrno() == IUS_DB2::NOT_CONNECTED )   return true;
 
-   // The MySQL client's own errors -- server gone, connection lost -- are
-   // numbered from 2000; the server's are below that
-   int code = dbase->lastServerErrno();
-
-   return code >= 2000  &&  code < 3000;
+   // The one rule US_DB2 itself goes by, for the server this connection is
+   // to: not every client error is a lost connection (2014, commands out of
+   // sync, is not), and some server errors are (1927, 4031 on MySQL)
+   return dbase->lastErrorIsConnectionLoss();
 }
 
 void US_DataCatalog::buildDiskIndex( void )

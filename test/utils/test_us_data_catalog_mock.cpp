@@ -82,6 +82,8 @@ namespace
          // edit it was recorded against (the first version)
          bool                  countNoiseByEdit = false;
          QMap< QString, int >  failOn;    // fail the n-th call; 0 = every call
+         int                   failErrno = 2013;   // how failOn fails: lost connection
+         QString               version   = "8.0.46";   // serverVersion()
          QMap< QString, int >  knt;       // calls so far, by procedure
          QStringList           calls;     // procedure names, in order
 
@@ -107,6 +109,8 @@ namespace
                .WillByDefault( Invoke( [ this ]() { return current.error; } ) );
             ON_CALL( db, lastServerErrno() )
                .WillByDefault( Invoke( [ this ]() { return current.server; } ) );
+            ON_CALL( db, serverVersion() )
+               .WillByDefault( Invoke( [ this ]() { return version; } ) );
          }
 
          int count( const QString& name ) const { return calls.count( name ); }
@@ -141,8 +145,8 @@ namespace
                  ( failOn[ name ] == 0  ||  failOn[ name ] == nth ) )
             {
                current.status = IUS_DB2::DBERROR;
-               current.server = 2013;            // lost connection
-               current.error  = "MySQL error: Lost connection during " + name;
+               current.server = failErrno;
+               current.error  = QString( "MySQL error %1 during " ).arg( failErrno ) + name;
                return;
             }
 
@@ -1418,6 +1422,42 @@ TEST_F( TestUSDataCatalogMock, AnOldListingSurvivesAProjectItMayNotRead )
    EXPECT_FALSE( catalog.loadRuns( error ) );
    EXPECT_FALSE( error.isEmpty() );
    EXPECT_EQ   ( catalog.runCount(), 2 );
+}
+
+// Whether a failed project read is a lost connection is US_DB2's one rule,
+// for the server connected to.  The catalog had a rule of its own -- every
+// client error, 2000-2999 -- so a statement out of sync (2014) dropped the
+// whole listing, and 4031 was a loss on MariaDB too, where it is a
+// statement error
+TEST_F( TestUSDataCatalogMock, ALostConnectionIsTheOneRuleForTheServer )
+{
+   server.missing << "get_experiment_summary";
+
+   US_DataCatalog catalog;
+   attachAndList( catalog );
+   server.failOn[ "get_project_info" ] = 0;
+
+   struct Case { int code; QString version; bool lost; };
+   const QList< Case > cases = {
+      { 2014, "8.0.46-0ubuntu0.24.04.5",           false },   // commands out of sync
+      { 2000, "8.0.46-0ubuntu0.24.04.5",           false },   // unknown client error
+      { 4031, "10.11.14-MariaDB-0ubuntu0.24.04.1", false },   // MariaDB: a statement error
+      { 4031, "8.0.46-0ubuntu0.24.04.5",           true  },   // MySQL: idle timeout
+      { 2013, "10.11.14-MariaDB-0ubuntu0.24.04.1", true  },
+      { 2026, "8.0.46-0ubuntu0.24.04.5",           true  },
+      { 1927, "10.11.14-MariaDB-0ubuntu0.24.04.1", true  },
+   };
+
+   for ( const Case& cc : cases )
+   {
+      SCOPED_TRACE( QString( "%1 on %2" ).arg( cc.code ).arg( cc.version ).toStdString() );
+      server.failErrno = cc.code;
+      server.version   = cc.version;
+
+      QString error;
+      EXPECT_EQ( catalog.loadRuns( error ), !cc.lost ) << error.toStdString();
+      EXPECT_EQ( catalog.runCount(), 2 );
+   }
 }
 
 // With nothing listed the whole store is still read, and all of it is an

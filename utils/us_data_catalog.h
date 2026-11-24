@@ -927,7 +927,9 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
       QHash< QString, QString > desc_tried;
 
       //! \brief True when the last query failed because the connection to
-      //!        the server is gone, not because of what it asked
+      //!        the server is gone, not because of what it asked: the
+      //!        connection says so, or its last error does by
+      //!        IUS_DB2::isConnectionLoss for its server
       bool connectionLost( void );
       bool loadDetailDisk    ( const Run&, QList< Raw >&, QString& );
 
