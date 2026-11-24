@@ -905,7 +905,19 @@ class US_DataModel : public QObject
         //! \brief Leave out of a catalog's database records those gone
         //!        from the database since it read them (\ref db_gone),
         //!        and what the database removed with them
-        void drop_db_gone( QVector< DataDesc >& descs );
+        //! \param descs     The catalog's database records
+        //! \param by_action When given, a gone record an action changed
+        //!        since the scan (\ref acted_on_db_record) is kept, for
+        //!        \ref apply_action to put the action back on, and its
+        //!        "type:ID" is added here: what the action does not
+        //!        match is still not shown in the database
+        void drop_db_gone( QVector< DataDesc >& descs,
+                           QSet< QString >* by_action = NULL );
+
+        //! \brief Whether an action since the scan changed the row that
+        //!        was merged with this database record (by type, GUID
+        //!        and database ID)
+        bool acted_on_db_record( const DataDesc& desc ) const;
 
         //! \brief Append a row of an experiment
         void append_row( const DataDesc& desc, int runIndex );

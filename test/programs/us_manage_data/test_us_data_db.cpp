@@ -2929,6 +2929,90 @@ TEST_F( TestUSDataDbRemerge, AMergeAgainKeepsWhatActionsDid )
               US_DataModel::SYNC_INSYNC ) << model.scan_errors().join( "\n" ).toStdString();
 }
 
+// A record downloaded and then removed from the database is local only when
+// its experiment is merged again: the catalog has it in the database, and
+// the database ID it had there is gone -- the action history says where it is
+TEST_F( TestUSDataDbRemerge, ARecordDownloadedThenRemovedFromTheDatabaseStaysLocal )
+{
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   scanRunA( model, win );
+
+   ASSERT_EQ( win.proc.record_download( rowOf( model, dbOnly, runa ) ), 0 )
+      << win.proc.lastError().toStdString();
+   QString file = model.row_datadesc( rowOf( model, dbOnly, runa ) ).filename;
+   ASSERT_TRUE( QFile::exists( file ) ) << file.toStdString();
+   ASSERT_EQ( win.proc.record_remove_db( rowOf( model, dbOnly, runa ) ), 0 )
+      << win.proc.lastError().toStdString();
+
+   EXPECT_TRUE( model.scan_run( runb ) );
+
+   int row = rowOf( model, dbOnly, runa );
+   ASSERT_GE( row, 0 ) << "the record vanished from the tree";
+   Desc desc = model.row_datadesc( row );
+   EXPECT_EQ( desc.recState & US_DataModel::REC_DB, 0 );
+   EXPECT_NE( desc.recState & US_DataModel::REC_LO, 0 );
+   EXPECT_LT( desc.recordID, 0 );
+   EXPECT_EQ( desc.filename.toStdString(), file.toStdString() );
+}
+
+// A record removed from the database and uploaded again is in both places,
+// under its new ID, when its experiment is merged again
+TEST_F( TestUSDataDbRemerge, ARecordRemovedThenUploadedAgainIsInBothPlaces )
+{
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   scanRunA( model, win );
+
+   ASSERT_EQ( win.proc.record_remove_db( rowOf( model, noiseG, runa ) ), 0 )
+      << win.proc.lastError().toStdString();
+   ASSERT_EQ( server.noiseById( "41" ), nullptr );
+   ASSERT_EQ( win.proc.record_upload( rowOf( model, noiseG, runa ) ), 0 )
+      << win.proc.lastError().toStdString();
+
+   QString newID;
+   for ( const FNoise& nn : server.noises )  if ( nn.guid == noiseG )  newID = nn.id;
+   ASSERT_FALSE( newID.isEmpty() );
+   ASSERT_NE( newID, QString( "41" ) );
+
+   EXPECT_TRUE( model.scan_run( runb ) );
+
+   int row = rowOf( model, noiseG, runa );
+   ASSERT_GE( row, 0 );
+   Desc desc = model.row_datadesc( row );
+   EXPECT_NE( desc.recState & US_DataModel::REC_DB, 0 ) << "shown as local only";
+   EXPECT_NE( desc.recState & US_DataModel::REC_LO, 0 );
+   EXPECT_EQ( desc.recordID, newID.toInt() );
+}
+
+// A record removed from both places does not come back as a local file when
+// its experiment is merged again: the catalog still lists the file
+TEST_F( TestUSDataDbRemerge, ARecordRemovedFromBothPlacesStaysRemoved )
+{
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   scanRunA( model, win );
+
+   ASSERT_EQ( win.proc.record_remove_db( rowOf( model, noiseG, runa ) ), 0 )
+      << win.proc.lastError().toStdString();
+   ASSERT_EQ( win.proc.record_remove_local( rowOf( model, noiseG, runa ) ), 0 )
+      << win.proc.lastError().toStdString();
+   ASSERT_FALSE( QFile::exists( noisePath ) );
+
+   EXPECT_TRUE( model.scan_run( runb ) );
+
+   for ( int rr = 0; rr < model.recCount(); rr++ )
+   {
+      Desc desc = model.row_datadesc( rr );
+      if ( desc.dataGUID != noiseG )   continue;
+      EXPECT_EQ( desc.recState & ( US_DataModel::REC_DB | US_DataModel::REC_LO ), 0 )
+         << "row " << rr << " " << desc.filename.toStdString();
+   }
+}
+
 // ------------------------------------------------------------ context menu
 
 // Reading the experiments a context menu acts on can merge another one
