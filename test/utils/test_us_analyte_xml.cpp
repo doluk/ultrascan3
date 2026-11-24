@@ -282,6 +282,75 @@ TEST_P( AnalyteXml, WriterProducesIndependentStructureValuesAndWrapping )
    }
 }
 
+// An XML reader turns CR LF and CR in element text into LF, so a sequence
+// written with them read back other than it was written (and other than the
+// database copy).  The writer gives the sequence LF line ends first; all
+// else -- a FASTA header, residue numbers, tabs, leading and trailing
+// spaces -- is written and read back as it is.
+TEST_P( AnalyteXml, SequenceRoundTripsWithLfLineEnds )
+{
+   const QString entered = "  >sp|P69905|HBA_HUMAN Hemoglobin subunit alpha\r\n"
+                           "    1 MVLSPADKTN\tVKAAWGKVGA \r\n"
+                           "   21 HAGEYGAEAL\rERMFLSFPTT\r\r\n"
+                           "\tKTYFPHF  ";
+   const QString stored  = "  >sp|P69905|HBA_HUMAN Hemoglobin subunit alpha\n"
+                           "    1 MVLSPADKTN\tVKAAWGKVGA \n"
+                           "   21 HAGEYGAEAL\nERMFLSFPTT\n\n"
+                           "\tKTYFPHF  ";
+   ASSERT_EQ( stored, US_Analyte::normalizedSequence( entered ) );
+
+   for ( auto type : { US_Analyte::PROTEIN, US_Analyte::CARBOHYDRATE } )
+   {
+      US_Analyte a;
+      a.type        = type;
+      a.analyteGUID = "fixture";
+      a.vbar20      = 0.72;
+      a.mw          = 15000;
+      a.sequence    = entered;
+      QByteArray bytes;
+      ASSERT_NO_FATAL_FAILURE( write( a, bytes ) );
+      EXPECT_EQ( stored, a.sequence );
+
+      US_Analyte b;
+      ASSERT_NO_FATAL_FAILURE( read( b, bytes ) );
+      EXPECT_EQ( stored, b.sequence );
+
+      // and once more: nothing grows or moves
+      QByteArray again;
+      ASSERT_NO_FATAL_FAILURE( write( b, again ) );
+      US_Analyte c;
+      ASSERT_NO_FATAL_FAILURE( read( c, again ) );
+      EXPECT_EQ( stored, c.sequence );
+   }
+}
+
+// Files written before: raw CR LF, which the reader normalises anyway, and
+// CR kept as a character reference, which it does not
+TEST_P( AnalyteXml, OldFilesWithCrInTheSequenceReadWithLfLineEnds )
+{
+   for ( const QByteArray& text : { QByteArray( "MKV\r\n0011 AAG\r\n" ), QByteArray( "MKV&#13;&#10;0011 AAG&#13;" ) } )
+   {
+      US_Analyte a;
+      ASSERT_NO_FATAL_FAILURE( read( a, "<AnalyteData><analyte analyteGUID='fixture' type='CARBOHYDRATE' vbar20='0.6' "
+                                        "mw='100'><sequence>" + text + "</sequence></analyte></AnalyteData>" ) );
+      EXPECT_FALSE( a.sequence.contains( '\r' ) ) << text.constData();
+      EXPECT_TRUE( a.sequence.startsWith( "MKV\n0011 AAG\n" ) ) << text.constData();
+   }
+}
+
+// Copies that differ only in their line ends are the same analyte
+TEST( AnalyteSequence, EqualityIgnoresCrLineEnds )
+{
+   US_Analyte a;
+   US_Analyte b;
+   a.sequence = "MKV\r\nAAG";
+   b.sequence = "MKV\nAAG";
+   EXPECT_TRUE( a == b );
+   b.sequence = "MKV\n AAG";
+   EXPECT_FALSE( a == b );
+   EXPECT_EQ( QString( "a\nb\nc\n\nd" ), US_Analyte::normalizedSequence( "a\r\nb\rc\r\r\nd" ) );
+}
+
 TEST_P( AnalyteXml, WriterOmitsNonpositiveMass )
 {
    for ( double mass : { 0.0, -1.0 } )

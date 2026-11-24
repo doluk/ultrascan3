@@ -355,6 +355,48 @@ TEST_F( AnalyteDb, WriteInsertsNewAnalyteWithInvestigatorAndSavesToDisk )
    EXPECT_EQ( QString( "Salt & <buffer>" ), diskDescription() );
 }
 
+// A sequence entered with CR LF line ends (as a web form sends it) is stored
+// with LF in the database, as the disk copy has it: an XML reader turns CR LF
+// into LF, so a CR kept in the database made the two copies differ.  The
+// rest of the text -- header, numbers, tabs, spaces -- is kept.
+TEST_F( AnalyteDb, WriteStoresTheSequenceWithLfLineEndsInTheDatabaseAndOnDisk )
+{
+   prepareProtein();
+   analyte.sequence     = ">sp|P1|TEST protein\r\n  1 MKVLA\tAGKVA \r\n 11 HHEE\rKK  \r\n";
+   const QString stored = ">sp|P1|TEST protein\n  1 MKVLA\tAGKVA \n 11 HHEE\nKK  \n";
+   {
+      InSequence sequence;
+      expectLookup( false );
+      expectBegin();
+      EXPECT_CALL(
+         db,
+         statusQuery( args( { "new_analyte", kGuid, "Protein", stored, "0.7125", "Salt & <buffer>", "", "45000.5", "0", "23" } ) ) )
+         .WillOnce( Return( IUS_DB2::OK ) );
+      EXPECT_CALL( db, lastErrno() ).Times( AtLeast( 1 ) ).WillRepeatedly( Return( IUS_DB2::OK ) );
+      EXPECT_CALL( db, lastInsertID() ).WillOnce( Return( 456 ) );
+      expectCommit();
+   }
+
+   EXPECT_EQ( IUS_DB2::OK, analyte.write( true, QString(), &db ) );
+   EXPECT_EQ( stored, analyte.sequence );
+
+   US_Analyte disk;
+   ASSERT_EQ( IUS_DB2::OK, disk.load( false, kGuid ) );
+   EXPECT_EQ( stored, disk.sequence );
+}
+
+// A row stored before, with CR LF or CR, reads as the disk copy does
+TEST_F( AnalyteDb, LoadGivesAStoredSequenceLfLineEnds )
+{
+   InSequence sequence;
+   expectInfoRow( "Other", ">header\r\n0001 Glc\tGal \r0005 Man\r\n" );
+   EXPECT_CALL( db, value( 7 ) ).WillOnce( Return( QVariant( "0" ) ) );
+   expectNoProfile();
+
+   ASSERT_EQ( IUS_DB2::OK, analyte.load( true, kGuid, &db ) );
+   EXPECT_EQ( QString( ">header\n0001 Glc\tGal \n0005 Man\n" ), analyte.sequence );
+}
+
 TEST_F( AnalyteDb, WriteUpdatesExistingAnalyteWithoutInvestigatorOrInsertId )
 {
    prepareProtein();
