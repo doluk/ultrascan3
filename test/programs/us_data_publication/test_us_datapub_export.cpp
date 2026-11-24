@@ -2973,3 +2973,318 @@ TEST_F( DataPubExportSteps, AModelsRowValuesAreReadFromTheDatabase )
    EXPECT_FALSE( US_DataPubExporterTest::modelRowValues( exporter, model,
                  variance, meniscus, error ) );
 }
+
+// ------------------------------------------------- runs left out, and copies
+
+namespace
+{
+   US_DataPubExporter::Selection projectSelection( const QString& project )
+   {
+      US_DataPubExporter::Selection selection;
+      selection.fromDb      = false;
+      selection.scope       = US_DataPub::ScopeNoise;
+      selection.projectGUID = project;
+
+      return selection;
+   }
+}
+
+/* A run directory copied under another name, GUIDs and all, whose
+   experiment XML still names the original run: the copy is left out, and
+   the original keeps its models and noise -- they are fitted to edits that
+   are in the bundle, with the original run, even though the copy's edits
+   have the same GUIDs.
+*/
+TEST_F( DataPubExport, ACopiedRunDirectoryDoesNotTakeTheModelsAlong )
+{
+   ASSERT_TRUE( copyRunDir( "A_copy_run", false ) );
+
+   US_DataPubExporter exporter;
+   QString            bundle = root + "/copy.tar.gz";
+   QString            error;
+
+   ASSERT_TRUE( exporter.exportBundle( projectSelection( projectGUID ),
+                                       bundle, error ) )
+      << error.toStdString();
+
+   const US_DataPubManifest& mani = exporter.manifest();
+   EXPECT_EQ( mani.count( US_DataPub::Experiment ), 1 );
+   EXPECT_EQ( mani.count( US_DataPub::EditedData ), 1 );
+   EXPECT_TRUE( mani.contains( US_DataPub::Model, modelGUID ) );
+   EXPECT_TRUE( mani.contains( US_DataPub::Noise, noiseGUID ) );
+
+   EXPECT_EQ( exporter.leftOutRuns(), QStringList() << "A_copy_run" );
+   EXPECT_EQ( exporter.leftOutRecords(), 0 );
+
+   QString warned = exporter.warnings().join( "\n" );
+   EXPECT_TRUE( warned.contains( "run A_copy_run of the project is left"
+                                 " out" ) ) << warned.toStdString();
+
+   // The warnings the copy's own records gave while it was staged went
+   // with it: only the original run's are left
+   EXPECT_EQ( warned.count( "names no rotor calibration" ),
+              exporter.log().join( "\n" ).count( "names no rotor calibration" )
+              > 0 ? 1 : 0 ) << warned.toStdString();
+   EXPECT_TRUE( exporter.warningReport().contains( "A_copy_run" ) );
+}
+
+/* A copy that holds together on its own -- the experiment XML renamed too
+   -- still shares its experiment, raw data and edits with the original.
+   The run that comes second is taken for the copy: it is left out, and the
+   bundle carries one run with everything it has.  Named, the pair fails
+   the export.
+*/
+TEST_F( DataPubExport, ARunWithTheGuidsOfAnotherIsLeftOutAsACopy )
+{
+   ASSERT_TRUE( copyRunDir( "A_copy_run", true ) );
+
+   US_DataPubExporter exporter;
+   QString            error;
+
+   ASSERT_TRUE( exporter.exportBundle( projectSelection( projectGUID ),
+                                       root + "/dup.tar.gz", error ) )
+      << error.toStdString() << "\n"
+      << exporter.log().join( "\n" ).toStdString();
+
+   const US_DataPubManifest& mani = exporter.manifest();
+   EXPECT_EQ( mani.count( US_DataPub::Experiment ), 1 );
+   EXPECT_EQ( mani.count( US_DataPub::RawData    ), 1 );
+   EXPECT_EQ( mani.count( US_DataPub::EditedData ), 1 );
+   EXPECT_TRUE( mani.contains( US_DataPub::Model, modelGUID ) );
+   EXPECT_TRUE( mani.contains( US_DataPub::Noise, noiseGUID ) );
+   ASSERT_EQ( exporter.leftOutRuns().size(), 1 );
+   EXPECT_TRUE( exporter.warnings().join( "\n" ).contains( "copy" ) )
+      << exporter.warnings().join( "\n" ).toStdString();
+
+   US_DataPubExporter            named;
+   US_DataPubExporter::Selection both = baseSelection( US_DataPub::ScopeNoise );
+   both.runIDs << "A_copy_run";
+
+   EXPECT_FALSE( named.exportBundle( both, root + "/both.tar.gz", error ) );
+   EXPECT_TRUE( error.contains( "copy" ) ) << error.toStdString();
+}
+
+/* The models and noise of a run a project export leaves out go with it,
+   with a warning each and counted -- but one that was asked for by GUID
+   fails the export instead of disappearing from it.
+*/
+TEST_F( DataPubExportTwoRuns, AModelOrNoiseAskedForFailsWhenItsRunIsLeftOut )
+{
+   addRun( "demo_run2" );
+
+   QString xml1 = runDir() + "/" + runID + "." + runType + ".xml";
+   ASSERT_TRUE( set_xml_attribute( xml1, "experiment", "runID", "old_name" ) );
+
+   {
+      US_DataPubExporter exporter;
+      QString            error;
+
+      ASSERT_TRUE( exporter.exportBundle( projectSelection( projectGUID ),
+                                          root + "/plain.tar.gz", error ) )
+         << error.toStdString();
+      EXPECT_FALSE( exporter.manifest().contains( US_DataPub::Model,
+                                                  modelGUID ) );
+      EXPECT_EQ( exporter.leftOutRuns(), QStringList() << runID );
+      EXPECT_EQ( exporter.leftOutRecords(), 2 );     // the model, its noise
+
+      QString warned = exporter.warnings().join( "\n" );
+      EXPECT_TRUE( warned.contains( "is left out with run " + runID ) )
+         << warned.toStdString();
+      EXPECT_TRUE( warned.contains( "1 noise record(s)" ) )
+         << warned.toStdString();
+   }
+
+   {
+      US_DataPubExporter            exporter;
+      US_DataPubExporter::Selection selection =
+         projectSelection( projectGUID );
+      selection.setModels( QStringList() << modelGUID );
+      QString error;
+
+      EXPECT_FALSE( exporter.exportBundle( selection, root + "/m.tar.gz",
+                                           error ) );
+      EXPECT_TRUE( error.contains( modelGUID ) ) << error.toStdString();
+      EXPECT_TRUE( error.contains( "left out" ) ) << error.toStdString();
+      EXPECT_FALSE( QFile::exists( root + "/m.tar.gz" ) );
+   }
+
+   {
+      US_DataPubExporter            exporter;
+      US_DataPubExporter::Selection selection =
+         projectSelection( projectGUID );
+      selection.setNoises( QStringList() << noiseGUID );
+      QString error;
+
+      EXPECT_FALSE( exporter.exportBundle( selection, root + "/n.tar.gz",
+                                           error ) );
+      EXPECT_TRUE( error.contains( noiseGUID ) ) << error.toStdString();
+      EXPECT_TRUE( error.contains( "left out" ) ) << error.toStdString();
+   }
+}
+
+/* A value that is not a finite number cannot be imported, so no record
+   carries one: a buffer, analyte or solution that holds one is the run's
+   fault -- a named run fails the export, a project export leaves the run
+   out (and here, with no other run, fails as well).
+*/
+TEST_F( DataPubExport, NonFiniteValuesInRecordsAreRefused )
+{
+   struct Case
+   {
+      QString dir;
+      QString element;
+      QString attr;
+      QString value;
+   };
+
+   QList< Case > cases;
+   cases << Case{ "buffers",   "buffer",    "density",         "nan"   }
+         << Case{ "buffers",   "buffer",    "ph",              "inf"   }
+         << Case{ "buffers",   "buffer",    "viscosity",       "-inf"  }
+         << Case{ "buffers",   "buffer",    "compressibility", "1e999" }
+         << Case{ "analytes",  "analyte",   "vbar20",          "inf"   }
+         << Case{ "analytes",  "analyte",   "mw",              "NaN"   }
+         << Case{ "solutions", "solution",  "commonVbar20",    "nan"   }
+         << Case{ "solutions", "solution",  "storageTemp",     "inf"   }
+         << Case{ "solutions", "analyte",   "amount",          "nan"   };
+
+   for ( int ii = 0; ii < cases.size(); ii++ )
+   {
+      const Case& cc = cases[ ii ];
+      SCOPED_TRACE( ( cc.element + "/@" + cc.attr + "=" + cc.value )
+                    .toStdString() );
+
+      QString     dir   = dataDir( cc.dir );
+      QStringList files = QDir( dir ).entryList( QDir::Files );
+      ASSERT_EQ( files.size(), 1 );
+      QString     file  = dir + "/" + files[ 0 ];
+      QByteArray  orig;
+      {
+         QFile in( file );
+         ASSERT_TRUE( in.open( QIODevice::ReadOnly ) );
+         orig = in.readAll();
+      }
+
+      ASSERT_TRUE( set_xml_attribute( file, cc.element, cc.attr, cc.value ) )
+         << orig.constData();
+
+      for ( int pass = 0; pass < 2; pass++ )
+      {
+         US_DataPubExporter            exporter;
+         US_DataPubExporter::Selection selection =
+            ( pass == 0 ) ? baseSelection( US_DataPub::ScopeNoise )
+                          : projectSelection( projectGUID );
+         QString error;
+         QString bundle = root + QString( "/nf%1_%2.tar.gz" ).arg( ii )
+                                 .arg( pass );
+
+         EXPECT_FALSE( exporter.exportBundle( selection, bundle, error ) );
+         EXPECT_FALSE( QFile::exists( bundle ) );
+
+         // (An amount was refused before: "... is nan, which is not a
+         // number"; a value too large for a double is read as "inf")
+         QString said = error + "\n" + exporter.warnings().join( "\n" );
+         EXPECT_TRUE( said.contains( "not a finite number" )  ||
+                      said.contains( "which is not a number" ) )
+            << said.toStdString();
+         EXPECT_TRUE( said.contains( cc.attr, Qt::CaseInsensitive ) )
+            << said.toStdString();
+
+         if ( pass == 1 )
+         {
+            EXPECT_EQ( exporter.leftOutRuns(), QStringList() << runID );
+         }
+      }
+
+      QFile out( file );
+      ASSERT_TRUE( out.open( QIODevice::WriteOnly | QIODevice::Truncate ) );
+      out.write( orig );
+      out.close();
+   }
+
+   // The store is whole again
+   US_DataPubExporter exporter;
+   QString            error;
+   ASSERT_TRUE( exporter.exportBundle( baseSelection( US_DataPub::ScopeNoise ),
+                                       root + "/fine.tar.gz", error ) )
+      << error.toStdString();
+}
+
+/* A model or noise record that holds a value that is not a finite number
+   is left out, with what depends on it, and counted; asked for by GUID,
+   it fails the export.
+*/
+TEST_F( DataPubExport, NonFiniteModelsAndNoiseAreLeftOutOrRefused )
+{
+   for ( int pass = 0; pass < 3; pass++ )
+   {
+      SCOPED_TRACE( pass == 0 ? "model variance" : pass == 1
+                    ? "model meniscus" : "noise value" );
+
+      writeModel();
+      writeNoise();
+
+      if ( pass < 2 )
+      {
+         US_Model model;
+         ASSERT_EQ( model.load( dataDir( "models" ) + "/M0000001.xml" ),
+                    IUS_DB2::OK );
+
+         if ( pass == 0 )
+            model.variance = std::numeric_limits< double >::quiet_NaN();
+         else
+            model.meniscus = std::numeric_limits< double >::infinity();
+
+         ASSERT_EQ( model.write( dataDir( "models" ) + "/M0000001.xml" ),
+                    IUS_DB2::OK );
+      }
+
+      else
+      {
+         US_Noise noise;
+         ASSERT_EQ( noise.load( dataDir( "noises" ) + "/N0000001.xml" ),
+                    IUS_DB2::OK );
+         noise.values[ 3 ] = std::numeric_limits< double >::quiet_NaN();
+         ASSERT_EQ( noise.write( dataDir( "noises" ) + "/N0000001.xml" ),
+                    IUS_DB2::OK );
+      }
+
+      // Not asked for: left out, with what depends on it
+      US_DataPubExporter exporter;
+      QString            error;
+      QString            bundle = root + QString( "/x%1.tar.gz" ).arg( pass );
+
+      ASSERT_TRUE( exporter.exportBundle( baseSelection(
+                   US_DataPub::ScopeNoise ), bundle, error ) )
+         << error.toStdString();
+      EXPECT_FALSE( exporter.manifest().contains( US_DataPub::Noise,
+                                                  noiseGUID ) );
+      EXPECT_EQ( exporter.manifest().contains( US_DataPub::Model, modelGUID ),
+                 pass == 2 );
+      EXPECT_EQ( exporter.leftOutRecords(), pass == 2 ? 1 : 2 );
+      EXPECT_TRUE( exporter.warnings().join( "\n" ).contains(
+                   "not a finite number" ) )
+         << exporter.warnings().join( "\n" ).toStdString();
+
+      // ... and the bundle written is whole
+      US_DataPubImporter importer;
+      ASSERT_TRUE( importer.inspect( bundle, error ) ) << error.toStdString();
+      EXPECT_TRUE( importer.verifyPayloads().isEmpty() );
+
+      // Asked for: the export fails
+      US_DataPubExporter            asked;
+      US_DataPubExporter::Selection selection =
+         baseSelection( US_DataPub::ScopeNoise );
+
+      if ( pass < 2 )
+         selection.setModels( QStringList() << modelGUID );
+      else
+         selection.setNoises( QStringList() << noiseGUID );
+
+      EXPECT_FALSE( asked.exportBundle( selection, root + "/y.tar.gz",
+                                        error ) );
+      EXPECT_TRUE( error.contains( "not a finite number" ) )
+         << error.toStdString();
+      EXPECT_FALSE( QFile::exists( root + "/y.tar.gz" ) );
+   }
+}

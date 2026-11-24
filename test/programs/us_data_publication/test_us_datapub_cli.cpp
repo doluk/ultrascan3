@@ -47,15 +47,29 @@ class DataPubCli : public DataPubTestEnv
 
 #if defined( Q_OS_UNIX )
       // Run, and collect what the command line wrote to its error output
-      int runCapturing( const QStringList& args, QString& errText )
+      // -- and, with \a outText, to its standard output
+      int runCapturing( const QStringList& args, QString& errText,
+                        QString* outText = nullptr )
       {
          QString path  = root + "/stderr.txt";
+         QString opath = root + "/stdout.txt";
          int     saved = dup( STDERR_FILENO );
          int     fd    = ::open( QFile::encodeName( path ).constData(),
                                  O_WRONLY | O_CREAT | O_TRUNC, 0600 );
+         int     osaved = -1;
          fflush( stderr );
          dup2( fd, STDERR_FILENO );
          ::close( fd );
+
+         if ( outText != nullptr )
+         {
+            osaved = dup( STDOUT_FILENO );
+            fd     = ::open( QFile::encodeName( opath ).constData(),
+                             O_WRONLY | O_CREAT | O_TRUNC, 0600 );
+            fflush( stdout );
+            dup2( fd, STDOUT_FILENO );
+            ::close( fd );
+         }
 
          int code;
          {
@@ -66,6 +80,17 @@ class DataPubCli : public DataPubTestEnv
          fflush( stderr );
          dup2( saved, STDERR_FILENO );
          ::close( saved );
+
+         if ( outText != nullptr )
+         {
+            fflush( stdout );
+            dup2( osaved, STDOUT_FILENO );
+            ::close( osaved );
+
+            QFile ofile( opath );
+            ofile.open( QIODevice::ReadOnly );
+            *outText = QString::fromUtf8( ofile.readAll() );
+         }
 
          QFile file( path );
          file.open( QIODevice::ReadOnly );
@@ -476,3 +501,135 @@ TEST_F( DataPubCli, APasswordFromAFileOrTheEnvironmentIsTaken )
 
    EXPECT_EQ( code, 1 );
 }
+
+#if defined( Q_OS_UNIX )
+/* What a project export leaves out is said without --verbose: a "Warning:"
+   line on the error output for each thing left out, and a count in the
+   last line of the standard output.  A copied run directory that is left
+   out does not take the original run's models and noise with it.
+*/
+TEST_F( DataPubCli, WhatIsLeftOutIsReportedWithoutVerbose )
+{
+   ASSERT_TRUE( copyRunDir( "A_copy_run", false ) );
+
+   QString bundle = root + "/copy.tar.gz";
+   QString errText;
+   QString outText;
+
+   ASSERT_EQ( runCapturing( QStringList() << "--mode" << "export"
+                            << "--project-guid" << projectGUID
+                            << "--non-interactive" << "--bundle" << bundle,
+                            errText, &outText ), 0 )
+      << errText.toStdString();
+
+   EXPECT_TRUE( errText.contains( "Warning: run A_copy_run of the project is"
+                                  " left out: " ) ) << errText.toStdString();
+   EXPECT_TRUE( errText.contains( "Warning: 1 run(s) of the project are left"
+                                  " out" ) ) << errText.toStdString();
+   EXPECT_FALSE( errText.contains( "Error:" ) ) << errText.toStdString();
+   EXPECT_TRUE( outText.contains( "Wrote " ) ) << outText.toStdString();
+   EXPECT_TRUE( outText.contains( "(left out: 1 run(s), 0 other record(s);"
+                                  " see the warnings)" ) )
+      << outText.toStdString();
+
+   US_DataPubManifest mani;
+   ASSERT_TRUE( manifestOf( bundle, mani ) );
+   EXPECT_EQ( mani.count( US_DataPub::Experiment ), 1 );
+   EXPECT_TRUE( mani.contains( US_DataPub::Model, modelGUID ) );
+   EXPECT_TRUE( mani.contains( US_DataPub::Noise, noiseGUID ) );
+
+   // A dry run says the same
+   ASSERT_EQ( runCapturing( QStringList() << "--mode" << "export"
+                            << "--project-guid" << projectGUID
+                            << "--non-interactive" << "--dry-run",
+                            errText, &outText ), 0 );
+   EXPECT_TRUE( outText.contains( "left out: " ) ) << outText.toStdString();
+
+   // Nothing left out, nothing said
+   QDir( US_Settings::resultDir() + "/A_copy_run" ).removeRecursively();
+
+   ASSERT_EQ( runCapturing( QStringList() << "--mode" << "export"
+                            << "--project-guid" << projectGUID
+                            << "--non-interactive" << "--bundle"
+                            << root + "/whole.tar.gz", errText, &outText ),
+              0 );
+   EXPECT_FALSE( errText.contains( "left out" ) ) << errText.toStdString();
+   EXPECT_FALSE( outText.contains( "left out" ) ) << outText.toStdString();
+}
+
+/* A model or noise record asked for by GUID whose run a project export
+   leaves out fails the export (exit 1), saying why, rather than vanishing
+   from a bundle that is written all the same.
+*/
+TEST_F( DataPubCli, AModelOrNoiseAskedForWhoseRunIsLeftOutFailsTheExport )
+{
+   // A second run of the project, of its own, which holds together ...
+   QString runID1   = runID;
+   QString expGUID1 = expGUID;
+   QString rawGUID1 = rawGUID;
+
+   runID   = "demo_run2";
+   expGUID = US_Util::new_guid();
+   rawGUID = US_Util::new_guid();
+   writeRawFile( 1, rawGUID );
+   writeExperimentXml();
+
+   runID   = runID1;
+   expGUID = expGUID1;
+   rawGUID = rawGUID1;
+
+   // ... and the first, with the model and noise, which does not
+   ASSERT_TRUE( set_xml_attribute( runDir() + "/" + runID + "." + runType
+                                   + ".xml", "experiment", "runID",
+                                   "old_name" ) );
+
+   QStringList base = QStringList() << "--mode" << "export"
+                                    << "--project-guid" << projectGUID
+                                    << "--non-interactive";
+   QString     errText;
+   QString     outText;
+
+   ASSERT_EQ( runCapturing( base + ( QStringList() << "--bundle"
+                                     << root + "/plain.tar.gz" ),
+                            errText, &outText ), 0 ) << errText.toStdString();
+   EXPECT_TRUE( errText.contains( "Warning: model " ) ) << errText.toStdString();
+   EXPECT_TRUE( outText.contains( "(left out: 1 run(s), 2 other record(s)" ) )
+      << outText.toStdString();
+
+   QString bundle = root + "/model.tar.gz";
+
+   EXPECT_EQ( runCapturing( base + ( QStringList() << "--model-guid"
+                                     << modelGUID << "--bundle" << bundle ),
+                            errText ), 1 );
+   EXPECT_TRUE( errText.contains( "Error: " ) ) << errText.toStdString();
+   EXPECT_TRUE( errText.contains( modelGUID ) ) << errText.toStdString();
+   EXPECT_TRUE( errText.contains( "left out" ) ) << errText.toStdString();
+   EXPECT_FALSE( QFile::exists( bundle ) );
+
+   EXPECT_EQ( runCapturing( base + ( QStringList() << "--noise-guid"
+                                     << noiseGUID << "--bundle" << bundle ),
+                            errText ), 1 );
+   EXPECT_TRUE( errText.contains( noiseGUID ) ) << errText.toStdString();
+   EXPECT_FALSE( QFile::exists( bundle ) );
+}
+
+// A record holding a value that is not a finite number is not exported
+TEST_F( DataPubCli, ANonFiniteValueFailsTheExport )
+{
+   QString dir  = dataDir( "buffers" );
+   QString file = dir + "/" + QDir( dir ).entryList( QDir::Files )[ 0 ];
+   ASSERT_TRUE( set_xml_attribute( file, "buffer", "density", "nan" ) );
+
+   QString errText;
+   QString bundle = root + "/nan.tar.gz";
+
+   EXPECT_EQ( runCapturing( QStringList() << "--mode" << "export"
+                            << "--experiment-id" << runID
+                            << "--non-interactive" << "--bundle" << bundle,
+                            errText ), 1 );
+   EXPECT_TRUE( errText.contains( "density=\"nan\"" ) ) << errText.toStdString();
+   EXPECT_TRUE( errText.contains( "not a finite number" ) )
+      << errText.toStdString();
+   EXPECT_FALSE( QFile::exists( bundle ) );
+}
+#endif
