@@ -380,6 +380,15 @@ DbgLv(1) << "GUI setup complete";
    // background, one experiment per turn of the event loop
    connect( da_model, &US_DataModel::workRequested,
             this,     [ this ]() { schedule_verifies(); } );
+
+   // The database listing was read for another investigator than the one
+   // selected now: what the tree shows of it is not theirs
+   connect( da_model, &US_DataModel::listingDropped,
+            this,     [ this ]()
+            {
+               drop_reset = true;
+               QTimer::singleShot( 0, this, &US_ManageData::listing_dropped );
+            } );
 DbgLv(1) << "classes setup complete";
 
    // Set up initial state of GUI
@@ -413,6 +422,24 @@ void US_ManageData::reset( void )
    cb_triple->clear();
    cb_triple->addItem ( tr( "ALL" ) );
 
+}
+
+// Clear the tree after the database listing was dropped
+void US_ManageData::listing_dropped( void )
+{
+   if ( ! drop_reset  ||  closing )   return;
+
+   if ( da_model->scan_active()  ||  da_model->is_busy() )
+   {  // the scan stops after the step it is in
+      QTimer::singleShot( 50, this, &US_ManageData::listing_dropped );
+      return;
+   }
+
+   drop_reset = false;
+   reset();
+   status_text( tr( "The investigator was changed while the database was"
+                    " read, so what was read is not shown.  Click \"Scan"
+                    " Data\" to see their data." ) );
 }
 
 // toggle edits between hide/show

@@ -651,6 +651,8 @@ void US_DataModel::open_catalogs( )
                this,   &US_DataModel::scanner_note );
       connect( cat_db, &US_DataCatalog::runChanged,
                this,   &US_DataModel::catalog_run_changed );
+      connect( cat_db, &US_DataCatalog::listingDropped,
+               this,   &US_DataModel::catalog_dropped );
 
       if ( ! cat_db->attach( db, error ) )
       {
@@ -760,6 +762,7 @@ void US_DataModel::scan_runs( )
    db_gone  .clear();
    errors   .clear();
    db_failed  = false;
+   db_dropped = false;
    demo       = false;
    kdb_recs   = 0;
    klo_recs   = 0;
@@ -1277,8 +1280,29 @@ int US_DataModel::pending_runs( ) const
 // reports
 bool US_DataModel::connection_lost( int serverErrno )
 {
-   return ( serverErrno == 2006  ||  serverErrno == 2013  ||
-            serverErrno == 2055 );
+   return US_DB2::isConnectionLoss( serverErrno );
+}
+
+bool US_DataModel::listing_dropped( void ) const
+{
+   return db_dropped;
+}
+
+/* The database catalog dropped its listing: the investigator changed.
+
+   What was read is the previous investigator's, and the experiments'
+   positions in the listing are gone: nothing more is read or merged from
+   it, the scan stops, and whoever shows the tree clears it.
+*/
+void US_DataModel::catalog_dropped( void )
+{
+   db_dropped = true;
+   run_queue .clear();
+   ver_queue .clear();
+   stale_runs.clear();
+   stop_scan();
+
+   emit listingDropped();
 }
 
 // Read the second layer of one experiment and merge it into the whole
@@ -1349,7 +1373,8 @@ bool US_DataModel::load_sides( int index )
       if ( catalog->loadRunDetail( cx, error ) )   continue;
 
       bool lost = ( side == 0  &&  db != NULL  &&
-                    connection_lost( db->lastServerErrno() ) );
+                    ( connection_lost( db->lastServerErrno() )  ||
+                      ! db->isConnected() ) );
 
       DbgLv(1) << "LoadSides: retry" << entry.runID << side << lost << error;
 
@@ -1449,6 +1474,14 @@ bool US_DataModel::do_merge_run( int index )
    {
       run_queue.removeAll( index );
       return true;
+   }
+
+   // The listing it was found in is gone (another investigator): its
+   // position there means nothing
+   if ( db_dropped )
+   {
+      run_queue.removeAll( index );
+      return false;
    }
 
    // Each side has to have read the experiment: one that could not is not
@@ -2155,6 +2188,7 @@ bool US_DataModel::do_verify_run( int index )
    ver_queue.removeAll( index );
 
    if ( entry.verified  ||  ! entry.loaded )       return false;
+   if ( db_dropped )                               return false;
 
    // An experiment in both places is hashed as a whole, once: the local
    // files are hashed on the worker thread while the database hashes its

@@ -72,6 +72,9 @@ class US_ManageData : public US_Widgets
         bool                verify_pending; //!< A pass of queued work is due
         bool                closing;    //!< Closed while a scan, or a read
                                         //!< outside one, was running
+        bool                drop_reset = false; //!< The database listing
+                                        //!< was dropped: the tree is to be
+                                        //!< cleared once the model is free
         int                 errs_seen;  //!< Scan errors already reported
         US_DataModel::Counts counts;    //!< Records merged so far, by kind
         int                 dbg_level;  //!< Debug level
@@ -145,6 +148,11 @@ class US_ManageData : public US_Widgets
 
         //! \brief Reset the interface
         void reset( void );
+
+        //! \brief Clear the tree once the database listing was dropped
+        //!        (US_DataModel::listingDropped), as soon as no read or
+        //!        scan is running, and say why
+        void listing_dropped( void );
 
         //! \brief Select an investigator
         void sel_investigator( void );
