@@ -6797,11 +6797,15 @@ bool US_DataPubImporter::createDisk( const US_DataPubEntity& entity,
 
    if ( type == US_DataPub::RotorCalibration )
    {
-      // A disk store finds a calibration by its ID (US_Rotor reads the
-      // file whose "id" is the one a run's XML names), so the calibration
-      // gets one that no calibration of the store has, and the runs of
-      // the bundle name it: without one the run would name -1 and lose its
-      // calibration
+      // The calibration carries no ID of its own (-1), and the runs of the
+      // bundle name it by -1 and its GUID.  An analysis maps the ID a run
+      // names to the coefficients of the calibration of that ID among the
+      // installation's (US_SimulationParameters::setHardware(), through
+      // US_Hardware::readRotorMap() and etc/rotors, where us_rotor_gui
+      // keeps database calibrations by their database IDs): any real ID
+      // could name another calibration there, while -1 names none, so the
+      // run's own coefficients stand.  An export finds the calibration by
+      // the GUID.
       US_Rotor::RotorCalibration calibration;
 
       if ( ! US_DataPubRecords::readCalibration( workPath, calibration ) )
@@ -6810,16 +6814,7 @@ bool US_DataPubImporter::createDisk( const US_DataPubEntity& entity,
          return false;
       }
 
-      int         top  = 0;
-      QStringList held = QDir( dir ).entryList(
-                         QStringList( "C???????.xml" ), QDir::Files );
-
-      for ( int ii = 0; ii < held.size(); ii++ )
-         top = qMax( top, first_attributes( dir + "/" + held[ ii ],
-                                            "Calibration" )
-                          .value( "id" ).toInt() );
-
-      calibration.ID = top + 1;
+      calibration.ID = -1;
 
       if ( ! US_DataPubRecords::writeCalibration( calibration, path ) )
       {
@@ -6827,7 +6822,7 @@ bool US_DataPubImporter::createDisk( const US_DataPubEntity& entity,
          return false;
       }
 
-      newID = QString::number( calibration.ID );
+      newID = QString( "-1" );
    }
 
    else if ( ! QFile::copy( workPath, path ) )

@@ -438,9 +438,12 @@ A record matched to a target record of another GUID is renamed in every
 payload that names it: a solution's buffer and analytes, a model's edit, a
 noise record's model, and the project, solutions, centerpieces and
 calibration of a run's experiment XML. Numeric IDs are never carried over: a
-record written to a disk store carries ``-1`` -- apart from a rotor
-calibration, which a disk store finds by its ID: it gets one no calibration of
-the store has, and the runs name it.
+record written to a disk store carries ``-1``, a rotor calibration too, and
+the runs name a calibration written to disk by ``-1`` and its GUID. (An
+analysis looks the ID a run names up among the installation's calibrations,
+where any real ID could be another rotor's; with ``-1`` the run's own
+coefficients are used. An export from the store finds the calibration by its
+GUID.)
 
 With **Ask me each time** set, each conflict opens a dialog that shows whether
 the two records match and offers *Use the Existing Record*, *Import Under a New

@@ -12,6 +12,8 @@
 #include "us_datapub_cli.h"
 #include "us_datapub_catalog.h"
 #include "us_analyte.h"
+#include "us_simparms.h"
+#include "us_dataIO.h"
 #include "us_crypto.h"
 
 #include <functional>
@@ -22,6 +24,30 @@
 #include <cstring>
 #include <unistd.h>
 #endif
+
+namespace
+{
+   // The value of an attribute of the first element of that name
+   QString first_attribute( const QString& path, const QString& element,
+                            const QString& attr )
+   {
+      QFile file( path );
+
+      if ( ! file.open( QIODevice::ReadOnly ) )  return QString();
+
+      QXmlStreamReader reader( &file );
+
+      while ( ! reader.atEnd() )
+      {
+         reader.readNext();
+
+         if ( reader.isStartElement()  &&  reader.name().toString() == element )
+            return reader.attributes().value( attr ).toString();
+      }
+
+      return QString();
+   }
+}
 
 class DataPubImport : public DataPubTestEnv
 {
@@ -1171,10 +1197,12 @@ TEST_F( DataPubImport, ADiskImportCarriesNoSourceIds )
    EXPECT_FALSE( content.contains( "id=\"21\"" ) ) << content.toStdString();
 }
 
-// A disk store finds a run's rotor calibration by the ID its XML names: the
-// calibration the import writes gets an ID no calibration of the store
-// has, and the run names it -- so that the run, exported from the store
-// again, still has its calibration
+/* A rotor calibration written to a disk store carries the ID -1, and so
+   does the run's XML: an analysis maps the ID a run names to the
+   coefficients of the calibration of that ID among the installation's
+   (US_Hardware::readRotorMap(), etc/rotors), and any real ID could be
+   another calibration there.  The GUID the run's XML names finds the
+   calibration when the run is exported from the store again. */
 TEST_F( DataPubImport, ADiskImportNamesTheCalibrationItWrote )
 {
    QString error;
@@ -1205,32 +1233,21 @@ TEST_F( DataPubImport, ADiskImportNamesTheCalibrationItWrote )
    ASSERT_TRUE( US_DataPubRecords::readCalibration( rotors + "/" + files[ 1 ],
                                                     written ) );
    EXPECT_EQ( written.GUID, calGUID );
-   EXPECT_EQ( written.ID,   22 );
+   EXPECT_EQ( written.ID,   -1 );
    EXPECT_EQ( written.label, QString( "Demo calibration" ) );
+   EXPECT_EQ( written.lastUpdated, QDate( 2024, 1, 1 ) );   // the source's
 
-   // The run names it
-   QFile xml( targetDir + "/results/" + runID + "/" + runID + "." + runType
-              + ".xml" );
-   ASSERT_TRUE( xml.open( QIODevice::ReadOnly ) );
-   QXmlStreamReader reader( &xml );
-   QString          named;
-
-   while ( ! reader.atEnd() )
-   {
-      reader.readNext();
-
-      if ( reader.isStartElement()  &&  reader.name().toString() == "calibration" )
-         named = reader.attributes().value( "id" ).toString();
-   }
-
-   xml.close();
-   EXPECT_EQ( named, QString::number( written.ID ) );
+   // The run names it by GUID, and by no ID of a calibration
+   QString xml = targetDir + "/results/" + runID + "/" + runID + "."
+                 + runType + ".xml";
+   EXPECT_EQ( first_attribute( xml, "calibration", "id" ),   QString( "-1" ) );
+   EXPECT_EQ( first_attribute( xml, "calibration", "guid" ), calGUID );
 
    for ( const US_DataPubImporter::Result& result : importer.results() )
    {
       if ( result.type == US_DataPub::RotorCalibration )
       {
-         EXPECT_EQ( result.targetID, QString::number( written.ID ) );
+         EXPECT_EQ( result.targetID, QString( "-1" ) );
       }
    }
 
@@ -1250,6 +1267,69 @@ TEST_F( DataPubImport, ADiskImportNamesTheCalibrationItWrote )
          exporter.manifest().section( US_DataPub::RotorCalibration );
    ASSERT_EQ( cals.size(), 1 );
    EXPECT_EQ( cals[ 0 ].guid, calGUID );
+}
+
+/* The analysis reads a run's rotor stretch through
+   US_SimulationParameters::initFromData(): the coefficients of the run's
+   XML, replaced by those of the installation's calibration (etc/rotors) of
+   the ID the XML names.  Imported into an empty disk store, the run has to
+   keep its own coefficients, whatever calibrations the installation has --
+   an ID the store's count gave (1 here) is one the installation's first
+   calibration has. */
+TEST_F( DataPubImport, TheAnalysisUsesTheImportedRunsOwnCalibration )
+{
+   // An installed calibration of ID 1 with other coefficients (the file
+   // read last wins an ID)
+   QString etc     = US_Settings::appBaseDir() + "/etc/rotors";
+   bool    madeEtc = ! QDir( etc ).exists();
+   QString planted = etc + "/C9999999.xml";
+   QDir().mkpath( etc );
+   ASSERT_FALSE( QFile::exists( planted ) );
+
+   struct Cleanup
+   {
+      QString file;
+      QString dir;
+      bool    rmdir;
+      ~Cleanup()
+      {
+         QFile::remove( file );
+         if ( rmdir )  QDir().rmdir( dir );
+      }
+   } cleanup { planted, etc, madeEtc };
+
+   US_Rotor::RotorCalibration installed;
+   installed.ID          = 1;
+   installed.GUID        = US_Util::new_guid();
+   installed.rotorGUID   = US_Util::new_guid();
+   installed.coeff1      = 3.0e-3;
+   installed.coeff2      = 4.0e-6;
+   installed.label       = "Installed calibration";
+   installed.lastUpdated = QDate( 2020, 1, 1 );
+   ASSERT_TRUE( US_DataPubRecords::writeCalibration( installed, planted ) );
+
+   QString error;
+   US_DataPubImporter importer;
+   ASSERT_TRUE( importer.inspect  ( bundlePath, error ) );
+   ASSERT_TRUE( importer.runImport( diskOptions(), error ) )
+      << error.toStdString();
+
+   US_Settings::set_workBaseDir( targetDir );
+
+   QString     dir  = targetDir + "/results/" + runID;
+   QStringList aucs = QDir( dir ).entryList( QStringList( "*.auc" ),
+                                             QDir::Files, QDir::Name );
+   ASSERT_FALSE( aucs.isEmpty() );
+
+   US_DataIO::RawData raw;
+   ASSERT_EQ( US_DataIO::readRawData( dir + "/" + aucs[ 0 ], raw ),
+              US_DataIO::OK );
+
+   US_SimulationParameters simparams;
+   simparams.initFromData( nullptr, raw, false, runID, runType );
+
+   EXPECT_DOUBLE_EQ( simparams.rotorcoeffs[ 0 ], 1.2e-05 );
+   EXPECT_DOUBLE_EQ( simparams.rotorcoeffs[ 1 ], 3.4e-10 );
 }
 
 // ------------------------------------------------------ the command line
@@ -2226,29 +2306,6 @@ TEST_F( DataPubCrafted, AManifestNumberThatIsNotFiniteIsRefused )
 
 // ------------------------------------------------- round six, follow-up
 
-namespace
-{
-   // The value of an attribute of the first element of that name
-   QString first_attribute( const QString& path, const QString& element,
-                            const QString& attr )
-   {
-      QFile file( path );
-
-      if ( ! file.open( QIODevice::ReadOnly ) )  return QString();
-
-      QXmlStreamReader reader( &file );
-
-      while ( ! reader.atEnd() )
-      {
-         reader.readNext();
-
-         if ( reader.isStartElement()  &&  reader.name().toString() == element )
-            return reader.attributes().value( attr ).toString();
-      }
-
-      return QString();
-   }
-}
 
 // A wrong master password is said to be wrong before the database is
 // opened, not reported as the server's refusal of a login without one

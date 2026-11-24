@@ -1173,11 +1173,17 @@ solutions, centerpieces and rotor calibration.
 Numeric IDs are never carried over. A database allocates its own. In a disk
 store a record the import writes carries the ID `-1`, and a reference names the
 ID the target's record has, or `-1`. A rotor calibration written to disk names
-the target's rotor of the same GUID, or none. It is the exception to `-1`: a
-disk store finds a run's calibration by the ID the run's XML names, so the
-calibration gets one no calibration of the store's `rotors` directory has (the
-highest there plus one), and the runs of the bundle name it. Exported from
-the store again, the run still has its calibration.
+the target's rotor of the same GUID, or none, and carries `-1` too, as does the
+run's `<calibration id>`: an analysis maps the ID a run names to the
+coefficients of the installation's calibration of that ID
+(`US_SimulationParameters::setHardware()` through `US_Hardware::readRotorMap()`,
+which reads `etc/rotors`, where `us_rotor_gui` keeps database calibrations by
+their database IDs), so any real ID could give the run another rotor's
+stretch; with `-1` the coefficients in the run's XML stand. The run's XML
+also names the calibration's GUID (`<calibration guid>`), by which an export
+from the store finds it: exported again, the run still has its calibration.
+A calibration the store already holds (matched by GUID or content) is named by
+the ID and GUID it has there.
 
 ### Order of replay
 
