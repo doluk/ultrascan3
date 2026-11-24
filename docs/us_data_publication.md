@@ -225,6 +225,19 @@ added because a local store keeps that information elsewhere, or rounds it:
   import takes the spectra from the spectra payload. A spectrum (of a buffer,
   analyte or solution), a buffer concentration or an analyte amount that is
   not a finite number is refused by the export, as an import would refuse it.
+  So is any other numeric value of any staged XML payload: every attribute
+  but those that hold text (names, descriptions, labels, run IDs, file
+  names, serial numbers, units and GUIDs — `US_DataPub::isTextAttribute()`)
+  whose value is `nan`, `inf`, `infinity` (any case or sign) or a number too
+  large for a double is refused (`US_DataPub::nonFiniteNumberInXml()`): a
+  buffer's pH, density, viscosity or compressibility, a component's
+  concentration or coefficients, an analyte's vbar20 or molecular weight, a
+  solution's common vbar20, storage temperature or amounts, a model's
+  variance, meniscus or component values, a noise vector's values, ...
+  A database cannot store such a value, and a disk import would write it
+  back as `nan`. In a buffer, analyte or solution it is the run's fault (see
+  below); a model or noise record that holds one is left out with a warning,
+  or fails the export when it was asked for by GUID.
 * `experiment/<runID>.RIProfile.xml` — the radial intensity profile an RI
   (pseudo-absorbance) run is reduced with, in the format of the local
   `<runID>.RIProfile.xml`. On disk it is the file in the run directory; from
@@ -516,16 +529,41 @@ without that run, with a warning naming it. So does a run whose records turn
 out not to hold together while they are staged: a channel without a solution
 (or whose solution, buffer or analyte is gone), a payload that does not carry
 the GUID the catalog lists it under, an experiment XML that names another run
-ID or GUID than the run (a run directory renamed by hand), a spectrum that is
-not all numbers. Everything already staged for that run is taken back, and
-its models and noise stay out with it. A database or disk that fails is not
-the run's fault and still fails the export. A run named on its own
+ID or GUID than the run (a run directory renamed by hand), a spectrum or
+other value that is not a finite number, or an experiment, raw data or edit
+that another run of the export already brought into the bundle (a run
+directory copied under another name, GUIDs and all: the run that comes
+later is taken for the copy, and the one already staged keeps everything).
+Everything already staged for that run is taken back, and so are the
+warnings its records gave. Its models and their noise stay out with it —
+those whose edit is not in the bundle: a model fitted to an edit that
+another run brought in (the same edit GUID, in a copied run directory)
+stays. A model or noise record that was asked for by GUID
+(`--model-guid`, `--noise-guid`) whose run is left out fails the export
+instead of vanishing from it. A database or disk that fails is not the
+run's fault and still fails the export. A run named on its own
 (`--experiment-id`, or picked in the window) is refused instead. When no run
 of the project is left, the export fails.
 
 Records the export cannot carry and was not asked for by name are left out
 with a warning: a model or noise record without a GUID, a noise record whose
 model is not in the bundle, an RI profile that does not parse.
+
+**What an export leaves out is always reported.** The command line writes
+each warning as a `Warning: ...` line on the error output, with or without
+`--verbose`, and its last line on the standard output counts what was left
+out:
+
+```
+Wrote 16 records to project5.tar.gz (left out: 1 run(s), 0 other record(s); see the warnings)
+```
+
+(A dry run says the same in its "would be exported" line.) Nothing left out,
+no such count. The window's completion box (and the preview, and the box of
+an export that failed) lists the runs left out, the number of other records
+left out, and the warnings. `US_DataPubExporter::warnings()`,
+`leftOutRuns()`, `leftOutRecords()` and `warningReport()` give the same to a
+caller.
 
 A run whose database record names no rotor calibration is exported without
 one; the rotor's first calibration is not assumed in its place, since a rotor

@@ -112,14 +112,31 @@ selected runs has any. A raw data record or an edit read from the database
 whose GUIDs are not the ones the catalog listed stops the export too, as does
 a noise record selected by GUID whose model is not in the bundle, an
 experiment XML that names another run ID or GUID than its run (a run
-directory renamed by hand), and a spectrum, buffer concentration or analyte
-amount that is not a number. A missing project file on disk is reported with
-the hint to leave the project out.
+directory renamed by hand), and a value that is not a finite number
+(``nan``, ``inf``, or a number too large for a double) anywhere in a record:
+a spectrum, a buffer's pH, density, viscosity, compressibility or
+concentrations, an analyte's vbar20 or molecular weight, a solution's common
+vbar20, storage temperature or amounts. A missing project file on disk is
+reported with the hint to leave the project out.
 
 When the runs come with a project rather than by name, a run whose own records
-do not hold together -- one of those problems, or a channel without a
-solution -- is left out with a warning instead, and the rest of the project is
-exported. A database or disk that fails still fails the export.
+do not hold together -- one of those problems, a channel without a solution,
+or an experiment, raw data or edit another run already brought into the
+bundle (a run directory copied under another name, GUIDs and all) -- is left
+out with a warning instead, and the rest of the project is exported. Its
+models and their noise go with it, unless their edit is in the bundle after
+all (with the run the copy was made from). A model or noise record selected by
+GUID whose run is left out fails the export. A model or noise record that
+holds a value that is not a finite number is left out with a warning, or
+fails the export when it was selected by GUID. A database or disk that fails
+still fails the export.
+
+What was left out is always reported: the **Export Complete** box lists the
+runs left out, the number of other records left out and the warnings (so do
+the manifest preview and the box of an export that failed), and the command
+line writes each warning to the error output, ``--verbose`` or not, and adds
+``(left out: N run(s), M other record(s); see the warnings)`` to its last
+line.
 
 An export also refuses to write a bundle the import would refuse, and checks
 it with the import's own rules before packing: every GUID of the manifest,
