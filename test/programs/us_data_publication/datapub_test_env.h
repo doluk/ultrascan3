@@ -641,6 +641,13 @@ class DataPubTestEnv : public ::testing::Test
  * section 4) -- or, overriding databaseVariable(), another one -- and a
  * connection to it in \c db.  Skips without one.  The database settings
  * and the investigator are put back afterwards.
+ *
+ * On MySQL 8, which has no DECODE() any more, the import targets
+ * (US3_TEST_DB_IMPORT_NAME and US3_TEST_DB_IMPORT2_NAME, never the fixture
+ * database) are given the stand-in test/README describes ("Database import
+ * targets on MySQL 8") when they do not have one, so that the import --
+ * and with it the database export cases -- runs there as on MariaDB.  A
+ * target the stand-in cannot be created in skips, saying why.
  */
 class DataPubDbTargetEnv : public DataPubTestEnv
 {
@@ -657,6 +664,97 @@ class DataPubDbTargetEnv : public DataPubTestEnv
          return "US3_TEST_DB_IMPORT_NAME";
       }
 
+      //! The settings entry of the test database \a name, with \a guid
+      //! and \a password as the investigator's login
+      QStringList settingsEntry( const QString& name, const QString& guid,
+                                 const QString& password )
+      {
+         QStringList dbCipher   = US_Crypto::encrypt(
+               qEnvironmentVariable( "US3_TEST_DB_PASS" ), master );
+         QStringList userCipher = US_Crypto::encrypt( password, master );
+
+         QStringList entry;
+         entry << "us3 import database"
+               << qEnvironmentVariable( "US3_TEST_DB_USER" ) << name
+               << qEnvironmentVariable( "US3_TEST_DB_HOST" )
+               << dbCipher.at( 0 ) << dbCipher.at( 1 )
+               << qEnvironmentVariable( "US3_TEST_DB_EMAIL" )
+               << userCipher.at( 0 ) << userCipher.at( 1 ) << guid;
+
+         return entry;
+      }
+
+   public:
+      /* Give an import target on MySQL 8 the DECODE() stand-in of
+         test/README, unless it has one: get_instrument_info_new reaches
+         DECODE() for an instrument without a radial calibration, and MySQL
+         8.0.3 removed the function, so the import fails there without it.
+         MariaDB (and MySQL before 8) has the function: nothing is done.
+         False, with \a why, when the stand-in is missing and could not be
+         created (the account needs CREATE ROUTINE, and with binary logging
+         on the server needs log_bin_trust_function_creators).
+      */
+      static bool ensureDecodeStandIn( US_DB2* conn, QString& why )
+      {
+         QString version = conn->serverVersion();
+
+         if ( ! IUS_DB2::serverIsMySQL( version )  ||
+              version.section( '.', 0, 0 ).toInt() < 8 )
+            return true;
+
+         auto present = [ conn ]( void )
+         {
+            conn->rawQuery( "SELECT COUNT(*) FROM information_schema.ROUTINES"
+                            " WHERE ROUTINE_SCHEMA = DATABASE()"
+                            " AND ROUTINE_TYPE = 'FUNCTION'"
+                            " AND ROUTINE_NAME = 'DECODE'" );
+            return conn->next()  &&  conn->value( 0 ).toInt() > 0;
+         };
+
+         if ( present() )  return true;
+
+         conn->rawQuery( "CREATE FUNCTION DECODE( p_text BLOB,"
+                         " p_key VARCHAR(255) ) RETURNS VARCHAR(255)"
+                         " DETERMINISTIC RETURN NULL" );
+
+         if ( present() )  return true;
+
+         why = "the MySQL 8 import target has no DECODE() stand-in, and it"
+               " could not be created (" + conn->lastError() + "); see"
+               " test/README, \"Database import targets on MySQL 8\"";
+         return false;
+      }
+
+   protected:
+      //! The stand-in in the import target \a name (see above)
+      bool decodeStandInIn( const QString& name, QString& why )
+      {
+         static QSet< QString > ready;   // once per database and run
+
+         if ( ready.contains( name ) )  return true;
+
+         QStringList saved = US_Settings::defaultDB();
+         US_Settings::set_defaultDB( settingsEntry( name,
+               qEnvironmentVariable( "US3_TEST_DB_PERSON_GUID" ),
+               qEnvironmentVariable( "US3_TEST_DB_PERSON_PW" ) ) );
+
+         US_DB2  conn;
+         QString error;
+         bool    ok = conn.connect( master, error );
+
+         US_Settings::set_defaultDB( saved );
+
+         if ( ! ok )
+         {
+            why = "cannot reach the database " + name + ": " + error;
+            return false;
+         }
+
+         if ( ! ensureDecodeStandIn( &conn, why ) )  return false;
+
+         ready.insert( name );
+         return true;
+      }
       void SetUp() override
       {
          QString host = qEnvironmentVariable( "US3_TEST_DB_HOST" );
@@ -704,6 +802,23 @@ class DataPubDbTargetEnv : public DataPubTestEnv
                          << ": " << error.toStdString();
          }
 
+         // The import targets on MySQL 8, never the fixture database
+         QString why;
+         QString second = qEnvironmentVariable( "US3_TEST_DB_IMPORT2_NAME" );
+         bool    target = QString( databaseVariable() )
+                          .startsWith( "US3_TEST_DB_IMPORT" );
+
+         if ( ( target  &&  ! ensureDecodeStandIn( db, why ) )  ||
+              ( ! second.isEmpty()  &&  second != name  &&
+                ! decodeStandInIn( second, why ) ) )
+         {
+            delete db;
+            db = nullptr;
+            US_Settings::set_defaultDB( savedDB );
+            US_Settings::set_us_inv_ID( savedInv );
+            restore = false;
+            GTEST_SKIP() << why.toStdString();
+         }
          // The store on disk comes last: it moves workBaseDir, and the
          // settings above have to be in place whether or not it is built
          DataPubTestEnv::SetUp();

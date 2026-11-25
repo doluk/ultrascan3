@@ -9,6 +9,8 @@
 
 #include <QtCore>
 
+#include <functional>
+
 #include "datapub_test_env.h"
 
 #include "us_datapub_export.h"
@@ -659,4 +661,160 @@ TEST_F( DataPubDbExport, NullExperimentFieldsStayNullInAnotherDatabase )
       EXPECT_TRUE( about[ 0 ].contains( "centrifugeProtocol and RIProfile" ) )
          << about[ 0 ].toStdString();
    }
+}
+
+/* Two experiments of the investigator under one run ID.  The run ID alone
+   names neither: the export is refused with a message that names both
+   experiment IDs (not "directories").  The experiment ID picks one, and
+   what is exported is that experiment -- its GUID, its raw data -- also
+   when it is the one listed second.
+
+   The second experiment is the store's run made again under new GUIDs and
+   imported too; when the import gave it another run ID it is then given
+   the first one's, with its file names to match.  Everything is put back
+   afterwards.
+*/
+TEST_F( DataPubDbExport, TwoExperimentsOfOneRunIdArePickedByTheirIds )
+{
+   QString runA;
+   QString runB;
+   QString error;
+   QString guidA = expGUID;
+   ASSERT_TRUE( storeInDatabase( runA, error ) ) << error.toStdString();
+
+   // The same run again, as another experiment: its own records under new
+   // GUIDs, the chemistry, project and calibration as they were
+   QDir( US_Settings::dataDir()   ).removeRecursively();
+   QDir( US_Settings::resultDir() ).removeRecursively();
+   QDir().mkpath( US_Settings::dataDir()   );
+   QDir().mkpath( US_Settings::resultDir() );
+   expGUID   = US_Util::new_guid();
+   rawGUID   = US_Util::new_guid();
+   editGUID  = US_Util::new_guid();
+   modelGUID = US_Util::new_guid();
+   noiseGUID = US_Util::new_guid();
+   buildStore();
+
+   QString guidB = expGUID;
+   ASSERT_TRUE( storeInDatabase( runB, error ) ) << error.toStdString();
+
+   auto idOf = [ this ]( const QString& guid )
+   {
+      db->rawQuery( "SELECT experimentID FROM experiment"
+                    " WHERE experimentGUID = '" + guid + "'" );
+      return db->next() ? db->value( 0 ).toInt() : -1;
+   };
+
+   int idA = idOf( guidA );
+   int idB = idOf( guidB );
+   ASSERT_GT( idA, 0 );
+   ASSERT_GT( idB, idA );
+   // Experiment B under run ID A, its files named as A's are
+   auto rename = [ this, idB ]( const QString& from, const QString& to )
+   {
+      QString len = QString::number( from.length() + 1 );
+      db->rawQuery( "UPDATE experiment SET runID = '" + to + "'"
+                    " WHERE experimentID = " + QString::number( idB ) );
+      db->rawQuery( "UPDATE rawData SET filename = CONCAT( '" + to + "',"
+                    " SUBSTRING( filename, " + len + " ) )"
+                    " WHERE experimentID = " + QString::number( idB )
+                    + " AND filename LIKE '" + from + ".%'" );
+      db->rawQuery( "UPDATE editedData e JOIN rawData r"
+                    " ON r.rawDataID = e.rawDataID"
+                    " SET e.filename = CONCAT( '" + to + "',"
+                    " SUBSTRING( e.filename, " + len + " ) )"
+                    " WHERE r.experimentID = " + QString::number( idB )
+                    + " AND e.filename LIKE '" + from + ".%'" );
+   };
+
+   struct PutBack
+   {
+      std::function< void() > undo;
+      ~PutBack() { undo(); }
+   } putBack { [ & ]() { if ( runA != runB )  rename( runA, runB ); } };
+
+   if ( runA != runB )  rename( runB, runA );
+
+   db->rawQuery( "SELECT COUNT(*) FROM experiment WHERE runID = '" + runA
+                 + "'" );
+   ASSERT_TRUE( db->next() );
+   ASSERT_EQ( db->value( 0 ).toInt(), 2 );
+
+   // By the run ID: refused, naming both experiments
+   US_DataPubExporter            refused;
+   US_DataPubExporter::Selection selection;
+   selection.fromDb     = true;
+   selection.dbPassword = master;
+   selection.scope      = US_DataPub::ScopeNoise;
+   selection.runIDs << runA;
+
+   EXPECT_FALSE( refused.previewManifest( selection, error ) );
+   QString both = QString( "%1, %2" ).arg( idA ).arg( idB );
+   EXPECT_TRUE( error.contains( both ) ) << error.toStdString();
+   EXPECT_FALSE( error.contains( "directories" ) ) << error.toStdString();
+
+   // By the experiment ID: that experiment, the first or the second
+   for ( int pass = 0; pass < 2; pass++ )
+   {
+      int     id   = ( pass == 0 ) ? idA : idB;
+      QString guid = ( pass == 0 ) ? guidA : guidB;
+      SCOPED_TRACE( QString::number( id ).toStdString() );
+
+      US_DataPubExporter            exporter;
+      US_DataPubExporter::Selection picked = selection;
+      picked.experimentIDs.insert( runA, QString::number( id ) );
+
+      ASSERT_TRUE( exporter.previewManifest( picked, error ) )
+         << error.toStdString() << "\n"
+         << exporter.log().join( "\n" ).toStdString();
+
+      QList< US_DataPubEntity > exps =
+         exporter.manifest().section( US_DataPub::Experiment );
+      ASSERT_EQ( exps.size(), 1 );
+      EXPECT_EQ( exps[ 0 ].guid, guid );
+      EXPECT_EQ( exps[ 0 ].id, QString::number( id ) );
+
+      // Its own raw data, by the experiment's rows
+      db->rawQuery( "SELECT rawDataGUID FROM rawData WHERE experimentID = "
+                    + QString::number( id ) );
+      QStringList raws;
+
+      while ( db->next() )  raws << db->value( 0 ).toString();
+
+      QList< US_DataPubEntity > staged =
+         exporter.manifest().section( US_DataPub::RawData );
+      ASSERT_EQ( staged.size(), raws.size() );
+
+      for ( int ii = 0; ii < staged.size(); ii++ )
+         EXPECT_TRUE( raws.contains( staged[ ii ].guid ) )
+            << staged[ ii ].guid.toStdString();
+   }
+}
+
+/* A model picked by its GUID alone is looked up for where it stands in the
+   database: its modelID and lastUpdated are those the chain of its run
+   lists for it. */
+TEST_F( DataPubDbExport, AModelPickedByGuidSaysWhereItStands )
+{
+   QString dbRunID;
+   QString error;
+   ASSERT_TRUE( storeInDatabase( dbRunID, error ) ) << error.toStdString();
+
+   US_DataPubCatalog catalog;
+   ASSERT_TRUE( catalog.open( true, master, error ) ) << error.toStdString();
+
+   US_DataPubCatalog::Run run;
+   ASSERT_TRUE( catalog.runByID( dbRunID, run, error ) ) << error.toStdString();
+   ASSERT_TRUE( catalog.loadRunDetails( run, error ) ) << error.toStdString();
+
+   QList< US_DataPubCatalog::Model > listed =
+      catalog.models( QList< US_DataPubCatalog::Run >() << run, error );
+   ASSERT_FALSE( listed.isEmpty() ) << error.toStdString();
+
+   US_DataPubCatalog::Model picked;
+   picked.guid = listed[ 0 ].guid;
+   ASSERT_TRUE( catalog.completeModel( picked, error ) ) << error.toStdString();
+   EXPECT_EQ( picked.id, listed[ 0 ].id );
+   EXPECT_FALSE( picked.lastUpdated.isEmpty() );
+   EXPECT_EQ( picked.lastUpdated, listed[ 0 ].lastUpdated );
 }

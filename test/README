@@ -729,3 +729,28 @@ default character set is utf8mb4 rather than latin1.
 
 Run them against a copy with the unpatched and with the patched procedures, on
 both servers.
+
+## The DECODE stand-in is made by the tests; export cases added in fix round 8
+
+- On MySQL 8 the database cases of `test_us_datapub` that write into an
+  import target (`DataPubDbTargetEnv` and the fixtures built on it:
+  `DataPubDbImport`, `DataPubDbRules`, `DataPubDbFields`, `DataPubDbExport`)
+  now create the `DECODE` stand-in of "Database import targets on MySQL 8"
+  themselves, in `US3_TEST_DB_IMPORT_NAME` and in `US3_TEST_DB_IMPORT2_NAME`,
+  when the database does not have it yet.  The fixture database
+  (`US3_TEST_DB_NAME`) is never changed, and MariaDB (which has the
+  function) is left alone.  So the import targets of section 4 can be set
+  on MySQL 8 as on MariaDB, and the `DataPubDbExport` cases run there.
+  Creating the function needs `CREATE ROUTINE` on the target (part of the
+  `GRANT ALL` of section 4) and, on a server with binary logging, either
+  `log_bin_trust_function_creators=1` or `SUPER`; without them the cases
+  skip with a message saying so, and the stand-in can be made by hand as
+  shown above.
+- `DataPubDbExport.TwoExperimentsOfOneRunIdArePickedByTheirIds` imports the
+  synthetic run, makes it again under new GUIDs and imports that too (the
+  import gives it another run ID), and then gives the second experiment the
+  first one's run ID (and renames its raw data and edit file names to
+  match) with `UPDATE`s on `experiment`, `rawData` and `editedData`; it puts
+  them back at its end.  The export by run ID has to be refused naming both
+  experiment IDs, and an export by either experiment ID has to carry that
+  experiment and its raw data.

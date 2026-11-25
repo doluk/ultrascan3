@@ -47,6 +47,12 @@ class US_DataPubExporter : public QObject
             QString     projectGUID; //!< Export this project, if known
             QStringList runIDs;      //!< The runs to export
 
+            /*! runID -> the database ID of the experiment to export under
+                that run ID.  A database can hold more than one experiment
+                of an investigator under one run ID; such a run is refused
+                unless this names one of them.  A disk export ignores it.
+            */
+            QMap< QString, QString > experimentIDs;
             QStringList rawGUIDs;    //!< Raw triples to export
             QStringList editGUIDs;   //!< Edits to export
             QStringList modelGUIDs;  //!< Models to export
@@ -218,16 +224,24 @@ class US_DataPubExporter : public QObject
 
       /*! \brief Ask the export or preview that is running to stop
 
-          It stops at the next record, or while the catalog reads the
-          chain, and fails with an error that says it was cancelled; no
-          bundle is written and the staging directory is removed.  It is
-          meant to be called from a slot connected to \ref message() or
-          \ref stepDone(), or from another thread; the next export starts
-          afresh.
+          It stops at the next record, at the next run while the runs are
+          read, between two files of a local store the catalog reads, and,
+          from a database, before the catalog reads the records of a run,
+          its experiment information or the noise of a model (what one of
+          those reads has started -- a few queries -- is finished first).
+          It fails with an error that says it was cancelled; no bundle is
+          written and the staging directory is removed.  It is meant to be
+          called from a slot connected to \ref message(), \ref steps() or
+          \ref stepDone(), or from another thread.  A cancel made while no
+          export or preview runs -- just before one starts, say -- stops the
+          next one before it reads anything; once an export or preview has
+          ended, a cancel made before or during it no longer counts, and
+          the next one starts afresh.
       */
       void cancel( void );
 
-      //! \brief True when the last export or preview was cancelled
+      //! \brief True while an export or preview runs and has been asked to
+      //!        stop, and afterwards when the last one was cancelled
       bool wasCancelled( void ) const;
 
    signals:
@@ -235,12 +249,17 @@ class US_DataPubExporter : public QObject
       //! \param message The note
       void message ( const QString& message );
 
-      //! \brief The number of records this export will deal with
-      //! \param steps The number of records
+      /*! \brief The number of steps of the current phase
+
+          First the runs that are read from the source, one step each, then
+          the records this export will deal with; the count of the second
+          phase starts again from one.
+          \param steps The number of steps
+      */
       void steps   ( int steps );
 
-      //! \brief The number of records dealt with so far
-      //! \param step The number of records finished
+      //! \brief The number of steps of the current phase finished so far
+      //! \param step The number of steps finished
       void stepDone( int step );
 
    public:
@@ -303,11 +322,33 @@ class US_DataPubExporter : public QObject
       //! that fails); only the former lets a project export go on
       bool               run_fault;
 
-      //! Set by cancel(); the catalog reads it too
+      //! Set by cancel(); the catalog reads it too.  It is cleared when an
+      //! export or preview ends, not when one starts.
       QAtomicInt         cancel_flag;
+
+      //! Whether the last export or preview that ended was cancelled
+      bool               cancelled_run;
 
       //! \brief True, with \a error filled in, once cancel() was called
       bool cancelledError( QString& error ) const;
+
+      /*! The end of an export or a preview: what it returns, with \a error
+          saying that it was cancelled when it failed after a cancel; the
+          request is cleared, so that the next one starts afresh
+      */
+      bool endRun( bool ok, QString& error );
+
+      //! exportBundle() and previewManifest() without \ref endRun()
+      bool exportRun ( const Selection&, const QString& bundlePath,
+                       QString& error );
+      bool previewRun( const Selection&, QString& error );
+
+      /*! On disk, the runs of \a all whose experiment XML is missing or
+          cannot be read: which project they belong to cannot be told, so
+          a project export does not take them.  Each is named in a warning.
+      */
+      void warnRunsWithoutProject( const Selection&,
+                                   const QList< US_DataPubCatalog::Run >& all );
 
       //! Every model the catalog lists for the runs, also those that were
       //! not selected: noise carried for one model may have been fitted to

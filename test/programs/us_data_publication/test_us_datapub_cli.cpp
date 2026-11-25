@@ -7,6 +7,8 @@
 #include "us_datapub_bundle.h"
 #include "us_datapub_manifest.h"
 #include "us_crypto.h"
+#include "us_datapub_export.h"
+#include "us_datapub_hash.h"
 
 #if defined( Q_OS_UNIX )
 #include <fcntl.h>
@@ -773,3 +775,156 @@ TEST_F( DataPubCli, AWrongMasterPasswordIsSaidToBeWrong )
                 .isEmpty() );
 }
 #endif
+
+/* An experiment ID picks one of several experiments that share a run ID;
+   a run ID picks none of them (the export then says which IDs there are).
+*/
+TEST_F( DataPubCli, AnExperimentIdPicksOneOfTheExperimentsOfARunId )
+{
+   QList< US_DataPubCatalog::Run > runs;
+   US_DataPubCatalog::Run          first;
+   first.runID = "dup_run";
+   first.id    = "12";
+   US_DataPubCatalog::Run          second;
+   second.runID = "dup_run";
+   second.id    = "15";
+   runs << first << second;
+
+   QString why;
+   QString expID = "stale";
+   EXPECT_EQ( US_DataPubCLI::resolveRun( runs, "15", why, &expID ),
+              QString( "dup_run" ) );
+   EXPECT_EQ( expID, QString( "15" ) );
+   EXPECT_TRUE( why.isEmpty() ) << why.toStdString();
+
+   EXPECT_EQ( US_DataPubCLI::resolveRun( runs, "dup_run", why, &expID ),
+              QString( "dup_run" ) );
+   EXPECT_TRUE( expID.isEmpty() );
+}
+
+#if defined( Q_OS_UNIX )
+/* --list shows what a bundle the import refuses holds -- here one of the
+   format 1 bundles that listed borrowed noise under the borrower -- and
+   then says why it is refused (exit 1).
+*/
+TEST_F( DataPubCli, ListShowsTheManifestOfARefusedBundle )
+{
+   QString bundle = root + "/plain.tar.gz";
+   QString errText;
+   QString outText;
+
+   ASSERT_EQ( runCapturing( QStringList() << "--mode" << "export"
+                            << "--experiment-id" << runID
+                            << "--non-interactive" << "--bundle" << bundle,
+                            errText, &outText ), 0 )
+      << errText.toStdString();
+
+   // The same bundle, as such a build wrote it
+   US_DataPubBundle in;
+   QString          error;
+   ASSERT_TRUE( in.unpack( bundle, error ) ) << error.toStdString();
+
+   US_DataPubBundle out;
+   ASSERT_TRUE( out.createStaging( error ) ) << error.toStdString();
+
+   QDir         src( in.rootPath() );
+   QDirIterator it( in.rootPath(), QDir::Files, QDirIterator::Subdirectories );
+
+   while ( it.hasNext() )
+   {
+      QString rel = src.relativeFilePath( it.next() );
+      QDir().mkpath( QFileInfo( out.stagingPath() + "/" + rel ).path() );
+      ASSERT_TRUE( QFile::copy( in.rootPath() + "/" + rel,
+                                out.stagingPath() + "/" + rel ) );
+   }
+
+   QString            mpath = out.stagingPath() + "/"
+                              + US_DataPubBundle::manifestName();
+   US_DataPubManifest mani;
+   ASSERT_TRUE( mani.read( mpath, error ) ) << error.toStdString();
+
+   QString fitted = "aaaaaaaa-0000-4000-8000-0000000000f1";
+   QList< US_DataPubEntity > noises = mani.section( US_DataPub::Noise );
+   ASSERT_FALSE( noises.isEmpty() );
+   noises[ 0 ].attrs.insert( "fittedToModelGUID", fitted );
+   US_DataPubEntity noise = noises[ 0 ];
+   mani.version = 1;
+   mani.setSection( US_DataPub::Noise, noises );
+   ASSERT_TRUE( mani.write( mpath, error ) ) << error.toStdString();
+
+   QFile digest( out.stagingPath() + "/"
+                 + US_DataPubExporter::manifestDigestName() );
+   ASSERT_TRUE( digest.open( QIODevice::WriteOnly | QIODevice::Truncate ) );
+   digest.write( ( US_DataPubHash::fileHash( mpath ) + "  "
+                   + US_DataPubBundle::manifestName() + "\n" ).toUtf8() );
+   digest.close();
+
+   QString refused = root + "/refused.tar.gz";
+   ASSERT_TRUE( out.pack( refused, error ) ) << error.toStdString();
+
+   EXPECT_EQ( runCapturing( QStringList() << "--mode" << "import"
+                            << "--bundle" << refused << "--list",
+                            errText, &outText ), 1 );
+   EXPECT_TRUE( outText.contains( "fittedToModelGUID" ) )
+      << outText.toStdString();
+   EXPECT_TRUE( outText.contains( noise.guid ) ) << outText.toStdString();
+   EXPECT_TRUE( errText.contains( "Error:" ) ) << errText.toStdString();
+   EXPECT_TRUE( errText.contains( "development build" ) )
+      << errText.toStdString();
+
+   // A bundle that is no bundle at all still shows nothing
+   QFile junk( root + "/junk.tar.gz" );
+   ASSERT_TRUE( junk.open( QIODevice::WriteOnly ) );
+   junk.write( "not a bundle" );
+   junk.close();
+   EXPECT_EQ( runCapturing( QStringList() << "--mode" << "import"
+                            << "--bundle" << junk.fileName() << "--list",
+                            errText, &outText ), 1 );
+   EXPECT_TRUE( outText.trimmed().isEmpty() ) << outText.toStdString();
+}
+#endif
+
+/* A subset picked with --model-guid carries, for each model and noise
+   record, where it stands in the source: sourceLastUpdated and
+   sourceIndex (the file number on disk), which the import writes the
+   records of an edit by.  It skips in a build whose export writes no
+   source order at all.
+*/
+TEST_F( DataPubCli, ModelsPickedByGuidCarryTheirSourceOrder )
+{
+   QString whole  = root + "/whole.tar.gz";
+   QString subset = root + "/subset.tar.gz";
+
+   ASSERT_EQ( run( QStringList() << "--mode" << "export"
+                   << "--experiment-id" << runID << "--non-interactive"
+                   << "--bundle" << whole ), 0 );
+
+   US_DataPubManifest all;
+   ASSERT_TRUE( manifestOf( whole, all ) );
+   QList< US_DataPubEntity > listed = all.section( US_DataPub::Model );
+   ASSERT_FALSE( listed.isEmpty() );
+
+   if ( ! listed[ 0 ].attrs.contains( "sourceLastUpdated" ) )
+      GTEST_SKIP() << "this build's export writes no source order";
+
+   ASSERT_EQ( run( QStringList() << "--mode" << "export"
+                   << "--experiment-id" << runID << "--model-guid"
+                   << modelGUID << "--non-interactive"
+                   << "--bundle" << subset ), 0 );
+
+   US_DataPubManifest mani;
+   ASSERT_TRUE( manifestOf( subset, mani ) );
+
+   QList< US_DataPubEntity > records = mani.section( US_DataPub::Model )
+                                       + mani.section( US_DataPub::Noise );
+   ASSERT_FALSE( mani.section( US_DataPub::Model ).isEmpty() );
+   ASSERT_FALSE( mani.section( US_DataPub::Noise ).isEmpty() );
+
+   for ( const US_DataPubEntity& record : records )
+   {
+      EXPECT_FALSE( record.attrs.value( "sourceLastUpdated" ).isEmpty() )
+         << record.guid.toStdString();
+      EXPECT_EQ( record.attrs.value( "sourceIndex" ), QString( "1" ) )
+         << record.guid.toStdString();
+   }
+}
