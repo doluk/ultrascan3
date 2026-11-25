@@ -102,7 +102,13 @@ class US_DataProcess : public QObject
             message then says what was removed all the same, if anything
             was, and when it could not all be read back, what to do: scan
             again, or after a lost connection, which this window does not
-            make anew, close the window and open it again.
+            make anew, close the window and open it again.  A connection
+            lost while a removal runs or is committed leaves open whether
+            it happened: the message says so (\ref outcome_unknown), also
+            for a model or noise record, each of which is one statement.
+            A rollback refused because the server had already ended the
+            transaction (a deadlock, or a lock wait timeout with
+            innodb_rollback_on_timeout) is not reported as a failed one.
             \param recordID The row of the record to be removed
             \return 0, or 2012 (the database kept the edit), 2016 (no
                     database ID), 2017 (the edit's noise could not be
@@ -110,6 +116,17 @@ class US_DataProcess : public QObject
                     (no transaction), or another error status
         */
         int record_remove_db( int recordID );
+
+        //! \brief Whether the outcome of the last \ref record_remove_db
+        //!        that failed is not known: the connection was lost while
+        //!        it ran or was committed, and what the database holds could
+        //!        not be read back.  Its message then says so.
+        bool outcome_unknown( void ) const { return unknown_out; }
+
+        //! \brief Whether the connection to the database was seen lost:
+        //!        every later database action fails too, since this window
+        //!        does not connect again
+        bool connection_lost( void ) const { return conn_lost; }
 
         //! \brief Remove a record from local storage
         //! \param recordID ID of the record to be removed
@@ -273,6 +290,15 @@ class US_DataProcess : public QObject
         //! \brief What to do once the connection to the database is lost
         QString     lost_text( void ) const;
 
+        //! \brief The message of a model or noise removal that failed,
+        //!        naming the record; after a lost connection, that whether
+        //!        it was removed is not known (\ref outcome_unknown)
+        QString     removal_error( const QString& proc, int status );
+
+        //! \brief Whether a refused rollback's message says the server had
+        //!        already ended the transaction
+        static bool ended_by_server( const QString& error );
+
         //! \brief Append \ref lost_text to the message of a failure on a
         //!        lost connection, or of any failure after one
         //! \returns \a stat
@@ -283,6 +309,8 @@ class US_DataProcess : public QObject
         EditFailure             edit_failure = EDIT_REFUSED; //!< ... its kind
         bool                    conn_lost = false; //!< The connection was
                                                    //!< seen lost
+        bool                    unknown_out = false; //!< See
+                                                     //!< outcome_unknown()
         QString                 errMsg;     //!< Message from the last error
         QWidget*                parentw;    //!< Parent widget
         IUS_DB2*                db;         //!< Pointer to database connection

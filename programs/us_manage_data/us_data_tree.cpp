@@ -959,13 +959,31 @@ int US_DataTree::confirm_and_act( QString item_exs, QString item_act )
 
       record_type( cdesc.recType, item_act );
 
-      if ( ask_user( PROMPT_CONFIRM, item_act,
-                     action_text( item_exs, item_act ) ) )
+      if ( investigator_refused() )
+         stat = ACT_REFUSED;
+
+      else if ( ask_user( PROMPT_CONFIRM, item_act,
+                          action_text( item_exs, item_act ) ) )
          stat = do_actions( item_exs, item_act );
    }
 
    action_result( stat, item_act );
    return stat;
+}
+
+// True, after saying so, when the investigator was changed since the
+// database was read: what the tree shows is the previous one's
+bool US_DataTree::investigator_refused( void )
+{
+   if ( ! da_model->investigator_changed() )   return false;
+
+   ask_user( PROMPT_INFORM, tr( "Investigator Changed" ),
+             tr( "The investigator was changed since the database was"
+                 " read: what this window shows is the previous"
+                 " investigator's records, so nothing was done.  Click"
+                 " \"Scan Data\" to see the data of the investigator"
+                 " selected now." ) );
+   return true;
 }
 
 // perform item upload action
@@ -1512,6 +1530,12 @@ DbgLv(1) << "ITEM do_actions" << narows << item_exs << item_act;
       return ACT_REFUSED;
    }
 
+   // What the tree shows is the investigator's whose records were read:
+   // once another one is selected -- in another window, say -- nothing is
+   // done to it, and the window clears it
+   if ( investigator_refused() )
+      return ACT_REFUSED;
+
    // Nothing is written for a run whose directory is not where it should
    // be: an upload or a download would put its records somewhere else
    if ( upLoad || dnLoad )
@@ -1637,6 +1661,9 @@ DbgLv(1) << "ITEM do_actions" << narows << item_exs << item_act;
    // when they are all done, not once per record
    ChangeBatch batch( da_model );
 
+   Removal     rmv;               // what a removal from the database did
+   QSet< int > dbKept;            // rows the database kept, or may have
+
    if ( remove && frDB )
    {                                  // REMOVE from DB
       // Parents go before their descendants: the database removes the
@@ -1644,12 +1671,11 @@ DbgLv(1) << "ITEM do_actions" << narows << item_exs << item_act;
       // removed is only marked as gone.  A record whose removal failed
       // keeps its descendants -- they are not removed one by one instead,
       // which would leave just the partial removal the database refused --
-      // and the message says what was removed and what was not.
+      // and the message says what was removed and what was not.  Once the
+      // connection is lost nothing more is tried: every removal would fail.
       QSet< int >  cascaded;
       QSet< int >  kept;
-      QStringList  errors;
-      QStringList  removed;
-      QStringList  notRemoved;
+      QSet< int >  keptUnknown;
 
       for ( int ii = US_DataModel::EDIT; ii <= US_DataModel::NOISE; ii++ )
       {
@@ -1661,16 +1687,31 @@ DbgLv(1) << "ITEM do_actions" << narows << item_exs << item_act;
             if ( ddesc.recType != ii )                              continue;
             if ( ( ddesc.recState & US_DataModel::REC_DB ) == 0 )   continue;
 
+            if ( keptUnknown.contains( irow ) )
+            {  // whatever happened to its ancestor happened to it
+               rmv.unknown << ddesc.label;
+               dbKept      << irow;
+               continue;
+            }
+
             if ( kept.contains( irow ) )
             {
-               notRemoved << ddesc.label;
+               rmv.notRemoved << ddesc.label;
+               dbKept         << irow;
                continue;
             }
 
             if ( cascaded.contains( irow ) )
             {
                da_process->mark_removed_from_db( irow );
-               removed << ddesc.label;
+               rmv.removed << ddesc.label;
+               continue;
+            }
+
+            if ( da_process->connection_lost() )
+            {
+               rmv.notTried << ddesc.label;
+               dbKept       << irow;
                continue;
             }
 
@@ -1683,25 +1724,32 @@ DbgLv(1) << "RMV_REC: irow stat1" << irow << stat1;
             {
                naerrs++;
                istat      = stat1;
-               errors << da_process->lastError();
+               rmv.errors << da_process->lastError();
+               dbKept     << irow;
+
+               bool unknown = da_process->outcome_unknown();
+
+               if ( unknown )
+                  rmv.unknown << ddesc.label;
 
                for ( int kk = 0; kk < drows.size(); kk++ )
-                  kept << drows[ kk ];
+               {
+                  if ( unknown )
+                     keptUnknown << drows[ kk ];
+                  else
+                     kept        << drows[ kk ];
+               }
             }
 
             else
             {
-               removed << ddesc.label;
+               rmv.removed << ddesc.label;
 
                for ( int kk = 0; kk < drows.size(); kk++ )
                   cascaded << drows[ kk ];
             }
          }
       }
-
-      if ( naerrs > 0 )
-         da_process->setError( removal_report( errors, notRemoved,
-                                               removed ) );
    }
 
    if ( remove && frLoc )
@@ -1716,6 +1764,15 @@ DbgLv(1) << "RMV_REC: irow stat1" << irow << stat1;
             if ( ddesc.recType != ii )  continue;  // not at current level
             if ( ( ddesc.recState & US_DataModel::REC_LO ) == 0 )  continue;
 
+            // Removing from both places, a record the database kept -- or
+            // may have -- keeps its local copy: removing that would leave
+            // it in the database only, not gone
+            if ( dbKept.contains( irow ) )
+            {
+               rmv.localKept << ddesc.label;
+               continue;
+            }
+
             nacted++;
             int stat1  = da_process->record_remove_local( irow );
 
@@ -1727,6 +1784,9 @@ DbgLv(1) << "RMV_REC: irow stat1" << irow << stat1;
          }
       }
    }
+
+   if ( ! rmv.errors.isEmpty() )
+      da_process->setError( removal_report( rmv ) );
 
    if ( upLoad )
    {                                  // UPLOAD to DB
@@ -1826,36 +1886,57 @@ DbgLv(1) << "RMV_REC: irow stat1" << irow << stat1;
 }
 
 // What a removal from the database that failed somewhere did, and did not
-QString US_DataTree::removal_report( const QStringList& errors,
-                                     const QStringList& notRemoved,
-                                     const QStringList& removed )
+QString US_DataTree::removal_report( const Removal& rr )
 {
    const int nshow = 20;
-   QString   text  = errors.join( "\n\n" );
+   const int nerrs = 5;
 
-   if ( ! notRemoved.isEmpty() )
+   auto listed = [ & ]( const QStringList& labels )
    {
+      QString text = "\n  " + labels.mid( 0, nshow ).join( "\n  " );
+
+      if ( labels.size() > nshow )
+         text += tr( "\n  ... and %1 more" ).arg( labels.size() - nshow );
+
+      return text;
+   };
+
+   QString text = rr.errors.mid( 0, nerrs ).join( "\n\n" );
+
+   if ( rr.errors.size() > nerrs )
+      text += tr( "\n\n... and %1 more record(s) could not be removed." )
+              .arg( rr.errors.size() - nerrs );
+
+   if ( ! rr.unknown.isEmpty() )
+      text += tr( "\n\nWhether these selected records were removed from the"
+                  " database is not known:" ) + listed( rr.unknown );
+
+   if ( ! rr.notRemoved.isEmpty() )
       text += tr( "\n\nThese selected records belong to a record that was"
-                  " not removed, and were not removed either:\n  %1" )
-              .arg( notRemoved.mid( 0, nshow ).join( "\n  " ) );
+                  " not removed, and were not removed either:" )
+              + listed( rr.notRemoved );
 
-      if ( notRemoved.size() > nshow )
-         text += tr( "\n  ... and %1 more" ).arg( notRemoved.size() - nshow );
-   }
+   if ( ! rr.notTried.isEmpty() )
+      text += tr( "\n\nThese selected records were not tried, since the"
+                  " connection to the database was lost, and are still in"
+                  " the database:" ) + listed( rr.notTried );
 
-   if ( removed.isEmpty() )
+   if ( ! rr.removed.isEmpty() )
+      text += tr( "\n\nThese selected records were removed from the"
+                  " database:" ) + listed( rr.removed );
+
+   else if ( rr.unknown.isEmpty() )
       text += tr( "\n\nNone of the selected records was removed from the"
                   " database." );
 
    else
-   {
-      text += tr( "\n\nThese selected records were removed from the"
-                  " database:\n  %1" )
-              .arg( removed.mid( 0, nshow ).join( "\n  " ) );
+      text += tr( "\n\nNo other selected record was removed from the"
+                  " database." );
 
-      if ( removed.size() > nshow )
-         text += tr( "\n  ... and %1 more" ).arg( removed.size() - nshow );
-   }
+   if ( ! rr.localKept.isEmpty() )
+      text += tr( "\n\nThe local copies of the records the database kept,"
+                  " or may have kept, were not removed either:" )
+              + listed( rr.localKept );
 
    return text;
 }

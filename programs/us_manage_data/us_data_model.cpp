@@ -1288,6 +1288,26 @@ bool US_DataModel::listing_dropped( void ) const
    return db_dropped;
 }
 
+// Whether the investigator selected now is another than the one whose
+// database records were read.  Another window can change it at any time;
+// the catalog only notices on its next read, so this asks it now: on a
+// change it drops its listing (catalog_dropped), and the window clears the
+// tree.
+bool US_DataModel::investigator_changed( void )
+{
+   if ( db_dropped )        return true;
+   if ( cat_db == NULL )    return false;
+
+   return cat_db->refreshInvestigator()  ||  db_dropped;
+}
+
+// The investigator whose database records were read
+int US_DataModel::scanned_investigator( void ) const
+{
+   return ( cat_db != NULL ) ? cat_db->investigatorID()
+                             : US_Settings::us_inv_ID();
+}
+
 /* The database catalog dropped its listing: the investigator changed.
 
    What was read is the previous investigator's, and the experiments'
@@ -1528,8 +1548,10 @@ bool US_DataModel::do_merge_run( int index )
 
    merging_run = -1;
 
-   // What the database lost since the catalog read it is not there
-   drop_db_gone( ddescs );
+   // What the database lost since the catalog read it is not there --
+   // unless an action since left it somewhere, which is put back below
+   QSet< QString > by_action;
+   drop_db_gone( ddescs, &by_action );
 
    kdb_recs      += ddescs.size();
    klo_recs      += ldescs.size();
@@ -1544,6 +1566,18 @@ bool US_DataModel::do_merge_run( int index )
       // since is where the action left it, not where they say it is
       DataDesc desc   = mdescs.at( ii );
       bool     redone = apply_action( desc );
+
+      if ( ! redone  &&  desc.recordID >= 0  &&
+           by_action.contains( QString::number( desc.recType ) + ":"
+                               + QString::number( desc.recordID ) ) )
+      {  // Gone from the database, and no action says where it is now:
+         // it is where the catalogs say, but for the database
+         if ( ( desc.recState & REC_LO ) == 0 )   continue;
+
+         desc.recordID  = -1;
+         desc.recState &= ~( REC_DB | HV_DET );
+         desc.contents  = QString();
+      }
 
       append_row( desc, index );
       row_file.last() = mdescs.at( ii ).filename;   // what the catalogs say
@@ -1921,7 +1955,8 @@ void US_DataModel::removed_from_db( int recType, int recordID )
    (by database ID) is gone; the parents come first in the list, and a
    record left out takes its own descendants with it.
 */
-void US_DataModel::drop_db_gone( QVector< DataDesc >& descs )
+void US_DataModel::drop_db_gone( QVector< DataDesc >& descs,
+                                 QSet< QString >* by_action )
 {
    if ( db_gone.isEmpty() )   return;
 
@@ -1941,6 +1976,19 @@ void US_DataModel::drop_db_gone( QVector< DataDesc >& descs )
              db_gone.contains( key( desc.recType - 1, desc.parentID ) ) ) )
       {
          db_gone.insert( key( desc.recType, desc.recordID ) );
+
+         // An action on this very record -- the row merged with this
+         // database ID -- says where it is now: downloaded before it was
+         // removed, or uploaded again under another ID.  It is merged, so
+         // that the action is put back on it (apply_action); left out, its
+         // local copy, or its new database record, would not be shown, or
+         // would be shown as local only.
+         if ( by_action != NULL  &&  acted_on_db_record( desc ) )
+         {
+            by_action->insert( key( desc.recType, desc.recordID ) );
+            kept << desc;
+         }
+
          continue;
       }
 
@@ -1948,6 +1996,21 @@ void US_DataModel::drop_db_gone( QVector< DataDesc >& descs )
    }
 
    descs = kept;
+}
+
+// Whether an action changed the row merged with this database record
+bool US_DataModel::acted_on_db_record( const DataDesc& desc ) const
+{
+   QString akey = action_key( desc );
+
+   if ( akey.isEmpty()  ||  ! acted.contains( akey ) )   return false;
+
+   const QList< Acted >& list = acted[ akey ];
+
+   for ( int ii = 0; ii < list.size(); ii++ )
+      if ( list.at( ii ).mergedID == desc.recordID )   return true;
+
+   return false;
 }
 
 // Bring an experiment up to date after records of it changed

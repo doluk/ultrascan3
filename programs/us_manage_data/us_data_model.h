@@ -326,6 +326,22 @@ class US_DataModel : public QObject
         //!        last scan; see \ref listingDropped
         bool listing_dropped( void ) const;
 
+        /*! \brief Whether the investigator selected now differs from the
+                   one whose database records were read
+
+            Another window can change the investigator at any time, also
+            after the scan.  This checks now: on a change the database
+            listing is dropped, as when it changes during a read (\ref
+            listingDropped), and true is returned -- also when the listing
+            was dropped before.  Nothing may then be done to what the tree
+            shows: it is the previous investigator's.
+        */
+        bool investigator_changed( void );
+
+        //! \brief The investigator whose database records were read (the
+        //!        selected one when no database was read)
+        int scanned_investigator( void ) const;
+
         //! \brief Read the first layer: one record per experiment
         //!
         //! This is what makes the window usable straight away on a store
@@ -905,7 +921,19 @@ class US_DataModel : public QObject
         //! \brief Leave out of a catalog's database records those gone
         //!        from the database since it read them (\ref db_gone),
         //!        and what the database removed with them
-        void drop_db_gone( QVector< DataDesc >& descs );
+        //! \param descs     The catalog's database records
+        //! \param by_action When given, a gone record an action changed
+        //!        since the scan (\ref acted_on_db_record) is kept, for
+        //!        \ref apply_action to put the action back on, and its
+        //!        "type:ID" is added here: what the action does not
+        //!        match is still not shown in the database
+        void drop_db_gone( QVector< DataDesc >& descs,
+                           QSet< QString >* by_action = NULL );
+
+        //! \brief Whether an action since the scan changed the row that
+        //!        was merged with this database record (by type, GUID
+        //!        and database ID)
+        bool acted_on_db_record( const DataDesc& desc ) const;
 
         //! \brief Append a row of an experiment
         void append_row( const DataDesc& desc, int runIndex );

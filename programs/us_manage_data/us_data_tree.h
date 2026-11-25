@@ -320,15 +320,32 @@ class US_DataTree : public QObject
         //! \param modelInfos The JSON model descriptions
         static QStringList parse_models_desc_json( const QStringList& modelInfos );
 
+        //! \brief True, after telling the user, when the investigator was
+        //!        changed since the database was read
+        //!        (US_DataModel::investigator_changed): nothing is done to
+        //!        what the tree shows then
+        bool investigator_refused( void );
+
+        //! \brief What a removal from the database did, by the labels of
+        //!        the selected records
+        struct Removal
+        {
+            QStringList errors;     //!< The message of each that failed
+            QStringList notRemoved; //!< Kept with a record that failed
+            QStringList unknown;    //!< Not known whether removed: the
+                                    //!< connection was lost while it ran,
+                                    //!< or they belong to one that was
+            QStringList notTried;   //!< Not tried: the connection was lost
+            QStringList removed;    //!< Removed
+            QStringList localKept;  //!< Their local copies kept, on a
+                                    //!< removal from both places, as the
+                                    //!< database kept them (or may have)
+        };
+
         //! \brief The message of a removal from the database that failed
-        //!        somewhere: why, and what was and was not removed
-        //! \param errors     The message of each record that failed
-        //! \param notRemoved The selected records kept with a record that
-        //!                   failed
-        //! \param removed    The selected records removed
-        QString removal_report( const QStringList& errors,
-                                const QStringList& notRemoved,
-                                const QStringList& removed );
+        //!        somewhere: why (the first few errors), and what was, was
+        //!        not, and may or may not have been removed
+        QString removal_report( const Removal& rr );
 
 
         //! \brief Handle the result of an action
