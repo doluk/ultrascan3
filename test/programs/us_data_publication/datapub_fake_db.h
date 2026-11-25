@@ -6,6 +6,7 @@
 #include <QtCore>
 
 #include "mock_us_db2.h"
+#include "us_db2.h"
 #include "us_util.h"
 
 /**
@@ -83,11 +84,24 @@
  *   client waiting for the next second gets there.  new_model and
  *   new_noise date the record (stamps, by GUID) with the clock's second,
  *   as the procedures date the rows with NOW().
- * - The session time zone: SELECT @@session.time_zone answers timeZone,
- *   SET time_zone = '...' changes it (refused with rejectZoneChange), and
- *   set_rotor_calibration_date keeps the zone in force with the date
- *   (calibrationZones).  SELECT FROM_UNIXTIME( n ) answers the UTC wall
- *   time of n.
+ * - The session time zone: SELECT @@session.time_zone answers timeZone
+ *   (or fails, with zoneUnreadable), SET time_zone = '...' changes it
+ *   (refused with rejectZoneChange), and set_rotor_calibration_date keeps
+ *   the zone in force with the date (calibrationZones; instantOf() reads
+ *   the two back as an instant).  SELECT FROM_UNIXTIME( n ) answers the
+ *   wall time of n in the session's zone: an offset ("+05:00"), a zone
+ *   name, or "SYSTEM", which is systemZone.
+ * - The catalog's clock: SELECT UNIX_TIMESTAMP(), ... timestamp2UTC(
+ *   NOW() ) answers the clock and, second, what timestamp2UTC() makes of
+ *   it -- catalogClock of the second where a test gives one (a server's
+ *   zone falling back), else the second itself; new_model and new_noise
+ *   then date their records (stamps) by that, as a catalog reads them.
+ * - A procedure of version 2 named in missingRoutines is not there,
+ *   although the marker says 2: information_schema.ROUTINES does not list
+ *   it and a call fails.
+ * - The connection can be lost (loseConnectionOn, a procedure): that call
+ *   and every statement after it fail with 2013, an open transaction is
+ *   rolled back by the server, and a rollback fails as US_DB2's does.
  * - Experiment 1 is "the magic ID that anyone can use temporarily"
  *   (verify_experiment_permission): its raw data is found by
  *   get_rawDataID_from_GUID whoever asks, as the procedure does.  The
@@ -142,6 +156,11 @@ class DataPubFakeDb
 
       QString failOn;            // A procedure that fails with DBERROR
 
+      // A procedure during which the connection is lost, and whether it is
+      QString loseConnectionOn;
+      bool    lost        = false;
+      int     serverErrno = 0;     // The server's error of the last statement
+
       // create_buffer_component is the updated procedure: the highest ID
       // plus one, reported as the insert ID
       bool patchedComponents = false;
@@ -163,9 +182,19 @@ class DataPubFakeDb
       qint64 clockMs     = 1700000000000LL;
       qint64 clockStepMs = 250;
 
-      // The session's time zone, and whether SET time_zone is refused
+      // The session's time zone, whether SET time_zone is refused, whether
+      // the zone can be read, and the zone "SYSTEM" stands for
       QString timeZone          = "SYSTEM";
       bool    rejectZoneChange  = false;
+      bool    zoneUnreadable    = false;
+      QString systemZone        = "UTC";
+
+      // What timestamp2UTC() makes of a second of the clock; none: the
+      // second itself
+      std::function< qint64( qint64 ) > catalogClock;
+
+      // Procedures of version 2 that are not there
+      QStringList missingRoutines;
       QString implicitCommitOn;  // A procedure that commits implicitly
 
       // Called as a transaction begins, to change the database between an
@@ -221,6 +250,9 @@ class DataPubFakeDb
 
             // A model's or noise record's GUID -> the second it is dated
             QMap< QString, qint64 >  stamps;
+
+            // A noise record's GUID -> its model's GUID
+            QMap< QString, QString > noiseModels;
       };
 
       State state;
@@ -268,7 +300,11 @@ class DataPubFakeDb
          ON_CALL( mock, lastError() )
             .WillByDefault( Invoke( [ this ]()
             { return status == IUS_DB2::OK ? QString()
-                                           : QString( "fake error" ); } ) );
+                     : lost ? QString( "Lost connection to server during"
+                                       " query" )
+                            : QString( "fake error" ); } ) );
+         ON_CALL( mock, lastServerErrno() )
+            .WillByDefault( Invoke( [ this ]() { return serverErrno; } ) );
          ON_CALL( mock, lastInsertID() )
             .WillByDefault( Invoke( [ this ]() { return insertID; } ) );
          ON_CALL( mock, writeBlobToDB( _, _, _ ) )
@@ -336,6 +372,13 @@ class DataPubFakeDb
                rollbacks++;
                inTxn = false;
 
+               // Over a lost connection the server rolled back already
+               if ( lost )
+               {
+                  error = QObject::tr( US_DB2::connectionLostRollbackMessage );
+                  return false;
+               }
+
                // Once the server ended it there is nothing to undo: what it
                // kept stays, and the rollback says so
                if ( ! serverTxn )
@@ -351,6 +394,40 @@ class DataPubFakeDb
       }
 
       IUS_DB2* db() { return &mock; }
+
+      // A session time zone as the server takes it: an offset, a name, or
+      // SYSTEM (systemZone)
+      QTimeZone zoneOf( const QString& zone ) const
+      {
+         if ( zone == "SYSTEM" )  return zoneOf( systemZone );
+
+         static const QRegularExpression offset(
+               "^([+-])([0-9]{1,2}):([0-9]{2})$" );
+         QRegularExpressionMatch match = offset.match( zone );
+
+         if ( match.hasMatch() )
+            return QTimeZone( ( match.captured( 1 ) == "-" ? -1 : 1 ) *
+                              ( match.captured( 2 ).toInt() * 3600 +
+                                match.captured( 3 ).toInt() * 60 ) );
+
+         return QTimeZone( zone.toUtf8() );
+      }
+
+      // The instant a wall time stands for in a session zone, as a
+      // TIMESTAMP column stores it
+      qint64 instantOf( const QString& wall, const QString& zone ) const
+      {
+         QDateTime when = QDateTime::fromString( wall, "yyyy-MM-dd hh:mm:ss" );
+         return QDateTime( when.date(), when.time(), zoneOf( zone ) )
+                .toSecsSinceEpoch();
+      }
+
+      // The second a record written now is dated by, as a catalog reads it
+      qint64 catalogNow() const
+      {
+         qint64 second = clockMs / 1000;
+         return catalogClock ? catalogClock( second ) : second;
+      }
 
       // The connection goes away: an open transaction is rolled back by the
       // server, never committed
@@ -606,7 +683,8 @@ class DataPubFakeDb
             }
 
             else if ( proc == "get_noise_desc" )
-               row << id << guid << 0 << 0 << "ti" << "" << "" << "" << ""
+               row << id << guid << 0 << 0 << "ti"
+                   << state.noiseModels.value( guid ) << "" << "" << ""
                    << name;
 
             else if ( proc == "all_editedDataIDs"  ||
@@ -658,7 +736,14 @@ class DataPubFakeDb
          log   << "sql";
          calls << ( QStringList() << "sql" << sql );
          rows.clear();
-         cursor = 0;
+         cursor      = 0;
+         serverErrno = 0;
+
+         if ( lost )
+         {
+            serverErrno = 2013;
+            return status = IUS_DB2::DBERROR;
+         }
 
          if ( failOn == "sql" )  return status = IUS_DB2::DBERROR;
 
@@ -685,6 +770,9 @@ class DataPubFakeDb
                listed.insert( "set_rotor_calibration_date", QString() );
             }
 
+            for ( const QString& name : missingRoutines )
+               listed.remove( name );
+
             for ( auto it = listed.constBegin(); it != listed.constEnd();
                   ++it )
                if ( sql.contains( "'" + it.key() + "'" ) )
@@ -698,15 +786,22 @@ class DataPubFakeDb
 
          else if ( sql.contains( "UNIX_TIMESTAMP()" ) )
          {
-            rows << ( QVariantList() << ( clockMs / 1000 ) );
+            QVariantList row;
+            row << ( clockMs / 1000 );
+
+            if ( sql.contains( "timestamp2UTC" ) )  row << catalogNow();
+
+            rows << row;
             clockMs += clockStepMs;
             status   = IUS_DB2::OK;
          }
 
          else if ( sql.contains( "@@session.time_zone" ) )
          {
-            rows << ( QVariantList() << timeZone );
-            status = IUS_DB2::OK;
+            if ( ! zoneUnreadable )  rows << ( QVariantList() << timeZone );
+
+            status = zoneUnreadable ? int( IUS_DB2::DBERROR )
+                                    : int( IUS_DB2::OK );
          }
 
          else if ( sql.startsWith( "SET time_zone = '" ) )
@@ -723,8 +818,8 @@ class DataPubFakeDb
             static const QRegularExpression number( "FROM_UNIXTIME\\( *(-?[0-9]+)" );
             qint64 secs = number.match( sql ).captured( 1 ).toLongLong();
             rows << ( QVariantList() << QDateTime::fromSecsSinceEpoch(
-                                           secs, Qt::UTC ).toString(
-                                           "yyyy-MM-dd hh:mm:ss" ) );
+                                           secs, zoneOf( timeZone ) )
+                                        .toString( "yyyy-MM-dd hh:mm:ss" ) );
             status = IUS_DB2::OK;
          }
 
@@ -915,7 +1010,20 @@ class DataPubFakeDb
          log   << proc;
          calls << q;
          rows.clear();
-         cursor = 0;
+         cursor      = 0;
+         serverErrno = 0;
+
+         if ( lost  ||  proc == loseConnectionOn )
+         {
+            // Gone: the server rolls back what was open
+            if ( ! lost  &&  inTxn  &&  serverTxn )  state = saved;
+
+            lost        = true;
+            serverTxn   = false;
+            serverErrno = 2013;
+            status      = IUS_DB2::DBERROR;
+            return;
+         }
 
          if ( proc == failOn )
          {
@@ -1050,7 +1158,8 @@ class DataPubFakeDb
          {
             int id = q.value( 1 ).toInt();
 
-            if ( catalogVersion < 2  ||  staleMarker )
+            if ( catalogVersion < 2  ||  staleMarker  ||
+                 missingRoutines.contains( proc ) )
                status = IUS_DB2::DBERROR;       // 1305: no such procedure
 
             else if ( proc == "clear_experiment_fields" )
@@ -1118,7 +1227,10 @@ class DataPubFakeDb
                   state.modelEdits.insert( q[ ii ], q.value( 6 ) );
 
                if ( proc == "new_model"  ||  proc == "new_noise" )
-                  state.stamps.insert( q[ ii ], clockMs / 1000 );
+                  state.stamps.insert( q[ ii ], catalogNow() );
+
+               if ( proc == "new_noise" )
+                  state.noiseModels.insert( q[ ii ], q.value( 4 ) );
 
                break;
             }

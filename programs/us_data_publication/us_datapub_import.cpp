@@ -17,6 +17,7 @@
 #include <set>
 #include <tuple>
 #include <QElapsedTimer>
+#include <QTemporaryFile>
 #include <QThread>
 
 #include "us_settings.h"
@@ -75,8 +76,10 @@ US_DataPubImporter::US_DataPubImporter( QObject* parent ) : QObject( parent )
    step_count  = 0;
    user_level  = -1;
    catalog_version = -1;
-   catalog_stale.clear();
+   catalog_missing.clear();
    clock_local     = false;
+   catalog_clock   = true;
+   catalog_second  = -1;
    unkept.clear();
 }
 
@@ -1145,8 +1148,18 @@ bool US_DataPubImporter::readOwned( US_DataPub::EntityType type )
 
       // The edit a model was fitted to, which its noise records name
       if ( type == US_DataPub::Model )
+      {
          list.edits.insert( dbase->value( 1 ).toString().toLower(),
                             dbase->value( 6 ).toString() );
+         list.editGuids.insert( dbase->value( 1 ).toString().toLower(),
+                                dbase->value( 5 ).toString().toLower() );
+      }
+
+      // The model a noise record was fitted to (get_noise_desc: noiseID,
+      // noiseGUID, editedDataID, modelID, noiseType, modelGUID, ...)
+      if ( type == US_DataPub::Noise )
+         list.models.insert( dbase->value( 1 ).toString().toLower(),
+                             dbase->value( 5 ).toString().toLower() );
    }
 
    owned.insert( int( type ), list );
@@ -1679,11 +1692,11 @@ bool US_DataPubImporter::checkServerRules( QString& error )
    us3_hardware_procs.sql and us3_expdata_procs.sql, or the procedures
    dropped since.  So from version 2 on, the procedures it stands for are
    looked for in information_schema.ROUTINES as well; where the listing
-   shows the procedures (new_model among them) but not those, the target
-   counts as version 1 -- in the dry run as in the import, which would
-   otherwise fail with "PROCEDURE does not exist" (1305).  A listing that
-   shows nothing at all (no privilege to see them) cannot tell, and the
-   marker stands.
+   shows the procedures (new_model among them) but not one of those, the
+   import does without that one (catalogHas()) and still uses the other --
+   in the dry run as in the import, which would otherwise fail with
+   "PROCEDURE does not exist" (1305).  A listing that shows nothing at all
+   (no privilege to see them) cannot tell, and the marker stands.
 */
 int US_DataPubImporter::catalogVersion( void )
 {
@@ -1696,7 +1709,7 @@ int US_DataPubImporter::catalogVersion( void )
 
       catalog_version = dbase->next() ? qMax( 0, dbase->value( 0 ).toInt() )
                                       : 0;
-      catalog_stale.clear();
+      catalog_missing.clear();
 
       if ( catalog_version >= 2 )
       {
@@ -1724,13 +1737,12 @@ int US_DataPubImporter::catalogVersion( void )
          if ( seen.contains( "new_model", Qt::CaseInsensitive )  &&
               ! missing.isEmpty() )
          {
-            catalog_stale = tr( "%1, but it has no %2" )
-                            .arg( catalog_version )
-                            .arg( missing.join( tr( " and no " ) ) );
-            note( tr( "The target's us3_catalog_version() answers %1:"
-                      " the import takes it as version 1" )
-                  .arg( catalog_stale ) );
-            catalog_version = 1;
+            catalog_missing = missing;
+            note( tr( "The target's us3_catalog_version() answers %1, but"
+                      " it has no %2: the import does without %3" )
+                  .arg( catalog_version )
+                  .arg( missing.join( tr( " and no " ) ) )
+                  .arg( missing.size() > 1 ? tr( "them" ) : tr( "it" ) ) );
          }
       }
    }
@@ -1738,30 +1750,65 @@ int US_DataPubImporter::catalogVersion( void )
    return catalog_version;
 }
 
-/* What a target whose procedures are older than us3_catalog_version() 2
-   cannot keep of the source -- a NULL centrifugeProtocol or RIProfile, a
-   calibration's date -- is noted as it comes up, and said once at the end
-   (unkeptWarning()).
+/* Whether the target has a procedure of us3_catalog_version() 2: decided
+   per procedure, so that a target that lacks one of them (a marker newer
+   than its procedures, catalogVersion()) still uses the other.
 */
-void US_DataPubImporter::cannotKeep( const QString& what )
+bool US_DataPubImporter::catalogHas( const QString& procedure )
 {
-   if ( ! unkept.contains( what ) )  unkept << what;
+   return catalogVersion() >= 2  &&
+          ! catalog_missing.contains( procedure, Qt::CaseInsensitive );
+}
+
+/* What a target without a procedure of us3_catalog_version() 2 cannot keep
+   of the source -- a NULL centrifugeProtocol or RIProfile without
+   clear_experiment_fields, a calibration's date without
+   set_rotor_calibration_date -- is noted as it comes up, and said once at
+   the end (unkeptWarning()).
+*/
+void US_DataPubImporter::cannotKeep( const QString& procedure,
+                                     const QString& what )
+{
+   QPair< QString, QString > item( procedure, what );
+
+   if ( ! unkept.contains( item ) )  unkept << item;
 }
 
 void US_DataPubImporter::unkeptWarning( void )
 {
    if ( unkept.isEmpty() )  return;
 
-   QString text = tr( "The target database's procedures are older than"
-                      " us3_catalog_version() 2 (it answers %1), which add"
-                      " clear_experiment_fields and"
-                      " set_rotor_calibration_date, so the import %2 not keep:"
-                      " %3.  Load the updated procedures (us3_sql) into the"
-                      " target to keep them" )
-                  .arg( catalog_stale.isEmpty()
-                        ? QString::number( catalogVersion() ) : catalog_stale )
-                  .arg( opts.dryRun ? tr( "would" ) : tr( "did" ) )
-                  .arg( unkept.join( "; " ) );
+   QStringList procedures;
+   QStringList what;
+
+   for ( const QPair< QString, QString >& item : unkept )
+   {
+      if ( ! procedures.contains( item.first ) )  procedures << item.first;
+
+      what << item.second;
+   }
+
+   QString text;
+
+   if ( catalogVersion() < 2 )
+      text = tr( "The target database's procedures are older than"
+                 " us3_catalog_version() 2 (it answers %1), which add"
+                 " clear_experiment_fields and set_rotor_calibration_date,"
+                 " so the import %2 not keep: %3.  Load the updated"
+                 " procedures (us3_sql) into the target to keep them" )
+             .arg( catalogVersion() )
+             .arg( opts.dryRun ? tr( "would" ) : tr( "did" ) )
+             .arg( what.join( "; " ) );
+
+   else
+      text = tr( "The target database has no %1 (its us3_catalog_version()"
+                 " answers %2, but the procedure is not there), so the"
+                 " import %3 not keep: %4.  Load the updated procedures"
+                 " (us3_sql) into the target to keep them" )
+             .arg( procedures.join( tr( " and no " ) ) )
+             .arg( catalogVersion() )
+             .arg( opts.dryRun ? tr( "would" ) : tr( "did" ) )
+             .arg( what.join( "; " ) );
 
    warnlist << text;
    note( tr( "Warning: " ) + text );
@@ -1925,24 +1972,42 @@ bool US_DataPubImporter::storeCalibrationDate( int calID, qint64 seconds,
 
    int     dstat = dbase->statusQuery( when );
    QString derr  = dbase->lastError();
+   QString failed;
 
-   // The session's own zone again, before anything else is written
-   if ( named  &&  zone != "+00:00" )
+   if ( dstat != IUS_DB2::OK )
+      failed = dbase->lastErrorIsConnectionLoss()
+         ? tr( "the connection to the target database was lost during"
+               " set_rotor_calibration_date: %1" ).arg( derr )
+         : tr( "set_rotor_calibration_date answered %1: %2" )
+           .arg( dstat ).arg( derr );
+
+   // The session's own zone again, before anything else is written -- not
+   // over a connection that is gone, and the procedure's failure is what
+   // is said
+   if ( named  &&  zone != "+00:00"  &&
+        ! ( dstat != IUS_DB2::OK  &&  dbase->lastErrorIsConnectionLoss() ) )
    {
       dbase->rawQuery( "SET time_zone = '" + zone + "'" );
+      QString setErr = dbase->lastError();
+      bool    gone   = dbase->lastErrorIsConnectionLoss();
 
-      if ( zoneNow() != zone )
+      if ( zoneNow() != zone  &&  failed.isEmpty() )
       {
-         error = tr( "the session time zone of the target database could"
-                     " not be set back to %1" ).arg( zone );
+         gone  = gone  ||  dbase->lastErrorIsConnectionLoss();
+         error = gone
+            ? tr( "the connection to the target database was lost while"
+                  " its session time zone was set back to %1: %2" )
+              .arg( zone ).arg( setErr.isEmpty() ? dbase->lastError()
+                                                 : setErr )
+            : tr( "the session time zone of the target database could"
+                  " not be set back to %1" ).arg( zone );
          return false;
       }
    }
 
-   if ( dstat != IUS_DB2::OK )
+   if ( ! failed.isEmpty() )
    {
-      error = tr( "set_rotor_calibration_date answered %1: %2" )
-              .arg( dstat ).arg( derr );
+      error = failed;
       return false;
    }
 
@@ -4338,8 +4403,10 @@ bool US_DataPubImporter::runImport( const Options& options, QString& error )
    tcomp_ids.clear();
    user_level = -1;
    catalog_version = -1;
-   catalog_stale.clear();
+   catalog_missing.clear();
    clock_local     = false;
+   catalog_clock   = true;
+   catalog_second  = -1;
    unkept.clear();
    fresh_guids.clear();
    cal_refused.clear();
@@ -4415,6 +4482,15 @@ bool US_DataPubImporter::runImport( const Options& options, QString& error )
                      " import: %1" ).arg( orderProblems[ ii ] ), error ) )
          continue;
 
+      outcome_text = tr( "Nothing was written" );
+      closeTarget();
+      return false;
+   }
+
+   // What the target holds already of those edits, which the order cannot
+   // take into account
+   if ( ! heldRecordsWarning( fitOrder, error ) )
+   {
       outcome_text = tr( "Nothing was written" );
       closeTarget();
       return false;
@@ -4931,12 +5007,46 @@ US_DataPubImporter::writeOrder( const US_DataPubManifest& manifest,
    server's clock, which a local clock need not agree with.  A server that
    does not answer, or a directory nothing can be written in, is read as
    the local clock from then on.
+
+   A database's catalog reads the time stamps through timestamp2UTC() --
+   the wall time of the server's zone taken back to UTC -- which steps back
+   an hour where that zone falls back to standard time.  So the clock is
+   read that way too (catalog_second, -1 where the server cannot say),
+   for writeModelsAndNoise() to see the step.
 */
 qint64 US_DataPubImporter::targetSecond( const QString& dir )
 {
    if ( opts.target == US_DataPub::TargetDb  &&  dbase != nullptr  &&
         ! clock_local )
    {
+      catalog_second = -1;
+
+      if ( catalog_clock )
+      {
+         dbase->rawQuery( "SELECT UNIX_TIMESTAMP(), TIMESTAMPDIFF( SECOND,"
+                          " '1970-01-01 00:00:00', timestamp2UTC( NOW() ) )" );
+
+         if ( dbase->next() )
+         {
+            bool   ok      = false;
+            bool   known   = false;
+            qint64 now     = dbase->value( 0 ).toLongLong( &ok );
+            qint64 catalog = dbase->value( 1 ).toLongLong( &known );
+
+            if ( ok  &&  now > 0 )
+            {
+               if ( known  &&  ! dbase->value( 1 ).isNull() )
+                  catalog_second = catalog;
+
+               return now;
+            }
+         }
+
+         // A server without the function (or one that cannot say) is
+         // asked for its clock alone from then on
+         catalog_clock = false;
+      }
+
       dbase->rawQuery( "SELECT UNIX_TIMESTAMP()" );
 
       // rawQuery() does not set lastErrno(): a failed query has no row
@@ -4954,16 +5064,18 @@ qint64 US_DataPubImporter::targetSecond( const QString& dir )
    if ( opts.target == US_DataPub::TargetDisk  &&  ! dir.isEmpty()  &&
         ! clock_local )
    {
-      QString probe = dir + "/.us_datapub_clock";
-      QFile   file( probe );
+      // A file of its own, which no other import into the directory --
+      // nor another importer of this process -- writes or removes
+      QTemporaryFile file( dir + "/.us_datapub_clock_XXXXXX" );
 
-      if ( file.open( QIODevice::WriteOnly | QIODevice::Truncate ) )
+      if ( file.open() )
       {
          file.write( "clock\n" );
-         file.close();
+         file.flush();
 
-         QDateTime when = QFileInfo( probe ).lastModified();
-         QFile::remove( probe );
+         QDateTime when = QFileInfo( file.fileName() ).lastModified();
+         file.close();
+         file.remove();
 
          if ( when.isValid() )  return when.toSecsSinceEpoch();
       }
@@ -5041,6 +5153,14 @@ qint64 US_DataPubImporter::writtenSecond( const OrderStep& step )
    The edits are taken in turn, one record each, so that the time one edit
    waits for passes for the others too: the waits add up to those of the
    edit that needs the most, not to those of all edits.
+
+   A database's catalog reads the time stamps as the wall time of the
+   server's zone taken back to UTC (timestamp2UTC()), which steps back an
+   hour where the zone falls back to standard time: records of an edit
+   written on both sides of that step can be read in the wrong order, which
+   no wait short of an hour mends.  Where the server's clock is seen to step
+   back so while an edit with a model that borrows is written, the import
+   says so for that edit.
 */
 bool US_DataPubImporter::writeModelsAndNoise(
       const QList< QList< OrderStep > >& order,
@@ -5052,6 +5172,8 @@ bool US_DataPubImporter::writeModelsAndNoise(
    QVector< qint64 >         lastBorrower( order.size(), -1 );
    QVector< QHash< QString, qint64 > > lastOfType( order.size() );
    QVector< bool >           borrowing( order.size(), false );
+   QVector< qint64 >         catalogMax( order.size(), -1 );
+   QVector< bool >           steppedBack( order.size(), false );
    bool                      left = true;
 
    for ( int ee = 0; ee < order.size(); ee++ )
@@ -5097,11 +5219,35 @@ bool US_DataPubImporter::writeModelsAndNoise(
 
          if ( second < 0 )  continue;
 
+         // The catalog's reading of the clock, which has to keep going on
+         if ( opts.target == US_DataPub::TargetDb  &&  catalog_second >= 0 )
+         {
+            if ( catalog_second < catalogMax[ ee ] )  steppedBack[ ee ] = true;
+
+            catalogMax[ ee ] = qMax( catalogMax[ ee ], catalog_second );
+         }
+
          if ( step.isNoise )
             lastOfType[ ee ].insert( step.noiseType, second );
          else if ( step.borrows )
             lastBorrower[ ee ] = second;
       }
+   }
+
+   for ( int ee = 0; ee < order.size(); ee++ )
+   {
+      if ( ! steppedBack[ ee ] )  continue;
+
+      QString text = tr( "the target database's clock, as its procedures"
+                         " date records (timestamp2UTC()), went back while"
+                         " the models and noise records of edit %1 were"
+                         " written -- the server's time zone fell back to"
+                         " standard time -- so which noise its models"
+                         " without noise of their own borrow in the target"
+                         " can differ from the source's" )
+                     .arg( order[ ee ].value( 0 ).editGUID );
+      warnlist << text;
+      note( tr( "Warning: " ) + text );
    }
 
    return true;
@@ -6357,6 +6503,139 @@ bool US_DataPubImporter::findByGuid( US_DataPub::EntityType type,
    }
 
    return false;
+}
+
+/* The models and noise records the target already holds of the edits the
+   import writes models or noise records of.  The import writes its records
+   after them: in a database with higher IDs, on disk in files after theirs
+   (count_noise() takes the highest ID or the last file of the models with
+   noise), and dated now (a catalog lends a model without noise the latest
+   record of its edit dated no later than the model).  So a target that
+   holds some of an edit's records already -- an earlier import of part of
+   the bundle, or analyses of its own -- can load another model's noise by
+   default, or lend another noise record, than the source; the import
+   cannot place its records among those.  It says so for each such edit,
+   in the dry run as in the import.  An edit of which the import writes
+   nothing is left as it is.
+*/
+bool US_DataPubImporter::heldRecordsWarning(
+      const QList< QList< OrderStep > >& order, QString& error )
+{
+   QHash< QString, QSet< QString > > held;     // edit GUID -> its records
+
+   if ( opts.target == US_DataPub::TargetDb )
+   {
+      if ( dbase == nullptr )  return true;
+
+      if ( ! readOwned( US_DataPub::Model )  ||
+           ! readOwned( US_DataPub::Noise ) )
+      {
+         error = lookup_error;
+         return false;
+      }
+
+      const Owned& models = owned[ int( US_DataPub::Model ) ];
+      const Owned& noises = owned[ int( US_DataPub::Noise ) ];
+
+      for ( auto it = models.editGuids.constBegin();
+            it != models.editGuids.constEnd(); ++it )
+         held[ it.value() ] << it.key();
+
+      for ( auto it = noises.models.constBegin();
+            it != noises.models.constEnd(); ++it )
+      {
+         QString edit = models.editGuids.value( it.value() );
+
+         if ( ! edit.isEmpty() )  held[ edit ] << it.key();
+      }
+   }
+
+   else
+   {
+      QHash< QString, QString > editOf;          // model GUID -> edit GUID
+      QString     mdir   = diskDir( US_DataPub::Model );
+      QStringList mfiles = QDir( mdir ).entryList(
+                           QStringList( "M???????.xml" ), QDir::Files,
+                           QDir::Name );
+
+      for ( const QString& name : mfiles )
+      {
+         QMap< QString, QString > attrs =
+               first_attributes( mdir + "/" + name, "model" );
+         QString model = attrs.value( "modelGUID" ).toLower();
+         QString edit  = attrs.value( "editGUID"  ).toLower();
+
+         if ( model.isEmpty()  ||  edit.isEmpty() )  continue;
+
+         editOf.insert( model, edit );
+         held[ edit ] << model;
+      }
+
+      QString     ndir   = diskDir( US_DataPub::Noise );
+      QStringList nfiles = QDir( ndir ).entryList(
+                           QStringList( "N???????.xml" ), QDir::Files,
+                           QDir::Name );
+
+      for ( const QString& name : nfiles )
+      {
+         QMap< QString, QString > attrs =
+               first_attributes( ndir + "/" + name, "noise" );
+         QString edit = editOf.value( attrs.value( "modelGUID" ).toLower() );
+
+         if ( ! edit.isEmpty() )
+            held[ edit ] << attrs.value( "noiseGUID" ).toLower();
+      }
+   }
+
+   for ( const QList< OrderStep >& steps : order )
+   {
+      if ( steps.isEmpty() )  continue;
+
+      QString         edit  = steps[ 0 ].editGUID;
+      QSet< QString > there = held.value( edit.toLower() );
+
+      if ( there.isEmpty() )  continue;
+
+      QSet< QString > ours;
+      int             written = 0;
+
+      for ( const OrderStep& step : steps )
+      {
+         QString guid = step.entity.guid.toLower();
+         ours << guid;
+
+         if ( ! there.contains( guid ) )  written++;
+      }
+
+      if ( written == 0 )  continue;
+
+      int fromBundle = 0;
+
+      for ( const QString& guid : there )
+         if ( ours.contains( guid ) )  fromBundle++;
+
+      US_DataPubEntity entity;
+      QString          label = edit;
+
+      if ( mani.entity( US_DataPub::EditedData, edit, entity )  &&
+           ! entity.name.isEmpty() )
+         label = tr( "%1 (%2)" ).arg( entity.name ).arg( edit );
+
+      QString text = tr( "the target already holds %1 of the models and"
+                         " noise records of edit %2 (%3 of them from this"
+                         " bundle); the import %4 the other %5 of the"
+                         " bundle after them, so which model's noise the"
+                         " analysis programs load for the edit by default,"
+                         " and which noise its models without noise of"
+                         " their own borrow, can differ from the source's" )
+                     .arg( there.size() ).arg( label ).arg( fromBundle )
+                     .arg( opts.dryRun ? tr( "would write" ) : tr( "writes" ) )
+                     .arg( written );
+      warnlist << text;
+      note( tr( "Warning: " ) + text );
+   }
+
+   return true;
 }
 
 /* Look a name up among the records the target already holds.
@@ -8327,7 +8606,7 @@ bool US_DataPubImporter::createExperimentDb( const US_DataPubEntity& entity,
 
    if ( nullProtocol  ||  nullRiProfile )
    {
-      if ( catalogVersion() >= 2 )
+      if ( catalogHas( "clear_experiment_fields" ) )
       {
          QStringList clear;
          clear << "clear_experiment_fields" << QString::number( expID )
@@ -8346,7 +8625,8 @@ bool US_DataPubImporter::createExperimentDb( const US_DataPubEntity& entity,
       }
 
       else
-         cannotKeep( unkeptFields( name, nullProtocol, nullRiProfile ) );
+         cannotKeep( "clear_experiment_fields",
+                     unkeptFields( name, nullProtocol, nullRiProfile ) );
    }
 
    for ( int ii = 0; ii < run.speedSteps.size(); ii++ )
@@ -8735,8 +9015,9 @@ bool US_DataPubImporter::checkDryDb( const US_DataPubEntity& entity,
                if ( calibrationInstant( entity, calibration, seconds,
                                         shown )  &&
                     calibrationDateFits( name, entity.guid, seconds, shown )
-                    &&  catalogVersion() < 2 )
-                  cannotKeep( unkeptDate( name, entity.guid, shown ) );
+                    &&  ! catalogHas( "set_rotor_calibration_date" ) )
+                  cannotKeep( "set_rotor_calibration_date",
+                              unkeptDate( name, entity.guid, shown ) );
             }
 
             return true;
@@ -8850,8 +9131,10 @@ bool US_DataPubImporter::checkDryDb( const US_DataPubEntity& entity,
          bool nullRiProfile = false;
          nullFieldsOf( entity, nullProtocol, nullRiProfile );
 
-         if ( ( nullProtocol  ||  nullRiProfile )  &&  catalogVersion() < 2 )
-            cannotKeep( unkeptFields( name, nullProtocol, nullRiProfile ) );
+         if ( ( nullProtocol  ||  nullRiProfile )  &&
+              ! catalogHas( "clear_experiment_fields" ) )
+            cannotKeep( "clear_experiment_fields",
+                        unkeptFields( name, nullProtocol, nullRiProfile ) );
 
          return true;
       }
@@ -9036,7 +9319,7 @@ bool US_DataPubImporter::createDb( const US_DataPubEntity& entity,
          if ( calibrationInstant( entity, calibration, seconds, shown )  &&
               calibrationDateFits( name, entity.guid, seconds, shown ) )
          {
-            if ( catalogVersion() >= 2 )
+            if ( catalogHas( "set_rotor_calibration_date" ) )
             {
                QString derror;
 
@@ -9052,7 +9335,8 @@ bool US_DataPubImporter::createDb( const US_DataPubEntity& entity,
             }
 
             else
-               cannotKeep( unkeptDate( name, entity.guid, shown ) );
+               cannotKeep( "set_rotor_calibration_date",
+                           unkeptDate( name, entity.guid, shown ) );
          }
 
          newID = QString::number( calibration.ID );

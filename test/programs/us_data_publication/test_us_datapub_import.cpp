@@ -3112,6 +3112,142 @@ TEST_F( DataPubOrder, AStoreWithFilledGapsKeepsItsLatestModelAndBorrowing )
    }
 }
 
+/* A store that already holds some of an edit's models or noise records --
+   part of the bundle imported before, or a model of its own -- makes the
+   import write the rest after them, which can change the model whose
+   noise the analysis programs load and what a model borrows.  The dry run
+   and the import say so, naming the edit; a store that holds none of the
+   edit's records, or all of the bundle's, hears nothing of it. */
+TEST_F( DataPubOrder, RecordsTheStoreHoldsOfAnEditAreSaid )
+{
+   DataPubBorrowScenario scenario;
+   scenario.write( US_Settings::dataDir() + "/models",
+                   US_Settings::dataDir() + "/noises", runID, editGUID,
+                   noiseGUID );
+
+   QString bundle = exportStore( "held" );
+
+   auto heldWarnings = []( const US_DataPubImporter& importer )
+   {
+      QStringList found;
+
+      for ( const QString& text : importer.warnings() )
+         if ( text.contains( "already holds" ) )  found << text;
+
+      return found;
+   };
+
+   auto run = [ & ]( const QString& store, bool dry, QStringList& said )
+   {
+      US_DataPubImporter          importer;
+      US_DataPubImporter::Options options = diskOptions();
+      options.outputDir = store;
+      options.dryRun    = dry;
+      QString error;
+      bool ok = importer.inspect( bundle, error )  &&
+                importer.runImport( options, error );
+      EXPECT_TRUE( ok ) << error.toStdString();
+      said = heldWarnings( importer );
+   };
+
+   QStringList said;
+
+   // An empty store, then the same import again: nothing to say
+   QString fresh = root + "/held_fresh";
+   run( fresh, true,  said );
+   EXPECT_TRUE( said.isEmpty() ) << said.join( "\n" ).toStdString();
+   run( fresh, false, said );
+   EXPECT_TRUE( said.isEmpty() ) << said.join( "\n" ).toStdString();
+   run( fresh, false, said );
+   EXPECT_TRUE( said.isEmpty() ) << said.join( "\n" ).toStdString();
+
+   // A store holding the bundle's latest model with noise and its noise (a
+   // part imported before): the rest goes after it
+   QString part = root + "/held_part";
+   QDir().mkpath( part + "/data/models" );
+   QDir().mkpath( part + "/data/noises" );
+   ASSERT_TRUE( QFile::copy( US_Settings::dataDir() + "/models/M0000013.xml",
+                             part + "/data/models/M0000001.xml" ) );
+   ASSERT_TRUE( QFile::copy( US_Settings::dataDir() + "/noises/N0000012.xml",
+                             part + "/data/noises/N0000001.xml" ) );
+
+   for ( bool dry : { true, false } )
+   {
+      SCOPED_TRACE( dry ? "dry run" : "import" );
+      run( part, dry, said );
+      ASSERT_EQ( said.size(), 1 );
+      EXPECT_TRUE( said[ 0 ].contains( editGUID )  &&
+                   said[ 0 ].contains( "holds 2 " )  &&
+                   said[ 0 ].contains( "2 of them from this bundle" ) )
+         << said[ 0 ].toStdString();
+   }
+
+   // As the warning says: the store's latest model with noise is no longer
+   // the source's
+   EXPECT_NE( DataPubNoiseRules::latestModelOnDisk( part + "/data", editGUID ),
+              scenario.latest() );
+
+   // A store with an analysis of its own of the edit
+   QString own = root + "/held_own";
+   QDir().mkpath( own + "/data/models" );
+   US_Model mine;
+   mine.modelGUID   = US_Util::new_guid();
+   mine.editGUID    = editGUID;
+   mine.description = runID + ".1A280.e9_own_2DSA.model";
+   ASSERT_EQ( mine.write( own + "/data/models/M0000001.xml" ), IUS_DB2::OK );
+
+   run( own, true, said );
+   ASSERT_EQ( said.size(), 1 );
+   EXPECT_TRUE( said[ 0 ].contains( "0 of them from this bundle" ) )
+      << said[ 0 ].toStdString();
+}
+
+/* The clock of a disk store is read from a file of the import's own: one
+   another import into the same directory has there is neither written nor
+   removed.  The probe had one fixed name, so two imports truncated and
+   removed each other's. */
+TEST_F( DataPubOrder, TheClockProbeLeavesOtherFilesAlone )
+{
+   DataPubBorrowScenario scenario;
+   scenario.write( US_Settings::dataDir() + "/models",
+                   US_Settings::dataDir() + "/noises", runID, editGUID,
+                   noiseGUID );
+
+   QString store = root + "/probe";
+   QStringList others;
+
+   for ( const char* sub : { "/data/models", "/data/noises" } )
+   {
+      QDir().mkpath( store + sub );
+      QString path = store + sub + "/.us_datapub_clock";
+      QFile   file( path );
+      ASSERT_TRUE( file.open( QIODevice::WriteOnly ) );
+      file.write( "another import's\n" );
+      file.close();
+      others << path;
+   }
+
+   QString            error;
+   US_DataPubImporter importer;
+   ASSERT_TRUE( importInto( exportStore( "probe" ), store, importer, error ) )
+      << error.toStdString();
+   EXPECT_EQ( DataPubBorrowScenario::text( borrowersIn( store ) ),
+              DataPubBorrowScenario::text( scenario.expected() ) );
+
+   for ( const QString& path : others )
+   {
+      QFile file( path );
+      ASSERT_TRUE( file.open( QIODevice::ReadOnly ) ) << path.toStdString();
+      EXPECT_EQ( file.readAll(), QByteArray( "another import's\n" ) );
+   }
+
+   // and the import's own probes are gone
+   for ( const char* sub : { "/data/models", "/data/noises" } )
+      EXPECT_EQ( QDir( store + sub ).entryList( QStringList(
+                    ".us_datapub_clock_*" ), QDir::Files | QDir::Hidden )
+                 .size(), 0 );
+}
+
 namespace
 {
    US_DataPubEntity order_model( const QString& guid, const QString& edit,

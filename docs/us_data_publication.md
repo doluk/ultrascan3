@@ -1121,6 +1121,20 @@ borrowing is kept. That, a model named for two records of a type, and a
 borrower of another edit or not in the bundle are each said in a warning
 before anything is written — in the dry run as in the import.
 
+**Records the target already holds.** The import can only place the records
+it writes: those the target holds already — part of the bundle imported
+before, or models of the target's own fitted to the same edit — have their
+IDs, file numbers and time stamps, and the import's go after them. So for an
+edit of which the target holds some models or noise records while the import
+writes others, the latest model with noise and what a model without noise
+borrows can differ from the source's (import a part of a bundle, then the
+whole: the part's records stay the older ones). The import — and its dry run —
+says so before anything is written, naming the edit and how many of its
+records the target holds (in a database those of the investigator,
+`get_model_desc` and `get_noise_desc`). An edit the target holds none of, or
+of which it holds every record of the bundle, gets no such warning; for
+exactly the source's order, import into a target without the edit's records.
+
 A disk import gives each model and noise file the number after the highest
 in the directory, never one of a gap: a file in a gap would count as older
 than the edit's files after it. A database gives new rows the next ID anyway.
@@ -1139,9 +1153,11 @@ target's clock to pass the second of the record before, where:
 The clock is the server's in a database (`SELECT UNIX_TIMESTAMP()`, the
 instant the procedures date the rows by — not `NOW()`, whose wall time steps
 back at a fall-back), and on disk the time the file system gives a new file
-in the target directory (a probe file, removed at once): that is the clock
-the record files are dated by, also on a FAT file system (two-second steps)
-or a network share (the server's clock). The second of a written record is
+in the target directory (a probe file of the import's own,
+`.us_datapub_clock_XXXXXX`, removed at once, so imports into one directory at
+the same time do not touch each other's): that is the clock the record files
+are dated by, also on a FAT file system (two-second steps) or a network share
+(the server's clock). The second of a written record is
 its file's time on disk, and the server's clock after the write in a
 database. Each wait lasts at most until the next second (two on FAT) and
 gives up after five. The edits are written in turn, one record each, so the
@@ -1149,6 +1165,17 @@ seconds one edit waits for pass for the others too: an import waits about as
 long as its edit with the most such steps, not as long as all of them.
 Exported from the target again, every noise record names the models it named
 in the source, and the latest model with noise of every edit is the source's.
+
+A database's catalog reads the stamps through `timestamp2UTC()`: the wall
+time of the server's zone taken back to UTC. Where that zone falls back to
+standard time, the wall clock repeats an hour, and records written on both
+sides of the step can be read in the wrong order — no wait short of an hour
+mends that. The import reads the server's clock that way too
+(`timestamp2UTC( NOW() )`, with `UNIX_TIMESTAMP()`), and where it sees it go
+back while an edit with a model that borrows is written, it warns, naming the
+edit: the borrowing the target's catalog reads may then differ from the
+source's. A target on UTC, or whose zone has no daylight saving time, never
+sees this.
 
 A run's experiment XML names its rotor calibration by ID and, in a bundle, by
 GUID (`<calibration guid="…">`); a disk import points both at the target's
@@ -1195,8 +1222,9 @@ updated procedures. A version marker can be newer than the procedures (the
 marker's file loaded without the others): from version 2 on the import also
 looks for `clear_experiment_fields` and `set_rotor_calibration_date` in
 `information_schema.ROUTINES`, in the preflight, and where the listing shows
-the procedures but not these two it takes the target as version 1, in the dry
-run as in the import, with the same warning. The marker is asked once per run
+the procedures but not one of these two, the import does without that one and
+still uses the other — decided per procedure, in the dry run as in the import
+— and the warning names the procedure the target lacks. The marker is asked once per run
 of the import (the import window keeps one importer for every run).
 
 The calibration's date is an instant: the bundle carries the source row's
@@ -1209,7 +1237,10 @@ day, or an older export) gives the payload's day, which the import stores at
 `TIMESTAMP` column reads in the session's time zone; the import sets the
 session to UTC (`SET time_zone = '+00:00'`) for that call and back to the
 zone it had right after, so the stored instant is the source's whatever the
-session's zone is. An instant the column cannot hold (before
+session's zone is. A session whose zone cannot be read is left as it is, and
+the instant is given as the server's wall time for it (`FROM_UNIXTIME()`). A
+connection lost during the call is reported as that (the transaction is gone
+with it), not as a zone that could not be set back. An instant the column cannot hold (before
 1970-01-01 00:00:01 or after 2038-01-19 03:14:07 UTC) is not passed on: the
 calibration keeps the day of the import, and the dry run and the import say
 so in a warning. A disk store keeps the calibration's date in its file, and
