@@ -1507,9 +1507,10 @@ QString shown_char( const QString& ch )
    return QString( "'%1' (U+%2)" ).arg( ch, QString::number( code, 16 ).toUpper().rightJustified( 4, '0' ) );
 }
 
+// What the user can do about it.  Not a conversion of the database: US3
+// databases stay Latin-1, so the text has to change.
 const char* const latin1Advice =
-   "Replace the characters outside Latin-1 (a Greek letter, for example, can be spelled out: alpha), "
-   "or have the database administrator convert the database to utf8mb4.";
+   "Replace these characters, or spell them out (a Greek letter, for example: alpha).";
 }
 
 bool US_DB2::fitsLatin1( const QString& text )
@@ -1652,16 +1653,35 @@ QString US_DB2::charsetErrorText( int serverErrno, const QString& serverMessage 
       if ( field.startsWith( "p_" ) )
          field = field.mid( 2 );
 
-      return QObject::tr( "This database stores text as Latin-1 and cannot hold %1 in \"%2\".  %3" )
+      return QObject::tr( "This database cannot store %1 in \"%2\": it stores that text as Latin-1, or in "
+                          "another character set without it.  %3" )
          .arg( character.isEmpty() ? QObject::tr( "a character" ) : shown_char( character ),
                field.isEmpty() ? QObject::tr( "a text field" ) : field, QObject::tr( latin1Advice ) );
    }
 
    if ( serverErrno == 1267 || serverErrno == 1271 || serverErrno == 1300 )
    {
-      return QObject::tr( "This database stores text as Latin-1, and the text given holds characters "
-                          "outside Latin-1 that it cannot compare or convert.  %1" )
-         .arg( QObject::tr( latin1Advice ) );
+      // 1300 quotes the bytes ("Invalid latin1 character string: 'CEB1'");
+      // the collation errors quote none
+      QString                         named;
+      static const QRegularExpression quoted( "character string: '([0-9A-Fa-f]+)" );
+      const QRegularExpressionMatch   bytesMatch = quoted.match( serverMessage );
+      if ( bytesMatch.hasMatch() )
+      {
+         const QByteArray bytes = QByteArray::fromHex( bytesMatch.captured( 1 ).toLatin1() );
+         QStringList      shown;
+         for ( const QString& ch : characters_of( QString::fromUtf8( bytes ) ) )
+         {
+            if ( ch != QString( QChar( QChar::ReplacementCharacter ) ) && !latin1_char( ch[ 0 ] ) )
+               shown << shown_char( ch );
+         }
+         shown.removeDuplicates();
+         if ( !shown.isEmpty() )
+            named = QObject::tr( ", %1" ).arg( shown.join( ", " ) );
+      }
+      return QObject::tr( "This database stores text as Latin-1 and cannot store, compare or convert the "
+                          "characters outside Latin-1 in the text given%1.  %2" )
+         .arg( named, QObject::tr( latin1Advice ) );
    }
 
    return QString();

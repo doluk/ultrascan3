@@ -574,9 +574,12 @@ public:
         value: '\\xCE\\xB1...' for column ...") names the column and the
         bytes it could not store; the message says which character that is
         and in which field.  1267, 1271 (illegal mix of collations) and
-        1300 (invalid character string) get a message on the same cause.
-        Every query of US_DB2 reports these errors with this message,
-        followed by the server's own, so lastError() carries both.
+        1300 (invalid character string) get a message on the same cause,
+        naming the characters when the server quotes them (1300).  The
+        message asks for the text to change; it does not suggest converting
+        the database, since US3 databases stay Latin-1.  Every query of
+        US_DB2 reports these errors with this message, followed by the
+        server's own, so lastError() carries both.
 
         \param serverErrno   mysql_errno() of the failed statement
         \param serverMessage mysql_error() of it
