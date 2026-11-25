@@ -378,8 +378,10 @@ bool US_DB2::connect( const QString& masterPW, QString& err )
 
    db_errno = OK;
    error = "";
-   inTransaction        = false;
-   rolledBackByDeadlock = false;
+   inTransaction          = false;
+   rolledBackByDeadlock   = false;
+   serverEndedTransaction = false;
+   server_errno           = 0;
    lostCommitError.clear();
    server_version       = connected ? QString::fromUtf8( mysql_get_server_info( db ) ) : QString();
 
@@ -495,8 +497,10 @@ bool US_DB2::connect(
 
    db_errno = OK;
    error = "";
-   inTransaction        = false;
-   rolledBackByDeadlock = false;
+   inTransaction          = false;
+   rolledBackByDeadlock   = false;
+   serverEndedTransaction = false;
+   server_errno           = 0;
    lostCommitError.clear();
    server_version       = connected ? QString::fromUtf8( mysql_get_server_info( db ) ) : QString();
    if ( ! connected )
@@ -612,8 +616,9 @@ bool US_DB2::beginTransaction( QString& transaction_error )
       return false;
    }
 
-   inTransaction        = true;
-   rolledBackByDeadlock = false;
+   inTransaction          = true;
+   rolledBackByDeadlock   = false;
+   serverEndedTransaction = false;
    lostCommitError.clear();
    transaction_error.clear();
    return true;
@@ -791,20 +796,45 @@ void US_DB2::resetLostHandle()
    row_lengths = nullptr;
    mysql_close( db );
    db              = mysql_init( NULL );
-   connection_lost = false;
-   inTransaction   = false;
+   connection_lost        = false;
+   inTransaction          = false;
+   serverEndedTransaction = false;
+}
+
+void US_DB2::noteTransactionStatus()
+{
+   // Only a statement that succeeded brought the status with it
+   if ( inTransaction && connected && !connection_lost && mysql_errno( db ) == 0 &&
+        ( db->server_status & SERVER_STATUS_IN_TRANS ) == 0 )
+   {
+      serverEndedTransaction = true;
+   }
 }
 
 QString US_DB2::transactionEndedText() const
 {
-   // A lost connection is checked first.  Lost before the COMMIT was sent,
-   // the server rolled the whole transaction back when the connection ended;
-   // lost during the COMMIT, whether it took effect is unknown.
-   if ( connection_lost )
+   // Lost during the COMMIT, whether it took effect is unknown
+   if ( connection_lost && !lostCommitError.isEmpty() )
    {
-      return lostCommitError.isEmpty() ? QObject::tr( connectionLostRollbackMessage ) : lostCommitError;
+      return lostCommitError;
    }
-   return QObject::tr( rolledBackByDeadlock ? serverRollbackMessage : transactionEndedMessage );
+
+   // A deadlock rolled the transaction back before anything else; what ran
+   // after it autocommitted, which the message says, lost connection or not
+   if ( rolledBackByDeadlock )
+   {
+      return QObject::tr( serverRollbackMessage );
+   }
+
+   // Lost while the transaction was still open: the server rolled it back
+   // when the connection ended.  Ended before, by an implicit commit or a
+   // rollback the client did not see, its rows may have been kept --
+   // whatever happened to the connection afterwards.
+   if ( connection_lost && !serverEndedTransaction )
+   {
+      return QObject::tr( connectionLostRollbackMessage );
+   }
+   return QObject::tr( transactionEndedMessage );
 }
 #endif
 
@@ -830,6 +860,10 @@ void US_DB2::drainResults()
    // last good one, which ends the loop above.
    noteStatementError();
 
+   // Otherwise the status is now that of the last statement's last result:
+   // the end of a procedure that committed is seen here
+   noteTransactionStatus();
+
    result = NULL;
 }
 #endif
@@ -841,13 +875,21 @@ void US_DB2::rawQuery( const QString& )
 #else
 void US_DB2::rawQuery( const QString& sqlQuery )
 {
+   if ( sendStatement( sqlQuery ) )
+   {
+      server_errno = int( mysql_errno( db ) );
+   }
+}
+
+bool US_DB2::sendStatement( const QString& sqlQuery )
+{
    // Make sure that we clear out any unused
    //   result sets
    drainResults();
 
    if ( refuseUnsendable( sqlQuery ) )
    {
-      return;
+      return false;
    }
 
    if ( run_utf8( db, sqlQuery ) != 0 )
@@ -867,7 +909,12 @@ void US_DB2::rawQuery( const QString& sqlQuery )
          error = serverErrorText();
          noteStatementError();
       }
+      else
+      {
+         noteTransactionStatus();
+      }
    }
+   return true;
 }
 #endif
 
@@ -883,7 +930,7 @@ int US_DB2::statusQuery( const QString& sqlQuery )
 
    db_errno = DBERROR;
 
-   this->rawQuery( sqlQuery );
+   sendStatement( sqlQuery );
 
    // What the server said about the statement itself; the reads of the US3
    // status below are statements too, and must not overwrite it
@@ -908,7 +955,7 @@ int US_DB2::statusQuery( const QString& sqlQuery )
 
    if ( db_errno != 0 )
    {
-      this->rawQuery( "SELECT last_error()" );
+      sendStatement( "SELECT last_error()" );
       if ( result )
       {
          row       = mysql_fetch_row( result );
@@ -964,7 +1011,7 @@ void US_DB2::query( const QString& sqlQuery )
       return;
    }
 
-   this->rawQuery( sqlQuery );
+   sendStatement( sqlQuery );
 
    // What the server said about the statement itself; the reads of the US3
    // status below are statements too, and must not overwrite it
@@ -1022,7 +1069,7 @@ void US_DB2::query( const QString& sqlQuery )
    else if ( sqlQuery.trimmed().startsWith( "CALL", Qt::CaseInsensitive ) )
    {
       db_errno = DBERROR;
-      this->rawQuery( "SELECT last_errno()" );
+      sendStatement( "SELECT last_errno()" );
 
       if ( result )
       {
@@ -1038,7 +1085,7 @@ void US_DB2::query( const QString& sqlQuery )
 
    if ( db_errno != 0 )
    {
-      this->rawQuery( "SELECT last_error()" );
+      sendStatement( "SELECT last_error()" );
 
       if ( result )
       {
@@ -1190,6 +1237,9 @@ int US_DB2::writeBlobToDB( const QString& filename,
       return refuseArguments( QStringList() << procedure );
    }
 
+   // Until a statement fails, the server has refused nothing of this call
+   server_errno = 0;
+
    if ( tableID == 0 )
    {
       error = QString( "writeBlob: don't know which record data belongs to in " ) + filename;
@@ -1229,6 +1279,8 @@ int US_DB2::writeBlobToDB( const QString& filename,
    const qint64 packet   = maxAllowedPacket();
    if ( packet <= 0 )
    {
+      // A lost connection, say, as the read of the limit failed
+      server_errno = int( mysql_errno( db ) );
       fin.close();
       error    = QString( "writeBlob: the server's max_allowed_packet could not be read, so nothing was sent" ) +
                  ( error.isEmpty() ? QString() : ": " + error );
@@ -1312,7 +1364,8 @@ int US_DB2::writeBlobToDB( const QString& filename,
 
    if ( mysql_real_query( db, sqlQuery.constData(), static_cast< unsigned long >( sqlQuery.size() ) ) != 0 )
    {
-     error = serverErrorText();
+     error        = serverErrorText();
+     server_errno = int( mysql_errno( db ) );
      noteStatementError();
 
      db_errno = DBERROR;
@@ -1327,6 +1380,7 @@ int US_DB2::writeBlobToDB( const QString& filename,
       if ( mysql_errno( db ) != 0 )
       {
          error += ": " + serverErrorText();
+         server_errno = int( mysql_errno( db ) );
          noteStatementError();
       }
       db_errno = DBERROR;
@@ -1361,7 +1415,7 @@ qint64 US_DB2::maxAllowedPacket() { return 0; }
 qint64 US_DB2::maxAllowedPacket()
 {
    error.clear();
-   rawQuery( "SELECT @@max_allowed_packet" );
+   sendStatement( "SELECT @@max_allowed_packet" );
    qint64 packet = 0;
    if ( result != NULL )
    {
@@ -1507,9 +1561,10 @@ QString shown_char( const QString& ch )
    return QString( "'%1' (U+%2)" ).arg( ch, QString::number( code, 16 ).toUpper().rightJustified( 4, '0' ) );
 }
 
+// What the user can do about it.  Not a conversion of the database: US3
+// databases stay Latin-1, so the text has to change.
 const char* const latin1Advice =
-   "Replace the characters outside Latin-1 (a Greek letter, for example, can be spelled out: alpha), "
-   "or have the database administrator convert the database to utf8mb4.";
+   "Replace these characters, or spell them out (a Greek letter, for example: alpha).";
 }
 
 bool US_DB2::fitsLatin1( const QString& text )
@@ -1652,16 +1707,35 @@ QString US_DB2::charsetErrorText( int serverErrno, const QString& serverMessage 
       if ( field.startsWith( "p_" ) )
          field = field.mid( 2 );
 
-      return QObject::tr( "This database stores text as Latin-1 and cannot hold %1 in \"%2\".  %3" )
+      return QObject::tr( "This database cannot store %1 in \"%2\": it stores that text as Latin-1, or in "
+                          "another character set without it.  %3" )
          .arg( character.isEmpty() ? QObject::tr( "a character" ) : shown_char( character ),
                field.isEmpty() ? QObject::tr( "a text field" ) : field, QObject::tr( latin1Advice ) );
    }
 
    if ( serverErrno == 1267 || serverErrno == 1271 || serverErrno == 1300 )
    {
-      return QObject::tr( "This database stores text as Latin-1, and the text given holds characters "
-                          "outside Latin-1 that it cannot compare or convert.  %1" )
-         .arg( QObject::tr( latin1Advice ) );
+      // 1300 quotes the bytes ("Invalid latin1 character string: 'CEB1'");
+      // the collation errors quote none
+      QString                         named;
+      static const QRegularExpression quoted( "character string: '([0-9A-Fa-f]+)" );
+      const QRegularExpressionMatch   bytesMatch = quoted.match( serverMessage );
+      if ( bytesMatch.hasMatch() )
+      {
+         const QByteArray bytes = QByteArray::fromHex( bytesMatch.captured( 1 ).toLatin1() );
+         QStringList      shown;
+         for ( const QString& ch : characters_of( QString::fromUtf8( bytes ) ) )
+         {
+            if ( ch != QString( QChar( QChar::ReplacementCharacter ) ) && !latin1_char( ch[ 0 ] ) )
+               shown << shown_char( ch );
+         }
+         shown.removeDuplicates();
+         if ( !shown.isEmpty() )
+            named = QObject::tr( ", %1" ).arg( shown.join( ", " ) );
+      }
+      return QObject::tr( "This database stores text as Latin-1 and cannot store, compare or convert the "
+                          "characters outside Latin-1 in the text given%1.  %2" )
+         .arg( named, QObject::tr( latin1Advice ) );
    }
 
    return QString();
@@ -1744,7 +1818,7 @@ int US_DB2::readBlobFromDB( const QString& filename,
          return serverFailure();
 
       int status = DBERROR;
-      rawQuery( "SELECT last_errno()" );
+      sendStatement( "SELECT last_errno()" );
       if ( result != NULL )
       {
          MYSQL_ROW recorded = mysql_fetch_row( result );
@@ -1855,7 +1929,7 @@ int US_DB2::readBlobFromDB( const QString& filename,
 QString US_DB2::recordedErrorText()
 {
    QString text;
-   rawQuery( "SELECT last_error()" );
+   sendStatement( "SELECT last_error()" );
    if ( result != NULL )
    {
       MYSQL_ROW recorded = mysql_fetch_row( result );
@@ -1875,7 +1949,7 @@ int US_DB2::lastInsertID( void )
 {
    int ID = -1;
 
-   this->rawQuery( "SELECT last_insertID()" );
+   sendStatement( "SELECT last_insertID()" );
    
    if ( result )
    {
@@ -1897,7 +1971,7 @@ QString US_DB2::lastDebug( void )
    QString debug = "";
 
    // Let's see if there is a debug message available
-   this->rawQuery( "SELECT last_debug()" );
+   sendStatement( "SELECT last_debug()" );
    if ( result )
    {
       row       = mysql_fetch_row( result );

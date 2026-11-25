@@ -803,7 +803,23 @@ qDebug() << "cvio:WrRDB: newExp id solID chnID" << ExpData.expID
 
       if ( delete_status != US_DB2::OK )
       {
-         error += QObject::tr( deleteExperimentFailedMessage ).arg( QString::number( ExpData.expID ), db->lastError() );
+         const QString delete_error = db->lastError();
+
+         // delete_experiment looks for the run's report and passes what it
+         // found to delete_report, NULL for a run that has none yet -- as
+         // here -- and that call's "no such report" becomes the status of
+         // the whole deletion, which went on and removed everything.  The
+         // experiment row goes last, so where it is gone the deletion ran
+         // to its end.
+         q.clear();
+         q << "get_experiment_info" << QString::number( ExpData.expID );
+         db->query( q );
+         const int read_status = db->lastErrno();
+
+         if ( read_status != IUS_DB2::NO_EXPERIMENT && read_status != IUS_DB2::NOROWS )
+         {
+            error += QObject::tr( deleteExperimentFailedMessage ).arg( QString::number( ExpData.expID ), delete_error );
+         }
       }
 
 //qDebug() << "cvio:WrRDB: OUT *ERR*" << error;

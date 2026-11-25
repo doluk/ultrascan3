@@ -329,6 +329,37 @@ TEST_F( WriteRawDataInjectionTest, AddsTheCleanupsOwnFailureToTheReport )
                  QString( US_ConvertIO::deleteExperimentFailedMessage ).arg( "11", "scripted failure" ) );
 }
 
+// delete_experiment passes the run's report ID to delete_report, NULL for a
+// run that has none, and returns that call's NO_REPORT although it went on
+// and removed the experiment.  The writer reads the experiment back: gone,
+// the cleanup worked and only the first failure is reported.
+TEST_F( WriteRawDataInjectionTest, ACleanupThatRemovedTheExperimentIsNotAFailure )
+{
+   db.fail( "new_rawData" );
+   db.fail( "delete_experiment", IUS_DB2::NO_REPORT );
+   db.fail( "get_experiment_info", IUS_DB2::NO_EXPERIMENT );
+
+   const QString error = write();
+
+   EXPECT_EQ( error, QString( US_ConvertIO::aucFileFailedMessage ).arg( aucPath(), "scripted failure" ) );
+   const int deleteIndex = db.called.indexOf( "delete_experiment" );
+   ASSERT_GE( deleteIndex, 0 );
+   EXPECT_GT( db.called.indexOf( "get_experiment_info" ), deleteIndex );
+}
+
+// The same status with the experiment still there is a failed cleanup
+TEST_F( WriteRawDataInjectionTest, ACleanupThatLeftTheExperimentIsReported )
+{
+   db.fail( "new_rawData" );
+   db.fail( "delete_experiment", IUS_DB2::NO_REPORT );
+
+   const QString error = write();
+
+   EXPECT_EQ( error,
+              QString( US_ConvertIO::aucFileFailedMessage ).arg( aucPath(), "scripted failure" ) +
+                 QString( US_ConvertIO::deleteExperimentFailedMessage ).arg( "11", "scripted failure" ) );
+}
+
 TEST_F( WriteRawDataInjectionTest, KeepsTheCleanupForNontransactionalCallers )
 {
    // US_ConvertGui writes without a transaction, so this delete is the only

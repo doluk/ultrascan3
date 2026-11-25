@@ -55,6 +55,7 @@ message(STATUS "Auto-discovered ${num_sources} test source files")
 # This also makes direct --gtest_shuffle/--gtest_repeat runs offline.
 set(DB_TEST_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/test_us_buffer_component_live.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_us_convertio_live.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_us_data_catalog_db.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_us_db2_blob_read_live.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_us_db2_connect_authenticated.cpp
