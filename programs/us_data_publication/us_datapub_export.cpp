@@ -289,9 +289,16 @@ US_DataPubExporter::US_DataPubExporter( QObject* parent ) : QObject( parent )
    // indexing a local store can take a while -- is part of the progress.
    // Its warnings are about copies of run directories anywhere in the
    // store; those of the runs exported are warned about by gatherRuns().
-   catalog.setMessageHandler( [ this ]( const QString& text )
+   // Those are known by the start of the shared catalog's own text, as
+   // it translates it.
+   const QString copyWarning = US_DataCatalog::tr(
+         "Warning: %1 holds a copy of run %2 and is"
+         " ignored; the run is %3" ).section( "%1", 0, 0 );
+
+   catalog.setMessageHandler( [ this, copyWarning ]( const QString& text )
                               {
-                                 if ( ! text.startsWith( tr( "Warning: " ) ) )
+                                 if ( copyWarning.isEmpty()  ||
+                                      ! text.startsWith( copyWarning ) )
                                     note( text );
                               } );
 }
@@ -308,7 +315,22 @@ bool US_DataPubExporter::wasCancelled( void ) const
 
 bool US_DataPubExporter::endRun( bool ok, QString& error )
 {
-   cancelled_run = ! ok  &&  cancel_flag.loadAcquire() != 0;
+   // A run that failed after a cancel was cancelled when it stopped for
+   // the cancel -- with the message of the exporter, the catalog or the
+   // shared catalog, or none -- and failed when it stopped for a reason
+   // of its own, whose message is kept
+   cancelled_run = false;
+
+   if ( ! ok  &&  cancel_flag.loadAcquire() != 0 )
+   {
+      QString own;
+      cancelledError( own );
+
+      cancelled_run = error.isEmpty()  ||  error == own  ||
+                      error == catalog.cancelledText()  ||
+                      error == US_DataCatalog::tr(
+                         "Reading the local data directory was cancelled" );
+   }
 
    if ( cancelled_run )  cancelledError( error );
 
@@ -733,8 +755,27 @@ bool US_DataPubExporter::exportRun( const Selection& selection,
 
    note( tr( "Packing the bundle into %1" ).arg( bundlePath ) );
 
-   if ( ! bundle.pack( bundlePath, error ) )
+   // The packing is a phase of its own, two steps per file (packed, then
+   // compared); a cancel stops it before the bundle is put in place
+   bool counted  = false;
+   auto progress = [ this, &counted ]( int done, int total )
    {
+      if ( ! counted )
+      {
+         emit steps( total );
+         counted = true;
+      }
+
+      emit stepDone( done );
+
+      return cancel_flag.loadAcquire() == 0;
+   };
+
+   if ( ! bundle.pack( bundlePath, error, progress ) )
+   {
+      if ( error == US_DataPubBundle::packingStopped() )
+         cancelledError( error );
+
       bundle.cleanup();
       return false;
    }
@@ -1393,6 +1434,17 @@ bool US_DataPubExporter::gatherRuns( const Selection& selection,
 
       runIDs      = unique( runIDs );
       fromProject = true;
+   }
+
+   // Runs named in a project: a run ID is looked up among the project's
+   // experiments first (see runByID()), so that another experiment of the
+   // run ID, in another project, does not make it ambiguous
+   else if ( selection.fromDb  &&  ! runIDs.isEmpty()  &&
+             ! selection.projectGUID.isEmpty() )
+   {
+      catalog.runs( selection.projectGUID, error );
+
+      if ( ! error.isEmpty() )  return false;
    }
 
    from_project = fromProject;
@@ -2612,7 +2664,10 @@ bool US_DataPubExporter::addCalibration(
 
    // The payload dates the calibration by the day; the database row has
    // the instant, which an import into a database keeps
-   QString dated = catalog.isDb() ? calibrationInstant( calID ) : QString();
+   QString dated;
+
+   if ( catalog.isDb()  &&  ! calibrationInstant( calID, dated, error ) )
+      return false;
 
    if ( ! dated.isEmpty() )
       entity.attrs.insert( "dateUpdated", dated );
@@ -2638,42 +2693,119 @@ bool US_DataPubExporter::addCalibration(
 
 /* The instant a database calibration was last updated, in UTC as a bundle
    carries it ("2024-03-01T13:45:10Z"), or nothing where the row has none.
-   get_rotor_calibration_info gives dateUpdated in the session's time zone
-   (a TIMESTAMP column), which the server turns back into the instant.
+   get_rotor_calibration_info gives dateUpdated (a TIMESTAMP column) as
+   the wall time of the session's time zone.  The session is put on UTC
+   for the call, so that the wall time is the instant itself: in a zone
+   with daylight saving time the hour of a fall-back is read twice, and
+   its wall time names two instants.  The session's zone is put back
+   afterwards.  Only a zone that cannot be read or named, or a server that
+   refuses the change, leaves the session as it is; the wall time is then
+   turned back into the instant by the server (UNIX_TIMESTAMP()), which
+   takes the later of two in a fall-back hour.
+   Fails only when the session's zone cannot be put back, which would
+   change how the rest of the export reads the database.
 */
-QString US_DataPubExporter::calibrationInstant( int calID )
+bool US_DataPubExporter::calibrationInstant( int calID, QString& instant,
+                                             QString& error )
 {
+   instant.clear();
+
    IUS_DB2* dbase = catalog.db();
 
-   if ( dbase == nullptr  ||  calID < 1 )  return QString();
+   if ( dbase == nullptr  ||  calID < 1 )  return true;
+
+   static const QRegularExpression safe( "^[A-Za-z0-9_/+:.-]{1,64}$" );
+
+   auto zoneNow = [ dbase ]( void ) -> QString
+   {
+      dbase->rawQuery( "SELECT @@session.time_zone" );
+
+      return ( dbase->lastErrno() == IUS_DB2::OK  &&  dbase->next() )
+             ? dbase->value( 0 ).toString().trimmed() : QString();
+   };
+
+   QString zone  = zoneNow();
+   bool    onUtc = ( zone == "+00:00" );
+   bool    moved = false;
+
+   if ( ! onUtc  &&  safe.match( zone ).hasMatch() )
+   {
+      dbase->rawQuery( "SET time_zone = '+00:00'" );
+      moved = ( dbase->lastErrno() == IUS_DB2::OK );
+      onUtc = moved  &&  zoneNow() == "+00:00";
+   }
 
    QStringList query;
    query << "get_rotor_calibration_info" << QString::number( calID );
    dbase->query( query );
 
-   if ( dbase->lastErrno() != IUS_DB2::OK  ||  ! dbase->next() )
-      return QString();
+   // "yyyy-MM-dd hh:mm:ss", or nothing for NULL
+   QString text;
 
-   // "yyyy-MM-dd hh:mm:ss", or nothing for NULL; only digits, dashes,
-   // colons and a space go into the statement
-   QString text = dbase->value( 7 ).toString().trimmed().left( 19 );
-   text.replace( 'T', ' ' );
+   if ( dbase->lastErrno() == IUS_DB2::OK  &&  dbase->next() )
+   {
+      text = dbase->value( 7 ).toString().trimmed().left( 19 );
+      text.replace( 'T', ' ' );
+   }
 
+   // The session's own zone again, before anything else is read
+   if ( moved )
+   {
+      dbase->rawQuery( "SET time_zone = '" + zone + "'" );
+
+      QString failure = ( dbase->lastErrno() != IUS_DB2::OK )
+                        ? dbase->lastError() : QString();
+
+      QString back = failure.isEmpty() ? zoneNow() : QString();
+
+      if ( failure.isEmpty()  &&  back != zone )
+         failure = ! back.isEmpty()
+                   ? tr( "the session has the zone %1" ).arg( back )
+                   : ( dbase->lastErrno() != IUS_DB2::OK )
+                     ? dbase->lastError()
+                     : tr( "its zone could not be read" );
+
+      if ( ! failure.isEmpty() )
+      {
+         error = tr( "The session time zone of the database could not be"
+                     " set back to %1 after the rotor calibration %2 was"
+                     " read: %3" ).arg( zone ).arg( calID ).arg( failure );
+         return false;
+      }
+   }
+
+   // Only digits, dashes, colons and a space go into a statement
    static const QRegularExpression shape(
          "^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}$" );
 
-   if ( ! shape.match( text ).hasMatch() )  return QString();
+   if ( ! shape.match( text ).hasMatch() )  return true;
 
-   dbase->rawQuery( "SELECT UNIX_TIMESTAMP( '" + text + "' )" );
+   qint64 seconds = 0;
 
-   bool   ok      = false;
-   qint64 seconds = dbase->next() ? dbase->value( 0 ).toLongLong( &ok ) : 0;
+   if ( onUtc )
+   {
+      QDateTime when = QDateTime::fromString( text, "yyyy-MM-dd hh:mm:ss" );
+      when.setTimeSpec( Qt::UTC );
 
-   if ( ! ok  ||  seconds < 1 )  return QString();
+      if ( when.isValid() )  seconds = when.toSecsSinceEpoch();
+   }
 
-   return QLocale::c().toString(
-             QDateTime::fromSecsSinceEpoch( seconds, Qt::UTC ),
-             "yyyy-MM-dd'T'hh:mm:ss'Z'" );
+   else
+   {
+      dbase->rawQuery( "SELECT UNIX_TIMESTAMP( '" + text + "' )" );
+
+      bool ok = false;
+      seconds = dbase->next() ? dbase->value( 0 ).toLongLong( &ok ) : 0;
+
+      if ( ! ok )  seconds = 0;
+   }
+
+   if ( seconds < 1 )  return true;
+
+   instant = QLocale::c().toString(
+                QDateTime::fromSecsSinceEpoch( seconds, Qt::UTC ),
+                "yyyy-MM-dd'T'hh:mm:ss'Z'" );
+   return true;
 }
 
 bool US_DataPubExporter::findDiskCalibration( const QString& guid,

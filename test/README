@@ -796,3 +796,33 @@ both servers.
 - `TestUSDataDbLive.AModelOrNoiseRemovedElsewhereIsReadBackAsGone` removes a
   noise record and a model with the administrator's connection after the
   window has read them.
+
+## Data export cases added in fix round 9
+
+All in `DataPubDbExport` (`US3_TEST_DB_IMPORT_NAME`); each puts back what it
+changed in the target.
+
+- `CaseVariantsOfARunIdAreRefusedAsTwoExperiments` imports the store's run
+  twice (the second time under new GUIDs) and gives the second experiment
+  the first one's run ID in upper case.  The `runID` column does not tell
+  case apart, so the run ID spelled either way has to be refused naming both
+  experiment IDs, and `US_DataPubCatalog::experimentsOfRun()` has to list
+  both.
+- `ARunIdIsTakenFromTheProjectAskedFor` does the same with the same run ID,
+  and moves the second experiment to a copy of the project row (`project`,
+  under a new ID and GUID).  The export of the run ID with the first
+  project, also through the command line (`--dry-run`), has to take the
+  first experiment.
+- `AModelTheChainDoesNotListBorrowsTheNoiseOfItsEdit` points a model without
+  noise at a copy of its edit, under copies of the raw data and experiment
+  rows that no person is listed for, so that the run's chain does not list
+  it, and exports it with `--model-guid` through the command line.  The
+  bundle has to carry the noise it borrows.  It needs `CREATE TEMPORARY
+  TABLES` on the target (part of `ALL`).
+- `TheCalibrationDateIsTheInstantInAFallBackHour` sets the run's rotor
+  calibration to instants in and around the European fall-back hour (with
+  the session on UTC) and checks the exported `dateUpdated`.  On a server on
+  UTC it checks only the instant; it tells the old reading apart only on a
+  server whose time zone has daylight saving time, such as a private MariaDB
+  started with `TZ=Europe/Berlin` (no time zone tables needed: the server's
+  `SYSTEM` zone is then Central European).

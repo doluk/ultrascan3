@@ -3,6 +3,7 @@
 #define US_DATAPUB_BUNDLE_H
 
 #include <QtCore>
+#include <functional>
 
 /*! \class US_DataPubBundle
     \brief The .tar.gz container of a data-publication bundle
@@ -114,9 +115,20 @@ class US_DataPubBundle
           symbolic link is refused rather than silently left out.
           \param archivePath The full path of the .tar.gz to write
           \param error       Filled in with a message when packing fails
+          \param progress    When given, called with the steps done and the
+                             steps there are (two per staged file: packed,
+                             then compared) as the packing goes on; when it
+                             returns false the packing stops before the
+                             next comparison, or before the archive is put
+                             in place, and fails without writing anything
+                             to \a archivePath (see \ref packingStopped)
           \returns True when the archive was written and verified
       */
-      bool    pack( const QString& archivePath, QString& error );
+      bool    pack( const QString& archivePath, QString& error,
+                    const std::function< bool( int, int ) >& progress = {} );
+
+      //! \brief What pack() fails with when \a progress stopped it
+      static QString packingStopped( void );
 
       /*! \brief Unpack an archive into a private staging directory
 

@@ -406,6 +406,24 @@ noise and on the calibration's date. They are optional, and the format stays
 `2`: an import that does not know them ignores them and imports as it did, and
 one that does treats a bundle without them as described there.
 
+The export reads the calibration's `dateUpdated` with the session's time
+zone set to UTC (`SET time_zone = '+00:00'`) and puts the session's zone
+back afterwards; an export that cannot put it back fails, saying why (a
+lost connection, say). The column is a `TIMESTAMP`, read as the wall time
+of the session's zone, and in a zone with daylight saving time the hour of
+a fall-back is read twice: read as wall time, 00:30 UTC on the European
+fall-back day came back as 01:30 UTC. A server that refuses the zone change
+(or a zone that cannot be named back) is read as before, as wall time
+turned into an instant by the server.
+
+The models' and noise records' `sourceLastUpdated` are the times the
+server's `timestamp2UTC()` gives. On a server without time zone tables that
+function adds the server's present offset from UTC to every time stamp,
+whatever the offset was when the record was made: there the times are off by
+the difference of summer and winter time for half of the year. All are off by
+the same amount, so their order — which is what the import uses them for —
+is kept.
+
 Every entry carries a `payload` and a `sha256`. **The digest is the digest of
 the payload file**, not of the record's properties, so a bundle can be verified
 the way any downloaded file is verified. An import checks every digest before
@@ -511,13 +529,19 @@ command line exits with `1`, when
   the export does not pick one: it fails with a message naming every
   directory;
 * a run ID names more than one experiment of the investigator in the
-  database. The run ID alone does not say which of them is meant, so the
-  export does not pick one: it fails with a message naming every experiment
-  ID. `--experiment-id <ID>` names one of them, and the export then reads
-  that experiment — its record, its experiment information and its RI
-  profile — and no other (`Selection::experimentIDs`). The window takes the
-  experiment it lists. A bundle holds one run of a run ID, so two such IDs
-  in one export are refused;
+  database. The database's `runID` column does not tell case apart, so
+  "RunA" and "runa" are two experiments of one run ID as well. The run ID
+  alone does not say which of them is meant, so the export does not pick
+  one: it fails with a message naming every experiment ID. `--experiment-id
+  <ID>` names one of them, and the export then reads that experiment — its
+  record, its experiment information and its RI profile — and no other
+  (`Selection::experimentIDs`). With `--project-id` / `--project-guid` the
+  run ID is looked up among the project's experiments first, so an
+  experiment of the run ID in another project does not make it ambiguous.
+  The window lists such a run ID once; when it is chosen there, the window
+  asks which of its experiments (by ID, label, date and project) is meant,
+  and exports that one (`US_DataPubCatalog::experimentsOfRun()`). A bundle
+  holds one run of a run ID, so two such IDs in one export are refused;
 * a run, raw data, edit, model or noise GUID it was asked for by name matches
   nothing (`--model-guid`, `--noise-guid`, or the selection of the window);
 * a run belongs to a project other than the one `--project-id` /
@@ -636,13 +660,19 @@ with **Cancel** (`US_DataPubExporter::cancel()`): the export or preview then
 fails with "The export was cancelled; no bundle was written" and removes its
 staging directory.
 
-**Progress and Cancel.** An export goes through two phases, and the progress
-bar counts each: first the runs are read from the source, one step per run
-("Reading run … (2 of 5)"), then the records are staged, one step per
-record. What the shared catalog says while it reads — "Indexing the local
-data directory…", a database without the catalog procedures — is in the
-status log (and, with `--verbose`, on the command line) as it happens. The
-window stays responsive throughout, and **Cancel** takes effect:
+**Progress and Cancel.** An export goes through three phases, and the
+progress bar counts each: first the runs are read from the source, one step
+per run ("Reading run … (2 of 5)"), then the records are staged, one step
+per record, and then the bundle is packed, two steps per file (packed, then
+read back and compared). What the shared catalog says while it reads —
+"Indexing the local data directory…", a database without the catalog
+procedures — is in the status log (and, with `--verbose`, on the command
+line) as it happens. The window takes events between these steps. Within
+one step it does not: indexing a local data directory (one pass over the
+run directories and the model and noise files), reading one run's records,
+and writing the archive are single steps, during which the window does not
+respond and a **Cancel** pressed is seen when the step is done.
+**Cancel** takes effect:
 
 * while the runs are read: before each run, between two files of a local
   store, and, from a database, before the catalog reads a run's records,
@@ -651,9 +681,22 @@ window stays responsive throughout, and **Cancel** takes effect:
   reads of one run's records (a few queries), and the listing of the
   database's experiments (one query), are not interrupted;
 * while the records are staged: before each record;
+* while the bundle is packed: once the archive is written, before each file
+  is compared, and before the bundle is put in place — nothing is written
+  to the bundle's path;
 * when it was pressed just before the export started: the export then stops
   before it reads anything. Once an export or preview has ended, a Cancel
   of it no longer counts, and the next one starts afresh.
+
+An export that stops for the Cancel says "The export was cancelled; no
+bundle was written". One that fails for a reason of its own after the
+Cancel was pressed — a run it cannot export, a database error — says that
+reason, and is reported as failed, not cancelled.
+
+The catalog's warnings about copies of run directories anywhere in the
+local store are not repeated in the status log; those about the runs
+exported are warnings of the export. They are known by the catalog's own
+text in the language the program runs in.
 
 A failed preview says "The export would fail: …" with the
 reason and the warnings. The window's completion box (and the preview, and the box of
@@ -706,7 +749,11 @@ record was fitted to) that the runs read do not list is looked up on its own
 for where it stands in the source — its database ID and last-updated time
 (`get_modelID`, `get_model_info`), or its `M*.xml` file and that file's
 time — just as a model the runs list carries them
-(`US_DataPubCatalog::completeModel()`).
+(`US_DataPubCatalog::completeModel()`). From a database it is also given
+the ID of its edit (`get_editID`), so that a model without noise of its own
+borrows the noise of its edit as one the runs list does. The model files of
+a local store are read once per export for this, however many models are
+looked up.
 
 Runs of several projects can be exported together; each project the runs
 belong to is then in the bundle, and each experiment depends on its own. A run
@@ -833,7 +880,9 @@ An import option (`--target`, `--output-dir`, `--on-conflict…`,
 `--mode import`; `--project-guid` and the common options are taken by both.
 
 Without `--experiment-id`, a `--project-id` or `--project-guid` exports every
-run of that project. With both, every run named has to belong to that project.
+run of that project. With both, every run named has to belong to that project;
+a run ID of several database experiments is looked up among the project's
+first, and is taken when the project has one of them.
 At least one of the three is required. A `--dry-run` needs no `--bundle`.
 
 Examples:

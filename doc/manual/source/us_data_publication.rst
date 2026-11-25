@@ -133,10 +133,13 @@ names by GUID is there: the other calibration's coefficients are not passed
 off as the run's.
 
 A database can hold more than one experiment of an investigator under one run
-ID. Which of them is meant cannot be told from the run ID, so such a run is
-refused with a message that names every experiment ID; on the command line
+ID -- also "RunA" and "runa", which the database does not tell apart. Which of
+them is meant cannot be told from the run ID, so such a run is refused with a
+message that names every experiment ID; on the command line
 ``--experiment-id <ID>`` picks one of them, and the export reads that
-experiment and no other.
+experiment and no other. With a project given, the run ID is looked up among
+the project's experiments first. The window asks which experiment is meant
+(see **Select Experiment(s)**).
 
 When the runs come with a project rather than by name, a run whose own records
 do not hold together -- one of those problems, a channel without a solution,
@@ -218,7 +221,11 @@ The Export tab works from the top down.
   Opens the run selection dialog. When a project is selected the dialog offers
   only that project's runs; without a project it offers every run. Selecting
   runs is enough on its own -- a project is not required, and one is adopted
-  from the first run when none was picked.
+  from the first run when none was picked. The dialog lists a run ID once;
+  when the database holds more than one experiment under it, a second dialog
+  lists them, by ID, label, date and project, and asks which one is meant.
+  Runs that cannot be exported (a run in directories none of which is named
+  after it, say) are listed in a message box and are not added.
 
 **Experiments, raw data and edits**
   A tree of check boxes, ``run -> rawData -> edit``. The buttons underneath are
@@ -266,13 +273,19 @@ The Export tab works from the top down.
   Writes the bundle. While the export runs the tab cannot be changed, the
   Import tab cannot be opened, and a request to close the window is carried
   out once the export is done. The progress bar counts the runs as they are
-  read from the source, then the records as they are staged, and the status
-  log shows what the export, and the catalog it reads with, is doing.
+  read from the source, then the records as they are staged, then the files
+  as the bundle is packed and read back, and the status log shows what the
+  export, and the catalog it reads with, is doing. The window responds
+  between these steps, not within one: indexing a local data directory,
+  reading one run's records and writing the archive each keep it busy until
+  they are done, and a **Cancel** pressed meanwhile is seen after them.
   **Cancel** stops the export before the next run or record, between two
   files of a local store, or, from a database, before the next run's
   records, experiment information or model noise are read (a read that has
-  started is finished first), also when it was pressed just as the export
-  started; nothing is written. An existing file of the same name is replaced
+  started is finished first), while the bundle is packed (before it is put
+  in place), also when it was pressed just as the export started; nothing
+  is written. An export that fails for a reason of its own after a Cancel
+  says that reason. An existing file of the same name is replaced
   only once the new bundle is complete and has been read back and compared,
   file by file, with what was staged. The UltraScan ``tmp`` directory needs
   room for about twice the data plus the bundle while this happens.

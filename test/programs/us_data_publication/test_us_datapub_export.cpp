@@ -1693,6 +1693,20 @@ class US_DataPubExporterTest
          return ex.storedRiProfile( run );
       }
 
+      static bool gatherRuns( US_DataPubExporter& ex,
+                              const US_DataPubExporter::Selection& selection,
+                              QList< US_DataPubCatalog::Run >& runs,
+                              QString& error )
+      {
+         return ex.gatherRuns( selection, runs, error );
+      }
+
+      static bool calibrationInstant( US_DataPubExporter& ex, int calID,
+                                      QString& instant, QString& error )
+      {
+         return ex.calibrationInstant( calID, instant, error );
+      }
+
       static bool addSolutions( US_DataPubExporter& ex,
                                 const US_DataPubCatalog::Run& run,
                                 QString& error )
@@ -4635,4 +4649,496 @@ TEST_F( DataPubExportSteps, AModelPickedByGuidSaysWhereItStandsInADatabase )
    none.guid = "aaaaaaaa-0000-4000-8000-000000000045";
    ASSERT_TRUE( catalog.completeModel( none, error ) ) << error.toStdString();
    EXPECT_TRUE( none.lastUpdated.isEmpty() );
+}
+
+// ------------------------------------------------------- fix round 9: export
+
+/* The database's runID column does not tell case apart, so "RunA" and
+   "runa" are experiments of one run ID: the run ID, spelled either way,
+   names neither of them and is refused with both experiment IDs, as two
+   experiments of one spelling are.  experimentsOfRun() lists both -- the
+   choice the export window offers -- and the experiment ID picks one.
+*/
+TEST_F( DataPubExportSteps, CaseVariantsOfARunIdAreExperimentsOfOneRunId )
+{
+   QString g12 = "aaaaaaaa-0000-4000-8000-000000000012";
+   QString g15 = "aaaaaaaa-0000-4000-8000-000000000015";
+
+   sdb.rows.insert( "get_experiment_summary", QList< QVariantList >()
+                    << summary_row( 12, g12, "RunA" )
+                    << summary_row( 15, g15, "runa" ) );
+
+   US_DataPubCatalog catalog;
+   catalog.attachDb( sdb.db() );
+
+   for ( const QString& spelling : { QString( "RunA" ), QString( "runa" ),
+                                     QString( "RUNA" ) } )
+   {
+      SCOPED_TRACE( spelling.toStdString() );
+      US_DataPubCatalog::Run run;
+      QString                error;
+      bool                   unusable = false;
+
+      EXPECT_FALSE( catalog.runByID( spelling, run, error, &unusable ) );
+      EXPECT_TRUE( unusable );
+      EXPECT_TRUE( error.contains( "12, 15" ) ) << error.toStdString();
+
+      QList< US_DataPubCatalog::Run > exps =
+         catalog.experimentsOfRun( spelling, error );
+      ASSERT_EQ( exps.size(), 2 ) << error.toStdString();
+      EXPECT_EQ( exps[ 0 ].id, QString( "12" ) );
+      EXPECT_EQ( exps[ 1 ].id, QString( "15" ) );
+
+      ASSERT_TRUE( catalog.runByID( spelling, run, error, nullptr, nullptr,
+                                    "15" ) ) << error.toStdString();
+      EXPECT_EQ( run.guid, g15 );
+      EXPECT_EQ( run.runID, QString( "runa" ) );
+   }
+}
+
+/* experimentsOfRun() takes the experiments of the project listed last when
+   it has any, as runByID() does, and the others otherwise. */
+TEST_F( DataPubExportSteps, TheExperimentsOfARunIdAreThoseOfTheProjectListed )
+{
+   QString p1 = "aaaaaaaa-0000-4000-8000-0000000000a1";
+   QString p2 = "aaaaaaaa-0000-4000-8000-0000000000a2";
+   QVariantList in1 = summary_row( 12, "aaaaaaaa-0000-4000-8000-000000000012",
+                                   "dup_run" );
+   QVariantList in2 = summary_row( 15, "aaaaaaaa-0000-4000-8000-000000000015",
+                                   "dup_run" );
+   in1[ 6 ] = 1;  in1[ 7 ] = p1;  in1[ 8 ] = "one";
+   in2[ 6 ] = 2;  in2[ 7 ] = p2;  in2[ 8 ] = "two";
+   sdb.rows.insert( "get_experiment_summary",
+                    QList< QVariantList >() << in1 << in2 );
+
+   US_DataPubCatalog catalog;
+   catalog.attachDb( sdb.db() );
+   QString error;
+
+   catalog.runs( p2, error );
+   ASSERT_TRUE( error.isEmpty() ) << error.toStdString();
+
+   QList< US_DataPubCatalog::Run > exps =
+      catalog.experimentsOfRun( "dup_run", error );
+   ASSERT_EQ( exps.size(), 1 );
+   EXPECT_EQ( exps[ 0 ].id, QString( "15" ) );
+
+   catalog.runs( QString(), error );
+   EXPECT_EQ( catalog.experimentsOfRun( "dup_run", error ).size(), 2 );
+}
+
+/* --project-guid P --experiment-id RUN: of the experiments of the run ID,
+   the one in P is the run.  The run ID was refused as ambiguous when
+   another experiment of it was in another project.  Ambiguous within P it
+   still is refused.
+*/
+TEST_F( DataPubExportSteps, ARunIdIsLookedUpInTheProjectAskedFor )
+{
+   QString p1  = "aaaaaaaa-0000-4000-8000-0000000000a1";
+   QString p2  = "aaaaaaaa-0000-4000-8000-0000000000a2";
+   QString g12 = "aaaaaaaa-0000-4000-8000-000000000012";
+   QString g15 = "aaaaaaaa-0000-4000-8000-000000000015";
+   QVariantList in1 = summary_row( 12, g12, "dup_run" );
+   QVariantList in2 = summary_row( 15, g15, "dup_run" );
+   in1[ 6 ] = 1;  in1[ 7 ] = p1;  in1[ 8 ] = "one";
+   in2[ 6 ] = 2;  in2[ 7 ] = p2;  in2[ 8 ] = "two";
+   sdb.rows.insert( "get_experiment_summary",
+                    QList< QVariantList >() << in1 << in2 );
+
+   US_DataPubExporter::Selection selection;
+   selection.fromDb      = true;
+   selection.scope       = US_DataPub::ScopeExperiment;
+   selection.projectGUID = p2;
+   selection.runIDs << "dup_run";
+
+   QList< US_DataPubCatalog::Run > runs;
+   QString                         error;
+   ASSERT_TRUE( US_DataPubExporterTest::gatherRuns( exporter, selection, runs,
+                                                    error ) )
+      << error.toStdString();
+   ASSERT_EQ( runs.size(), 1 );
+   EXPECT_EQ( runs[ 0 ].id, QString( "15" ) );
+   EXPECT_EQ( runs[ 0 ].guid, g15 );
+
+   // An experiment ID of another project is still told as such
+   US_DataPubExporter               other;
+   US_DataPubExporterTest::attach( other, sdb.db() );
+   selection.experimentIDs.insert( "dup_run", "12" );
+   EXPECT_FALSE( US_DataPubExporterTest::gatherRuns( other, selection, runs,
+                                                     error ) );
+   EXPECT_TRUE( error.contains( "belongs to project" ) ) << error.toStdString();
+
+   // Both in the project: refused
+   in1[ 7 ] = p2;
+   sdb.rows.insert( "get_experiment_summary",
+                    QList< QVariantList >() << in1 << in2 );
+   US_DataPubExporter both;
+   US_DataPubExporterTest::attach( both, sdb.db() );
+   selection.experimentIDs.clear();
+   EXPECT_FALSE( US_DataPubExporterTest::gatherRuns( both, selection, runs,
+                                                     error ) );
+   EXPECT_TRUE( error.contains( "12, 15" ) ) << error.toStdString();
+}
+
+/* Where file names compare without case, a directory holding the run under
+   another spelling of its run ID is a copy of it, and is named as one when
+   the run is looked up -- as a copy of the same spelling is.
+*/
+TEST_F( DataPubExport, ACaseVariantCopyOfTheRunIsReported )
+{
+   ASSERT_TRUE( copyRunDir( "DEMO_RUN", true ) );
+   QString copy = US_Settings::resultDir() + "/Backup_DEMO_RUN";
+   ASSERT_TRUE( QDir().rename( US_Settings::resultDir() + "/DEMO_RUN",
+                               copy ) );
+
+   US_DataPubCatalog catalog;
+   QString           error;
+   ASSERT_TRUE( catalog.open( false, QString(), error ) );
+   catalog.setFileNameCase( Qt::CaseInsensitive );
+
+   US_DataPubCatalog::Run run;
+   QStringList            copies;
+   bool                   unusable = true;
+   ASSERT_TRUE( catalog.runByID( runID, run, error, &unusable, &copies ) )
+      << error.toStdString();
+   EXPECT_FALSE( unusable );
+   EXPECT_EQ( QDir::toNativeSeparators( run.dirPath ),
+              QDir::toNativeSeparators( runDir() ) );
+   EXPECT_EQ( copies, QStringList( QDir::toNativeSeparators( copy ) ) );
+}
+
+/* A model picked by GUID out of a database is given the ID of its edit, so
+   that the noise of that edit is looked up for it when it has none of its
+   own: the noise it borrows.  Without the ID the lookup was not made.
+*/
+TEST_F( DataPubExportSteps, AModelPickedByGuidHasTheIdOfItsEdit )
+{
+   QString guid = "aaaaaaaa-0000-4000-8000-000000000044";
+   sdb.rows.insert( "get_modelID", QList< QVariantList >()
+                    << ( QVariantList() << 44 ) );
+   sdb.rows.insert( "get_model_info", QList< QVariantList >()
+                    << ( QVariantList() << guid << "a model" << "<xml/>"
+                         << 0.0 << 6.1 << 2 << "2024-03-31 01:30:00" ) );
+   sdb.rows.insert( "get_editID", QList< QVariantList >()
+                    << ( QVariantList() << 6 ) );
+
+   US_DataPubCatalog catalog;
+   catalog.attachDb( sdb.db() );
+
+   US_DataPubCatalog::Model model;
+   model.guid     = guid;
+   model.editGUID = editGUID;
+   QString error;
+   ASSERT_TRUE( catalog.completeModel( model, error ) ) << error.toStdString();
+   EXPECT_EQ( model.editID, QString( "6" ) );
+
+   sdb.asked.clear();
+   catalog.noises( QList< US_DataPubCatalog::Model >() << model, error );
+   EXPECT_TRUE( sdb.asked.contains( "get_noise_desc_by_editID" ) )
+      << sdb.asked.join( ", " ).toStdString();
+
+   // An edit the database does not have leaves the ID empty
+   sdb.rows.remove( "get_editID" );
+   US_DataPubCatalog::Model gone;
+   gone.guid     = guid;
+   gone.editGUID = "aaaaaaaa-0000-4000-8000-000000000046";
+   ASSERT_TRUE( catalog.completeModel( gone, error ) ) << error.toStdString();
+   EXPECT_TRUE( gone.editID.isEmpty() );
+
+   // ... and a failed lookup fails
+   sdb.rows.insert( "get_editID", QList< QVariantList >()
+                    << ( QVariantList() << 6 ) );
+   sdb.failing.insert( "get_editID" );
+   US_DataPubCatalog::Model failed;
+   failed.guid     = guid;
+   failed.editGUID = editGUID;
+   EXPECT_FALSE( catalog.completeModel( failed, error ) );
+   EXPECT_FALSE( error.isEmpty() );
+}
+
+/* On disk the model files are read once for every model a catalog looks
+   up by GUID, not once per model. */
+TEST_F( DataPubExport, ModelFilesAreReadOncePerCatalog )
+{
+   US_Model later;
+   later.modelGUID   = US_Util::new_guid();
+   later.editGUID    = editGUID;
+   later.description = "demo_run.1A280.2dsa-mc.model";
+   ASSERT_EQ( later.write( US_Settings::dataDir() + "/models/M0000002.xml" ),
+              IUS_DB2::OK );
+
+   US_DataPubCatalog catalog;
+   QString           error;
+   ASSERT_TRUE( catalog.open( false, QString(), error ) );
+
+   US_DataPubCatalog::Model first;
+   first.guid = modelGUID;
+   US_DataPubCatalog::Model second;
+   second.guid = later.modelGUID;
+   US_DataPubCatalog::Model none;
+   none.guid = US_Util::new_guid();
+
+   ASSERT_TRUE( catalog.completeModel( first,  error ) );
+   ASSERT_TRUE( catalog.completeModel( second, error ) );
+   ASSERT_TRUE( catalog.completeModel( none,   error ) );
+   EXPECT_EQ( first .filename, QString( "M0000001.xml" ) );
+   EXPECT_EQ( second.filename, QString( "M0000002.xml" ) );
+   EXPECT_TRUE( none.filename.isEmpty() );
+   EXPECT_EQ( catalog.modelFileScans(), 1 );
+}
+
+namespace
+{
+   /* A database whose session time zone is a zone with daylight saving
+      time (SYSTEM, Central European) -- in the hour of the fall-back of
+      2024-10-27, 02:00 to 03:00 local time is read twice.  A calibration
+      updated at 00:30 UTC reads 02:30 there, and UNIX_TIMESTAMP() turns
+      02:30 into 01:30 UTC, the later of the two.  On UTC it reads 00:30.
+   */
+   class ZoneDb
+   {
+      public:
+         NiceMock< US_DB2_Mock > mock;
+         QString     zone       = "SYSTEM";
+         bool        refuseSet  = false;  // SET time_zone fails
+         bool        loseOnBack = false;  // the connection is lost on SET back
+         QStringList statements;
+
+         ZoneDb()
+         {
+            ON_CALL( mock, isConnected() ).WillByDefault( Return( true ) );
+
+            ON_CALL( mock, rawQuery( _ ) )
+               .WillByDefault( [ this ]( const QString& sql )
+               {
+                  statements << sql;
+                  status = IUS_DB2::OK;
+                  rows.clear();
+                  cursor = 0;
+
+                  if ( sql == "SELECT @@session.time_zone" )
+                     rows << QVariant( zone );
+
+                  else if ( sql.startsWith( "SET time_zone = '" ) )
+                  {
+                     QString to = sql.section( '\'', 1, 1 );
+
+                     if ( refuseSet  ||  ( loseOnBack  &&  to != "+00:00" ) )
+                        status = IUS_DB2::DBERROR;
+                     else
+                        zone = to;
+                  }
+
+                  else if ( sql.startsWith( "SELECT UNIX_TIMESTAMP( '" ) )
+                     rows << QVariant( sql.section( '\'', 1, 1 )
+                                       == "2024-10-27 02:30:00"
+                                       ? 1729992600LL : 0LL );
+               } );
+
+            ON_CALL( mock, query( An< const QStringList& >() ) )
+               .WillByDefault( [ this ]( const QStringList& q )
+               {
+                  statements << q.value( 0 );
+                  status = IUS_DB2::OK;
+                  rows.clear();
+                  cursor = 0;
+                  row7   = zone == "+00:00" ? "2024-10-27 00:30:00"
+                                            : "2024-10-27 02:30:00";
+                  rows << QVariant( "calibration" );
+               } );
+
+            ON_CALL( mock, lastErrno() ).WillByDefault( [ this ]()
+                                                        { return status; } );
+            ON_CALL( mock, lastError() ).WillByDefault( [ this ]()
+            {
+               return status == IUS_DB2::OK
+                      ? QString() : QString( "Lost connection to server" );
+            } );
+            ON_CALL( mock, next() ).WillByDefault( [ this ]()
+                                                   { return ++cursor <= rows.size(); } );
+            ON_CALL( mock, value( _ ) ).WillByDefault( [ this ]( unsigned col )
+            {
+               if ( cursor < 1  ||  cursor > rows.size() )  return QVariant();
+
+               if ( statements.last() == "get_rotor_calibration_info" )
+                  return col == 7 ? QVariant( row7 ) : QVariant();
+
+               return col == 0 ? rows[ cursor - 1 ] : QVariant();
+            } );
+         }
+
+      private:
+         int             status = IUS_DB2::OK;
+         QList< QVariant > rows;
+         int             cursor = 0;
+         QString         row7;
+   };
+}
+
+/* The calibration's dateUpdated is read with the session on UTC, so that an
+   instant in the hour of a fall-back is the one it was, and the session's
+   zone is put back afterwards.  It was read as wall time and turned back
+   into an instant by the server, which gave 01:30 UTC for 00:30 UTC.
+*/
+TEST_F( DataPubExportSteps, ACalibrationIsDatedInUtcInTheFallBackHour )
+{
+   ZoneDb             zdb;
+   US_DataPubExporter ex;
+   US_DataPubExporterTest::attach( ex, &zdb.mock );
+
+   QString instant;
+   QString error;
+   ASSERT_TRUE( US_DataPubExporterTest::calibrationInstant( ex, 3, instant,
+                                                            error ) )
+      << error.toStdString();
+   EXPECT_EQ( instant, QString( "2024-10-27T00:30:00Z" ) );
+   EXPECT_EQ( zdb.zone, QString( "SYSTEM" ) )
+      << zdb.statements.join( "; " ).toStdString();
+   EXPECT_TRUE( zdb.statements.contains( "SET time_zone = 'SYSTEM'" ) )
+      << zdb.statements.join( "; " ).toStdString();
+
+   // A server that refuses the zone: the wall time, as the server reads it
+   ZoneDb             refusing;
+   US_DataPubExporter ex2;
+   refusing.refuseSet = true;
+   US_DataPubExporterTest::attach( ex2, &refusing.mock );
+   ASSERT_TRUE( US_DataPubExporterTest::calibrationInstant( ex2, 3, instant,
+                                                            error ) )
+      << error.toStdString();
+   EXPECT_EQ( instant, QString( "2024-10-27T01:30:00Z" ) );
+   EXPECT_EQ( refusing.zone, QString( "SYSTEM" ) );
+
+   // A session whose zone cannot be put back fails, saying why
+   ZoneDb             losing;
+   US_DataPubExporter ex3;
+   losing.loseOnBack = true;
+   US_DataPubExporterTest::attach( ex3, &losing.mock );
+   EXPECT_FALSE( US_DataPubExporterTest::calibrationInstant( ex3, 3, instant,
+                                                             error ) );
+   EXPECT_TRUE( error.contains( "Lost connection" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "SYSTEM" ) ) << error.toStdString();
+}
+
+/* A Cancel pressed while the bundle is packed is carried out: nothing is
+   written, and the export says it was cancelled.  It used to be ignored
+   once the packing had begun, and the export reported success.  The
+   packing counts its steps as a phase of its own.
+*/
+TEST_F( DataPubExport, ACancelWhileThePackingRunsWritesNoBundle )
+{
+   US_DataPubExporter exporter;
+   QString            bundle  = root + "/packing.tar.gz";
+   bool               packing = false;
+   int                steps   = 0;
+
+   QObject::connect( &exporter, &US_DataPubExporter::message,
+                     [ &packing ]( const QString& text )
+                     {
+                        if ( text.startsWith( "Packing the bundle" ) )
+                           packing = true;
+                     } );
+   QObject::connect( &exporter, &US_DataPubExporter::stepDone,
+                     [ & ]( int )
+                     {
+                        if ( ! packing )  return;
+
+                        if ( ++steps == 1 )  exporter.cancel();
+                     } );
+
+   QString error;
+   EXPECT_FALSE( exporter.exportBundle( baseSelection( US_DataPub::ScopeNoise ),
+                                        bundle, error ) );
+   EXPECT_TRUE( exporter.wasCancelled() );
+   EXPECT_TRUE( error.contains( "cancelled" ) ) << error.toStdString();
+   EXPECT_FALSE( QFile::exists( bundle ) );
+   EXPECT_GT( steps, 0 );
+
+   // Not cancelled, it is written
+   US_DataPubExporter again;
+   ASSERT_TRUE( again.exportBundle( baseSelection( US_DataPub::ScopeNoise ),
+                                    bundle, error ) ) << error.toStdString();
+   EXPECT_TRUE( QFile::exists( bundle ) );
+}
+
+/* An export that fails for a reason of its own after a Cancel says that
+   reason; it was not cancelled.  The reason used to be replaced with
+   "cancelled". */
+TEST_F( DataPubExport, AFailureAfterACancelKeepsItsMessage )
+{
+   US_DataPubExporter exporter;
+   QObject::connect( &exporter, &US_DataPubExporter::message,
+                     [ &exporter ]( const QString& text )
+                     {
+                        if ( text.startsWith( "Reading run" ) )
+                           exporter.cancel();
+                     } );
+
+   US_DataPubExporter::Selection selection =
+      baseSelection( US_DataPub::ScopeNoise );
+   selection.runIDs = QStringList( "bad.run" );
+
+   QString error;
+   EXPECT_FALSE( exporter.exportBundle( selection, root + "/bad.tar.gz",
+                                        error ) );
+   EXPECT_TRUE( error.contains( "cannot be exported" ) ) << error.toStdString();
+   EXPECT_FALSE( exporter.wasCancelled() );
+
+   // A cancel the export stopped for is still a cancel
+   US_DataPubExporter cancelled;
+   QObject::connect( &cancelled, &US_DataPubExporter::message,
+                     [ &cancelled ]( const QString& text )
+                     {
+                        if ( text.startsWith( "Reading run" ) )
+                           cancelled.cancel();
+                     } );
+   EXPECT_FALSE( cancelled.exportBundle( baseSelection( US_DataPub::ScopeNoise ),
+                                         root + "/c.tar.gz", error ) );
+   EXPECT_TRUE( cancelled.wasCancelled() );
+   EXPECT_TRUE( error.contains( "cancelled" ) ) << error.toStdString();
+}
+
+namespace
+{
+   // Translates the shared catalog's warning about a copied run directory
+   class CopyWarningTranslator : public QTranslator
+   {
+      public:
+         QString translate( const char* context, const char* source,
+                            const char* = nullptr, int = -1 ) const override
+         {
+            if ( QString( context ) == "US_DataCatalog"  &&
+                 QString( source ).startsWith( "Warning: %1 holds a copy" ) )
+               return QString( "Achtung: %1 ist eine Kopie des Laufs %2;"
+                               " der Lauf ist %3" );
+
+            return QString();
+         }
+
+         bool isEmpty() const override { return false; }
+   };
+}
+
+/* The shared catalog's warnings about copies of run directories are known
+   in a translation as well: they are its own text, in its own context, not
+   the exporter's "Warning: ".  The copies of the runs exported are warned
+   about by the export; the catalog's warning is not noted besides.
+*/
+TEST_F( DataPubExport, TheCatalogsCopyWarningIsKnownInATranslation )
+{
+   QString copy = US_Settings::resultDir() + "/Backup_demo_run";
+   ASSERT_TRUE( copy_dir_as_is( runDir(), copy ) );
+
+   CopyWarningTranslator translator;
+   ASSERT_TRUE( QCoreApplication::installTranslator( &translator ) );
+
+   US_DataPubExporter exporter;
+   QString            error;
+   bool ok = exporter.previewManifest( baseSelection( US_DataPub::ScopeNoise ),
+                                       error );
+   QCoreApplication::removeTranslator( &translator );
+
+   ASSERT_TRUE( ok ) << error.toStdString();
+   QString log = exporter.log().join( "\n" );
+   EXPECT_FALSE( log.contains( "Achtung" ) ) << log.toStdString();
+   EXPECT_TRUE( exporter.warnings().join( "\n" ).contains( "is ignored" ) );
 }

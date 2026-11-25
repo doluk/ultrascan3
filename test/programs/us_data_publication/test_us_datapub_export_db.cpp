@@ -17,6 +17,8 @@
 #include "us_datapub_import.h"
 #include "us_datapub_manifest.h"
 #include "us_datapub_catalog.h"
+#include "us_datapub_cli.h"
+#include "us_datapub_bundle.h"
 
 class DataPubDbExport : public DataPubDbTargetEnv
 {
@@ -85,6 +87,96 @@ class DataPubDbExport : public DataPubDbTargetEnv
          selection.runIDs << dbRunID;
 
          return exporter.exportBundle( selection, bundle, error );
+      }
+
+      /* The store's run in the database twice: the second time as the
+         store's run made again under new GUIDs -- the chemistry, project
+         and calibration as they were.  The run IDs (the import may give
+         the second another one) and the experiment IDs.
+      */
+      bool storeTwice( QString& runA, QString& runB, int& idA, int& idB,
+                       QString& error )
+      {
+         QString guidA = expGUID;
+
+         if ( ! storeInDatabase( runA, error ) )  return false;
+
+         QDir( US_Settings::dataDir()   ).removeRecursively();
+         QDir( US_Settings::resultDir() ).removeRecursively();
+         QDir().mkpath( US_Settings::dataDir()   );
+         QDir().mkpath( US_Settings::resultDir() );
+         expGUID   = US_Util::new_guid();
+         rawGUID   = US_Util::new_guid();
+         editGUID  = US_Util::new_guid();
+         modelGUID = US_Util::new_guid();
+         noiseGUID = US_Util::new_guid();
+         buildStore();
+
+         QString guidB = expGUID;
+
+         if ( ! storeInDatabase( runB, error ) )  return false;
+
+         idA = experimentIdOf( guidA );
+         idB = experimentIdOf( guidB );
+
+         if ( idA < 1  ||  idB < 1 )
+         {
+            error = "the experiments were not found";
+            return false;
+         }
+
+         return true;
+      }
+
+      int experimentIdOf( const QString& guid )
+      {
+         db->rawQuery( "SELECT experimentID FROM experiment"
+                       " WHERE experimentGUID = '" + guid + "'" );
+         return db->next() ? db->value( 0 ).toInt() : -1;
+      }
+
+      // Experiment \a id under the run ID \a to, its files named to match
+      void renameExperiment( int id, const QString& from, const QString& to )
+      {
+         QString len = QString::number( from.length() + 1 );
+         QString eid = QString::number( id );
+         db->rawQuery( "UPDATE experiment SET runID = '" + to + "'"
+                       " WHERE experimentID = " + eid );
+         db->rawQuery( "UPDATE rawData SET filename = CONCAT( '" + to + "',"
+                       " SUBSTRING( filename, " + len + " ) )"
+                       " WHERE experimentID = " + eid
+                       + " AND filename LIKE '" + from + ".%'" );
+         db->rawQuery( "UPDATE editedData e JOIN rawData r"
+                       " ON r.rawDataID = e.rawDataID"
+                       " SET e.filename = CONCAT( '" + to + "',"
+                       " SUBSTRING( e.filename, " + len + " ) )"
+                       " WHERE r.experimentID = " + eid
+                       + " AND e.filename LIKE '" + from + ".%'" );
+      }
+
+      /* A copy of row \a id of \a table under a new ID and GUID, with
+         \a set applied to it ("col = value, ..."); its ID, or -1
+      */
+      int copyRow( const QString& table, const QString& idColumn,
+                   const QString& guidColumn, int id, const QString& set )
+      {
+         db->rawQuery( "DROP TEMPORARY TABLE IF EXISTS fx_copy" );
+         db->rawQuery( "CREATE TEMPORARY TABLE fx_copy AS SELECT * FROM "
+                       + table + " WHERE " + idColumn + " = "
+                       + QString::number( id ) );
+         db->rawQuery( "SELECT MAX( " + idColumn + " ) + 1 FROM " + table );
+         int newID = db->next() ? db->value( 0 ).toInt() : -1;
+
+         if ( newID < 1 )  return -1;
+
+         db->rawQuery( "UPDATE fx_copy SET " + idColumn + " = "
+                       + QString::number( newID ) + ", " + guidColumn
+                       + " = UUID()" + ( set.isEmpty() ? "" : ", " + set ) );
+         db->rawQuery( "INSERT INTO " + table + " SELECT * FROM fx_copy" );
+         int status = db->lastErrno();
+         db->rawQuery( "DROP TEMPORARY TABLE IF EXISTS fx_copy" );
+
+         return status == IUS_DB2::OK ? newID : -1;
       }
 
       // Import a bundle into a disk store and export the run from there
@@ -817,4 +909,330 @@ TEST_F( DataPubDbExport, AModelPickedByGuidSaysWhereItStands )
    EXPECT_EQ( picked.id, listed[ 0 ].id );
    EXPECT_FALSE( picked.lastUpdated.isEmpty() );
    EXPECT_EQ( picked.lastUpdated, listed[ 0 ].lastUpdated );
+}
+
+// ------------------------------------------------------- fix round 9: export
+
+/* A run ID spelled in two cases names two experiments of one run ID: the
+   database's runID column does not tell them apart.  Spelled either way,
+   the run ID is refused with both experiment IDs; the experiment ID picks
+   one of them.  One of the two used to be exported without a word.
+*/
+TEST_F( DataPubDbExport, CaseVariantsOfARunIdAreRefusedAsTwoExperiments )
+{
+   QString runA, runB, error;
+   int     idA = -1, idB = -1;
+   ASSERT_TRUE( storeTwice( runA, runB, idA, idB, error ) )
+      << error.toStdString();
+
+   QString upper = runA.toUpper();
+   ASSERT_NE( upper, runA );
+
+   struct PutBack
+   {
+      std::function< void() > undo;
+      ~PutBack() { undo(); }
+   } putBack { [ & ]() { renameExperiment( idB, upper, runB ); } };
+
+   renameExperiment( idB, runB, upper );
+
+   for ( const QString& spelling : { runA, upper } )
+   {
+      SCOPED_TRACE( spelling.toStdString() );
+      US_DataPubExporter            refused;
+      US_DataPubExporter::Selection selection;
+      selection.fromDb     = true;
+      selection.dbPassword = master;
+      selection.scope      = US_DataPub::ScopeNoise;
+      selection.runIDs << spelling;
+
+      EXPECT_FALSE( refused.previewManifest( selection, error ) );
+      EXPECT_TRUE( error.contains( QString( "%1, %2" ).arg( idA ).arg( idB ) ) )
+         << error.toStdString();
+
+      US_DataPubCatalog catalog;
+      ASSERT_TRUE( catalog.open( true, master, error ) ) << error.toStdString();
+      QList< US_DataPubCatalog::Run > exps =
+         catalog.experimentsOfRun( spelling, error );
+      ASSERT_EQ( exps.size(), 2 ) << error.toStdString();
+      EXPECT_EQ( exps[ 0 ].id.toInt(), idA );
+      EXPECT_EQ( exps[ 1 ].id.toInt(), idB );
+
+      // The window passes the experiment chosen
+      US_DataPubExporter            picked;
+      selection.experimentIDs.insert( spelling, QString::number( idB ) );
+      ASSERT_TRUE( picked.previewManifest( selection, error ) )
+         << error.toStdString();
+      QList< US_DataPubEntity > exp =
+         picked.manifest().section( US_DataPub::Experiment );
+      ASSERT_EQ( exp.size(), 1 );
+      EXPECT_EQ( exp[ 0 ].id, QString::number( idB ) );
+   }
+}
+
+/* --project-guid P --experiment-id RUN: of two experiments of the run ID,
+   the one in P is exported.  It used to be refused as ambiguous although
+   the other one is in another project.
+*/
+TEST_F( DataPubDbExport, ARunIdIsTakenFromTheProjectAskedFor )
+{
+   QString runA, runB, error;
+   int     idA = -1, idB = -1;
+   ASSERT_TRUE( storeTwice( runA, runB, idA, idB, error ) )
+      << error.toStdString();
+
+   db->rawQuery( "SELECT projectID FROM experiment WHERE experimentID = "
+                 + QString::number( idB ) );
+   ASSERT_TRUE( db->next() );
+   int projectID = db->value( 0 ).toInt();
+   ASSERT_GT( projectID, 0 );
+
+   int otherProject = copyRow( "project", "projectID", "projectGUID",
+                               projectID, QString() );
+   ASSERT_GT( otherProject, 0 ) << db->lastError().toStdString();
+
+   struct PutBack
+   {
+      std::function< void() > undo;
+      ~PutBack() { undo(); }
+   } putBack { [ & ]()
+   {
+      db->rawQuery( "UPDATE experiment SET projectID = "
+                    + QString::number( projectID ) + " WHERE experimentID = "
+                    + QString::number( idB ) );
+      renameExperiment( idB, runA, runB );
+      db->rawQuery( "DELETE FROM project WHERE projectID = "
+                    + QString::number( otherProject ) );
+   } };
+
+   renameExperiment( idB, runB, runA );
+   db->rawQuery( "UPDATE experiment SET projectID = "
+                 + QString::number( otherProject ) + " WHERE experimentID = "
+                 + QString::number( idB ) );
+   ASSERT_EQ( db->lastErrno(), IUS_DB2::OK ) << db->lastError().toStdString();
+
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection;
+   selection.fromDb      = true;
+   selection.dbPassword  = master;
+   selection.scope       = US_DataPub::ScopeNoise;
+   selection.projectGUID = projectGUID;
+   selection.runIDs << runA;
+
+   ASSERT_TRUE( exporter.previewManifest( selection, error ) )
+      << error.toStdString();
+   QList< US_DataPubEntity > exp =
+      exporter.manifest().section( US_DataPub::Experiment );
+   ASSERT_EQ( exp.size(), 1 );
+   EXPECT_EQ( exp[ 0 ].id, QString::number( idA ) );
+
+   // The same through the command line
+   QByteArray saved = qgetenv( "US3_DB_PASSWORD" );
+   qputenv( "US3_DB_PASSWORD", master.toUtf8() );
+   int code;
+   {
+      US_DataPubCLI cli;
+      code = cli.run( QStringList() << "us_data_publication" << "--mode"
+                      << "export" << "--source" << "db" << "--project-guid"
+                      << projectGUID << "--experiment-id" << runA
+                      << "--non-interactive" << "--dry-run" );
+   }
+   if ( saved.isEmpty() )  qunsetenv( "US3_DB_PASSWORD" );
+   else                    qputenv( "US3_DB_PASSWORD", saved );
+   EXPECT_EQ( code, 0 );
+
+   // Without the project the run ID is ambiguous
+   US_DataPubExporter refused;
+   selection.projectGUID.clear();
+   EXPECT_FALSE( refused.previewManifest( selection, error ) );
+   EXPECT_TRUE( error.contains( QString( "%1, %2" ).arg( idA ).arg( idB ) ) )
+      << error.toStdString();
+}
+
+/* A model picked by GUID that the chain of the runs read does not list --
+   its row names an edit of an experiment the investigator does not see --
+   still borrows the noise of its edit, which travels with the model it
+   was fitted to; it says where it stands in the source.  Through the
+   command line, which looks the model up by itself (completeModel()).  The
+   noise used to be left behind: the model had no edit ID to look it up by.
+*/
+TEST_F( DataPubDbExport, AModelTheChainDoesNotListBorrowsTheNoiseOfItsEdit )
+{
+   QString  laterGUID = US_Util::new_guid();
+   US_Model later;
+   later.modelGUID   = laterGUID;
+   later.editGUID    = editGUID;
+   later.description = "demo_run.1A280.2dsa-mc.model";
+   ASSERT_EQ( later.write( US_Settings::dataDir() + "/models/M0000002.xml" ),
+              IUS_DB2::OK );
+
+   QString dbRunID;
+   QString error;
+   ASSERT_TRUE( storeInDatabase( dbRunID, error ) ) << error.toStdString();
+
+   db->rawQuery( QString( "UPDATE noise SET timeEntered = '2020-01-01 00:00:00'"
+                          " WHERE noiseGUID = '%1'" ).arg( noiseGUID ) );
+   ASSERT_EQ( db->lastErrno(), IUS_DB2::OK ) << db->lastError().toStdString();
+   db->rawQuery( QString( "UPDATE model SET lastUpdated = NOW()"
+                          " WHERE modelGUID = '%1'" ).arg( laterGUID ) );
+   ASSERT_EQ( db->lastErrno(), IUS_DB2::OK ) << db->lastError().toStdString();
+
+   // The model's row names a copy of its edit, under a copy of the raw
+   // data of a copy of the experiment that nobody is listed for
+   db->rawQuery( QString( "SELECT m.modelID, m.editedDataID, e.rawDataID,"
+                          " r.experimentID FROM model m"
+                          " JOIN editedData e ON e.editedDataID = m.editedDataID"
+                          " JOIN rawData r ON r.rawDataID = e.rawDataID"
+                          " WHERE m.modelGUID = '%1'" ).arg( laterGUID ) );
+   ASSERT_TRUE( db->next() ) << db->lastError().toStdString();
+   int modelID = db->value( 0 ).toInt();
+   int editID  = db->value( 1 ).toInt();
+   int rawID   = db->value( 2 ).toInt();
+   int expID   = db->value( 3 ).toInt();
+
+   int hiddenExp  = copyRow( "experiment", "experimentID", "experimentGUID",
+                             expID, "runID = CONCAT( 'hidden_', "
+                             + QString::number( expID ) + " )" );
+   ASSERT_GT( hiddenExp, 0 ) << db->lastError().toStdString();
+   int hiddenRaw  = copyRow( "rawData", "rawDataID", "rawDataGUID", rawID,
+                             "experimentID = " + QString::number( hiddenExp ) );
+   ASSERT_GT( hiddenRaw, 0 ) << db->lastError().toStdString();
+   int hiddenEdit = copyRow( "editedData", "editedDataID", "editGUID", editID,
+                             "rawDataID = " + QString::number( hiddenRaw ) );
+   ASSERT_GT( hiddenEdit, 0 ) << db->lastError().toStdString();
+
+   struct PutBack
+   {
+      std::function< void() > undo;
+      ~PutBack() { undo(); }
+   } putBack { [ & ]()
+   {
+      db->rawQuery( "UPDATE model SET editedDataID = "
+                    + QString::number( editID ) + " WHERE modelID = "
+                    + QString::number( modelID ) );
+      db->rawQuery( "DELETE FROM editedData WHERE editedDataID = "
+                    + QString::number( hiddenEdit ) );
+      db->rawQuery( "DELETE FROM rawData WHERE rawDataID = "
+                    + QString::number( hiddenRaw ) );
+      db->rawQuery( "DELETE FROM experiment WHERE experimentID = "
+                    + QString::number( hiddenExp ) );
+   } };
+
+   db->rawQuery( "UPDATE model SET editedDataID = "
+                 + QString::number( hiddenEdit ) + " WHERE modelID = "
+                 + QString::number( modelID ) );
+   ASSERT_EQ( db->lastErrno(), IUS_DB2::OK ) << db->lastError().toStdString();
+
+   // Not listed by the chain of the run
+   {
+      US_DataPubCatalog      catalog;
+      US_DataPubCatalog::Run run;
+      ASSERT_TRUE( catalog.open( true, master, error ) ) << error.toStdString();
+      ASSERT_TRUE( catalog.runByID( dbRunID, run, error ) )
+         << error.toStdString();
+      ASSERT_TRUE( catalog.loadRunDetails( run, error ) )
+         << error.toStdString();
+      QList< US_DataPubCatalog::Model > listed =
+         catalog.models( QList< US_DataPubCatalog::Run >() << run, error );
+
+      for ( const US_DataPubCatalog::Model& model : listed )
+         ASSERT_NE( model.guid, laterGUID );
+   }
+
+   QString    bundle = root + "/picked.tar.gz";
+   QByteArray saved  = qgetenv( "US3_DB_PASSWORD" );
+   qputenv( "US3_DB_PASSWORD", master.toUtf8() );
+   int code;
+   {
+      US_DataPubCLI cli;
+      code = cli.run( QStringList() << "us_data_publication" << "--mode"
+                      << "export" << "--source" << "db" << "--experiment-id"
+                      << dbRunID << "--model-guid" << laterGUID
+                      << "--non-interactive" << "--bundle" << bundle );
+   }
+   if ( saved.isEmpty() )  qunsetenv( "US3_DB_PASSWORD" );
+   else                    qputenv( "US3_DB_PASSWORD", saved );
+   ASSERT_EQ( code, 0 );
+
+   US_DataPubBundle   unpacked;
+   US_DataPubManifest mani;
+   ASSERT_TRUE( unpacked.unpack( bundle, error ) ) << error.toStdString();
+   ASSERT_TRUE( mani.read( unpacked.rootPath() + "/"
+                           + US_DataPubBundle::manifestName(), error ) )
+      << error.toStdString();
+
+   US_DataPubEntity model;
+   ASSERT_TRUE( mani.entity( US_DataPub::Model, laterGUID, model ) );
+   EXPECT_EQ( model.attrs.value( "sourceIndex" ), QString::number( modelID ) );
+   EXPECT_TRUE( model.attrs.value( "sourceLastUpdated" ).endsWith( "Z" ) )
+      << model.attrs.value( "sourceLastUpdated" ).toStdString();
+
+   US_DataPubEntity noise;
+   ASSERT_TRUE( mani.entity( US_DataPub::Noise, noiseGUID, noise ) );
+   EXPECT_EQ( noise.attrs.value( "borrowedByModelGUIDs" ), laterGUID );
+   EXPECT_TRUE( mani.contains( US_DataPub::Model, modelGUID ) );
+}
+
+/* The calibration's dateUpdated travels as the instant it is, also in the
+   hour of a fall-back of the server's time zone (Europe: 2024-10-27, 01:00
+   UTC), which a zone with daylight saving time reads twice.  It is read
+   with the session on UTC.  Only a server in such a zone can tell the
+   difference; on a server on UTC this checks the instant alone.
+*/
+TEST_F( DataPubDbExport, TheCalibrationDateIsTheInstantInAFallBackHour )
+{
+   QString dbRunID;
+   QString error;
+   ASSERT_TRUE( storeInDatabase( dbRunID, error ) ) << error.toStdString();
+
+   db->rawQuery( "SELECT rotorCalibrationID FROM experiment WHERE runID = '"
+                 + dbRunID + "'" );
+   ASSERT_TRUE( db->next() );
+   QString calID = db->value( 0 ).toString();
+   ASSERT_GT( calID.toInt(), 0 );
+
+   db->rawQuery( "SELECT @@session.time_zone" );
+   ASSERT_TRUE( db->next() );
+   QString zone = db->value( 0 ).toString();
+
+   db->rawQuery( "SET time_zone = '+00:00'" );
+   db->rawQuery( "SELECT dateUpdated FROM rotorCalibration"
+                 " WHERE rotorCalibrationID = " + calID );
+   ASSERT_TRUE( db->next() );
+   QString was = db->value( 0 ).toDateTime().toString( "yyyy-MM-dd hh:mm:ss" );
+
+   struct PutBack
+   {
+      std::function< void() > undo;
+      ~PutBack() { undo(); }
+   } putBack { [ & ]()
+   {
+      db->rawQuery( "SET time_zone = '+00:00'" );
+      db->rawQuery( "UPDATE rotorCalibration SET dateUpdated = "
+                    + ( was.isEmpty() ? QString( "NULL" ) : "'" + was + "'" )
+                    + " WHERE rotorCalibrationID = " + calID );
+      db->rawQuery( "SET time_zone = '" + zone + "'" );
+   } };
+
+   for ( const QString& instant : { QString( "2024-10-27 00:30:00" ),
+                                    QString( "2024-10-27 01:30:00" ),
+                                    QString( "2024-03-31 00:30:00" ) } )
+   {
+      SCOPED_TRACE( instant.toStdString() );
+      db->rawQuery( "SET time_zone = '+00:00'" );
+      db->rawQuery( "UPDATE rotorCalibration SET dateUpdated = '" + instant
+                    + "' WHERE rotorCalibrationID = " + calID );
+      ASSERT_EQ( db->lastErrno(), IUS_DB2::OK ) << db->lastError().toStdString();
+      db->rawQuery( "SET time_zone = '" + zone + "'" );
+
+      US_DataPubExporter fromDb;
+      ASSERT_TRUE( exportFromDb( dbRunID, root + "/cal.tar.gz", fromDb,
+                                 error ) ) << error.toStdString();
+
+      QList< US_DataPubEntity > cals =
+         fromDb.manifest().section( US_DataPub::RotorCalibration );
+      ASSERT_EQ( cals.size(), 1 );
+      EXPECT_EQ( cals[ 0 ].attrs.value( "dateUpdated" ),
+                 QString( instant ).replace( ' ', 'T' ) + "Z" );
+   }
 }

@@ -251,6 +251,23 @@ class US_DataPubCatalog
                     QStringList* copies = nullptr,
                     const QString& experimentID = QString() );
 
+      /*! \brief Every experiment the source holds under a run ID
+
+          The entries \ref runByID chooses among, by the same rule: a
+          database can hold several experiments of the investigator under
+          one run ID (also spelled with another case, which its runID
+          column does not tell apart), and a local store the directories
+          of the run and of copies of it.  Those of the project listed
+          last are taken when it has any, as runByID() takes them.  A
+          caller that offers the choice -- the export window -- passes the
+          ID of the one picked to runByID().
+          \param runID The run identifier to look for
+          \param error Filled in with a message when the scan fails
+          \returns The run headers, by experiment ID; empty when there is
+                   no such run
+      */
+      QList< Run > experimentsOfRun( const QString& runID, QString& error );
+
       //! \brief Fill in the raw-data triples and edits of a run
       //!
       //! A run without raw data is not an error here; whether that matters
@@ -268,13 +285,21 @@ class US_DataPubCatalog
           not.  This looks them up from \a model.guid: in the database its
           modelID and lastUpdated (get_modelID, get_model_info), on disk
           its M*.xml file (filename, path) and that file's time, as the
-          chain gives them.  Nothing is changed when the source has no
-          such model.
+          chain gives them.  From a database it also fills in the ID of
+          the model's edit (get_editID of \a model.editGUID, when the
+          editID is not set), which noises() looks the noise a model
+          without its own borrows up by.  Nothing is changed when the
+          source has no such model.
           \param model The model, its GUID set
           \param error Filled in when the database cannot be asked
           \returns False only when the database cannot be asked
       */
       bool completeModel( Model& model, QString& error );
+
+      //! \brief How often completeModel() has read the model files of a
+      //!        local store: once per catalog opened, however many models
+      //!        it looks up
+      int modelFileScans( void ) const;
 
       //! \brief All models that belong to the edits of the given runs
       //! \param runs  The runs whose models are wanted
@@ -368,6 +393,15 @@ class US_DataPubCatalog
       static QMap< QString, QString > peekAttributes( const QString& filename,
                                                       const QString& element );
 
+      //! \brief Compare file names, and so run IDs on disk, as \a
+      //!        sensitivity says (US_DataCatalog::setFileNameCase()); the
+      //!        default is the platform's
+      void setFileNameCase( Qt::CaseSensitivity sensitivity );
+
+      //! \brief What the catalog's reads fail with when they stop for a
+      //!        cancel (see setCancelFlag())
+      QString cancelledText( void ) const;
+
       //! \brief The investigator ID the catalog reads records for
       int investigatorID( void ) const;
 
@@ -403,15 +437,21 @@ class US_DataPubCatalog
       const QAtomicInt* cancel_flag;
       QMetaObject::Connection message_link;
 
+      //! completeModel() on disk: model GUID -> M*.xml file name, read
+      //! once from model_files_dir; model_file_scans counts the reads
+      QHash< QString, QString > model_files;
+      QString                   model_files_dir;
+      int                       model_file_scans;
+
       //! \brief True, with \a error filled in, once the cancel flag is set
       bool cancelledError( QString& error ) const;
 
       //! \brief Drop what was listed when the investigator has changed
       void syncInvestigator( void );
 
-      //! \brief The catalog positions of the runs of a run ID: the exact
-      //!        matches, or failing those, the runs of the spelling the
-      //!        source's own comparison finds (see indexOfRun())
+      //! \brief The catalog positions of the runs of a run ID, compared
+      //!        as US_DataCatalog::indexOfRun() compares: without case on
+      //!        the database, as the file system does on disk
       QList< int > indexesOfRun( const QString& runID ) const;
 
       //! \brief The catalog position of a run looked up before: the one of

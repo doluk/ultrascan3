@@ -240,6 +240,7 @@ US_DataPubCatalog::US_DataPubCatalog()
    cat     = new US_DataCatalog();
    listed  = false;
    cancel_flag = nullptr;
+   model_file_scans = 0;
 }
 
 US_DataPubCatalog::~US_DataPubCatalog()
@@ -256,6 +257,7 @@ bool US_DataPubCatalog::open( bool fromDb, const QString& dbPassword,
    from_db = fromDb;
    listed  = false;
    listed_project.clear();
+   model_files_dir.clear();
 
    // A wrong master password would otherwise be reported as the server's
    // refusal of a login without a password
@@ -356,10 +358,22 @@ bool US_DataPubCatalog::cancelledError( QString& error ) const
    if ( cancel_flag == nullptr  ||  cancel_flag->loadAcquire() == 0 )
       return false;
 
-   error = QObject::tr( "Reading the %1 was cancelled" )
-           .arg( from_db ? QObject::tr( "database" )
-                         : QObject::tr( "local data directory" ) );
+   error = cancelledText();
    return true;
+}
+
+void US_DataPubCatalog::setFileNameCase( Qt::CaseSensitivity sensitivity )
+{
+   cat->setFileNameCase( sensitivity );
+   listed = false;
+   listed_project.clear();
+}
+
+QString US_DataPubCatalog::cancelledText( void ) const
+{
+   return QObject::tr( "Reading the %1 was cancelled" )
+          .arg( from_db ? QObject::tr( "database" )
+                        : QObject::tr( "local data directory" ) );
 }
 
 void US_DataPubCatalog::setMessageHandler(
@@ -378,6 +392,11 @@ void US_DataPubCatalog::setMessageHandler(
 IUS_DB2* US_DataPubCatalog::db( void )
 {
    return dbase;
+}
+
+int US_DataPubCatalog::modelFileScans( void ) const
+{
+   return model_file_scans;
 }
 
 int US_DataPubCatalog::investigatorID( void ) const
@@ -520,19 +539,50 @@ QList< US_DataPubCatalog::Run > US_DataPubCatalog::runs(
 QList< int > US_DataPubCatalog::indexesOfRun( const QString& runID ) const
 {
    QList< int > found;
-   int          first = cat->indexOfRun( runID );
 
-   if ( first < 0 )  return found;
-
-   // Every run of the spelling that was found: a local store can hold it
-   // in more than one directory
-   QString spelling = cat->run( first ).runID;
+   // Every run the source takes for this run ID, by the rule of
+   // US_DataCatalog::indexOfRun(): the database's runID column does not
+   // tell "RunA" from "runa", so both are experiments of the one run ID
+   // (and more than one is refused by runByID()); a local store compares
+   // as its file system does, and can hold the run in more than one
+   // directory
+   Qt::CaseSensitivity cs = from_db ? Qt::CaseInsensitive
+                                    : cat->fileNameCase();
 
    for ( int ii = 0; ii < cat->runCount(); ii++ )
-      if ( cat->run( ii ).runID == spelling )
+      if ( cat->run( ii ).runID.compare( runID, cs ) == 0 )
          found << ii;
 
    return found;
+}
+
+QList< US_DataPubCatalog::Run > US_DataPubCatalog::experimentsOfRun(
+      const QString& runID, QString& error )
+{
+   QList< Run > list;
+
+   if ( ! ensureListed( listed ? listed_project : QString(), error ) )
+      return list;
+
+   QList< int > indexes = indexesOfRun( runID );
+
+   if ( indexes.isEmpty()  &&  ! listed_project.isEmpty() )
+   {  // Not in the project that was listed, as runByID() looks
+      if ( ! ensureListed( QString(), error ) )  return list;
+
+      indexes = indexesOfRun( runID );
+   }
+
+   for ( int ii = 0; ii < indexes.size(); ii++ )
+      list << cat->run( indexes[ ii ] );
+
+   std::stable_sort( list.begin(), list.end(),
+                     []( const Run& aa, const Run& bb )
+                     { return aa.id.toInt() < bb.id.toInt(); } );
+
+   error.clear();
+
+   return list;
 }
 
 int US_DataPubCatalog::indexOfListedRun( const Run& run ) const
@@ -589,14 +639,32 @@ bool US_DataPubCatalog::runByID( const QString& runID, Run& found,
       QList< int > byID;
       QStringList  ids;
 
-      for ( int ii = 0; ii < indexes.size(); ii++ )
+      auto pick = [ & ]( void )
       {
-         const Run& run = cat->run( indexes[ ii ] );
+         byID.clear();
+         ids .clear();
 
-         ids << run.id;
+         for ( int ii = 0; ii < indexes.size(); ii++ )
+         {
+            const Run& run = cat->run( indexes[ ii ] );
 
-         if ( run.id.toInt() > 0  &&  run.id.toInt() == experimentID.toInt() )
-            byID << indexes[ ii ];
+            ids << run.id;
+
+            if ( run.id.toInt() > 0  &&
+                 run.id.toInt() == experimentID.toInt() )
+               byID << indexes[ ii ];
+         }
+      };
+
+      pick();
+
+      if ( byID.isEmpty()  &&  ! listed_project.isEmpty() )
+      {  // The experiment named is not in the project listed: the caller
+         // says what is wrong with one of another project
+         if ( ! ensureListed( QString(), error ) )  return false;
+
+         indexes = indexesOfRun( runID );
+         pick();
       }
 
       if ( byID.isEmpty() )
@@ -802,26 +870,40 @@ bool US_DataPubCatalog::completeModel( Model& model, QString& error )
 
    if ( ! from_db )
    {
-      QString     mdir  = US_Settings::dataDir() + "/models";
-      QStringList files = QDir( mdir ).entryList(
-                          QStringList( "M???????.xml" ), QDir::Files,
-                          QDir::Name );
+      // The model files are read once, for every model looked up after:
+      // GUID -> the first file (by name) that holds it
+      QString mdir = US_Settings::dataDir() + "/models";
 
-      for ( int ii = 0; ii < files.size(); ii++ )
+      if ( model_files_dir != mdir )
       {
-         QString path = mdir + "/" + files[ ii ];
+         QStringList files = QDir( mdir ).entryList(
+                             QStringList( "M???????.xml" ), QDir::Files,
+                             QDir::Name );
 
-         if ( peekAttributes( path, "model" ).value( "modelGUID" )
-              != model.guid )
-            continue;
+         model_files.clear();
+         model_files_dir = mdir;
+         model_file_scans++;
 
-         model.filename    = files[ ii ];
-         model.path        = path;
-         model.lastUpdated = QLocale::c().toString(
-               QFileInfo( path ).lastModified().toUTC(),
-               "yyyy-MM-dd hh:mm:ss" ) + " UTC";
-         break;
+         for ( int ii = 0; ii < files.size(); ii++ )
+         {
+            QString guid = peekAttributes( mdir + "/" + files[ ii ], "model" )
+                           .value( "modelGUID" );
+
+            if ( ! guid.isEmpty()  &&  ! model_files.contains( guid ) )
+               model_files.insert( guid, files[ ii ] );
+         }
       }
+
+      QString file = model_files.value( model.guid );
+
+      if ( file.isEmpty() )  return true;
+
+      QString path      = mdir + "/" + file;
+      model.filename    = file;
+      model.path        = path;
+      model.lastUpdated = QLocale::c().toString(
+            QFileInfo( path ).lastModified().toUTC(),
+            "yyyy-MM-dd hh:mm:ss" ) + " UTC";
 
       return true;
    }
@@ -866,6 +948,22 @@ bool US_DataPubCatalog::completeModel( Model& model, QString& error )
    // personID, lastUpdated (UTC), ...
    if ( dbase->next()  &&  dbase->value( 0 ).toString() == model.guid )
       model.lastUpdated = US_DataCatalog::utcText( dbase->value( 6 ) );
+
+   // The edit it was fitted to, by ID: the noise of that edit is what a
+   // model without noise of its own borrows (noises(), noisesOfEdit())
+   if ( model.editID.isEmpty()  &&  ! model.editGUID.isEmpty() )
+   {
+      query.clear();
+      query << "get_editID" << model.editGUID;
+      dbase->query( query );
+
+      if ( failed() )  return false;
+
+      int editID = dbase->next() ? dbase->value( 0 ).toInt() : 0;
+
+      if ( editID > 0 )
+         model.editID = QString::number( editID );
+   }
 
    return true;
 }

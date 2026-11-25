@@ -32,8 +32,9 @@ class US_DataPubExportPane : public US_Widgets
 
       /*! \brief True while an export is running
 
-          The export runs on the window's own thread and keeps the window
-          responsive by processing events, so the window has to refuse to
+          The export runs on the window's own thread and processes events
+          between its steps (not within one: indexing a local store, reading
+          one run's records, writing the archive), so the window has to refuse to
           close -- and the tab refuses every other action -- until it is
           done.
       */
@@ -128,6 +129,16 @@ class US_DataPubExportPane : public US_Widgets
       QStringList checkedGuids ( const QString& kind ) const;
 
       QTreeWidgetItem* itemFor( QTreeWidget*, const QString& guid ) const;
+
+      /*! Ask which of the experiments a run ID names in the database is
+          meant.  \param runID The run ID the dialog gave
+          \param exps  Its experiments (US_DataPubCatalog::experimentsOfRun)
+          \param expID Set to the ID of the one chosen
+          \returns False when none was chosen
+      */
+      bool    chooseExperiment( const QString& runID,
+                                const QList< US_DataPubCatalog::Run >& exps,
+                                QString& expID );
 
       void    setEditChecks( const QString& mode );
       bool    modelsNeeding( const QString& editGUID, QStringList& ) const;
