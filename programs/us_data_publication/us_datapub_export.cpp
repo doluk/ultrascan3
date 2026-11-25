@@ -1266,6 +1266,8 @@ bool US_DataPubExporter::addFittedModels(
             model.description = record.description;
             model.editGUID    = record.editGUID;
             found             = true;
+
+            if ( ! catalog.completeModel( model, error ) )  return false;
          }
 
          else if ( status != IUS_DB2::OK  &&  status != IUS_DB2::NO_MODEL  &&
@@ -3276,8 +3278,12 @@ bool US_DataPubExporter::collectModels(
       model.guid        = record.modelGUID;
       model.description = record.description;
       model.editGUID    = record.editGUID;
-      models << model;
 
+      // Where it stands in the source -- ID or file, and time -- which the
+      // import writes the models of an edit by
+      if ( ! catalog.completeModel( model, error ) )  return false;
+
+      models << model;
       note( tr( "Model \"%1\" is not one the selected runs list; it is"
                 " exported as asked" ).arg( model.description ) );
    }

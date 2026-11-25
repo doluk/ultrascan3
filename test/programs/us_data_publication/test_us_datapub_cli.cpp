@@ -883,3 +883,48 @@ TEST_F( DataPubCli, ListShowsTheManifestOfARefusedBundle )
    EXPECT_TRUE( outText.trimmed().isEmpty() ) << outText.toStdString();
 }
 #endif
+
+/* A subset picked with --model-guid carries, for each model and noise
+   record, where it stands in the source: sourceLastUpdated and
+   sourceIndex (the file number on disk), which the import writes the
+   records of an edit by.  It skips in a build whose export writes no
+   source order at all.
+*/
+TEST_F( DataPubCli, ModelsPickedByGuidCarryTheirSourceOrder )
+{
+   QString whole  = root + "/whole.tar.gz";
+   QString subset = root + "/subset.tar.gz";
+
+   ASSERT_EQ( run( QStringList() << "--mode" << "export"
+                   << "--experiment-id" << runID << "--non-interactive"
+                   << "--bundle" << whole ), 0 );
+
+   US_DataPubManifest all;
+   ASSERT_TRUE( manifestOf( whole, all ) );
+   QList< US_DataPubEntity > listed = all.section( US_DataPub::Model );
+   ASSERT_FALSE( listed.isEmpty() );
+
+   if ( ! listed[ 0 ].attrs.contains( "sourceLastUpdated" ) )
+      GTEST_SKIP() << "this build's export writes no source order";
+
+   ASSERT_EQ( run( QStringList() << "--mode" << "export"
+                   << "--experiment-id" << runID << "--model-guid"
+                   << modelGUID << "--non-interactive"
+                   << "--bundle" << subset ), 0 );
+
+   US_DataPubManifest mani;
+   ASSERT_TRUE( manifestOf( subset, mani ) );
+
+   QList< US_DataPubEntity > records = mani.section( US_DataPub::Model )
+                                       + mani.section( US_DataPub::Noise );
+   ASSERT_FALSE( mani.section( US_DataPub::Model ).isEmpty() );
+   ASSERT_FALSE( mani.section( US_DataPub::Noise ).isEmpty() );
+
+   for ( const US_DataPubEntity& record : records )
+   {
+      EXPECT_FALSE( record.attrs.value( "sourceLastUpdated" ).isEmpty() )
+         << record.guid.toStdString();
+      EXPECT_EQ( record.attrs.value( "sourceIndex" ), QString( "1" ) )
+         << record.guid.toStdString();
+   }
+}

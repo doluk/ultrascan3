@@ -260,6 +260,22 @@ class US_DataPubCatalog
       //! \returns True when the details could be read
       bool loadRunDetails( Run& run, QString& error );
 
+      /*! \brief Fill in where a model picked by GUID stands in the source
+
+          A model the chain of the runs lists carries its ID, file and
+          last-updated time; one picked by its GUID alone (outside the
+          runs read, or the model a borrowed noise was fitted to) does
+          not.  This looks them up from \a model.guid: in the database its
+          modelID and lastUpdated (get_modelID, get_model_info), on disk
+          its M*.xml file (filename, path) and that file's time, as the
+          chain gives them.  Nothing is changed when the source has no
+          such model.
+          \param model The model, its GUID set
+          \param error Filled in when the database cannot be asked
+          \returns False only when the database cannot be asked
+      */
+      bool completeModel( Model& model, QString& error );
+
       //! \brief All models that belong to the edits of the given runs
       //! \param runs  The runs whose models are wanted
       //! \param error Filled in with a message when the scan fails

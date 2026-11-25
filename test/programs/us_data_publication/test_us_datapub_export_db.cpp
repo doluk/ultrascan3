@@ -790,3 +790,31 @@ TEST_F( DataPubDbExport, TwoExperimentsOfOneRunIdArePickedByTheirIds )
             << staged[ ii ].guid.toStdString();
    }
 }
+
+/* A model picked by its GUID alone is looked up for where it stands in the
+   database: its modelID and lastUpdated are those the chain of its run
+   lists for it. */
+TEST_F( DataPubDbExport, AModelPickedByGuidSaysWhereItStands )
+{
+   QString dbRunID;
+   QString error;
+   ASSERT_TRUE( storeInDatabase( dbRunID, error ) ) << error.toStdString();
+
+   US_DataPubCatalog catalog;
+   ASSERT_TRUE( catalog.open( true, master, error ) ) << error.toStdString();
+
+   US_DataPubCatalog::Run run;
+   ASSERT_TRUE( catalog.runByID( dbRunID, run, error ) ) << error.toStdString();
+   ASSERT_TRUE( catalog.loadRunDetails( run, error ) ) << error.toStdString();
+
+   QList< US_DataPubCatalog::Model > listed =
+      catalog.models( QList< US_DataPubCatalog::Run >() << run, error );
+   ASSERT_FALSE( listed.isEmpty() ) << error.toStdString();
+
+   US_DataPubCatalog::Model picked;
+   picked.guid = listed[ 0 ].guid;
+   ASSERT_TRUE( catalog.completeModel( picked, error ) ) << error.toStdString();
+   EXPECT_EQ( picked.id, listed[ 0 ].id );
+   EXPECT_FALSE( picked.lastUpdated.isEmpty() );
+   EXPECT_EQ( picked.lastUpdated, listed[ 0 ].lastUpdated );
+}

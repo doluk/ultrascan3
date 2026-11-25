@@ -1635,6 +1635,15 @@ class US_DataPubExporterTest
          return ex.mani;
       }
 
+      static bool collectModels( US_DataPubExporter& ex,
+            const US_DataPubExporter::Selection& selection,
+            QList< US_DataPubCatalog::Model >& models, QString& error )
+      {
+         return ex.collectModels( selection,
+                                  QList< US_DataPubCatalog::Run >(), models,
+                                  error );
+      }
+
       static bool openDisk( US_DataPubExporter& ex )
       {
          QString error;
@@ -4567,4 +4576,63 @@ TEST_F( DataPubExportSteps, TheCatalogStartsNoDatabaseReadOnceCancelled )
    EXPECT_TRUE( error.contains( "cancelled" ) ) << error.toStdString();
 
    EXPECT_TRUE( sdb.asked.isEmpty() ) << sdb.asked.join( ", " ).toStdString();
+}
+
+// ------------------------------- where a model picked by GUID stands
+
+/* A model picked by its GUID that the runs read do not list is loaded by
+   itself.  It still says where it stands in the source -- its file and
+   that file's time on disk -- which the export writes as the record's
+   source order (sourceIndex, sourceLastUpdated) and the import writes
+   the models of an edit by.
+*/
+TEST_F( DataPubExport, AModelPickedByGuidSaysWhereItStands )
+{
+   US_DataPubExporter exporter;
+   ASSERT_TRUE( US_DataPubExporterTest::openDisk( exporter ) );
+
+   US_DataPubExporter::Selection selection =
+      baseSelection( US_DataPub::ScopeNoise );
+   selection.setModels( QStringList() << modelGUID );
+
+   QList< US_DataPubCatalog::Model > models;
+   QString                           error;
+   ASSERT_TRUE( US_DataPubExporterTest::collectModels( exporter, selection,
+                                                       models, error ) )
+      << error.toStdString();
+   ASSERT_EQ( models.size(), 1 );
+   EXPECT_EQ( models[ 0 ].guid, modelGUID );
+   EXPECT_EQ( models[ 0 ].filename, QString( "M0000001.xml" ) );
+   EXPECT_EQ( models[ 0 ].path,
+              US_Settings::dataDir() + "/models/M0000001.xml" );
+   EXPECT_TRUE( models[ 0 ].lastUpdated.endsWith( " UTC" ) )
+      << models[ 0 ].lastUpdated.toStdString();
+}
+
+// The same from a database: its modelID and lastUpdated
+TEST_F( DataPubExportSteps, AModelPickedByGuidSaysWhereItStandsInADatabase )
+{
+   QString guid = "aaaaaaaa-0000-4000-8000-000000000044";
+   sdb.rows.insert( "get_modelID", QList< QVariantList >()
+                    << ( QVariantList() << 44 ) );
+   sdb.rows.insert( "get_model_info", QList< QVariantList >()
+                    << ( QVariantList() << guid << "a model" << "<xml/>"
+                         << 0.0 << 6.1 << 2 << "2024-03-31 01:30:00" ) );
+
+   US_DataPubCatalog catalog;
+   catalog.attachDb( sdb.db() );
+
+   US_DataPubCatalog::Model model;
+   model.guid = guid;
+   QString error;
+   ASSERT_TRUE( catalog.completeModel( model, error ) ) << error.toStdString();
+   EXPECT_EQ( model.id, QString( "44" ) );
+   EXPECT_EQ( model.lastUpdated, QString( "2024-03-31 01:30:00 UTC" ) );
+
+   // A model the database does not have is left as it was
+   sdb.rows.remove( "get_modelID" );
+   US_DataPubCatalog::Model none;
+   none.guid = "aaaaaaaa-0000-4000-8000-000000000045";
+   ASSERT_TRUE( catalog.completeModel( none, error ) ) << error.toStdString();
+   EXPECT_TRUE( none.lastUpdated.isEmpty() );
 }

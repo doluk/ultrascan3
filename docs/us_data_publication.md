@@ -693,6 +693,13 @@ the selected triples. Either way the experiment XML names the investigator and
 operator of the run by GUID, as it does in a local store; a bundle that is to
 be published should be checked for that.
 
+A model picked by its GUID (`--model-guid`, or the model a carried noise
+record was fitted to) that the runs read do not list is looked up on its own
+for where it stands in the source — its database ID and last-updated time
+(`get_modelID`, `get_model_info`), or its `M*.xml` file and that file's
+time — just as a model the runs list carries them
+(`US_DataPubCatalog::completeModel()`).
+
 Runs of several projects can be exported together; each project the runs
 belong to is then in the bundle, and each experiment depends on its own. A run
 named twice is exported once.

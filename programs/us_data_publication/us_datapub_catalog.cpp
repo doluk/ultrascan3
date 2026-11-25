@@ -799,8 +799,83 @@ QList< US_DataPubCatalog::Model > US_DataPubCatalog::models(
    return list;
 }
 
-// ------------------------------------------------------------------ noises
+bool US_DataPubCatalog::completeModel( Model& model, QString& error )
+{
+   error.clear();
 
+   if ( model.guid.isEmpty() )  return true;
+
+   if ( ! from_db )
+   {
+      QString     mdir  = US_Settings::dataDir() + "/models";
+      QStringList files = QDir( mdir ).entryList(
+                          QStringList( "M???????.xml" ), QDir::Files,
+                          QDir::Name );
+
+      for ( int ii = 0; ii < files.size(); ii++ )
+      {
+         QString path = mdir + "/" + files[ ii ];
+
+         if ( peekAttributes( path, "model" ).value( "modelGUID" )
+              != model.guid )
+            continue;
+
+         model.filename    = files[ ii ];
+         model.path        = path;
+         model.lastUpdated = QLocale::c().toString(
+               QFileInfo( path ).lastModified().toUTC(),
+               "yyyy-MM-dd hh:mm:ss" ) + " UTC";
+         break;
+      }
+
+      return true;
+   }
+
+   if ( dbase == nullptr )
+   {
+      error = QObject::tr( "No database connection" );
+      return false;
+   }
+
+   auto failed = [ this, &error, &model ]( void )
+   {
+      int status = dbase->lastErrno();
+
+      if ( status == IUS_DB2::OK  ||  status == IUS_DB2::NOROWS )
+         return false;
+
+      error = QObject::tr( "The model %1 could not be looked up: %2" )
+              .arg( model.guid ).arg( dbase->lastError() );
+      return true;
+   };
+
+   QStringList query;
+   query << "get_modelID" << model.guid;
+   dbase->query( query );
+
+   if ( failed() )  return false;
+
+   int id = dbase->next() ? dbase->value( 0 ).toInt() : 0;
+
+   if ( id < 1 )  return true;
+
+   model.id = QString::number( id );
+
+   query.clear();
+   query << "get_model_info" << model.id;
+   dbase->query( query );
+
+   if ( failed() )  return false;
+
+   // get_model_info: modelGUID, description, xml, variance, meniscus,
+   // personID, lastUpdated (UTC), ...
+   if ( dbase->next()  &&  dbase->value( 0 ).toString() == model.guid )
+      model.lastUpdated = US_DataCatalog::utcText( dbase->value( 6 ) );
+
+   return true;
+}
+
+// ------------------------------------------------------------------ noises
 QList< US_DataPubCatalog::Noise > US_DataPubCatalog::noises(
       const QList< Model >& modelList, QString& error,
       QMultiHash< QString, QString >* borrowers )
