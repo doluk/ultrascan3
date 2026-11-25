@@ -1302,10 +1302,37 @@ QString US_DataTree::record_state( int istate )
     return "(" + hexn + ") " + flags;  // return hex flag and text version
 }
 
-// The model IDs in a list of autoflow model descriptions
-QStringList US_DataTree::parse_models_desc_json( const QStringList& modelInfos )
+/* The model IDs in a list of autoflow model descriptions (the GMP links)
+
+   A description that is JSON names the modelID values of its 2DSA_IT,
+   2DSA_MC and PCSA arrays, as UltraScan3 reads them.  One that is not JSON
+   -- a column changed to text, or a MariaDB table made before its JSON
+   columns had a CHECK -- UltraScan3 does not read, but it may still name
+   GMP models, and delete_model and delete_noise do not check the links: it
+   is read as the database reads it before it removes an edit
+   (delete_editedData).  Each "modelID" in its text, under any key, names
+   the run of ASCII digits that starts after at most 8 other characters,
+   written as a model ID is ("09405" names none).  The database counts those
+   8 in bytes, and here they are counted in characters, none of which is
+   less than a byte: every model the database's rule names is named here
+   too (and, next to characters outside ASCII, perhaps one more).
+
+   A description Qt refuses only for being stricter than the database -- a
+   number a double cannot hold (1e400, which MariaDB's JSON accepts), or
+   nesting or a size beyond Qt's limits -- may be JSON to the database,
+   which then reads it by key, in a way the text rule does not follow (a
+   modelID far from its key, an escaped key).  Whether it names a model
+   cannot be told: it is counted in unjudged, and the caller removes no
+   model while such a description is there.  A NULL description names none.
+*/
+QStringList US_DataTree::parse_models_desc_json( const QStringList& modelInfos,
+                                                 int* unjudged )
 {
    QStringList modelIDs;
+   const QString key_name = "modelID";
+
+   if ( unjudged != NULL )
+      *unjudged = 0;
 
    for ( int ii = 0; ii < modelInfos.size(); ii++ )
    {
@@ -1313,8 +1340,50 @@ QStringList US_DataTree::parse_models_desc_json( const QStringList& modelInfos )
 
       if ( modelDescJson.isEmpty() )   continue;
 
-      QJsonObject json_obj = QJsonDocument::fromJson( modelDescJson.toUtf8() )
-                             .object();
+      QJsonParseError perr;
+      QJsonDocument   jdoc = QJsonDocument::fromJson( modelDescJson.toUtf8(),
+                                                      &perr );
+
+      if ( perr.error != QJsonParseError::NoError )
+      {  // Not JSON to Qt
+         if ( perr.error == QJsonParseError::IllegalNumber  ||
+              perr.error == QJsonParseError::DeepNesting    ||
+              perr.error == QJsonParseError::DocumentTooLarge )
+         {  // ... but perhaps to the database
+            if ( unjudged != NULL )
+               ( *unjudged )++;
+         }
+
+         // The digits after each "modelID" in the text
+         const int length = modelDescJson.length();
+         int       pos    = modelDescJson.indexOf( key_name );
+
+         while ( pos >= 0 )
+         {
+            int start = pos + key_name.length();
+            int limit = start + 8;
+
+            while ( start < limit  &&  start < length  &&
+                    ! ( modelDescJson[ start ] >= QChar( '0' )  &&
+                        modelDescJson[ start ] <= QChar( '9' ) ) )
+               start++;
+
+            int end = start;
+
+            while ( end < length  &&  modelDescJson[ end ] >= QChar( '0' )  &&
+                    modelDescJson[ end ] <= QChar( '9' ) )
+               end++;
+
+            if ( end > start )
+               modelIDs << modelDescJson.mid( start, end - start );
+
+            pos = modelDescJson.indexOf( key_name, pos + key_name.length() );
+         }
+
+         continue;
+      }
+
+      QJsonObject json_obj = jdoc.object();
       QStringList keys     = json_obj.keys();
 
       for ( int jj = 0; jj < keys.size(); jj++ )
@@ -1328,7 +1397,7 @@ QStringList US_DataTree::parse_models_desc_json( const QStringList& modelInfos )
 
          for ( int kk = 0; kk < json_array.size(); kk++ )
          {
-            QJsonValue mid = json_array[ kk ].toObject().value( "modelID" );
+            QJsonValue mid = json_array[ kk ].toObject().value( key_name );
 
             if ( ! mid.isUndefined() )
                modelIDs << mid.toVariant().toString();
@@ -1371,7 +1440,17 @@ int US_DataTree::is_modelIDs_from_autoflow( const QString& mID )
          while ( status == IUS_DB2::OK  &&  dbP->next() )
             infos << dbP->value( 0 ).toString();
 
-         gmp_models = parse_models_desc_json( infos );
+         int unjudged = 0;
+         gmp_models   = parse_models_desc_json( infos, &unjudged );
+
+         if ( unjudged > 0 )
+         {  // which models they name cannot be told: none is removed
+            gmp_error = tr( "%n GMP link record(s) (autoflowModelsLink) are"
+                            " not JSON this window can read, but may be"
+                            " JSON to the database; an administrator has to"
+                            " correct them", "", unjudged );
+            return -1;
+         }
       }
 
       gmp_models_read = true;

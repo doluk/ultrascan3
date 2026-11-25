@@ -338,9 +338,16 @@ class US_DataTree : public QObject
         //! \param what What could not be checked
         void gmp_unknown( const QString& what );
 
-        //! \brief The model IDs in a list of autoflow model descriptions
-        //! \param modelInfos The JSON model descriptions
-        static QStringList parse_models_desc_json( const QStringList& modelInfos );
+        //! \brief The model IDs in a list of autoflow model descriptions:
+        //!        by key in JSON, by the database's text rule in text that
+        //!        is not JSON (see the definition)
+        //! \param modelInfos The model descriptions (modelsDesc)
+        //! \param unjudged   Set to the number of descriptions that are
+        //!                   not JSON to Qt but may be to the database:
+        //!                   which models those name cannot be told
+        //! \returns The model IDs, as written
+        static QStringList parse_models_desc_json( const QStringList& modelInfos,
+                                                   int* unjudged = NULL );
 
         //! \brief True, after telling the user, when the investigator was
         //!        changed since the database was read

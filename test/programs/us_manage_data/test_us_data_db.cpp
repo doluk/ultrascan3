@@ -172,6 +172,8 @@ namespace
          int                      autoflow = 0;     // every run is GMP's
          QSet< QString >          autoflowRuns;     // ... or these
          QStringList              autoflowModels;   // model IDs GMP made
+         QStringList              autoflowDescs;    // ... and GMP links
+                                                    // as written (modelsDesc)
          QSet< QString >          commitsInside;    // writes that end the
                                                     // client's transaction
          std::function< void( const QString& ) > during; // run as each
@@ -1063,6 +1065,8 @@ namespace
                for ( const QString& id : autoflowModels )
                   rows << ( QVariantList()
                             << QString( "{\"2DSA_IT\":[{\"modelID\":\"%1\"}]}" ).arg( id ) );
+               for ( const QString& desc : autoflowDescs )
+                  rows << ( QVariantList() << desc );
             }
 
             if ( rows.isEmpty()  &&  ! okWhenEmpty.contains( name ) )
@@ -1812,6 +1816,106 @@ TEST_F( TestUSDataDb, GmpDataIsNotRemoved )
    ASSERT_EQ( win.prompts.size(), 1 );
    EXPECT_TRUE( win.prompts[ 0 ].contains( "GMP" ) );
    EXPECT_NE( stateOf( model, editG ) & US_DataModel::REC_DB, 0 );
+}
+
+// A GMP link that is not JSON (a column changed to text) still names its
+// models, as the database reads it before it removes an edit: the digits
+// after each "modelID", under any key, after at most 8 other characters.
+// delete_model and delete_noise do not check the links, so the window does
+TEST_F( TestUSDataDb, GmpLinksThatAreNotJsonStillProtectTheirModels )
+{
+   struct Case { QString desc; bool kept; };
+   const QList< Case > cases = {
+      { "{\"2DSA_IT\":[{\"modelID\":\"31\"}",           true  },  // cut short
+      { "{\"2DSA\":[{\"modelID\": 31}], x",              true  },  // any key
+      { "garbage modelID=\t  \"#31; more",               true  },  // 6 others
+      { "{'modelID'   :  '31'",                          true  },  // 8 others
+      { "{'modelID'    :  '31'",                         false },  // 9 others
+      { "{\"modelID\":\"\u00e9\u00e9\u00e9\u00e9\u00e931",  true  },  // 8 characters, 13 bytes
+      { "{\"PCSA\":[{\"modelID\":\"031\"}",              false },  // not its ID
+      { "{\"PCSA\":[{\"modelID\":\"310\"}",              false },  // not its ID
+      { "{\"PCSA\":[{\"modelId\":\"31\"}",               false },  // case
+      { "{\"PCSA\":[{\"modelID\":\"7\"},{\"modelID\":\"31\"", true }, // 2nd
+   };
+
+   for ( const Case& cc : cases )
+   {
+      SCOPED_TRACE( cc.desc.toStdString() );
+      TearDown();
+      server = FakeServer();
+      SetUp();
+      server.autoflowDescs << cc.desc;
+
+      US_DataModel model;
+      prepare( model );
+      Window       win( model );
+      model.scan_data();
+      win.tree.build_dtree();
+
+      win.select( itemOfRow( win.tw, rowOf( model, modelG ) ) );
+      int stat = win.tree.act_on_selection( "Database only", "DB-only remove" );
+
+      if ( cc.kept )
+      {
+         EXPECT_EQ( stat, (int)US_DataTree::ACT_REFUSED );
+         EXPECT_TRUE( server.changes.isEmpty() ) << server.changes.join( " " ).toStdString();
+         ASSERT_EQ( win.prompts.size(), 1 );
+         EXPECT_TRUE( win.prompts[ 0 ].contains( "GMP" ) ) << win.prompts[ 0 ].toStdString();
+         EXPECT_NE( server.modelById( "31" ), nullptr );
+      }
+      else
+      {
+         EXPECT_EQ( stat, 0 ) << win.proc.lastError().toStdString();
+         EXPECT_EQ( server.modelById( "31" ), nullptr );
+      }
+   }
+
+   // valid JSON is read by key, as UltraScan3 reads it: only the stages it
+   // reads protect a model
+   TearDown();
+   server = FakeServer();
+   SetUp();
+   server.autoflowDescs << "{\"2DSA\":[{\"modelID\":\"31\"}]}";
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+   win.select( itemOfRow( win.tw, rowOf( model, noiseG ) ) );
+   EXPECT_EQ( win.tree.act_on_selection( "Database only", "DB-only remove" ), 0 )
+      << win.proc.lastError().toStdString();
+}
+
+// A GMP link Qt cannot read only because it is stricter than the database
+// -- a number a double cannot hold, which MariaDB's JSON accepts -- may be
+// JSON to the database, read by key: which models it names cannot be told,
+// and no model or noise record is removed while it is there
+TEST_F( TestUSDataDb, AGmpLinkThatCannotBeJudgedRemovesNothing )
+{
+   server.autoflowDescs << "{\"2DSA_IT\":[{\"modelID\":1e400},{\"modelID\":\"77\"}]}";
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   for ( const QString& guid : { noiseG, modelG } )
+   {
+      win.prompts.clear();
+      win.select( itemOfRow( win.tw, rowOf( model, guid ) ) );
+      EXPECT_EQ( win.tree.act_on_selection( "Database only", "DB-only remove" ),
+                 (int)US_DataTree::ACT_REFUSED );
+      ASSERT_FALSE( win.prompts.isEmpty() );
+      EXPECT_TRUE( win.prompts.last().contains( "could not be checked" ) )
+         << win.prompts.last().toStdString();
+      EXPECT_TRUE( win.prompts.last().contains( "autoflowModelsLink" ) )
+         << win.prompts.last().toStdString();
+   }
+
+   EXPECT_TRUE( server.changes.isEmpty() ) << server.changes.join( " " ).toStdString();
+   EXPECT_NE( server.modelById( "31" ), nullptr );
 }
 
 // Removing everything under the global models asks first, with the count
