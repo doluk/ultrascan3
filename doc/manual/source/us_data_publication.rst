@@ -132,6 +132,12 @@ to a calibration with another GUID is refused too, unless the calibration it
 names by GUID is there: the other calibration's coefficients are not passed
 off as the run's.
 
+A database can hold more than one experiment of an investigator under one run
+ID. Which of them is meant cannot be told from the run ID, so such a run is
+refused with a message that names every experiment ID; on the command line
+``--experiment-id <ID>`` picks one of them, and the export reads that
+experiment and no other.
+
 When the runs come with a project rather than by name, a run whose own records
 do not hold together -- one of those problems, a channel without a solution,
 a rotor calibration or centerpiece it names that is not there, a time state
@@ -144,7 +150,9 @@ all (with the run the copy was made from). A model or noise record selected by
 GUID whose run is left out fails the export. A model or noise record that
 holds a value that is not a finite number is left out with a warning, or
 fails the export when it was selected by GUID. A database or disk that fails
-still fails the export.
+still fails the export. On disk a run belongs to the project its experiment
+XML names; a run whose experiment XML is missing or cannot be read names no
+project, so a project export does not take it, and a warning names it.
 
 What was left out is always reported: the **Export Complete** box lists the
 runs left out, the number of other records left out and the warnings (so do
@@ -251,14 +259,20 @@ The Export tab works from the top down.
   would be left out: every record is read and checked as the export does it,
   in a staging directory that is removed afterwards, so it takes as long as
   the export. Its progress is shown as the export's is, the window is locked
-  meanwhile, and **Cancel** stops it. A preview that fails says "The export
+  meanwhile, and **Cancel** stops it, as it stops the export. A preview that fails says "The export
   would fail" with the reason and the warnings.
 
 **Export Bundle**
   Writes the bundle. While the export runs the tab cannot be changed, the
   Import tab cannot be opened, and a request to close the window is carried
-  out once the export is done. **Cancel** stops the export at the next record;
-  nothing is written. An existing file of the same name is replaced
+  out once the export is done. The progress bar counts the runs as they are
+  read from the source, then the records as they are staged, and the status
+  log shows what the export, and the catalog it reads with, is doing.
+  **Cancel** stops the export before the next run or record, between two
+  files of a local store, or, from a database, before the next run's
+  records, experiment information or model noise are read (a read that has
+  started is finished first), also when it was pressed just as the export
+  started; nothing is written. An existing file of the same name is replaced
   only once the new bundle is complete and has been read back and compared,
   file by file, with what was staged. The UltraScan ``tmp`` directory needs
   room for about twice the data plus the bundle while this happens.
@@ -565,7 +579,8 @@ Export options
 ``--experiment-id <run>``       Export this run; repeatable. Accepts a runID or an
                                 experiment database ID; a run ID that matches
                                 exactly wins, and an ID only counts when one run
-                                has it
+                                has it. An ID picks one of several database
+                                experiments that share a run ID
 ``--max-scope <scope>``         Export up to and including this record type
                                 (default: ``noise``, the whole chain)
 ``--include-<scope>``           Export up to and including this record type;
@@ -595,7 +610,9 @@ Import options
 ``--no-verify``                        Skip the payload digest check; the only way
                                        to import a bundle without digests
 ``--strict-hardware``                  Fail rather than substitute missing hardware
-``--list``                             Print the manifest and stop
+``--list``                             Print the manifest and stop; for a bundle
+                                       the import refuses, the manifest (when it
+                                       can be read) and then the refusal
 =====================================  ===================================================
 
 Common options

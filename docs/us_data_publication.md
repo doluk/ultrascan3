@@ -501,8 +501,15 @@ command line exits with `1`, when
   (`US_DataCatalog::Run::copyOf`), never read, and named in a warning. When
   none is named after the run, which of them is the run cannot be told, so
   the export does not pick one: it fails with a message naming every
-  directory. (The export once read whichever directory the catalog listed
-  first; round 7 refused the run as long as any copy was there);
+  directory;
+* a run ID names more than one experiment of the investigator in the
+  database. The run ID alone does not say which of them is meant, so the
+  export does not pick one: it fails with a message naming every experiment
+  ID. `--experiment-id <ID>` names one of them, and the export then reads
+  that experiment — its record, its experiment information and its RI
+  profile — and no other (`Selection::experimentIDs`). The window takes the
+  experiment it lists. A bundle holds one run of a run ID, so two such IDs
+  in one export are refused;
 * a run, raw data, edit, model or noise GUID it was asked for by name matches
   nothing (`--model-guid`, `--noise-guid`, or the selection of the window);
 * a run belongs to a project other than the one `--project-id` /
@@ -582,6 +589,15 @@ run's fault and still fails the export. A run named on its own
 (`--experiment-id`, or picked in the window) is refused instead. When no run
 of the project is left, the export fails.
 
+A run of a local store belongs to the project its experiment XML names. A
+run whose experiment XML is missing, or cannot be read from its start, names
+no project, so it is not one of the project's runs and a project export does
+not take it; a warning names it ("run … is not in the bundle: its
+experiment XML … is missing, so whether it belongs to the project … cannot
+be told"), so that it does not vanish from the export without a word. A run
+whose XML reads but names no project belongs to none and is not warned
+about.
+
 Records the export cannot carry and was not asked for by name are left out
 with a warning: a model or noise record without a GUID, a noise record whose
 model is not in the bundle, an RI profile that does not parse.
@@ -610,7 +626,28 @@ the export, less the packing. The window's preview shows its progress in the
 status log and the progress bar, as the export does, and both can be stopped
 with **Cancel** (`US_DataPubExporter::cancel()`): the export or preview then
 fails with "The export was cancelled; no bundle was written" and removes its
-staging directory. A failed preview says "The export would fail: …" with the
+staging directory.
+
+**Progress and Cancel.** An export goes through two phases, and the progress
+bar counts each: first the runs are read from the source, one step per run
+("Reading run … (2 of 5)"), then the records are staged, one step per
+record. What the shared catalog says while it reads — "Indexing the local
+data directory…", a database without the catalog procedures — is in the
+status log (and, with `--verbose`, on the command line) as it happens. The
+window stays responsive throughout, and **Cancel** takes effect:
+
+* while the runs are read: before each run, between two files of a local
+  store, and, from a database, before the catalog reads a run's records,
+  before it reads a run's experiment information and before each model's
+  noise is looked up. What has been started there is finished first: the
+  reads of one run's records (a few queries), and the listing of the
+  database's experiments (one query), are not interrupted;
+* while the records are staged: before each record;
+* when it was pressed just before the export started: the export then stops
+  before it reads anything. Once an export or preview has ended, a Cancel
+  of it no longer counts, and the next one starts afresh.
+
+A failed preview says "The export would fail: …" with the
 reason and the warnings. The window's completion box (and the preview, and the box of
 an export that failed) lists the runs left out, the number of other records
 left out, and the warnings. `US_DataPubExporter::warnings()`,
@@ -745,13 +782,15 @@ The Export tab works top to bottom:
    with the warnings of what would be left out: it is the export without the
    bundle (every record is read and checked, in a staging directory that is
    removed afterwards), so it takes as long as the export; it shows its
-   progress, locks the window as the export does, and **Cancel** stops it.
+   progress, locks the window as the export does, and **Cancel** stops it
+   (see *Progress and Cancel* above).
    **Latest Edit** ticks
    the edit with the latest edit time stamp of each triple.
 10. **Export Bundle**. While the export runs the tab cannot be changed, the
     Import tab cannot be opened, and closing the window waits: it closes once
-    the export is done. **Cancel** stops the export (or the preview) at the
-    next record; no bundle is written. The same holds the other way round during an import.
+    the export is done. **Cancel** stops the export (or the preview) while
+    the runs are read as well as while the records are staged (see
+    *Progress and Cancel* above); no bundle is written. The same holds the other way round during an import.
 
 ### Command line
 
@@ -764,7 +803,7 @@ us_data_publication --mode export --bundle <file.tar.gz> [options]
 | `--source db\|disk` | Where the records are read from (default: `disk`) |
 | `--project-id <id>` | Export this project, by database ID |
 | `--project-guid <guid>` | Export this project, by GUID |
-| `--experiment-id <run>` | Export this run; repeatable. Accepts a runID or an experiment database ID. A run ID that matches exactly always wins — a run ID made only of digits is not taken for another run's database ID (that is warned about) — and a database ID is only taken when exactly one run has it |
+| `--experiment-id <run>` | Export this run; repeatable. Accepts a runID or an experiment database ID. A run ID that matches exactly always wins — a run ID made only of digits is not taken for another run's database ID (that is warned about) — and a database ID is only taken when exactly one run has it. A database ID picks one of several experiments of a run ID, which the run ID alone does not |
 | `--max-scope <scope>` | Export up to and including this record type (default: `noise`, the whole chain) |
 | `--include-<scope>` | Export up to and including this record type; with several, the deepest counts. It may not go beyond `--max-scope`; within it, it is what is exported (`--max-scope noise --include-solutions` exports up to the solutions) |
 | `--model-guid <guid>` | Export only these models; repeatable |
@@ -1363,7 +1402,7 @@ us_data_publication --mode import --bundle <file.tar.gz> [options]
 | `--rename-suffix <text>` | Suffix for auto-renamed records (default: `imported`) |
 | `--no-verify` | Skip the payload digest check; the only way to import a bundle without digests |
 | `--strict-hardware` | Fail rather than stand another rotor, calibration, centerpiece, instrument or operator in for a missing one |
-| `--list` | Print the manifest and stop |
+| `--list` | Print the manifest and stop. A bundle the import refuses whose manifest can still be read (a format `1` bundle with `fittedToModelGUID`, say) has its manifest printed, then the refusal, with exit code `1` |
 
 A database import settles the master password first, before the bundle is
 unpacked; without one it stops with a single error that names the ways to
