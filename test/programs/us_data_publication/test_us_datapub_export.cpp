@@ -1693,6 +1693,14 @@ class US_DataPubExporterTest
          return ex.storedRiProfile( run );
       }
 
+      static bool gatherRuns( US_DataPubExporter& ex,
+                              const US_DataPubExporter::Selection& selection,
+                              QList< US_DataPubCatalog::Run >& runs,
+                              QString& error )
+      {
+         return ex.gatherRuns( selection, runs, error );
+      }
+
       static bool addSolutions( US_DataPubExporter& ex,
                                 const US_DataPubCatalog::Run& run,
                                 QString& error )
@@ -4635,4 +4643,160 @@ TEST_F( DataPubExportSteps, AModelPickedByGuidSaysWhereItStandsInADatabase )
    none.guid = "aaaaaaaa-0000-4000-8000-000000000045";
    ASSERT_TRUE( catalog.completeModel( none, error ) ) << error.toStdString();
    EXPECT_TRUE( none.lastUpdated.isEmpty() );
+}
+
+// ------------------------------------------------------- fix round 9: export
+
+/* The database's runID column does not tell case apart, so "RunA" and
+   "runa" are experiments of one run ID: the run ID, spelled either way,
+   names neither of them and is refused with both experiment IDs, as two
+   experiments of one spelling are.  experimentsOfRun() lists both -- the
+   choice the export window offers -- and the experiment ID picks one.
+*/
+TEST_F( DataPubExportSteps, CaseVariantsOfARunIdAreExperimentsOfOneRunId )
+{
+   QString g12 = "aaaaaaaa-0000-4000-8000-000000000012";
+   QString g15 = "aaaaaaaa-0000-4000-8000-000000000015";
+
+   sdb.rows.insert( "get_experiment_summary", QList< QVariantList >()
+                    << summary_row( 12, g12, "RunA" )
+                    << summary_row( 15, g15, "runa" ) );
+
+   US_DataPubCatalog catalog;
+   catalog.attachDb( sdb.db() );
+
+   for ( const QString& spelling : { QString( "RunA" ), QString( "runa" ),
+                                     QString( "RUNA" ) } )
+   {
+      SCOPED_TRACE( spelling.toStdString() );
+      US_DataPubCatalog::Run run;
+      QString                error;
+      bool                   unusable = false;
+
+      EXPECT_FALSE( catalog.runByID( spelling, run, error, &unusable ) );
+      EXPECT_TRUE( unusable );
+      EXPECT_TRUE( error.contains( "12, 15" ) ) << error.toStdString();
+
+      QList< US_DataPubCatalog::Run > exps =
+         catalog.experimentsOfRun( spelling, error );
+      ASSERT_EQ( exps.size(), 2 ) << error.toStdString();
+      EXPECT_EQ( exps[ 0 ].id, QString( "12" ) );
+      EXPECT_EQ( exps[ 1 ].id, QString( "15" ) );
+
+      ASSERT_TRUE( catalog.runByID( spelling, run, error, nullptr, nullptr,
+                                    "15" ) ) << error.toStdString();
+      EXPECT_EQ( run.guid, g15 );
+      EXPECT_EQ( run.runID, QString( "runa" ) );
+   }
+}
+
+/* experimentsOfRun() takes the experiments of the project listed last when
+   it has any, as runByID() does, and the others otherwise. */
+TEST_F( DataPubExportSteps, TheExperimentsOfARunIdAreThoseOfTheProjectListed )
+{
+   QString p1 = "aaaaaaaa-0000-4000-8000-0000000000a1";
+   QString p2 = "aaaaaaaa-0000-4000-8000-0000000000a2";
+   QVariantList in1 = summary_row( 12, "aaaaaaaa-0000-4000-8000-000000000012",
+                                   "dup_run" );
+   QVariantList in2 = summary_row( 15, "aaaaaaaa-0000-4000-8000-000000000015",
+                                   "dup_run" );
+   in1[ 6 ] = 1;  in1[ 7 ] = p1;  in1[ 8 ] = "one";
+   in2[ 6 ] = 2;  in2[ 7 ] = p2;  in2[ 8 ] = "two";
+   sdb.rows.insert( "get_experiment_summary",
+                    QList< QVariantList >() << in1 << in2 );
+
+   US_DataPubCatalog catalog;
+   catalog.attachDb( sdb.db() );
+   QString error;
+
+   catalog.runs( p2, error );
+   ASSERT_TRUE( error.isEmpty() ) << error.toStdString();
+
+   QList< US_DataPubCatalog::Run > exps =
+      catalog.experimentsOfRun( "dup_run", error );
+   ASSERT_EQ( exps.size(), 1 );
+   EXPECT_EQ( exps[ 0 ].id, QString( "15" ) );
+
+   catalog.runs( QString(), error );
+   EXPECT_EQ( catalog.experimentsOfRun( "dup_run", error ).size(), 2 );
+}
+
+/* --project-guid P --experiment-id RUN: of the experiments of the run ID,
+   the one in P is the run.  The run ID was refused as ambiguous when
+   another experiment of it was in another project.  Ambiguous within P it
+   still is refused.
+*/
+TEST_F( DataPubExportSteps, ARunIdIsLookedUpInTheProjectAskedFor )
+{
+   QString p1  = "aaaaaaaa-0000-4000-8000-0000000000a1";
+   QString p2  = "aaaaaaaa-0000-4000-8000-0000000000a2";
+   QString g12 = "aaaaaaaa-0000-4000-8000-000000000012";
+   QString g15 = "aaaaaaaa-0000-4000-8000-000000000015";
+   QVariantList in1 = summary_row( 12, g12, "dup_run" );
+   QVariantList in2 = summary_row( 15, g15, "dup_run" );
+   in1[ 6 ] = 1;  in1[ 7 ] = p1;  in1[ 8 ] = "one";
+   in2[ 6 ] = 2;  in2[ 7 ] = p2;  in2[ 8 ] = "two";
+   sdb.rows.insert( "get_experiment_summary",
+                    QList< QVariantList >() << in1 << in2 );
+
+   US_DataPubExporter::Selection selection;
+   selection.fromDb      = true;
+   selection.scope       = US_DataPub::ScopeExperiment;
+   selection.projectGUID = p2;
+   selection.runIDs << "dup_run";
+
+   QList< US_DataPubCatalog::Run > runs;
+   QString                         error;
+   ASSERT_TRUE( US_DataPubExporterTest::gatherRuns( exporter, selection, runs,
+                                                    error ) )
+      << error.toStdString();
+   ASSERT_EQ( runs.size(), 1 );
+   EXPECT_EQ( runs[ 0 ].id, QString( "15" ) );
+   EXPECT_EQ( runs[ 0 ].guid, g15 );
+
+   // An experiment ID of another project is still told as such
+   US_DataPubExporter               other;
+   US_DataPubExporterTest::attach( other, sdb.db() );
+   selection.experimentIDs.insert( "dup_run", "12" );
+   EXPECT_FALSE( US_DataPubExporterTest::gatherRuns( other, selection, runs,
+                                                     error ) );
+   EXPECT_TRUE( error.contains( "belongs to project" ) ) << error.toStdString();
+
+   // Both in the project: refused
+   in1[ 7 ] = p2;
+   sdb.rows.insert( "get_experiment_summary",
+                    QList< QVariantList >() << in1 << in2 );
+   US_DataPubExporter both;
+   US_DataPubExporterTest::attach( both, sdb.db() );
+   selection.experimentIDs.clear();
+   EXPECT_FALSE( US_DataPubExporterTest::gatherRuns( both, selection, runs,
+                                                     error ) );
+   EXPECT_TRUE( error.contains( "12, 15" ) ) << error.toStdString();
+}
+
+/* Where file names compare without case, a directory holding the run under
+   another spelling of its run ID is a copy of it, and is named as one when
+   the run is looked up -- as a copy of the same spelling is.
+*/
+TEST_F( DataPubExport, ACaseVariantCopyOfTheRunIsReported )
+{
+   ASSERT_TRUE( copyRunDir( "DEMO_RUN", true ) );
+   QString copy = US_Settings::resultDir() + "/Backup_DEMO_RUN";
+   ASSERT_TRUE( QDir().rename( US_Settings::resultDir() + "/DEMO_RUN",
+                               copy ) );
+
+   US_DataPubCatalog catalog;
+   QString           error;
+   ASSERT_TRUE( catalog.open( false, QString(), error ) );
+   catalog.setFileNameCase( Qt::CaseInsensitive );
+
+   US_DataPubCatalog::Run run;
+   QStringList            copies;
+   bool                   unusable = true;
+   ASSERT_TRUE( catalog.runByID( runID, run, error, &unusable, &copies ) )
+      << error.toStdString();
+   EXPECT_FALSE( unusable );
+   EXPECT_EQ( QDir::toNativeSeparators( run.dirPath ),
+              QDir::toNativeSeparators( runDir() ) );
+   EXPECT_EQ( copies, QStringList( QDir::toNativeSeparators( copy ) ) );
 }

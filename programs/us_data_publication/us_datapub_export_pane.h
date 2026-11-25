@@ -129,6 +129,16 @@ class US_DataPubExportPane : public US_Widgets
 
       QTreeWidgetItem* itemFor( QTreeWidget*, const QString& guid ) const;
 
+      /*! Ask which of the experiments a run ID names in the database is
+          meant.  \param runID The run ID the dialog gave
+          \param exps  Its experiments (US_DataPubCatalog::experimentsOfRun)
+          \param expID Set to the ID of the one chosen
+          \returns False when none was chosen
+      */
+      bool    chooseExperiment( const QString& runID,
+                                const QList< US_DataPubCatalog::Run >& exps,
+                                QString& expID );
+
       void    setEditChecks( const QString& mode );
       bool    modelsNeeding( const QString& editGUID, QStringList& ) const;
 

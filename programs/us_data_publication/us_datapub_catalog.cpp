@@ -356,10 +356,22 @@ bool US_DataPubCatalog::cancelledError( QString& error ) const
    if ( cancel_flag == nullptr  ||  cancel_flag->loadAcquire() == 0 )
       return false;
 
-   error = QObject::tr( "Reading the %1 was cancelled" )
-           .arg( from_db ? QObject::tr( "database" )
-                         : QObject::tr( "local data directory" ) );
+   error = cancelledText();
    return true;
+}
+
+void US_DataPubCatalog::setFileNameCase( Qt::CaseSensitivity sensitivity )
+{
+   cat->setFileNameCase( sensitivity );
+   listed = false;
+   listed_project.clear();
+}
+
+QString US_DataPubCatalog::cancelledText( void ) const
+{
+   return QObject::tr( "Reading the %1 was cancelled" )
+          .arg( from_db ? QObject::tr( "database" )
+                        : QObject::tr( "local data directory" ) );
 }
 
 void US_DataPubCatalog::setMessageHandler(
@@ -520,19 +532,50 @@ QList< US_DataPubCatalog::Run > US_DataPubCatalog::runs(
 QList< int > US_DataPubCatalog::indexesOfRun( const QString& runID ) const
 {
    QList< int > found;
-   int          first = cat->indexOfRun( runID );
 
-   if ( first < 0 )  return found;
-
-   // Every run of the spelling that was found: a local store can hold it
-   // in more than one directory
-   QString spelling = cat->run( first ).runID;
+   // Every run the source takes for this run ID, by the rule of
+   // US_DataCatalog::indexOfRun(): the database's runID column does not
+   // tell "RunA" from "runa", so both are experiments of the one run ID
+   // (and more than one is refused by runByID()); a local store compares
+   // as its file system does, and can hold the run in more than one
+   // directory
+   Qt::CaseSensitivity cs = from_db ? Qt::CaseInsensitive
+                                    : cat->fileNameCase();
 
    for ( int ii = 0; ii < cat->runCount(); ii++ )
-      if ( cat->run( ii ).runID == spelling )
+      if ( cat->run( ii ).runID.compare( runID, cs ) == 0 )
          found << ii;
 
    return found;
+}
+
+QList< US_DataPubCatalog::Run > US_DataPubCatalog::experimentsOfRun(
+      const QString& runID, QString& error )
+{
+   QList< Run > list;
+
+   if ( ! ensureListed( listed ? listed_project : QString(), error ) )
+      return list;
+
+   QList< int > indexes = indexesOfRun( runID );
+
+   if ( indexes.isEmpty()  &&  ! listed_project.isEmpty() )
+   {  // Not in the project that was listed, as runByID() looks
+      if ( ! ensureListed( QString(), error ) )  return list;
+
+      indexes = indexesOfRun( runID );
+   }
+
+   for ( int ii = 0; ii < indexes.size(); ii++ )
+      list << cat->run( indexes[ ii ] );
+
+   std::stable_sort( list.begin(), list.end(),
+                     []( const Run& aa, const Run& bb )
+                     { return aa.id.toInt() < bb.id.toInt(); } );
+
+   error.clear();
+
+   return list;
 }
 
 int US_DataPubCatalog::indexOfListedRun( const Run& run ) const
@@ -589,14 +632,32 @@ bool US_DataPubCatalog::runByID( const QString& runID, Run& found,
       QList< int > byID;
       QStringList  ids;
 
-      for ( int ii = 0; ii < indexes.size(); ii++ )
+      auto pick = [ & ]( void )
       {
-         const Run& run = cat->run( indexes[ ii ] );
+         byID.clear();
+         ids .clear();
 
-         ids << run.id;
+         for ( int ii = 0; ii < indexes.size(); ii++ )
+         {
+            const Run& run = cat->run( indexes[ ii ] );
 
-         if ( run.id.toInt() > 0  &&  run.id.toInt() == experimentID.toInt() )
-            byID << indexes[ ii ];
+            ids << run.id;
+
+            if ( run.id.toInt() > 0  &&
+                 run.id.toInt() == experimentID.toInt() )
+               byID << indexes[ ii ];
+         }
+      };
+
+      pick();
+
+      if ( byID.isEmpty()  &&  ! listed_project.isEmpty() )
+      {  // The experiment named is not in the project listed: the caller
+         // says what is wrong with one of another project
+         if ( ! ensureListed( QString(), error ) )  return false;
+
+         indexes = indexesOfRun( runID );
+         pick();
       }
 
       if ( byID.isEmpty() )

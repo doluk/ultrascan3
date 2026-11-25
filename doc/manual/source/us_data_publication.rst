@@ -133,10 +133,13 @@ names by GUID is there: the other calibration's coefficients are not passed
 off as the run's.
 
 A database can hold more than one experiment of an investigator under one run
-ID. Which of them is meant cannot be told from the run ID, so such a run is
-refused with a message that names every experiment ID; on the command line
+ID -- also "RunA" and "runa", which the database does not tell apart. Which of
+them is meant cannot be told from the run ID, so such a run is refused with a
+message that names every experiment ID; on the command line
 ``--experiment-id <ID>`` picks one of them, and the export reads that
-experiment and no other.
+experiment and no other. With a project given, the run ID is looked up among
+the project's experiments first. The window asks which experiment is meant
+(see **Select Experiment(s)**).
 
 When the runs come with a project rather than by name, a run whose own records
 do not hold together -- one of those problems, a channel without a solution,
@@ -218,7 +221,11 @@ The Export tab works from the top down.
   Opens the run selection dialog. When a project is selected the dialog offers
   only that project's runs; without a project it offers every run. Selecting
   runs is enough on its own -- a project is not required, and one is adopted
-  from the first run when none was picked.
+  from the first run when none was picked. The dialog lists a run ID once;
+  when the database holds more than one experiment under it, a second dialog
+  lists them, by ID, label, date and project, and asks which one is meant.
+  Runs that cannot be exported (a run in directories none of which is named
+  after it, say) are listed in a message box and are not added.
 
 **Experiments, raw data and edits**
   A tree of check boxes, ``run -> rawData -> edit``. The buttons underneath are

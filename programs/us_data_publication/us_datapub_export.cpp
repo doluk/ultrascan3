@@ -1395,6 +1395,17 @@ bool US_DataPubExporter::gatherRuns( const Selection& selection,
       fromProject = true;
    }
 
+   // Runs named in a project: a run ID is looked up among the project's
+   // experiments first (see runByID()), so that another experiment of the
+   // run ID, in another project, does not make it ambiguous
+   else if ( selection.fromDb  &&  ! runIDs.isEmpty()  &&
+             ! selection.projectGUID.isEmpty() )
+   {
+      catalog.runs( selection.projectGUID, error );
+
+      if ( ! error.isEmpty() )  return false;
+   }
+
    from_project = fromProject;
 
    int skipped = 0;

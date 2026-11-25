@@ -511,13 +511,19 @@ command line exits with `1`, when
   the export does not pick one: it fails with a message naming every
   directory;
 * a run ID names more than one experiment of the investigator in the
-  database. The run ID alone does not say which of them is meant, so the
-  export does not pick one: it fails with a message naming every experiment
-  ID. `--experiment-id <ID>` names one of them, and the export then reads
-  that experiment — its record, its experiment information and its RI
-  profile — and no other (`Selection::experimentIDs`). The window takes the
-  experiment it lists. A bundle holds one run of a run ID, so two such IDs
-  in one export are refused;
+  database. The database's `runID` column does not tell case apart, so
+  "RunA" and "runa" are two experiments of one run ID as well. The run ID
+  alone does not say which of them is meant, so the export does not pick
+  one: it fails with a message naming every experiment ID. `--experiment-id
+  <ID>` names one of them, and the export then reads that experiment — its
+  record, its experiment information and its RI profile — and no other
+  (`Selection::experimentIDs`). With `--project-id` / `--project-guid` the
+  run ID is looked up among the project's experiments first, so an
+  experiment of the run ID in another project does not make it ambiguous.
+  The window lists such a run ID once; when it is chosen there, the window
+  asks which of its experiments (by ID, label, date and project) is meant,
+  and exports that one (`US_DataPubCatalog::experimentsOfRun()`). A bundle
+  holds one run of a run ID, so two such IDs in one export are refused;
 * a run, raw data, edit, model or noise GUID it was asked for by name matches
   nothing (`--model-guid`, `--noise-guid`, or the selection of the window);
 * a run belongs to a project other than the one `--project-id` /
@@ -833,7 +839,9 @@ An import option (`--target`, `--output-dir`, `--on-conflict…`,
 `--mode import`; `--project-guid` and the common options are taken by both.
 
 Without `--experiment-id`, a `--project-id` or `--project-guid` exports every
-run of that project. With both, every run named has to belong to that project.
+run of that project. With both, every run named has to belong to that project;
+a run ID of several database experiments is looked up among the project's
+first, and is taken when the project has one of them.
 At least one of the three is required. A `--dry-run` needs no `--bundle`.
 
 Examples:

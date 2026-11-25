@@ -9,6 +9,7 @@
 #include "us_select_runs.h"
 #include "us_model_loader.h"
 #include "us_editor.h"
+#include <QInputDialog>
 
 // The roles the tree items carry
 #define ROLE_GUID   ( Qt::UserRole     )
@@ -393,14 +394,44 @@ void US_DataPubExportPane::select_runs( void )
    QApplication::setOverrideCursor( QCursor( Qt::WaitCursor ) );
    runs.clear();
 
+   QStringList notAdded;      // what could not be taken, said in a box
+
    for ( int ii = 0; ii < runIDs.size(); ii++ )
    {
       US_DataPubCatalog::Run run;
       QStringList            copies;
+      QString                expID;
 
-      if ( ! catalog.runByID( runIDs[ ii ], run, error, nullptr, &copies ) )
+      // A database can hold more than one experiment under the run ID the
+      // dialog lists once: the user says which of them is meant, and that
+      // experiment is the run (Selection::experimentIDs)
+      if ( dkdb_cntrls->db() )
+      {
+         QList< US_DataPubCatalog::Run > exps =
+            catalog.experimentsOfRun( runIDs[ ii ], error );
+
+         if ( exps.size() > 1 )
+         {
+            QApplication::restoreOverrideCursor();
+
+            if ( ! chooseExperiment( runIDs[ ii ], exps, expID ) )
+            {
+               QApplication::setOverrideCursor( QCursor( Qt::WaitCursor ) );
+               te_status->append( tr( "Run %1 was not added: no experiment"
+                                      " of it was chosen" )
+                                  .arg( runIDs[ ii ] ) );
+               continue;
+            }
+
+            QApplication::setOverrideCursor( QCursor( Qt::WaitCursor ) );
+         }
+      }
+
+      if ( ! catalog.runByID( runIDs[ ii ], run, error, nullptr, &copies,
+                              expID ) )
       {
          te_status->append( error );
+         notAdded << error;
          continue;
       }
 
@@ -420,6 +451,11 @@ void US_DataPubExportPane::select_runs( void )
    }
 
    QApplication::restoreOverrideCursor();
+
+   if ( ! notAdded.isEmpty() )
+      QMessageBox::warning( this, tr( "Runs Not Added" ),
+         tr( "These runs cannot be exported:\n\n%1" )
+         .arg( notAdded.join( "\n\n" ) ) );
 
    // Adopt the project of the first run when none was picked by hand
    if ( project_guid.isEmpty()  &&  ! runs.isEmpty() )
@@ -443,6 +479,39 @@ void US_DataPubExportPane::select_runs( void )
    latest_edits();
    buildModelTree();
    updateSummary();
+}
+
+bool US_DataPubExportPane::chooseExperiment(
+      const QString& runID, const QList< US_DataPubCatalog::Run >& exps,
+      QString& expID )
+{
+   expID.clear();
+
+   QStringList items;
+
+   for ( int ii = 0; ii < exps.size(); ii++ )
+   {
+      const US_DataPubCatalog::Run& exp = exps[ ii ];
+
+      items << tr( "ID %1: %2  \"%3\"  %4  [%5]" )
+               .arg( exp.id ).arg( exp.runID ).arg( exp.label )
+               .arg( exp.date )
+               .arg( exp.projectDesc.isEmpty() ? tr( "no project" )
+                                               : exp.projectDesc );
+   }
+
+   bool    ok     = false;
+   QString picked = QInputDialog::getItem( this, tr( "Choose the Experiment" ),
+      tr( "The database holds %1 experiments under the run ID %2.\n"
+          "A bundle holds one of them; which is to be exported?" )
+      .arg( exps.size() ).arg( runID ), items, 0, false, &ok );
+
+   int index = items.indexOf( picked );
+
+   if ( ! ok  ||  index < 0 )  return false;
+
+   expID = exps[ index ].id;
+   return true;
 }
 
 void US_DataPubExportPane::clear_runs( void )
