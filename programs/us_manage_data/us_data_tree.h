@@ -22,6 +22,9 @@ class US_DataTree : public QObject
         //! \brief Statuses of an action that are not an error
         enum ActStatus
         {
+            ACT_NOT_TRIED = 995,  //!< Some records were not tried: the
+                                  //!< investigator changed, or the
+                                  //!< connection was lost, while it ran
             ACT_IN_SYNC   = 996,  //!< A DB replace found nothing to replace
             ACT_REFUSED   = 997,  //!< Refused, and the user was told why
             ACT_NOTHING   = 998,  //!< No selected record could take it
@@ -99,9 +102,17 @@ class US_DataTree : public QObject
             and their descendants (see \ref action_row_list).
             \param item_exs Where the records exist ("Database only", ...)
             \param item_act The action ("DB-only remove", ...)
+            The investigator is checked again after every question asked
+            and before every record is written or removed: once another one
+            is selected, nothing more is done, and the message lists the
+            records not tried.  So does a lost connection for the records
+            that need the database.  The GMP guard fails closed: when what
+            it asks the database cannot be answered, nothing is removed.
             \returns 0 on success, an error status, \ref ACT_NOTHING when
-                     no record could be acted on, or \ref ACT_REFUSED when
-                     the GMP guard refused
+                     no record could be acted on, \ref ACT_REFUSED when
+                     the GMP guard or the investigator check refused before
+                     anything was done, or \ref ACT_NOT_TRIED when records
+                     were left untried and no other error was met
         */
         int act_on_selection( QString item_exs, QString item_act );
 
@@ -194,6 +205,8 @@ class US_DataTree : public QObject
         QMap< QString, bool > gmp_runs;     //!< Runs the GMP guard checked
         QStringList    gmp_models;     //!< Model IDs produced by autoflow
         bool           gmp_models_read; //!< True once gmp_models is read
+        QString        gmp_error;      //!< Why the GMP guard's last
+                                       //!< question was not answered
 
         //! Whether a model or noise conflict is more than formatting, by
         //! GUID and compared contents: significant_diffs() reads both copies
@@ -296,9 +309,11 @@ class US_DataTree : public QObject
         //! \return Status code of the operation
         int do_actions( QString action, QString text );
 
-        //! \brief True when a run is required by the GMP framework
+        //! \brief Whether a run is required by the GMP framework
         //! \param runID The run ID
-        bool check_filename_for_autoflow( const QString& runID );
+        //! \returns 1 when it is, 0 when not, -1 when the database could
+        //!          not say (\ref gmp_error says why)
+        int  check_filename_for_autoflow( const QString& runID );
 
         //! \brief The key a record's item is found again by after its
         //!        experiment is shown anew: its type and GUID
@@ -312,9 +327,16 @@ class US_DataTree : public QObject
         bool foreign_noise_gmp_ok( const US_DataModel::DataDesc& ddesc,
                                    const QString& runID );
 
-        //! \brief True when a model was produced by an autoflow
+        //! \brief Whether a model was produced by an autoflow
         //! \param mID The model ID
-        bool is_modelIDs_from_autoflow( const QString& mID );
+        //! \returns 1 when it was, 0 when not, -1 when the list could not
+        //!          be read (\ref gmp_error says why)
+        int  is_modelIDs_from_autoflow( const QString& mID );
+
+        //! \brief Tell the user that the GMP guard could not ask the
+        //!        database, so nothing is removed
+        //! \param what What could not be checked
+        void gmp_unknown( const QString& what );
 
         //! \brief The model IDs in a list of autoflow model descriptions
         //! \param modelInfos The JSON model descriptions
@@ -335,7 +357,11 @@ class US_DataTree : public QObject
             QStringList unknown;    //!< Not known whether removed: the
                                     //!< connection was lost while it ran,
                                     //!< or they belong to one that was
-            QStringList notTried;   //!< Not tried: the connection was lost
+            QStringList notTried;   //!< Not tried: the connection was lost,
+                                    //!< or the investigator changed
+            QString     notTriedWhy; //!< ... which of them, as a reason
+            QStringList localErrors; //!< The message of each local removal
+                                     //!< that failed
             QStringList removed;    //!< Removed
             QStringList localKept;  //!< Their local copies kept, on a
                                     //!< removal from both places, as the
@@ -344,7 +370,8 @@ class US_DataTree : public QObject
 
         //! \brief The message of a removal from the database that failed
         //!        somewhere: why (the first few errors), and what was, was
-        //!        not, and may or may not have been removed
+        //!        not, and may or may not have been removed; and the
+        //!        local removals that failed
         QString removal_report( const Removal& rr );
 
 

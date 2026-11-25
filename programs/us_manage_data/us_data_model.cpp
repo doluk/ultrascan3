@@ -1536,12 +1536,14 @@ bool US_DataModel::do_merge_run( int index )
    // A record whose parent only the other source has in this experiment is
    // an orphan of its own source -- a model downloaded while its edit was
    // not, say.  It belongs here, where its other copy and its parent are,
-   // not under the stand-in.
+   // not under the stand-in -- unless this is a copy of a run (see below).
    index_orphans();
 
    merging_run = index;
 
-   for ( int pass = 0; pass < 3; pass++ )
+   // A copy of a run takes none: nothing can be done for its records, and
+   // the orphans of the run's GUIDs belong under the run's own directory
+   for ( int pass = 0; pass < 3  &&  entry.copyOf.isEmpty(); pass++ )
    {
       int before = ddescs.size() + ldescs.size();
 
@@ -1565,6 +1567,18 @@ bool US_DataModel::do_merge_run( int index )
 
    int  base  = adescs.size();
 
+   // Whether a merged record is gone from the database, no action saying
+   // where it is now, and is in no other place: it is not shown
+   auto left_out = [ & ]( const DataDesc& mdesc )
+   {
+      DataDesc desc = mdesc;
+
+      return ! apply_action( desc )  &&  desc.recordID >= 0  &&
+             by_action.contains( QString::number( desc.recType ) + ":"
+                                 + QString::number( desc.recordID ) )  &&
+             ( desc.recState & REC_LO ) == 0;
+   };
+
    for ( int ii = 0; ii < mdescs.size(); ii++ )
    {
       // The catalogs are what the scan read: a record an action changed
@@ -1577,11 +1591,29 @@ bool US_DataModel::do_merge_run( int index )
                                + QString::number( desc.recordID ) ) )
       {  // Gone from the database, and no action says where it is now:
          // it is where the catalogs say, but for the database
-         if ( ( desc.recState & REC_LO ) == 0 )   continue;
-
          desc.recordID  = -1;
          desc.recState &= ~( REC_DB | HV_DET );
          desc.contents  = QString();
+
+         if ( ( desc.recState & REC_LO ) == 0 )
+         {  // In neither place.  The rows are in tree order, and a row's
+            // parent is the nearest row above of a lower level: a record
+            // under it that is still shown -- a local child -- would hang
+            // off the row above instead.  It keeps the row, as a filler,
+            // as a removal leaves it (US_DataProcess::mark_removed_from_db).
+            bool kids = false;
+
+            for ( int jj = ii + 1; jj < mdescs.size()  &&  ! kids; jj++ )
+            {
+               if ( mdescs.at( jj ).recType <= desc.recType )   break;
+
+               kids = ! left_out( mdescs.at( jj ) );
+            }
+
+            if ( ! kids )   continue;
+
+            desc.recState = NOSTAT;
+         }
       }
 
       append_row( desc, index );

@@ -1241,6 +1241,15 @@ void US_DataTree::action_result( int stat, QString item_act )
       ask_user( PROMPT_INFORM, item_act, text );
    }
 
+   else if ( stat == ACT_NOT_TRIED )
+   {  // stopped part-way, with no other error: what was not tried is said
+      ask_user( PROMPT_WARN, item_act + tr( " Stopped" ),
+            tr( "The \"%1\" action stopped before it was done." )
+            .arg( item_act )
+            + "\n\n" + ( da_process ? da_process->lastError() : QString() ) );
+      text = tr( "\"%1\" stopped" ).arg( item_act );
+   }
+
    else if ( stat == 0 )
    {  // action was successful
       text = tr( "\"%1\" Success!" ).arg( item_act );
@@ -1330,18 +1339,17 @@ QStringList US_DataTree::parse_models_desc_json( const QStringList& modelInfos )
    return modelIDs;
 }
 
-// True when a model was produced by an autoflow (GMP) run
+// Whether a model was produced by an autoflow (GMP) run: 1 yes, 0 no, -1
+// when the list could not be read -- which the caller takes as a refusal
 //
 // The list is read once per action, over the connection the window already
 // has, rather than a connection per record.
-bool US_DataTree::is_modelIDs_from_autoflow( const QString& mID )
+int US_DataTree::is_modelIDs_from_autoflow( const QString& mID )
 {
    if ( ! gmp_models_read )
    {
-      gmp_models_read = true;
-      gmp_models.clear();
-
       IUS_DB2* dbP = da_model->dbase();
+      gmp_models.clear();
 
       if ( dbP != NULL )
       {
@@ -1350,18 +1358,51 @@ bool US_DataTree::is_modelIDs_from_autoflow( const QString& mID )
          q << "get_modelIDs_for_autoflow";
          dbP->query( q );
 
-         while ( dbP->next() )
+         int status = dbP->lastErrno();
+
+         if ( ( status != IUS_DB2::OK  &&  status != IUS_DB2::NOROWS )  ||
+              ! dbP->isConnected() )
+         {  // not read: asked again for the next record
+            gmp_error = tr( "get_modelIDs_for_autoflow: %1" )
+                        .arg( dbP->lastError() );
+            return -1;
+         }
+
+         while ( status == IUS_DB2::OK  &&  dbP->next() )
             infos << dbP->value( 0 ).toString();
 
          gmp_models = parse_models_desc_json( infos );
       }
+
+      gmp_models_read = true;
    }
 
-   return gmp_models.contains( mID );
+   return gmp_models.contains( mID ) ? 1 : 0;
+}
+
+// The GMP guard could not ask the database: nothing is removed
+void US_DataTree::gmp_unknown( const QString& what )
+{
+   IUS_DB2* dbP  = da_model->dbase();
+   bool     lost = ( dbP != NULL  &&  ! dbP->isConnected() )  ||
+                   ( da_process != NULL  &&  da_process->connection_lost() );
+
+   QString text = tr( "Whether %1 is needed by the GMP framework could not"
+                      " be checked (%2), so nothing was removed.%3" )
+                  .arg( what ).arg( gmp_error )
+                  .arg( lost ? tr( "\n\nThe connection to the database was"
+                                   " lost, and this window does not connect"
+                                   " again: close it and open it again." )
+                             : QString() );
+
+   if ( da_process != NULL )
+      da_process->setError( text );
+
+   ask_user( PROMPT_INFORM, tr( "GMP Check Failed" ), text );
 }
 
 // The GMP guard for the noise of other edits' models an edit removal takes
-// along.  What cannot be listed is left to the removal, which reports it.
+// along.  Noise that cannot be listed, or checked, keeps the edit.
 bool US_DataTree::foreign_noise_gmp_ok( const US_DataModel::DataDesc& ddesc,
                                         const QString& runID )
 {
@@ -1373,14 +1414,27 @@ bool US_DataTree::foreign_noise_gmp_ok( const US_DataModel::DataDesc& ddesc,
    QList< US_DataProcess::ForeignNoise > foreign;
 
    if ( ! da_process->foreign_noise_of_edit( ddesc.recordID, foreign ) )
-      return true;
+   {
+      gmp_error = da_process->lastError();
+      gmp_unknown( tr( "the noise computed from %1 for models of other"
+                       " edits" ).arg( ddesc.label ) );
+      return false;
+   }
 
    for ( int ii = 0; ii < foreign.size(); ii++ )
    {
       const US_DataProcess::ForeignNoise& fn = foreign.at( ii );
       QString name = fn.description.isEmpty() ? fn.guid : fn.description;
+      int     made = is_modelIDs_from_autoflow( QString::number( fn.modelID ) );
 
-      if ( is_modelIDs_from_autoflow( QString::number( fn.modelID ) ) )
+      if ( made < 0 )
+      {
+         gmp_unknown( tr( "noise %1, computed from %2," ).arg( name )
+                      .arg( ddesc.label ) );
+         return false;
+      }
+
+      if ( made > 0 )
       {
          ask_user( PROMPT_INFORM, tr( "Selected Model GMP produced!" ),
             tr( "Removing %1 would also remove noise %2, which was computed"
@@ -1409,7 +1463,15 @@ bool US_DataTree::foreign_noise_gmp_ok( const US_DataModel::DataDesc& ddesc,
               ? fn.description.section( ".", 0, -4 )
               : fn.description.section( ".", 0, 0 );
 
-      if ( nrun != runID  &&  check_filename_for_autoflow( nrun ) )
+      int needed = ( nrun != runID ) ? check_filename_for_autoflow( nrun ) : 0;
+
+      if ( needed < 0 )
+      {
+         gmp_unknown( tr( "run \"%1\" of noise %2" ).arg( nrun ).arg( name ) );
+         return false;
+      }
+
+      if ( needed > 0 )
       {
          ask_user( PROMPT_INFORM, tr( "Data Cannot be Deleted" ),
             tr( "Removing %1 would also remove noise %2 of the Run:\n\n"
@@ -1423,13 +1485,14 @@ bool US_DataTree::foreign_noise_gmp_ok( const US_DataModel::DataDesc& ddesc,
    return true;
 }
 
-// True when the run is part of the GMP framework
+// Whether the run is part of the GMP framework: 1 yes, 0 no, -1 when the
+// database could not say -- which the caller takes as a refusal
 //
 // Asked once per run per action, over the window's own connection.
-bool US_DataTree::check_filename_for_autoflow( const QString& runID )
+int US_DataTree::check_filename_for_autoflow( const QString& runID )
 {
    if ( gmp_runs.contains( runID ) )
-      return gmp_runs.value( runID );
+      return gmp_runs.value( runID ) ? 1 : 0;
 
    bool     isRequired = false;
    IUS_DB2* dbP        = da_model->dbase();
@@ -1440,13 +1503,24 @@ bool US_DataTree::check_filename_for_autoflow( const QString& runID )
       q  << QString( "check_filename_for_autoflow" ) //for now, both GMP and R&D
          << runID;
 
-      isRequired = ( dbP->functionQuery( q ) > 0 );
+      int count = dbP->functionQuery( q );
+
+      // The function's value, or DBERROR (-1) when it did not run
+      if ( count < 0  ||  dbP->lastServerErrno() != 0  ||
+           ! dbP->isConnected() )
+      {
+         gmp_error = tr( "check_filename_for_autoflow: %1" )
+                     .arg( dbP->lastError() );
+         return -1;
+      }
+
+      isRequired = ( count > 0 );
    }
 
 DbgLv(1) << "check_filename_for_autoflow: runID isRequired" << runID << isRequired;
    gmp_runs.insert( runID, isRequired );
 
-   return isRequired;
+   return isRequired ? 1 : 0;
 }
 
 // A batch of record changes, ended when it goes out of scope at the latest
@@ -1523,6 +1597,7 @@ DbgLv(1) << "ITEM do_actions" << narows << item_exs << item_act;
    gmp_runs.clear();
    gmp_models.clear();
    gmp_models_read = false;
+   gmp_error.clear();
 
    // The sample tree shown before a scan is no data anywhere
    if ( da_model->is_demo() )
@@ -1645,6 +1720,11 @@ DbgLv(1) << "ITEM do_actions" << narows << item_exs << item_act;
                       : tr( "These are records whose experiment or parent"
                             " is missing." ) ) ) )
             return ACT_CANCELLED;
+
+         // The question is modal: another investigator may have been
+         // selected while it was asked
+         if ( investigator_refused() )
+            return ACT_REFUSED;
       }
    }
 
@@ -1657,9 +1737,16 @@ DbgLv(1) << "ITEM do_actions" << narows << item_exs << item_act;
 
          if ( ( ddesc.recState & US_DataModel::REC_DB ) == 0 )   continue;
 
-         QString runID = da_model->run_id_of_row( irow );
+         QString runID  = da_model->run_id_of_row( irow );
+         int     needed = check_filename_for_autoflow( runID );
 
-         if ( check_filename_for_autoflow( runID ) )
+         if ( needed < 0 )
+         {
+            gmp_unknown( tr( "run \"%1\"" ).arg( runID ) );
+            return ACT_REFUSED;
+         }
+
+         if ( needed > 0 )
          {
             ask_user( PROMPT_INFORM, tr( "Data Cannot be Deleted" ),
                tr( "The Data for the Run:\n\n"
@@ -1680,8 +1767,16 @@ DbgLv(1) << "ITEM do_actions" << narows << item_exs << item_act;
          {
             int model_idDB = ( ddesc.recType == US_DataModel::MODEL )
                            ? ddesc.recordID : ddesc.parentID;
+            int made       = is_modelIDs_from_autoflow(
+                                QString::number( model_idDB ) );
 
-            if ( is_modelIDs_from_autoflow( QString::number( model_idDB ) ) )
+            if ( made < 0 )
+            {
+               gmp_unknown( ddesc.label );
+               return ACT_REFUSED;
+            }
+
+            if ( made > 0 )
             {
                ask_user( PROMPT_INFORM,
                   tr( "Selected Model GMP produced!" ),
@@ -1700,6 +1795,29 @@ DbgLv(1) << "ITEM do_actions" << narows << item_exs << item_act;
 
    Removal     rmv;               // what a removal from the database did
    QSet< int > dbKept;            // rows the database kept, or may have
+
+   // Before each record: once another investigator is selected -- in
+   // another window, while a question was asked or a long upload ran --
+   // nothing more is done, since the rows are the previous one's; once the
+   // connection is lost, nothing more that needs the database is tried,
+   // since it would fail the same way.  What is left is listed.
+   const QString invWhy  = tr( "the investigator was changed while the"
+                               " action ran" );
+   const QString lostWhy = tr( "the connection to the database was lost" );
+   QString       stopWhy;         // why records were left untried
+   QStringList   untried;         // those, but for removals from the DB
+
+   auto halted = [ & ]( bool needsDb )
+   {
+      if ( stopWhy != invWhy  &&  da_model->investigator_changed() )
+         stopWhy = invWhy;
+
+      else if ( stopWhy.isEmpty()  &&  needsDb  &&
+                da_process->connection_lost() )
+         stopWhy = lostWhy;
+
+      return ( stopWhy == invWhy )  ||  ( needsDb  &&  ! stopWhy.isEmpty() );
+   };
 
    if ( remove && frDB )
    {                                  // REMOVE from DB
@@ -1745,7 +1863,7 @@ DbgLv(1) << "ITEM do_actions" << narows << item_exs << item_act;
                continue;
             }
 
-            if ( da_process->connection_lost() )
+            if ( halted( true ) )
             {
                rmv.notTried << ddesc.label;
                dbKept       << irow;
@@ -1810,6 +1928,12 @@ DbgLv(1) << "RMV_REC: irow stat1" << irow << stat1;
                continue;
             }
 
+            if ( halted( false ) )
+            {
+               untried << ddesc.label;
+               continue;
+            }
+
             nacted++;
             int stat1  = da_process->record_remove_local( irow );
 
@@ -1817,13 +1941,62 @@ DbgLv(1) << "RMV_REC: irow stat1" << irow << stat1;
             {
                naerrs++;
                istat      = stat1;
+               rmv.localErrors << da_process->lastError();
             }
          }
       }
    }
 
-   if ( ! rmv.errors.isEmpty() )
+   // A copy of a run shows the run's own model and noise files: one
+   // removed above is gone from the copy's rows too
+   if ( remove && frLoc )
+   {
+      for ( int index = 0; index < da_model->runCount(); index++ )
+      {
+         US_DataModel::RunEntry entry = da_model->run_entry( index );
+
+         if ( entry.copyOf.isEmpty()  ||  ! entry.loaded  ||
+              entry.firstRow < 0 )
+            continue;
+
+         for ( int row = entry.firstRow; row <= entry.lastRow; row++ )
+         {
+            US_DataModel::DataDesc desc = da_model->row_datadesc( row );
+
+            if ( desc.recType < US_DataModel::MODEL                  ||
+                 ( desc.recState & US_DataModel::REC_LO ) == 0       ||
+                 desc.filename.isEmpty()  ||  QFile::exists( desc.filename ) )
+               continue;
+
+            desc.recState &= ~( US_DataModel::REC_LO | US_DataModel::HV_DET );
+            desc.contents  = QString();
+
+            if ( ( desc.recState & US_DataModel::REC_DB ) == 0 )
+               desc.recState = US_DataModel::NOSTAT;
+
+            da_model->change_datadesc( desc, row );
+            da_model->record_changed ( row );
+         }
+      }
+   }
+
+   rmv.notTriedWhy = stopWhy;
+
+   // A removal from the database that failed somewhere is reported as a
+   // whole, with the local removals that failed too: one message does not
+   // replace the other
+   bool reported = ! rmv.errors.isEmpty()  ||  ! rmv.notTried.isEmpty()  ||
+                   rmv.localErrors.size() > 1;
+
+   if ( ! rmv.errors.isEmpty()  ||  ! rmv.notTried.isEmpty() )
       da_process->setError( removal_report( rmv ) );
+
+   else if ( rmv.localErrors.size() > 1 )
+      da_process->setError( rmv.localErrors.mid( 0, 5 ).join( "\n\n" )
+         + ( rmv.localErrors.size() > 5
+             ? tr( "\n\n... and %1 more local file(s) could not be"
+                   " removed." ).arg( rmv.localErrors.size() - 5 )
+             : QString() ) );
 
    if ( upLoad )
    {                                  // UPLOAD to DB
@@ -1836,6 +2009,12 @@ DbgLv(1) << "RMV_REC: irow stat1" << irow << stat1;
 
             if ( ddesc.recType != ii )  continue;  // not at current level
             if ( ( ddesc.recState & US_DataModel::REC_LO ) == 0 )  continue;
+
+            if ( halted( true ) )
+            {
+               untried << ddesc.label;
+               continue;
+            }
 
             int stat1  = da_process->record_upload( irow );
 
@@ -1879,6 +2058,12 @@ DbgLv(1) << "RMV_REC: irow stat1" << irow << stat1;
             if ( ddesc.recType != ii )  continue;  // not at current level
             if ( ( ddesc.recState & US_DataModel::REC_DB ) == 0 )  continue;
 
+            if ( halted( true ) )
+            {
+               untried << ddesc.label;
+               continue;
+            }
+
             nacted++;
             int stat1  = da_process->record_download( irow );
 
@@ -1910,8 +2095,45 @@ DbgLv(1) << "RMV_REC: irow stat1" << irow << stat1;
    for ( int jj = 0; jj < runs.size(); jj++ )
       refresh_run( runs[ jj ] );
 
+   // What was not tried, and why: the rows of the records tried show
+   // where they are now
+   if ( ! stopWhy.isEmpty()  &&  ( ! untried.isEmpty()  ||
+                                   ! rmv.notTried.isEmpty() ) )
+   {
+      if ( istat == 0  &&  ! reported )
+         da_process->setError( QString() );     // an earlier action's
+
+      if ( ! untried.isEmpty() )
+      {
+         QString text = tr( "These selected records were not tried, since"
+                            " %1:" ).arg( stopWhy ) + "\n  "
+                        + untried.mid( 0, 20 ).join( "\n  " );
+
+         if ( untried.size() > 20 )
+            text += tr( "\n  ... and %1 more" ).arg( untried.size() - 20 );
+
+         da_process->appendError( ( da_process->lastError().isEmpty()
+                                    ? QString() : QString( "\n\n" ) ) + text );
+      }
+
+      if ( stopWhy == invWhy )
+         da_process->appendError( tr( "\n\nWhat this window shows is the"
+            " previous investigator's records.  Click \"Scan Data\" to see"
+            " the data of the investigator selected now." ) );
+
+      else if ( ! da_process->lastError().contains(
+                   tr( "close it and open it again" ) ) )
+         da_process->appendError( tr( "\n\nThis window does not connect"
+            " again: close it and open it again, and look at these records"
+            " before acting on them." ) );
+
+      if ( istat == 0 )
+         istat = ACT_NOT_TRIED;
+   }
+
    if ( nacted == 0 )                  // never "Success" for doing nothing
-      return ( nsynced > 0 ) ? ACT_IN_SYNC : ACT_NOTHING;
+      return ( istat == ACT_NOT_TRIED ) ? istat
+           : ( nsynced > 0 )            ? ACT_IN_SYNC : ACT_NOTHING;
 
 
    if ( naerrs > 0  &&  naerrs < nacted )
@@ -1954,9 +2176,12 @@ QString US_DataTree::removal_report( const Removal& rr )
               + listed( rr.notRemoved );
 
    if ( ! rr.notTried.isEmpty() )
-      text += tr( "\n\nThese selected records were not tried, since the"
-                  " connection to the database was lost, and are still in"
-                  " the database:" ) + listed( rr.notTried );
+      text += tr( "\n\nThese selected records were not tried, since %1,"
+                  " and are still in the database:" )
+              .arg( rr.notTriedWhy.isEmpty()
+                    ? tr( "the connection to the database was lost" )
+                    : rr.notTriedWhy )
+              + listed( rr.notTried );
 
    if ( ! rr.removed.isEmpty() )
       text += tr( "\n\nThese selected records were removed from the"
@@ -1974,6 +2199,16 @@ QString US_DataTree::removal_report( const Removal& rr )
       text += tr( "\n\nThe local copies of the records the database kept,"
                   " or may have kept, were not removed either:" )
               + listed( rr.localKept );
+
+   if ( ! rr.localErrors.isEmpty() )
+   {
+      text += tr( "\n\nRemoving from local disk failed:" ) + "\n\n"
+              + rr.localErrors.mid( 0, nerrs ).join( "\n\n" );
+
+      if ( rr.localErrors.size() > nerrs )
+         text += tr( "\n\n... and %1 more local file(s) could not be"
+                     " removed." ).arg( rr.localErrors.size() - nerrs );
+   }
 
    return text;
 }

@@ -109,20 +109,36 @@ class US_DataProcess : public QObject
             says so with US_DB2::connectionLostRollbackMessage -- was rolled
             back by the server: nothing was removed, and the message says
             so.  A connection lost during the COMMIT
-            (US_DB2::commitUnknownMessage), or while a model or noise record
-            is removed -- each one statement, committed as it runs -- leaves
-            open whether it happened: the message says so
-            (\ref outcome_unknown).  Whether an error means a lost
+            (US_DB2::commitUnknownMessage) leaves open whether it happened:
+            the message says so (\ref outcome_unknown).  Whether an error means a lost
             connection goes by IUS_DB2::isConnectionLoss for the server
             (serverVersion()): 4031 on MySQL 8, not on MariaDB.
             A rollback refused because the server had already ended the
             transaction (a deadlock, or a lock wait timeout with
             innodb_rollback_on_timeout) is not reported as a failed one.
+
+            A model or a noise record is removed in a transaction of its
+            own too: delete_model removes the model's noise and its
+            modelPerson row before the model, one statement at a time, and
+            outside a transaction a failure part-way (a lock wait timeout,
+            say) would leave the model without an owner and its noise gone.
+            Its outcome is classified as an edit's is: a failure given back
+            as a whole removed nothing, and any other is read back.
+
+            After each write that succeeded, whether the server still has the
+            transaction open is asked (a savepoint that must outlive the
+            statement that set it): a procedure that committed inside it
+            would have ended it, and what it removed is kept.  When it is
+            found ended, or cannot be asked, no further write is made in it,
+            and a connection lost afterwards does not mean that nothing was
+            removed: what the database holds is read back.
             \param recordID The row of the record to be removed
             \return 0, or 2012 (the database kept the edit), 2016 (no
                     database ID), 2017 (the edit's noise could not be
                     listed), 2018 (that noise could not be removed), 2019
-                    (no transaction), or another error status
+                    (no transaction, or no commit), 2013 (a model not
+                    removed), 2014 (a noise record not removed), or another
+                    error status
         */
         int record_remove_db( int recordID );
 
@@ -244,22 +260,61 @@ class US_DataProcess : public QObject
         int  edit_attempt( int editID, const QList< ForeignNoise >& first,
                            QString& why, bool& clean );
 
-        /*! \brief Read back what the database holds after an edit removal
+        /*! \brief Read back what the database holds after a removal
                    that failed and was not given back as a whole, whose
                    outcome is not known, or of an edit the database says
                    is not there
 
-            Every row of a record found gone -- the edit's own models and
-            noise, and the foreign noise -- is marked as gone.
-            \param row     The row of the edit
+            Every row of a record found gone -- the record (an edit, a
+            model or a noise record), what the tree shows under it, and the
+            foreign noise -- is marked as gone.
+            \param row     The row of the record
             \param foreign The foreign noise the removal took on
             \param stat    The status of the removal so far
             \param why     What went wrong
-            \returns 0 when the edit is gone after all, else an error
+            \returns 0 when the record is gone after all, else an error
                      status with the message set
         */
-        int  settle_edit( int row, const QList< ForeignNoise >& foreign,
-                          int stat, const QString& why );
+        int  settle_removal( int row, const QList< ForeignNoise >& foreign,
+                             int stat, const QString& why );
+
+        /*! \brief Remove a model or a noise record in a transaction
+            \param row  Its row
+            \param proc "delete_model" or "delete_noise"
+            \param code The status of a failure: 2013 or 2014
+            \returns 0, or \a code with the message set
+        */
+        int  remove_one( int row, const QString& proc, int code );
+
+        /*! \brief Say how a transaction whose COMMIT was refused ended
+            \param terr  The commit's message
+            \param why   Set to what happened
+            \param clean Set true when the server rolled all of it back,
+                         false otherwise
+        */
+        void commit_refused( const QString& terr, QString& why, bool& clean );
+
+        /*! \brief Roll back a transaction whose write failed
+                   (\ref edit_failure, \ref edit_error), and say how it
+                   ended
+            \param inProc Whether the write that failed was the one
+                          \a why names, rather than one before it
+            \param proc   That procedure
+            \param why    What went wrong: appended to
+            \param clean  Set false when it was not given back as a whole
+        */
+        void roll_back_failed( bool inProc, const QString& proc,
+                               QString& why, bool& clean );
+
+        /*! \brief Ask the server whether the open transaction is still
+                   open, after a write in it succeeded
+
+            A savepoint outlives the statement that set it only inside a
+            transaction.  When the transaction is found ended -- a procedure
+            committed it -- or the server cannot be asked, \ref tx_may_end
+            is set: what was written may have been kept.
+        */
+        void check_tx_open( void );
 
         //! \brief Whether a record is still in the database
         //! \param proc   "get_editedData", "get_model_info", ...
@@ -333,11 +388,6 @@ class US_DataProcess : public QObject
         //! \brief What to do once the connection to the database is lost
         QString     lost_text( void ) const;
 
-        //! \brief The message of a model or noise removal that failed,
-        //!        naming the record; after a lost connection, that whether
-        //!        it was removed is not known (\ref outcome_unknown)
-        QString     removal_error( const QString& proc, int status );
-
         //! \brief Whether a refused rollback's message says the server had
         //!        already ended the transaction
         static bool ended_by_server( const QString& error );
@@ -353,6 +403,9 @@ class US_DataProcess : public QObject
         QString                 edit_error; //!< ... and its message
         bool                    conn_lost = false; //!< The connection was
                                                    //!< seen lost
+        bool                    tx_may_end = false; //!< The open
+                                    //!< transaction may have been ended by
+                                    //!< a write in it: see check_tx_open
         bool                    unknown_out = false; //!< See
                                                      //!< outcome_unknown()
         QString                 errMsg;     //!< Message from the last error

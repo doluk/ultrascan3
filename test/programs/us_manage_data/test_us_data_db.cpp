@@ -39,6 +39,13 @@
 // way is unknown, a deadlock's rollback, an implicit commit.  serverVersion()
 // names the server (MySQL 8 unless a test says MariaDB), and an error that
 // is no loss on it (4031 on MariaDB) fails only its statement.
+// delete_model runs statement by statement as us3_model_procs.sql has it --
+// the model's noise, then its modelPerson row, then the model -- so a
+// failure at the model (a lock wait, a lost connection) keeps the first two
+// done unless a transaction gives them back.  A plain statement (query with
+// a string) answers the savepoint check of whether a transaction is still
+// open: releasing a savepoint fails with 1305 once the server has ended the
+// transaction.
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
 
@@ -167,6 +174,12 @@ namespace
          QStringList              autoflowModels;   // model IDs GMP made
          QSet< QString >          commitsInside;    // writes that end the
                                                     // client's transaction
+         std::function< void( const QString& ) > during; // run as each
+                                                    // procedure is called
+         QStringList              statements;       // plain statements
+         QString                  statementLoss;    // a plain statement
+                                                    // starting so loses
+                                                    // the connection
          int                      nextID   = 900;
 
          // delete_editedData as the patched us3_sql has it: all or nothing
@@ -230,6 +243,8 @@ namespace
                .WillByDefault( Invoke( [ this ]() { return ! lost; } ) );
             ON_CALL( db, query( An< const QStringList& >() ) )
                .WillByDefault( Invoke( [ this ]( const QStringList& q ) { call( q ); } ) );
+            ON_CALL( db, query( An< const QString& >() ) )
+               .WillByDefault( Invoke( [ this ]( const QString& q ) { statement( q ); } ) );
             ON_CALL( db, next() )
                .WillByDefault( Invoke( [ this ]() { return ++row < current.rows.size(); } ) );
 
@@ -265,8 +280,10 @@ namespace
                .WillByDefault( Invoke( [ this ]( const QStringList& q )
                {
                   calls << q.value( 0 );
-                  if ( lost )  return int( IUS_DB2::DBERROR );
-                  return autoflowRuns.contains( q.value( 1 ) ) ? 1 : autoflow;
+                  if ( during )  during( q.value( 0 ) );
+                  if ( fails( q.value( 0 ) ) )  return int( IUS_DB2::DBERROR );
+                  current.status = autoflowRuns.contains( q.value( 1 ) ) ? 1 : autoflow;
+                  return current.status;
                } ) );
             ON_CALL( db, readBlobFromDB( _, _, _ ) )
                .WillByDefault( Invoke( [ this ]( const QString& path,
@@ -317,19 +334,21 @@ namespace
                      return false;
                   }
                   if ( ! clientTx )  { error = "no transaction";  return false; }
-                  if ( ! serverTx )
-                  {
-                     error = endedText();
-                     return false;
-                  }
                   if ( commitLoss == 3 )
-                  {  // US_DB2's check before the COMMIT finds it lost
-                     restore( saved );
+                  {  // US_DB2's check before the COMMIT finds it lost -- and
+                     // says the server rolled back, also when a procedure
+                     // had committed the transaction before
+                     if ( serverTx )  restore( saved );
                      serverTx       = false;
                      lost           = true;
                      current.status = IUS_DB2::DBERROR;
                      current.server = 2013;
                      current.error  = "Lost connection to MySQL server during query";
+                     error = endedText();
+                     return false;
+                  }
+                  if ( ! serverTx )
+                  {
                      error = endedText();
                      return false;
                   }
@@ -479,6 +498,42 @@ namespace
             return false;
          }
 
+         // A plain statement: the savepoint check of the transaction
+         void statement( const QString& q )
+         {
+            statements << q;
+            current = Answer();
+            row     = -1;
+
+            if ( lost )
+            {
+               current.status = IUS_DB2::DBERROR;
+               current.server = 2006;
+               current.error  = goneText;
+               return;
+            }
+
+            if ( ! statementLoss.isEmpty()  &&  q.startsWith( statementLoss ) )
+            {  // the server rolls back what the connection left open
+               if ( clientTx  &&  serverTx )
+                  restore( saved );
+               serverTx       = false;
+               lost           = true;
+               current.status = IUS_DB2::DBERROR;
+               current.server = 2013;
+               current.error  = "Lost connection to MySQL server during query";
+               return;
+            }
+
+            // Outside a transaction a savepoint is gone with its statement
+            if ( q.startsWith( "RELEASE SAVEPOINT" )  &&  ! ( clientTx  &&  serverTx ) )
+            {
+               current.status = IUS_DB2::DBERROR;
+               current.server = 1305;
+               current.error  = "SAVEPOINT " + q.section( " ", 2, 2 ) + " does not exist";
+            }
+         }
+
          void refuse( int status, const QString& error )
          {
             current.status = status;
@@ -490,6 +545,7 @@ namespace
          {
             const QString name = q.value( 0 );
             calls << name;
+            if ( during )  during( name );
             lastArgs[ name ] = q.mid( 1 );
 
             if ( fails( name ) )   return;
@@ -586,6 +642,26 @@ namespace
             const QString     name = q.value( 0 );
             const QStringList a    = q.mid( 1 );
 
+            if ( during )  during( name );
+
+            // delete_model's first statements -- the model's noise, its
+            // modelPerson row -- are done before a failure at the model
+            bool partModel = false;
+
+            if ( name == "delete_model"  &&  ! lost  &&
+                 ! missing.contains( name )  &&  ! denied.contains( name )  &&
+                 ! refusing.contains( name )  &&  ! deadlocking.contains( name )  &&
+                 modelMine( a.value( 0 ) ) )
+            {
+               if ( commitsInside.contains( name ) )
+                  serverTx = false;
+               for ( int ii = noises.size() - 1; ii >= 0; ii-- )
+                  if ( noises[ ii ].modelID == a.value( 0 ) )  noises.removeAt( ii );
+               for ( FModel& mm : models )
+                  if ( mm.id == a.value( 0 ) )  mm.owner = 0;
+               partModel = true;
+            }
+
             if ( fails( name ) )   return;
 
             // The patched procedure starts a transaction of its own, which
@@ -623,6 +699,12 @@ namespace
                                          "MySQL: you do not have permission to view or modify this noise file" );
                for ( int ii = noises.size() - 1; ii >= 0; ii-- )
                   if ( noises[ ii ].id == a.value( 0 ) )  noises.removeAt( ii );
+            }
+
+            else if ( name == "delete_model"  &&  partModel )
+            {  // the last statement: the model
+               for ( int ii = models.size() - 1; ii >= 0; ii-- )
+                  if ( models[ ii ].id == a.value( 0 ) )  models.removeAt( ii );
             }
 
             else if ( name == "delete_model" )
@@ -1875,6 +1957,66 @@ TEST_F( TestUSDataDb, AStrayCopyOfARunDirectoryIsIgnoredAndTheRunIsNot )
    EXPECT_FALSE( QDir( copyDir ).exists( runA + ".2401031200.RA.1.A.280.xml" ) );
 }
 
+// A database record whose parent is only on local disk -- a model whose
+// edit was never uploaded -- is shown under that parent.  A copy of the run
+// holds the same edit, but nothing can be done for a copy: the model is
+// shown under the run's own edit, where it can be acted on, never under
+// the copy's
+TEST_F( TestUSDataDb, ACopyOfARunTakesNoDatabaseOrphans )
+{
+   QString edit2  = US_Util::new_guid();
+   QString model2 = US_Util::new_guid();
+   QString ename  = runA + ".2401051200.RA.1.A.280.xml";
+   writeEdit( runDir( runA ) + "/" + ename, edit2, rawG );
+
+   QString copyDir = US_Settings::resultDir() + "/Backup_" + runA;
+   QDir().mkpath( copyDir );
+   ASSERT_TRUE( QFile::copy( aucPath,  copyDir + "/" + QFileInfo( aucPath ).fileName() ) );
+   ASSERT_TRUE( QFile::copy( editPath, copyDir + "/" + QFileInfo( editPath ).fileName() ) );
+   ASSERT_TRUE( QFile::copy( runDir( runA ) + "/" + ename, copyDir + "/" + ename ) );
+
+   server.models << FModel{ "36", model2, runA + ".1A280.e2401051200_a1_2DSA_i01.model",
+                            edit2, "", "<model/>" };
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+
+   // the copy is opened first, so it is read first
+   QList< int > order;
+   QObject::connect( &model, &US_DataModel::runsListed, [ & ]()
+   {
+      for ( int ii = 0; ii < model.runCount(); ii++ )
+         if ( ! model.run_entry( ii ).copyOf.isEmpty() )
+            model.request_run( ii );
+   } );
+   QObject::connect( &model, &US_DataModel::runMerged,
+                     [ & ]( int index ) { order << index; } );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   int realIx = model.index_of_run( runA );
+   ASSERT_GE( realIx, 0 );
+   ASSERT_TRUE( model.run_entry( realIx ).copyOf.isEmpty() );
+   ASSERT_FALSE( order.isEmpty() );
+   ASSERT_FALSE( model.run_entry( order.first() ).copyOf.isEmpty() );
+
+   QList< int > rows;
+   for ( int row = 0; row < model.recCount(); row++ )
+      if ( model.row_datadesc( row ).dataGUID == model2  &&  model.run_of_row( row ) >= 0 )
+         rows << row;
+
+   ASSERT_EQ( rows.size(), 1 );
+   int mrow = rows.first();
+   EXPECT_EQ( model.run_of_row( mrow ), realIx )
+      << model.run_entry( model.run_of_row( mrow ) ).copyOf.toStdString();
+   EXPECT_EQ( model.row_datadesc( model.parent_row( mrow ) ).dataGUID, edit2 );
+
+   // and it can be acted on there
+   EXPECT_EQ( win.proc.record_remove_db( mrow ), 0 ) << win.proc.lastError().toStdString();
+   EXPECT_EQ( server.modelById( "36" ), nullptr );
+}
+
 // A model is not downloaded where its edit is not
 TEST_F( TestUSDataDb, AChildIsNotDownloadedWithoutItsParent )
 {
@@ -2480,9 +2622,10 @@ TEST_F( TestUSDataDb, APatchedRefusalRemovesNothing )
       EXPECT_NE( stateOf( model, guid ) & US_DataModel::REC_DB, 0 ) << guid.toStdString();
 }
 
-// When the edit is still refused after the noise of another edit's model
-// was removed first, and that removal was kept -- the transaction ended
-// under it -- the message says so, and so does its row, under that model
+// When the noise of another edit's model removed first was kept -- the
+// transaction ended under it -- the edit is not asked for again, the message
+// says the noise was removed all the same, and so does its row, under that
+// model
 TEST_F( TestUSDataDb, ForeignNoiseRemovedBeforeARefusedEditIsReported )
 {
    QString edit2  = US_Util::new_guid();
@@ -2505,9 +2648,9 @@ TEST_F( TestUSDataDb, ForeignNoiseRemovedBeforeARefusedEditIsReported )
    int crow = rowOf( model, cross );
    ASSERT_GE( crow, 0 );
 
-   EXPECT_EQ( win.proc.record_remove_db( rowOf( model, editG ) ), 2012 );
+   EXPECT_EQ( win.proc.record_remove_db( rowOf( model, editG ) ), 2019 );
    EXPECT_EQ( server.changes, QStringList() << "delete_editedData 21"
-                              << "delete_noise 47" << "delete_editedData 21" );
+                              << "delete_noise 47" );
 
    QString error = win.proc.lastError();
    EXPECT_TRUE( error.contains( runA + ".1A280.e2401021200_a1_2DSA_i01.ti_noise" ) )
@@ -3953,12 +4096,20 @@ TEST_F( TestUSDataDb, ARemovalOnALostConnectionSaysToOpenTheWindowAgain )
    EXPECT_TRUE( win.proc.lastError().contains( "close it and open it again" ) )
       << win.proc.lastError().toStdString();
 
+   // lost in the model's transaction: the server rolled it back
+   EXPECT_TRUE( win.proc.lastError().contains( "Nothing was removed" ) )
+      << win.proc.lastError().toStdString();
+   EXPECT_FALSE( win.proc.outcome_unknown() );
+   EXPECT_EQ( server.models.size(), 1 );
+   EXPECT_EQ( server.models[ 0 ].owner, kInv );
+   EXPECT_EQ( server.noises.size(), 1 );
+
    EXPECT_EQ( win.proc.record_remove_db( rowOf( model, editG ) ), 2017 );
    EXPECT_TRUE( win.proc.lastError().contains( "could not be listed" ) )
       << win.proc.lastError().toStdString();
    EXPECT_TRUE( win.proc.lastError().contains( "close it and open it again" ) )
       << win.proc.lastError().toStdString();
-   EXPECT_TRUE( server.txlog.isEmpty() );
+   EXPECT_EQ( server.txlog, QStringList() << "begin" << "rollback" );   // the model's
 }
 
 // The connection lost during the commit of an edit removal: whether the
@@ -4084,7 +4235,8 @@ static QStringList addModels( QList< FModel >& models, const QString& runA,
 
 // A removal that loses the connection stops: the records after it are not
 // tried -- each would fail the same way -- and the message names the record
-// whose outcome is not known and lists those not tried
+// the server rolled back, as it does a transaction whose connection ends,
+// and lists those not tried
 TEST_F( TestUSDataDb, ARemovalStopsWhenTheConnectionIsLost )
 {
    QStringList guids = addModels( server.models, runA, editG, 4 );
@@ -4109,10 +4261,14 @@ TEST_F( TestUSDataDb, ARemovalStopsWhenTheConnectionIsLost )
    for ( const FModel& mm : server.models )
       if ( mm.id == first )  label = model.row_datadesc( rowOf( model, mm.guid ) ).label;
    ASSERT_FALSE( label.isEmpty() );
-   EXPECT_TRUE( error.contains( "Whether " + label + " was removed from the database is"
-                                " not known" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( label + " was not removed from the database: the connection"
+                                " to the database was lost while it was being removed" ) )
+      << error.toStdString();
+   EXPECT_TRUE( error.contains( "so the server rolled the removal back" ) ) << error.toStdString();
+   EXPECT_FALSE( error.contains( "not known" ) ) << error.toStdString();
    EXPECT_TRUE( error.contains( "were not tried" ) ) << error.toStdString();
-   EXPECT_FALSE( error.contains( "None of the selected records" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "None of the selected records" ) ) << error.toStdString();
+   EXPECT_EQ( server.models.size(), 5 );
    for ( const QString& guid : guids )
       EXPECT_NE( stateOf( model, guid ) & US_DataModel::REC_DB, 0 ) << guid.toStdString();
 }
@@ -4138,7 +4294,8 @@ TEST_F( TestUSDataDb, RefusedModelRemovalsAreNamedAndTheirListIsBounded )
    EXPECT_EQ( server.changes.size(), 8 );
 
    QString error = win.proc.lastError();
-   EXPECT_EQ( error.count( "was not removed from the database (delete_model status" ), 5 )
+   EXPECT_EQ( error.count( "was not removed from the database: the database refused it"
+                           " (delete_model status" ), 5 )
       << error.toStdString();
    EXPECT_TRUE( error.contains( "and 3 more record(s) could not be removed" ) )
       << error.toStdString();
@@ -4148,6 +4305,162 @@ TEST_F( TestUSDataDb, RefusedModelRemovalsAreNamedAndTheirListIsBounded )
    QString label = model.row_datadesc( rowOf( model, guids.first() ) ).label;
    EXPECT_TRUE( error.contains( label + " was not removed from the database" ) )
       << error.toStdString();
+}
+
+// ------------------------------------------------------------ model and noise removals
+
+// delete_model removes the model's noise and its modelPerson row before the
+// model, one statement at a time.  A lock wait at the model fails only that
+// statement: outside a transaction the model would be left without an owner
+// and its noise gone, while the message said it was not removed.  In its
+// own transaction the rollback gives them back, and nothing was removed
+TEST_F( TestUSDataDb, AModelRemovalThatFailsPartWayRemovesNothing )
+{
+   for ( bool rollbackOnTimeout : { false, true } )
+   {
+      SCOPED_TRACE( rollbackOnTimeout ? "innodb_rollback_on_timeout" : "default" );
+      TearDown();
+      server = FakeServer();
+      SetUp();
+      server.transient[ "delete_model" ] = 1;
+      server.rollbackOnTimeout = rollbackOnTimeout;
+
+      US_DataModel model;
+      prepare( model );
+      Window       win( model );
+      model.scan_data();
+      win.tree.build_dtree();
+
+      win.select( itemOfRow( win.tw, rowOf( model, modelG ) ) );
+      EXPECT_EQ( win.tree.act_on_selection( "Database only", "DB-only remove" ), 2013 );
+
+      QString error = win.proc.lastError();
+      EXPECT_EQ( server.txlog, QStringList() << "begin" << "rollback" );
+      ASSERT_EQ( server.models.size(), 1 );
+      EXPECT_EQ( server.models[ 0 ].owner, kInv );
+      EXPECT_EQ( server.noises.size(), 1 );
+      EXPECT_TRUE( error.contains( "lock wait timeout" ) ) << error.toStdString();
+      EXPECT_TRUE( error.contains( "Nothing was removed" ) ) << error.toStdString();
+      EXPECT_FALSE( error.contains( "could not be rolled back" ) ) << error.toStdString();
+      for ( const QString& guid : { modelG, noiseG } )
+         EXPECT_NE( stateOf( model, guid ) & US_DataModel::REC_DB, 0 ) << guid.toStdString();
+   }
+}
+
+// A model or noise removal that succeeds is committed, in a transaction
+TEST_F( TestUSDataDb, ModelAndNoiseRemovalsAreCommitted )
+{
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+
+   EXPECT_EQ( win.proc.record_remove_db( rowOf( model, noiseG ) ), 0 )
+      << win.proc.lastError().toStdString();
+   EXPECT_EQ( win.proc.record_remove_db( rowOf( model, modelG ) ), 0 )
+      << win.proc.lastError().toStdString();
+   EXPECT_EQ( server.txlog, QStringList() << "begin" << "commit" << "begin" << "commit" );
+   EXPECT_TRUE( server.models.isEmpty() );
+   EXPECT_TRUE( server.noises.isEmpty() );
+
+   // the transaction was found open after each write
+   EXPECT_EQ( server.statements.filter( "RELEASE SAVEPOINT" ).size(), 2 );
+}
+
+// A procedure that committed the transaction inside it (none of today's
+// does) has kept what it removed: a connection lost before the COMMIT
+// then does not mean that nothing was removed.  US_DB2 says the server
+// rolled back, as it cannot see the earlier commit; the check after the
+// write did, and the outcome is reported as not known
+TEST_F( TestUSDataDb, AConnectionLostAfterAProcedureCommittedIsNotNothingRemoved )
+{
+   for ( const QString& proc : { QString( "delete_editedData" ), QString( "delete_model" ) } )
+   {
+      SCOPED_TRACE( proc.toStdString() );
+      TearDown();
+      server = FakeServer();
+      SetUp();
+      server.patchedEditDelete = true;
+      server.commitsInside << proc;
+      server.commitLoss        = 3;
+
+      US_DataModel model;
+      prepare( model );
+      Window       win( model );
+      model.scan_data();
+
+      int row = rowOf( model, proc == "delete_model" ? modelG : editG );
+      EXPECT_NE( win.proc.record_remove_db( row ), 0 );
+
+      QString error = win.proc.lastError();
+      if ( proc == "delete_model" )
+         EXPECT_TRUE( server.models.isEmpty() );
+      else
+         EXPECT_TRUE( server.edits.isEmpty() );
+      EXPECT_TRUE( win.proc.connection_lost() );
+      EXPECT_TRUE( win.proc.outcome_unknown() ) << error.toStdString();
+      EXPECT_FALSE( error.contains( "Nothing was removed" ) ) << error.toStdString();
+      EXPECT_TRUE( error.contains( "is not known" ) ) << error.toStdString();
+      EXPECT_TRUE( error.contains( "close it and open it again" ) ) << error.toStdString();
+   }
+}
+
+// The same for a connection lost while the transaction is being checked:
+// whether the procedure committed it is not known
+TEST_F( TestUSDataDb, AConnectionLostWhileTheTransactionIsCheckedLeavesTheOutcomeOpen )
+{
+   server.statementLoss = "SAVEPOINT";
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+
+   EXPECT_EQ( win.proc.record_remove_db( rowOf( model, modelG ) ), 2013 );
+
+   QString error = win.proc.lastError();
+   EXPECT_TRUE( win.proc.outcome_unknown() ) << error.toStdString();
+   EXPECT_FALSE( error.contains( "Nothing was removed" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "close it and open it again" ) ) << error.toStdString();
+}
+
+// Noise of another edit's model goes first on an older database.  A
+// delete_noise that ended the transaction (a commit inside it) has kept
+// the noise removed: the edit is not asked for outside the transaction --
+// an older delete_editedData that then failed would keep what it took --
+// and what the database holds is read back
+TEST_F( TestUSDataDb, NoEditIsRemovedAfterAWriteEndedTheTransaction )
+{
+   QString edit2  = US_Util::new_guid();
+   QString model2 = US_Util::new_guid();
+   QString cross  = US_Util::new_guid();
+   server.edits  << FEdit { "22", edit2, "11", runA + ".2401021200.RA.1.A.280.xml" };
+   server.models << FModel{ "34", model2, runA + ".1A280.e2401021200_a1_2DSA_i01.model",
+                            edit2, "22", "<model/>" };
+   server.noises << FNoise{ "47", cross, "21", "34", model2, "ti_noise",
+                            runA + ".1A280.e2401021200_a1_2DSA_i01.ti_noise", "<noise/>" };
+   server.commitsInside << "delete_noise";
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   int crow = rowOf( model, cross );
+   ASSERT_GE( crow, 0 );
+
+   EXPECT_EQ( win.proc.record_remove_db( rowOf( model, editG ) ), 2019 );
+
+   QString error = win.proc.lastError();
+   EXPECT_EQ( server.changes, QStringList() << "delete_editedData 21" << "delete_noise 47" );
+   EXPECT_EQ( server.edits.size(), 2 );
+   EXPECT_TRUE( error.contains( "the database ended the transaction" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "removed from the database all the same" ) )
+      << error.toStdString();
+   EXPECT_FALSE( error.contains( "Nothing was removed" ) ) << error.toStdString();
+   EXPECT_EQ( model.row_datadesc( crow ).recState, (int)US_DataModel::NOSTAT );
+   EXPECT_NE( stateOf( model, editG ) & US_DataModel::REC_DB, 0 );
 }
 
 // Removing from both places, a record the database keeps keeps its local
@@ -4313,4 +4626,273 @@ TEST_F( TestUSDataDb, AListingDroppedForAnotherInvestigatorIsNotShown )
    model.scan_data();
    EXPECT_FALSE( model.listing_dropped() );
    EXPECT_NE( stateOf( model, editG ) & US_DataModel::REC_DB, 0 );
+}
+
+// ------------------------------------------------------------ actions that stop part-way
+
+// Removing from both places: a database removal that fails is reported
+// with what the local removals that failed said -- one message does not
+// replace the other
+TEST_F( TestUSDataDb, LocalRemovalErrorsAreReportedWithFailedDatabaseRemovals )
+{
+   QString model2 = US_Util::new_guid();
+   QString path2  = US_Settings::dataDir() + "/models/M0000002.xml";
+   writeModel( path2, model2, editG, runA + ".1A280.e2401011200_a2_2DSA_i01.model" );
+   server.models << FModel{ "32", model2, runA + ".1A280.e2401011200_a2_2DSA_i01.model",
+                            editG, "21", textOf( path2 ) };
+   server.digest[ model2 ] = US_Util::md5sum_file( path2 );
+   server.transient[ "delete_model" ] = 1;      // the first one waits too long
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   // the local files are gone behind the window's back
+   ASSERT_TRUE( QFile::remove( modelPath ) );
+   ASSERT_TRUE( QFile::remove( path2 ) );
+
+   win.tw.clearSelection();
+   for ( const QString& guid : { modelG, model2 } )
+      itemOfRow( win.tw, rowOf( model, guid ) )->setSelected( true );
+
+   EXPECT_NE( win.tree.act_on_selection( "both DB and Local", "DB+Local remove" ), 0 );
+   EXPECT_EQ( server.models.size(), 1 );         // one of the two removed
+
+   QString error = win.proc.lastError();
+   EXPECT_TRUE( error.contains( "was not removed from the database" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "lock wait timeout" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "attempt to remove non-existent file" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "Removing from local disk failed" ) ) << error.toStdString();
+}
+
+// Another investigator selected while the question before removing all of
+// a stand-in was asked: nothing is done
+TEST_F( TestUSDataDb, AnInvestigatorChangedDuringAQuestionStopsTheAction )
+{
+   server.models << FModel{ "51", US_Util::new_guid(), "G.global.e1_a1_2DSA-GL_i01.model", "", "", "" };
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   int glbs = standIn( model, true );
+   ASSERT_GE( glbs, 0 );
+   win.select( win.tw.topLevelItem( glbs ) );
+
+   win.tree.setPrompter( [ & ]( int, const QString& title, const QString& text )
+   {
+      win.prompts << title + ": " + text;
+      if ( title.startsWith( "Remove All" ) )
+         US_Settings::set_us_inv_ID( kOther );
+      return true;
+   } );
+
+   EXPECT_EQ( win.tree.act_on_selection( "Database only", "DB-only remove" ),
+              (int)US_DataTree::ACT_REFUSED );
+   EXPECT_TRUE( server.changes.isEmpty() ) << server.changes.join( " " ).toStdString();
+   EXPECT_TRUE( win.prompts.join( "\n" ).contains( "Investigator Changed" ) )
+      << win.prompts.join( "\n" ).toStdString();
+   EXPECT_NE( server.modelById( "51" ), nullptr );
+
+   US_Settings::set_us_inv_ID( kInv );
+}
+
+// Another investigator selected while an action runs -- a long upload, say:
+// the records after the one being written are not tried, and the message
+// lists them and says why
+TEST_F( TestUSDataDb, AnInvestigatorChangedWhileAnActionRunsStopsIt )
+{
+   QStringList guids = addModels( server.models, runA, editG, 4 );
+   server.during = [ & ]( const QString& name )
+   {
+      if ( name == "delete_model" )
+         US_Settings::set_us_inv_ID( kOther );
+   };
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   win.tw.clearSelection();
+   for ( const QString& guid : guids )
+      itemOfRow( win.tw, rowOf( model, guid ) )->setSelected( true );
+
+   int stat = win.tree.act_on_selection( "Database only", "DB-only remove" );
+   QString error = win.proc.lastError();
+   US_Settings::set_us_inv_ID( kInv );
+
+   EXPECT_EQ( stat, (int)US_DataTree::ACT_NOT_TRIED ) << error.toStdString();
+   EXPECT_EQ( server.changes.size(), 1 ) << server.changes.join( " " ).toStdString();
+   EXPECT_EQ( server.models.size(), 4 );
+   EXPECT_TRUE( error.contains( "not tried, since the investigator was changed" ) )
+      << error.toStdString();
+   EXPECT_TRUE( error.contains( "previous investigator's records" ) ) << error.toStdString();
+   EXPECT_EQ( error.count( "\n  " + runA ), 4 ) << error.toStdString();   // 3 not tried, 1 removed
+}
+
+// The same for a download: what is written locally stops too
+TEST_F( TestUSDataDb, AnInvestigatorChangedWhileADownloadRunsStopsIt )
+{
+   QStringList guids = addModels( server.models, runA, editG, 3 );
+   server.during = [ & ]( const QString& name )
+   {
+      if ( name == "get_model_info" )
+         US_Settings::set_us_inv_ID( kOther );
+   };
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   win.tw.clearSelection();
+   for ( const QString& guid : guids )
+      itemOfRow( win.tw, rowOf( model, guid ) )->setSelected( true );
+
+   int stat = win.tree.act_on_selection( "Database only", "Local file create" );
+   QString error = win.proc.lastError();
+   US_Settings::set_us_inv_ID( kInv );
+
+   EXPECT_EQ( stat, (int)US_DataTree::ACT_NOT_TRIED ) << error.toStdString();
+   EXPECT_EQ( server.count( "get_model_info" ), 1 );
+   EXPECT_TRUE( error.contains( "not tried, since the investigator was changed" ) )
+      << error.toStdString();
+}
+
+// A download that loses the connection stops: the records after it are not
+// tried -- each would fail the same way -- and the message lists them
+TEST_F( TestUSDataDb, ADownloadStopsWhenTheConnectionIsLost )
+{
+   QStringList guids = addModels( server.models, runA, editG, 4 );
+   server.failing << "get_model_info";
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   win.tw.clearSelection();
+   for ( const QString& guid : guids )
+      itemOfRow( win.tw, rowOf( model, guid ) )->setSelected( true );
+
+   EXPECT_NE( win.tree.act_on_selection( "Database only", "Local file create" ), 0 );
+   EXPECT_EQ( server.count( "get_model_info" ), 1 );
+
+   QString error = win.proc.lastError();
+   EXPECT_TRUE( error.contains( "not tried, since the connection to the database was lost" ) )
+      << error.toStdString();
+   EXPECT_EQ( error.count( "\n  " + runA ), 3 ) << error.toStdString();
+   EXPECT_EQ( error.count( "close it and open it again" ), 1 ) << error.toStdString();
+}
+
+// The same for an upload
+TEST_F( TestUSDataDb, AnUploadStopsWhenTheConnectionIsLost )
+{
+   QStringList guids;
+   for ( int ii = 0; ii < 3; ii++ )
+   {
+      guids << US_Util::new_guid();
+      writeModel( US_Settings::dataDir() + QString( "/models/M000001%1.xml" ).arg( ii ),
+                  guids.last(), editG,
+                  runA + QString( ".1A280.e2401011200_a%1_2DSA_i01.model" ).arg( 20 + ii ) );
+   }
+   server.failing << "new_model";
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   win.tw.clearSelection();
+   for ( const QString& guid : guids )
+      itemOfRow( win.tw, rowOf( model, guid ) )->setSelected( true );
+
+   EXPECT_NE( win.tree.act_on_selection( "Local disk only", "DB create" ), 0 );
+   EXPECT_EQ( server.changes.filter( "new_model" ).size(), 1 );
+
+   QString error = win.proc.lastError();
+   EXPECT_TRUE( error.contains( "not tried, since the connection to the database was lost" ) )
+      << error.toStdString();
+   EXPECT_EQ( error.count( "\n  " + runA ), 2 ) << error.toStdString();
+}
+
+// The GMP guard fails closed: when the database cannot say whether the GMP
+// framework needs a record, nothing is removed, and the user is told why
+TEST_F( TestUSDataDb, AGmpCheckThatFailsRemovesNothing )
+{
+   for ( const QString& proc : { QString( "get_modelIDs_for_autoflow" ),
+                                 QString( "check_filename_for_autoflow" ),
+                                 QString( "get_noise_desc_by_editID" ) } )
+   {
+      SCOPED_TRACE( proc.toStdString() );
+      TearDown();
+      server = FakeServer();
+      SetUp();
+      server.denied << proc;
+
+      US_DataModel model;
+      prepare( model );
+      Window       win( model );
+      model.scan_data();
+      win.tree.build_dtree();
+
+      // a model, or the edit when it is the edit's noise listing that fails
+      QString guid = ( proc == "get_noise_desc_by_editID" ) ? editG : modelG;
+      win.select( itemOfRow( win.tw, rowOf( model, guid ) ) );
+      EXPECT_EQ( win.tree.act_on_selection( "Database only", "DB-only remove" ),
+                 (int)US_DataTree::ACT_REFUSED ) << win.proc.lastError().toStdString();
+      EXPECT_TRUE( server.changes.isEmpty() ) << server.changes.join( " " ).toStdString();
+      ASSERT_FALSE( win.prompts.isEmpty() );
+      EXPECT_TRUE( win.prompts.last().contains( "could not be checked" ) )
+         << win.prompts.last().toStdString();
+      EXPECT_NE( stateOf( model, guid ) & US_DataModel::REC_DB, 0 );
+   }
+}
+
+// After a local removal, a copy of the run shows the removed model and
+// noise files gone too: they are the run's own files
+TEST_F( TestUSDataDb, ACopyOfARunShowsTheRunsFilesRemoved )
+{
+   QString copyDir = US_Settings::resultDir() + "/Backup_" + runA;
+   QDir().mkpath( copyDir );
+   ASSERT_TRUE( QFile::copy( aucPath,  copyDir + "/" + QFileInfo( aucPath ).fileName() ) );
+   ASSERT_TRUE( QFile::copy( editPath, copyDir + "/" + QFileInfo( editPath ).fileName() ) );
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   int realIx = model.index_of_run( runA );
+   int copyIx = -1;
+   for ( int ii = 0; ii < model.runCount(); ii++ )
+      if ( ! model.run_entry( ii ).copyOf.isEmpty() )  copyIx = ii;
+   ASSERT_GE( copyIx, 0 );
+   ASSERT_GE( rowOf( model, modelG, copyIx ), 0 );
+   ASSERT_NE( model.row_datadesc( rowOf( model, modelG, copyIx ) ).recState
+              & US_DataModel::REC_LO, 0 );
+
+   win.select( itemOfRow( win.tw, rowOf( model, modelG, realIx ) ) );
+   EXPECT_EQ( win.tree.act_on_selection( "Local disk only", "Local-only remove" ), 0 )
+      << win.proc.lastError().toStdString();
+   EXPECT_FALSE( QFile::exists( modelPath ) );
+   EXPECT_FALSE( QFile::exists( noisePath ) );
+
+   for ( const QString& guid : { modelG, noiseG } )
+   {
+      int row = rowOf( model, guid, copyIx );
+      ASSERT_GE( row, 0 );
+      EXPECT_EQ( model.row_datadesc( row ).recState & US_DataModel::REC_LO, 0 )
+         << guid.toStdString();
+   }
 }
