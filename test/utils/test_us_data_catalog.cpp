@@ -1162,6 +1162,133 @@ TEST_F( TestUSDataCatalog, FileNamesCompareAsTheFileSystemDoes )
    EXPECT_LT( exact .indexOfRun( "OTHER_RUN" ), 0 );
 }
 
+// A listing for one project says nothing about the runs of another: their
+// copies are not listed, so no warning names them
+TEST_F( TestUSDataCatalog, CopiesOutsideTheProjectAreNotWarnedAbout )
+{
+   const QString foreign = "Foreign_run";
+   const QString mine    = projectGUID;
+   projectGUID           = US_Util::new_guid();   // the other project's
+
+   for ( const QString& name : { foreign, "Copy_" + foreign } )
+   {
+      QString dir = runDir( name );
+      writeAuc( dir + "/" + foreign + ".RA.1.A.280.auc", US_Util::new_guid(), name );
+      writeExperimentXml( dir + "/" + foreign + ".RA.xml", foreign, US_Util::new_guid() );
+   }
+   const QString other = projectGUID;
+   projectGUID         = mine;
+
+   for ( const QString& filter : { mine, other } )
+   {
+      SCOPED_TRACE( filter == mine ? "this project" : "the copy's project" );
+
+      US_DataCatalog catalog;
+      QString        error;
+      QStringList    messages;
+      QObject::connect( &catalog, &US_DataCatalog::message,
+                        [ &messages ]( const QString& text )
+                        { messages << text; } );
+
+      ASSERT_TRUE( catalog.open( US_DataCatalog::Disk, QString(), error ) );
+      ASSERT_TRUE( catalog.loadRuns( filter, error ) ) << error.toStdString();
+
+      const QStringList warned = messages.filter( "copy of run " + foreign );
+
+      if ( filter == mine )
+      {
+         EXPECT_LT( catalog.indexOfRun( foreign ), 0 );
+         EXPECT_TRUE( warned.isEmpty() ) << warned.join( "\n" ).toStdString();
+      }
+      else
+      {  // listed, the copy is still warned about
+         EXPECT_GE( catalog.indexOfRun( foreign ), 0 );
+         EXPECT_EQ( warned.size(), 1 ) << messages.join( "\n" ).toStdString();
+      }
+   }
+}
+
+// Where file names compare without case, so do run IDs: files of "FOLD_RUN"
+// in another directory are a copy of run "Fold_run", whose directory is
+// there, and the run ID in any case finds the run, not the copy
+TEST_F( TestUSDataCatalog, ACopyInAnotherCaseIsACopyWhereCaseIsNotTold )
+{
+   const QString runID = "Fold_run";
+   writeAuc( runDir( runID ) + "/" + runID + ".RA.1.A.280.auc", US_Util::new_guid(), "the run" );
+   writeAuc( runDir( "Copy_fold" ) + "/FOLD_RUN.RA.1.A.280.auc", US_Util::new_guid(), "the copy" );
+
+   US_DataCatalog catalog;
+   QString        error;
+   catalog.setFileNameCase( Qt::CaseInsensitive );
+   ASSERT_TRUE( catalog.open( US_DataCatalog::Disk, QString(), error ) );
+   ASSERT_TRUE( catalog.loadRuns( error ) );
+
+   int realIx = -1;
+   int copyIx = -1;
+
+   for ( int ii = 0; ii < catalog.runCount(); ii++ )
+   {
+      if ( catalog.run( ii ).dirPath == runDir( runID ) )      realIx = ii;
+      if ( catalog.run( ii ).dirPath == runDir( "Copy_fold" ) ) copyIx = ii;
+   }
+
+   ASSERT_GE( realIx, 0 );
+   ASSERT_GE( copyIx, 0 );
+
+   EXPECT_TRUE ( catalog.run( realIx ).usable ) << catalog.run( realIx ).problem.toStdString();
+   EXPECT_FALSE( catalog.run( copyIx ).usable );
+   EXPECT_EQ   ( catalog.run( copyIx ).copyOf, runDir( runID ) );
+   EXPECT_TRUE ( catalog.run( copyIx ).problem.contains( "copy of run" ) )
+      << catalog.run( copyIx ).problem.toStdString();
+
+   // the copy's own spelling finds the run as well
+   EXPECT_EQ( catalog.indexOfRun( runID ), realIx );
+   EXPECT_EQ( catalog.indexOfRun( "FOLD_RUN" ), realIx );
+   EXPECT_EQ( catalog.indexOfRun( "fold_run" ), realIx );
+}
+
+// A stray file of another run that sorts first does not make a run's own
+// directory a copy of that other run: the directory is still its run, not
+// usable for holding two runs, and nothing is called a copy
+TEST_F( TestUSDataCatalog, AStrayFileDoesNotMakeARunACopyOfAnother )
+{
+   const QString stray = "AAA_run";
+   const QString runID = "Mixed_run";
+   writeAuc( runDir( stray ) + "/" + stray + ".RA.1.A.280.auc", US_Util::new_guid(), "stray's own" );
+   writeAuc( runDir( runID ) + "/" + stray + ".RA.1.A.280.auc", US_Util::new_guid(), "stray" );
+   writeAuc( runDir( runID ) + "/" + runID + ".RA.1.A.280.auc", US_Util::new_guid(), "own" );
+   writeExperimentXml( runDir( runID ) + "/" + runID + ".RA.xml", runID, US_Util::new_guid() );
+
+   US_DataCatalog catalog;
+   QString        error;
+   QStringList    messages;
+   QObject::connect( &catalog, &US_DataCatalog::message,
+                     [ &messages ]( const QString& text )
+                     { messages << text; } );
+
+   ASSERT_TRUE( catalog.open( US_DataCatalog::Disk, QString(), error ) );
+   ASSERT_TRUE( catalog.loadRuns( error ) );
+
+   const int index = catalog.indexOfRun( runID );
+   ASSERT_GE( index, 0 ) << "the run dropped out of the listing";
+
+   const US_DataCatalog::Run& run = catalog.run( index );
+   EXPECT_EQ   ( run.dirPath, runDir( runID ) );
+   EXPECT_TRUE ( run.copyOf.isEmpty() ) << run.copyOf.toStdString();
+   EXPECT_EQ   ( run.runType, QString( "RA" ) );
+   EXPECT_FALSE( run.usable );
+   EXPECT_TRUE ( run.problem.contains( "more than one run" ) ) << run.problem.toStdString();
+   EXPECT_FALSE( run.problem.contains( "copy" ) ) << run.problem.toStdString();
+
+   // and the stray's own run is untouched
+   const int strayIx = catalog.indexOfRun( stray );
+   ASSERT_GE  ( strayIx, 0 );
+   EXPECT_EQ  ( catalog.run( strayIx ).dirPath, runDir( stray ) );
+   EXPECT_TRUE( catalog.run( strayIx ).usable ) << catalog.run( strayIx ).problem.toStdString();
+
+   EXPECT_TRUE( messages.filter( "copy of run" ).isEmpty() ) << messages.join( "\n" ).toStdString();
+}
+
 // A file that cannot be read has no checksum, and saying it has checksum
 // "0" would make it look like a copy that differs.  The read fails instead,
 // and the experiment stays as it was.

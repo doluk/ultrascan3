@@ -1054,32 +1054,34 @@ const US_DataCatalog::Run& US_DataCatalog::run( int index ) const
 
 int US_DataCatalog::indexOfRun( const QString& runID ) const
 {
-   // The run's own directory before a copy of it, wherever that sorts
-   int copy = -1;
-
-   for ( int ii = 0; ii < run_list.size(); ii++ )
-   {
-      if ( run_list[ ii ].runID != runID )  continue;
-      if ( run_list[ ii ].copyOf.isEmpty() )  return ii;
-      if ( copy < 0 )  copy = ii;
-   }
-
-   if ( copy >= 0 )  return copy;
-
    // The source's own idea of one name: the database's runID column does
    // not tell case apart, and a local store does where its file system does
    Qt::CaseSensitivity cs = isDb() ? Qt::CaseInsensitive : file_case;
 
-   if ( cs == Qt::CaseSensitive )  return -1;
+   // Of the entries with that run ID, wherever they sort: the run's own
+   // directory before a copy of it, a usable entry before one that is not,
+   // and then the exact spelling before another case of it
+   int best      = -1;
+   int bestScore = 0;
 
    for ( int ii = 0; ii < run_list.size(); ii++ )
    {
-      if ( run_list[ ii ].runID.compare( runID, cs ) != 0 )  continue;
-      if ( run_list[ ii ].copyOf.isEmpty() )  return ii;
-      if ( copy < 0 )  copy = ii;
+      const Run& run = run_list[ ii ];
+
+      if ( run.runID.compare( runID, cs ) != 0 )  continue;
+
+      const int score = ( run.copyOf.isEmpty() ? 0 : 4 ) +
+                        ( run.usable           ? 0 : 2 ) +
+                        ( run.runID == runID   ? 0 : 1 );
+
+      if ( best < 0  ||  score < bestScore )
+      {
+         best      = ii;
+         bestScore = score;
+      }
    }
 
-   return copy;
+   return best;
 }
 
 bool US_DataCatalog::isRunLoaded( int index ) const
@@ -1534,12 +1536,28 @@ void US_DataCatalog::buildDiskIndex( void )
 
       else
       {
-         rf.runID   = runIdOfFile( rf.aucFiles.first(), false );
-         rf.runType = rf.aucFiles.first().section( ".", -5, -5 );
+         // The run of the first file, unless the directory holds more than
+         // one run and one of them is the run it is named after: a stray
+         // file of another run that sorts first does not make the run's own
+         // directory a copy of that other run
+         int own = 0;
+
+         for ( int jj = 0; jj < rf.aucFiles.size(); jj++ )
+         {
+            if ( runIdOfFile( rf.aucFiles[ jj ], false )
+                    .compare( rf.dirName, file_case ) == 0 )
+            {
+               own = jj;
+               break;
+            }
+         }
+
+         rf.runID   = runIdOfFile( rf.aucFiles[ own ], false );
+         rf.runType = rf.aucFiles[ own ].section( ".", -5, -5 );
 
          if ( rf.runID.isEmpty() )  rf.runID = rf.dirName;
 
-         for ( int jj = 1; jj < rf.aucFiles.size(); jj++ )
+         for ( int jj = 0; jj < rf.aucFiles.size(); jj++ )
             if ( runIdOfFile( rf.aucFiles[ jj ], false ) != rf.runID )
                rf.mixedRuns = true;
       }
@@ -1680,20 +1698,31 @@ bool US_DataCatalog::loadRunsDisk( QList< Run >& runs, QString& error )
    // ID is a copy of it -- "Copy of MyRun", "Backup_MyRun", "MyRun_old" --
    // and is ignored.  Without such a directory which one is the run cannot
    // be told, and all of them are refused.
+   //
+   // One run ID as the file system compares names: where it does not tell
+   // "RunA" from "runA", the two are one run, and the directories that hold
+   // them are the run and its copies.
+   const auto runKey = [ this ]( const QString& runID )
+   {
+      return file_case == Qt::CaseInsensitive ? runID.toCaseFolded() : runID;
+   };
+
    QSet< QString >                runIDs;
-   QMultiHash< QString, QString > dirsOfRun;
-   QHash< QString, QString >      runDirOf;    // runID -> its own dirPath
+   QMultiHash< QString, QString > dirsOfRun;   // run key -> directory names
+   QHash< QString, QString >      runDirOf;    // run key -> its own dirPath
 
    for ( const DiskIndex::RunFiles& rf : disk_index->runs )
    {
       if ( rf.aucFiles.isEmpty() )  continue;
 
+      const QString key = runKey( rf.runID );
+
       runIDs   .insert( rf.runID );
-      dirsOfRun.insert( rf.runID, rf.dirName );
+      dirsOfRun.insert( key, rf.dirName );
 
       if ( rf.runID.compare( rf.dirName, file_case ) == 0  &&
-           ! runDirOf.contains( rf.runID ) )
-         runDirOf.insert( rf.runID, rf.dirPath );
+           ! runDirOf.contains( key ) )
+         runDirOf.insert( key, rf.dirPath );
    }
 
    // Which models and noise records belong to a run can only be said for
@@ -1744,6 +1773,9 @@ bool US_DataCatalog::loadRunsDisk( QList< Run >& runs, QString& error )
          run.projectDesc = proj.value( "desc" );
       }
 
+      // A run of another project is not listed, so nothing is said of it
+      if ( ! proj_guid.isEmpty()  &&  run.projectGUID != proj_guid )  continue;
+
       run.date       = utc_of_file( rf.dirPath + "/" + rf.aucFiles.first() );
       run.modelCount = modelKnt.value( rf.runID );
       run.noiseCount = noiseKnt.value( rf.runID );
@@ -1755,7 +1787,7 @@ bool US_DataCatalog::loadRunsDisk( QList< Run >& runs, QString& error )
          problems << tr( "The run ID %1 is not one UltraScan accepts" )
                      .arg( rf.runID );
 
-      QString runDir = runDirOf.value( rf.runID );
+      QString runDir = runDirOf.value( runKey( rf.runID ) );
 
       if ( ! runDir.isEmpty()  &&  runDir != rf.dirPath )
       {  // A copy of a run whose own directory is there: never the run
@@ -1779,7 +1811,7 @@ bool US_DataCatalog::loadRunsDisk( QList< Run >& runs, QString& error )
 
       // No directory is named after the run: which one is the run cannot
       // be told, and every one of them is refused
-      QStringList others = dirsOfRun.values( rf.runID );
+      QStringList others = dirsOfRun.values( runKey( rf.runID ) );
       others.removeAll( rf.dirName );
       others.sort();
 
@@ -1793,8 +1825,6 @@ bool US_DataCatalog::loadRunsDisk( QList< Run >& runs, QString& error )
          run.usable  = false;
          run.problem = problems.join( "; " );
       }
-
-      if ( ! proj_guid.isEmpty()  &&  run.projectGUID != proj_guid )  continue;
 
       runs << run;
    }

@@ -301,6 +301,11 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
             //! hold one run ID, the one named after it is the run and stays
             //! usable; the others are copies of it (\ref copyOf) and are
             //! not.  When none is named after the run ID, none is usable.
+            //! Where file names compare without case (\ref fileNameCase),
+            //! so do run IDs here: "RunA" in a directory "Copy of RunA" is
+            //! a copy of run "runA" in directory "runA".  A directory that
+            //! holds the files of more than one run is the run it is named
+            //! after when it holds that run, and is not usable.
             bool    usable;
             //! What is wrong with the run, when \ref usable is false
             QString problem;
@@ -495,14 +500,14 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
 
       //! \brief The position of an experiment, by run identifier
       //!
-      //! An exact match wins.  Failing one, the run ID is compared the way
-      //! the source compares it: without case on the database, whose
-      //! runID column does not tell "RunA" from "runA", and on disk as
-      //! \ref fileNameCase says.
+      //! The run ID is compared the way the source compares it: without
+      //! case on the database, whose runID column does not tell "RunA" from
+      //! "runA", and on disk as \ref fileNameCase says.  Of several entries
+      //! that match, the run's own directory (not a \ref Run::copyOf) wins,
+      //! then a \ref Run::usable one, then the exact spelling, then the
+      //! first in the list.
       //! \param runID The run identifier to look for
-      //! \returns -1 when there is no such experiment.  When a local store
-      //!          holds the run ID in more than one directory: the one named
-      //!          after it (not a \ref Run::copyOf), else the first one
+      //! \returns -1 when there is no such experiment
       int  indexOfRun( const QString& runID ) const;
 
       /*! \brief Read the whole chain of every experiment at once
