@@ -406,6 +406,24 @@ noise and on the calibration's date. They are optional, and the format stays
 `2`: an import that does not know them ignores them and imports as it did, and
 one that does treats a bundle without them as described there.
 
+The export reads the calibration's `dateUpdated` with the session's time
+zone set to UTC (`SET time_zone = '+00:00'`) and puts the session's zone
+back afterwards; an export that cannot put it back fails, saying why (a
+lost connection, say). The column is a `TIMESTAMP`, read as the wall time
+of the session's zone, and in a zone with daylight saving time the hour of
+a fall-back is read twice: read as wall time, 00:30 UTC on the European
+fall-back day came back as 01:30 UTC. A server that refuses the zone change
+(or a zone that cannot be named back) is read as before, as wall time
+turned into an instant by the server.
+
+The models' and noise records' `sourceLastUpdated` are the times the
+server's `timestamp2UTC()` gives. On a server without time zone tables that
+function adds the server's present offset from UTC to every time stamp,
+whatever the offset was when the record was made: there the times are off by
+the difference of summer and winter time for half of the year. All are off by
+the same amount, so their order — which is what the import uses them for —
+is kept.
+
 Every entry carries a `payload` and a `sha256`. **The digest is the digest of
 the payload file**, not of the record's properties, so a bundle can be verified
 the way any downloaded file is verified. An import checks every digest before

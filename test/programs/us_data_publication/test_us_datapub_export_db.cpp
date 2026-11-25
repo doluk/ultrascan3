@@ -1172,3 +1172,67 @@ TEST_F( DataPubDbExport, AModelTheChainDoesNotListBorrowsTheNoiseOfItsEdit )
    EXPECT_EQ( noise.attrs.value( "borrowedByModelGUIDs" ), laterGUID );
    EXPECT_TRUE( mani.contains( US_DataPub::Model, modelGUID ) );
 }
+
+/* The calibration's dateUpdated travels as the instant it is, also in the
+   hour of a fall-back of the server's time zone (Europe: 2024-10-27, 01:00
+   UTC), which a zone with daylight saving time reads twice.  It is read
+   with the session on UTC.  Only a server in such a zone can tell the
+   difference; on a server on UTC this checks the instant alone.
+*/
+TEST_F( DataPubDbExport, TheCalibrationDateIsTheInstantInAFallBackHour )
+{
+   QString dbRunID;
+   QString error;
+   ASSERT_TRUE( storeInDatabase( dbRunID, error ) ) << error.toStdString();
+
+   db->rawQuery( "SELECT rotorCalibrationID FROM experiment WHERE runID = '"
+                 + dbRunID + "'" );
+   ASSERT_TRUE( db->next() );
+   QString calID = db->value( 0 ).toString();
+   ASSERT_GT( calID.toInt(), 0 );
+
+   db->rawQuery( "SELECT @@session.time_zone" );
+   ASSERT_TRUE( db->next() );
+   QString zone = db->value( 0 ).toString();
+
+   db->rawQuery( "SET time_zone = '+00:00'" );
+   db->rawQuery( "SELECT dateUpdated FROM rotorCalibration"
+                 " WHERE rotorCalibrationID = " + calID );
+   ASSERT_TRUE( db->next() );
+   QString was = db->value( 0 ).toDateTime().toString( "yyyy-MM-dd hh:mm:ss" );
+
+   struct PutBack
+   {
+      std::function< void() > undo;
+      ~PutBack() { undo(); }
+   } putBack { [ & ]()
+   {
+      db->rawQuery( "SET time_zone = '+00:00'" );
+      db->rawQuery( "UPDATE rotorCalibration SET dateUpdated = "
+                    + ( was.isEmpty() ? QString( "NULL" ) : "'" + was + "'" )
+                    + " WHERE rotorCalibrationID = " + calID );
+      db->rawQuery( "SET time_zone = '" + zone + "'" );
+   } };
+
+   for ( const QString& instant : { QString( "2024-10-27 00:30:00" ),
+                                    QString( "2024-10-27 01:30:00" ),
+                                    QString( "2024-03-31 00:30:00" ) } )
+   {
+      SCOPED_TRACE( instant.toStdString() );
+      db->rawQuery( "SET time_zone = '+00:00'" );
+      db->rawQuery( "UPDATE rotorCalibration SET dateUpdated = '" + instant
+                    + "' WHERE rotorCalibrationID = " + calID );
+      ASSERT_EQ( db->lastErrno(), IUS_DB2::OK ) << db->lastError().toStdString();
+      db->rawQuery( "SET time_zone = '" + zone + "'" );
+
+      US_DataPubExporter fromDb;
+      ASSERT_TRUE( exportFromDb( dbRunID, root + "/cal.tar.gz", fromDb,
+                                 error ) ) << error.toStdString();
+
+      QList< US_DataPubEntity > cals =
+         fromDb.manifest().section( US_DataPub::RotorCalibration );
+      ASSERT_EQ( cals.size(), 1 );
+      EXPECT_EQ( cals[ 0 ].attrs.value( "dateUpdated" ),
+                 QString( instant ).replace( ' ', 'T' ) + "Z" );
+   }
+}

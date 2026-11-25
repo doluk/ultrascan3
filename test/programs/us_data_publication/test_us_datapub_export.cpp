@@ -1701,6 +1701,12 @@ class US_DataPubExporterTest
          return ex.gatherRuns( selection, runs, error );
       }
 
+      static bool calibrationInstant( US_DataPubExporter& ex, int calID,
+                                      QString& instant, QString& error )
+      {
+         return ex.calibrationInstant( calID, instant, error );
+      }
+
       static bool addSolutions( US_DataPubExporter& ex,
                                 const US_DataPubCatalog::Run& run,
                                 QString& error )
@@ -4879,4 +4885,136 @@ TEST_F( DataPubExport, ModelFilesAreReadOncePerCatalog )
    EXPECT_EQ( second.filename, QString( "M0000002.xml" ) );
    EXPECT_TRUE( none.filename.isEmpty() );
    EXPECT_EQ( catalog.modelFileScans(), 1 );
+}
+
+namespace
+{
+   /* A database whose session time zone is a zone with daylight saving
+      time (SYSTEM, Central European) -- in the hour of the fall-back of
+      2024-10-27, 02:00 to 03:00 local time is read twice.  A calibration
+      updated at 00:30 UTC reads 02:30 there, and UNIX_TIMESTAMP() turns
+      02:30 into 01:30 UTC, the later of the two.  On UTC it reads 00:30.
+   */
+   class ZoneDb
+   {
+      public:
+         NiceMock< US_DB2_Mock > mock;
+         QString     zone       = "SYSTEM";
+         bool        refuseSet  = false;  // SET time_zone fails
+         bool        loseOnBack = false;  // the connection is lost on SET back
+         QStringList statements;
+
+         ZoneDb()
+         {
+            ON_CALL( mock, isConnected() ).WillByDefault( Return( true ) );
+
+            ON_CALL( mock, rawQuery( _ ) )
+               .WillByDefault( [ this ]( const QString& sql )
+               {
+                  statements << sql;
+                  status = IUS_DB2::OK;
+                  rows.clear();
+                  cursor = 0;
+
+                  if ( sql == "SELECT @@session.time_zone" )
+                     rows << QVariant( zone );
+
+                  else if ( sql.startsWith( "SET time_zone = '" ) )
+                  {
+                     QString to = sql.section( '\'', 1, 1 );
+
+                     if ( refuseSet  ||  ( loseOnBack  &&  to != "+00:00" ) )
+                        status = IUS_DB2::DBERROR;
+                     else
+                        zone = to;
+                  }
+
+                  else if ( sql.startsWith( "SELECT UNIX_TIMESTAMP( '" ) )
+                     rows << QVariant( sql.section( '\'', 1, 1 )
+                                       == "2024-10-27 02:30:00"
+                                       ? 1729992600LL : 0LL );
+               } );
+
+            ON_CALL( mock, query( An< const QStringList& >() ) )
+               .WillByDefault( [ this ]( const QStringList& q )
+               {
+                  statements << q.value( 0 );
+                  status = IUS_DB2::OK;
+                  rows.clear();
+                  cursor = 0;
+                  row7   = zone == "+00:00" ? "2024-10-27 00:30:00"
+                                            : "2024-10-27 02:30:00";
+                  rows << QVariant( "calibration" );
+               } );
+
+            ON_CALL( mock, lastErrno() ).WillByDefault( [ this ]()
+                                                        { return status; } );
+            ON_CALL( mock, lastError() ).WillByDefault( [ this ]()
+            {
+               return status == IUS_DB2::OK
+                      ? QString() : QString( "Lost connection to server" );
+            } );
+            ON_CALL( mock, next() ).WillByDefault( [ this ]()
+                                                   { return ++cursor <= rows.size(); } );
+            ON_CALL( mock, value( _ ) ).WillByDefault( [ this ]( unsigned col )
+            {
+               if ( cursor < 1  ||  cursor > rows.size() )  return QVariant();
+
+               if ( statements.last() == "get_rotor_calibration_info" )
+                  return col == 7 ? QVariant( row7 ) : QVariant();
+
+               return col == 0 ? rows[ cursor - 1 ] : QVariant();
+            } );
+         }
+
+      private:
+         int             status = IUS_DB2::OK;
+         QList< QVariant > rows;
+         int             cursor = 0;
+         QString         row7;
+   };
+}
+
+/* The calibration's dateUpdated is read with the session on UTC, so that an
+   instant in the hour of a fall-back is the one it was, and the session's
+   zone is put back afterwards.  It was read as wall time and turned back
+   into an instant by the server, which gave 01:30 UTC for 00:30 UTC.
+*/
+TEST_F( DataPubExportSteps, ACalibrationIsDatedInUtcInTheFallBackHour )
+{
+   ZoneDb             zdb;
+   US_DataPubExporter ex;
+   US_DataPubExporterTest::attach( ex, &zdb.mock );
+
+   QString instant;
+   QString error;
+   ASSERT_TRUE( US_DataPubExporterTest::calibrationInstant( ex, 3, instant,
+                                                            error ) )
+      << error.toStdString();
+   EXPECT_EQ( instant, QString( "2024-10-27T00:30:00Z" ) );
+   EXPECT_EQ( zdb.zone, QString( "SYSTEM" ) )
+      << zdb.statements.join( "; " ).toStdString();
+   EXPECT_TRUE( zdb.statements.contains( "SET time_zone = 'SYSTEM'" ) )
+      << zdb.statements.join( "; " ).toStdString();
+
+   // A server that refuses the zone: the wall time, as the server reads it
+   ZoneDb             refusing;
+   US_DataPubExporter ex2;
+   refusing.refuseSet = true;
+   US_DataPubExporterTest::attach( ex2, &refusing.mock );
+   ASSERT_TRUE( US_DataPubExporterTest::calibrationInstant( ex2, 3, instant,
+                                                            error ) )
+      << error.toStdString();
+   EXPECT_EQ( instant, QString( "2024-10-27T01:30:00Z" ) );
+   EXPECT_EQ( refusing.zone, QString( "SYSTEM" ) );
+
+   // A session whose zone cannot be put back fails, saying why
+   ZoneDb             losing;
+   US_DataPubExporter ex3;
+   losing.loseOnBack = true;
+   US_DataPubExporterTest::attach( ex3, &losing.mock );
+   EXPECT_FALSE( US_DataPubExporterTest::calibrationInstant( ex3, 3, instant,
+                                                             error ) );
+   EXPECT_TRUE( error.contains( "Lost connection" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "SYSTEM" ) ) << error.toStdString();
 }

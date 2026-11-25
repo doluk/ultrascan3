@@ -449,8 +449,10 @@ class US_DataPubExporter : public QObject
       bool addCalibration( const US_DataPubCatalog::ExpInfo&, QString& );
 
       //! \brief When a database calibration was last updated, as a UTC
-      //!        ISO time stamp; empty where that cannot be told
-      QString calibrationInstant( int calID );
+      //!        ISO time stamp in \a instant; empty where that cannot be
+      //!        told.  Read with the session on UTC, its zone put back
+      //!        afterwards; false, with \a error, when it cannot be.
+      bool calibrationInstant( int calID, QString& instant, QString& error );
 
       //! The calibration of the local rotor directory with this GUID
       static bool findDiskCalibration( const QString& guid,
