@@ -591,7 +591,11 @@ public:
  private:
     bool       connected;
     bool       inTransaction        = false;
-    //! A deadlock in the open transaction, after which the server rolled it back.
+    //! A deadlock while the server still had the transaction open, after
+    //! which it rolled the whole transaction back.  Not set after
+    //! \ref serverEndedTransaction: what the transaction wrote before that
+    //! was kept.  A deadlock in a statement that committed part way through
+    //! with no result set in between cannot be told apart and is recorded.
     bool       rolledBackByDeadlock = false;
     //! A statement of the open transaction succeeded with the server no
     //! longer in a transaction: something -- a COMMIT in a procedure, DDL, a

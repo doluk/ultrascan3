@@ -48,6 +48,16 @@ const char* const failingProcedure = "us3_test_txn_fail";
 // as US3 procedures do on an empty GUID or a failed verify_user.
 const char* const silentProcedure = "us3_test_txn_silent";
 
+// Returns a status set and a data set, as US3 procedures do, and commits the
+// caller's transaction part way: after the status set ( p = 1 ) or after the
+// data set, followed by one more set ( p = 2 ).  Then it waits for the lock
+// on row 2, where a test can lose its connection while the client still has
+// result sets to read.
+const char* const committingProcedure = "us3_test_txn_commit";
+
+// A table that DDL creates inside a transaction, to commit it implicitly
+const char* const ddlTable = "us3_test_txn_ddl";
+
 struct LiveDb
 {
       QString host;
@@ -108,6 +118,13 @@ class US_DB2_LiveTransaction : public ::testing::Test
          first->rawQuery( QString( "CREATE PROCEDURE %1( p INT ) BEGIN SET @US3_LAST_ERRNO = p; "
                                    "SET @US3_LAST_ERROR = CONCAT( 'silent status ', p ); END" )
                              .arg( silentProcedure ) );
+         first->rawQuery( QString( "DROP PROCEDURE IF EXISTS %1" ).arg( committingProcedure ) );
+         first->rawQuery( QString( "CREATE PROCEDURE %1( p INT ) BEGIN SELECT 0 AS status; "
+                                   "IF p = 1 THEN UPDATE %2 SET v = v + 1 WHERE id = 1; COMMIT; END IF; "
+                                   "SELECT 1 AS data; "
+                                   "IF p = 2 THEN UPDATE %2 SET v = v + 1 WHERE id = 1; COMMIT; SELECT 2; END IF; "
+                                   "SELECT v FROM %2 WHERE id = 2 FOR UPDATE; SELECT 3; END" )
+                             .arg( committingProcedure, table ) );
 
          // The US3 schema's status functions, created only where they are missing.
          createdStatusFunctions = scalar( *first,
@@ -121,9 +138,9 @@ class US_DB2_LiveTransaction : public ::testing::Test
 
          ASSERT_EQ( scalar( *first,
                             QString( "SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = DATABASE() "
-                                     "AND ROUTINE_NAME IN ( '%1', '%2', '%3', 'last_errno', 'last_error' )" )
-                               .arg( rollbackProcedure, failingProcedure, silentProcedure ) ),
-                    "5" )
+                                     "AND ROUTINE_NAME IN ( '%1', '%2', '%3', '%4', 'last_errno', 'last_error' )" )
+                               .arg( rollbackProcedure, failingProcedure, silentProcedure, committingProcedure ) ),
+                    "6" )
             << "the test user needs CREATE ROUTINE";
       }
 
@@ -135,6 +152,8 @@ class US_DB2_LiveTransaction : public ::testing::Test
             first->rawQuery( QString( "DROP PROCEDURE IF EXISTS %1" ).arg( rollbackProcedure ) );
             first->rawQuery( QString( "DROP PROCEDURE IF EXISTS %1" ).arg( failingProcedure ) );
             first->rawQuery( QString( "DROP PROCEDURE IF EXISTS %1" ).arg( silentProcedure ) );
+            first->rawQuery( QString( "DROP PROCEDURE IF EXISTS %1" ).arg( committingProcedure ) );
+            first->rawQuery( QString( "DROP TABLE IF EXISTS %1" ).arg( ddlTable ) );
             if ( createdStatusFunctions )
             {
                first->rawQuery( "DROP FUNCTION IF EXISTS last_errno" );
@@ -143,11 +162,35 @@ class US_DB2_LiveTransaction : public ::testing::Test
          }
       }
 
+      // Waits until the connection with this ID waits for a row lock; a
+      // connection killed before may still be listed as waiting.  InnoDB
+      // refreshes what INNODB_TRX shows only after 0.1 s without a read of
+      // it, so polling faster than that would read the same snapshot forever.
+      void awaitLockWait( US_DB2& observer, const QString& connectionId )
+      {
+         for ( int tries = 0; tries < 50; ++tries )
+         {
+            if ( scalar( observer, QString( "SELECT COUNT(*) FROM information_schema.INNODB_TRX WHERE "
+                                            "trx_state = 'LOCK WAIT' AND trx_mysql_thread_id = %1" )
+                                      .arg( connectionId ) ) != "0" )
+            {
+               return;
+            }
+            std::this_thread::sleep_for( std::chrono::milliseconds( 150 ) );
+         }
+         ADD_FAILURE() << "connection " << connectionId.toStdString() << " did not wait for a lock: "
+                       << scalar( observer, "SELECT GROUP_CONCAT( trx_mysql_thread_id, ' ', trx_state, ' ', "
+                                            "IFNULL( trx_query, '-' ) SEPARATOR '; ' ) FROM information_schema.INNODB_TRX" )
+                             .toStdString()
+                       << " / " << observer.lastError().toStdString();
+      }
+
       // Each connection locks one row, then asks for the other's.  The server
       // breaks the cycle by rolling one of them back; that one is returned.
       US_DB2* deadlock()
       {
-         QString error;
+         const QString firstId = scalar( *first, "SELECT CONNECTION_ID()" );
+         QString       error;
          EXPECT_TRUE( first->beginTransaction( error ) ) << error.toStdString();
          EXPECT_TRUE( second->beginTransaction( error ) ) << error.toStdString();
 
@@ -159,14 +202,7 @@ class US_DB2_LiveTransaction : public ::testing::Test
 
          // Wait until the server shows it waiting, so the next update closes the
          // cycle rather than racing it.
-         for ( int tries = 0; tries < 100; ++tries )
-         {
-            if ( scalar( *second, "SELECT COUNT(*) FROM information_schema.INNODB_TRX WHERE trx_state = 'LOCK WAIT'" ) != "0" )
-            {
-               break;
-            }
-            std::this_thread::sleep_for( std::chrono::milliseconds( 20 ) );
-         }
+         awaitLockWait( *second, firstId );
 
          second->rawQuery( QString( "UPDATE %1 SET v = 2 WHERE id = 1" ).arg( table ) );
          blocked.join();
@@ -511,6 +547,90 @@ TEST_F( US_DB2_LiveTransaction, RawQueryAndWriteBlobSetTheServerError )
    second->rawQuery( "KILL " + scalar( db, "SELECT CONNECTION_ID()" ) );
    EXPECT_EQ( db.writeBlobToDB( path, "us3_test_no_such_procedure", 1 ), IUS_DB2::DBERROR );
    EXPECT_TRUE( db.lastErrorIsConnectionLoss() ) << db.lastServerErrno() << " " << db.lastError().toStdString();
+}
+
+// DDL commits the open transaction implicitly; what follows runs outside it.
+// A deadlock after that -- here in a transaction a procedure would have
+// started -- rolls back only what ran since, so it must not be reported as
+// "nothing written in it was kept": the row written before the DDL was.
+TEST_F( US_DB2_LiveTransaction, ADeadlockAfterAnImplicitCommitSaysRowsMayHaveBeenKept )
+{
+   const QString firstId = scalar( *first, "SELECT CONNECTION_ID()" );
+   QString       error;
+   ASSERT_TRUE( first->beginTransaction( error ) ) << error.toStdString();
+   first->rawQuery( QString( "UPDATE %1 SET v = 5 WHERE id = 1" ).arg( table ) );
+   first->rawQuery( QString( "CREATE TABLE %1 ( id INT PRIMARY KEY ) ENGINE=InnoDB" ).arg( ddlTable ) );
+   ASSERT_EQ( first->lastServerErrno(), 0 ) << first->lastError().toStdString();
+   first->rawQuery( "START TRANSACTION" );
+
+   // The second transaction writes more, so the server picks the first one
+   // as the deadlock victim
+   ASSERT_TRUE( second->beginTransaction( error ) ) << error.toStdString();
+   for ( int id = 100; id < 150; ++id )
+      second->rawQuery( QString( "INSERT INTO %1 VALUES ( %2, 0 )" ).arg( table ).arg( id ) );
+
+   first->rawQuery( QString( "UPDATE %1 SET v = 1 WHERE id = 1" ).arg( table ) );
+   second->rawQuery( QString( "UPDATE %1 SET v = 2 WHERE id = 2" ).arg( table ) );
+   std::thread blocked( [this] { first->rawQuery( QString( "UPDATE %1 SET v = 1 WHERE id = 2" ).arg( table ) ); } );
+   awaitLockWait( *second, firstId );
+   second->rawQuery( QString( "UPDATE %1 SET v = 2 WHERE id = 1" ).arg( table ) );
+   blocked.join();
+   ASSERT_TRUE( first->lastError().contains( "Deadlock" ) ) << first->lastError().toStdString();
+   ASSERT_EQ( second->lastServerErrno(), 0 ) << second->lastError().toStdString();
+
+   EXPECT_FALSE( first->commitTransaction( error ) );
+   EXPECT_EQ( error, QObject::tr( US_DB2::transactionEndedMessage ) ) << error.toStdString();
+   EXPECT_FALSE( first->rollbackTransaction( error ) );
+   EXPECT_EQ( error, QObject::tr( US_DB2::transactionEndedMessage ) ) << error.toStdString();
+
+   ASSERT_TRUE( second->rollbackTransaction( error ) ) << error.toStdString();
+
+   // The write before the DDL was kept
+   EXPECT_EQ( scalar( *second, QString( "SELECT v FROM %1 WHERE id = 1" ).arg( table ) ), "5" );
+}
+
+// A procedure commits part way, and the connection is lost while the client
+// still reads its later result sets.  The set sent after the COMMIT showed
+// the transaction ended, so the loss is not "the server rolled it back":
+// the procedure's write was kept.  Commits after the status set (read by
+// query()) and after the data set (read when the next statement clears the
+// connection) are both covered.
+TEST_F( US_DB2_LiveTransaction, ALostConnectionAfterAProcedureCommittedSaysRowsMayHaveBeenKept )
+{
+   for ( int stage : { 1, 2 } )
+   {
+      SCOPED_TRACE( "commit at stage " + std::to_string( stage ) );
+      first->rawQuery( QString( "UPDATE %1 SET v = 0" ).arg( table ) );
+
+      const LiveDb live = liveDb();
+      US_DB2       lost;
+      QString      error;
+      ASSERT_TRUE( lost.connect( live.host, live.name, live.user, live.password, error ) ) << error.toStdString();
+      const QString id = scalar( lost, "SELECT CONNECTION_ID()" );
+
+      // Holds row 2, where the procedure waits after its commit
+      ASSERT_TRUE( second->beginTransaction( error ) ) << error.toStdString();
+      second->rawQuery( QString( "UPDATE %1 SET v = 9 WHERE id = 2" ).arg( table ) );
+
+      ASSERT_TRUE( lost.beginTransaction( error ) ) << error.toStdString();
+      lost.rawQuery( QString( "UPDATE %1 SET v = 5 WHERE id = 1" ).arg( table ) );
+      lost.query( QString( "CALL %1( %2 )" ).arg( committingProcedure ).arg( stage ) );
+      ASSERT_EQ( lost.lastErrno(), IUS_DB2::OK ) << lost.lastError().toStdString();
+      ASSERT_TRUE( lost.next() );
+      EXPECT_EQ( lost.value( 0 ).toString(), "1" );
+
+      awaitLockWait( *second, id );
+      second->rawQuery( "KILL " + id );
+      ASSERT_EQ( second->lastServerErrno(), 0 ) << second->lastError().toStdString();
+      ASSERT_TRUE( second->rollbackTransaction( error ) ) << error.toStdString();
+
+      EXPECT_FALSE( lost.rollbackTransaction( error ) );
+      EXPECT_FALSE( lost.isConnected() );
+      EXPECT_EQ( error, QObject::tr( US_DB2::transactionEndedMessage ) ) << error.toStdString();
+
+      // And it was kept: the client's write and the procedure's, committed together
+      EXPECT_EQ( scalar( *second, QString( "SELECT v FROM %1 WHERE id = 1" ).arg( table ) ), "6" );
+   }
 }
 #endif
 } // namespace

@@ -763,7 +763,11 @@ void US_DB2::noteStatementError()
    // when innodb_rollback_on_timeout is set, and is not recorded.  Remember
    // the error while it is still on the connection; the next statement
    // replaces it.
-   if ( inTransaction && mysql_errno( db ) == ER_LOCK_DEADLOCK )
+   //
+   // Only while the server still had the transaction open: after an implicit
+   // commit the deadlock rolled back at most what ran since, so it cannot
+   // say that nothing written in the transaction was kept.
+   if ( inTransaction && !serverEndedTransaction && mysql_errno( db ) == ER_LOCK_DEADLOCK )
    {
       rolledBackByDeadlock = true;
    }
@@ -854,6 +858,11 @@ void US_DB2::drainResults()
    {
       result = mysql_store_result( db );
       mysql_free_result( result );
+
+      // Each result set carries the status at the point the procedure sent
+      // it: one that committed part way shows it here, before a later set
+      // can lose the connection
+      noteTransactionStatus();
    }
 
    // A procedure that failed part way reports it on the result set after the
@@ -1052,6 +1061,10 @@ void US_DB2::query( const QString& sqlQuery )
       else if ( next == 0 ) // get the result data
       {
          result = mysql_store_result( db );
+
+         // The procedure may have committed after its status set
+         noteTransactionStatus();
+
          if ( ! result )
          {
             if ( mysql_field_count( db ) == 0 )
@@ -1373,6 +1386,7 @@ int US_DB2::writeBlobToDB( const QString& filename,
    }
 
    result   = mysql_store_result( db );
+   noteTransactionStatus();
    row      = result != NULL ? mysql_fetch_row( result ) : NULL;
    if ( row == NULL || row[ 0 ] == NULL )
    {
@@ -1812,6 +1826,7 @@ int US_DB2::readBlobFromDB( const QString& filename,
    // an empty GUID, a failed login -- sent none, and recorded its status
    // in @US3_LAST_ERRNO instead.
    result = mysql_store_result( db );
+   noteTransactionStatus();
    if ( result == NULL )
    {
       if ( mysql_errno( db ) != 0 )
@@ -1867,6 +1882,8 @@ int US_DB2::readBlobFromDB( const QString& filename,
    }
 
    result = ( next == 0 ) ? mysql_store_result( db ) : NULL;
+   if ( next == 0 )
+      noteTransactionStatus();
    if ( result == NULL )
    {
       if ( next == 0 && mysql_errno( db ) != 0 )
