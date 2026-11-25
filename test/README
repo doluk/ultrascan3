@@ -778,3 +778,21 @@ both servers.
   records it stores by it, keeps a session time zone (`@@session.time_zone`,
   `SET time_zone`), and lists the version-2 procedures in
   `information_schema.ROUTINES` unless `staleMarker` is set.
+
+## us_manage_data: live cases added in fix round 9
+
+- `TestUSDataDbLive.GmpLinksThatAreNotJsonKeepTheirModels` writes GMP links
+  (`autoflowModelsLink`) that are not JSON.  A JSON column refuses them, and
+  the test then skips: in the test's own copy make the column text first, as
+  the us3_sql tests do:
+
+  ```
+  ALTER TABLE autoflowModelsLink MODIFY modelsDesc LONGTEXT NULL;
+  ```
+- `TestUSDataDbLive.NoEditIsRemovedAfterAWriteEndedTheTransaction` answers
+  the first `delete_editedData` itself, as an older database's foreign-key
+  refusal, and commits after `delete_noise`; it runs the same on both
+  procedure versions.
+- `TestUSDataDbLive.AModelOrNoiseRemovedElsewhereIsReadBackAsGone` removes a
+  noise record and a model with the administrator's connection after the
+  window has read them.

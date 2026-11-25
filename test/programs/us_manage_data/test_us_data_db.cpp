@@ -5009,3 +5009,144 @@ TEST_F( TestUSDataDb, ACopyOfARunShowsTheRunsFilesRemoved )
          << guid.toStdString();
    }
 }
+
+// A model or a noise record another session removed since the scan: the
+// database says it has no such record (NO_MODEL, NO_NOISE).  What it holds
+// is read back, and the row -- with the noise that went with a model --
+// shows it gone, as for an edit removed elsewhere; the removal is no failure
+TEST_F( TestUSDataDb, AModelOrNoiseRemovedElsewhereIsReadBackAsGone )
+{
+   for ( bool ofModel : { false, true } )
+   {
+      SCOPED_TRACE( ofModel ? "model" : "noise" );
+      TearDown();
+      server = FakeServer();
+      SetUp();
+      QString guid = ofModel ? modelG : noiseG;
+
+      US_DataModel model;
+      prepare( model );
+      Window       win( model );
+      model.scan_data();
+      win.tree.build_dtree();
+
+      int row  = rowOf( model, guid );
+      int nrow = rowOf( model, noiseG );
+      ASSERT_GE( row, 0 );
+      ASSERT_GE( nrow, 0 );
+
+      // gone behind the window's back, with the model's noise
+      server.noises.clear();
+      if ( ofModel )
+         server.models.clear();
+
+      win.select( itemOfRow( win.tw, row ) );
+      EXPECT_EQ( win.tree.act_on_selection( "Database only", "DB-only remove" ), 0 )
+         << win.proc.lastError().toStdString();
+      EXPECT_EQ( model.row_datadesc( row ).recState & US_DataModel::REC_DB, 0 );
+      EXPECT_EQ( model.row_datadesc( nrow ).recState & US_DataModel::REC_DB, 0 );
+      EXPECT_EQ( server.txlog, QStringList() << "begin" << "rollback" );
+   }
+
+   // one that is still there after all stays, and the refusal is reported
+   TearDown();
+   server = FakeServer();
+   SetUp();
+   server.refusing[ "delete_model" ] = IUS_DB2::NO_MODEL;
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   win.select( itemOfRow( win.tw, rowOf( model, modelG ) ) );
+   EXPECT_NE( win.tree.act_on_selection( "Database only", "DB-only remove" ), 0 );
+   QString error = win.proc.lastError();
+   EXPECT_TRUE( error.contains( "no such record" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "Nothing was removed" ) ) << error.toStdString();
+   EXPECT_NE( stateOf( model, modelG ) & US_DataModel::REC_DB, 0 );
+   EXPECT_NE( stateOf( model, noiseG ) & US_DataModel::REC_DB, 0 );
+}
+
+// Removing from both places when the investigator is changed part-way: the
+// records not tried in the database are listed as not tried, their local
+// copies with them -- not as records the database kept
+TEST_F( TestUSDataDb, RemovingFromBothPlacesListsWhatWasNotTriedAsSuch )
+{
+   QString model2 = US_Util::new_guid();
+   QString path2  = US_Settings::dataDir() + "/models/M0000002.xml";
+   QString label2 = runA + ".1A280.e2401011200_a2_2DSA_i01.model";
+   writeModel( path2, model2, editG, label2 );
+   server.models << FModel{ "32", model2, label2, editG, "21", textOf( path2 ) };
+   server.digest[ model2 ] = US_Util::md5sum_file( path2 );
+   server.during = [ & ]( const QString& name )
+   {
+      if ( name == "delete_model" )
+         US_Settings::set_us_inv_ID( kOther );
+   };
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   win.tw.clearSelection();
+   for ( const QString& guid : { modelG, model2 } )
+      itemOfRow( win.tw, rowOf( model, guid ) )->setSelected( true );
+
+   int stat = win.tree.act_on_selection( "both DB and Local", "DB+Local remove" );
+   QString error = win.proc.lastError();
+   US_Settings::set_us_inv_ID( kInv );
+
+   EXPECT_EQ( stat, (int)US_DataTree::ACT_NOT_TRIED ) << error.toStdString();
+   EXPECT_EQ( server.changes.filter( "delete_model" ).size(), 1 );
+   EXPECT_TRUE( QFile::exists( modelPath ) );
+   EXPECT_TRUE( QFile::exists( path2 ) );
+
+   QString notTried = server.modelById( "31" ) == nullptr
+                    ? model.row_datadesc( rowOf( model, model2 ) ).label
+                    : model.row_datadesc( rowOf( model, modelG ) ).label;
+   EXPECT_TRUE( error.contains( "not tried, since the investigator was changed" ) )
+      << error.toStdString();
+   EXPECT_TRUE( error.contains( "the local copies they have were not removed either" ) )
+      << error.toStdString();
+   EXPECT_FALSE( error.contains( "the database kept" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( notTried ) ) << error.toStdString();
+}
+
+// A model in the database of an edit made in a copy of a run, after it was
+// copied, has its parent in the copy only.  The copy takes no orphans, and
+// the run's own directory does not have that edit: the model is shown under
+// the records of no experiment
+TEST_F( TestUSDataDb, ADatabaseRecordOfAnEditMadeInACopyHasNoExperiment )
+{
+   QString edit2  = US_Util::new_guid();
+   QString model2 = US_Util::new_guid();
+   QString ename  = runA + ".2401051200.RA.1.A.280.xml";
+
+   QString copyDir = US_Settings::resultDir() + "/Backup_" + runA;
+   QDir().mkpath( copyDir );
+   ASSERT_TRUE( QFile::copy( aucPath,  copyDir + "/" + QFileInfo( aucPath ).fileName() ) );
+   ASSERT_TRUE( QFile::copy( editPath, copyDir + "/" + QFileInfo( editPath ).fileName() ) );
+   writeEdit( copyDir + "/" + ename, edit2, rawG );
+
+   server.models << FModel{ "36", model2, runA + ".1A280.e2401051200_a1_2DSA_i01.model",
+                            edit2, "", "<model/>" };
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   int erow = rowOf( model, edit2 );
+   ASSERT_GE( erow, 0 );
+   EXPECT_FALSE( model.run_entry( model.run_of_row( erow ) ).copyOf.isEmpty() );
+
+   int mrow = rowOf( model, model2 );
+   ASSERT_GE( mrow, 0 );
+   EXPECT_TRUE( model.run_entry( model.run_of_row( mrow ) ).orphans )
+      << model.run_entry( model.run_of_row( mrow ) ).runID.toStdString();
+}

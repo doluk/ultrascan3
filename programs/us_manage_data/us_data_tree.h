@@ -373,6 +373,9 @@ class US_DataTree : public QObject
             QStringList localKept;  //!< Their local copies kept, on a
                                     //!< removal from both places, as the
                                     //!< database kept them (or may have)
+            bool        localNotTried = false; //!< On a removal from both
+                                    //!< places, the local copies of records
+                                    //!< not tried were not removed either
         };
 
         //! \brief The message of a removal from the database that failed

@@ -504,7 +504,10 @@ DbgLv(1) << "NOI_RMV:   dataID" << dataID << "stat" << stat << errMsg;
    leaves the model without an owner and its noise gone.  In a transaction
    the rollback gives them back.  The outcome is classified as an edit
    removal's is (edit_attempt): what the transaction gave back as a whole
-   removed nothing, anything else is read back.
+   removed nothing, anything else is read back -- and so is a record the
+   database says it does not have (NO_MODEL, NO_NOISE): another session
+   removed it, and its row, and those of the noise that went with a model,
+   then show it gone.
 */
 int US_DataProcess::remove_one( int row, const QString& proc, int code )
 {
@@ -566,13 +569,22 @@ int US_DataProcess::remove_one( int row, const QString& proc, int code )
             .arg( proc ).arg( st ).arg( derr )
             + failure_text( edit_failure );
 
+   else if ( st == ( proc == "delete_model" ? IUS_DB2::NO_MODEL
+                                            : IUS_DB2::NO_NOISE ) )
+   {  // Another session removed it: read back, it is shown gone
+      edit_failure = EDIT_MISSING;
+      why = tr( "the database has no such record (%1 status %2: %3):"
+                " another session may have removed it." )
+            .arg( proc ).arg( st ).arg( derr );
+   }
+
    else
       why = tr( "the database refused it (%1 status %2: %3)." )
             .arg( proc ).arg( st ).arg( derr );
 
    roll_back_failed( true, proc, why, clean );
 
-   if ( clean )
+   if ( clean  &&  edit_failure != EDIT_MISSING )
    {
       errMsg = tr( "%1 was not removed from the database: %2\n\nNothing was"
                    " removed." ).arg( label ).arg( why );
@@ -582,11 +594,26 @@ int US_DataProcess::remove_one( int row, const QString& proc, int code )
    return settle_removal( row, QList< ForeignNoise >(), code, why );
 }
 
-// Whether the server still has the open transaction, after a write in it
-// succeeded.  A procedure that commits inside it ends it, and what it wrote
-// then stays: a connection lost later does not give that back.  Outside a
-// transaction a savepoint is gone with the statement that set it, so
-// releasing it fails (1305); inside one it is there.
+/* Whether the server still has the open transaction, after a write in it
+   succeeded.  A procedure that commits inside it ends it, and what it wrote
+   then stays: a connection lost later does not give that back.  Outside a
+   transaction a savepoint is gone with the statement that set it, so
+   releasing it fails (1305); inside one it is there.
+
+   US_DB2 follows the server's IN_TRANS flag too, and refuses to commit a
+   transaction that ended (and says so when it is rolled back), so after a
+   removal's only write (remove_one) the two tell the same.  This check is
+   what keeps an edit removal from sending its next write (edit_attempt)
+   once a write ended the transaction: US_DB2 would send it, and it would be
+   committed as it runs.  When the connection is lost during the check, it
+   cannot tell, and the outcome is taken as not known.
+
+   Neither sees a procedure that commits -- with COMMIT, or implicitly with
+   DDL -- and then starts a new transaction (START TRANSACTION): the server
+   then has a transaction open again, and what was written before the commit
+   is kept whatever the rollback does.  None of the procedures this window
+   calls commits inside a caller's transaction.
+*/
 void US_DataProcess::check_tx_open( void )
 {
    if ( tx_may_end )   return;

@@ -1874,6 +1874,7 @@ DbgLv(1) << "ITEM do_actions" << narows << item_exs << item_act;
 
    Removal     rmv;               // what a removal from the database did
    QSet< int > dbKept;            // rows the database kept, or may have
+   QSet< int > dbNotTried;        // rows not tried in the database
 
    // Before each record: once another investigator is selected -- in
    // another window, while a question was asked or a long upload ran --
@@ -1946,6 +1947,7 @@ DbgLv(1) << "ITEM do_actions" << narows << item_exs << item_act;
             {
                rmv.notTried << ddesc.label;
                dbKept       << irow;
+               dbNotTried   << irow;
                continue;
             }
 
@@ -2000,7 +2002,14 @@ DbgLv(1) << "RMV_REC: irow stat1" << irow << stat1;
 
             // Removing from both places, a record the database kept -- or
             // may have -- keeps its local copy: removing that would leave
-            // it in the database only, not gone
+            // it in the database only, not gone.  So does one not tried
+            // in the database, which is listed as not tried
+            if ( dbNotTried.contains( irow ) )
+            {
+               rmv.localNotTried = true;
+               continue;
+            }
+
             if ( dbKept.contains( irow ) )
             {
                rmv.localKept << ddesc.label;
@@ -2255,8 +2264,12 @@ QString US_DataTree::removal_report( const Removal& rr )
               + listed( rr.notRemoved );
 
    if ( ! rr.notTried.isEmpty() )
-      text += tr( "\n\nThese selected records were not tried, since %1,"
-                  " and are still in the database:" )
+      text += ( rr.localNotTried
+                ? tr( "\n\nThese selected records were not tried, since %1,"
+                      " and are still in the database; the local copies"
+                      " they have were not removed either:" )
+                : tr( "\n\nThese selected records were not tried, since %1,"
+                      " and are still in the database:" ) )
               .arg( rr.notTriedWhy.isEmpty()
                     ? tr( "the connection to the database was lost" )
                     : rr.notTriedWhy )

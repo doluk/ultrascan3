@@ -1100,3 +1100,173 @@ TEST_F( TestUSDataDbLive, AGmpCheckThatCannotBeAnsweredRemovesNothing )
    EXPECT_EQ( present( "get_model_info", ed.modelID, IUS_DB2::NO_MODEL ), 1 );
    EXPECT_TRUE( win.inDb( ed.modelG ) );
 }
+
+/* A GMP link that is not JSON still names its model: delete_model does not
+   check the links, so the window reads such a link as the database reads
+   it before it removes an edit -- the digits after each "modelID" -- and
+   refuses.  One that Qt cannot read only for being stricter than the
+   database (1e400) may be JSON to it: no model is removed while it is
+   there.  A JSON column refuses such text: to run this, the copy's column
+   is made LONGTEXT (test/README), as the SQL tests do; else it skips.
+*/
+TEST_F( TestUSDataDbLive, GmpLinksThatAreNotJsonKeepTheirModels )
+{
+   Edit ed;
+   newEdit( ed, false );
+   if ( HasFatalFailure() )   return;
+
+   QString id = QString::number( 910000 + ed.modelID );
+   admin->rawQuery( "INSERT INTO autoflowModelsLink ( autoflowAnalysisID,"
+                    " modelsDesc, autoflowID ) VALUES ( " + id + ", '{\"2DSA_IT\":"
+                    "[{\"modelID\":\"" + QString::number( ed.modelID ) + "\"}', 0 )" );
+   rawCleanup << "DELETE FROM autoflowModelsLink WHERE autoflowAnalysisID = " + id;
+   admin->rawQuery( "SELECT COUNT(*) FROM autoflowModelsLink"
+                    " WHERE autoflowAnalysisID = " + id );
+   if ( ! admin->next()  ||  admin->value( 0 ).toInt() != 1 )
+      GTEST_SKIP() << "autoflowModelsLink.modelsDesc takes only JSON here;"
+                      " make it LONGTEXT in the test's copy to run this";
+
+   {
+      Win win( inv, runID );
+      ASSERT_GE( rowOf( win.model, ed.modelG ), 0 );
+
+      EXPECT_EQ( win.remove( ed.modelG ), (int)US_DataTree::ACT_REFUSED );
+      ASSERT_EQ( win.prompts.size(), 1 );
+      EXPECT_TRUE( win.prompts[ 0 ].contains( "GMP" ) ) << win.prompts[ 0 ].toStdString();
+      EXPECT_EQ( present( "get_model_info", ed.modelID, IUS_DB2::NO_MODEL ), 1 );
+      EXPECT_EQ( present( "get_noise_info", ed.noiseID, IUS_DB2::NO_NOISE ), 1 );
+      EXPECT_TRUE( win.inDb( ed.modelG ) );
+   }
+
+   // a link that may be JSON to the database, which Qt cannot read
+   admin->rawQuery( "UPDATE autoflowModelsLink SET modelsDesc = '{\"2DSA_IT\":"
+                    "[{\"modelID\":1e400}]}' WHERE autoflowAnalysisID = " + id );
+   ASSERT_TRUE( admin->lastError().isEmpty()  ||  admin->lastServerErrno() == 0 )
+      << admin->lastError().toStdString();
+   {
+      Win win( inv, runID );
+      ASSERT_GE( rowOf( win.model, ed.noiseG ), 0 );
+
+      EXPECT_EQ( win.remove( ed.noiseG ), (int)US_DataTree::ACT_REFUSED );
+      ASSERT_FALSE( win.prompts.isEmpty() );
+      EXPECT_TRUE( win.prompts.last().contains( "could not be checked" ) )
+         << win.prompts.last().toStdString();
+      EXPECT_EQ( present( "get_noise_info", ed.noiseID, IUS_DB2::NO_NOISE ), 1 );
+   }
+
+   // gone, the model can be removed
+   admin->rawQuery( rawCleanup.takeLast() );
+   {
+      Win win( inv, runID );
+      EXPECT_EQ( win.remove( ed.modelG ), 0 ) << win.proc.lastError().toStdString();
+      EXPECT_EQ( present( "get_model_info", ed.modelID, IUS_DB2::NO_MODEL ), 0 );
+   }
+}
+
+/* A model or a noise record another session removed since the scan: the
+   database says it has no such record (NO_MODEL, NO_NOISE).  What it holds
+   is read back, and the rows -- a model's with its noise -- show it gone.
+*/
+TEST_F( TestUSDataDbLive, AModelOrNoiseRemovedElsewhereIsReadBackAsGone )
+{
+   Edit ed;
+   newEdit( ed, false );
+   if ( HasFatalFailure() )   return;
+
+   Win win( inv, runID );
+   ASSERT_GE( rowOf( win.model, ed.noiseG ), 0 );
+
+   ASSERT_EQ( admin->statusQuery( QStringList() << "delete_noise"
+                                  << QString::number( ed.noiseID ) ), IUS_DB2::OK )
+      << admin->lastError().toStdString();
+   EXPECT_EQ( win.remove( ed.noiseG ), 0 ) << win.proc.lastError().toStdString();
+   EXPECT_FALSE( win.inDb( ed.noiseG ) );
+   EXPECT_TRUE( win.inDb( ed.modelG ) );
+
+   // a model, with noise of its own that went with it
+   QString noise2G = US_Util::new_guid();
+   int     noise2  = newNoise( inv, noise2G, ed.editID, ed.modelG,
+                               runID + ".1A280.extra_a1_2DSA_i01.ri_noise" );
+   ASSERT_GT( noise2, 0 );
+   Win win2( inv, runID );
+   ASSERT_GE( rowOf( win2.model, noise2G ), 0 );
+
+   ASSERT_EQ( admin->statusQuery( QStringList() << "delete_model"
+                                  << QString::number( ed.modelID ) ), IUS_DB2::OK )
+      << admin->lastError().toStdString();
+   EXPECT_EQ( win2.remove( ed.modelG ), 0 ) << win2.proc.lastError().toStdString();
+   EXPECT_FALSE( win2.inDb( ed.modelG ) );
+   EXPECT_FALSE( win2.inDb( noise2G ) );
+   EXPECT_TRUE( win2.inDb( ed.editG ) );
+}
+
+/* The check after each write that the transaction is still open is what
+   keeps an edit removal from sending its next write once a write ended
+   the transaction; US_DB2 sees the end too, but only refuses the COMMIT,
+   and by then that write would have been committed as it ran.  Here the
+   first delete_editedData is answered as an older database answers it --
+   refused on the investigator's own noise of another edit's model
+   recorded against the edit (fk_noise_editDataID), without being sent --
+   so the noise goes first, and the test commits right after delete_noise,
+   as a procedure that committed would.  The edit is then not asked for:
+   it stays, with its model, and the message says why.  (The same on both
+   procedure versions; without the check the edit would be removed outside
+   any transaction.)
+*/
+TEST_F( TestUSDataDbLive, NoEditIsRemovedAfterAWriteEndedTheTransaction )
+{
+   Edit ed;
+   Edit other;
+   newEdit( ed, false, "a1" );
+   if ( HasFatalFailure() )   return;
+   newEdit( other, false, "a2" );
+   if ( HasFatalFailure() )   return;
+
+   QString crossG = US_Util::new_guid();
+   int     cross  = newNoise( inv, crossG, ed.editID, other.modelG,
+                              runID + ".1A280.global_a2_2DSA_i01.ti_noise" );
+   ASSERT_GT( cross, 0 );
+   cleanup.prepend( "delete_noise " + QString::number( cross ) );
+
+   ::testing::NiceMock< US_DB2_Mock > wrap;
+   passOn( wrap, inv );
+   int sent    = 0;              // delete_editedData calls the server saw
+   int refused = 0;
+   ON_CALL( wrap, statusQuery( ::testing::An< const QStringList& >() ) )
+      .WillByDefault( ::testing::Invoke( [ & ]( const QStringList& q )
+      {
+         if ( q.value( 0 ) == "delete_editedData"  &&  refused == 0 )
+         {
+            refused++;
+            return (int)IUS_DB2::CONSTRAINT_FAILED;
+         }
+
+         if ( q.value( 0 ) == "delete_editedData" )
+            sent++;
+
+         int st = inv->statusQuery( q );
+         if ( q.value( 0 ) == "delete_noise"  &&  st == IUS_DB2::OK )
+            inv->rawQuery( "COMMIT" );          // as a procedure might
+         return st;
+      } ) );
+
+   Win win( &wrap, runID );
+   ASSERT_GE( rowOf( win.model, ed.editG ), 0 );
+
+   int stat = win.remove( ed.editG );
+   QString error = win.proc.lastError();
+
+   EXPECT_EQ( refused, 1 );
+   EXPECT_EQ( sent, 0 ) << error.toStdString();
+   EXPECT_EQ( stat, 2019 ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "the database ended the transaction" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "removed from the database all the same" ) ) << error.toStdString();
+   EXPECT_FALSE( error.contains( "Nothing was removed" ) ) << error.toStdString();
+
+   EXPECT_EQ( present( "get_noise_info", cross,      IUS_DB2::NO_NOISE ), 0 );
+   EXPECT_EQ( present( "get_editedData", ed.editID,  IUS_DB2::NO_EDITDATA ), 1 );
+   EXPECT_EQ( present( "get_model_info", ed.modelID, IUS_DB2::NO_MODEL ), 1 );
+   EXPECT_EQ( present( "get_noise_info", ed.noiseID, IUS_DB2::NO_NOISE ), 1 );
+   EXPECT_FALSE( win.inDb( crossG ) );
+   EXPECT_TRUE( win.inDb( ed.editG ) );
+}

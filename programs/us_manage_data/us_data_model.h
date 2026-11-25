@@ -154,10 +154,14 @@ class US_DataModel : public QObject
                 //! with the run's, so its models and noise are the run's
                 //! own files.  It takes no orphans either: a record whose
                 //! parent only the other place has is shown under the run's
-                //! own directory, where it can be acted on.  An edit made in
-                //! the copy since it was copied has a GUID of its own, but
-                //! the copy is refused all the same.  Empty for every other
-                //! experiment.
+                //! own directory, where it can be acted on, when that
+                //! directory has the parent.  An edit made in the copy since
+                //! it was copied has a GUID of its own, but the copy is
+                //! refused all the same; a database record of such an edit
+                //! -- a model of it uploaded from elsewhere, say -- has its
+                //! parent in the copy only, and is shown under the stand-in
+                //! experiment of the records of no experiment.  Empty for
+                //! every other experiment.
                 QString   copyOf;
 
                 //! What is wrong with the run, when either source says it
