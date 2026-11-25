@@ -5018,3 +5018,81 @@ TEST_F( DataPubExportSteps, ACalibrationIsDatedInUtcInTheFallBackHour )
    EXPECT_TRUE( error.contains( "Lost connection" ) ) << error.toStdString();
    EXPECT_TRUE( error.contains( "SYSTEM" ) ) << error.toStdString();
 }
+
+/* A Cancel pressed while the bundle is packed is carried out: nothing is
+   written, and the export says it was cancelled.  It used to be ignored
+   once the packing had begun, and the export reported success.  The
+   packing counts its steps as a phase of its own.
+*/
+TEST_F( DataPubExport, ACancelWhileThePackingRunsWritesNoBundle )
+{
+   US_DataPubExporter exporter;
+   QString            bundle  = root + "/packing.tar.gz";
+   bool               packing = false;
+   int                steps   = 0;
+
+   QObject::connect( &exporter, &US_DataPubExporter::message,
+                     [ &packing ]( const QString& text )
+                     {
+                        if ( text.startsWith( "Packing the bundle" ) )
+                           packing = true;
+                     } );
+   QObject::connect( &exporter, &US_DataPubExporter::stepDone,
+                     [ & ]( int )
+                     {
+                        if ( ! packing )  return;
+
+                        if ( ++steps == 1 )  exporter.cancel();
+                     } );
+
+   QString error;
+   EXPECT_FALSE( exporter.exportBundle( baseSelection( US_DataPub::ScopeNoise ),
+                                        bundle, error ) );
+   EXPECT_TRUE( exporter.wasCancelled() );
+   EXPECT_TRUE( error.contains( "cancelled" ) ) << error.toStdString();
+   EXPECT_FALSE( QFile::exists( bundle ) );
+   EXPECT_GT( steps, 0 );
+
+   // Not cancelled, it is written
+   US_DataPubExporter again;
+   ASSERT_TRUE( again.exportBundle( baseSelection( US_DataPub::ScopeNoise ),
+                                    bundle, error ) ) << error.toStdString();
+   EXPECT_TRUE( QFile::exists( bundle ) );
+}
+
+/* An export that fails for a reason of its own after a Cancel says that
+   reason; it was not cancelled.  The reason used to be replaced with
+   "cancelled". */
+TEST_F( DataPubExport, AFailureAfterACancelKeepsItsMessage )
+{
+   US_DataPubExporter exporter;
+   QObject::connect( &exporter, &US_DataPubExporter::message,
+                     [ &exporter ]( const QString& text )
+                     {
+                        if ( text.startsWith( "Reading run" ) )
+                           exporter.cancel();
+                     } );
+
+   US_DataPubExporter::Selection selection =
+      baseSelection( US_DataPub::ScopeNoise );
+   selection.runIDs = QStringList( "bad.run" );
+
+   QString error;
+   EXPECT_FALSE( exporter.exportBundle( selection, root + "/bad.tar.gz",
+                                        error ) );
+   EXPECT_TRUE( error.contains( "cannot be exported" ) ) << error.toStdString();
+   EXPECT_FALSE( exporter.wasCancelled() );
+
+   // A cancel the export stopped for is still a cancel
+   US_DataPubExporter cancelled;
+   QObject::connect( &cancelled, &US_DataPubExporter::message,
+                     [ &cancelled ]( const QString& text )
+                     {
+                        if ( text.startsWith( "Reading run" ) )
+                           cancelled.cancel();
+                     } );
+   EXPECT_FALSE( cancelled.exportBundle( baseSelection( US_DataPub::ScopeNoise ),
+                                         root + "/c.tar.gz", error ) );
+   EXPECT_TRUE( cancelled.wasCancelled() );
+   EXPECT_TRUE( error.contains( "cancelled" ) ) << error.toStdString();
+}

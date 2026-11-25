@@ -333,7 +333,8 @@ class US_DataPubExporter : public QObject
       bool cancelledError( QString& error ) const;
 
       /*! The end of an export or a preview: what it returns, with \a error
-          saying that it was cancelled when it failed after a cancel; the
+          saying that it was cancelled when it stopped for a cancel (a
+          failure of its own after a cancel keeps its message); the
           request is cleared, so that the next one starts afresh
       */
       bool endRun( bool ok, QString& error );

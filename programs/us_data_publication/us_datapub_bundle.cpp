@@ -334,7 +334,13 @@ bool US_DataPubBundle::listTree( const QString& dir,
    return true;
 }
 
-bool US_DataPubBundle::pack( const QString& archivePath, QString& error )
+QString US_DataPubBundle::packingStopped( void )
+{
+   return QObject::tr( "The packing of the bundle was stopped" );
+}
+
+bool US_DataPubBundle::pack( const QString& archivePath, QString& error,
+                             const std::function< bool( int, int ) >& progress )
 {
    if ( staging.isEmpty() )
    {
@@ -397,11 +403,43 @@ bool US_DataPubBundle::pack( const QString& archivePath, QString& error )
    QString    workFile = packDir + "/bundle.tar.gz";
    US_Archive archive;
 
+   // Two steps per file: packed, then compared.  The archive cannot be
+   // stopped while it is written, so a stop asked for meanwhile is
+   // carried out once it is.
+   const int total = 2 * staged.size();
+   int       done  = 0;
+   bool      going = true;
+
+   auto step = [ & ]( void )
+   {
+      done = qMin( done + 1, total );
+
+      if ( progress  &&  ! progress( done, total ) )
+         going = false;
+
+      return going;
+   };
+
+   QObject::connect( &archive, &US_Archive::itemAdded, &archive,
+                     [ & ]( const QString&, const QString& )
+                     {
+                        if ( done < staged.size() )  step();
+                     } );
+
    if ( ! archive.compress( sources, workFile )  ||
         ! QFile::exists( workFile ) )
    {
       error = QObject::tr( "The bundle could not be packed: %1" )
               .arg( archive.getError() );
+      removeTree( packDir );
+      return false;
+   }
+
+   done = staged.size();
+
+   if ( ! going  ||  ( progress  &&  ! progress( done, total ) ) )
+   {
+      error = packingStopped();
       removeTree( packDir );
       return false;
    }
@@ -419,9 +457,11 @@ bool US_DataPubBundle::pack( const QString& archivePath, QString& error )
 
    if ( readable )
    {
-      for ( int ii = 0; ii < relPaths.size(); ii++ )
+      for ( int ii = 0; ii < relPaths.size()  &&  going; ii++ )
       {
          QString rel = relPaths[ ii ];
+
+         if ( ! step() )  break;
 
          // Two reads that both failed give two empty digests, which are
          // equal; a digest that could not be taken is a failure
@@ -437,6 +477,13 @@ bool US_DataPubBundle::pack( const QString& archivePath, QString& error )
    }
 
    removeTree( verifyDir );
+
+   if ( ! going )
+   {
+      error = packingStopped();
+      removeTree( packDir );
+      return false;
+   }
 
    if ( ! readable  ||  packed != staged  ||  ! missing.isEmpty() )
    {
@@ -460,6 +507,14 @@ bool US_DataPubBundle::pack( const QString& archivePath, QString& error )
    {
       error = QObject::tr( "Cannot create the output directory %1" )
               .arg( target.absolutePath() );
+      removeTree( packDir );
+      return false;
+   }
+
+   // The last chance to stop: nothing has been written yet
+   if ( progress  &&  ! progress( total, total ) )
+   {
+      error = packingStopped();
       removeTree( packDir );
       return false;
    }

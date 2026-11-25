@@ -273,13 +273,19 @@ The Export tab works from the top down.
   Writes the bundle. While the export runs the tab cannot be changed, the
   Import tab cannot be opened, and a request to close the window is carried
   out once the export is done. The progress bar counts the runs as they are
-  read from the source, then the records as they are staged, and the status
-  log shows what the export, and the catalog it reads with, is doing.
+  read from the source, then the records as they are staged, then the files
+  as the bundle is packed and read back, and the status log shows what the
+  export, and the catalog it reads with, is doing. The window responds
+  between these steps, not within one: indexing a local data directory,
+  reading one run's records and writing the archive each keep it busy until
+  they are done, and a **Cancel** pressed meanwhile is seen after them.
   **Cancel** stops the export before the next run or record, between two
   files of a local store, or, from a database, before the next run's
   records, experiment information or model noise are read (a read that has
-  started is finished first), also when it was pressed just as the export
-  started; nothing is written. An existing file of the same name is replaced
+  started is finished first), while the bundle is packed (before it is put
+  in place), also when it was pressed just as the export started; nothing
+  is written. An export that fails for a reason of its own after a Cancel
+  says that reason. An existing file of the same name is replaced
   only once the new bundle is complete and has been read back and compared,
   file by file, with what was staged. The UltraScan ``tmp`` directory needs
   room for about twice the data plus the bundle while this happens.

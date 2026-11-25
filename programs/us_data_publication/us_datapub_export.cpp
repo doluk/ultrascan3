@@ -308,7 +308,22 @@ bool US_DataPubExporter::wasCancelled( void ) const
 
 bool US_DataPubExporter::endRun( bool ok, QString& error )
 {
-   cancelled_run = ! ok  &&  cancel_flag.loadAcquire() != 0;
+   // A run that failed after a cancel was cancelled when it stopped for
+   // the cancel -- with the message of the exporter, the catalog or the
+   // shared catalog, or none -- and failed when it stopped for a reason
+   // of its own, whose message is kept
+   cancelled_run = false;
+
+   if ( ! ok  &&  cancel_flag.loadAcquire() != 0 )
+   {
+      QString own;
+      cancelledError( own );
+
+      cancelled_run = error.isEmpty()  ||  error == own  ||
+                      error == catalog.cancelledText()  ||
+                      error == US_DataCatalog::tr(
+                         "Reading the local data directory was cancelled" );
+   }
 
    if ( cancelled_run )  cancelledError( error );
 
@@ -733,8 +748,27 @@ bool US_DataPubExporter::exportRun( const Selection& selection,
 
    note( tr( "Packing the bundle into %1" ).arg( bundlePath ) );
 
-   if ( ! bundle.pack( bundlePath, error ) )
+   // The packing is a phase of its own, two steps per file (packed, then
+   // compared); a cancel stops it before the bundle is put in place
+   bool counted  = false;
+   auto progress = [ this, &counted ]( int done, int total )
    {
+      if ( ! counted )
+      {
+         emit steps( total );
+         counted = true;
+      }
+
+      emit stepDone( done );
+
+      return cancel_flag.loadAcquire() == 0;
+   };
+
+   if ( ! bundle.pack( bundlePath, error, progress ) )
+   {
+      if ( error == US_DataPubBundle::packingStopped() )
+         cancelledError( error );
+
       bundle.cleanup();
       return false;
    }

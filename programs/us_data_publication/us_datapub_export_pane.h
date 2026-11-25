@@ -32,8 +32,9 @@ class US_DataPubExportPane : public US_Widgets
 
       /*! \brief True while an export is running
 
-          The export runs on the window's own thread and keeps the window
-          responsive by processing events, so the window has to refuse to
+          The export runs on the window's own thread and processes events
+          between its steps (not within one: indexing a local store, reading
+          one run's records, writing the archive), so the window has to refuse to
           close -- and the tab refuses every other action -- until it is
           done.
       */

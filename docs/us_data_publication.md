@@ -660,13 +660,19 @@ with **Cancel** (`US_DataPubExporter::cancel()`): the export or preview then
 fails with "The export was cancelled; no bundle was written" and removes its
 staging directory.
 
-**Progress and Cancel.** An export goes through two phases, and the progress
-bar counts each: first the runs are read from the source, one step per run
-("Reading run … (2 of 5)"), then the records are staged, one step per
-record. What the shared catalog says while it reads — "Indexing the local
-data directory…", a database without the catalog procedures — is in the
-status log (and, with `--verbose`, on the command line) as it happens. The
-window stays responsive throughout, and **Cancel** takes effect:
+**Progress and Cancel.** An export goes through three phases, and the
+progress bar counts each: first the runs are read from the source, one step
+per run ("Reading run … (2 of 5)"), then the records are staged, one step
+per record, and then the bundle is packed, two steps per file (packed, then
+read back and compared). What the shared catalog says while it reads —
+"Indexing the local data directory…", a database without the catalog
+procedures — is in the status log (and, with `--verbose`, on the command
+line) as it happens. The window takes events between these steps. Within
+one step it does not: indexing a local data directory (one pass over the
+run directories and the model and noise files), reading one run's records,
+and writing the archive are single steps, during which the window does not
+respond and a **Cancel** pressed is seen when the step is done.
+**Cancel** takes effect:
 
 * while the runs are read: before each run, between two files of a local
   store, and, from a database, before the catalog reads a run's records,
