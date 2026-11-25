@@ -708,6 +708,7 @@ int US_DataProcess::edit_attempt( int editID,
    clean        = true;
    edit_status  = IUS_DB2::OK;
    edit_failure = EDIT_REFUSED;
+   edit_error.clear();
 
    if ( ! db->beginTransaction( terr ) )
    {
@@ -752,6 +753,7 @@ DbgLv(1) << "EDT_RMV:" << query;
       int     serr = db->lastServerErrno();
       QString derr = db->lastError();
       edit_status  = est;
+      edit_error   = derr;
 
       if ( est != IUS_DB2::OK )
       {
@@ -782,14 +784,29 @@ DbgLv(1) << "EDT_RMV:   stat" << est << derr << serr;
       if ( db->commitTransaction( terr ) )
          return 0;
 
-      // Not confirmed: still open as far as the client knows.  A connection
-      // lost at the commit leaves open whether the server committed.
-      bool lost = lost_now();
+      // Not confirmed: still open as far as the client knows.  The commit
+      // says how it ended (US_DB2): a connection lost before the COMMIT
+      // went out was rolled back by the server, and nothing was removed; a
+      // connection lost during the COMMIT leaves open whether the server
+      // committed.
+      TxEnd   end  = transaction_end( terr );
+      bool    lost = lost_now()  ||  end == TX_LOST_ROLLED_BACK  ||
+                     end == TX_LOST_UNKNOWN;
       QString rerr;
       db->rollbackTransaction( rerr );
       clean = false;
 
-      if ( lost )
+      if ( lost  &&  end == TX_LOST_ROLLED_BACK )
+      {
+         conn_lost    = true;
+         clean        = true;       // the server gave it all back
+         edit_failure = EDIT_LOST_ROLLED_BACK;
+         why = tr( "the connection to the database was lost before the"
+                   " removal was committed, so the server rolled the removal"
+                   " back (%1)." ).arg( terr );
+      }
+
+      else if ( lost )
       {
          conn_lost    = true;
          edit_failure = EDIT_LOST;
@@ -809,10 +826,34 @@ DbgLv(1) << "EDT_RMV:   stat" << est << derr << serr;
    if ( ! db->rollbackTransaction( terr )  &&  edit_failure != EDIT_DEADLOCK )
    {
       clean = false;                // what is left is read back
+      TxEnd end = transaction_end( terr );
 
-      if ( edit_failure == EDIT_LOST  ||  lost_now() )
-      {  // The server rolls back what its lost connection left uncommitted;
-         // the message already says the connection was lost when it was
+      if ( end == TX_LOST_ROLLED_BACK )
+      {  // The connection was lost before anything was committed, and the
+         // server rolled back the whole transaction when it ended: nothing
+         // was removed, whenever it was lost
+         if ( edit_failure == EDIT_LOST  &&  stat == 2012 )
+            why = tr( "the connection to the database was lost while it was"
+                      " being removed (delete_editedData: %1), so the server"
+                      " rolled the removal back." ).arg( edit_error );
+         else if ( edit_failure == EDIT_LOST )
+            why += tr( "\nThe connection to the database was lost, so the"
+                       " server rolled the whole removal back." );
+         else
+            why += tr( "\nThe connection to the database was lost before the"
+                       " transaction was rolled back, so the server rolled it"
+                       " back itself." );
+
+         conn_lost    = true;
+         clean        = true;       // the server gave it all back
+         edit_failure = EDIT_LOST_ROLLED_BACK;
+         return stat;
+      }
+
+      if ( edit_failure == EDIT_LOST  ||  lost_now()  ||
+           end == TX_LOST_UNKNOWN )
+      {  // Lost, and the rollback cannot say what the server kept; the
+         // message already says the connection was lost when it was
          if ( edit_failure != EDIT_LOST )
             why += tr( "\nThe connection to the database was lost before the"
                        " transaction was rolled back; the server rolls back"
@@ -840,14 +881,36 @@ DbgLv(1) << "EDT_RMV:   stat" << est << derr << serr;
    return stat;
 }
 
+// How a refused commit or rollback says the transaction ended, by the texts
+// US_DB2 gives for it
+US_DataProcess::TxEnd US_DataProcess::transaction_end( const QString& error )
+{
+   if ( error == QObject::tr( US_DB2::transactionEndedMessage )  ||
+        error == QObject::tr( US_DB2::serverRollbackMessage ) )
+      return TX_ENDED_BY_SERVER;
+
+   if ( error == QObject::tr( US_DB2::connectionLostRollbackMessage ) )
+      return TX_LOST_ROLLED_BACK;
+
+   // "... is unknown: %1", the error of the COMMIT after it
+   QString unknown = QObject::tr( US_DB2::commitUnknownMessage );
+   unknown         = unknown.left( unknown.indexOf( "%1" ) );
+
+   if ( ! unknown.isEmpty()  &&  error.startsWith( unknown ) )
+      return TX_LOST_UNKNOWN;
+
+   return TX_FAILED;
+}
+
 // Whether a rollback was refused because the server had already ended the
 // transaction (US_DB2::rollbackTransaction's message for that) -- after a
 // deadlock, after a lock wait timeout with innodb_rollback_on_timeout, or by
-// a commit inside a procedure -- rather than because it failed itself
+// a commit inside a procedure -- rather than because it failed itself.  A
+// transaction a lost connection ended is not one of these: see
+// transaction_end.
 bool US_DataProcess::ended_by_server( const QString& error )
 {
-   return error == QObject::tr( US_DB2::transactionEndedMessage )  ||
-          error == QObject::tr( US_DB2::serverRollbackMessage );
+   return transaction_end( error ) == TX_ENDED_BY_SERVER;
 }
 
 // What kind of failure a delete_editedData or delete_noise status says
@@ -863,7 +926,8 @@ US_DataProcess::EditFailure US_DataProcess::failure_kind(
                error.contains( QString( "error %1:" ).arg( code ) ) );
    };
 
-   if ( US_DataModel::connection_lost( serverErrno )  ||  ! db->isConnected() )
+   if ( US_DataModel::connection_lost( serverErrno, db->serverVersion() )  ||
+        ! db->isConnected() )
    {
       conn_lost = true;
       return EDIT_LOST;
@@ -935,7 +999,8 @@ QString US_DataProcess::read_back_advice( void ) const
 bool US_DataProcess::lost_now( void )
 {
    return db != NULL  &&
-          ( US_DataModel::connection_lost( db->lastServerErrno() )  ||
+          ( US_DataModel::connection_lost( db->lastServerErrno(),
+                                           db->serverVersion() )  ||
             ! db->isConnected() );
 }
 

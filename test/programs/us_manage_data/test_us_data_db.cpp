@@ -33,7 +33,12 @@
 // victim (1213, no status), rolling back the whole transaction -- new_noise
 // files noise under edit 1 when the edit may not be used, transactions
 // give back what was written since the begin unless the server ended them,
-// and lastInsertID() never names the record just written.
+// and lastInsertID() never names the record just written.  A refused commit
+// or rollback says what US_DB2 says (transactionEndedText): the server
+// rolled back after a lost connection, the outcome of a COMMIT lost on its
+// way is unknown, a deadlock's rollback, an implicit commit.  serverVersion()
+// names the server (MySQL 8 unless a test says MariaDB), and an error that
+// is no loss on it (4031 on MariaDB) fails only its statement.
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
 
@@ -133,7 +138,12 @@ namespace
          QSet< QString >          failing;    // procedures whose call loses
                                               // the connection
          QMap< QString, int >     failAfter;  // ... after the first n calls
-         int                      lostErrno = 2013; // how it is lost
+         int                      lostErrno = 2013; // how it is lost: an
+                                                    // error that is no loss
+                                                    // on this server (4031
+                                                    // on MariaDB) fails
+                                                    // just the statement
+         QString                  version = "8.0.46"; // serverVersion()
          bool                     lost      = false; // it is: every call
                                                      // fails from now on
          QMap< QString, int >     callCount;  // calls so far, by name
@@ -182,8 +192,13 @@ namespace
          int    row = -1;
 
          // The connection lost at the commit: 1 before the server committed
-         // (it rolls back), 2 after it did
+         // (it rolls back), 2 after it did -- the client cannot tell which
+         // -- or 3 before the COMMIT went out, which the client sees (its
+         // check of the transaction fails), and the server rolls back
          int    commitLoss = 0;
+         QString lostCommitText;    // what the commit said, lost during it
+         bool    deadlocked = false; // the server ended the transaction
+                                     // after a deadlock
 
          // innodb_rollback_on_timeout: a lock wait timeout rolls back the
          // whole transaction, not just the statement
@@ -235,6 +250,8 @@ namespace
                .WillByDefault( Invoke( [ this ]() { return current.error; } ) );
             ON_CALL( db, lastServerErrno() )
                .WillByDefault( Invoke( [ this ]() { return current.server; } ) );
+            ON_CALL( db, serverVersion() )
+               .WillByDefault( Invoke( [ this ]() { return version; } ) );
             ON_CALL( db, lastInsertID() )
                .WillByDefault( Return( 4242 ) );     // never the record written
             ON_CALL( db, statusQuery( An< const QStringList& >() ) )
@@ -274,9 +291,16 @@ namespace
                {
                   txlog << "begin";
                   error.clear();
-                  if ( lost )      { error = goneText;  return false; }
+                  if ( lost )
+                  {
+                     error = QObject::tr( IUS_DB2::notConnectedMessage )
+                             .arg( "beginTransaction" );
+                     return false;
+                  }
                   if ( clientTx )  { error = "a transaction is open";  return false; }
                   clientTx = serverTx = true;
+                  deadlocked = false;
+                  lostCommitText.clear();
                   saved    = data();
                   return true;
                } ) );
@@ -285,11 +309,28 @@ namespace
                {
                   txlog << "commit";
                   error.clear();
+                  if ( lost )
+                  {
+                     error = clientTx ? endedText()
+                                      : QObject::tr( IUS_DB2::notConnectedMessage )
+                                        .arg( "commitTransaction" );
+                     return false;
+                  }
                   if ( ! clientTx )  { error = "no transaction";  return false; }
-                  if ( lost )        { error = goneText;  return false; }
                   if ( ! serverTx )
                   {
-                     error = QObject::tr( US_DB2::transactionEndedMessage );
+                     error = endedText();
+                     return false;
+                  }
+                  if ( commitLoss == 3 )
+                  {  // US_DB2's check before the COMMIT finds it lost
+                     restore( saved );
+                     serverTx       = false;
+                     lost           = true;
+                     current.status = IUS_DB2::DBERROR;
+                     current.server = 2013;
+                     current.error  = "Lost connection to MySQL server during query";
+                     error = endedText();
                      return false;
                   }
                   if ( commitLoss != 0 )
@@ -300,8 +341,9 @@ namespace
                      current.status = IUS_DB2::DBERROR;
                      current.server = 2013;
                      current.error  = "Lost connection to MySQL server during query";
-                     error = QObject::tr( US_DB2::commitUnknownMessage )
-                             .arg( current.error );
+                     lostCommitText = QObject::tr( US_DB2::commitUnknownMessage )
+                                      .arg( current.error );
+                     error = lostCommitText;
                      return false;
                   }
                   clientTx = serverTx = false;
@@ -312,12 +354,17 @@ namespace
                {
                   txlog << "rollback";
                   error.clear();
+                  if ( lost  &&  ! clientTx )
+                  {
+                     error = QObject::tr( IUS_DB2::notConnectedMessage )
+                             .arg( "rollbackTransaction" );
+                     return false;
+                  }
                   if ( ! clientTx )  { error = "no transaction";  return false; }
                   clientTx = false;
-                  if ( lost )        { error = goneText;  return false; }
-                  if ( ! serverTx )
+                  if ( lost  ||  ! serverTx )
                   {
-                     error = QObject::tr( US_DB2::transactionEndedMessage );
+                     error = endedText();
                      return false;
                   }
                   serverTx = false;
@@ -327,6 +374,23 @@ namespace
          }
 
          int count( const QString& name ) const { return calls.count( name ); }
+
+         // What US_DB2 says of a transaction the server ended before the
+         // commit or rollback (US_DB2::transactionEndedText): lost before
+         // the COMMIT went out, the server rolled it back; lost during it,
+         // the outcome is unknown; otherwise a deadlock's rollback or an
+         // implicit commit.  Neither call is made outside a transaction
+         // here, where US_DB2 would say that no connection is open.
+         QString endedText() const
+         {
+            if ( lost )
+               return lostCommitText.isEmpty()
+                      ? QObject::tr( US_DB2::connectionLostRollbackMessage )
+                      : lostCommitText;
+
+            return QObject::tr( deadlocked ? US_DB2::serverRollbackMessage
+                                           : US_DB2::transactionEndedMessage );
+         }
 
          static constexpr const char* goneText = "MySQL server has gone away";
 
@@ -350,6 +414,18 @@ namespace
                current.status = IUS_DB2::DBERROR;
                current.server = 2006;
                current.error  = goneText;
+               return true;
+            }
+
+            if ( ( failing.contains( name )  ||
+                   ( failAfter.contains( name )  &&
+                     ncall > failAfter.value( name ) ) )  &&
+                 ! IUS_DB2::isConnectionLoss( lostErrno, version ) )
+            {  // an error that is no loss on this server: the statement fails
+               current.status = IUS_DB2::DBERROR;
+               current.server = lostErrno;
+               current.error  = QString( "error %1 of the statement" )
+                                .arg( lostErrno );
                return true;
             }
 
@@ -520,7 +596,10 @@ namespace
             if ( deadlocking.contains( name ) )
             {  // as InnoDB does, and a patched procedure raises it again
                if ( clientTx  &&  serverTx )
+               {
                   restore( saved );
+                  deadlocked = true;
+               }
                serverTx       = false;
                current.status = IUS_DB2::DBERROR;
                current.server = 1213;
@@ -2690,7 +2769,7 @@ TEST_F( TestUSDataDb, AnExperimentADatabaseReadFailedOnIsNotShownAsLocal )
 
       server.failing << "get_rawData_by_experiment";
       server.lostErrno = lostErrno;
-      EXPECT_TRUE( US_DataModel::connection_lost( lostErrno ) );   // by itself
+      EXPECT_TRUE( US_DataModel::connection_lost( lostErrno, server.version ) );
 
       US_DataModel model;
       prepare( model, runA );
@@ -3773,10 +3852,14 @@ TEST_F( TestUSDataDb, AnEditAlreadyGoneIsReadBackAsRemoved )
    }
 }
 
-// The connection lost while the edit is removed: whether it was removed is
-// not known, nothing can be read back -- the connection stays lost -- and
-// the message says to open the window again, not to scan again
-TEST_F( TestUSDataDb, AConnectionLostDuringAnEditRemovalSaysToOpenTheWindowAgain )
+// The connection lost while the edit is removed: the transaction was not
+// committed, and the server rolls back a transaction whose connection
+// ends -- US_DB2's rollback says so (connectionLostRollbackMessage) -- so
+// nothing was removed, and the message says that, and to open the window
+// again, not to scan again.  Nothing can be read back: the connection stays
+// lost.  (Until round 7 the message said that whether the edit was removed
+// is not known, around a rollback text that said nothing was kept.)
+TEST_F( TestUSDataDb, AConnectionLostDuringAnEditRemovalIsRolledBackByTheServer )
 {
    server.failing << "delete_editedData";
 
@@ -3784,21 +3867,75 @@ TEST_F( TestUSDataDb, AConnectionLostDuringAnEditRemovalSaysToOpenTheWindowAgain
    prepare( model );
    Window       win( model );
    model.scan_data();
+   int reads = server.count( "get_editedData" );
 
    EXPECT_EQ( win.proc.record_remove_db( rowOf( model, editG ) ), 2012 );
 
    QString error = win.proc.lastError();
    EXPECT_TRUE( error.contains( "connection to the database was lost" ) ) << error.toStdString();
-   EXPECT_TRUE( error.contains( "not known" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "the server rolled the removal back" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "Nothing was removed" ) ) << error.toStdString();
    EXPECT_TRUE( error.contains( "close it and open it again" ) ) << error.toStdString();
+   EXPECT_FALSE( error.contains( "not known" ) ) << error.toStdString();
    EXPECT_FALSE( error.contains( "Scan again" ) ) << error.toStdString();
    EXPECT_FALSE( error.contains( "refused" ) ) << error.toStdString();
-   EXPECT_FALSE( error.contains( "Nothing was removed" ) ) << error.toStdString();
    EXPECT_FALSE( error.contains( "could not be rolled back" ) ) << error.toStdString();
+   EXPECT_FALSE( win.proc.outcome_unknown() );
+   EXPECT_TRUE ( win.proc.connection_lost() );
+   EXPECT_EQ( server.count( "get_editedData" ), reads );      // no read back
 
-   // the rows are left as they were: nothing is known to be gone
+   // the rows are left as they were: nothing is gone
    for ( const QString& guid : { editG, modelG, noiseG } )
       EXPECT_NE( stateOf( model, guid ) & US_DataModel::REC_DB, 0 ) << guid.toStdString();
+}
+
+// 4031 is a lost connection on MySQL 8 (an idle connection that timed out)
+// and a statement error on MariaDB, where the connection is fine: an edit
+// removal failing with it is a refusal there, rolled back by the client,
+// and the window goes on.  It used to be taken as a loss on every server,
+// and then on none.
+TEST_F( TestUSDataDb, Error4031IsALossOnMySqlOnly )
+{
+   for ( const QString& version : { QString( "8.0.46" ),
+                                    QString( "10.11.9-MariaDB" ) } )
+   {
+      SCOPED_TRACE( version.toStdString() );
+      TearDown();
+      server = FakeServer();
+      SetUp();
+      server.version   = version;
+      server.lostErrno = 4031;
+      server.failing << "delete_editedData";
+      bool mysql = ! version.contains( "MariaDB" );
+
+      EXPECT_EQ( US_DataModel::connection_lost( 4031, version ), mysql );
+
+      US_DataModel model;
+      prepare( model );
+      Window       win( model );
+      model.scan_data();
+
+      EXPECT_EQ( win.proc.record_remove_db( rowOf( model, editG ) ), 2012 );
+
+      QString error = win.proc.lastError();
+      EXPECT_EQ( win.proc.connection_lost(), mysql ) << error.toStdString();
+      EXPECT_EQ( error.contains( "close it and open it again" ), mysql )
+         << error.toStdString();
+      EXPECT_EQ( error.contains( "the database refused it" ), ! mysql )
+         << error.toStdString();
+      EXPECT_TRUE( error.contains( "Nothing was removed" ) ) << error.toStdString();
+      EXPECT_EQ( server.txlog, QStringList() << "begin" << "rollback" );
+
+      for ( const QString& guid : { editG, modelG, noiseG } )
+         EXPECT_NE( stateOf( model, guid ) & US_DataModel::REC_DB, 0 ) << guid.toStdString();
+
+      // on MariaDB the connection is fine: the next removal is made
+      int stat = win.proc.record_remove_db( rowOf( model, noiseG ) );
+      if ( mysql )
+         EXPECT_NE( stat, 0 );
+      else
+         EXPECT_EQ( stat, 0 ) << win.proc.lastError().toStdString();
+   }
 }
 
 // Any removal that fails on a lost connection says so, and so does every
@@ -3824,10 +3961,11 @@ TEST_F( TestUSDataDb, ARemovalOnALostConnectionSaysToOpenTheWindowAgain )
    EXPECT_TRUE( server.txlog.isEmpty() );
 }
 
-// The connection lost at the commit of an edit removal: whether the server
-// committed is not known -- before it did or after -- and the message says
-// so, names the connection as lost, and does not say that nothing was
-// removed; the edit's models and noise are as open as it is
+// The connection lost during the commit of an edit removal: whether the
+// server committed is not known -- before it did or after -- and the
+// message says so (US_DB2's commitUnknownMessage), names the connection as
+// lost, and does not say that nothing was removed; the edit's models and
+// noise are as open as it is
 TEST_F( TestUSDataDb, AConnectionLostAtTheCommitLeavesTheOutcomeOpen )
 {
    for ( int landed = 1; landed <= 2; landed++ )
@@ -3864,6 +4002,41 @@ TEST_F( TestUSDataDb, AConnectionLostAtTheCommitLeavesTheOutcomeOpen )
       EXPECT_FALSE( error.contains( "was not removed:" ) ) << error.toStdString();
       EXPECT_FALSE( error.contains( "could not be rolled back" ) ) << error.toStdString();
    }
+}
+
+// The connection lost just before the COMMIT went out: US_DB2's check of
+// the transaction finds it lost, and the server rolls back a transaction
+// whose connection ends (connectionLostRollbackMessage).  That outcome is
+// known: nothing was removed, and the message says so rather than that it
+// is not known
+TEST_F( TestUSDataDb, AConnectionLostBeforeTheCommitRemovesNothing )
+{
+   server.patchedEditDelete = true;
+   server.commitLoss        = 3;
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   win.select( itemOfRow( win.tw, rowOf( model, editG ) ) );
+   EXPECT_EQ( win.tree.act_on_selection( "Database only", "DB-only remove" ), 2019 );
+   EXPECT_EQ( server.txlog, QStringList() << "begin" << "commit" << "rollback" );
+   EXPECT_FALSE( server.edits.isEmpty() );
+
+   QString error = win.proc.lastError();
+   EXPECT_TRUE( win.proc.connection_lost() );
+   EXPECT_TRUE( error.contains( "lost before the removal was committed, so the"
+                                " server rolled the removal back" ) )
+      << error.toStdString();
+   EXPECT_TRUE( error.contains( "Nothing was removed" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "close it and open it again" ) ) << error.toStdString();
+   EXPECT_FALSE( error.contains( "is not known" ) ) << error.toStdString();
+   EXPECT_FALSE( error.contains( "could not be rolled back" ) ) << error.toStdString();
+
+   for ( const QString& guid : { editG, modelG, noiseG } )
+      EXPECT_NE( stateOf( model, guid ) & US_DataModel::REC_DB, 0 ) << guid.toStdString();
 }
 
 // innodb_rollback_on_timeout: the server rolled the whole transaction back

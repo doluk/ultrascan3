@@ -105,9 +105,16 @@ class US_DataProcess : public QObject
             was, and when it could not all be read back, what to do: scan
             again, or after a lost connection, which this window does not
             make anew, close the window and open it again.  A connection
-            lost while a removal runs or is committed leaves open whether
-            it happened: the message says so (\ref outcome_unknown), also
-            for a model or noise record, each of which is one statement.
+            lost in an edit's transaction before the COMMIT went out -- US_DB2
+            says so with US_DB2::connectionLostRollbackMessage -- was rolled
+            back by the server: nothing was removed, and the message says
+            so.  A connection lost during the COMMIT
+            (US_DB2::commitUnknownMessage), or while a model or noise record
+            is removed -- each one statement, committed as it runs -- leaves
+            open whether it happened: the message says so
+            (\ref outcome_unknown).  Whether an error means a lost
+            connection goes by IUS_DB2::isConnectionLoss for the server
+            (serverVersion()): 4031 on MySQL 8, not on MariaDB.
             A rollback refused because the server had already ended the
             transaction (a deadlock, or a lock wait timeout with
             innodb_rollback_on_timeout) is not reported as a failed one.
@@ -276,8 +283,33 @@ class US_DataProcess : public QObject
             EDIT_DEADLOCK,     //!< A deadlock (1213): the server rolled
                                //!< back the whole transaction
             EDIT_TIMEOUT,      //!< A lock wait timeout (1205)
-            EDIT_LOST          //!< The connection was lost
+            EDIT_LOST,         //!< The connection was lost, and what the
+                               //!< server kept is not known
+            EDIT_LOST_ROLLED_BACK //!< The connection was lost before the
+                               //!< transaction was committed: the server
+                               //!< rolled all of it back
         };
+
+        //! \brief How a refused commit or rollback says the transaction
+        //!        ended, by the texts US_DB2 gives for each
+        enum TxEnd
+        {
+            TX_FAILED,           //!< Not ended: the call failed itself
+            TX_ENDED_BY_SERVER,  //!< Ended by the server before the call
+                                 //!< (US_DB2::transactionEndedMessage,
+                                 //!< US_DB2::serverRollbackMessage)
+            TX_LOST_ROLLED_BACK, //!< The connection was lost before a
+                                 //!< COMMIT went out, and the server rolled
+                                 //!< the transaction back
+                                 //!< (US_DB2::connectionLostRollbackMessage)
+            TX_LOST_UNKNOWN      //!< The connection was lost during the
+                                 //!< COMMIT: whether it took effect is not
+                                 //!< known (US_DB2::commitUnknownMessage)
+        };
+
+        //! \brief How the message of a refused commit or rollback says the
+        //!        transaction ended
+        static TxEnd transaction_end( const QString& error );
 
         //! \brief The kind of failure a write's status, the server's error
         //!        number and the message say -- as an older procedure has
@@ -318,6 +350,7 @@ class US_DataProcess : public QObject
         int                     edit_status = 0;  //!< delete_editedData's
                                                   //!< status, last try
         EditFailure             edit_failure = EDIT_REFUSED; //!< ... its kind
+        QString                 edit_error; //!< ... and its message
         bool                    conn_lost = false; //!< The connection was
                                                    //!< seen lost
         bool                    unknown_out = false; //!< See

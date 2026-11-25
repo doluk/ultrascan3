@@ -331,11 +331,16 @@ class US_DataModel : public QObject
         */
         void removed_from_db( int recType, int recordID );
 
-        //! \brief Whether a client error number says the connection to
-        //!        the database server is gone, as US_DB2::isConnectionLoss
-        //!        has it (2006, 2013, 2026 -- a TLS connection that was cut
-        //!        --, 2055, ...): the window does not connect again
-        static bool connection_lost( int serverErrno );
+        //! \brief Whether an error number says the connection to the
+        //!        database server is gone, as IUS_DB2::isConnectionLoss has
+        //!        it for that server (2006, 2013, 2026 -- a TLS connection
+        //!        that was cut --, 2055, ...; 4031 on MySQL 8 only, where it
+        //!        is an idle timeout, and not on MariaDB, where it is a
+        //!        statement error): the window does not connect again
+        //! \param serverErrno   lastServerErrno() of the statement
+        //! \param serverVersion serverVersion() of its connection
+        static bool connection_lost( int serverErrno,
+                                     const QString& serverVersion );
 
         //! \brief True once the database listing was dropped since the
         //!        last scan; see \ref listingDropped

@@ -383,6 +383,7 @@ static void passOn( ::testing::NiceMock< US_DB2_Mock >& m, US_DB2* real )
    ON_CALL( m, lastError() ).WillByDefault( Invoke( [ real ]() { return real->lastError(); } ) );
    ON_CALL( m, lastErrno() ).WillByDefault( Invoke( [ real ]() { return real->lastErrno(); } ) );
    ON_CALL( m, lastServerErrno() ).WillByDefault( Invoke( [ real ]() { return real->lastServerErrno(); } ) );
+   ON_CALL( m, serverVersion() ).WillByDefault( Invoke( [ real ]() { return real->serverVersion(); } ) );
    ON_CALL( m, lastInsertID() ).WillByDefault( Invoke( [ real ]() { return real->lastInsertID(); } ) );
    ON_CALL( m, lastDebug() ).WillByDefault( Invoke( [ real ]() { return real->lastDebug(); } ) );
    ON_CALL( m, readBlobFromDB( _, _, _ ) ).WillByDefault( Invoke( [ real ]( const QString& f, const QString& p, int id )
@@ -781,8 +782,9 @@ TEST_F( TestUSDataDbLive, ARemovalOnALostConnectionSaysToOpenTheWindowAgain )
    // 2026 over TLS with libmariadb): it reads as a lost one
    int serr = inv->lastServerErrno();
    RecordProperty( "client_errno", serr );
-   EXPECT_TRUE( US_DB2::isConnectionLoss( serr ) ) << serr << " " << error.toStdString();
-   EXPECT_TRUE( US_DataModel::connection_lost( serr ) ) << serr;
+   EXPECT_TRUE( IUS_DB2::isConnectionLoss( serr, inv->serverVersion() ) )
+      << serr << " " << error.toStdString();
+   EXPECT_TRUE( US_DataModel::connection_lost( serr, inv->serverVersion() ) ) << serr;
    EXPECT_FALSE( inv->isConnected() );
    EXPECT_TRUE( error.contains( "close it and open it again" ) ) << error.toStdString();
    EXPECT_FALSE( error.contains( "Scan again" ) ) << error.toStdString();
@@ -856,6 +858,12 @@ TEST_F( TestUSDataDbLive, AConnectionLostDuringAnEditRemovalIsNotAFailedRollback
    EXPECT_FALSE( error.contains( "could not be rolled back" ) ) << error.toStdString();
    EXPECT_FALSE( error.contains( "None of the selected records" ) ) << error.toStdString();
 
+   // US_DB2's rollback says the server rolled it back, and the message
+   // agrees: nothing was removed, which is what the database holds
+   EXPECT_TRUE( error.contains( "the server rolled the removal back" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "Nothing was removed" ) ) << error.toStdString();
+   EXPECT_FALSE( error.contains( "not known" ) ) << error.toStdString();
+
    EXPECT_EQ( present( "get_editedData", ed.editID,  IUS_DB2::NO_EDITDATA ), 1 );
    EXPECT_EQ( present( "get_model_info", ed.modelID, IUS_DB2::NO_MODEL ), 1 );
    EXPECT_EQ( present( "get_noise_info", ed.noiseID, IUS_DB2::NO_NOISE ), 1 );
@@ -863,13 +871,16 @@ TEST_F( TestUSDataDbLive, AConnectionLostDuringAnEditRemovalIsNotAFailedRollback
       EXPECT_TRUE( win.inDb( guid ) ) << guid.toStdString();
 }
 
-/* The connection lost at the commit of an edit removal (killed just before
-   the COMMIT goes out, so the server rolls back): the message says the
-   connection was lost while the removal was being committed and that
-   whether the records were removed is not known -- the client cannot tell
-   -- not that none was.  Only the test's own connection is killed.
+/* The connection lost at the commit of an edit removal, killed just before
+   the COMMIT goes out: US_DB2's check of the transaction finds the
+   connection gone, and the server rolls back a transaction whose connection
+   ends, so nothing was removed -- and the message says so, and that the
+   connection was lost; not that whether the records were removed is not
+   known.  (A loss during the COMMIT itself, whose outcome is not known, is
+   AConnectionLostAtTheCommitLeavesTheOutcomeOpen in test_us_data_db.cpp.)
+   Only the test's own connection is killed.
 */
-TEST_F( TestUSDataDbLive, AConnectionLostAtTheCommitLeavesTheOutcomeOpen )
+TEST_F( TestUSDataDbLive, AConnectionLostBeforeTheCommitRemovesNothing )
 {
    Edit ed;
    newEdit( ed, false );
@@ -900,10 +911,11 @@ TEST_F( TestUSDataDbLive, AConnectionLostAtTheCommitLeavesTheOutcomeOpen )
    ASSERT_EQ( killError.toStdString(), std::string() );
    EXPECT_EQ( stat, 2019 ) << error.toStdString();
    EXPECT_FALSE( inv->isConnected() );
-   EXPECT_TRUE( error.contains( "lost while the removal was being committed" ) )
+   EXPECT_TRUE( error.contains( "lost before the removal was committed, so the"
+                                " server rolled the removal back" ) )
       << error.toStdString();
-   EXPECT_TRUE( error.contains( "Whether these selected records were removed from the"
-                                " database is not known" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "Nothing was removed" ) ) << error.toStdString();
+   EXPECT_FALSE( error.contains( "is not known" ) ) << error.toStdString();
    EXPECT_TRUE( error.contains( "close it and open it again" ) ) << error.toStdString();
    EXPECT_FALSE( error.contains( "None of the selected records" ) ) << error.toStdString();
    EXPECT_FALSE( error.contains( "could not be rolled back" ) ) << error.toStdString();

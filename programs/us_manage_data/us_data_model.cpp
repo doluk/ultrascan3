@@ -1278,13 +1278,13 @@ int US_DataModel::pending_runs( ) const
    return run_queue.size();
 }
 
-// Whether a client error number says the connection to the server is gone:
-// CR_SERVER_GONE_ERROR (2006), CR_SERVER_LOST (2013) or
-// CR_SERVER_LOST_EXTENDED (2055), which is what a TLS connection that breaks
-// reports
-bool US_DataModel::connection_lost( int serverErrno )
+// Whether an error number says the connection to the server is gone, by
+// the one rule US_DB2 goes by, for the server that gave it: 4031 is a lost
+// connection on MySQL 8 and a statement error on MariaDB
+bool US_DataModel::connection_lost( int serverErrno,
+                                    const QString& serverVersion )
 {
-   return US_DB2::isConnectionLoss( serverErrno );
+   return IUS_DB2::isConnectionLoss( serverErrno, serverVersion );
 }
 
 bool US_DataModel::listing_dropped( void ) const
@@ -1397,7 +1397,8 @@ bool US_DataModel::load_sides( int index )
       if ( catalog->loadRunDetail( cx, error ) )   continue;
 
       bool lost = ( side == 0  &&  db != NULL  &&
-                    ( connection_lost( db->lastServerErrno() )  ||
+                    ( connection_lost( db->lastServerErrno(),
+                                       db->serverVersion() )  ||
                       ! db->isConnected() ) );
 
       DbgLv(1) << "LoadSides: retry" << entry.runID << side << lost << error;
