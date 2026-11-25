@@ -796,8 +796,10 @@ TEST_F( TestUSDataDbLive, ARemovalOnALostConnectionSaysToOpenTheWindowAgain )
 /* The connection lost while delete_editedData waits for a lock another
    session holds: the server rolls back what the connection left open, so
    the database loses nothing.  The message says the connection was lost --
-   not that the transaction could not be rolled back -- and to open the
-   window again, and the rows still show the records in the database.
+   not that the transaction could not be rolled back -- that the server
+   rolled the removal back, so that none of the records was removed, and to
+   open the window again, and the rows still show the records in the
+   database.
    Only the test's own connection is killed.
 */
 TEST_F( TestUSDataDbLive, AConnectionLostDuringAnEditRemovalIsNotAFailedRollback )
@@ -856,7 +858,7 @@ TEST_F( TestUSDataDbLive, AConnectionLostDuringAnEditRemovalIsNotAFailedRollback
    EXPECT_TRUE( error.contains( "connection to the database was lost" ) ) << error.toStdString();
    EXPECT_TRUE( error.contains( "close it and open it again" ) ) << error.toStdString();
    EXPECT_FALSE( error.contains( "could not be rolled back" ) ) << error.toStdString();
-   EXPECT_FALSE( error.contains( "None of the selected records" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "None of the selected records" ) ) << error.toStdString();
 
    // US_DB2's rollback says the server rolled it back, and the message
    // agrees: nothing was removed, which is what the database holds
@@ -917,7 +919,7 @@ TEST_F( TestUSDataDbLive, AConnectionLostBeforeTheCommitRemovesNothing )
    EXPECT_TRUE( error.contains( "Nothing was removed" ) ) << error.toStdString();
    EXPECT_FALSE( error.contains( "is not known" ) ) << error.toStdString();
    EXPECT_TRUE( error.contains( "close it and open it again" ) ) << error.toStdString();
-   EXPECT_FALSE( error.contains( "None of the selected records" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "None of the selected records" ) ) << error.toStdString();
    EXPECT_FALSE( error.contains( "could not be rolled back" ) ) << error.toStdString();
 
    // killed before the COMMIT went out: the server kept everything

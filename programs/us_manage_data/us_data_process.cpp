@@ -803,7 +803,7 @@ DbgLv(1) << "EDT_RMV:   stat" << est << derr << serr;
          edit_failure = EDIT_LOST_ROLLED_BACK;
          why = tr( "the connection to the database was lost before the"
                    " removal was committed, so the server rolled the removal"
-                   " back (%1)." ).arg( terr );
+                   " back." );
       }
 
       else if ( lost )

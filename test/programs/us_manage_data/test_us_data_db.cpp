@@ -4032,6 +4032,7 @@ TEST_F( TestUSDataDb, AConnectionLostBeforeTheCommitRemovesNothing )
       << error.toStdString();
    EXPECT_TRUE( error.contains( "Nothing was removed" ) ) << error.toStdString();
    EXPECT_TRUE( error.contains( "close it and open it again" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "None of the selected records" ) ) << error.toStdString();
    EXPECT_FALSE( error.contains( "is not known" ) ) << error.toStdString();
    EXPECT_FALSE( error.contains( "could not be rolled back" ) ) << error.toStdString();
 
