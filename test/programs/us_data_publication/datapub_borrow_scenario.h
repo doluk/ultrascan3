@@ -227,4 +227,79 @@ class DataPubDeadEndScenario : public DataPubBorrowScenario
       }
 };
 
+/* A disk store whose file numbers do not follow its time stamps, as
+   US_Model::get_filename() and US_Noise::write() leave one: a new file
+   fills the first gap a removal left.  Dated ten seconds apart:
+
+     a   the fixture's model (M0000001), with its ti noise n1 (N0000001)
+     b   a model with the ri noise r                  (M0000011, N0000011)
+     d   a model with the ti noise n2                 (M0000012, N0000012)
+     c   a model with no noise, in a gap: borrows n2 and r      (M0000005)
+     f   a model with the ti noise n3, its noise in a gap
+                                                      (M0000013, N0000003)
+     e   a model with no noise, in a gap: borrows n3 and r      (M0000002)
+
+   The import used to chain every model by its file number, which put c
+   before d and so before the n2 it borrows: it took that for a
+   contradiction and dropped all the borrowing of the edit.
+*/
+class DataPubGapScenario : public DataPubBorrowScenario
+{
+   public:
+      QString a, f;                // model GUIDs (b, c, d, e inherited)
+      QString n3;                  // noise GUIDs (n1, r, n2 inherited)
+
+      void write( const QString& models, const QString& noises,
+                  const QString& runID, const QString& editGUID,
+                  const QString& n1A )
+      {
+         n1 = n1A;
+         b  = US_Util::new_guid();
+         c  = US_Util::new_guid();
+         d  = US_Util::new_guid();
+         e  = US_Util::new_guid();
+         f  = US_Util::new_guid();
+         r  = US_Util::new_guid();
+         n2 = US_Util::new_guid();
+         n3 = US_Util::new_guid();
+
+         QDateTime t0 = QDateTime::currentDateTimeUtc().addSecs( -3600 );
+
+         stamp( models + "/M0000001.xml", t0 );
+         stamp( noises + "/N0000001.xml", t0 );
+         model( models + "/M0000011.xml", b, editGUID,
+                runID + ".1A280.e1_b_2DSA_local_ri.model", t0.addSecs( 10 ) );
+         noise( noises + "/N0000011.xml", r, b, US_Noise::RI,
+                runID + ".1A280.e1_b_2DSA_local_ri.ri_noise", t0.addSecs( 10 ) );
+         model( models + "/M0000012.xml", d, editGUID,
+                runID + ".1A280.e1_d_2DSA_local_ti.model", t0.addSecs( 20 ) );
+         noise( noises + "/N0000012.xml", n2, d, US_Noise::TI,
+                runID + ".1A280.e1_d_2DSA_local_ti.ti_noise", t0.addSecs( 20 ) );
+         model( models + "/M0000005.xml", c, editGUID,
+                runID + ".1A280.e1_c_GA_local.model", t0.addSecs( 30 ) );
+         model( models + "/M0000013.xml", f, editGUID,
+                runID + ".1A280.e1_f_2DSA_local_ti.model", t0.addSecs( 40 ) );
+         noise( noises + "/N0000003.xml", n3, f, US_Noise::TI,
+                runID + ".1A280.e1_f_2DSA_local_ti.ti_noise", t0.addSecs( 40 ) );
+         model( models + "/M0000002.xml", e, editGUID,
+                runID + ".1A280.e1_e_GA_local.model", t0.addSecs( 50 ) );
+      }
+
+      //! The last file of a model with noise: f
+      QString latest( void ) const { return f; }
+
+      QMap< QString, QString > expected( void ) const
+      {
+         QStringList both = QStringList() << c << e;
+         std::sort( both.begin(), both.end() );
+
+         QMap< QString, QString > map;
+         map.insert( n1, QString() );
+         map.insert( r,  both.join( " " ) );
+         map.insert( n2, c );
+         map.insert( n3, e );
+         return map;
+      }
+};
+
 #endif

@@ -826,3 +826,30 @@ changed in the target.
   server whose time zone has daylight saving time, such as a private MariaDB
   started with `TZ=Europe/Berlin` (no time zone tables needed: the server's
   `SYSTEM` zone is then Central European).
+
+## Data import cases added in fix round 9 (borrowers placed by their edges, held records)
+
+- `DataPubDbImport.TheLatestModelWithNoiseSurvivesADatabaseRoundTrip` is now
+  `DataPubDbRoundTrip.TheLatestModelWithNoiseSurvivesADatabaseRoundTrip`; the
+  same round trip runs for two more sources:
+  `DataPubDbRoundTrip.AStoreWithFilledGapsSurvivesADatabaseRoundTrip` (a disk
+  store whose model and noise file numbers have gaps filled after removals)
+  and `DataPubDbRoundTrip.AModelUpdatedLaterKeepsItsBorrowing`, which, after
+  the first import, moves a model's `lastUpdated` in `US3_TEST_DB_IMPORT_NAME`
+  past every noise record (`UPDATE model`, so the user needs `UPDATE` on that
+  database) and then expects the borrowing the database's catalog reports.
+- `DataPubDbImport.RecordsTheDatabaseHoldsOfAnEditAreSaid` imports part of a
+  bundle, then the whole, into `US3_TEST_DB_IMPORT_NAME`, and expects the
+  warning that the target already holds records of the edit (dry run and
+  import).
+- `DataPubWriteOrder.ABorrowerIsPlacedByWhatItBorrowsAlone` holds
+  `writeOrder()` to the review's crafted history (two edits, ti and ri noise,
+  a Monte Carlo request, ties to the second; also with a model updated
+  later) and to a gap-filled disk history, through the catalog's rule
+  (`noiseBefore()`) and `count_noise()`'s; no database.
+- The fake database (`datapub_fake_db.h`) now gives `FROM_UNIXTIME()` in the
+  session's zone (`systemZone` for `SYSTEM`), can hide the zone
+  (`zoneUnreadable`), lose the connection (`loseConnectionOn`), lack one
+  version-2 procedure (`missingRoutines`), answer `timestamp2UTC( NOW() )`
+  with a clock that falls back (`catalogClock`), and lists a noise record's
+  model in `get_noise_desc`.

@@ -409,26 +409,33 @@ class US_DataPubImporter : public QObject
           -- with the target's clock moved on where two records have to be
           dated apart -- a target keeps both.
 
-          - The models of an edit keep the source's order among themselves,
-            and so do its noise records: the source's ID or file number
-            (sourceIndex; else the manifest's modelID/noiseID of a database
-            export or the number of a disk export's file name), else the
-            manifest's order -- which a database export lists newest first.
-          - A noise record comes after the model it was fitted to; a model
-            that borrows (borrowedByModelGUIDs, or an older bundle's
-            borrowedByModelGUID) comes after the record it borrows of each
-            type and before the next record of that type, and one no record
-            names comes before every noise record of its edit.
-          - Within that, the source's time stamps (sourceLastUpdated) decide,
-            a noise record going first on a tie; a bundle without them puts
-            each noise record as early as it can.
+          - The models of an edit that have noise keep the source's order
+            among themselves -- the source's ID or file number
+            (sourceIndex; else the manifest's modelID of a database export
+            or the number of a disk export's file name), else the
+            manifest's order, which a database export lists newest first.
+            That order is all count_noise() reads.
+          - The noise records of each type keep the source's time order
+            (sourceLastUpdated; a tie to the second goes to the higher
+            database ID, on disk to the higher GUID, as noiseBefore()
+            breaks it), else the source's order like the models.
+          - A noise record comes after the model it was fitted to.
+          - A model without noise of its own is in no chain: it comes after
+            the record it borrows of each type (borrowedByModelGUIDs, or an
+            older bundle's borrowedByModelGUID) and before the next record
+            of that type -- before the first, for a type it borrows none
+            of.
+          - Within that, the source's time stamps decide, a noise record
+            going first on a tie; a bundle without them puts each noise
+            record as early as it can.
 
           \param manifest The manifest of the bundle
           \param problems Filled in with what the bundle's borrowing cannot
                           keep: a borrower named in another edit, a model
-                          named for two records of a type, or borrowing
-                          that contradicts the source's order (then left
-                          out of the order of that edit)
+                          named for two records of a type, or a model
+                          whose borrowing contradicts the source's order
+                          and the rest of the borrowing (only that model's
+                          borrowing is then left out of the order)
           \returns The steps of each edit, in the order of the edits'
                    first appearance in the bundle
       */
@@ -547,6 +554,10 @@ class US_DataPubImporter : public QObject
             QSet< QString >          ids;        //!< Their record IDs
             QSet< QString >          guids;      //!< Their GUIDs, lower case
             QHash< QString, QString > edits;     //!< A model's edit ID
+            //! A model's edit GUID, lower case (both GUIDs)
+            QHash< QString, QString > editGuids;
+            //! A noise record's model GUID, lower case (both GUIDs)
+            QHash< QString, QString > models;
       };
 
       //! The investigator's records, per type, once listed
@@ -670,6 +681,19 @@ class US_DataPubImporter : public QObject
       //!        write for a database; -1 when nothing was written
       qint64  writtenSecond( const OrderStep& step );
 
+      /*! \brief Say which edits of the bundle the target already holds
+                 models or noise records of, where the import writes
+                 others: they are dated and numbered before the import's,
+                 so count_noise()'s choice and the borrowing of the edit
+                 can differ from the source's (the import cannot place its
+                 records among them)
+          \param order  writeOrder()'s order
+          \param error  Filled in when the target's records cannot be read
+          \returns False when they cannot
+      */
+      bool    heldRecordsWarning( const QList< QList< OrderStep > >& order,
+                                  QString& error );
+
       //! \brief Write the models and noise records of the bundle in
       //!        writeOrder()'s order, the edits taken in turn
       bool    writeModelsAndNoise( const QList< QList< OrderStep > >& order,
@@ -680,13 +704,26 @@ class US_DataPubImporter : public QObject
       //! The server did not tell its time: the local clock stands in
       bool                       clock_local;
 
+      //! The server's clock is also read as its catalog reads time stamps
+      //! (timestamp2UTC()); false once it could not be
+      bool                       catalog_clock;
+
+      //! That reading, in seconds, at the last targetSecond() of a
+      //! database; -1 where there is none
+      qint64                     catalog_second;
+
       //! \brief The target's us3_catalog_version(), asked once: 0 for a
       //!        server without it
       int     catalogVersion( void );
 
-      //! \brief Note something of the source a target whose procedures
-      //!        are older than version 2 cannot keep
-      void    cannotKeep( const QString& what );
+      //! \brief Whether the target has a procedure of version 2
+      //!        (clear_experiment_fields, set_rotor_calibration_date): its
+      //!        marker says version 2 or more, and the procedure is there
+      bool    catalogHas( const QString& procedure );
+
+      //! \brief Note something of the source a target without the version
+      //!        2 \a procedure cannot keep
+      void    cannotKeep( const QString& procedure, const QString& what );
 
       //! \brief One warning naming everything cannotKeep() was told of
       void    unkeptWarning( void );
@@ -721,16 +758,17 @@ class US_DataPubImporter : public QObject
       bool    storeCalibrationDate( int calID, qint64 seconds,
                                     QString& error );
 
-      //! What a target older than version 2 cannot keep, for unkeptWarning()
-      QStringList                unkept;
+      //! What a target without a version 2 procedure cannot keep, for
+      //! unkeptWarning(): the procedure, then what
+      QList< QPair< QString, QString > > unkept;
 
       //! The target's us3_catalog_version(): 0 for a server without it,
       //! -1 before it was asked
       int                        catalog_version;
 
-      //! What the marker answers and lacks, when catalogVersion() took a
-      //! version 2 marker without its procedures as version 1
-      QString                    catalog_stale;
+      //! The procedures of version 2 the target lacks although its marker
+      //! answers 2 or more (seen in information_schema.ROUTINES)
+      QStringList                catalog_missing;
 
       /*! \brief The value of a manifest field every raw data record of a run
                  carries, the same in all of them
