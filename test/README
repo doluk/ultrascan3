@@ -688,3 +688,27 @@ default character set is utf8mb4 rather than latin1.
   whose outcome is not known, is covered by the fake server of
   `test_us_data_db.cpp`, whose commit and rollback now answer with US_DB2's
   own texts and whose `serverVersion()` names MySQL 8 or MariaDB.
+
+## us_manage_data: live cases added in fix round 8
+
+- `TestUSDataDbLive.AModelRemovalHeldUpByALockRemovesNothing` holds a share
+  lock on a model row from the test's own second connection (the
+  administrator's) while the investigator removes the model, with
+  `innodb_lock_wait_timeout` at 2 s for the investigator's session.
+  `delete_model` removes the noise and the `modelPerson` row first and waits
+  only at the model; the test checks that the window's transaction gives them
+  back (the model keeps its owner and its noise), then removes the model once
+  the lock is gone.
+- `AConnectionLostAfterAProcedureCommittedIsNotNothingRemoved` commits the
+  transaction right after `delete_editedData` (standing in for a procedure
+  that commits inside it) and kills the test's own connection just before the
+  COMMIT, with `US3_TEST_DB_KILL` when set.  The window's savepoint check
+  must find the transaction ended, so the outcome is reported as not known.
+- `ModelAndNoiseRemovalsAreCommitted` checks the savepoint check on the server
+  itself: released inside a transaction, and refused with 1305 outside one.
+- `AGmpCheckThatCannotBeAnsweredRemovesNothing` kills the test's own
+  connection before a model removal: the GMP check cannot be answered, so
+  nothing is removed.
+
+Run them against a copy with the unpatched and with the patched procedures, on
+both servers.
