@@ -210,6 +210,7 @@ namespace
          // check of the transaction fails), and the server rolls back
          int    commitLoss = 0;
          QString lostCommitText;    // what the commit said, lost during it
+         bool    endedEarly = false; // the transaction had ended when the connection was lost
          bool    deadlocked = false; // the server ended the transaction
                                      // after a deadlock
 
@@ -317,6 +318,7 @@ namespace
                   if ( clientTx )  { error = "a transaction is open";  return false; }
                   clientTx = serverTx = true;
                   deadlocked = false;
+                  endedEarly = false;
                   lostCommitText.clear();
                   saved    = data();
                   return true;
@@ -335,9 +337,10 @@ namespace
                   }
                   if ( ! clientTx )  { error = "no transaction";  return false; }
                   if ( commitLoss == 3 )
-                  {  // US_DB2's check before the COMMIT finds it lost -- and
-                     // says the server rolled back, also when a procedure
-                     // had committed the transaction before
+                  {  // US_DB2's check before the COMMIT finds it lost: the server
+                     // rolled back, unless a procedure had ended the
+                     // transaction before (then rows may have been kept)
+                     endedEarly     = ! serverTx;
                      if ( serverTx )  restore( saved );
                      serverTx       = false;
                      lost           = true;
@@ -355,6 +358,7 @@ namespace
                   if ( commitLoss != 0 )
                   {  // as US_DB2 has it: the client still thinks it open
                      if ( commitLoss == 1 )  restore( saved );
+                     endedEarly     = clientTx  &&  ! serverTx;
                      serverTx       = false;
                      lost           = true;
                      current.status = IUS_DB2::DBERROR;
@@ -402,13 +406,16 @@ namespace
          // here, where US_DB2 would say that no connection is open.
          QString endedText() const
          {
-            if ( lost )
-               return lostCommitText.isEmpty()
-                      ? QObject::tr( US_DB2::connectionLostRollbackMessage )
-                      : lostCommitText;
-
-            return QObject::tr( deadlocked ? US_DB2::serverRollbackMessage
-                                           : US_DB2::transactionEndedMessage );
+            // US_DB2's order: a lost COMMIT, then a deadlock's rollback,
+            // then a transaction that had ended before the loss; only a
+            // loss of a transaction still open means nothing was kept
+            if ( lost  &&  ! lostCommitText.isEmpty() )
+               return lostCommitText;
+            if ( deadlocked )
+               return QObject::tr( US_DB2::serverRollbackMessage );
+            if ( lost  &&  ! endedEarly )
+               return QObject::tr( US_DB2::connectionLostRollbackMessage );
+            return QObject::tr( US_DB2::transactionEndedMessage );
          }
 
          static constexpr const char* goneText = "MySQL server has gone away";
@@ -453,6 +460,7 @@ namespace
             {  // the server rolls back what the connection left open
                if ( clientTx  &&  serverTx )
                   restore( saved );
+               endedEarly     = clientTx  &&  ! serverTx;
                serverTx       = false;
                lost           = true;
                current.status = IUS_DB2::DBERROR;
@@ -517,6 +525,7 @@ namespace
             {  // the server rolls back what the connection left open
                if ( clientTx  &&  serverTx )
                   restore( saved );
+               endedEarly     = clientTx  &&  ! serverTx;
                serverTx       = false;
                lost           = true;
                current.status = IUS_DB2::DBERROR;
