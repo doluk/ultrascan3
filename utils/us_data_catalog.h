@@ -749,7 +749,11 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
           A run directory is named after its run, and its files are found
           by suffix.  Where the file system does not tell "RunA" from
           "runA" -- Windows, and macOS as installed -- neither does the
-          catalog; elsewhere names must match exactly.  The platform
+          catalog; elsewhere names must match exactly.  The rule covers
+          every comparison of run IDs on disk: the run a directory and its
+          files belong to, a copy of a run, files of more than one run in
+          one directory, and the run a model's or noise record's
+          description names for the listing's counts.  The platform
           decides by default; this is for a store on a file system that is
           not like the platform's, and for tests.
           \param sensitivity Qt::CaseInsensitive to compare without case

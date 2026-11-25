@@ -1247,6 +1247,104 @@ TEST_F( TestUSDataCatalog, ACopyInAnotherCaseIsACopyWhereCaseIsNotTold )
    EXPECT_EQ( catalog.indexOfRun( "fold_run" ), realIx );
 }
 
+// Where file names compare without case, files of "Spell_run" and of
+// "SPELL_RUN" in one directory are one run, not two; where they do not,
+// the directory holds two runs
+TEST_F( TestUSDataCatalog, FilesOfOneRunInTwoSpellingsAreOneRunWhereCaseIsNotTold )
+{
+   const QString runID = "Spell_run";
+   const QString dir   = runDir( runID );
+   writeAuc( dir + "/" + runID + ".RA.1.A.280.auc", US_Util::new_guid(), "own spelling" );
+   writeAuc( dir + "/SPELL_RUN.RA.1.A.281.auc", US_Util::new_guid(), "other spelling" );
+   writeExperimentXml( dir + "/" + runID + ".RA.xml", runID, US_Util::new_guid() );
+
+   for ( Qt::CaseSensitivity cs : { Qt::CaseInsensitive, Qt::CaseSensitive } )
+   {
+      SCOPED_TRACE( cs == Qt::CaseInsensitive ? "insensitive" : "sensitive" );
+
+      US_DataCatalog catalog;
+      QString        error;
+      catalog.setFileNameCase( cs );
+      ASSERT_TRUE( catalog.open( US_DataCatalog::Disk, QString(), error ) );
+      ASSERT_TRUE( catalog.loadRuns( error ) ) << error.toStdString();
+
+      const int index = catalog.indexOfRun( runID );
+      ASSERT_GE( index, 0 );
+      const US_DataCatalog::Run& run = catalog.run( index );
+      EXPECT_EQ( run.rawCount, 2 );
+
+      if ( cs == Qt::CaseInsensitive )
+      {
+         EXPECT_TRUE ( run.usable ) << run.problem.toStdString();
+         EXPECT_FALSE( run.problem.contains( "more than one run" ) ) << run.problem.toStdString();
+      }
+      else
+      {
+         EXPECT_FALSE( run.usable );
+         EXPECT_TRUE ( run.problem.contains( "more than one run" ) ) << run.problem.toStdString();
+      }
+   }
+}
+
+// The listing's model and noise counts compare run IDs as the directories
+// do: where case is not told, a record whose description spells the run
+// in another case is the run's, and a copy in another case does not split
+// the count
+TEST_F( TestUSDataCatalog, ModelAndNoiseCountsCompareRunIdsAsTheFileSystemDoes )
+{
+   const QString runID = "Tally_run";
+   writeAuc( runDir( runID ) + "/" + runID + ".RA.1.A.280.auc", US_Util::new_guid(), "the run" );
+   writeAuc( runDir( "Copy_tally" ) + "/TALLY_RUN.RA.1.A.280.auc", US_Util::new_guid(), "the copy" );
+
+   int file = 10;
+   for ( const QString& spelling : { runID, QString( "TALLY_RUN" ), QString( "tally_run" ) } )
+   {
+      US_Model model;
+      model.modelGUID   = US_Util::new_guid();
+      model.editGUID    = US_Util::new_guid();
+      model.description = spelling + ".1A280.e1_a1_2DSA_i01.model";
+      model.write( US_Settings::dataDir() + QString( "/models/M%1.xml" ).arg( file, 7, 10, QChar( '0' ) ) );
+
+      US_Noise noise;
+      noise.noiseGUID   = US_Util::new_guid();
+      noise.modelGUID   = model.modelGUID;
+      noise.description = spelling + ".1A280.2dsa.ti_noise";
+      noise.type        = US_Noise::TI;
+      noise.values << 0.001 << 0.002;
+      noise.count  = 2;
+      noise.write( US_Settings::dataDir() + QString( "/noises/N%1.xml" ).arg( file, 7, 10, QChar( '0' ) ) );
+      ++file;
+   }
+
+   for ( Qt::CaseSensitivity cs : { Qt::CaseInsensitive, Qt::CaseSensitive } )
+   {
+      SCOPED_TRACE( cs == Qt::CaseInsensitive ? "insensitive" : "sensitive" );
+
+      US_DataCatalog catalog;
+      QString        error;
+      catalog.setFileNameCase( cs );
+      ASSERT_TRUE( catalog.open( US_DataCatalog::Disk, QString(), error ) );
+      ASSERT_TRUE( catalog.loadRuns( error ) ) << error.toStdString();
+
+      int realIx = -1;
+      int copyIx = -1;
+      for ( int ii = 0; ii < catalog.runCount(); ii++ )
+      {
+         if ( catalog.run( ii ).dirPath == runDir( runID ) )        realIx = ii;
+         if ( catalog.run( ii ).dirPath == runDir( "Copy_tally" ) ) copyIx = ii;
+      }
+      ASSERT_GE( realIx, 0 );
+      ASSERT_GE( copyIx, 0 );
+
+      // All three spellings, or only the exact one each
+      const int expected = cs == Qt::CaseInsensitive ? 3 : 1;
+      EXPECT_EQ( catalog.run( realIx ).modelCount, expected );
+      EXPECT_EQ( catalog.run( realIx ).noiseCount, expected );
+      EXPECT_EQ( catalog.run( copyIx ).modelCount, expected );
+      EXPECT_EQ( catalog.run( copyIx ).noiseCount, expected );
+   }
+}
+
 // A stray file of another run that sorts first does not make a run's own
 // directory a copy of that other run: the directory is still its run, not
 // usable for holding two runs, and nothing is called a copy

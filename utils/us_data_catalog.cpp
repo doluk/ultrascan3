@@ -1557,8 +1557,11 @@ void US_DataCatalog::buildDiskIndex( void )
 
          if ( rf.runID.isEmpty() )  rf.runID = rf.dirName;
 
+         // As the file system compares names: where "MyRun" and "myrun"
+         // are one run, so are their files
          for ( int jj = 0; jj < rf.aucFiles.size(); jj++ )
-            if ( runIdOfFile( rf.aucFiles[ jj ], false ) != rf.runID )
+            if ( runIdOfFile( rf.aucFiles[ jj ], false )
+                    .compare( rf.runID, file_case ) != 0 )
                rf.mixedRuns = true;
       }
 
@@ -1661,19 +1664,28 @@ void US_DataCatalog::buildDiskIndex( void )
 
 namespace
 {
-   // The run a model or noise description names, by the longest dotted
-   // prefix of it that is a run: "A.b.1A280.2dsa.model" belongs to run
-   // "A.b" when there is one, and not also to run "A".
+   // One run ID as the file system compares names: where it does not tell
+   // "RunA" from "runA", both give the same key
+   QString run_key( const QString& runID, Qt::CaseSensitivity cs )
+   {
+      return cs == Qt::CaseInsensitive ? runID.toCaseFolded() : runID;
+   }
+
+   // The key of the run a model or noise description names, by the longest
+   // dotted prefix of it that is a run: "A.b.1A280.2dsa.model" belongs to
+   // run "A.b" when there is one, and not also to run "A".  The prefix is
+   // compared as run_key() compares run IDs.
    QString run_of_description( const QString& description,
-                               const QSet< QString >& runIDs )
+                               const QSet< QString >& runKeys,
+                               Qt::CaseSensitivity cs )
    {
       QStringList parts = description.split( "." );
 
       for ( int kk = parts.size() - 1; kk > 0; kk-- )
       {
-         QString prefix = QStringList( parts.mid( 0, kk ) ).join( "." );
+         QString key = run_key( QStringList( parts.mid( 0, kk ) ).join( "." ), cs );
 
-         if ( runIDs.contains( prefix ) )  return prefix;
+         if ( runKeys.contains( key ) )  return key;
       }
 
       return QString();
@@ -1704,10 +1716,10 @@ bool US_DataCatalog::loadRunsDisk( QList< Run >& runs, QString& error )
    // them are the run and its copies.
    const auto runKey = [ this ]( const QString& runID )
    {
-      return file_case == Qt::CaseInsensitive ? runID.toCaseFolded() : runID;
+      return run_key( runID, file_case );
    };
 
-   QSet< QString >                runIDs;
+   QSet< QString >                runKeys;
    QMultiHash< QString, QString > dirsOfRun;   // run key -> directory names
    QHash< QString, QString >      runDirOf;    // run key -> its own dirPath
 
@@ -1717,7 +1729,7 @@ bool US_DataCatalog::loadRunsDisk( QList< Run >& runs, QString& error )
 
       const QString key = runKey( rf.runID );
 
-      runIDs   .insert( rf.runID );
+      runKeys  .insert( key );
       dirsOfRun.insert( key, rf.dirName );
 
       if ( rf.runID.compare( rf.dirName, file_case ) == 0  &&
@@ -1727,20 +1739,22 @@ bool US_DataCatalog::loadRunsDisk( QList< Run >& runs, QString& error )
 
    // Which models and noise records belong to a run can only be said for
    // certain once the edits are read, but their descriptions start with the
-   // run identifier, which is enough for a count at this layer
-   QHash< QString, int > modelKnt;
+   // run identifier, which is enough for a count at this layer.  Counted
+   // by run key, like the directories: where "MyRun" and "myrun" are one
+   // run, their records are too.
+   QHash< QString, int > modelKnt;   // run key -> count
    QHash< QString, int > noiseKnt;
 
    for ( const DiskIndex::ModelFile& mf : disk_index->models )
    {
-      QString runID = run_of_description( mf.description, runIDs );
-      if ( ! runID.isEmpty() )  modelKnt[ runID ]++;
+      QString key = run_of_description( mf.description, runKeys, file_case );
+      if ( ! key.isEmpty() )  modelKnt[ key ]++;
    }
 
    for ( const DiskIndex::NoiseFile& nf : disk_index->noises )
    {
-      QString runID = run_of_description( nf.description, runIDs );
-      if ( ! runID.isEmpty() )  noiseKnt[ runID ]++;
+      QString key = run_of_description( nf.description, runKeys, file_case );
+      if ( ! key.isEmpty() )  noiseKnt[ key ]++;
    }
 
    for ( const DiskIndex::RunFiles& rf : disk_index->runs )
@@ -1777,8 +1791,8 @@ bool US_DataCatalog::loadRunsDisk( QList< Run >& runs, QString& error )
       if ( ! proj_guid.isEmpty()  &&  run.projectGUID != proj_guid )  continue;
 
       run.date       = utc_of_file( rf.dirPath + "/" + rf.aucFiles.first() );
-      run.modelCount = modelKnt.value( rf.runID );
-      run.noiseCount = noiseKnt.value( rf.runID );
+      run.modelCount = modelKnt.value( runKey( rf.runID ) );
+      run.noiseCount = noiseKnt.value( runKey( rf.runID ) );
 
       // What would trip up a program that acts on this run
       QStringList problems;
