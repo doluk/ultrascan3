@@ -1048,3 +1048,127 @@ TEST_F( DataPubDbExport, ARunIdIsTakenFromTheProjectAskedFor )
    EXPECT_TRUE( error.contains( QString( "%1, %2" ).arg( idA ).arg( idB ) ) )
       << error.toStdString();
 }
+
+/* A model picked by GUID that the chain of the runs read does not list --
+   its row names an edit of an experiment the investigator does not see --
+   still borrows the noise of its edit, which travels with the model it
+   was fitted to; it says where it stands in the source.  Through the
+   command line, which looks the model up by itself (completeModel()).  The
+   noise used to be left behind: the model had no edit ID to look it up by.
+*/
+TEST_F( DataPubDbExport, AModelTheChainDoesNotListBorrowsTheNoiseOfItsEdit )
+{
+   QString  laterGUID = US_Util::new_guid();
+   US_Model later;
+   later.modelGUID   = laterGUID;
+   later.editGUID    = editGUID;
+   later.description = "demo_run.1A280.2dsa-mc.model";
+   ASSERT_EQ( later.write( US_Settings::dataDir() + "/models/M0000002.xml" ),
+              IUS_DB2::OK );
+
+   QString dbRunID;
+   QString error;
+   ASSERT_TRUE( storeInDatabase( dbRunID, error ) ) << error.toStdString();
+
+   db->rawQuery( QString( "UPDATE noise SET timeEntered = '2020-01-01 00:00:00'"
+                          " WHERE noiseGUID = '%1'" ).arg( noiseGUID ) );
+   ASSERT_EQ( db->lastErrno(), IUS_DB2::OK ) << db->lastError().toStdString();
+   db->rawQuery( QString( "UPDATE model SET lastUpdated = NOW()"
+                          " WHERE modelGUID = '%1'" ).arg( laterGUID ) );
+   ASSERT_EQ( db->lastErrno(), IUS_DB2::OK ) << db->lastError().toStdString();
+
+   // The model's row names a copy of its edit, under a copy of the raw
+   // data of a copy of the experiment that nobody is listed for
+   db->rawQuery( QString( "SELECT m.modelID, m.editedDataID, e.rawDataID,"
+                          " r.experimentID FROM model m"
+                          " JOIN editedData e ON e.editedDataID = m.editedDataID"
+                          " JOIN rawData r ON r.rawDataID = e.rawDataID"
+                          " WHERE m.modelGUID = '%1'" ).arg( laterGUID ) );
+   ASSERT_TRUE( db->next() ) << db->lastError().toStdString();
+   int modelID = db->value( 0 ).toInt();
+   int editID  = db->value( 1 ).toInt();
+   int rawID   = db->value( 2 ).toInt();
+   int expID   = db->value( 3 ).toInt();
+
+   int hiddenExp  = copyRow( "experiment", "experimentID", "experimentGUID",
+                             expID, "runID = CONCAT( 'hidden_', "
+                             + QString::number( expID ) + " )" );
+   ASSERT_GT( hiddenExp, 0 ) << db->lastError().toStdString();
+   int hiddenRaw  = copyRow( "rawData", "rawDataID", "rawDataGUID", rawID,
+                             "experimentID = " + QString::number( hiddenExp ) );
+   ASSERT_GT( hiddenRaw, 0 ) << db->lastError().toStdString();
+   int hiddenEdit = copyRow( "editedData", "editedDataID", "editGUID", editID,
+                             "rawDataID = " + QString::number( hiddenRaw ) );
+   ASSERT_GT( hiddenEdit, 0 ) << db->lastError().toStdString();
+
+   struct PutBack
+   {
+      std::function< void() > undo;
+      ~PutBack() { undo(); }
+   } putBack { [ & ]()
+   {
+      db->rawQuery( "UPDATE model SET editedDataID = "
+                    + QString::number( editID ) + " WHERE modelID = "
+                    + QString::number( modelID ) );
+      db->rawQuery( "DELETE FROM editedData WHERE editedDataID = "
+                    + QString::number( hiddenEdit ) );
+      db->rawQuery( "DELETE FROM rawData WHERE rawDataID = "
+                    + QString::number( hiddenRaw ) );
+      db->rawQuery( "DELETE FROM experiment WHERE experimentID = "
+                    + QString::number( hiddenExp ) );
+   } };
+
+   db->rawQuery( "UPDATE model SET editedDataID = "
+                 + QString::number( hiddenEdit ) + " WHERE modelID = "
+                 + QString::number( modelID ) );
+   ASSERT_EQ( db->lastErrno(), IUS_DB2::OK ) << db->lastError().toStdString();
+
+   // Not listed by the chain of the run
+   {
+      US_DataPubCatalog      catalog;
+      US_DataPubCatalog::Run run;
+      ASSERT_TRUE( catalog.open( true, master, error ) ) << error.toStdString();
+      ASSERT_TRUE( catalog.runByID( dbRunID, run, error ) )
+         << error.toStdString();
+      ASSERT_TRUE( catalog.loadRunDetails( run, error ) )
+         << error.toStdString();
+      QList< US_DataPubCatalog::Model > listed =
+         catalog.models( QList< US_DataPubCatalog::Run >() << run, error );
+
+      for ( const US_DataPubCatalog::Model& model : listed )
+         ASSERT_NE( model.guid, laterGUID );
+   }
+
+   QString    bundle = root + "/picked.tar.gz";
+   QByteArray saved  = qgetenv( "US3_DB_PASSWORD" );
+   qputenv( "US3_DB_PASSWORD", master.toUtf8() );
+   int code;
+   {
+      US_DataPubCLI cli;
+      code = cli.run( QStringList() << "us_data_publication" << "--mode"
+                      << "export" << "--source" << "db" << "--experiment-id"
+                      << dbRunID << "--model-guid" << laterGUID
+                      << "--non-interactive" << "--bundle" << bundle );
+   }
+   if ( saved.isEmpty() )  qunsetenv( "US3_DB_PASSWORD" );
+   else                    qputenv( "US3_DB_PASSWORD", saved );
+   ASSERT_EQ( code, 0 );
+
+   US_DataPubBundle   unpacked;
+   US_DataPubManifest mani;
+   ASSERT_TRUE( unpacked.unpack( bundle, error ) ) << error.toStdString();
+   ASSERT_TRUE( mani.read( unpacked.rootPath() + "/"
+                           + US_DataPubBundle::manifestName(), error ) )
+      << error.toStdString();
+
+   US_DataPubEntity model;
+   ASSERT_TRUE( mani.entity( US_DataPub::Model, laterGUID, model ) );
+   EXPECT_EQ( model.attrs.value( "sourceIndex" ), QString::number( modelID ) );
+   EXPECT_TRUE( model.attrs.value( "sourceLastUpdated" ).endsWith( "Z" ) )
+      << model.attrs.value( "sourceLastUpdated" ).toStdString();
+
+   US_DataPubEntity noise;
+   ASSERT_TRUE( mani.entity( US_DataPub::Noise, noiseGUID, noise ) );
+   EXPECT_EQ( noise.attrs.value( "borrowedByModelGUIDs" ), laterGUID );
+   EXPECT_TRUE( mani.contains( US_DataPub::Model, modelGUID ) );
+}

@@ -285,13 +285,21 @@ class US_DataPubCatalog
           not.  This looks them up from \a model.guid: in the database its
           modelID and lastUpdated (get_modelID, get_model_info), on disk
           its M*.xml file (filename, path) and that file's time, as the
-          chain gives them.  Nothing is changed when the source has no
-          such model.
+          chain gives them.  From a database it also fills in the ID of
+          the model's edit (get_editID of \a model.editGUID, when the
+          editID is not set), which noises() looks the noise a model
+          without its own borrows up by.  Nothing is changed when the
+          source has no such model.
           \param model The model, its GUID set
           \param error Filled in when the database cannot be asked
           \returns False only when the database cannot be asked
       */
       bool completeModel( Model& model, QString& error );
+
+      //! \brief How often completeModel() has read the model files of a
+      //!        local store: once per catalog opened, however many models
+      //!        it looks up
+      int modelFileScans( void ) const;
 
       //! \brief All models that belong to the edits of the given runs
       //! \param runs  The runs whose models are wanted

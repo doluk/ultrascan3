@@ -4800,3 +4800,83 @@ TEST_F( DataPubExport, ACaseVariantCopyOfTheRunIsReported )
               QDir::toNativeSeparators( runDir() ) );
    EXPECT_EQ( copies, QStringList( QDir::toNativeSeparators( copy ) ) );
 }
+
+/* A model picked by GUID out of a database is given the ID of its edit, so
+   that the noise of that edit is looked up for it when it has none of its
+   own: the noise it borrows.  Without the ID the lookup was not made.
+*/
+TEST_F( DataPubExportSteps, AModelPickedByGuidHasTheIdOfItsEdit )
+{
+   QString guid = "aaaaaaaa-0000-4000-8000-000000000044";
+   sdb.rows.insert( "get_modelID", QList< QVariantList >()
+                    << ( QVariantList() << 44 ) );
+   sdb.rows.insert( "get_model_info", QList< QVariantList >()
+                    << ( QVariantList() << guid << "a model" << "<xml/>"
+                         << 0.0 << 6.1 << 2 << "2024-03-31 01:30:00" ) );
+   sdb.rows.insert( "get_editID", QList< QVariantList >()
+                    << ( QVariantList() << 6 ) );
+
+   US_DataPubCatalog catalog;
+   catalog.attachDb( sdb.db() );
+
+   US_DataPubCatalog::Model model;
+   model.guid     = guid;
+   model.editGUID = editGUID;
+   QString error;
+   ASSERT_TRUE( catalog.completeModel( model, error ) ) << error.toStdString();
+   EXPECT_EQ( model.editID, QString( "6" ) );
+
+   sdb.asked.clear();
+   catalog.noises( QList< US_DataPubCatalog::Model >() << model, error );
+   EXPECT_TRUE( sdb.asked.contains( "get_noise_desc_by_editID" ) )
+      << sdb.asked.join( ", " ).toStdString();
+
+   // An edit the database does not have leaves the ID empty
+   sdb.rows.remove( "get_editID" );
+   US_DataPubCatalog::Model gone;
+   gone.guid     = guid;
+   gone.editGUID = "aaaaaaaa-0000-4000-8000-000000000046";
+   ASSERT_TRUE( catalog.completeModel( gone, error ) ) << error.toStdString();
+   EXPECT_TRUE( gone.editID.isEmpty() );
+
+   // ... and a failed lookup fails
+   sdb.rows.insert( "get_editID", QList< QVariantList >()
+                    << ( QVariantList() << 6 ) );
+   sdb.failing.insert( "get_editID" );
+   US_DataPubCatalog::Model failed;
+   failed.guid     = guid;
+   failed.editGUID = editGUID;
+   EXPECT_FALSE( catalog.completeModel( failed, error ) );
+   EXPECT_FALSE( error.isEmpty() );
+}
+
+/* On disk the model files are read once for every model a catalog looks
+   up by GUID, not once per model. */
+TEST_F( DataPubExport, ModelFilesAreReadOncePerCatalog )
+{
+   US_Model later;
+   later.modelGUID   = US_Util::new_guid();
+   later.editGUID    = editGUID;
+   later.description = "demo_run.1A280.2dsa-mc.model";
+   ASSERT_EQ( later.write( US_Settings::dataDir() + "/models/M0000002.xml" ),
+              IUS_DB2::OK );
+
+   US_DataPubCatalog catalog;
+   QString           error;
+   ASSERT_TRUE( catalog.open( false, QString(), error ) );
+
+   US_DataPubCatalog::Model first;
+   first.guid = modelGUID;
+   US_DataPubCatalog::Model second;
+   second.guid = later.modelGUID;
+   US_DataPubCatalog::Model none;
+   none.guid = US_Util::new_guid();
+
+   ASSERT_TRUE( catalog.completeModel( first,  error ) );
+   ASSERT_TRUE( catalog.completeModel( second, error ) );
+   ASSERT_TRUE( catalog.completeModel( none,   error ) );
+   EXPECT_EQ( first .filename, QString( "M0000001.xml" ) );
+   EXPECT_EQ( second.filename, QString( "M0000002.xml" ) );
+   EXPECT_TRUE( none.filename.isEmpty() );
+   EXPECT_EQ( catalog.modelFileScans(), 1 );
+}

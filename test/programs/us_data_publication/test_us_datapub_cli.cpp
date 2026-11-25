@@ -887,8 +887,11 @@ TEST_F( DataPubCli, ListShowsTheManifestOfARefusedBundle )
 /* A subset picked with --model-guid carries, for each model and noise
    record, where it stands in the source: sourceLastUpdated and
    sourceIndex (the file number on disk), which the import writes the
-   records of an edit by.  It skips in a build whose export writes no
-   source order at all.
+   records of an edit by -- the same as the whole run's bundle says.  A
+   bundle without them fails.  (A model the runs do not list is looked up
+   by itself, completeModel(); a local store lists every model of an edit,
+   so the database case, AModelTheChainDoesNotListBorrowsTheNoiseOfItsEdit,
+   covers that.)
 */
 TEST_F( DataPubCli, ModelsPickedByGuidCarryTheirSourceOrder )
 {
@@ -901,11 +904,17 @@ TEST_F( DataPubCli, ModelsPickedByGuidCarryTheirSourceOrder )
 
    US_DataPubManifest all;
    ASSERT_TRUE( manifestOf( whole, all ) );
-   QList< US_DataPubEntity > listed = all.section( US_DataPub::Model );
-   ASSERT_FALSE( listed.isEmpty() );
+   QList< US_DataPubEntity > listed = all.section( US_DataPub::Model )
+                                      + all.section( US_DataPub::Noise );
+   ASSERT_EQ( listed.size(), 2 );
 
-   if ( ! listed[ 0 ].attrs.contains( "sourceLastUpdated" ) )
-      GTEST_SKIP() << "this build's export writes no source order";
+   for ( const US_DataPubEntity& record : listed )
+   {
+      EXPECT_TRUE( record.attrs.value( "sourceLastUpdated" ).endsWith( "Z" ) )
+         << record.guid.toStdString();
+      EXPECT_EQ( record.attrs.value( "sourceIndex" ), QString( "1" ) )
+         << record.guid.toStdString();
+   }
 
    ASSERT_EQ( run( QStringList() << "--mode" << "export"
                    << "--experiment-id" << runID << "--model-guid"
@@ -917,14 +926,18 @@ TEST_F( DataPubCli, ModelsPickedByGuidCarryTheirSourceOrder )
 
    QList< US_DataPubEntity > records = mani.section( US_DataPub::Model )
                                        + mani.section( US_DataPub::Noise );
-   ASSERT_FALSE( mani.section( US_DataPub::Model ).isEmpty() );
-   ASSERT_FALSE( mani.section( US_DataPub::Noise ).isEmpty() );
+   ASSERT_EQ( records.size(), 2 );
 
    for ( const US_DataPubEntity& record : records )
    {
-      EXPECT_FALSE( record.attrs.value( "sourceLastUpdated" ).isEmpty() )
+      US_DataPubEntity inWhole;
+      ASSERT_TRUE( all.entity( record.type, record.guid, inWhole ) )
          << record.guid.toStdString();
-      EXPECT_EQ( record.attrs.value( "sourceIndex" ), QString( "1" ) )
+      EXPECT_EQ( record.attrs.value( "sourceLastUpdated" ),
+                 inWhole.attrs.value( "sourceLastUpdated" ) )
+         << record.guid.toStdString();
+      EXPECT_EQ( record.attrs.value( "sourceIndex" ),
+                 inWhole.attrs.value( "sourceIndex" ) )
          << record.guid.toStdString();
    }
 }

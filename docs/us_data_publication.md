@@ -712,7 +712,11 @@ record was fitted to) that the runs read do not list is looked up on its own
 for where it stands in the source — its database ID and last-updated time
 (`get_modelID`, `get_model_info`), or its `M*.xml` file and that file's
 time — just as a model the runs list carries them
-(`US_DataPubCatalog::completeModel()`).
+(`US_DataPubCatalog::completeModel()`). From a database it is also given
+the ID of its edit (`get_editID`), so that a model without noise of its own
+borrows the noise of its edit as one the runs list does. The model files of
+a local store are read once per export for this, however many models are
+looked up.
 
 Runs of several projects can be exported together; each project the runs
 belong to is then in the bundle, and each experiment depends on its own. A run

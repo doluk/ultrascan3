@@ -240,6 +240,7 @@ US_DataPubCatalog::US_DataPubCatalog()
    cat     = new US_DataCatalog();
    listed  = false;
    cancel_flag = nullptr;
+   model_file_scans = 0;
 }
 
 US_DataPubCatalog::~US_DataPubCatalog()
@@ -256,6 +257,7 @@ bool US_DataPubCatalog::open( bool fromDb, const QString& dbPassword,
    from_db = fromDb;
    listed  = false;
    listed_project.clear();
+   model_files_dir.clear();
 
    // A wrong master password would otherwise be reported as the server's
    // refusal of a login without a password
@@ -390,6 +392,11 @@ void US_DataPubCatalog::setMessageHandler(
 IUS_DB2* US_DataPubCatalog::db( void )
 {
    return dbase;
+}
+
+int US_DataPubCatalog::modelFileScans( void ) const
+{
+   return model_file_scans;
 }
 
 int US_DataPubCatalog::investigatorID( void ) const
@@ -863,26 +870,40 @@ bool US_DataPubCatalog::completeModel( Model& model, QString& error )
 
    if ( ! from_db )
    {
-      QString     mdir  = US_Settings::dataDir() + "/models";
-      QStringList files = QDir( mdir ).entryList(
-                          QStringList( "M???????.xml" ), QDir::Files,
-                          QDir::Name );
+      // The model files are read once, for every model looked up after:
+      // GUID -> the first file (by name) that holds it
+      QString mdir = US_Settings::dataDir() + "/models";
 
-      for ( int ii = 0; ii < files.size(); ii++ )
+      if ( model_files_dir != mdir )
       {
-         QString path = mdir + "/" + files[ ii ];
+         QStringList files = QDir( mdir ).entryList(
+                             QStringList( "M???????.xml" ), QDir::Files,
+                             QDir::Name );
 
-         if ( peekAttributes( path, "model" ).value( "modelGUID" )
-              != model.guid )
-            continue;
+         model_files.clear();
+         model_files_dir = mdir;
+         model_file_scans++;
 
-         model.filename    = files[ ii ];
-         model.path        = path;
-         model.lastUpdated = QLocale::c().toString(
-               QFileInfo( path ).lastModified().toUTC(),
-               "yyyy-MM-dd hh:mm:ss" ) + " UTC";
-         break;
+         for ( int ii = 0; ii < files.size(); ii++ )
+         {
+            QString guid = peekAttributes( mdir + "/" + files[ ii ], "model" )
+                           .value( "modelGUID" );
+
+            if ( ! guid.isEmpty()  &&  ! model_files.contains( guid ) )
+               model_files.insert( guid, files[ ii ] );
+         }
       }
+
+      QString file = model_files.value( model.guid );
+
+      if ( file.isEmpty() )  return true;
+
+      QString path      = mdir + "/" + file;
+      model.filename    = file;
+      model.path        = path;
+      model.lastUpdated = QLocale::c().toString(
+            QFileInfo( path ).lastModified().toUTC(),
+            "yyyy-MM-dd hh:mm:ss" ) + " UTC";
 
       return true;
    }
@@ -927,6 +948,22 @@ bool US_DataPubCatalog::completeModel( Model& model, QString& error )
    // personID, lastUpdated (UTC), ...
    if ( dbase->next()  &&  dbase->value( 0 ).toString() == model.guid )
       model.lastUpdated = US_DataCatalog::utcText( dbase->value( 6 ) );
+
+   // The edit it was fitted to, by ID: the noise of that edit is what a
+   // model without noise of its own borrows (noises(), noisesOfEdit())
+   if ( model.editID.isEmpty()  &&  ! model.editGUID.isEmpty() )
+   {
+      query.clear();
+      query << "get_editID" << model.editGUID;
+      dbase->query( query );
+
+      if ( failed() )  return false;
+
+      int editID = dbase->next() ? dbase->value( 0 ).toInt() : 0;
+
+      if ( editID > 0 )
+         model.editID = QString::number( editID );
+   }
 
    return true;
 }
