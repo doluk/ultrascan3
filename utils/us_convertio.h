@@ -335,6 +335,11 @@ class US_UTIL_EXTERN US_ConvertIO
                          cell/channel/wavelength defined by the xml file.
           \param dir     Local disk directory where auc files can be found
           \param db      An opened db connection
+          \returns An empty string, or what failed.  After a failure the
+                   experiment is deleted again (delete_experiment), unless
+                   \a db has a transaction open (IUS_DB2::transactionActive()):
+                   the caller's rollback then undoes the run, and the message
+                   names only what failed.
       */
       static QString writeRawDataToDB( US_Experiment&, QList<US_Convert::TripleInfo>&, const QString&, IUS_DB2* = nullptr );
 

@@ -655,3 +655,17 @@ With it, the `DataPubDbExport` cases -- among them the row attributes of
 the unpatched and the patched procedures; `DataPubDbRules.
 TextTheTargetCannotStoreFailsTheDryRun` still skips there when the target's
 default character set is utf8mb4 rather than latin1.
+
+## Data import cases added in fix round 7 (test_us_datapub)
+
+- `DataPubDbImport.EveryBorrowingSurvivesTheDatabase` waits for the server's
+  clock to move on between some of the records it imports (a few seconds).
+- `DataPubDbRules.TheLatin1RuleIsTheServers` creates a temporary table in the
+  import target (`CREATE TEMPORARY TABLES`, part of the `GRANT ALL` above).
+- `DataPubDbRules.NullFieldsAndTheCalibrationDateSurviveTheDatabase` needs the
+  administrator login (it skips without). Against a target loaded with the
+  procedures of `us3_catalog_version()` 2 or later it checks that the NULL
+  fields and the calibration date are kept; against older ones, that the
+  import says it could not keep them.
+- `DataPubDbRules.ARawDataFailureSaysWhatFailed` has the server refuse a raw
+  data label longer than its column; the import is rolled back.

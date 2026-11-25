@@ -427,8 +427,10 @@ class US_DataPubImporter : public QObject
             QString id;         //!< The record ID in the target
             QString guid;       //!< The record GUID, once it is known
             bool    resolved;   //!< True when the GUID has been looked up
+            //! A record this import wrote (or, in a dry run, would write)
+            bool    ours;
 
-            Named() { resolved = false; }
+            Named() { resolved = false;  ours = false; }
       };
 
       // bundle GUID -> target GUID / ID / name
@@ -594,14 +596,74 @@ class US_DataPubImporter : public QObject
       */
       bool    componentIdsMayBeCounted( void );
 
-      /*! \brief The models of the bundle that borrow one of its noise
-                 records (borrowedByModelGUIDs)
+      //! \brief One record of the sequence fitSequence() puts the models
+      //!        without noise of their own and the noise records in
+      class FitStep
+      {
+         public:
+            US_DataPubEntity entity;     //!< The model or noise record
+            QString          editGUID;   //!< The edit it belongs to
+            QString          noiseType;  //!< "ti" or "ri" for noise
+            bool             isNoise;    //!< A noise record, not a model
+            //! A noise record some model of the sequence borrows
+            bool             borrowed;
+            //! Its edit needs the target's clock to tell the records apart
+            bool             timed;
 
-          A catalog tells a borrowing model by its time stamp, which is not
-          older than the noise record's, so the import writes them after
-          the noise.  A model a noise record was fitted to is never one.
+            FitStep() { isNoise = false;  borrowed = false;  timed = false; }
+      };
+
+      /*! \brief The order the models without noise of their own and the
+                 noise records of their edits are written in
+
+          A catalog tells which noise such a model was run with by time
+          stamps alone (US_DataPubCatalog::noiseBefore()); the order makes
+          every model borrow what the bundle says it borrows
+          (borrowedByModelGUIDs), and nothing where it borrows nothing.
+          \param problem Filled in when the bundle's borrowing cannot all
+                         be met, empty otherwise
+          \returns Every noise record of the bundle and those models
       */
-      QSet< QString > borrowingModels( void ) const;
+      QList< FitStep > fitSequence( QString& problem ) const;
+
+      //! \brief The target's clock in seconds since the epoch: the
+      //!        server's for a database, the local one for a disk store
+      qint64  targetSecond( void );
+
+      //! \brief Wait until the target's clock is past \a second (at most
+      //!        five seconds)
+      //! \returns False, with \a error filled in, when it does not get there
+      bool    waitForClock( qint64 second, QString& error );
+
+      //! The server did not tell its time: the local clock stands in
+      bool                       clock_local;
+
+      //! \brief The target's us3_catalog_version(), asked once: 0 for a
+      //!        server without it
+      int     catalogVersion( void );
+
+      //! \brief Note something of the source a target whose procedures
+      //!        are older than version 2 cannot keep
+      void    cannotKeep( const QString& what );
+
+      //! \brief One warning naming everything cannotKeep() was told of
+      void    unkeptWarning( void );
+
+      //! \brief The NULL fields a run's manifest entry names ("nullFields":
+      //!        centrifugeProtocol, RIProfile)
+      void    nullFieldsOf( const US_DataPubEntity& entity, bool& protocol,
+                            bool& riProfile ) const;
+
+      //! \brief What cannotKeep() is told of NULL fields of a run
+      QString unkeptFields( const QString& run, bool protocol,
+                            bool riProfile ) const;
+
+      //! \brief What cannotKeep() is told of a calibration's date
+      QString unkeptDate( const QString& name, const QString& guid,
+                          const QDate& date ) const;
+
+      //! What a target older than version 2 cannot keep, for unkeptWarning()
+      QStringList                unkept;
 
       //! The target's us3_catalog_version(): 0 for a server without it,
       //! -1 before it was asked
@@ -793,15 +855,27 @@ class US_DataPubImporter : public QObject
 
       /*! \brief Refuse a record with a number that is not finite, or, for a
                  database, text the target cannot store
+
+          What is checked follows what reaches the target's text: the
+          manifest's fields of every record (also raw data and edits, whose
+          label and comment are columns); the attributes and text of an XML
+          payload the library writers pass on; the whole text of a payload
+          the database stores as it is (a model's and a noise record's XML,
+          a time state's field definitions), comments and processing
+          instructions included; and nothing of the main payload of an edit,
+          raw data or time state, which go into a BLOB.
           \param entity The record
           \param file   The XML payload read, or the main payload's path
           \param data   Its contents; a null array checks the manifest's
                         fields of the record instead
-          \param error  Names the record, the field and the value or
-                        character when the record is refused
+          \param key    The manifest key that names the payload ("payload"
+                        for the main one, "definitionsPayload", ...)
+          \param error  Names the record, the field, its place and the value
+                        or character when the record is refused
       */
       bool    checkValues ( const US_DataPubEntity& entity, const QString& file,
-                            const QByteArray& data, QString& error );
+                            const QByteArray& data, const QString& key,
+                            QString& error );
       bool    availableAs ( US_DataPub::EntityType, const QString& guid,
                             QString& error );
 
@@ -815,8 +889,12 @@ class US_DataPubImporter : public QObject
 
       bool    findByGuid( US_DataPub::EntityType, const QString& guid,
                           QString& id, QString& name );
+      //! \brief The record of a name in the target
+      //! \param ours Set, when given, to whether the record is one this
+      //!             import wrote or (dry run) would write; only records
+      //!             of a type indexed by name are told apart
       bool    findByName( US_DataPub::EntityType, const QString& name,
-                          QString& guid, QString& id );
+                          QString& guid, QString& id, bool* ours = nullptr );
 
       //! \brief Whether a name is taken in the target, without asking which
       //!        record has it

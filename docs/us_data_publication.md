@@ -994,11 +994,30 @@ manifest's into it (all digits) when the XML holds another value or none — a
 zero, which `US_Model` leaves out, stays out.
 
 A model with no noise of its own borrows the noise of its edit by time stamp:
-the newest one not newer than the model. The noise record names such models
-(`borrowedByModelGUIDs`; an older bundle's `borrowedByModelGUID`), and the
-import writes them after the noise record — in a database after its row, on
-disk after its file — so the target says the same: exported from it again, the
-noise still travels with them.
+of each noise type (`ti`, `ri`), the newest record not newer than the model,
+where a record dated the same second as the model counts as older. Two
+records of a type dated the same second are told apart by a fixed rule, never
+by the order a listing returns them in: in a database the higher ID (the one
+written last) wins, otherwise the higher GUID
+(`US_DataPubCatalog::noiseBefore()`). The target stores no borrowing relation,
+only these time stamps, which the import writes anew. So the bundle names the
+borrowing models in the noise record (`borrowedByModelGUIDs`; an older bundle's
+`borrowedByModelGUID`), and the import writes the models without noise of
+their own and the noise records of their edit in an order that reproduces
+it (`US_DataPubImporter::fitSequence()`): a model is written when the noise
+records last written of each type are those it borrows (none yet, where it
+borrows none), and a noise record only when no model still to come needs the
+one before it. Where a noise record has to be newer than a model written
+before it, or a borrowed record newer than the one of its type before it, the
+import waits until the target's clock has moved on to the next second — the
+server's (`SELECT UNIX_TIMESTAMP( NOW() )`, the clock the procedures date the
+rows with) in a database, the local one (which dates the files) on disk. That
+costs at most a second per such step and is needed only in an edit with a
+model without noise of its own and more than one noise record, or more than
+one of a type. Exported from the target again, every noise record names the
+models it named in the source, and a model made before any noise borrows none.
+A bundle whose borrowing cannot be met (one model named for two records of a
+type) is imported with a note, the rest of its records in the bundle's order.
 
 A run's experiment XML names its rotor calibration by ID and, in a bundle, by
 GUID (`<calibration guid="…">`); a disk import points both at the target's
@@ -1014,6 +1033,7 @@ without them as it always did:
 | `comment` | edit | `editedData.comment` | empty (as `us_edit` stores an edit) |
 | `label`, `comment` | raw data | `rawData.label`, `rawData.comment` | the run's label and comment, as `us_convert` writes raw data |
 | `spectrum` (may be empty) | analyte | the analyte row's `spectrum` column | its first extinction (or refraction, fluorescence) point, as `US_Analyte` writes it |
+| `nullFields` (space-separated: `centrifugeProtocol`, `RIProfile`) | experiment | those columns of the experiment row set to NULL with `clear_experiment_fields` (see below) | `''`, as `new_experiment` stores an empty value |
 
 An export from a database writes them from the source's rows
 (`get_buffer_info`'s `private`, `get_rawData`'s `label` and `comment`,
@@ -1024,6 +1044,20 @@ disk leaves the attributes out.
 The raw data rows of a run are written in one call (`US_ConvertIO`), which
 gives all of them one label and comment: the run's raw data records have to
 agree on theirs, or they are written with the run's, and the log says so.
+
+Two things of the source no procedure the LIMS calls can write: a NULL
+`centrifugeProtocol` or `RIProfile` of an experiment (`new_experiment` and
+`update_experiment` store `''`) and a calibration's date
+(`add_rotor_calibration` stores the time of the call). The procedures of
+`us3_catalog_version()` 2 add `clear_experiment_fields` and
+`set_rotor_calibration_date` for them, and the import calls them in its
+transaction right after the record is written, when `SELECT
+us3_catalog_version()` answers 2 or more. A target with older procedures keeps
+`''` and the day of the import; the import — and its dry run — then gives one
+warning that names every run and calibration concerned and says to load the
+updated procedures. A disk store keeps the calibration's date in its file, and
+has no NULL to keep: the run's XML holds the bundle's (empty) protocol and the
+RI profile file is there or not.
 
 A **dry run** reads the target and decides everything, but opens no
 transaction and writes nothing — not even the output directory. Like the
@@ -1042,14 +1076,14 @@ opens, the rules the server would otherwise enforce only on the writes:
 
 | Rule of the server | What the import does |
 |---|---|
-| `add_rotor_calibration` takes an administrator (user level 3) | A calibration the person logged in may not add is left out with a warning (`--strict-hardware` refuses it); an administrator's import records "no calibration experiment" as `-1`. The procedure dates the row itself (`NOW()`): the source's date is not kept |
+| `add_rotor_calibration` takes an administrator (user level 3) | A calibration the person logged in may not add is left out with a warning (`--strict-hardware` refuses it); an administrator's import records "no calibration experiment" as `-1`. The procedure dates the row itself (`NOW()`); the import then sets the source's date (the calibration payload's `lastUpdated`, at midnight) with `set_rotor_calibration_date` (see below) |
 | `create_buffer_component` takes user level 2 | A buffer component the target lacks is refused below that level |
 | `new_solutionAnalyte` takes the investigator's own analyte (`analytePerson`), or an administrator | Another investigator's analyte of the bundle's GUID is not reused: the import makes a copy under a GUID of its own. One the bundle does not carry is refused |
 | (none: no procedure checks it) | Another investigator's *private* buffer is not linked either: the import makes a copy. A public one, or the investigator's own, is reused |
 | Raw data and solution rows name channel 1 (foreign keys) | A target without channel 1 is refused (when the channel table cannot be read, the log says the check could not be made) |
 | `new_noise` needs an edit | A noise record that comes to no edit the bundle carries or the target holds is refused, never written with edit 0 |
 | `new_experiment` takes an operator with a permit for the instrument | An operator without one is stood in for by the current investigator, or another operator who holds one, with a warning; with no permit holder at all the run is refused |
-| Text goes into columns and procedure parameters of a character set (`latin1` in `us3.sql`'s schema, whatever the connection's), and a strict server refuses a character they cannot hold ("Incorrect string value") | The character set of every text parameter of the procedures and every text column of the tables a record type is written with is read from `information_schema` (the schema's default when it shows nothing), and a record whose text — any attribute or text of its XML, apart from an edit's and a time state's, which go into a BLOB, and its fields in the manifest — holds a character the narrowest of them cannot store is refused, naming the record, the field and the character (`α` into a `latin1` target, for instance; `é` fits) |
+| Text goes into columns and procedure parameters of a character set (`latin1` in `us3.sql`'s schema, whatever the connection's), and a strict server refuses a character they cannot hold ("Incorrect string value") | The character set of every text parameter of the procedures and every text column of the tables a record type is written with is read from `information_schema` (the schema's default when it shows nothing), and a record whose text holds a character the narrowest of them cannot store is refused, naming the record, the field (and its line, where it is in a payload) and the character (`α` into a `latin1` target, for instance; `é` and `€` fit). Checked is what reaches the target's text: every manifest field of every record (raw data's and edits' `label` and `comment` included); every attribute and text of an XML payload; the *whole* text of a payload the database stores as it is — a model's and a noise record's XML, a time state's field definitions — comments, processing instructions and the document type included. Only the main payloads of raw data, edits and time states are not, which go into a BLOB as they are. `latin1` is MySQL's: Windows-1252, which takes the euro sign and the other 26 characters cp1252 has at 0x80–0x9F and passes the five codes it leaves undefined (U+0081, U+008D, U+008F, U+0090, U+009D) through, and refuses the other C1 codes, U+0080 among them (measured on MySQL 8 and MariaDB 10.11) |
 
 So a dry run that succeeds is an import that succeeds, short of what only the
 writes can find: a lost connection, a record another session writes in the
@@ -1130,6 +1164,14 @@ For every record in the manifest, in dependency order:
      means, so `reuse` is not offered. `fail` still stops the import.
    - A run of the same ID and another GUID is another run; it is always
      renamed.
+   - A record this import has just written (in a dry run: would write) is no
+     conflict: two records of the bundle that share a name — two fits of an
+     edit with the same description, say — go in under that name, as the
+     source holds them, also into an empty target. Only a record the target
+     held before is a conflict. (A run ID is the exception: it has to stay
+     unique, so a second run of a name is renamed.) A dry run decides exactly
+     as the import: a record it plans has no ID yet, and is never looked up by
+     one.
 
 A run that is already in the database is not added to: when its raw data, a
 solution of it or its time state is not there too, the import stops rather
@@ -1141,7 +1183,13 @@ carries the source's (`comment`, above).
 
 Renaming changes the name inside the payload; the GUID is untouched, so the
 record's dependants follow it. Auto-generated names are `<name> (imported)`,
-then `<name> (imported 2)`, and so on until one is free (after a thousand,
+then `<name> (imported 2)`, and so on until one is free. For a model or noise
+record the suffix follows `.model` (`… .model (imported)`): the programs that
+read a model's run, triple and analysis from its description take the
+dot-separated fields counted from the end but one (`section( '.', -2 )`,
+`-3`, …) or look for `.model` (`indexOf`, `lastIndexOf`), which all still find
+them; only a test for a description *ending* in `model` (`us_mwl_spectra`,
+which then falls back to the description itself) does not (after a thousand,
 `<name>-` and eight random hexadecimal digits, checked like the others). A
 buffer is compared and renamed into a database under the description it is
 stored with, without the `  [M]` marker of a manually entered buffer. A run
@@ -1192,11 +1240,17 @@ solutions, centerpieces and rotor calibration.
 Numeric IDs are never carried over. A database allocates its own. In a disk
 store a record the import writes carries the ID `-1`, and a reference names the
 ID the target's record has, or `-1`. A rotor calibration written to disk names
-the target's rotor of the same GUID, or none. It is the exception to `-1`: a
-disk store finds a run's calibration by the ID the run's XML names, so the
-calibration gets one no calibration of the store's `rotors` directory has (the
-highest there plus one), and the runs of the bundle name it. Exported from
-the store again, the run still has its calibration.
+the target's rotor of the same GUID, or none, and carries `-1` too, as does the
+run's `<calibration id>`: an analysis maps the ID a run names to the
+coefficients of the installation's calibration of that ID
+(`US_SimulationParameters::setHardware()` through `US_Hardware::readRotorMap()`,
+which reads `etc/rotors`, where `us_rotor_gui` keeps database calibrations by
+their database IDs), so any real ID could give the run another rotor's
+stretch; with `-1` the coefficients in the run's XML stand. The run's XML
+also names the calibration's GUID (`<calibration guid>`), by which an export
+from the store finds it: exported again, the run still has its calibration.
+A calibration the store already holds (matched by GUID or content) is named by
+the ID and GUID it has there.
 
 ### Order of replay
 

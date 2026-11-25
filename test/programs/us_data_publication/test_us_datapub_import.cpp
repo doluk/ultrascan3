@@ -2,6 +2,7 @@
 #include <gtest/gtest.h>
 
 #include "datapub_test_env.h"
+#include "datapub_borrow_scenario.h"
 
 #include "us_datapub_export.h"
 #include "us_datapub_import.h"
@@ -9,8 +10,12 @@
 #include "us_datapub_hash.h"
 #include "us_datapub_bundle.h"
 #include "us_datapub_cli.h"
+#include "us_datapub_catalog.h"
 #include "us_analyte.h"
+#include "us_simparms.h"
+#include "us_dataIO.h"
 #include "us_crypto.h"
+#include <openssl/evp.h>
 
 #include <functional>
 
@@ -20,6 +25,30 @@
 #include <cstring>
 #include <unistd.h>
 #endif
+
+namespace
+{
+   // The value of an attribute of the first element of that name
+   QString first_attribute( const QString& path, const QString& element,
+                            const QString& attr )
+   {
+      QFile file( path );
+
+      if ( ! file.open( QIODevice::ReadOnly ) )  return QString();
+
+      QXmlStreamReader reader( &file );
+
+      while ( ! reader.atEnd() )
+      {
+         reader.readNext();
+
+         if ( reader.isStartElement()  &&  reader.name().toString() == element )
+            return reader.attributes().value( attr ).toString();
+      }
+
+      return QString();
+   }
+}
 
 class DataPubImport : public DataPubTestEnv
 {
@@ -1169,10 +1198,12 @@ TEST_F( DataPubImport, ADiskImportCarriesNoSourceIds )
    EXPECT_FALSE( content.contains( "id=\"21\"" ) ) << content.toStdString();
 }
 
-// A disk store finds a run's rotor calibration by the ID its XML names: the
-// calibration the import writes gets an ID no calibration of the store
-// has, and the run names it -- so that the run, exported from the store
-// again, still has its calibration
+/* A rotor calibration written to a disk store carries the ID -1, and so
+   does the run's XML: an analysis maps the ID a run names to the
+   coefficients of the calibration of that ID among the installation's
+   (US_Hardware::readRotorMap(), etc/rotors), and any real ID could be
+   another calibration there.  The GUID the run's XML names finds the
+   calibration when the run is exported from the store again. */
 TEST_F( DataPubImport, ADiskImportNamesTheCalibrationItWrote )
 {
    QString error;
@@ -1203,32 +1234,21 @@ TEST_F( DataPubImport, ADiskImportNamesTheCalibrationItWrote )
    ASSERT_TRUE( US_DataPubRecords::readCalibration( rotors + "/" + files[ 1 ],
                                                     written ) );
    EXPECT_EQ( written.GUID, calGUID );
-   EXPECT_EQ( written.ID,   22 );
+   EXPECT_EQ( written.ID,   -1 );
    EXPECT_EQ( written.label, QString( "Demo calibration" ) );
+   EXPECT_EQ( written.lastUpdated, QDate( 2024, 1, 1 ) );   // the source's
 
-   // The run names it
-   QFile xml( targetDir + "/results/" + runID + "/" + runID + "." + runType
-              + ".xml" );
-   ASSERT_TRUE( xml.open( QIODevice::ReadOnly ) );
-   QXmlStreamReader reader( &xml );
-   QString          named;
-
-   while ( ! reader.atEnd() )
-   {
-      reader.readNext();
-
-      if ( reader.isStartElement()  &&  reader.name().toString() == "calibration" )
-         named = reader.attributes().value( "id" ).toString();
-   }
-
-   xml.close();
-   EXPECT_EQ( named, QString::number( written.ID ) );
+   // The run names it by GUID, and by no ID of a calibration
+   QString xml = targetDir + "/results/" + runID + "/" + runID + "."
+                 + runType + ".xml";
+   EXPECT_EQ( first_attribute( xml, "calibration", "id" ),   QString( "-1" ) );
+   EXPECT_EQ( first_attribute( xml, "calibration", "guid" ), calGUID );
 
    for ( const US_DataPubImporter::Result& result : importer.results() )
    {
       if ( result.type == US_DataPub::RotorCalibration )
       {
-         EXPECT_EQ( result.targetID, QString::number( written.ID ) );
+         EXPECT_EQ( result.targetID, QString( "-1" ) );
       }
    }
 
@@ -1248,6 +1268,69 @@ TEST_F( DataPubImport, ADiskImportNamesTheCalibrationItWrote )
          exporter.manifest().section( US_DataPub::RotorCalibration );
    ASSERT_EQ( cals.size(), 1 );
    EXPECT_EQ( cals[ 0 ].guid, calGUID );
+}
+
+/* The analysis reads a run's rotor stretch through
+   US_SimulationParameters::initFromData(): the coefficients of the run's
+   XML, replaced by those of the installation's calibration (etc/rotors) of
+   the ID the XML names.  Imported into an empty disk store, the run has to
+   keep its own coefficients, whatever calibrations the installation has --
+   an ID the store's count gave (1 here) is one the installation's first
+   calibration has. */
+TEST_F( DataPubImport, TheAnalysisUsesTheImportedRunsOwnCalibration )
+{
+   // An installed calibration of ID 1 with other coefficients (the file
+   // read last wins an ID)
+   QString etc     = US_Settings::appBaseDir() + "/etc/rotors";
+   bool    madeEtc = ! QDir( etc ).exists();
+   QString planted = etc + "/C9999999.xml";
+   QDir().mkpath( etc );
+   ASSERT_FALSE( QFile::exists( planted ) );
+
+   struct Cleanup
+   {
+      QString file;
+      QString dir;
+      bool    rmdir;
+      ~Cleanup()
+      {
+         QFile::remove( file );
+         if ( rmdir )  QDir().rmdir( dir );
+      }
+   } cleanup { planted, etc, madeEtc };
+
+   US_Rotor::RotorCalibration installed;
+   installed.ID          = 1;
+   installed.GUID        = US_Util::new_guid();
+   installed.rotorGUID   = US_Util::new_guid();
+   installed.coeff1      = 3.0e-3;
+   installed.coeff2      = 4.0e-6;
+   installed.label       = "Installed calibration";
+   installed.lastUpdated = QDate( 2020, 1, 1 );
+   ASSERT_TRUE( US_DataPubRecords::writeCalibration( installed, planted ) );
+
+   QString error;
+   US_DataPubImporter importer;
+   ASSERT_TRUE( importer.inspect  ( bundlePath, error ) );
+   ASSERT_TRUE( importer.runImport( diskOptions(), error ) )
+      << error.toStdString();
+
+   US_Settings::set_workBaseDir( targetDir );
+
+   QString     dir  = targetDir + "/results/" + runID;
+   QStringList aucs = QDir( dir ).entryList( QStringList( "*.auc" ),
+                                             QDir::Files, QDir::Name );
+   ASSERT_FALSE( aucs.isEmpty() );
+
+   US_DataIO::RawData raw;
+   ASSERT_EQ( US_DataIO::readRawData( dir + "/" + aucs[ 0 ], raw ),
+              US_DataIO::OK );
+
+   US_SimulationParameters simparams;
+   simparams.initFromData( nullptr, raw, false, runID, runType );
+
+   EXPECT_DOUBLE_EQ( simparams.rotorcoeffs[ 0 ], 1.2e-05 );
+   EXPECT_DOUBLE_EQ( simparams.rotorcoeffs[ 1 ], 3.4e-10 );
 }
 
 // ------------------------------------------------------ the command line
@@ -2224,29 +2307,6 @@ TEST_F( DataPubCrafted, AManifestNumberThatIsNotFiniteIsRefused )
 
 // ------------------------------------------------- round six, follow-up
 
-namespace
-{
-   // The value of an attribute of the first element of that name
-   QString first_attribute( const QString& path, const QString& element,
-                            const QString& attr )
-   {
-      QFile file( path );
-
-      if ( ! file.open( QIODevice::ReadOnly ) )  return QString();
-
-      QXmlStreamReader reader( &file );
-
-      while ( ! reader.atEnd() )
-      {
-         reader.readNext();
-
-         if ( reader.isStartElement()  &&  reader.name().toString() == element )
-            return reader.attributes().value( attr ).toString();
-      }
-
-      return QString();
-   }
-}
 
 // A wrong master password is said to be wrong before the database is
 // opened, not reported as the server's refusal of a login without one
@@ -2275,6 +2335,81 @@ TEST_F( DataPubImport, AWrongMasterPasswordIsSaidToBeWrong )
    EXPECT_TRUE ( error.contains( "master password is wrong" ) )
       << error.toStdString();
    EXPECT_FALSE( error.contains( "using password" ) ) << error.toStdString();
+
+   US_Settings::set_defaultDB   ( savedDB   );
+   US_Settings::set_UltraScanPW( savedHash );
+}
+
+/* A database password stored empty is unlocked by the right master
+   password too.  In the current format its ciphertext is empty; in the old
+   one (AES-128-CBC) it is one block of padding, which decrypts to nothing
+   as a wrong master password does -- and the right one was refused. */
+TEST_F( DataPubImport, AnEmptyStoredPasswordTakesTheRightMasterPassword )
+{
+   QStringList savedDB   = US_Settings::defaultDB();
+   QByteArray  savedHash = US_Settings::UltraScanPW();
+   US_Settings::set_UltraScanPW( QByteArray() );
+
+   // The old format, as US3 once wrote it: AES-128-CBC with the master
+   // password's first 16 characters as the key, PKCS#7 padding
+   auto legacy = []( const QString& plain, const QString& master,
+                     QString& ivHex ) -> QString
+   {
+      unsigned char key[ 16 ];
+      US_Crypto::deriveLegacyKey_16( master, key );
+      // A fixed vector, so that what a wrong key makes of the block -- a
+      // padding error here -- is the same in every run
+      QByteArray iv( "0123456789abcdef" );
+      QByteArray in  = plain.toLatin1();
+      QByteArray out( in.size() + 32, '\0' );
+      int        len = 0;
+      int        fin = 0;
+
+      EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+      EVP_EncryptInit_ex( ctx, EVP_aes_128_cbc(), nullptr, key,
+                          reinterpret_cast< const unsigned char* >( iv.constData() ) );
+      EVP_EncryptUpdate( ctx, reinterpret_cast< unsigned char* >( out.data() ),
+                         &len,
+                         reinterpret_cast< const unsigned char* >( in.constData() ),
+                         in.size() );
+      EVP_EncryptFinal_ex( ctx, reinterpret_cast< unsigned char* >( out.data() )
+                                + len, &fin );
+      EVP_CIPHER_CTX_free( ctx );
+      out.resize( len + fin );
+      ivHex = QString::fromLatin1( iv.toHex() );
+      return QString::fromLatin1( out.toHex() );
+   };
+
+   auto store = []( const QString& cipher, const QString& iv )
+   {
+      QStringList entry;
+      entry << "a database" << "us3" << "us3_somewhere" << "127.0.0.1:9"
+            << cipher << iv << "me@example.org" << cipher << iv
+            << US_Util::new_guid();
+      US_Settings::set_defaultDB( entry );
+   };
+
+   // Old format, empty
+   QString iv;
+   QString cipher = legacy( QString(), "right master", iv );
+   ASSERT_EQ( cipher.size(), 32 );
+   ASSERT_TRUE( US_Crypto::decrypt( cipher, "right master", iv ).isEmpty() );
+   store( cipher, iv );
+   EXPECT_TRUE ( US_DataPub::masterPasswordProblem( "right master" ).isEmpty() );
+   EXPECT_FALSE( US_DataPub::masterPasswordProblem( "wrong master" ).isEmpty() );
+
+   // Old format, not empty: the rule is unchanged
+   cipher = legacy( "dbpw", "right master", iv );
+   ASSERT_EQ( US_Crypto::decrypt( cipher, "right master", iv ), QString( "dbpw" ) );
+   store( cipher, iv );
+   EXPECT_TRUE ( US_DataPub::masterPasswordProblem( "right master" ).isEmpty() );
+   EXPECT_FALSE( US_DataPub::masterPasswordProblem( "wrong master" ).isEmpty() );
+
+   // The current format, empty
+   QStringList current = US_Crypto::encrypt( QString(), "right master" );
+   ASSERT_EQ( current.size(), 2 );
+   store( current.at( 0 ), current.at( 1 ) );
+   EXPECT_TRUE( US_DataPub::masterPasswordProblem( "right master" ).isEmpty() );
 
    US_Settings::set_defaultDB   ( savedDB   );
    US_Settings::set_UltraScanPW( savedHash );
@@ -2392,6 +2527,187 @@ TEST_F( DataPubImport, ABorrowingModelKeepsItsNoiseThroughAnImport )
    US_DataPubEntity back;
    ASSERT_TRUE( again.manifest().entity( US_DataPub::Noise, noiseGUID, back ) );
    EXPECT_EQ( back.attrs.value( "borrowedByModelGUIDs" ), laterGUID );
+}
+
+/* Two records of the bundle that share a name -- two models and two noise
+   records here, as two fits of an edit can have -- go into an empty store
+   under that name, as the source holds them: the name is taken by a record
+   the import wrote itself, which is no conflict.  A dry run says the
+   same. */
+TEST_F( DataPubImport, SameNamedRecordsKeepTheirNamesInAnEmptyStore )
+{
+   QString  twinGUID = US_Util::new_guid();
+   US_Model twin;
+   twin.modelGUID   = twinGUID;
+   twin.editGUID    = editGUID;
+   twin.description = "demo_run.1A280.2dsa.model";      // the fixture's
+   twin.write( US_Settings::dataDir() + "/models/M0000002.xml" );
+
+   US_Noise noise;
+   noise.noiseGUID   = US_Util::new_guid();
+   noise.modelGUID   = twinGUID;
+   noise.description = "demo_run.1A280.2dsa.ti_noise";  // the fixture's
+   noise.type        = US_Noise::TI;
+   noise.minradius   = 5.8;
+   noise.maxradius   = 5.95;
+   for ( int ii = 0; ii < 16; ii++ )  noise.values << 0.003 * double( ii );
+   noise.count = noise.values.size();
+   noise.write( US_Settings::dataDir() + "/noises/N0000002.xml" );
+
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection;
+   selection.fromDb = false;
+   selection.scope  = US_DataPub::ScopeNoise;
+   selection.runIDs << runID;
+
+   QString error;
+   QString bundle = root + "/twins.tar.gz";
+   ASSERT_TRUE( exporter.exportBundle( selection, bundle, error ) )
+      << error.toStdString();
+   ASSERT_EQ( exporter.manifest().section( US_DataPub::Model ).size(), 2 );
+   ASSERT_EQ( exporter.manifest().section( US_DataPub::Noise ).size(), 2 );
+
+   for ( int dry = 1; dry >= 0; dry-- )
+   {
+      US_DataPubImporter          importer;
+      US_DataPubImporter::Options options = diskOptions();
+      options.dryRun = ( dry == 1 );
+      ASSERT_TRUE( importer.inspect  ( bundle, error ) ) << error.toStdString();
+      ASSERT_TRUE( importer.runImport( options, error ) ) << error.toStdString();
+
+      for ( const US_DataPubImporter::Result& result : importer.results() )
+      {
+         if ( result.type != US_DataPub::Model  &&
+              result.type != US_DataPub::Noise )
+            continue;
+
+         EXPECT_EQ( result.resolution, US_DataPub::ResolvedCreated )
+            << ( dry ? "dry run " : "import " ) << result.targetName.toStdString();
+         EXPECT_FALSE( result.targetName.contains( "imported" ) )
+            << result.targetName.toStdString();
+      }
+   }
+
+   QStringList models = QDir( targetDir + "/data/models" )
+                        .entryList( QStringList( "M*.xml" ), QDir::Files );
+   ASSERT_EQ( models.size(), 2 );
+
+   for ( const QString& name : models )
+      EXPECT_EQ( first_attribute( targetDir + "/data/models/" + name, "model",
+                                  "description" ),
+                 QString( "demo_run.1A280.2dsa.model" ) );
+
+   // A store that already holds the name is a conflict, though: renamed
+   QString other = root + "/target2";
+   QDir().mkpath( other + "/data/models" );
+   US_Model held;
+   held.modelGUID   = US_Util::new_guid();
+   held.editGUID    = US_Util::new_guid();
+   held.description = "demo_run.1A280.2dsa.model";
+   held.write( other + "/data/models/M0000001.xml" );
+
+   US_DataPubImporter          importer;
+   US_DataPubImporter::Options options = diskOptions();
+   options.outputDir = other;
+   options.policy    = US_DataPub::PolicyRename;
+   ASSERT_TRUE( importer.inspect  ( bundle, error ) ) << error.toStdString();
+   ASSERT_TRUE( importer.runImport( options, error ) ) << error.toStdString();
+
+   int renamed = 0;
+
+   for ( const US_DataPubImporter::Result& result : importer.results() )
+      if ( result.type == US_DataPub::Model  &&
+           result.resolution == US_DataPub::ResolvedRenamed )
+         renamed++;
+
+   EXPECT_EQ( renamed, 2 );
+}
+
+/* Two noise records of a type dated the same second as each other (and as
+   the model) are told apart by a fixed rule, not by the order the catalog
+   lists them in: the higher database ID, else the higher GUID. */
+TEST_F( DataPubImport, NoiseBeforeBreaksATieTheSameWayInEveryOrder )
+{
+   US_DataCatalog::Noise low;
+   low.guid        = "aaaaaaaa-0000-4000-8000-000000000001";
+   low.id          = "7";
+   low.noiseType   = "ti";
+   low.lastUpdated = "2024-01-01 10:00:00 UTC";
+
+   US_DataCatalog::Noise high = low;
+   high.guid = "bbbbbbbb-0000-4000-8000-000000000001";
+   high.id   = "5";
+
+   QString model = "2024-01-01 10:00:00";        // the same second
+
+   for ( int order = 0; order < 2; order++ )
+   {
+      QList< US_DataCatalog::Noise > both;
+      both << ( order == 0 ? low : high ) << ( order == 0 ? high : low );
+
+      // In a database, the higher ID: written last
+      QList< US_DataCatalog::Noise > picked =
+            US_DataPubCatalog::noiseBefore( both, model );
+      ASSERT_EQ( picked.size(), 1 );
+      EXPECT_EQ( picked[ 0 ].guid, low.guid ) << order;
+
+      // On disk (no IDs), the higher GUID
+      both[ 0 ].id = "-1";
+      both[ 1 ].id = "-1";
+      picked = US_DataPubCatalog::noiseBefore( both, model );
+      ASSERT_EQ( picked.size(), 1 );
+      EXPECT_EQ( picked[ 0 ].guid, high.guid ) << order;
+
+      // ... and so with neither dated
+      both[ 0 ].lastUpdated.clear();
+      both[ 1 ].lastUpdated.clear();
+      picked = US_DataPubCatalog::noiseBefore( both, model );
+      ASSERT_EQ( picked.size(), 1 );
+      EXPECT_EQ( picked[ 0 ].guid, high.guid ) << order;
+   }
+}
+
+/* Several noise records of a type in one edit, and models that borrow
+   them or none: what each model borrows is told by time stamps alone, so
+   the import writes the models and noise in an order -- with the clock moved
+   on in between where needed -- that keeps it.  Exported from the store
+   again, every noise record names the same borrowers as in the source, and
+   the model made before any noise borrows none. */
+TEST_F( DataPubImport, EveryBorrowingSurvivesSeveralNoiseRecordsOfAType )
+{
+   DataPubBorrowScenario scenario;
+   scenario.write( US_Settings::dataDir() + "/models",
+                   US_Settings::dataDir() + "/noises", runID, editGUID,
+                   noiseGUID );
+
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection;
+   selection.fromDb = false;
+   selection.scope  = US_DataPub::ScopeNoise;
+   selection.runIDs << runID;
+
+   QString error;
+   QString bundle = root + "/several.tar.gz";
+   ASSERT_TRUE( exporter.exportBundle( selection, bundle, error ) )
+      << error.toStdString();
+   ASSERT_EQ( DataPubBorrowScenario::text(
+                 DataPubBorrowScenario::borrowers( exporter.manifest() ) ),
+              DataPubBorrowScenario::text( scenario.expected() ) );
+
+   US_DataPubImporter importer;
+   ASSERT_TRUE( importer.inspect  ( bundle, error ) ) << error.toStdString();
+   ASSERT_TRUE( importer.runImport( diskOptions(), error ) )
+      << error.toStdString();
+
+   US_Settings::set_workBaseDir( targetDir );
+
+   US_DataPubExporter again;
+   ASSERT_TRUE( again.exportBundle( selection, root + "/again.tar.gz", error ) )
+      << error.toStdString();
+   EXPECT_EQ( DataPubBorrowScenario::text(
+                 DataPubBorrowScenario::borrowers( again.manifest() ) ),
+              DataPubBorrowScenario::text( scenario.expected() ) );
+   EXPECT_TRUE( again.manifest().contains( US_DataPub::Model, scenario.m0 ) );
 }
 
 // A calibration the target already has under another GUID is named by that

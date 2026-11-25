@@ -62,6 +62,8 @@ class ScriptedDb : public StrictMock<US_DB2_Mock>
          EXPECT_CALL( *this, lastError() ).Times( AnyNumber() );
          EXPECT_CALL( *this, lastInsertID() ).Times( AnyNumber() );
          EXPECT_CALL( *this, writeBlobToDB( _, _, _ ) ).Times( AnyNumber() );
+         ON_CALL( *this, transactionActive() ).WillByDefault( Invoke( [this] { return inTransaction; } ) );
+         EXPECT_CALL( *this, transactionActive() ).Times( AnyNumber() );
       }
 
       //! Make one procedure fail; everything else keeps succeeding.
@@ -76,6 +78,7 @@ class ScriptedDb : public StrictMock<US_DB2_Mock>
       QMap<QString, int>         statusFor;
       int                        blobStatus = IUS_DB2::OK;
       int                        insertID   = 55;
+      bool                       inTransaction = false; //!< a caller's transaction is open
 
    private:
       int scripted( const QString& procedure )
@@ -341,4 +344,20 @@ TEST_F( WriteRawDataInjectionTest, KeepsTheCleanupForNontransactionalCallers )
    ASSERT_GE( rawIndex, 0 );
    ASSERT_GE( deleteIndex, 0 );
    EXPECT_GT( deleteIndex, rawIndex );
+}
+
+TEST_F( WriteRawDataInjectionTest, LeavesTheRunToTheCallersRollback )
+{
+   // Inside a caller's transaction (us_import_run, the data import) the
+   // rollback undoes the run.  Deleting it as well would only add a failure
+   // of its own ("error deleting experiment N") to the report, which then
+   // names a deletion instead of what failed.
+   db.inTransaction = true;
+   db.fail( "new_rawData" );
+   db.fail( "delete_experiment" );
+
+   const QString error = write();
+
+   EXPECT_EQ( error, QString( US_ConvertIO::aucFileFailedMessage ).arg( aucPath(), "scripted failure" ) );
+   EXPECT_FALSE( db.called.contains( "delete_experiment" ) );
 }

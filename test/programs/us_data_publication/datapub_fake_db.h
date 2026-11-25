@@ -70,6 +70,8 @@
  * - information_schema.ROUTINES lists the routines of `routines`, with the
  *   definition a test gave (empty: NULL, as anyone but the definer and an
  *   administrator reads it).
+ * - clear_experiment_fields and set_rotor_calibration_date exist from
+ *   catalogVersion 2 on, with the procedures' permission rules
  * - SELECT us3_catalog_version() answers catalogVersion; 0 is a server
  *   without the function, where the statement fails (1305).
  * - Experiment 1 is "the magic ID that anyone can use temporarily"
@@ -93,8 +95,9 @@
  * Text goes into columns and procedure parameters of the character set
  * `charset` (utf8mb4 unless a test says otherwise), which information_schema
  * and @@character_set_database report (raw queries).  With latin1, a write
- * whose text holds a character beyond U+00FF is refused with DBERROR, as a
- * strict server refuses it ("Incorrect string value", 1366).
+ * whose text holds a character latin1 (cp1252) cannot hold is refused with
+ * DBERROR (see latin1Refuses()), as a strict server refuses it ("Incorrect
+ * string value", 1366).
  */
 class DataPubFakeDb
 {
@@ -180,6 +183,12 @@ class DataPubFakeDb
 
             // "procedure:id" -> the bytes uploaded
             QMap< QString, QByteArray > blobs;
+
+            // Experiment ID -> the fields clear_experiment_fields set to
+            // NULL; calibration ID -> the date set_rotor_calibration_date
+            // gave it
+            QMap< int, QStringList > nulled;
+            QMap< int, QString >     calibrationDates;
       };
 
       State state;
@@ -679,6 +688,33 @@ class DataPubFakeDb
          return status;
       }
 
+      /* Whether a latin1 column or parameter refuses a code point, as MySQL
+         8 and MariaDB 10.11 do in strict mode (measured on both): latin1 is
+         Windows-1252 there, so it takes ASCII, U+00A0..U+00FF, the 27
+         characters cp1252 puts at 0x80..0x9F (the euro sign among them),
+         and the five C1 codes cp1252 leaves undefined (U+0081, U+008D,
+         U+008F, U+0090, U+009D), which pass through; it refuses the other
+         C1 codes (U+0080 among them) and everything else. */
+      static bool latin1Refuses( uint code )
+      {
+         if ( code < 0x80  ||  ( code >= 0xA0  &&  code <= 0xFF ) )
+            return false;
+
+         if ( code == 0x81  ||  code == 0x8D  ||  code == 0x8F  ||
+              code == 0x90  ||  code == 0x9D )
+            return false;
+
+         static const QVector< uint > cp1252 = QString::fromUtf8(
+            "\xE2\x82\xAC\xE2\x80\x9A\xC6\x92\xE2\x80\x9E\xE2\x80\xA6"
+            "\xE2\x80\xA0\xE2\x80\xA1\xCB\x86\xE2\x80\xB0\xC5\xA0"
+            "\xE2\x80\xB9\xC5\x92\xC5\xBD\xE2\x80\x98\xE2\x80\x99"
+            "\xE2\x80\x9C\xE2\x80\x9D\xE2\x80\xA2\xE2\x80\x93\xE2\x80\x94"
+            "\xCB\x9C\xE2\x84\xA2\xC5\xA1\xE2\x80\xBA\xC5\x93\xC5\xBE"
+            "\xC5\xB8" ).toUcs4();
+
+         return ! cp1252.contains( code );
+      }
+
       // What the server's own checks refuse among the writes; true when the
       // write was refused, with the status set
       bool refuses( const QString& proc, const QStringList& q )
@@ -687,8 +723,8 @@ class DataPubFakeDb
          if ( charset == "latin1" )
          {
             for ( int ii = 1; ii < q.size(); ii++ )
-               for ( const QChar& ch : q[ ii ] )
-                  if ( ch.unicode() > 0xFF )
+               for ( uint code : q[ ii ].toUcs4() )
+                  if ( latin1Refuses( code ) )
                   {
                      status = IUS_DB2::DBERROR;
                      return true;
@@ -930,6 +966,48 @@ class DataPubFakeDb
             }
             else
                status = IUS_DB2::NOROWS;
+
+            return;
+         }
+
+         // The procedures of us3_catalog_version() 2; a server older than
+         // that has none of them
+         if ( proc == "clear_experiment_fields"  ||
+              proc == "set_rotor_calibration_date" )
+         {
+            int id = q.value( 1 ).toInt();
+
+            if ( catalogVersion < 2 )
+               status = IUS_DB2::DBERROR;
+
+            else if ( proc == "clear_experiment_fields" )
+            {
+               if ( ! state.experiments.contains( id ) )
+                  status = IUS_DB2::NO_EXPERIMENT;
+               else if ( ! admin  &&  state.experiments[ id ].owner != person )
+                  status = IUS_DB2::NOTPERMITTED;
+               else
+               {
+                  if ( q.value( 2 ) != "0" )
+                     state.nulled[ id ] << "centrifugeProtocol";
+                  if ( q.value( 3 ) != "0" )
+                     state.nulled[ id ] << "RIProfile";
+                  status = IUS_DB2::OK;
+               }
+            }
+
+            else if ( level() < 3 )
+               status = IUS_DB2::NOTPERMITTED;
+
+            else if ( ! state.registry.value( "calibration" ).values()
+                         .contains( id ) )
+               status = IUS_DB2::NO_CALIB;
+
+            else
+            {
+               state.calibrationDates.insert( id, q.value( 2 ) );
+               status = IUS_DB2::OK;
+            }
 
             return;
          }

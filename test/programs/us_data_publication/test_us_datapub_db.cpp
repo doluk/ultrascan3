@@ -25,6 +25,7 @@
 #include <QtCore>
 
 #include "datapub_test_env.h"
+#include "datapub_borrow_scenario.h"
 
 #include "us_datapub_catalog.h"
 #include "us_datapub_export.h"
@@ -1373,6 +1374,136 @@ TEST_F( DataPubDbRules, ACalibrationIsAddedByAnAdministratorOnly )
    EXPECT_EQ( stored.calibrationExperimentID, -1 );
 }
 
+/* Raw data the server refuses (a label longer than the column) fails the
+   import, which is rolled back; the message says what failed -- the raw
+   data -- and not that experiment 1, or any, could not be deleted: the
+   caller's transaction undoes the run, US_ConvertIO does not try to. */
+TEST_F( DataPubDbRules, ARawDataFailureSaysWhatFailed )
+{
+   QString bundle = recraft( exportStore( "longlabel" ),
+                             []( US_DataPubManifest& m, const QString& )
+   {
+      QList< US_DataPubEntity > raws = m.section( US_DataPub::RawData );
+      ASSERT_FALSE( raws.isEmpty() );
+
+      for ( int ii = 0; ii < raws.size(); ii++ )
+         raws[ ii ].attrs.insert( "label", QString( 300, QChar( 'x' ) ) );
+
+      m.setSection( US_DataPub::RawData, raws );
+   } );
+
+   db->rawQuery( "SELECT COUNT(*) FROM experiment" );
+   int before = db->next() ? db->value( 0 ).toInt() : -1;
+
+   US_DataPubImporter importer;
+   QString            error;
+   ASSERT_TRUE ( importer.inspect( bundle, error ) ) << error.toStdString();
+   EXPECT_FALSE( importer.runImport( options(), error ) );
+   EXPECT_FALSE( error.contains( "deleting experiment" ) ) << error.toStdString();
+   EXPECT_TRUE ( error.contains( "raw data" ) ) << error.toStdString();
+
+   db->rawQuery( "SELECT COUNT(*) FROM experiment" );
+   EXPECT_EQ( db->next() ? db->value( 0 ).toInt() : -2, before );
+}
+
+/* A run whose centrifugeProtocol and RIProfile were NULL in the source
+   (the bundle says so in "nullFields") and a calibration's date: a target
+   whose procedures are of us3_catalog_version() 2 or later keeps them; an
+   older one stores '' and the day of the import, and the import and its dry
+   run say so in one warning. */
+TEST_F( DataPubDbRules, NullFieldsAndTheCalibrationDateSurviveTheDatabase )
+{
+   QString rotor = targetRotorGUID();
+   ASSERT_FALSE( rotor.isEmpty() ) << "the target database has no rotor";
+
+   if ( ! loginAs( qEnvironmentVariable( "US3_TEST_DB_ADMIN_GUID" ),
+                   qEnvironmentVariable( "US3_TEST_DB_ADMIN_PW" ),
+                   qEnvironmentVariable( "US3_TEST_DB_PERSON_ID" ).toInt() ) )
+      GTEST_SKIP() << "no administrator login configured";
+
+   rebuildKeepingChemistry();
+   calibrateTargetRotor( rotor );
+
+   QString bundle = recraft( exportStore( "nulls" ),
+                             []( US_DataPubManifest& m, const QString& )
+   {
+      QList< US_DataPubEntity > runs = m.section( US_DataPub::Experiment );
+      ASSERT_EQ( runs.size(), 1 );
+      runs[ 0 ].attrs.insert( "nullFields", "centrifugeProtocol RIProfile" );
+      m.setSection( US_DataPub::Experiment, runs );
+   } );
+
+   db->rawQuery( "SELECT us3_catalog_version()" );
+   int version = db->next() ? db->value( 0 ).toInt() : 0;
+
+   QString error;
+   QString expID;
+   QString calID;
+
+   for ( int dry = 1; dry >= 0; dry-- )
+   {
+      US_DataPubImporter importer;
+      ASSERT_TRUE( importer.inspect( bundle, error ) ) << error.toStdString();
+      ASSERT_TRUE( importer.runImport( options( dry == 1 ), error ) )
+         << error.toStdString() << "\n"
+         << importer.log().join( "\n" ).toStdString();
+
+      QStringList about;
+
+      for ( const QString& text : importer.warnings() )
+         if ( text.contains( "us3_catalog_version()" ) )  about << text;
+
+      if ( version >= 2 )
+      {
+         EXPECT_TRUE( about.isEmpty() ) << about.join( "\n" ).toStdString();
+      }
+
+      else
+      {
+         ASSERT_EQ( about.size(), 1 );
+         EXPECT_TRUE( about[ 0 ].contains( "centrifugeProtocol" )  &&
+                      about[ 0 ].contains( "2024-01-01" ) )
+            << about[ 0 ].toStdString();
+      }
+
+      if ( dry == 1 )  continue;
+
+      const US_DataPubImporter::Result* run =
+            resultOf( importer.results(), US_DataPub::Experiment );
+      const US_DataPubImporter::Result* cal =
+            resultOf( importer.results(), US_DataPub::RotorCalibration );
+      ASSERT_NE( run, nullptr );
+      ASSERT_NE( cal, nullptr );
+      expID = run->targetID;
+      calID = cal->targetID;
+   }
+
+   ASSERT_GT( expID.toInt(), 0 );
+   ASSERT_GT( calID.toInt(), 0 );
+
+   db->rawQuery( "SELECT centrifugeProtocol IS NULL, RIProfile IS NULL"
+                 " FROM experiment WHERE experimentID = " + expID );
+   ASSERT_TRUE( db->next() );
+   bool kept = ( version >= 2 );
+   EXPECT_EQ( db->value( 0 ).toInt() == 1, kept );
+   EXPECT_EQ( db->value( 1 ).toInt() == 1, kept );
+
+   db->rawQuery( "SELECT DATE( dateUpdated ) FROM rotorCalibration"
+                 " WHERE rotorCalibrationID = " + calID );
+   ASSERT_TRUE( db->next() );
+   QDate date = db->value( 0 ).toDate();
+
+   if ( kept )
+   {
+      EXPECT_EQ( date, QDate( 2024, 1, 1 ) );
+   }
+
+   else
+   {
+      EXPECT_NE( date, QDate( 2024, 1, 1 ) );
+   }
+}
+
 /* A second investigator imports a bundle whose buffer and analyte the first
    one's import put in the database.  The analyte is not theirs to use (the
    server refuses it in new_solutionAnalyte, half way through the import)
@@ -1578,6 +1709,119 @@ TEST_F( DataPubDbRules, TextTheTargetCannotStoreFailsTheDryRun )
    db->query( q );
    ASSERT_TRUE( db->next() );
    EXPECT_EQ( db->value( 4 ).toString(), acute );
+}
+
+/* The rule the import judges latin1 text by is the server's: of U+0080 ..
+   U+00FF and the characters cp1252 adds, a latin1 column takes exactly
+   those unstorableCharacter() lets through (the euro sign among them, U+0080
+   not). */
+TEST_F( DataPubDbRules, TheLatin1RuleIsTheServers )
+{
+   db->rawQuery( "CREATE TEMPORARY TABLE latin_probe"
+                 " ( c VARCHAR(4) CHARACTER SET latin1 ) ENGINE=InnoDB" );
+   db->rawQuery( "SELECT COUNT(*) FROM latin_probe" );
+   ASSERT_TRUE( db->next() ) << db->lastError().toStdString();
+
+   QList< uint > codes;
+
+   for ( uint code = 0x7E; code <= 0xFF; code++ )  codes << code;
+
+   codes << 0x20AC << 0x201A << 0x0192 << 0x2122 << 0x0153 << 0x0178
+         << 0x0100 << 0x03B1 << 0xFFFD << 0x1F600;
+
+   int differ = 0;
+   int stored = 0;
+
+   for ( uint code : codes )
+   {
+      char32_t one  = char32_t( code );
+      QString  ch   = QString::fromUcs4( &one, 1 );
+      bool     ours = US_DataPubImporter::unstorableCharacter( "latin1", ch )
+                      .isEmpty();
+
+      // rawQuery() leaves lastErrno() as it was: count the rows instead
+      db->rawQuery( "INSERT INTO latin_probe VALUES ( '"
+                    + QString( ch ).replace( "\\", "\\\\" ).replace( "'", "''" )
+                    + "' )" );
+      db->rawQuery( "SELECT COUNT(*) FROM latin_probe" );
+      int  rows   = db->next() ? db->value( 0 ).toInt() : -1;
+      bool server = ( rows > stored );
+      stored      = qMax( stored, rows );
+
+      EXPECT_EQ( ours, server ) << QString::number( code, 16 ).toStdString();
+
+      if ( ours != server )  differ++;
+   }
+
+   EXPECT_EQ( differ, 0 );
+   db->rawQuery( "DROP TEMPORARY TABLE latin_probe" );
+}
+
+/* What a latin1 target cannot store anywhere a record's text reaches it --
+   a comment of a model's XML, which is stored whole, or a raw data label --
+   fails the dry run as it fails the import, before anything is written. */
+TEST_F( DataPubDbRules, TextOutsideTheValuesALatin1TargetRefusesFailsTheDryRun )
+{
+   db->rawQuery( "SELECT CHARACTER_SET_NAME FROM information_schema.COLUMNS"
+                 " WHERE TABLE_SCHEMA = DATABASE()"
+                 " AND TABLE_NAME = 'model' AND COLUMN_NAME = 'xml'" );
+   QString charset = db->next() ? db->value( 0 ).toString() : QString();
+
+   if ( charset != "latin1" )
+      GTEST_SKIP() << "the target's model XML is not latin1 ("
+                   << charset.toStdString() << ")";
+
+   QString alpha = QString::fromUtf8( "\xCE\xB1" );
+   QString plain = exportStore( "latin" );
+
+   QString inComment = recraft( plain, [ & ]( US_DataPubManifest& m,
+                                              const QString& stage )
+   {
+      QList< US_DataPubEntity > list = m.section( US_DataPub::Model );
+      ASSERT_FALSE( list.isEmpty() );
+      QString path = stage + "/" + list[ 0 ].payload;
+      QFile   file( path );
+      ASSERT_TRUE( file.open( QIODevice::ReadOnly ) );
+      QString content = QString::fromUtf8( file.readAll() );
+      file.close();
+      content.insert( content.indexOf( "?>" ) + 2,
+                      "\n<!-- fitted by " + alpha + " -->" );
+      ASSERT_TRUE( file.open( QIODevice::WriteOnly | QIODevice::Truncate ) );
+      file.write( content.toUtf8() );
+      file.close();
+      list[ 0 ].sha256 = US_DataPubHash::fileHash( path );
+      m.setSection( US_DataPub::Model, list );
+   } );
+
+   QString inLabel = recraft( plain, [ & ]( US_DataPubManifest& m,
+                                            const QString& )
+   {
+      QList< US_DataPubEntity > list = m.section( US_DataPub::RawData );
+      ASSERT_FALSE( list.isEmpty() );
+      list[ 0 ].attrs.insert( "label", "Cell " + alpha );
+      m.setSection( US_DataPub::RawData, list );
+   } );
+
+   QStringList bundles;
+   bundles << inComment << inLabel;
+
+   for ( const QString& bundle : bundles )
+   {
+      for ( int dry = 1; dry >= 0; dry-- )
+      {
+         US_DataPubImporter importer;
+         QString            error;
+         ASSERT_TRUE ( importer.inspect( bundle, error ) ) << error.toStdString();
+         EXPECT_FALSE( importer.runImport( options( dry == 1 ), error ) )
+            << ( dry ? "dry run" : "import" ) << " " << bundle.toStdString();
+         EXPECT_TRUE ( error.contains( "U+03B1" )  &&
+                       error.contains( "latin1" )  &&
+                       ( error.contains( "comment" )  ||
+                         error.contains( "label" ) ) ) << error.toStdString();
+         EXPECT_TRUE ( error.contains( "before anything is written" ) )
+            << error.toStdString();
+      }
+   }
 }
 
 /* A sequence is stored exactly as the bundle holds it -- FASTA header,
@@ -1926,6 +2170,22 @@ TEST_F( DataPubMockImport, AFailedNoiseWriteRollsBackTheWholeRun )
    EXPECT_FALSE( importOnce( importer, error, dbOptions() ) );
    EXPECT_EQ   ( fake.commits,   0 );
    EXPECT_EQ   ( fake.rollbacks, 1 );
+}
+
+// A time state the database refuses is reported with the server's words,
+// not only US_TimeState's status -4
+TEST_F( DataPubMockImport, ARefusedTimeStateSaysWhy )
+{
+   fake.failOn = "new_timestate";
+
+   US_DataPubImporter importer;
+   QString            error;
+
+   EXPECT_FALSE( importOnce( importer, error, dbOptions() ) );
+   EXPECT_TRUE ( error.contains( "time state" )  &&
+                 error.contains( "refused" )     &&
+                 error.contains( "fake error" ) ) << error.toStdString();
+   EXPECT_EQ   ( fake.commits, 0 );
 }
 
 // A lookup that fails is not taken for "not there": that would create a
@@ -3808,6 +4068,254 @@ TEST_F( DataPubMockRules, TextTheTargetCannotStoreIsRefusedUpFront )
    EXPECT_EQ( latin.callsOf( "new_analyte" ).value( 0 ).value( 5 ), acute );
 }
 
+/* Everything of a record that reaches a latin1 target's text is checked
+   before anything is written, by a dry run as by the import, with a
+   message that says where: the raw data's and the edit's label and comment
+   (columns, not the BLOB their payloads go into), and the whole text of a
+   payload stored as it is -- a model's and a noise record's XML, a time
+   state's field definitions -- comments and processing instructions too.
+   The main payloads of raw data and edits go into a BLOB and are not
+   checked; text cp1252 holds (the euro sign) goes in. */
+TEST_F( DataPubMockRules, EveryTextALatin1TargetRefusesIsFoundUpFront )
+{
+   QString alpha    = QString::fromUtf8( "\xCE\xB1" );
+   QString original = bundlePath;
+
+   // The first record of a type: its payload (by manifest key) and fields
+   auto edit = [ & ]( US_DataPub::EntityType type, const QString& key,
+                      std::function< void( QString& ) > text,
+                      std::function< void( US_DataPubEntity& ) > fields )
+   {
+      bundlePath = original;
+      craft( [ & ]( US_DataPubManifest& m, const QString& stage )
+      {
+         QList< US_DataPubEntity > list = m.section( type );
+         ASSERT_FALSE( list.isEmpty() );
+
+         if ( text )
+         {
+            QString rel  = ( key == "payload" ) ? list[ 0 ].payload
+                                                : list[ 0 ].attrs.value( key );
+            QString path = stage + "/" + rel;
+            QFile   file( path );
+            ASSERT_TRUE( file.open( QIODevice::ReadOnly ) ) << path.toStdString();
+            QString content = QString::fromUtf8( file.readAll() );
+            file.close();
+
+            text( content );
+
+            ASSERT_TRUE( file.open( QIODevice::WriteOnly | QIODevice::Truncate ) );
+            file.write( content.toUtf8() );
+            file.close();
+
+            if ( key == "payload" )
+               list[ 0 ].sha256 = US_DataPubHash::fileHash( path );
+            else
+               list[ 0 ].attrs.insert( US_DataPub::digestKeyOf( key ),
+                                       US_DataPubHash::fileHash( path ) );
+         }
+
+         if ( fields )  fields( list[ 0 ] );
+
+         m.setSection( type, list );
+      } );
+   };
+
+   // After the XML declaration
+   auto comment = [ & ]( const QString& what )
+   {
+      return [ what ]( QString& content )
+      {
+         int at = content.indexOf( "?>" );
+         content.insert( at < 0 ? 0 : at + 2, "\n" + what );
+      };
+   };
+
+   struct Case
+   {
+      const char*            name;
+      US_DataPub::EntityType type;
+      QString                key;
+      bool                   text;      // in the payload, else a field
+      QString                insert;    // what goes into the payload
+      QString                field;     // or the manifest field set
+      QString                where;     // what the message has to say
+   };
+
+   QList< Case > cases;
+   cases << Case{ "model comment",   US_DataPub::Model, "payload", true,
+                  "<!-- fitted by " + alpha + " -->", "", "comment" }
+         << Case{ "noise instruction", US_DataPub::Noise, "payload", true,
+                  "<?note " + alpha + "?>", "", "processing instruction" }
+         << Case{ "time state definitions", US_DataPub::TimeState,
+                  "definitionsPayload", true,
+                  "<!-- " + alpha + " -->", "", "comment" }
+         << Case{ "raw data label", US_DataPub::RawData, "payload", false,
+                  "", "label", "label" }
+         << Case{ "raw data comment", US_DataPub::RawData, "payload", false,
+                  "", "comment", "comment" }
+         << Case{ "edit comment", US_DataPub::EditedData, "payload", false,
+                  "", "comment", "comment" };
+
+   for ( const Case& cc : cases )
+   {
+      SCOPED_TRACE( cc.name );
+
+      if ( cc.text )
+         edit( cc.type, cc.key, comment( cc.insert ), nullptr );
+      else
+         edit( cc.type, cc.key, nullptr, [ & ]( US_DataPubEntity& entity )
+         {
+            entity.attrs.insert( cc.field, "noted by " + alpha );
+         } );
+
+      DataPubFakeDb latin;
+      latin.addHardware( "DEMO-1" );
+      latin.charset = "latin1";
+
+      for ( int dry = 1; dry >= 0; dry-- )
+      {
+         US_DataPubImporter          importer;
+         US_DataPubImporter::Options options = dbOptions();
+         options.dryRun = ( dry == 1 );
+         QString                     error;
+
+         importer.setDatabase( latin.db() );
+         ASSERT_TRUE ( importer.inspect( bundlePath, error ) )
+            << error.toStdString();
+         EXPECT_FALSE( importer.runImport( options, error ) )
+            << ( dry ? "dry run" : "import" );
+         EXPECT_TRUE ( error.contains( "U+03B1" )  &&
+                       error.contains( cc.where )  &&
+                       error.contains( "latin1" ) ) << error.toStdString();
+      }
+
+      EXPECT_EQ( latin.begins,   0 );
+      EXPECT_EQ( latin.writes(), 0 );
+   }
+
+   // The euro sign is cp1252's, and so latin1's: in a model's comment it
+   // goes in, as the whole payload
+   edit( US_DataPub::Model, "payload",
+         comment( QString::fromUtf8( "<!-- 5 \xE2\x82\xAC -->" ) ), nullptr );
+
+   DataPubFakeDb latin;
+   latin.addHardware( "DEMO-1" );
+   latin.charset = "latin1";
+
+   US_DataPubImporter importer;
+   QString            error;
+   importer.setDatabase( latin.db() );
+   ASSERT_TRUE( importer.inspect( bundlePath, error ) );
+   ASSERT_TRUE( importer.runImport( dbOptions(), error ) ) << error.toStdString();
+   EXPECT_TRUE( latin.callsOf( "new_model" ).value( 0 ).value( 3 )
+                .contains( QString::fromUtf8( "\xE2\x82\xAC" ) ) );
+
+   // ... and U+0080, which cp1252 puts the euro sign in the place of, does
+   // not
+   edit( US_DataPub::Model, "payload",
+         comment( QString::fromUtf8( "<!-- \xC2\x80 -->" ) ), nullptr );
+
+   DataPubFakeDb refusing;
+   refusing.addHardware( "DEMO-1" );
+   refusing.charset = "latin1";
+
+   US_DataPubImporter dry;
+   US_DataPubImporter::Options options = dbOptions();
+   options.dryRun = true;
+   dry.setDatabase( refusing.db() );
+   ASSERT_TRUE ( dry.inspect( bundlePath, error ) );
+   EXPECT_FALSE( dry.runImport( options, error ) );
+   EXPECT_TRUE ( error.contains( "U+0080" ) ) << error.toStdString();
+}
+
+/* The source's NULL centrifugeProtocol and RIProfile (named by the run's
+   "nullFields") and its calibration's date: a target with the procedures
+   of us3_catalog_version() 2 keeps them (clear_experiment_fields,
+   set_rotor_calibration_date, inside the transaction); an older one cannot,
+   and the import -- and the dry run -- says so in one warning naming what
+   is lost. */
+TEST_F( DataPubMockRules, NullFieldsAndTheCalibrationDateNeedVersionTwo )
+{
+   craft( []( US_DataPubManifest& m, const QString& )
+   {
+      QList< US_DataPubEntity > runs = m.section( US_DataPub::Experiment );
+      ASSERT_EQ( runs.size(), 1 );
+      runs[ 0 ].attrs.insert( "nullFields", "centrifugeProtocol RIProfile" );
+      m.setSection( US_DataPub::Experiment, runs );
+   } );
+
+   US_DataPubImporter probe;
+   QString            error;
+   ASSERT_TRUE( probe.inspect( bundlePath, error ) );
+   QList< US_DataPubEntity > cals =
+         probe.manifest().section( US_DataPub::RotorCalibration );
+   ASSERT_EQ( cals.size(), 1 );
+
+   for ( int version : { 1, 2 } )
+   {
+      SCOPED_TRACE( version );
+      DataPubFakeDb target;
+      target.addHardware( "DEMO-1" );
+      target.registry[ "rotor" ].insert( cals[ 0 ].attrs.value( "rotorGUID" ),
+                                         3 );
+      target.admin          = true;
+      target.catalogVersion = version;
+
+      for ( int dry = 1; dry >= 0; dry-- )
+      {
+         US_DataPubImporter          importer;
+         US_DataPubImporter::Options options = dbOptions();
+         options.dryRun = ( dry == 1 );
+         importer.setDatabase( target.db() );
+         ASSERT_TRUE( importer.inspect( bundlePath, error ) );
+         ASSERT_TRUE( importer.runImport( options, error ) )
+            << error.toStdString();
+
+         QStringList about;
+
+         for ( const QString& text : importer.warnings() )
+            if ( text.contains( "us3_catalog_version()" ) )  about << text;
+
+         if ( version >= 2 )
+         {
+            EXPECT_TRUE( about.isEmpty() ) << about.join( "\n" ).toStdString();
+            continue;
+         }
+
+         ASSERT_EQ( about.size(), 1 ) << importer.warnings().join( "\n" )
+                                          .toStdString();
+         EXPECT_TRUE( about[ 0 ].contains( "centrifugeProtocol and RIProfile" )
+                      &&  about[ 0 ].contains( "2024-01-01" )
+                      &&  about[ 0 ].contains( runID ) )
+            << about[ 0 ].toStdString();
+      }
+
+      QList< QStringList > clears = target.callsOf( "clear_experiment_fields" );
+      QList< QStringList > dates  = target.callsOf( "set_rotor_calibration_date" );
+
+      if ( version < 2 )
+      {
+         EXPECT_TRUE( clears.isEmpty() );
+         EXPECT_TRUE( dates .isEmpty() );
+         continue;
+      }
+
+      int expID = target.registry[ "experiment" ].value( probe.manifest()
+                     .section( US_DataPub::Experiment )[ 0 ].guid );
+      int calID = target.registry[ "calibration" ].value( cals[ 0 ].guid );
+
+      ASSERT_EQ( clears.size(), 1 );
+      EXPECT_EQ( clears[ 0 ].value( 1 ), QString::number( expID ) );
+      EXPECT_EQ( target.state.nulled.value( expID ),
+                 QStringList() << "centrifugeProtocol" << "RIProfile" );
+      ASSERT_EQ( dates.size(), 1 );
+      EXPECT_EQ( target.state.calibrationDates.value( calID ),
+                 QString( "2024-01-01 00:00:00" ) );
+      EXPECT_EQ( target.commits, 1 );
+   }
+}
+
 // A number that is not finite is refused by the preflight of a database
 // import too
 TEST_F( DataPubMockRules, ANumberThatIsNotFiniteIsRefusedUpFront )
@@ -5123,4 +5631,171 @@ TEST_F( DataPubDbImport, ABorrowingModelKeepsItsNoiseThroughTheDatabase )
    US_DataPubEntity back;
    ASSERT_TRUE( again.manifest().entity( US_DataPub::Noise, noiseGUID, back ) );
    EXPECT_EQ( back.attrs.value( "borrowedByModelGUIDs" ), laterGUID );
+}
+
+/* Several noise records of a type in one edit and models that borrow them,
+   or none: imported into a database -- the records dated by the server's
+   clock, to the second -- and exported from it again, every noise record
+   names the borrowers it had in the source. */
+TEST_F( DataPubDbImport, EveryBorrowingSurvivesTheDatabase )
+{
+   DataPubBorrowScenario scenario;
+   scenario.write( US_Settings::dataDir() + "/models",
+                   US_Settings::dataDir() + "/noises", runID, editGUID,
+                   noiseGUID );
+
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection;
+   selection.fromDb = false;
+   selection.scope  = US_DataPub::ScopeNoise;
+   selection.runIDs << runID;
+
+   QString bundle = root + "/several.tar.gz";
+   QString error;
+   ASSERT_TRUE( exporter.exportBundle( selection, bundle, error ) )
+      << error.toStdString();
+   ASSERT_EQ( DataPubBorrowScenario::text(
+                 DataPubBorrowScenario::borrowers( exporter.manifest() ) ),
+              DataPubBorrowScenario::text( scenario.expected() ) );
+
+   US_DataPubImporter::Options options;
+   options.target       = US_DataPub::TargetDb;
+   options.dbPassword   = master;
+   options.verifyHashes = true;
+   options.dryRun       = false;
+   options.policy       = US_DataPub::PolicyRename;
+
+   US_DataPubImporter importer;
+   ASSERT_TRUE( importer.inspect( bundle, error ) ) << error.toStdString();
+   ASSERT_TRUE( importer.runImport( options, error ) )
+      << error.toStdString() << "\n" << importer.log().join( "\n" ).toStdString();
+
+   QString newRun;
+
+   for ( const US_DataPubImporter::Result& result : importer.results() )
+      if ( result.type == US_DataPub::Experiment )  newRun = result.targetName;
+
+   ASSERT_FALSE( newRun.isEmpty() );
+
+   US_DataPubExporter            again;
+   US_DataPubExporter::Selection fromDb;
+   fromDb.fromDb     = true;
+   fromDb.dbPassword = master;
+   fromDb.scope      = US_DataPub::ScopeNoise;
+   fromDb.runIDs << newRun;
+   ASSERT_TRUE( again.exportBundle( fromDb, root + "/again.tar.gz", error ) )
+      << error.toStdString() << "\n" << again.log().join( "\n" ).toStdString();
+
+   EXPECT_EQ( DataPubBorrowScenario::text(
+                 DataPubBorrowScenario::borrowers( again.manifest() ) ),
+              DataPubBorrowScenario::text( scenario.expected() ) );
+   EXPECT_TRUE( again.manifest().contains( US_DataPub::Model, scenario.m0 ) );
+}
+
+/* A bundle with two records of one name (two models and their noise
+   records, as two fits of an edit can have): the dry run decides as the
+   import does -- it used to look the first, planned record up by the ID -1
+   and fail with 507 -- and neither renames a record because of the other:
+   the target holds both under the source's name. */
+TEST_F( DataPubDbImport, SameNamedRecordsImportAsTheDryRunSays )
+{
+   QString tag   = US_Util::new_guid().left( 8 );
+   QString mdesc = runID + ".1A280.e1_a" + tag + "_2DSA.model";
+   QString ndesc = runID + ".1A280.e1_a" + tag + "_2DSA.ti_noise";
+
+   for ( int ii = 1; ii <= 2; ii++ )
+   {
+      QString  mguid = ( ii == 1 ) ? modelGUID : US_Util::new_guid();
+      QString  mpath = US_Settings::dataDir() + "/models/M000000"
+                       + QString::number( ii ) + ".xml";
+      US_Model model;
+
+      if ( ii == 1 )
+      {
+         ASSERT_EQ( model.load( mpath ), IUS_DB2::OK );
+      }
+
+      model.modelGUID   = mguid;
+      model.editGUID    = editGUID;
+      model.description = mdesc;
+      QFile::remove( mpath );
+      ASSERT_EQ( model.write( mpath ), IUS_DB2::OK );
+
+      QString  npath = US_Settings::dataDir() + "/noises/N000000"
+                       + QString::number( ii ) + ".xml";
+      US_Noise noise;
+
+      if ( ii == 1 )
+      {
+         ASSERT_EQ( noise.load( npath ), IUS_DB2::OK );
+      }
+
+      else
+      {
+         noise.noiseGUID = US_Util::new_guid();
+         noise.type      = US_Noise::TI;
+         noise.minradius = 5.8;
+         noise.maxradius = 5.95;
+         for ( int jj = 0; jj < 16; jj++ )  noise.values << 0.003 * jj;
+         noise.count     = noise.values.size();
+      }
+
+      noise.modelGUID   = mguid;
+      noise.description = ndesc;
+      QFile::remove( npath );
+      ASSERT_EQ( noise.write( npath ), IUS_DB2::OK );
+   }
+
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection;
+   selection.fromDb = false;
+   selection.scope  = US_DataPub::ScopeNoise;
+   selection.runIDs << runID;
+
+   QString bundle = root + "/twins.tar.gz";
+   QString error;
+   ASSERT_TRUE( exporter.exportBundle( selection, bundle, error ) )
+      << error.toStdString();
+   ASSERT_EQ( exporter.manifest().section( US_DataPub::Model ).size(), 2 );
+
+   US_DataPubImporter::Options options;
+   options.target       = US_DataPub::TargetDb;
+   options.dbPassword   = master;
+   options.verifyHashes = true;
+   options.policy       = US_DataPub::PolicyRename;
+
+   QStringList said[ 2 ];
+
+   for ( int dry = 1; dry >= 0; dry-- )
+   {
+      options.dryRun = ( dry == 1 );
+
+      US_DataPubImporter importer;
+      ASSERT_TRUE( importer.inspect( bundle, error ) ) << error.toStdString();
+      ASSERT_TRUE( importer.runImport( options, error ) )
+         << ( dry ? "dry run: " : "import: " ) << error.toStdString() << "\n"
+         << importer.log().join( "\n" ).toStdString();
+
+      for ( const US_DataPubImporter::Result& result : importer.results() )
+      {
+         if ( result.type != US_DataPub::Model  &&
+              result.type != US_DataPub::Noise )
+            continue;
+
+         said[ dry ] << QString( "%1 %2 %3" ).arg( int( result.type ) )
+                        .arg( int( result.resolution ) ).arg( result.targetName );
+         EXPECT_EQ( result.resolution, US_DataPub::ResolvedCreated )
+            << result.targetName.toStdString();
+         // The run itself may be renamed (the target may hold its ID),
+         // and its records' names with it -- but not one for the other
+         EXPECT_TRUE( result.targetName.endsWith( mdesc.section( '.', 1 ) )  ||
+                      result.targetName.endsWith( ndesc.section( '.', 1 ) ) )
+            << result.targetName.toStdString();
+         EXPECT_FALSE( result.targetName.contains( "(" ) )
+            << result.targetName.toStdString();
+      }
+   }
+
+   EXPECT_EQ( said[ 1 ].join( "\n" ).toStdString(),
+              said[ 0 ].join( "\n" ).toStdString() );
 }

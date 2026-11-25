@@ -280,7 +280,14 @@ class US_DataPubCatalog
           carry a time-invariant and a radially-invariant record at once.
 
           A candidate whose time stamp cannot be read is not ruled out by
-          the model's, but it loses to any candidate that has one.
+          the model's, but it loses to any candidate that has one.  A
+          candidate dated the same second as the model counts as made
+          before it.  Two candidates of a type dated the same second (or
+          both undated) are told apart by their database IDs, the higher
+          one -- written last -- winning, and where either has none by
+          their GUIDs, the higher one winning; the order of \a candidates
+          never decides.  An import writes the records so that no such tie
+          decides what a model borrows (US_DataPubImporter::fitSequence()).
           \param candidates The noise records of the model's edit
           \param modelStamp The model's time stamp
           \returns At most one record per noise type
