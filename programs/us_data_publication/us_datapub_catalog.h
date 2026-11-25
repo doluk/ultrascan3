@@ -4,6 +4,8 @@
 
 #include <QtCore>
 
+#include <functional>
+
 #include "us_datapub_defs.h"
 #include "us_data_catalog.h"
 #include "ius_db2.h"
@@ -151,9 +153,10 @@ class US_DataPubCatalog
 
       /*! \brief Read from a database connection the caller owns
 
-          Only the queries this class makes itself -- the projects, a run's
-          experiment information and its time state -- use the connection;
-          the record chain still needs open().  It lets those queries run
+          The queries this class makes itself -- the projects, a run's
+          experiment information and its time state -- use the connection,
+          and so does the record chain when the connection says it is
+          connected (US_DataCatalog::attach()).  It lets those queries run
           against any IUS_DB2, a test double included.  The connection is
           not taken over: it has to outlive the catalog's use of it.
           \param db The connection to read from
@@ -173,10 +176,30 @@ class US_DataPubCatalog
       */
       void setBulkQueries( bool on );
 
-      //! \brief A flag that, once set, makes the catalog's reads of the
-      //!        chain stop with an error (US_DataCatalog::setCancelFlag);
-      //!        it has to outlive the catalog's use of it
+      /*! \brief A flag that, once set, makes the catalog's reads stop
+          with an error that says they were cancelled
+
+          The shared catalog checks it between the files of a local store
+          (US_DataCatalog::setCancelFlag); this class checks it as well
+          before each run it reads in detail and before each model whose
+          noise it looks up, so that a database read stops too, between the
+          reads of two records (the queries of one read are not stopped).
+          It has to outlive the catalog's use of it.
+          \param flag The flag, or null for none
+      */
       void setCancelFlag( const QAtomicInt* flag );
+
+      /*! \brief Where the notes of the shared catalog go
+
+          US_DataCatalog says what it is doing while it lists and reads a
+          source ("Indexing the local data directory...", the copies of a
+          run it ignores, a database without the catalog procedures);
+          \a handler gets each of those notes as it is made.  A handler
+          set before replaces it; an empty one drops them.
+          \param handler What to call with each note
+      */
+      void setMessageHandler(
+            const std::function< void( const QString& ) >& handler );
 
       //! \brief The open database connection, or null for a disk catalog
       IUS_DB2* db( void );
@@ -204,6 +227,12 @@ class US_DataPubCatalog
           directory.  A run whose directory is not named after it, or whose
           own directory is not usable, is refused too, and \a unusable then
           says that it is the run that is at fault, not the source.
+
+          A database can hold more than one experiment of an investigator
+          under one run ID.  Which of them is meant then cannot be told
+          from the run ID: without \a experimentID the run is refused, as
+          not usable, with a message naming every experiment ID; with it,
+          the experiment of that ID is the run (a disk catalog ignores it).
           \param runID    The run identifier to look for
           \param found    Filled in with the run header when it was found
           \param error    Filled in with a message when the scan fails or
@@ -213,11 +242,14 @@ class US_DataPubCatalog
           \param copies   When given, filled in with the directories (native
                           separators, sorted) that hold copies of the run
                           found and were ignored
+          \param experimentID When not empty, the database ID of the
+                          experiment to take among those of the run ID
           \returns True when exactly one usable run has the run ID
       */
       bool runByID( const QString& runID, Run& found, QString& error,
                     bool* unusable = nullptr,
-                    QStringList* copies = nullptr );
+                    QStringList* copies = nullptr,
+                    const QString& experimentID = QString() );
 
       //! \brief Fill in the raw-data triples and edits of a run
       //!
@@ -324,7 +356,9 @@ class US_DataPubCatalog
       //!
       //! For a disk catalog the run's experiment XML file is read; for a
       //! database catalog the record is read from the database and the
-      //! equivalent information is filled in.
+      //! equivalent information is filled in.  A database run is read by
+      //! its experiment ID (Run::id) when it has one, so that of two
+      //! experiments of one run ID the right one is read.
       //! \param run   The run whose experiment information is wanted
       //! \param info  Filled in with the experiment information
       //! \param error Filled in with a message when the read fails
@@ -347,6 +381,11 @@ class US_DataPubCatalog
       US_DataCatalog* cat;
       QString         listed_project;
       bool            listed;
+      const QAtomicInt* cancel_flag;
+      QMetaObject::Connection message_link;
+
+      //! \brief True, with \a error filled in, once the cancel flag is set
+      bool cancelledError( QString& error ) const;
 
       //! \brief Drop what was listed when the investigator has changed
       void syncInvestigator( void );

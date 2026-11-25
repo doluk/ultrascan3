@@ -41,6 +41,125 @@ namespace
 
       return out;
    }
+
+   /* A connection that gives, of the rows get_experiment_info_by_runID
+      returns, only the row of one experiment ID.
+
+      An investigator can have more than one experiment of a run ID, and
+      the procedure returns every one; US_Experiment::readFromDB() takes
+      the first.  Through this it reads the experiment it is meant to.
+      Everything else goes to the connection as it is.
+   */
+   class ExperimentRowDb : public IUS_DB2
+   {
+      public:
+         ExperimentRowDb( IUS_DB2* db, int expID )
+            : real( db ), exp_id( expID ), filtering( false ) {}
+
+         bool connect( const QString& pw, QString& err ) override
+         { return real->connect( pw, err ); }
+         bool connect( const QString& host, const QString& dbname,
+                       const QString& user, const QString& password,
+                       QString& err ) override
+         { return real->connect( host, dbname, user, password, err ); }
+         bool transactionActive() const override
+         { return real->transactionActive(); }
+         bool beginTransaction( QString& err ) override
+         { return real->beginTransaction( err ); }
+         bool commitTransaction( QString& err ) override
+         { return real->commitTransaction( err ); }
+         bool rollbackTransaction( QString& err ) override
+         { return real->rollbackTransaction( err ); }
+
+         void query( const QString& sql ) override
+         {
+            filtering = false;
+            real->query( sql );
+         }
+
+         void query( const QStringList& arguments ) override
+         {
+            filtering = ( exp_id > 0  &&
+                          arguments.value( 0 ) ==
+                          QString( "get_experiment_info_by_runID" ) );
+            real->query( arguments );
+         }
+
+         int statusQuery( const QString& sql ) override
+         {
+            filtering = false;
+            return real->statusQuery( sql );
+         }
+
+         int statusQuery( const QStringList& arguments ) override
+         {
+            filtering = false;
+            return real->statusQuery( arguments );
+         }
+
+         // Column 1 of the procedure's rows is the experiment ID
+         bool next() override
+         {
+            while ( real->next() )
+               if ( ! filtering  ||  real->value( 1 ).toInt() == exp_id )
+                  return true;
+
+            return false;
+         }
+
+         QVariant value( unsigned index ) override
+         { return real->value( index ); }
+         bool isConnected() override { return real->isConnected(); }
+         QString lastError() override { return real->lastError(); }
+         int lastErrno() override { return real->lastErrno(); }
+         int lastServerErrno() override { return real->lastServerErrno(); }
+         QString serverVersion() override { return real->serverVersion(); }
+         int lastInsertID() override { return real->lastInsertID(); }
+         bool test_db_connection( const QString& host, const QString& dbname,
+                                  const QString& user, const QString& pw,
+                                  QString& err ) override
+         { return real->test_db_connection( host, dbname, user, pw, err ); }
+         bool test_secure_connection( const QString& host,
+                                      const QString& dbname,
+                                      const QString& user, const QString& pw,
+                                      const QString& email,
+                                      const QString& upw,
+                                      QString& err ) override
+         {
+            return real->test_secure_connection( host, dbname, user, pw,
+                                                 email, upw, err );
+         }
+         int writeBlobToDB( const QString& file, const QString& procedure,
+                            const int id ) override
+         { return real->writeBlobToDB( file, procedure, id ); }
+         int readBlobFromDB( const QString& file, const QString& procedure,
+                             const int id ) override
+         { return real->readBlobFromDB( file, procedure, id ); }
+         int writeAucToDB( const QString& file, int id ) override
+         { return real->writeAucToDB( file, id ); }
+         int readAucFromDB( const QString& file, int id ) override
+         { return real->readAucFromDB( file, id ); }
+         void rawQuery( const QString& sql ) override
+         {
+            filtering = false;
+            real->rawQuery( sql );
+         }
+         int functionQuery( const QStringList& arguments ) override
+         {
+            filtering = false;
+            return real->functionQuery( arguments );
+         }
+         int numRows() override { return real->numRows(); }
+         QString lastDebug() override { return real->lastDebug(); }
+         unsigned long mysqlEscapeString( QByteArray& to, QByteArray& from,
+                                          unsigned long length ) override
+         { return real->mysqlEscapeString( to, from, length ); }
+
+      private:
+         IUS_DB2* real;
+         int      exp_id;
+         bool     filtering;
+   };
 }
 
 US_DataPubExporter::Selection::Selection()
@@ -117,14 +236,24 @@ US_DataPubExporter::US_DataPubExporter( QObject* parent ) : QObject( parent )
    hd_comp_loaded = false;
    from_project   = false;
    run_fault      = false;
+   cancelled_run  = false;
    left_out_records = 0;
-
    // A staging directory is never without its lock, so a sweep can tell
    // the directory of an export that was killed from one still running
    bundle.setStagingLock( stagingLockName() );
 
    cancel_flag.storeRelease( 0 );
    catalog.setCancelFlag( &cancel_flag );
+
+   // What the shared catalog says while it lists and reads the source --
+   // indexing a local store can take a while -- is part of the progress.
+   // Its warnings are about copies of run directories anywhere in the
+   // store; those of the runs exported are warned about by gatherRuns().
+   catalog.setMessageHandler( [ this ]( const QString& text )
+                              {
+                                 if ( ! text.startsWith( tr( "Warning: " ) ) )
+                                    note( text );
+                              } );
 }
 
 void US_DataPubExporter::cancel( void )
@@ -134,7 +263,18 @@ void US_DataPubExporter::cancel( void )
 
 bool US_DataPubExporter::wasCancelled( void ) const
 {
-   return cancel_flag.loadAcquire() != 0;
+   return cancel_flag.loadAcquire() != 0  ||  cancelled_run;
+}
+
+bool US_DataPubExporter::endRun( bool ok, QString& error )
+{
+   cancelled_run = ! ok  &&  cancel_flag.loadAcquire() != 0;
+
+   if ( cancelled_run )  cancelledError( error );
+
+   cancel_flag.storeRelease( 0 );
+
+   return ok;
 }
 
 bool US_DataPubExporter::cancelledError( QString& error ) const
@@ -503,9 +643,17 @@ bool US_DataPubExporter::stageSpectra(
 bool US_DataPubExporter::previewManifest( const Selection& selection,
                                           QString& error )
 {
-   bool staged = stageBundle( selection, error );
+   // A cancel made before this started is kept: it stops the preview
+   // before anything is read
+   cancelled_run = false;
 
-   if ( ! staged )  cancelledError( error );
+   return endRun( previewRun( selection, error ), error );
+}
+
+bool US_DataPubExporter::previewRun( const Selection& selection,
+                                     QString& error )
+{
+   bool staged = stageBundle( selection, error );
 
    bundle.cleanup();
 
@@ -516,6 +664,15 @@ bool US_DataPubExporter::exportBundle( const Selection& selection,
                                        const QString& bundlePath,
                                        QString& error )
 {
+   cancelled_run = false;
+
+   return endRun( exportRun( selection, bundlePath, error ), error );
+}
+
+bool US_DataPubExporter::exportRun( const Selection& selection,
+                                    const QString& bundlePath,
+                                    QString& error )
+{
    if ( bundlePath.trimmed().isEmpty() )
    {
       error = tr( "No bundle file name was given" );
@@ -524,7 +681,6 @@ bool US_DataPubExporter::exportBundle( const Selection& selection,
 
    if ( ! stageBundle( selection, error ) )
    {
-      cancelledError( error );
       bundle.cleanup();
       return false;
    }
@@ -624,7 +780,10 @@ bool US_DataPubExporter::build( const Selection& selection, QString& error )
    run_fault      = false;
    listed_models.clear();
    noise_borrowers.clear();
-   cancel_flag.storeRelease( 0 );
+
+   // Not reset here: a cancel made just before the export started counts
+   // (endRun() clears it once the export is over)
+   if ( cancelledError( error ) )  return false;
 
    US_DataPub::Scope scope = selection.effectiveScope();
    exp_scope       = scope;
@@ -702,6 +861,8 @@ bool US_DataPubExporter::build( const Selection& selection, QString& error )
       US_DataPubCatalog::ExpInfo info;
       bool                       fault = false;
 
+      // A database run's information is a few queries of its own
+      if ( cancelledError( error ) )  return false;
       if ( catalog.expInfo( runs[ ii ], info, error, &fault ) )
       {
          infos << info;
@@ -1172,13 +1333,21 @@ bool US_DataPubExporter::gatherRuns( const Selection& selection,
    if ( runIDs.isEmpty()  &&  ! selection.projectGUID.isEmpty()  &&
         scope > US_DataPub::ScopeProject )
    {
+      // A run of a local store is listed under a project by its experiment
+      // XML; one whose XML is missing or broken is under none, and would
+      // be missing from the bundle without a word.  So on disk every run
+      // is listed, once, and those of the project are taken from that.
       QList< US_DataPubCatalog::Run > found =
-            catalog.runs( selection.projectGUID, error );
+            catalog.runs( selection.fromDb ? selection.projectGUID
+                                           : QString(), error );
 
       if ( ! error.isEmpty() )  return false;
 
       for ( int ii = 0; ii < found.size(); ii++ )
-         runIDs << found[ ii ].runID;
+         if ( found[ ii ].projectGUID == selection.projectGUID )
+            runIDs << found[ ii ].runID;
+
+      if ( ! selection.fromDb )  warnRunsWithoutProject( selection, found );
 
       runIDs      = unique( runIDs );
       fromProject = true;
@@ -1198,8 +1367,19 @@ bool US_DataPubExporter::gatherRuns( const Selection& selection,
    QStringList seenEdits;
    int         nraws = 0;
 
+   // Reading the runs is a phase of its own, which can take a while for a
+   // project: one step per run, and a chance to cancel before each
+   emit steps( runIDs.size() );
+
    for ( int ii = 0; ii < runIDs.size(); ii++ )
    {
+      if ( cancelledError( error ) )  return false;
+
+      if ( ii > 0 )  emit stepDone( ii );
+
+      note( tr( "Reading run %1 (%2 of %3)" ).arg( runIDs[ ii ] )
+            .arg( ii + 1 ).arg( runIDs.size() ) );
+
       // The run ID names directories and files in the bundle
       if ( ! US_DataPub::runIdIsUsable( runIDs[ ii ] ) )
       {
@@ -1228,7 +1408,10 @@ bool US_DataPubExporter::gatherRuns( const Selection& selection,
       // directory copied by hand is never read in place of the run: the
       // directory named after the run is the run, and a copy beside it is
       // ignored with a warning
-      if ( ! catalog.runByID( runIDs[ ii ], run, error, &unusable, &copies ) )
+      if ( ! catalog.runByID( runIDs[ ii ], run, error, &unusable, &copies,
+                              selection.fromDb
+                              ? selection.experimentIDs.value( runIDs[ ii ] )
+                              : QString() ) )
       {
          if ( ! unusable  ||  ! fromProject )  return false;
 
@@ -1325,6 +1508,8 @@ bool US_DataPubExporter::gatherRuns( const Selection& selection,
       runs << run;
    }
 
+   if ( ! runIDs.isEmpty() )  emit stepDone( runIDs.size() );
+
    // The count of the runs left out is given once, by build(), when the
    // staging may have left out more
    if ( skipped > 0  &&  runs.isEmpty() )
@@ -1372,6 +1557,45 @@ bool US_DataPubExporter::gatherRuns( const Selection& selection,
    error.clear();
 
    return true;
+}
+
+/* A run of a local store belongs to the project its experiment XML names.
+   The catalog lists a project's runs by that, so a run whose experiment
+   XML is missing, or is not XML, belongs to none and is not listed: it
+   would be missing from the export of its project without a word.  It is
+   not known to be the project's, so it is not exported either; each one
+   is named in a warning instead.  A copy of a run's directory is not a
+   run, and a run whose XML reads but names no project belongs to none.
+*/
+void US_DataPubExporter::warnRunsWithoutProject(
+      const Selection& selection, const QList< US_DataPubCatalog::Run >& all )
+{
+   for ( int ii = 0; ii < all.size(); ii++ )
+   {
+      const US_DataPubCatalog::Run& run = all[ ii ];
+
+      if ( ! run.projectGUID.isEmpty()  ||  ! run.copyOf.isEmpty() )  continue;
+
+      QString path = US_DataPubCatalog::expFilePath( run );
+      QString why;
+
+      if ( path.isEmpty()  ||  ! QFileInfo( path ).isFile() )
+         why = tr( "its experiment XML %1 is missing" )
+               .arg( QDir::toNativeSeparators( path.isEmpty() ? run.dirPath
+                                                              : path ) );
+
+      else if ( US_DataPubCatalog::peekAttributes( path, "experiment" )
+                .isEmpty() )
+         why = tr( "its experiment XML %1 cannot be read" )
+               .arg( QDir::toNativeSeparators( path ) );
+
+      else
+         continue;
+
+      warn( tr( "run %1 is not in the bundle: %2, so whether it belongs to"
+                " the project %3 cannot be told" )
+            .arg( run.runID ).arg( why ).arg( selection.projectGUID ) );
+   }
 }
 
 // ------------------------------------------------------------------- project
@@ -1665,7 +1889,17 @@ bool US_DataPubExporter::readExperimentDb(
       QVector< US_SimulationParameters::SpeedProfile >& speedsteps,
       QString& error )
 {
-   int status = exper.readFromDB( run.runID, catalog.db(), speedsteps,
+   if ( catalog.db() == nullptr )
+   {
+      error = tr( "No database connection" );
+      return false;
+   }
+
+   // The run's own experiment, should the investigator have another one of
+   // the run ID
+   ExperimentRowDb dbase( catalog.db(), run.id.toInt() );
+
+   int status = exper.readFromDB( run.runID, &dbase, speedsteps,
                                   QString(), false, false );
 
    if ( status != IUS_DB2::OK )
@@ -1689,9 +1923,12 @@ QByteArray US_DataPubExporter::storedRiProfile(
 
    query << "get_experiment_info_by_runID" << run.runID
          << QString::number( US_Settings::us_inv_ID() );
-   dbase->query( query );
 
-   if ( dbase->lastErrno() != IUS_DB2::OK  ||  ! dbase->next() )
+   // Every experiment of the run ID comes back; column 1 is its ID
+   ExperimentRowDb rows( dbase, run.id.toInt() );
+   rows.query( query );
+
+   if ( rows.lastErrno() != IUS_DB2::OK  ||  ! rows.next() )
       return QByteArray();
 
    // Column 16 is the RIProfile of the experiment row

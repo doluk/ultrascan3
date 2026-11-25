@@ -244,6 +244,7 @@ US_DataPubCatalog::US_DataPubCatalog()
    inv_id  = US_Settings::us_inv_ID();
    cat     = new US_DataCatalog();
    listed  = false;
+   cancel_flag = nullptr;
 }
 
 US_DataPubCatalog::~US_DataPubCatalog()
@@ -332,6 +333,11 @@ void US_DataPubCatalog::attachDb( IUS_DB2* db )
    dbase   = db;
    listed  = false;
    listed_project.clear();
+
+   // The chain reads through the same connection when it can; a test
+   // double that says it is not connected leaves the chain without one
+   QString error;
+   cat->attach( db, error );
 }
 
 bool US_DataPubCatalog::isDb( void ) const
@@ -346,7 +352,32 @@ void US_DataPubCatalog::setBulkQueries( bool on )
 
 void US_DataPubCatalog::setCancelFlag( const QAtomicInt* flag )
 {
+   cancel_flag = flag;
    cat->setCancelFlag( flag );
+}
+
+bool US_DataPubCatalog::cancelledError( QString& error ) const
+{
+   if ( cancel_flag == nullptr  ||  cancel_flag->loadAcquire() == 0 )
+      return false;
+
+   error = QObject::tr( "Reading the %1 was cancelled" )
+           .arg( from_db ? QObject::tr( "database" )
+                         : QObject::tr( "local data directory" ) );
+   return true;
+}
+
+void US_DataPubCatalog::setMessageHandler(
+      const std::function< void( const QString& ) >& handler )
+{
+   QObject::disconnect( message_link );
+   message_link = QMetaObject::Connection();
+
+   if ( ! handler )  return;
+
+   message_link = QObject::connect( cat, &US_DataCatalog::message, cat,
+                                    [ handler ]( const QString& text )
+                                    { handler( text ); } );
 }
 
 IUS_DB2* US_DataPubCatalog::db( void )
@@ -513,16 +544,24 @@ int US_DataPubCatalog::indexOfListedRun( const Run& run ) const
 {
    QList< int > found = indexesOfRun( run.runID );
 
+   // A database run is its experiment, a disk run its directory
    for ( int ii = 0; ii < found.size(); ii++ )
-      if ( from_db  ||  cat->run( found[ ii ] ).dirPath == run.dirPath )
+   {
+      const Run& listedRun = cat->run( found[ ii ] );
+
+      if ( from_db ? ( run.id.toInt() < 1  ||
+                       listedRun.id.toInt() == run.id.toInt() )
+                   : listedRun.dirPath == run.dirPath )
          return found[ ii ];
+   }
 
    return -1;
 }
 
 bool US_DataPubCatalog::runByID( const QString& runID, Run& found,
                                  QString& error, bool* unusable,
-                                 QStringList* copies )
+                                 QStringList* copies,
+                                 const QString& experimentID )
 {
    if ( unusable != nullptr )  *unusable = false;
    if ( copies   != nullptr )  copies->clear();
@@ -544,6 +583,60 @@ bool US_DataPubCatalog::runByID( const QString& runID, Run& found,
       error = QObject::tr( "No run \"%1\" was found in the %2" ).arg( runID )
               .arg( from_db ? QObject::tr( "database" )
                             : QObject::tr( "local results directory" ) );
+      return false;
+   }
+
+   // A database can hold several experiments of one investigator under
+   // one run ID.  Only an experiment ID tells them apart; the run ID alone
+   // names none of them.
+   if ( from_db  &&  ! experimentID.isEmpty() )
+   {
+      QList< int > byID;
+      QStringList  ids;
+
+      for ( int ii = 0; ii < indexes.size(); ii++ )
+      {
+         const Run& run = cat->run( indexes[ ii ] );
+
+         ids << run.id;
+
+         if ( run.id.toInt() > 0  &&  run.id.toInt() == experimentID.toInt() )
+            byID << indexes[ ii ];
+      }
+
+      if ( byID.isEmpty() )
+      {
+         error = QObject::tr( "Run %1 has no experiment with the ID %2 in the"
+                              " database (its experiment ID: %3)" )
+                 .arg( runID ).arg( experimentID ).arg( ids.join( ", " ) );
+         return false;
+      }
+
+      indexes = byID;
+   }
+
+   else if ( from_db  &&  indexes.size() > 1 )
+   {
+      QList< int > ids;
+
+      for ( int ii = 0; ii < indexes.size(); ii++ )
+         ids << cat->run( indexes[ ii ] ).id.toInt();
+
+      std::sort( ids.begin(), ids.end() );
+
+      QStringList idText;
+
+      for ( int ii = 0; ii < ids.size(); ii++ )
+         idText << QString::number( ids[ ii ] );
+
+      if ( unusable != nullptr )  *unusable = true;
+
+      error = QObject::tr( "Run %1 is the run ID of %2 experiments in the"
+                           " database, with the experiment IDs %3; which of"
+                           " them is meant cannot be told from the run ID."
+                           "  Select one by its experiment ID"
+                           " (--experiment-id <ID> on the command line)" )
+              .arg( runID ).arg( ids.size() ).arg( idText.join( ", " ) );
       return false;
    }
 
@@ -633,6 +726,9 @@ QString US_DataPubCatalog::expFilePath( const Run& run )
 
 bool US_DataPubCatalog::loadRunDetails( Run& run, QString& error )
 {
+   // A database read cannot be stopped part way; it is not started
+   if ( cancelledError( error ) )  return false;
+
    if ( ! ensureListed( listed ? listed_project : QString(), error ) )
       return false;
 
@@ -719,6 +815,9 @@ QList< US_DataPubCatalog::Noise > US_DataPubCatalog::noises(
    for ( int ii = 0; ii < modelList.size(); ii++ )
    {
       const Model& model = modelList[ ii ];
+
+      // Each lookup below can be a database query of its own
+      if ( cancelledError( error ) )  return list;
 
       // A model that came out of the chain carries its noise already; one
       // the user picked by hand, whose edit was not among those read, has
@@ -844,10 +943,26 @@ bool US_DataPubCatalog::expInfo( const Run& run, ExpInfo& info,
 
    if ( failed( QObject::tr( "experiment" ) ) )  return false;
 
-   if ( ! dbase->next() )
+   // The row of the run's own experiment: an investigator can have more
+   // than one experiment of a run ID, and the procedure gives every one
+   bool byID  = run.id.toInt() > 0;
+   bool found = false;
+
+   while ( dbase->next() )
    {
-      error = QObject::tr( "Run %1 was not found in the database" )
-              .arg( run.runID );
+      if ( byID  &&  dbase->value( 1 ).toInt() != run.id.toInt() )  continue;
+
+      found = true;
+      break;
+   }
+
+   if ( ! found )
+   {
+      error = byID ? QObject::tr( "Run %1 (experiment ID %2) was not found in"
+                                  " the database" ).arg( run.runID )
+                     .arg( run.id )
+                   : QObject::tr( "Run %1 was not found in the database" )
+                     .arg( run.runID );
 
       if ( runFault != nullptr )  *runFault = true;
 

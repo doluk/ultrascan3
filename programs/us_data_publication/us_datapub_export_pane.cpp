@@ -1269,8 +1269,14 @@ US_DataPubExporter::Selection US_DataPubExportPane::selection( void ) const
    sel.comment          = le_comment->text();
 
    for ( int ii = 0; ii < runs.size(); ii++ )
+   {
       sel.runIDs << runs[ ii ].runID;
 
+      // The experiment that was picked, should the database have another
+      // one of the run ID
+      if ( sel.fromDb  &&  runs[ ii ].id.toInt() > 0 )
+         sel.experimentIDs.insert( runs[ ii ].runID, runs[ ii ].id );
+   }
    // With only a project picked there is no tree to narrow anything down:
    // the project's runs go whole
    sel.setChecked( ! runs.isEmpty(), checkedRaws(), checkedEdits(),

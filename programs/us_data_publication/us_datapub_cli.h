@@ -69,15 +69,34 @@ class US_DataPubCLI : public QObject
           digits ("12345") is not taken for the database ID of some other
           run.  Only when no run has that run ID is the value taken as a
           database ID, and then only when exactly one run has it -- local
-          copies of runs can carry the same placeholder ID.
+          copies of runs can carry the same placeholder ID.  A value taken
+          as a database ID names that experiment, also where the source
+          holds more than one experiment of its run ID.
           \param runs   The runs of the source
           \param wanted The value given
           \param why    On failure, why; on success, a warning when the
                         value is also the database ID of another run
+          \param experimentID When given, set to the value when it was
+                        taken as a database ID, and cleared otherwise
           \returns The run ID of the run, or an empty string
       */
       static QString resolveRun( const QList< US_DataPubCatalog::Run >& runs,
-                                 const QString& wanted, QString& why );
+                                 const QString& wanted, QString& why,
+                                 QString* experimentID = nullptr );
+
+      /*! \brief Print the manifest of a bundle an import refuses
+
+          What \c --list shows of a bundle whose manifest reads but does not
+          pass the import's checks -- a bundle of an older format the
+          import cannot take, say -- so that one can still see what it
+          holds.  The bundle is unpacked into a staging directory of its
+          own, which is removed again.
+          \param bundlePath The bundle
+          \param yaml       Filled in with the manifest as YAML
+          \returns False when the manifest cannot be read at all, or is of
+                   a later format than this build reads
+      */
+      static bool refusedManifest( const QString& bundlePath, QString& yaml );
 
    private slots:
       void onMessage( const QString& );

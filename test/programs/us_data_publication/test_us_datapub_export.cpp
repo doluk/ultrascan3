@@ -1444,6 +1444,10 @@ TEST_F( DataPubCatalogDb, CellAssignmentsUseTheChannelLetters )
       if ( current == "get_experiment_info_by_runID"  &&  col == 7 )
          return QVariant( "12" );                    // a calibration ID
 
+      // The run's own experiment ID: its row is the one read
+      if ( current == "get_experiment_info_by_runID"  &&  col == 1 )
+         return QVariant( db_run().id );
+
       return QVariant( "1" );
    } );
 
@@ -1479,6 +1483,8 @@ TEST_F( DataPubCatalogDb, ACalibrationIsNotAssumed )
    {
       if ( current == "get_experiment_info_by_runID"  &&  col == 7 )
          return QVariant( "0" );                     // no calibration
+      if ( current == "get_experiment_info_by_runID"  &&  col == 1 )
+         return QVariant( db_run().id );             // the run's experiment
       if ( current == "get_rotor_calibration_profiles" )
          return QVariant( "44" );                    // the rotor's first
       return QVariant( "1" );
@@ -1515,6 +1521,8 @@ TEST_F( DataPubCatalogDb, ANullRotorOrProjectIsNotLookedUp )
    ON_CALL( db, value( _ ) ).WillByDefault( [ &current ]( unsigned col )
    {
       if ( col == 0  ||  col == 6 )  return QVariant( QString() );  // NULL
+      if ( current == "get_experiment_info_by_runID"  &&  col == 1 )
+         return QVariant( db_run().id );             // the run's experiment
       return QVariant( "1" );
    } );
 
@@ -1660,6 +1668,20 @@ class US_DataPubExporterTest
                                   QString& error )
       {
          return ex.modelRowValues( model, variance, meniscus, error );
+      }
+
+      static bool readExperimentDb( US_DataPubExporter& ex,
+                                    const US_DataPubCatalog::Run& run,
+                                    US_Experiment& exper, QString& error )
+      {
+         QVector< US_SimulationParameters::SpeedProfile > steps;
+         return ex.readExperimentDb( run, exper, steps, error );
+      }
+
+      static QByteArray storedRiProfile( US_DataPubExporter& ex,
+                                         const US_DataPubCatalog::Run& run )
+      {
+         return ex.storedRiProfile( run );
       }
 
       static bool addSolutions( US_DataPubExporter& ex,
@@ -3755,8 +3777,7 @@ TEST_F( DataPubExport, AnExportStoppedBySigtermIsSweptByTheNext )
 }
 #endif
 
-// ---------------------------------------------------------------- round 7
-
+// ------------------------------------------- copies of a run's directory
 namespace
 {
    // A copy of the run directory under another name, every file as it is:
@@ -3811,10 +3832,10 @@ namespace
 /* A "Copy of ...", "Backup_..." or "..._old" directory holding the run's
    files under their own names is never read in place of the run, wherever
    it sorts: the directory named after the run is the run, and the copy is
-   ignored with a warning that names it.  Round 7 refused the run as long as
-   a copy was there; before that the export read whichever directory the
-   catalog listed first.  The copies here hold .auc files no reader takes,
-   so an export that read one would fail.
+   ignored with a warning that names it.  The run is not refused because a
+   copy is there, and the copy is never read for it, whichever directory
+   the catalog lists first.  The copies here hold .auc files no reader
+   takes, so an export that read one would fail.
 */
 TEST_F( DataPubExport, AStrayCopyOfTheRunDirectoryIsNotReadForTheRun )
 {
@@ -3900,8 +3921,8 @@ TEST_F( DataPubExport, ARunInDirectoriesNoneNamedAfterItIsRefused )
 }
 
 /* In a project export the run is exported from its own directory, and the
-   copy beside it is ignored with a warning that names it.  Round 7 left
-   the whole run out.
+   copy beside it is ignored with a warning that names it; the run itself
+   is not left out.
 */
 TEST_F( DataPubExportTwoRuns, AProjectExportReadsTheRunNotItsCopy )
 {
@@ -4225,4 +4246,325 @@ TEST_F( DataPubExport, EachBorrowerIsNamedInTheNoiseItWasRunWith )
    ASSERT_TRUE( single.manifest().entity( US_DataPub::Noise, noiseGUID,
                                           noise ) );
    EXPECT_EQ( noise.attrs.value( "borrowedByModelGUIDs" ), b1 );
+}
+
+// ------------------------------- cancel, progress and the runs of a source
+
+/* A cancel made just before an export or a preview starts -- the window's
+   Cancel button pressed while the window is still being locked -- stops it
+   before it reads anything.  Once it has ended the cancel no longer
+   counts: the same exporter then exports as ever.
+*/
+TEST_F( DataPubExport, ACancelJustBeforeTheStartIsKept )
+{
+   for ( int pass = 0; pass < 2; pass++ )
+   {
+      SCOPED_TRACE( pass == 0 ? "export" : "preview" );
+      US_DataPubExporter exporter;
+      QStringList        notes;
+      QObject::connect( &exporter, &US_DataPubExporter::message,
+                        [ &notes ]( const QString& text ) { notes << text; } );
+
+      exporter.cancel();
+
+      QString bundle = root + "/early.tar.gz";
+      QString error;
+      bool    ok = ( pass == 0 )
+                   ? exporter.exportBundle( baseSelection(
+                        US_DataPub::ScopeNoise ), bundle, error )
+                   : exporter.previewManifest( baseSelection(
+                        US_DataPub::ScopeNoise ), error );
+
+      EXPECT_FALSE( ok );
+      EXPECT_TRUE( exporter.wasCancelled() );
+      EXPECT_TRUE( error.contains( "cancelled" ) ) << error.toStdString();
+      EXPECT_TRUE( notes.isEmpty() ) << notes.join( "\n" ).toStdString();
+      EXPECT_FALSE( QFile::exists( bundle ) );
+
+      ASSERT_TRUE( exporter.exportBundle( baseSelection(
+                   US_DataPub::ScopeNoise ), bundle, error ) )
+         << error.toStdString();
+      EXPECT_FALSE( exporter.wasCancelled() );
+      QFile::remove( bundle );
+   }
+}
+
+/* Reading the runs of a project is a phase of its own: what the shared
+   catalog says while it indexes the store comes through, each run is a
+   step, and a cancel made at the first run stops the export before the
+   second run is read and before anything is staged.
+*/
+TEST_F( DataPubExportTwoRuns, ReadingTheRunsShowsProgressAndCanBeCancelled )
+{
+   addRun( "demo_run2" );
+
+   US_DataPubExporter::Selection selection;
+   selection.fromDb      = false;
+   selection.scope       = US_DataPub::ScopeNoise;
+   selection.projectGUID = projectGUID;
+
+   US_DataPubExporter exporter;
+   QStringList        notes;
+   QList< int >       events;       // > 0: steps announced, < 0: step done
+   QObject::connect( &exporter, &US_DataPubExporter::message,
+                     [ &notes ]( const QString& text ) { notes << text; } );
+   QObject::connect( &exporter, &US_DataPubExporter::steps,
+                     [ &events ]( int steps ) { events << steps; } );
+   QObject::connect( &exporter, &US_DataPubExporter::stepDone,
+                     [ &events ]( int step )  { events << -step; } );
+
+   QString error;
+   ASSERT_TRUE( exporter.previewManifest( selection, error ) )
+      << error.toStdString();
+
+   QString all = notes.join( "\n" );
+   EXPECT_TRUE( all.contains( "Indexing the local data directory" ) )
+      << all.toStdString();
+   EXPECT_TRUE( all.contains( "Reading run " + runID1 ) ) << all.toStdString();
+   EXPECT_TRUE( all.contains( "Reading run " + runID2 ) ) << all.toStdString();
+
+   // Two runs, both read, before the records are counted
+   ASSERT_GE( events.size(), 4 );
+   EXPECT_EQ( events[ 0 ],  2 );
+   EXPECT_EQ( events[ 1 ], -1 );
+   EXPECT_EQ( events[ 2 ], -2 );
+   EXPECT_EQ( events.last(), exporter.manifest().total() );
+
+   // Cancelled while the first run is read
+   US_DataPubExporter stopped;
+   QStringList        seen;
+   QObject::connect( &stopped, &US_DataPubExporter::message,
+                     [ &stopped, &seen ]( const QString& text )
+                     {
+                        seen << text;
+
+                        if ( text.startsWith( "Reading run" ) )
+                           stopped.cancel();
+                     } );
+
+   EXPECT_FALSE( stopped.previewManifest( selection, error ) );
+   EXPECT_TRUE( stopped.wasCancelled() );
+   EXPECT_TRUE( error.contains( "cancelled" ) ) << error.toStdString();
+
+   int reads = 0;
+
+   for ( int ii = 0; ii < seen.size(); ii++ )
+   {
+      if ( seen[ ii ].startsWith( "Reading run" ) )  reads++;
+      EXPECT_FALSE( seen[ ii ].startsWith( "Experiment:" ) )
+         << seen[ ii ].toStdString();
+   }
+
+   EXPECT_EQ( reads, 1 ) << seen.join( "\n" ).toStdString();
+}
+
+/* A run of a local store belongs to the project its experiment XML names,
+   so a run whose XML is missing, or cannot be read from its start, is in
+   no project's listing.  A project export does not take it -- whether it
+   is the project's cannot be told -- but it says so instead of leaving it
+   out without a word.  A copy of a run's directory is not named.
+*/
+TEST_F( DataPubExportTwoRuns, ARunWithoutAReadableExperimentXmlIsNamed )
+{
+   addRun( "demo_run2" );
+
+   QString xml2 = US_Settings::resultDir() + "/" + runID2 + "/" + runID2
+                  + "." + runType + ".xml";
+   ASSERT_TRUE( QFile::exists( xml2 ) );
+
+   US_DataPubExporter::Selection selection;
+   selection.fromDb      = false;
+   selection.scope       = US_DataPub::ScopeNoise;
+   selection.projectGUID = projectGUID;
+
+   for ( int pass = 0; pass < 2; pass++ )
+   {
+      SCOPED_TRACE( pass == 0 ? "missing" : "not XML" );
+
+      if ( pass == 0 )
+         ASSERT_TRUE( QFile::rename( xml2, xml2 + ".away" ) );
+
+      else
+      {
+         ASSERT_TRUE( QFile::rename( xml2 + ".away", xml2 ) );
+         QFile file( xml2 );
+         ASSERT_TRUE( file.open( QIODevice::WriteOnly | QIODevice::Truncate ) );
+         file.write( "<<< not xml" );
+         file.close();
+      }
+
+      US_DataPubExporter exporter;
+      QString            error;
+      ASSERT_TRUE( exporter.previewManifest( selection, error ) )
+         << error.toStdString();
+
+      EXPECT_EQ( exporter.manifest().count( US_DataPub::Experiment ), 1 );
+
+      QString warned = exporter.warnings().join( "\n" );
+      EXPECT_TRUE( warned.contains( runID2 ) ) << warned.toStdString();
+      EXPECT_TRUE( warned.contains( pass == 0 ? "missing" : "cannot be read" ) )
+         << warned.toStdString();
+      EXPECT_FALSE( warned.contains( runID1 + " " ) ) << warned.toStdString();
+   }
+}
+
+/* A run whose experiment XML reads but names no project belongs to none:
+   that is not a problem of the run, and a project export says nothing
+   about it. */
+TEST_F( DataPubExportTwoRuns, ARunOfNoProjectIsNotWarnedAbout )
+{
+   addRun( "demo_run2" );
+
+   QString xml2 = US_Settings::resultDir() + "/" + runID2 + "/" + runID2
+                  + "." + runType + ".xml";
+   QString text = read_text( xml2 );
+   text.replace( projectGUID, "" );
+   QFile file( xml2 );
+   ASSERT_TRUE( file.open( QIODevice::WriteOnly | QIODevice::Truncate ) );
+   file.write( text.toUtf8() );
+   file.close();
+
+   US_DataPubExporter::Selection selection;
+   selection.fromDb      = false;
+   selection.scope       = US_DataPub::ScopeNoise;
+   selection.projectGUID = projectGUID;
+
+   US_DataPubExporter exporter;
+   QString            error;
+   ASSERT_TRUE( exporter.previewManifest( selection, error ) )
+      << error.toStdString();
+   EXPECT_EQ( exporter.manifest().count( US_DataPub::Experiment ), 1 );
+   EXPECT_FALSE( exporter.warnings().join( "\n" ).contains( runID2 ) )
+      << exporter.warnings().join( "\n" ).toStdString();
+}
+
+// ------------------------------- two experiments of one run ID in a database
+
+namespace
+{
+   // A row of get_experiment_summary
+   QVariantList summary_row( int id, const QString& guid,
+                             const QString& runID )
+   {
+      return QVariantList() << id << guid << runID << "velocity" << "RA"
+                            << runID << 0 << QString() << QString()
+                            << "2024-01-02 03:04:05" << 1 << 1 << 0 << 0;
+   }
+
+   // A row of get_experiment_info_by_runID; column 16 is the RI profile
+   QVariantList info_row( int id, const QString& guid, const QString& label,
+                          const QString& riProfile )
+   {
+      return QVariantList() << 0 << id << guid << 1 << 1 << 2 << 0 << 0
+                            << "velocity" << "20.0" << label << "comment"
+                            << "" << "2024-01-02 03:04:05" << 2 << "RA"
+                            << riProfile;
+   }
+}
+
+/* A database can hold more than one experiment of an investigator under one
+   run ID.  The run ID alone then names none of them: the run is refused as
+   not usable, with a message that names every experiment ID and says how to
+   pick one.  The experiment ID picks it, and every read of the run -- its
+   experiment information, its experiment record, its stored RI profile --
+   reads that experiment, not the first of the run ID.
+*/
+TEST_F( DataPubExportSteps, TwoExperimentsOfOneRunIdAreToldApartByTheirIds )
+{
+   QString g12 = "aaaaaaaa-0000-4000-8000-000000000012";
+   QString g15 = "aaaaaaaa-0000-4000-8000-000000000015";
+   QString g20 = "aaaaaaaa-0000-4000-8000-000000000020";
+
+   sdb.rows.insert( "get_experiment_summary", QList< QVariantList >()
+                    << summary_row( 12, g12, "dup_run" )
+                    << summary_row( 15, g15, "dup_run" )
+                    << summary_row( 20, g20, "other_run" ) );
+   sdb.rows.insert( "get_experiment_info_by_runID", QList< QVariantList >()
+                    << info_row( 12, g12, "first", "<first/>" )
+                    << info_row( 15, g15, "second", "<second/>" ) );
+
+   US_DataPubCatalog catalog;
+   catalog.attachDb( sdb.db() );
+
+   US_DataPubCatalog::Run run;
+   QString                error;
+   bool                   unusable = false;
+
+   EXPECT_FALSE( catalog.runByID( "dup_run", run, error, &unusable ) );
+   EXPECT_TRUE( unusable );
+   EXPECT_TRUE( error.contains( "12, 15" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "--experiment-id" ) ) << error.toStdString();
+   EXPECT_FALSE( error.contains( "directories" ) ) << error.toStdString();
+
+   ASSERT_TRUE( catalog.runByID( "dup_run", run, error, nullptr, nullptr,
+                                 "15" ) ) << error.toStdString();
+   EXPECT_EQ( run.id, QString( "15" ) );
+   EXPECT_EQ( run.guid, g15 );
+
+   US_DataPubCatalog::Run none;
+   EXPECT_FALSE( catalog.runByID( "dup_run", none, error, nullptr, nullptr,
+                                  "20" ) );
+   EXPECT_TRUE( error.contains( "20" ) ) << error.toStdString();
+
+   US_DataPubCatalog::Run other;
+   EXPECT_TRUE( catalog.runByID( "other_run", other, error ) )
+      << error.toStdString();
+
+   // The experiment information is that of experiment 15
+   US_DataPubCatalog::ExpInfo info;
+   ASSERT_TRUE( catalog.expInfo( run, info, error ) ) << error.toStdString();
+   EXPECT_EQ( info.expID, QString( "15" ) );
+   EXPECT_EQ( info.expGUID, g15 );
+   EXPECT_EQ( info.label, QString( "second" ) );
+
+   // ... and so are the experiment record and its RI profile
+   US_Experiment exper;
+   ASSERT_TRUE( US_DataPubExporterTest::readExperimentDb( exporter, run,
+                                                          exper, error ) )
+      << error.toStdString();
+   EXPECT_EQ( exper.expID, 15 );
+   EXPECT_EQ( exper.expGUID, g15 );
+   EXPECT_EQ( US_DataPubExporterTest::storedRiProfile( exporter, run ),
+              QByteArray( "<second/>" ) );
+
+   // A run without an ID reads the first, as it always has
+   US_DataPubCatalog::Run plain = run;
+   plain.id.clear();
+   EXPECT_EQ( US_DataPubExporterTest::storedRiProfile( exporter, plain ),
+              QByteArray( "<first/>" ) );
+}
+
+/* A database read of the catalog is not started once the export has been
+   cancelled: no query goes out for the run's records or a model's noise. */
+TEST_F( DataPubExportSteps, TheCatalogStartsNoDatabaseReadOnceCancelled )
+{
+   sdb.rows.insert( "get_experiment_summary", QList< QVariantList >()
+                    << summary_row( 12, "aaaaaaaa-0000-4000-8000-000000000012",
+                                    "a_run" ) );
+
+   US_DataPubCatalog catalog;
+   catalog.attachDb( sdb.db() );
+
+   QAtomicInt flag( 0 );
+   catalog.setCancelFlag( &flag );
+
+   US_DataPubCatalog::Run run;
+   QString                error;
+   ASSERT_TRUE( catalog.runByID( "a_run", run, error ) ) << error.toStdString();
+
+   flag.storeRelease( 1 );
+   sdb.asked.clear();
+
+   EXPECT_FALSE( catalog.loadRunDetails( run, error ) );
+   EXPECT_TRUE( error.contains( "cancelled" ) ) << error.toStdString();
+
+   US_DataPubCatalog::Model model;
+   model.guid     = "aaaaaaaa-0000-4000-8000-000000000033";
+   model.editGUID = "aaaaaaaa-0000-4000-8000-000000000034";
+   error.clear();
+   EXPECT_TRUE( catalog.noises( QList< US_DataPubCatalog::Model >() << model,
+                                error ).isEmpty() );
+   EXPECT_TRUE( error.contains( "cancelled" ) ) << error.toStdString();
+
+   EXPECT_TRUE( sdb.asked.isEmpty() ) << sdb.asked.join( ", " ).toStdString();
 }

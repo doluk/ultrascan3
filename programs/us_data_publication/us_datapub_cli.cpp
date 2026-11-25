@@ -288,7 +288,9 @@ QString US_DataPubCLI::usage( void )
       "  --project-id <id>       export this project (database ID)\n"
       "  --project-guid <guid>   export this project (GUID)\n"
       "  --experiment-id <run>   export this run; may be repeated.  Accepts a\n"
-      "                          runID or an experiment database ID\n"
+      "                          runID or an experiment database ID; the ID\n"
+      "                          picks one of several database experiments\n"
+      "                          that share a runID\n"
       "  --max-scope <scope>     export up to and including this record type\n"
       "                          (default: noise, the whole chain)\n"
       "  --include-<scope>       export up to and including this record type;\n"
@@ -597,10 +599,12 @@ bool US_DataPubCLI::readPasswordFile( const QString& path, QString& password,
 }
 
 QString US_DataPubCLI::resolveRun( const QList< US_DataPubCatalog::Run >& runs,
-                                   const QString& wanted, QString& why )
+                                   const QString& wanted, QString& why,
+                                   QString* experimentID )
 {
    why.clear();
 
+   if ( experimentID != nullptr )  experimentID->clear();
    QStringList byID;
 
    for ( int ii = 0; ii < runs.size(); ii++ )
@@ -621,8 +625,13 @@ QString US_DataPubCLI::resolveRun( const QList< US_DataPubCatalog::Run >& runs,
       return runs[ ii ].runID;
    }
 
-   if ( byID.size() == 1 )  return byID[ 0 ];
+   if ( byID.size() == 1 )
+   {
+      // The experiment of that ID, whatever else has its run ID
+      if ( experimentID != nullptr )  *experimentID = wanted;
 
+      return byID[ 0 ];
+   }
    if ( byID.size() > 1 )
       why = tr( "\"%1\" is the ID of %2 runs (%3); name the run by its run"
                 " ID" ).arg( wanted ).arg( byID.size() )
@@ -631,6 +640,29 @@ QString US_DataPubCLI::resolveRun( const QList< US_DataPubCatalog::Run >& runs,
       why = tr( "No run \"%1\" was found" ).arg( wanted );
 
    return QString();
+}
+
+bool US_DataPubCLI::refusedManifest( const QString& bundlePath, QString& yaml )
+{
+   yaml.clear();
+
+   US_DataPubBundle   bundle;
+   US_DataPubManifest manifest;
+   QString            error;
+
+   bundle.setStagingLock( "list.lock" );
+
+   bool read = bundle.unpack( bundlePath, error )  &&
+               ! bundle.rootPath().isEmpty()  &&
+               manifest.read( bundle.rootPath() + "/"
+                              + US_DataPubBundle::manifestName(), error )  &&
+               manifest.version <= US_DataPubManifest::currentVersion;
+
+   bundle.cleanup();
+
+   if ( read )  yaml = manifest.toYaml();
+
+   return read;
 }
 
 QString US_DataPubCLI::password( bool needed )
@@ -948,12 +980,15 @@ int US_DataPubCLI::runExport( void )
          return 1;
       }
 
+      // runID -> the experiment ID it was named by, when it was
+      QMap< QString, QString > byID;
+
       for ( int ii = 0; ii < args.experiments.size(); ii++ )
       {
          QString wanted = args.experiments[ ii ];
          QString why;
-         QString runID  = resolveRun( runs, wanted, why );
-
+         QString expID;
+         QString runID  = resolveRun( runs, wanted, why, &expID );
          if ( runID.isEmpty() )
          {
             fail( why );
@@ -966,10 +1001,25 @@ int US_DataPubCLI::runExport( void )
             err.flush();
          }
 
+         // A bundle holds one run of a run ID: two experiments of one run
+         // ID cannot both go
+         if ( ! expID.isEmpty()  &&  byID.contains( runID )  &&
+              byID.value( runID ) != expID )
+         {
+            fail( tr( "--experiment-id %1 and %2 name two experiments of the"
+                      " run ID %3; a bundle can hold only one of them" )
+                  .arg( byID.value( runID ) ).arg( expID ).arg( runID ) );
+            return 1;
+         }
+
+         if ( ! expID.isEmpty() )  byID.insert( runID, expID );
+
          // A run named twice -- by runID and by ID, say -- is one run
          if ( ! selection.runIDs.contains( runID ) )
             selection.runIDs << runID;
       }
+
+      selection.experimentIDs = byID;
    }
 
    US_DataPubExporter exporter;
@@ -1097,6 +1147,13 @@ int US_DataPubCLI::runImport( void )
 
    if ( ! importer.inspect( args.bundle, error ) )
    {
+      // A bundle that cannot be imported can still be looked at: its
+      // manifest first, then why it is refused
+      QString yaml;
+
+      if ( args.listOnly  &&  refusedManifest( args.bundle, yaml ) )
+         print( yaml );
+
       fail( error );
       return 1;
    }
