@@ -243,6 +243,108 @@ TEST_F( DataPubDbExport, ABorrowingModelIsNamedFromTheDatabase )
       << fromDb.log().join( "\n" ).toStdString();
 }
 
+/* An edit with more than one noise record of a type, and models without
+   noise of their own, exported from a database: each borrower is named in
+   the records it was run with -- the newest of each type that was there
+   when it was made, by the rows' time stamps -- and in no other.
+
+     M1 (the store's) 00:00, its noise N1 (ti) 00:10, borrower B1 00:20,
+     M2 00:30, its noise N2 (ti) 00:40 and N3 (ri) 00:50, borrower B2 01:00
+*/
+TEST_F( DataPubDbExport, EachBorrowerIsNamedInTheNoiseItWasRunWith )
+{
+   auto write_model = [ & ]( const QString& file, const QString& desc )
+   {
+      US_Model model;
+      model.modelGUID   = US_Util::new_guid();
+      model.editGUID    = editGUID;
+      model.description = desc;
+      EXPECT_EQ( model.write( US_Settings::dataDir() + "/models/" + file ),
+                 IUS_DB2::OK );
+      return model.modelGUID;
+   };
+
+   auto write_noise = [ & ]( const QString& file, const QString& model,
+                             US_Noise::NoiseType type, const QString& desc )
+   {
+      US_Noise noise;
+      noise.noiseGUID   = US_Util::new_guid();
+      noise.modelGUID   = model;
+      noise.description = desc;
+      noise.type        = type;
+      noise.values << 0.001 << 0.002;
+      noise.count       = 2;
+      EXPECT_EQ( noise.write( US_Settings::dataDir() + "/noises/" + file ),
+                 IUS_DB2::OK );
+      return noise.noiseGUID;
+   };
+
+   QString b1 = write_model( "M0000011.xml", "demo_run.1A280.e1_a1_2DSA-B1.model" );
+   QString m2 = write_model( "M0000012.xml", "demo_run.1A280.e1_a1_2DSA-M2.model" );
+   QString n2 = write_noise( "N0000012.xml", m2, US_Noise::TI,
+                             "demo_run.1A280.e1_a1_2DSA-M2.ti_noise" );
+   QString n3 = write_noise( "N0000013.xml", m2, US_Noise::RI,
+                             "demo_run.1A280.e1_a1_2DSA-M2.ri_noise" );
+   QString b2 = write_model( "M0000013.xml", "demo_run.1A280.e1_a1_2DSA-B2.model" );
+
+   QString dbRunID;
+   QString error;
+   ASSERT_TRUE( storeInDatabase( dbRunID, error ) ) << error.toStdString();
+
+   const QList< QPair< QString, QString > > models =
+   {
+      { modelGUID, "00:00:00" }, { b1, "00:00:20" }, { m2, "00:00:30" },
+      { b2, "00:01:00" }
+   };
+   const QList< QPair< QString, QString > > noises =
+   {
+      { noiseGUID, "00:00:10" }, { n2, "00:00:40" }, { n3, "00:00:50" }
+   };
+
+   for ( const auto& mm : models )
+   {
+      db->rawQuery( QString( "UPDATE model SET lastUpdated = '2020-01-01 %1'"
+                             " WHERE modelGUID = '%2'" )
+                    .arg( mm.second ).arg( mm.first ) );
+      ASSERT_EQ( db->lastErrno(), IUS_DB2::OK ) << db->lastError().toStdString();
+   }
+
+   for ( const auto& nn : noises )
+   {
+      db->rawQuery( QString( "UPDATE noise SET timeEntered = '2020-01-01 %1'"
+                             " WHERE noiseGUID = '%2'" )
+                    .arg( nn.second ).arg( nn.first ) );
+      ASSERT_EQ( db->lastErrno(), IUS_DB2::OK ) << db->lastError().toStdString();
+   }
+
+   US_DataPubExporter fromDb;
+   ASSERT_TRUE( exportFromDb( dbRunID, root + "/from_db.tar.gz", fromDb,
+                              error ) )
+      << error.toStdString() << "\n" << fromDb.log().join( "\n" ).toStdString();
+
+   const US_DataPubManifest& mani = fromDb.manifest();
+   EXPECT_EQ( mani.count( US_DataPub::Model ), 4 );
+   ASSERT_EQ( mani.count( US_DataPub::Noise ), 3 );
+
+   struct Expect { QString noise; QString fitted; QString borrowers; };
+   const QList< Expect > expected =
+   {
+      { noiseGUID, modelGUID, b1 },
+      { n2,        m2,        b2 },
+      { n3,        m2,        b2 },
+   };
+
+   for ( const Expect& ex : expected )
+   {
+      US_DataPubEntity noise;
+      ASSERT_TRUE( mani.entity( US_DataPub::Noise, ex.noise, noise ) );
+      EXPECT_EQ( noise.depend( US_DataPub::Model ), ex.fitted );
+      EXPECT_EQ( noise.attrs.value( "borrowedByModelGUIDs" ), ex.borrowers )
+         << ex.noise.toStdString() << "\n"
+         << fromDb.log().join( "\n" ).toStdString();
+   }
+}
+
 /**
  * The fixture database itself (US3_TEST_DB_NAME), read only: no import
  * into a database, so these run against MySQL 8 as well.

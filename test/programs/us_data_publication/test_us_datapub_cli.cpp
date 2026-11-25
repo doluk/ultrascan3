@@ -692,6 +692,45 @@ TEST_F( DataPubCli, AnEmptyPasswordInTheEnvironmentFailsWithOneError )
    }
 }
 
+/* An empty --db-password is a password given, and an empty one, as an
+   empty US3_DB_PASSWORD is: a failure (1) said once, not a usage error (2)
+   with the whole help text.  Both spellings of the option.
+*/
+TEST_F( DataPubCli, AnEmptyPasswordOptionFailsAsTheEnvironmentDoes )
+{
+   const QStringList modes[] =
+   {
+      { "--mode", "export", "--source", "db", "--experiment-id", "demo_run",
+        "--dry-run", "--non-interactive", "--db-password", "" },
+      { "--mode", "export", "--source", "db", "--experiment-id", "demo_run",
+        "--dry-run", "--db-password=" },
+      { "--mode", "import", "--target", "db", "--bundle",
+        "/nonexistent/bundle.tar.gz", "--dry-run", "--non-interactive",
+        "--db-password", "" }
+   };
+
+   for ( const QStringList& args : modes )
+   {
+      SCOPED_TRACE( args.join( " " ).toStdString() );
+      QString errText;
+
+      EXPECT_EQ( runCapturing( args, errText ), 1 );
+      EXPECT_EQ( errText.count( "Error:" ), 1 ) << errText.toStdString();
+      EXPECT_TRUE( errText.contains( "--db-password was given an empty"
+                                     " password" ) )
+         << errText.toStdString();
+      EXPECT_FALSE( errText.contains( "Usage" ) ) << errText.toStdString();
+      EXPECT_FALSE( errText.contains( "master password:" ) )
+         << errText.toStdString();
+   }
+
+   // An option with no value at all is still a usage error
+   QString errText;
+   EXPECT_EQ( runCapturing( QStringList() << "--mode" << "export" << "--source"
+                            << "db" << "--experiment-id" << "demo_run"
+                            << "--db-password", errText ), 2 );
+}
+
 /* A wrong master password is said to be wrong.  It unlocks nothing, and the
    server then refused a login without any password: "Access denied ...
    (using password: NO)", which named neither the master password nor what

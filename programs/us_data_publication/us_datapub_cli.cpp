@@ -507,7 +507,11 @@ bool US_DataPubCLI::parse( const QStringList& arguments, QString& error )
          return false;
       }
 
-      if ( last  ||  ( next.isEmpty()  &&  arg != "--comment" ) )
+      // An empty comment is a comment; an empty --db-password is a password
+      // that is no use, which password() says as it says it of an empty
+      // US3_DB_PASSWORD, not a usage error
+      if ( last  ||  ( next.isEmpty()  &&  arg != "--comment"  &&
+                       arg != "--db-password" ) )
       {
          error = tr( "%1 needs a value" ).arg( arg );
          return false;
@@ -666,8 +670,16 @@ QString US_DataPubCLI::password( bool needed )
       return pw;
    }
 
-   if ( ! args.dbPassword.isEmpty() )
+   if ( args.given.contains( "--db-password" ) )
    {
+      if ( args.dbPassword.isEmpty() )
+      {
+         fail( tr( "--db-password was given an empty password; give the"
+                   " master password" ) );
+         password_failed = true;
+         return QString();
+      }
+
       err << tr( "Warning: a password given with --db-password can be seen"
                  " by other users of this machine; prefer --db-password-file"
                  " or US3_DB_PASSWORD" ) << "\n";

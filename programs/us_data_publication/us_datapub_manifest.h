@@ -132,8 +132,21 @@ class US_DataPubManifest
       //! \brief Construct an empty manifest
       US_DataPubManifest();
 
-      //! \brief The manifest format version this build writes
-      static const int currentVersion = 1;
+      /*! \brief The manifest format version this build writes
+
+          - 1: every bundle written before format 2.  Some development
+            builds (between 27126e8 and fa19fb7) listed a noise record
+            carried for a model without noise of its own under that model,
+            naming the model it was fitted to in \c fittedToModelGUID; its
+            payload names the other model, so those bundles cannot be
+            imported, and validate() says so.
+          - 2: noise is always listed under the model it was fitted to,
+            and every model of the bundle that borrows it is named in
+            \c borrowedByModelGUIDs.
+
+          A reader accepts every version up to this one.
+      */
+      static constexpr int currentVersion = 2;
 
       int     version;      //!< Manifest format version
       QString created;      //!< UTC creation time, ISO-8601

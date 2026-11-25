@@ -294,7 +294,7 @@ import replays them in the order its target needs, see
 ```yaml
 # UltraScan3 data publication bundle manifest
 # Records are listed in dependency order: each depends only on records listed before it.
-version: 1
+version: 2
 created: "2026-09-12T09:30:11Z"
 generator: "us_data_publication 4.3.0-dev"
 source: "db"
@@ -378,13 +378,25 @@ Header keys:
 
 | Key          | Meaning                                                   |
 |--------------|-----------------------------------------------------------|
-| `version`    | Manifest format version; this build writes and reads `1`  |
+| `version`    | Manifest format version; this build writes `2` and reads `1` and `2` (see below) |
 | `created`    | UTC time the bundle was written, ISO-8601                 |
 | `generator`  | Program and version that wrote it                         |
 | `source`     | `db` or `disk` — where the records were read from         |
 | `scope`      | The deepest record type in the bundle                     |
 | `bundleGUID` | Identifies this bundle                                    |
 | `comment`    | Free text from `--comment` or the **Comment** field       |
+
+**Format versions.** `1` is every bundle written before format `2` was
+introduced; `2` is written since. They differ in one point: a few development
+builds of format `1` listed a noise record carried for a model without noise
+of its own under that model, with the model it was fitted to in
+`fittedToModelGUID`, while its payload names the model it was fitted to. Such
+a bundle cannot be imported, and `US_DataPubManifest::validate()` refuses it
+with a message that says so and names the three records — "export the data
+again" — instead of reporting a payload that does not match its entry. Format
+`2` lists such a noise record under the model it was fitted to and names every
+borrower in `borrowedByModelGUIDs`. A reader accepts every format up to the
+one it writes (`US_DataPubManifest::currentVersion`) and refuses a later one.
 
 Every entry carries a `payload` and a `sha256`. **The digest is the digest of
 the payload file**, not of the record's properties, so a bundle can be verified
@@ -479,6 +491,15 @@ directories.
 command line exits with `1`, when
 
 * there would be nothing in the bundle;
+* a run named on its own is one the catalog marks as not to be acted on
+  (`US_DataCatalog::Run::usable`): above all, a run ID the local results
+  directory holds in more than one directory — a `Copy of …` or `Backup_…`
+  directory made by hand holds the same files under the same names. Which of
+  them is the run cannot be told, so the export does not pick one: it fails
+  with a message naming every directory, and says to keep only the one named
+  after the run. (It used to read whichever directory the catalog listed
+  first.) When exactly one of the directories of a run ID is usable, that one
+  is the run, wherever it sorts;
 * a run, raw data, edit, model or noise GUID it was asked for by name matches
   nothing (`--model-guid`, `--noise-guid`, or the selection of the window);
 * a run belongs to a project other than the one `--project-id` /
@@ -534,7 +555,9 @@ out not to hold together while they are staged: a channel without a solution
 centerpiece the run names that the source does not have, a time state
 without its field definitions, a payload that does not carry
 the GUID the catalog lists it under, an experiment XML that names another run
-ID or GUID than the run (a run directory renamed by hand), a spectrum or
+ID or GUID than the run (a run directory renamed by hand), an experiment XML
+that is missing or is not XML, a run ID held in more than one directory (the
+warning names them), a spectrum or
 other value that is not a finite number, or an experiment, raw data or edit
 that another run of the export already brought into the bundle (a run
 directory copied under another name, GUIDs and all: the run that comes
@@ -568,7 +591,9 @@ Wrote 16 records to project5.tar.gz (left out: 1 run(s), 0 other record(s); see 
 ```
 
 (A dry run says the same in its "would be exported" line.) Nothing left out,
-no such count.
+no such count. The warnings count the runs of a project that were left out
+once, whichever check left each one out: "2 run(s) of the project are left
+out of the bundle: bad run, demo_run3".
 
 **A dry run, and the window's preview, are the export without the bundle.**
 They read and stage every record in a staging directory of their own and make
@@ -576,7 +601,12 @@ every check the export makes — the payload GUIDs, the experiment XML, values
 that are not finite, the staged tree — and remove the directory afterwards, so
 the records they list, their digests and what they leave out (which copy of a
 copied run directory, say) are what the export writes. They take as long as
-the export, less the packing. The window's completion box (and the preview, and the box of
+the export, less the packing. The window's preview shows its progress in the
+status log and the progress bar, as the export does, and both can be stopped
+with **Cancel** (`US_DataPubExporter::cancel()`): the export or preview then
+fails with "The export was cancelled; no bundle was written" and removes its
+staging directory. A failed preview says "The export would fail: …" with the
+reason and the warnings. The window's completion box (and the preview, and the box of
 an export that failed) lists the runs left out, the number of other records
 left out, and the warnings. `US_DataPubExporter::warnings()`,
 `leftOutRuns()`, `leftOutRecords()` and `warningReport()` give the same to a
@@ -593,7 +623,12 @@ ignores the attribute). A disk store a bundle is imported into gives the
 calibration no ID of its own (`-1`), so the ID alone named nothing there, and
 a run exported from it again — database → bundle → disk → bundle — lost its
 calibration. An export from disk finds the calibration by that GUID among the
-`C*.xml` files of the rotor directory when the ID does not find it.
+`C*.xml` files of the rotor directory when the ID does not find it, or finds
+one with another GUID. When the calibration of the ID has another GUID and no
+calibration has the run's, the run was made with a calibration the store does
+not have: the run is refused (or left out of a project export) with a message
+naming both GUIDs, rather than exported with the other calibration's
+coefficients.
 
 A model's variance and meniscus travel with every digit: in the manifest
 (`variance`, `meniscus`, from the database row when the source is a
@@ -704,11 +739,14 @@ The Export tab works top to bottom:
    command line, and the summary says so. **Details…** shows the manifest that would be written,
    with the warnings of what would be left out: it is the export without the
    bundle (every record is read and checked, in a staging directory that is
-   removed afterwards), so it takes as long as the export. **Latest Edit** ticks
+   removed afterwards), so it takes as long as the export; it shows its
+   progress, locks the window as the export does, and **Cancel** stops it.
+   **Latest Edit** ticks
    the edit with the latest edit time stamp of each triple.
 10. **Export Bundle**. While the export runs the tab cannot be changed, the
     Import tab cannot be opened, and closing the window waits: it closes once
-    the export is done. The same holds the other way round during an import.
+    the export is done. **Cancel** stops the export (or the preview) at the
+    next record; no bundle is written. The same holds the other way round during an import.
 
 ### Command line
 
@@ -1317,7 +1355,8 @@ file that cannot be read, and an empty password from the file, the environment
 or the prompt, is reported once and the run exits with `1`; no password at all
 is a usage error (`2`). `US3_DB_PASSWORD` that is set to nothing
 (`US3_DB_PASSWORD=`) is an empty password, not a missing one: exit `1`, no
-prompt. A wrong master password is said to be wrong — it is checked against
+prompt; so is `--db-password ''` (or `--db-password=`). `--db-password` with
+no value after it at all is a usage error. A wrong master password is said to be wrong — it is checked against
 the hash the installation keeps and against the database password stored for
 the default database before any connection is made — instead of surfacing as
 the server's "Access denied … (using password: NO)". The prompt keeps the terminal quiet
