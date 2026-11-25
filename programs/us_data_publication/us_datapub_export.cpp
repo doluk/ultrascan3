@@ -1899,6 +1899,11 @@ bool US_DataPubExporter::addExperiment( const US_DataPubCatalog::Run& run,
                                                         : info.label );
    entity.attrs.insert( "expType", info.expType.isEmpty() ? run.expType
                                                           : info.expType );
+
+   // The columns NULL in the source's row, which new_experiment would store
+   // as '' (a disk store cannot tell NULL from empty, and names none)
+   if ( ! info.nullFields.isEmpty() )
+      entity.attrs.insert( "nullFields", info.nullFields.join( " " ) );
    if ( mani.contains( US_DataPub::Project, info.projectGUID ) )
       entity.setDepend( US_DataPub::Project, info.projectGUID );
 

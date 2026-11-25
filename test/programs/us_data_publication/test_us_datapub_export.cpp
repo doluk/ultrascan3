@@ -1228,6 +1228,52 @@ class DataPubCatalogDb : public ::testing::Test
       }
 };
 
+/* The experiment row's NULL centrifugeProtocol and RIProfile
+   (get_experiment_info_by_runID columns 12 and 16) are told from empty
+   ones: US_DB2::value() gives a NULL column as a null string and an empty
+   one as an empty string.  The export names the NULL ones in the run's
+   "nullFields", which the import keeps; a column the row does not have is
+   not taken for NULL. */
+TEST_F( DataPubCatalogDb, NullExperimentFieldsAreToldFromEmptyOnes )
+{
+   struct Case { QVariant protocol, profile; QStringList nulls; };
+   const QList< Case > cases =
+   {
+      { QVariant( QString() ),   QVariant( QString() ),
+        QStringList() << "centrifugeProtocol" << "RIProfile" },
+      { QVariant( QString( "" ) ), QVariant( QString() ),
+        QStringList() << "RIProfile" },
+      { QVariant( QString() ),   QVariant( QString( "<x/>" ) ),
+        QStringList() << "centrifugeProtocol" },
+      { QVariant( QString( "" ) ), QVariant( QString( "" ) ), QStringList() },
+      { QVariant(),              QVariant(),               QStringList() },
+   };
+
+   for ( int ii = 0; ii < cases.size(); ii++ )
+   {
+      SCOPED_TRACE( ii );
+      NiceMock< US_DB2_Mock > mock;
+      US_DataPubCatalog       cat;
+      cat.attachDb( &mock );
+
+      ON_CALL( mock, lastErrno() ).WillByDefault( Return( IUS_DB2::OK ) );
+      EXPECT_CALL( mock, next() ).WillOnce( Return( true ) )
+                                 .WillRepeatedly( Return( false ) );
+      ON_CALL( mock, value( _ ) )
+         .WillByDefault( Return( QVariant( QString( "" ) ) ) );
+      ON_CALL( mock, value( 1u ) ).WillByDefault( Return( QVariant( "31" ) ) );
+      ON_CALL( mock, value( 2u ) )
+         .WillByDefault( Return( QVariant( db_run().guid ) ) );
+      ON_CALL( mock, value( 12u ) ).WillByDefault( Return( cases[ ii ].protocol ) );
+      ON_CALL( mock, value( 16u ) ).WillByDefault( Return( cases[ ii ].profile ) );
+
+      US_DataPubCatalog::ExpInfo info;
+      QString                    error;
+      ASSERT_TRUE( cat.expInfo( db_run(), info, error ) ) << error.toStdString();
+      EXPECT_EQ( info.nullFields, cases[ ii ].nulls );
+   }
+}
+
 // No time state is the normal case; it is told apart from a lookup failure
 TEST_F( DataPubCatalogDb, NoTimeStateIsNotAFailure )
 {

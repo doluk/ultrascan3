@@ -122,6 +122,14 @@ class US_DataPubCatalog
             //! "cell/channel" -> centerpiece serial number of that channel
             QMap< QString, QString > tripleCenterpieceIDs;
 
+            //! The columns of the experiment row that are NULL in the
+            //! database: "centrifugeProtocol" and/or "RIProfile"
+            //! (get_experiment_info_by_runID columns 12 and 16, which
+            //! US_DB2::value() gives as a null string, and an empty one as
+            //! an empty string).  Always empty for a disk store, whose XML
+            //! cannot tell NULL from empty.
+            QStringList nullFields;
+
             //! \brief Read the experiment XML of a run
             //! \param filename The full path of the experiment XML file
             //! \returns True when the file could be read

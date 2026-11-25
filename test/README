@@ -669,3 +669,22 @@ default character set is utf8mb4 rather than latin1.
   import says it could not keep them.
 - `DataPubDbRules.ARawDataFailureSaysWhatFailed` has the server refuse a raw
   data label longer than its column; the import is rolled back.
+
+## Cases added by the round-7 follow-up (duplicate run directories, lost connections, NULL fields)
+
+- `DataPubDbExport.NullExperimentFieldsStayNullInAnotherDatabase` (needs
+  `US3_TEST_DB_IMPORT_NAME` and `US3_TEST_DB_IMPORT2_NAME`) sets the
+  `centrifugeProtocol` and `RIProfile` of a run in the first scratch database
+  to `''` and then to NULL, exports it each time and imports the second
+  bundle into the second scratch database.  With the procedures of
+  `us3_catalog_version()` 2 the columns are NULL there; with older ones they
+  are `''` and the import warns once.
+- `TestUSDataDbLive.AConnectionLostBeforeTheCommitRemovesNothing` (it was
+  `AConnectionLostAtTheCommitLeavesTheOutcomeOpen`) and
+  `AConnectionLostDuringAnEditRemovalIsNotAFailedRollback` now expect the
+  message to say that the server rolled the removal back and that nothing
+  was removed: US_DB2 reports a connection lost before the COMMIT went out
+  with `connectionLostRollbackMessage`.  A loss during the COMMIT itself,
+  whose outcome is not known, is covered by the fake server of
+  `test_us_data_db.cpp`, whose commit and rollback now answer with US_DB2's
+  own texts and whose `serverVersion()` names MySQL 8 or MariaDB.

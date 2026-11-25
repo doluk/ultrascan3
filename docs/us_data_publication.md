@@ -1043,8 +1043,13 @@ without them as it always did:
 An export from a database writes them from the source's rows
 (`get_buffer_info`'s `private`, `get_rawData`'s `label` and `comment`,
 `get_editedData`'s `comment`, `get_analyte_info`'s `spectrum`, the last also
-when it is empty). A disk store has none of these columns, so an export from
-disk leaves the attributes out.
+when it is empty, and `nullFields` from `get_experiment_info_by_runID`'s
+`centrifugeProtocol` and `RIProfile`, columns 12 and 16 — named only when
+the column is NULL, which `US_DB2::value()` gives as a null string and an
+empty column as an empty one). A disk store has none of these columns, so an
+export from disk leaves the attributes out; in particular it never writes
+`nullFields`, since the experiment XML and the RI profile file cannot tell a
+NULL column from an empty one.
 
 The raw data rows of a run are written in one call (`US_ConvertIO`), which
 gives all of them one label and comment: the run's raw data records have to

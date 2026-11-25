@@ -544,3 +544,119 @@ TEST_F( DataPubDbExport, TheSourcesFieldsTravelToAnotherDatabase )
                          " analyteGUID = '" + analyteGUID + "'" ),
               QString( "250/2.5" ) );
 }
+
+/* A NULL centrifugeProtocol and RIProfile of the source's experiment row
+   stay NULL in another database: database -> bundle -> database.  The
+   export tells NULL from empty (US_DB2::value() gives a null string for a
+   NULL column) and names the NULL columns in the run's "nullFields"; empty
+   ones are not named.  A target whose procedures are of
+   us3_catalog_version() 2 sets them to NULL again (clear_experiment_fields);
+   an older one keeps the '' new_experiment stores, and the import says so
+   in one warning.  The bundle is of manifest format 2, which the import
+   reads.  The export used to write no marker, and every NULL became ''.
+
+   The target is a second scratch database, US3_TEST_DB_IMPORT2_NAME, built
+   like the first (test/README, section 4); the case skips without it.
+*/
+TEST_F( DataPubDbExport, NullExperimentFieldsStayNullInAnotherDatabase )
+{
+   QString second = qEnvironmentVariable( "US3_TEST_DB_IMPORT2_NAME" );
+
+   if ( second.isEmpty() )
+      GTEST_SKIP() << "no second scratch database (US3_TEST_DB_IMPORT2_NAME)";
+
+   QString dbRunID;
+   QString error;
+   ASSERT_TRUE( storeInDatabase( dbRunID, error ) ) << error.toStdString();
+
+   QString where = " WHERE experimentID IN ( SELECT experimentID FROM"
+                   " experimentPerson WHERE personID = "
+                   + QString::number( US_Settings::us_inv_ID() )
+                   + " ) AND runID = '" + dbRunID + "'";
+
+   // Empty columns are not NULL ones
+   db->rawQuery( "UPDATE experiment SET centrifugeProtocol = '',"
+                 " RIProfile = ''" + where );
+   ASSERT_EQ( db->lastErrno(), IUS_DB2::OK ) << db->lastError().toStdString();
+
+   US_DataPubExporter empty;
+   ASSERT_TRUE( exportFromDb( dbRunID, root + "/empty.tar.gz", empty, error ) )
+      << error.toStdString();
+   QList< US_DataPubEntity > runs = empty.manifest().section(
+                                       US_DataPub::Experiment );
+   ASSERT_EQ( runs.size(), 1 );
+   EXPECT_FALSE( runs[ 0 ].attrs.contains( "nullFields" ) )
+      << runs[ 0 ].attrs.value( "nullFields" ).toStdString();
+
+   db->rawQuery( "UPDATE experiment SET centrifugeProtocol = NULL,"
+                 " RIProfile = NULL" + where );
+   ASSERT_EQ( db->lastErrno(), IUS_DB2::OK ) << db->lastError().toStdString();
+
+   US_DataPubExporter fromDb;
+   QString            bundle = root + "/nulls.tar.gz";
+   ASSERT_TRUE( exportFromDb( dbRunID, bundle, fromDb, error ) )
+      << error.toStdString();
+   EXPECT_EQ( fromDb.manifest().version, 2 );
+   runs = fromDb.manifest().section( US_DataPub::Experiment );
+   ASSERT_EQ( runs.size(), 1 );
+   EXPECT_EQ( runs[ 0 ].attrs.value( "nullFields" ),
+              QString( "centrifugeProtocol RIProfile" ) );
+
+   // ... into the second database
+   QStringList source = US_Settings::defaultDB();
+   QStringList other  = source;
+   other.replace( 2, second );
+   US_Settings::set_defaultDB( other );
+
+   US_DataPubImporter importer;
+   bool imported = importer.inspect( bundle, error );
+   int  version  = imported ? importer.manifest().version : -1;
+   imported      = imported  &&
+                   importer.runImport( target( true, QString() ), error );
+
+   US_DB2  tdb;
+   QString cerror;
+   bool    connected = tdb.connect( master, cerror );
+   US_Settings::set_defaultDB( source );
+
+   ASSERT_TRUE( imported ) << error.toStdString() << "\n"
+                           << importer.log().join( "\n" ).toStdString();
+   ASSERT_TRUE( connected ) << cerror.toStdString();
+   EXPECT_EQ( version, 2 );
+
+   QString expID;
+
+   for ( const US_DataPubImporter::Result& result : importer.results() )
+      if ( result.type == US_DataPub::Experiment )
+         expID = result.targetID;
+
+   ASSERT_GT( expID.toInt(), 0 );
+
+   QString procs  = sql_value( &tdb, "SELECT us3_catalog_version()" );
+   bool    kept   = ( procs != "<none>"  &&  procs.toInt() >= 2 );
+
+   EXPECT_EQ( sql_value( &tdb, "SELECT centrifugeProtocol IS NULL FROM"
+                         " experiment WHERE experimentID = " + expID ),
+              QString( kept ? "1" : "0" ) ) << procs.toStdString();
+   EXPECT_EQ( sql_value( &tdb, "SELECT RIProfile IS NULL FROM experiment"
+                         " WHERE experimentID = " + expID ),
+              QString( kept ? "1" : "0" ) ) << procs.toStdString();
+
+   QStringList about;
+
+   for ( const QString& text : importer.warnings() )
+      if ( text.contains( "us3_catalog_version()" ) )  about << text;
+
+   if ( kept )
+   {
+      EXPECT_TRUE( about.isEmpty() ) << about.join( "\n" ).toStdString();
+   }
+
+   else
+   {
+      ASSERT_EQ( about.size(), 1 ) << importer.warnings().join( "\n" )
+                                       .toStdString();
+      EXPECT_TRUE( about[ 0 ].contains( "centrifugeProtocol and RIProfile" ) )
+         << about[ 0 ].toStdString();
+   }
+}

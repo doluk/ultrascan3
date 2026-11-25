@@ -864,6 +864,20 @@ bool US_DataPubCatalog::expInfo( const Run& run, ExpInfo& info,
    info.comments      = dbase->value( 11 ).toString();
    info.runID         = run.runID;
 
+   // NULL, not empty: new_experiment stores '' for both, so an import keeps
+   // the NULL only when the bundle says so (the "nullFields" attribute)
+   // (A column the row does not have is not NULL.)
+   info.nullFields.clear();
+
+   auto isNull = [ this ]( int column )
+   {
+      QVariant value = dbase->value( column );
+      return value.isValid()  &&  value.toString().isNull();
+   };
+
+   if ( isNull( 12 ) )  info.nullFields << "centrifugeProtocol";
+   if ( isNull( 16 ) )  info.nullFields << "RIProfile";
+
    // A NULL column comes back as "", which a server in strict mode refuses
    // as an integer argument ("Incorrect integer value"): a record that
    // names no project or rotor is not looked up at all

@@ -499,6 +499,80 @@ TEST_F( DataPubImport, RoundTripKeepsThePayloadsIdentical )
               US_DataPubHash::fileHash( targetEdit ) );
 }
 
+/* A bundle of manifest format 2 -- what every export writes since round 7
+   -- goes through a disk store and back: the import reads format 2, and an
+   export of what it wrote gives a format 2 bundle with the same records
+   and the same payloads, which imports again.
+*/
+TEST_F( DataPubImport, AFormatTwoBundleRoundTripsThroughADiskStore )
+{
+   QString error;
+
+   US_DataPubImporter importer;
+   ASSERT_TRUE( importer.inspect( bundlePath, error ) ) << error.toStdString();
+   EXPECT_EQ( importer.manifest().version, 2 );
+   ASSERT_TRUE( importer.runImport( diskOptions(), error ) )
+      << error.toStdString() << "\n"
+      << importer.log().join( "\n" ).toStdString();
+
+   const US_DataPubManifest first = importer.manifest();
+
+   // export the run again, from the store it was imported into
+   QString saved = US_Settings::workBaseDir();
+   US_Settings::set_workBaseDir( targetDir );
+
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection;
+   selection.fromDb = false;
+   selection.scope  = US_DataPub::ScopeNoise;
+   selection.runIDs << runID;
+   QString again = root + "/again.tar.gz";
+   bool    ok    = exporter.exportBundle( selection, again, error );
+   US_Settings::set_workBaseDir( saved );
+   ASSERT_TRUE( ok ) << error.toStdString() << "\n"
+                     << exporter.log().join( "\n" ).toStdString();
+
+   const US_DataPubManifest& second = exporter.manifest();
+   EXPECT_EQ( second.version, 2 );
+
+   for ( int tt = 0; tt < int( US_DataPub::UnknownType ); tt++ )
+   {
+      US_DataPub::EntityType    type = US_DataPub::EntityType( tt );
+      QList< US_DataPubEntity > ones = first.section( type );
+      SCOPED_TRACE( tt );
+      EXPECT_EQ( ones.size(), second.section( type ).size() );
+
+      for ( const US_DataPubEntity& one : ones )
+      {
+         US_DataPubEntity two;
+         ASSERT_TRUE( second.entity( type, one.guid, two ) )
+            << one.guid.toStdString();
+         EXPECT_EQ( one.name, two.name );
+
+         // the payloads the source wrote are the ones that come back, but
+         // for the IDs the disk store gives them: none (-1) for a project,
+         // run, rotor calibration, solution and its buffer
+         if ( type != US_DataPub::Experiment        &&
+              type != US_DataPub::Project           &&
+              type != US_DataPub::RotorCalibration  &&
+              type != US_DataPub::Solution )
+         {
+            EXPECT_EQ( one.sha256.toStdString(), two.sha256.toStdString() )
+               << one.guid.toStdString() << " " << one.payload.toStdString();
+         }
+      }
+   }
+
+   // and the second bundle imports as well
+   US_DataPubImporter next;
+   ASSERT_TRUE( next.inspect( again, error ) ) << error.toStdString();
+   EXPECT_EQ( next.manifest().version, 2 );
+   US_DataPubImporter::Options options = diskOptions();
+   options.outputDir = root + "/target2";
+   ASSERT_TRUE( next.runImport( options, error ) )
+      << error.toStdString() << "\n" << next.log().join( "\n" ).toStdString();
+}
+
 // ------------------------------------------------ importing into a project
 
 // The receiving installation keeps its own projects, so an import can be
