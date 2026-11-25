@@ -127,23 +127,18 @@ bool US_DataPubCatalog::ExpInfo::readFromFile( const QString& filename )
 namespace
 {
    // An UltraScan3 time stamp, whichever of the two shapes it has: the
-   // database hands back "yyyy-MM-dd HH:mm:ss" and a local file's time is
-   // the same with a " UTC" suffix.
+   // database hands back "yyyy-MM-dd HH:mm:ss" (UTC: the procedures convert
+   // it, timestamp2UTC) and a local file's time is the same with a " UTC"
+   // suffix.  Read as UTC, never as a local time: a time of the local
+   // spring-forward gap would come out shifted or invalid.
    QDateTime stamp_of( const QString& text )
    {
-      QString trimmed = text.trimmed();
+      qint64 seconds = 0;
 
-      if ( trimmed.endsWith( " UTC" ) )
-         trimmed.chop( 4 );
+      if ( ! US_DataPub::utcStampSeconds( text, seconds ) )
+         return QDateTime();
 
-      trimmed.replace( "T", " " );
-
-      QDateTime when = QDateTime::fromString( trimmed, "yyyy-MM-dd HH:mm:ss" );
-
-      if ( ! when.isValid() )
-         when = QDateTime::fromString( trimmed, Qt::ISODate );
-
-      return when;
+      return QDateTime::fromSecsSinceEpoch( seconds, Qt::UTC );
    }
 
 }

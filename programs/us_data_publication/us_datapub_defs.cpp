@@ -601,3 +601,55 @@ QString US_DataPub::masterPasswordProblem( const QString& masterPW )
 
    return QString();
 }
+
+bool US_DataPub::utcStampSeconds( const QString& stamp, qint64& seconds )
+{
+   seconds = 0;
+
+   QString text = stamp.trimmed();
+   int     offset = 0;           // seconds east of UTC
+
+   if ( text.endsWith( " UTC" ) )      text.chop( 4 );
+   else if ( text.endsWith( 'Z' ) )    text.chop( 1 );
+   else if ( text.size() > 19 )
+   {  // "+hh:mm" or "-hh:mm" after the time
+      static const QRegularExpression zone( "([+-])(\\d\\d):?(\\d\\d)$" );
+      QRegularExpressionMatch         match = zone.match( text );
+
+      if ( match.hasMatch()  &&  match.capturedStart() >= 19 )
+      {
+         offset = match.captured( 2 ).toInt() * 3600
+                  + match.captured( 3 ).toInt() * 60;
+
+         if ( match.captured( 1 ) == "-" )  offset = -offset;
+
+         text = text.left( match.capturedStart() );
+      }
+   }
+
+   if ( text.size() != 19  ||
+        ( text.at( 10 ) != ' '  &&  text.at( 10 ) != 'T' ) )
+      return false;
+
+   // Put together as UTC directly: parsed as a local time, a time of the
+   // local spring-forward gap would come out shifted or invalid
+   QDate date = QDate::fromString( text.left( 10 ),   "yyyy-MM-dd" );
+   QTime time = QTime::fromString( text.mid( 11, 8 ), "hh:mm:ss" );
+
+   if ( ! date.isValid()  ||  ! time.isValid() )  return false;
+
+   seconds = QDateTime( date, time, Qt::UTC ).toSecsSinceEpoch() - offset;
+
+   return true;
+}
+
+QString US_DataPub::isoUtcStamp( const QString& catalogStamp )
+{
+   qint64 seconds = 0;
+
+   if ( ! utcStampSeconds( catalogStamp, seconds ) )  return QString();
+
+   return QLocale::c().toString( QDateTime::fromSecsSinceEpoch( seconds,
+                                                                Qt::UTC ),
+                                 "yyyy-MM-dd'T'hh:mm:ss'Z'" );
+}

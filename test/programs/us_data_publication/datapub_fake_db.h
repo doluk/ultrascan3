@@ -73,7 +73,21 @@
  * - clear_experiment_fields and set_rotor_calibration_date exist from
  *   catalogVersion 2 on, with the procedures' permission rules
  * - SELECT us3_catalog_version() answers catalogVersion; 0 is a server
- *   without the function, where the statement fails (1305).
+ *   without the function, where the statement fails (1305).  From version
+ *   2 on, information_schema.ROUTINES lists clear_experiment_fields and
+ *   set_rotor_calibration_date, unless staleMarker says the marker is newer
+ *   than the procedures (which then do not exist); new_model is always
+ *   listed.  A listing row is (ROUTINE_DEFINITION, ROUTINE_NAME).
+ * - The server's clock: SELECT UNIX_TIMESTAMP() answers clockMs / 1000,
+ *   and moves clockMs on by clockStepMs every time it is asked, so that a
+ *   client waiting for the next second gets there.  new_model and
+ *   new_noise date the record (stamps, by GUID) with the clock's second,
+ *   as the procedures date the rows with NOW().
+ * - The session time zone: SELECT @@session.time_zone answers timeZone,
+ *   SET time_zone = '...' changes it (refused with rejectZoneChange), and
+ *   set_rotor_calibration_date keeps the zone in force with the date
+ *   (calibrationZones).  SELECT FROM_UNIXTIME( n ) answers the UTC wall
+ *   time of n.
  * - Experiment 1 is "the magic ID that anyone can use temporarily"
  *   (verify_experiment_permission): its raw data is found by
  *   get_rawDataID_from_GUID whoever asks, as the procedure does.  The
@@ -137,7 +151,21 @@ class DataPubFakeDb
 
       // information_schema.ROUTINES: name -> definition (empty: NULL)
       QMap< QString, QString > routines { { "create_buffer_component",
-                                            QString() } };
+                                            QString() },
+                                          { "new_model", QString() } };
+
+      // us3_catalog_version() answers more than the procedures there are:
+      // those of version 2 are missing
+      bool staleMarker = false;
+
+      // The server's clock, in milliseconds since the epoch, and how far it
+      // moves on each time it is read
+      qint64 clockMs     = 1700000000000LL;
+      qint64 clockStepMs = 250;
+
+      // The session's time zone, and whether SET time_zone is refused
+      QString timeZone          = "SYSTEM";
+      bool    rejectZoneChange  = false;
       QString implicitCommitOn;  // A procedure that commits implicitly
 
       // Called as a transaction begins, to change the database between an
@@ -189,6 +217,10 @@ class DataPubFakeDb
             // gave it
             QMap< int, QStringList > nulled;
             QMap< int, QString >     calibrationDates;
+            QMap< int, QString >     calibrationZones;
+
+            // A model's or noise record's GUID -> the second it is dated
+            QMap< QString, qint64 >  stamps;
       };
 
       State state;
@@ -645,13 +677,54 @@ class DataPubFakeDb
 
          else if ( sql.contains( "information_schema.ROUTINES" ) )
          {
-            for ( auto it = routines.constBegin(); it != routines.constEnd();
+            QMap< QString, QString > listed = routines;
+
+            if ( catalogVersion >= 2  &&  ! staleMarker )
+            {
+               listed.insert( "clear_experiment_fields",    QString() );
+               listed.insert( "set_rotor_calibration_date", QString() );
+            }
+
+            for ( auto it = listed.constBegin(); it != listed.constEnd();
                   ++it )
                if ( sql.contains( "'" + it.key() + "'" ) )
-                  rows << ( QVariantList()       // ROUTINE_DEFINITION
+                  rows << ( QVariantList()       // ROUTINE_DEFINITION, NAME
                             << ( it.value().isEmpty() ? QVariant()
-                                                      : QVariant( it.value() ) ) );
+                                                      : QVariant( it.value() ) )
+                            << it.key() );
 
+            status = IUS_DB2::OK;
+         }
+
+         else if ( sql.contains( "UNIX_TIMESTAMP()" ) )
+         {
+            rows << ( QVariantList() << ( clockMs / 1000 ) );
+            clockMs += clockStepMs;
+            status   = IUS_DB2::OK;
+         }
+
+         else if ( sql.contains( "@@session.time_zone" ) )
+         {
+            rows << ( QVariantList() << timeZone );
+            status = IUS_DB2::OK;
+         }
+
+         else if ( sql.startsWith( "SET time_zone = '" ) )
+         {
+            if ( ! rejectZoneChange )
+               timeZone = sql.section( '\'', 1, 1 );
+
+            status = rejectZoneChange ? int( IUS_DB2::DBERROR )
+                                      : int( IUS_DB2::OK );
+         }
+
+         else if ( sql.contains( "FROM_UNIXTIME(" ) )
+         {
+            static const QRegularExpression number( "FROM_UNIXTIME\\( *(-?[0-9]+)" );
+            qint64 secs = number.match( sql ).captured( 1 ).toLongLong();
+            rows << ( QVariantList() << QDateTime::fromSecsSinceEpoch(
+                                           secs, Qt::UTC ).toString(
+                                           "yyyy-MM-dd hh:mm:ss" ) );
             status = IUS_DB2::OK;
          }
 
@@ -977,8 +1050,8 @@ class DataPubFakeDb
          {
             int id = q.value( 1 ).toInt();
 
-            if ( catalogVersion < 2 )
-               status = IUS_DB2::DBERROR;
+            if ( catalogVersion < 2  ||  staleMarker )
+               status = IUS_DB2::DBERROR;       // 1305: no such procedure
 
             else if ( proc == "clear_experiment_fields" )
             {
@@ -1006,6 +1079,7 @@ class DataPubFakeDb
             else
             {
                state.calibrationDates.insert( id, q.value( 2 ) );
+               state.calibrationZones.insert( id, timeZone );
                status = IUS_DB2::OK;
             }
 
@@ -1042,6 +1116,9 @@ class DataPubFakeDb
 
                if ( proc == "new_model" )
                   state.modelEdits.insert( q[ ii ], q.value( 6 ) );
+
+               if ( proc == "new_model"  ||  proc == "new_noise" )
+                  state.stamps.insert( q[ ii ], clockMs / 1000 );
 
                break;
             }

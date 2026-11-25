@@ -407,6 +407,10 @@ class US_DataPubExporter : public QObject
       bool addTimeState ( const US_DataPubCatalog::Run&, QString& );
       bool addCalibration( const US_DataPubCatalog::ExpInfo&, QString& );
 
+      //! \brief When a database calibration was last updated, as a UTC
+      //!        ISO time stamp; empty where that cannot be told
+      QString calibrationInstant( int calID );
+
       //! The calibration of the local rotor directory with this GUID
       static bool findDiskCalibration( const QString& guid,
                                        US_Rotor::RotorCalibration& );

@@ -300,8 +300,11 @@ class US_DataPubCatalog
           both undated) are told apart by their database IDs, the higher
           one -- written last -- winning, and where either has none by
           their GUIDs, the higher one winning; the order of \a candidates
-          never decides.  An import writes the records so that no such tie
-          decides what a model borrows (US_DataPubImporter::fitSequence()).
+          never decides.  An import writes the records in the source's
+          order, the target's clock moved on where a tie would decide
+          otherwise (US_DataPubImporter::writeOrder()).  The time stamps
+          are UTC, as the catalog gives them ("yyyy-MM-dd hh:mm:ss" with or
+          without " UTC"), and are read as UTC, never as local times.
           \param candidates The noise records of the model's edit
           \param modelStamp The model's time stamp
           \returns At most one record per noise type

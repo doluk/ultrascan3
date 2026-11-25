@@ -26,6 +26,8 @@
 
 #include "datapub_test_env.h"
 #include "datapub_borrow_scenario.h"
+#include "datapub_craft.h"
+#include "datapub_noise_rules.h"
 
 #include "us_datapub_catalog.h"
 #include "us_datapub_export.h"
@@ -4310,8 +4312,13 @@ TEST_F( DataPubMockRules, NullFieldsAndTheCalibrationDateNeedVersionTwo )
       EXPECT_EQ( target.state.nulled.value( expID ),
                  QStringList() << "centrifugeProtocol" << "RIProfile" );
       ASSERT_EQ( dates.size(), 1 );
+      // The payload's day, at 12:00 UTC (the bundle carries no instant),
+      // with the session on UTC for the call
       EXPECT_EQ( target.state.calibrationDates.value( calID ),
-                 QString( "2024-01-01 00:00:00" ) );
+                 QString( "2024-01-01 12:00:00" ) );
+      EXPECT_EQ( target.state.calibrationZones.value( calID ),
+                 QString( "+00:00" ) );
+      EXPECT_EQ( target.timeZone, QString( "SYSTEM" ) );
       EXPECT_EQ( target.commits, 1 );
    }
 }
@@ -5798,4 +5805,696 @@ TEST_F( DataPubDbImport, SameNamedRecordsImportAsTheDryRunSays )
 
    EXPECT_EQ( said[ 1 ].join( "\n" ).toStdString(),
               said[ 0 ].join( "\n" ).toStdString() );
+}
+
+// ------------------------------------- fix round 8: order, clock, dates
+
+/* The import into a database, on the fake: the models and noise records of
+   an edit in the source's order, the server's clock (UNIX_TIMESTAMP())
+   moved on where two records have to be dated apart, the calibration's
+   instant, the procedures a version marker stands for, and what a failed
+   rollback says. */
+class DataPubMockOrder : public DataPubMockRules
+{
+   protected:
+      QString exportScenario( const QString& name )
+      {
+         US_DataPubExporter            exporter;
+         US_DataPubExporter::Selection selection;
+         selection.fromDb = false;
+         selection.scope  = US_DataPub::ScopeNoise;
+         selection.runIDs << runID;
+
+         QString bundle = root + "/" + name + ".tar.gz";
+         QString error;
+         EXPECT_TRUE( exporter.exportBundle( selection, bundle, error ) )
+            << error.toStdString();
+         return bundle;
+      }
+
+      // The latest model with noise in the fake, as count_noise() picks it
+      // in a database: the highest ID of the edit's models with noise
+      static QString latestIn( DataPubFakeDb& db,
+                               const US_DataPubManifest& mani )
+      {
+         QSet< QString > fitted;
+
+         for ( const US_DataPubEntity& noise :
+               mani.section( US_DataPub::Noise ) )
+            fitted << noise.depend( US_DataPub::Model );
+
+         QString latest;
+         int     highest = 0;
+
+         for ( const QString& guid : fitted )
+         {
+            int id = db.state.registry.value( "model" ).value( guid );
+
+            if ( id > highest )
+            {
+               highest = id;
+               latest  = guid;
+            }
+         }
+
+         return latest;
+      }
+
+      // noise GUID -> borrowers, as a catalog of the fake would tell them
+      // from the rows' time stamps and IDs (US_DataPubCatalog::noiseBefore)
+      static QMap< QString, QString > borrowersIn(
+            DataPubFakeDb& db, const US_DataPubManifest& mani )
+      {
+         QSet< QString >                fitted;
+         QList< US_DataCatalog::Noise > rows;
+
+         auto stampOf = [ & ]( const QString& guid )
+         {
+            return QDateTime::fromSecsSinceEpoch(
+                      db.state.stamps.value( guid ), Qt::UTC )
+                   .toString( "yyyy-MM-dd hh:mm:ss" ) + " UTC";
+         };
+
+         for ( const US_DataPubEntity& noise :
+               mani.section( US_DataPub::Noise ) )
+         {
+            fitted << noise.depend( US_DataPub::Model );
+
+            US_DataCatalog::Noise row;
+            row.guid        = noise.guid;
+            row.id          = QString::number(
+                                 db.state.registry.value( "noise" )
+                                 .value( noise.guid ) );
+            row.noiseType   = noise.attrs.value( "noiseType" );
+            row.lastUpdated = stampOf( noise.guid );
+            rows << row;
+         }
+
+         QMap< QString, QStringList > by;
+
+         for ( const US_DataPubEntity& model :
+               mani.section( US_DataPub::Model ) )
+         {
+            if ( fitted.contains( model.guid ) )  continue;
+
+            for ( const US_DataCatalog::Noise& noise :
+                  US_DataPubCatalog::noiseBefore( rows, stampOf( model.guid ) ) )
+               by[ noise.guid ] << model.guid;
+         }
+
+         QMap< QString, QString > map;
+
+         for ( const US_DataPubEntity& noise :
+               mani.section( US_DataPub::Noise ) )
+         {
+            QStringList names = by.value( noise.guid );
+            std::sort( names.begin(), names.end() );
+            map.insert( noise.guid, names.join( " " ) );
+         }
+
+         return map;
+      }
+};
+
+/* A bundle laid out as a database export (newest first) into a database:
+   the latest model with noise has the highest ID, as in the source, and
+   every model borrows what it did -- the fake's rows dated by its clock,
+   which the import asks with UNIX_TIMESTAMP() (never NOW(), whose wall
+   time steps back an hour at the fall-back). */
+TEST_F( DataPubMockOrder, ADatabaseOrderedBundleKeepsTheLatestModelAndTheBorrowing )
+{
+   DataPubBorrowScenario scenario;
+   scenario.write( US_Settings::dataDir() + "/models",
+                   US_Settings::dataDir() + "/noises", runID, editGUID,
+                   noiseGUID );
+
+   QString error;
+   QString bundle = datapubRecraft( exportScenario( "plain" ),
+                    root + "/dbordered.tar.gz",
+                    []( US_DataPubManifest& m, const QString& )
+                    { datapubAsDatabaseExport( m, true, false ); }, error );
+   ASSERT_FALSE( bundle.isEmpty() ) << error.toStdString();
+
+   US_DataPubImporter importer;
+   importer.setDatabase( fake.db() );
+   ASSERT_TRUE( importer.inspect( bundle, error ) ) << error.toStdString();
+   ASSERT_TRUE( importer.runImport( dbOptions(), error ) )
+      << error.toStdString() << "\n" << importer.log().join( "\n" ).toStdString();
+
+   EXPECT_EQ( latestIn( fake, importer.manifest() ), scenario.latest() );
+   EXPECT_EQ( DataPubBorrowScenario::text(
+                 borrowersIn( fake, importer.manifest() ) ),
+              DataPubBorrowScenario::text( scenario.expected() ) );
+
+   int clock = 0;
+
+   for ( const QStringList& call : fake.callsOf( "sql" ) )
+   {
+      if ( call.value( 1 ).contains( "UNIX_TIMESTAMP()" ) )  clock++;
+      EXPECT_FALSE( call.value( 1 ).contains( "NOW()" ) )
+         << call.value( 1 ).toStdString();
+   }
+
+   EXPECT_GT( clock, 0 );
+   EXPECT_EQ( fake.commits, 1 );
+}
+
+/* The review's dead end of the greedy sequence, into a database. */
+TEST_F( DataPubMockOrder, TheGreedySequencesDeadEndIsWrittenInTheSourcesOrder )
+{
+   DataPubDeadEndScenario scenario;
+   scenario.write( US_Settings::dataDir() + "/models",
+                   US_Settings::dataDir() + "/noises", runID, editGUID,
+                   noiseGUID );
+
+   QString error;
+   QString bundle = datapubRecraft( exportScenario( "deadend" ),
+                    root + "/reversed.tar.gz",
+                    []( US_DataPubManifest& m, const QString& )
+                    { datapubAsDatabaseExport( m, true, false ); }, error );
+   ASSERT_FALSE( bundle.isEmpty() ) << error.toStdString();
+
+   US_DataPubImporter importer;
+   importer.setDatabase( fake.db() );
+   ASSERT_TRUE( importer.inspect( bundle, error ) ) << error.toStdString();
+   ASSERT_TRUE( importer.runImport( dbOptions(), error ) )
+      << error.toStdString();
+
+   for ( const QString& text : importer.warnings() )
+      EXPECT_FALSE( text.contains( "may not survive" ) ) << text.toStdString();
+
+   EXPECT_EQ( DataPubBorrowScenario::text(
+                 borrowersIn( fake, importer.manifest() ) ),
+              DataPubBorrowScenario::text( scenario.expected() ) );
+   EXPECT_EQ( latestIn( fake, importer.manifest() ), scenario.latest() );
+}
+
+/* A calibration's date is the instant the source's row had (the bundle's
+   "dateUpdated", UTC), stored with the session on UTC for the call -- in a
+   session east of UTC as anywhere -- and the session's zone put back.  A
+   bundle with the day only (a disk store, an older export) stores 12:00
+   UTC of it, which is that day in every zone within twelve hours of UTC:
+   1970-01-01 too, which midnight east of UTC put before the epoch.  A date
+   the TIMESTAMP column cannot hold is said in the dry run as in the import,
+   which keeps the calibration dated the day of the import. */
+TEST_F( DataPubMockOrder, ACalibrationKeepsTheSourcesInstant )
+{
+   US_DataPubImporter probe;
+   QString            error;
+   ASSERT_TRUE( probe.inspect( bundlePath, error ) );
+   QList< US_DataPubEntity > cals =
+         probe.manifest().section( US_DataPub::RotorCalibration );
+   ASSERT_EQ( cals.size(), 1 );
+   QString rotorGUID = cals[ 0 ].attrs.value( "rotorGUID" );
+   QString plain     = bundlePath;
+
+   struct Case
+   {
+      QString dateUpdated;     // the bundle's; empty for the day only
+      QString payloadDay;      // the payload's day, when changed
+      QString stored;          // what set_rotor_calibration_date gets
+   };
+
+   const QList< Case > cases =
+   {
+      { "2024-01-01T21:30:05Z", QString(),    "2024-01-01 21:30:05" },
+      { QString(),              QString(),    "2024-01-01 12:00:00" },
+      { QString(),              "1970-01-01", "1970-01-01 12:00:00" },
+      { "1969-12-31T23:00:00Z", QString(),    QString() },
+      { "2038-01-19T03:14:08Z", QString(),    QString() }
+   };
+
+   for ( const Case& one : cases )
+   {
+      SCOPED_TRACE( ( one.dateUpdated + " " + one.payloadDay ).toStdString() );
+      bundlePath = plain;
+      craft( [ & ]( US_DataPubManifest& m, const QString& stage )
+      {
+         QList< US_DataPubEntity > list =
+               m.section( US_DataPub::RotorCalibration );
+
+         if ( ! one.dateUpdated.isEmpty() )
+            list[ 0 ].attrs.insert( "dateUpdated", one.dateUpdated );
+
+         if ( ! one.payloadDay.isEmpty() )
+         {
+            QString path = stage + "/" + list[ 0 ].payload;
+            QFile   file( path );
+            ASSERT_TRUE( file.open( QIODevice::ReadOnly ) );
+            QString text = QString::fromUtf8( file.readAll() );
+            file.close();
+            text.replace( "2024-01-01", one.payloadDay );
+            ASSERT_TRUE( file.open( QIODevice::WriteOnly | QIODevice::Truncate ) );
+            file.write( text.toUtf8() );
+            file.close();
+            list[ 0 ].sha256 = US_DataPubHash::fileHash( path );
+         }
+
+         m.setSection( US_DataPub::RotorCalibration, list );
+      } );
+
+      DataPubFakeDb target;
+      target.addHardware( "DEMO-1" );
+      target.registry[ "rotor" ].insert( rotorGUID, 3 );
+      target.admin          = true;
+      target.catalogVersion = 2;
+      target.timeZone       = "+05:00";
+
+      QStringList said[ 2 ];
+
+      for ( int dry = 1; dry >= 0; dry-- )
+      {
+         US_DataPubImporter          importer;
+         US_DataPubImporter::Options options = dbOptions();
+         options.dryRun = ( dry == 1 );
+         importer.setDatabase( target.db() );
+         ASSERT_TRUE( importer.inspect( bundlePath, error ) );
+         ASSERT_TRUE( importer.runImport( options, error ) )
+            << error.toStdString();
+
+         for ( const QString& text : importer.warnings() )
+            if ( text.contains( "calibration" ) )
+               said[ dry ] << QString( text ).replace( "would be", "is" );
+      }
+
+      EXPECT_EQ( said[ 1 ].join( "\n" ).toStdString(),
+                 said[ 0 ].join( "\n" ).toStdString() );
+      EXPECT_EQ( target.timeZone, QString( "+05:00" ) );
+
+      int calID = target.registry[ "calibration" ].value( cals[ 0 ].guid );
+      QList< QStringList > dates = target.callsOf( "set_rotor_calibration_date" );
+
+      if ( one.stored.isEmpty() )
+      {
+         EXPECT_TRUE( dates.isEmpty() );
+         ASSERT_EQ( said[ 0 ].size(), 1 );
+         EXPECT_TRUE( said[ 0 ][ 0 ].contains( "outside" ) )
+            << said[ 0 ][ 0 ].toStdString();
+         continue;
+      }
+
+      EXPECT_TRUE( said[ 0 ].isEmpty() ) << said[ 0 ].join( "\n" ).toStdString();
+      ASSERT_EQ( dates.size(), 1 );
+      EXPECT_EQ( target.state.calibrationDates.value( calID ), one.stored );
+      EXPECT_EQ( target.state.calibrationZones.value( calID ),
+                 QString( "+00:00" ) );
+   }
+}
+
+/* A version marker newer than the procedures (us3_catalog_version() 2
+   without set_rotor_calibration_date and clear_experiment_fields): the
+   dry run and the import both take the target as version 1, and say what
+   it cannot keep; the import used to call the missing procedures and fail
+   (1305) where the dry run had passed. */
+TEST_F( DataPubMockOrder, AStaleVersionMarkerIsSeenInThePreflight )
+{
+   craft( []( US_DataPubManifest& m, const QString& )
+   {
+      QList< US_DataPubEntity > runs = m.section( US_DataPub::Experiment );
+      runs[ 0 ].attrs.insert( "nullFields", "centrifugeProtocol" );
+      m.setSection( US_DataPub::Experiment, runs );
+   } );
+
+   DataPubFakeDb stale;
+   stale.addHardware( "DEMO-1" );
+   stale.catalogVersion = 2;
+   stale.staleMarker    = true;
+
+   for ( int dry = 1; dry >= 0; dry-- )
+   {
+      US_DataPubImporter          importer;
+      US_DataPubImporter::Options options = dbOptions();
+      options.dryRun = ( dry == 1 );
+      QString                     error;
+      importer.setDatabase( stale.db() );
+      ASSERT_TRUE( importer.inspect( bundlePath, error ) );
+      ASSERT_TRUE( importer.runImport( options, error ) )
+         << ( dry ? "dry run: " : "import: " ) << error.toStdString();
+
+      QString about = importer.warnings().join( "\n" );
+      EXPECT_TRUE( about.contains( "it answers 2, but it has no"
+                                   " clear_experiment_fields" )  &&
+                   about.contains( "centrifugeProtocol" ) )
+         << about.toStdString();
+   }
+
+   EXPECT_TRUE( stale.callsOf( "clear_experiment_fields" ).isEmpty() );
+   EXPECT_EQ( stale.commits, 1 );
+}
+
+/* One importer, run twice -- as the import pane keeps one -- asks the
+   target's version marker each run: after the procedures were updated, or
+   against another database. */
+TEST_F( DataPubMockOrder, TheVersionMarkerIsAskedEachRun )
+{
+   craft( []( US_DataPubManifest& m, const QString& )
+   {
+      QList< US_DataPubEntity > runs = m.section( US_DataPub::Experiment );
+      runs[ 0 ].attrs.insert( "nullFields", "RIProfile" );
+      m.setSection( US_DataPub::Experiment, runs );
+   } );
+
+   DataPubFakeDb old;
+   old.addHardware( "DEMO-1" );
+   old.catalogVersion = 1;
+
+   US_DataPubImporter          importer;
+   US_DataPubImporter::Options options = dbOptions();
+   options.dryRun = true;
+   QString                     error;
+
+   importer.setDatabase( old.db() );
+   ASSERT_TRUE( importer.inspect( bundlePath, error ) );
+   ASSERT_TRUE( importer.runImport( options, error ) ) << error.toStdString();
+   EXPECT_TRUE( importer.warnings().join( "\n" ).contains( "RIProfile" ) );
+
+   old.catalogVersion = 2;
+   ASSERT_TRUE( importer.runImport( options, error ) ) << error.toStdString();
+   EXPECT_FALSE( importer.warnings().join( "\n" ).contains( "RIProfile" ) )
+      << importer.warnings().join( "\n" ).toStdString();
+}
+
+/* A rollback refused because the connection was lost says what is known:
+   the server rolled back an import whose connection was lost before the
+   commit, and nothing was kept -- not both that and "some records may have
+   been kept"; a connection lost during the commit leaves it open. */
+TEST_F( DataPubMockOrder, ALostConnectionSaysWhatWasKept )
+{
+   struct Case
+   {
+      QString     rollback;      // what the rollback says
+      bool        commitFails;   // the commit is what fails
+      QStringList says;
+      QStringList never;
+   };
+
+   QString lostBefore = QObject::tr( US_DB2::connectionLostRollbackMessage );
+   QString lostDuring = QObject::tr( US_DB2::commitUnknownMessage )
+                        .arg( "Lost connection to server during query" );
+
+   const QList< Case > cases =
+   {
+      { lostBefore, false, { "Nothing was imported", "rolled the import back" },
+                           { "may have been kept" } },
+      { lostDuring, true,  { "not known" },
+                           { "Nothing was imported", "may have been kept" } },
+      { QObject::tr( US_DB2::transactionEndedMessage ), false,
+                           { "may have been kept", "implicit commit" },
+                           { "Nothing was imported" } }
+   };
+
+   for ( const Case& one : cases )
+   {
+      SCOPED_TRACE( one.rollback.toStdString() );
+      DataPubFakeDb lost;
+      lost.addHardware( "DEMO-1" );
+
+      if ( ! one.commitFails )  lost.failOn = "new_noise";
+
+      ON_CALL( lost.mock, rollbackTransaction( ::testing::_ ) )
+         .WillByDefault( ::testing::Invoke( [ & ]( QString& error )
+         {
+            lost.inTxn = false;
+            error      = one.rollback;
+            return false;
+         } ) );
+
+      if ( one.commitFails )
+         ON_CALL( lost.mock, commitTransaction( ::testing::_ ) )
+            .WillByDefault( ::testing::Invoke( [ & ]( QString& error )
+            {
+               error = one.rollback;
+               return false;
+            } ) );
+
+      US_DataPubImporter importer;
+      QString            error;
+      importer.setDatabase( lost.db() );
+      ASSERT_TRUE ( importer.inspect( bundlePath, error ) );
+      EXPECT_FALSE( importer.runImport( dbOptions(), error ) );
+
+      for ( const QString& text : one.says )
+         EXPECT_TRUE( importer.outcome().contains( text ) )
+            << importer.outcome().toStdString();
+
+      for ( const QString& text : one.never )
+         EXPECT_FALSE( importer.outcome().contains( text ) )
+            << importer.outcome().toStdString();
+   }
+}
+
+/* A rename suffix a latin1 target cannot store fails the dry run as it
+   fails the import, before anything is written, with what the character
+   is -- and no advice to convert the database. */
+TEST_F( DataPubMockOrder, ARenameSuffixTheTargetCannotStoreFailsTheDryRun )
+{
+   US_DataPubImporter probe;
+   QString            error;
+   ASSERT_TRUE( probe.inspect( bundlePath, error ) );
+   QList< US_DataPubEntity > buffers =
+         probe.manifest().section( US_DataPub::Buffer );
+   ASSERT_EQ( buffers.size(), 1 );
+
+   DataPubFakeDb latin;
+   latin.addHardware( "DEMO-1" );
+   latin.charset = "latin1";
+   latin.addRecord( "buffer", US_Util::new_guid(), 77, latin.person,
+                    buffers[ 0 ].name );
+
+   QString suffix = QString::fromUtf8( "\xE5\xAF\xBC\xE5\x85\xA5" );
+
+   for ( int dry = 1; dry >= 0; dry-- )
+   {
+      US_DataPubImporter          importer;
+      US_DataPubImporter::Options options = dbOptions();
+      options.dryRun       = ( dry == 1 );
+      options.policy       = US_DataPub::PolicyRename;
+      options.renameSuffix = suffix;
+      importer.setDatabase( latin.db() );
+      ASSERT_TRUE ( importer.inspect( bundlePath, error ) );
+      EXPECT_FALSE( importer.runImport( options, error ) )
+         << ( dry ? "dry run" : "import" );
+      EXPECT_TRUE ( error.contains( "U+5BFC" )  &&  error.contains( "latin1" )
+                    &&  error.contains( "rename suffix" ) )
+         << error.toStdString();
+      EXPECT_FALSE( error.contains( "utf8mb4" ) ) << error.toStdString();
+   }
+
+   EXPECT_EQ( latin.commits, 0 );
+   EXPECT_TRUE( latin.callsOf( "new_buffer" ).isEmpty() );
+}
+
+/* The analysis programs' noise, through databases: a disk store's edit with
+   three models with noise and three that borrow, imported into the scratch
+   database, exported from it -- a database export lists the models newest
+   first -- and imported from that bundle into a disk store and into a
+   second scratch database (US3_TEST_DB_IMPORT2_NAME; that part skips
+   without it).  In each, the latest model with noise of the edit, whose
+   noise the analysis programs load (US_LoadableNoise::count_noise(), see
+   datapub_noise_rules.h), is the source's, and every model borrows what it
+   did.  The import used to write the models in the bundle's order, and the
+   oldest model with noise became the latest. */
+TEST_F( DataPubDbImport, TheLatestModelWithNoiseSurvivesADatabaseRoundTrip )
+{
+   DataPubBorrowScenario scenario;
+   scenario.write( US_Settings::dataDir() + "/models",
+                   US_Settings::dataDir() + "/noises", runID, editGUID,
+                   noiseGUID );
+   int invID = US_Settings::us_inv_ID();
+
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection;
+   selection.fromDb = false;
+   selection.scope  = US_DataPub::ScopeNoise;
+   selection.runIDs << runID;
+
+   QString error;
+   QString bundle = root + "/fromdisk.tar.gz";
+   ASSERT_TRUE( exporter.exportBundle( selection, bundle, error ) )
+      << error.toStdString();
+
+   US_DataPubImporter::Options options;
+   options.target       = US_DataPub::TargetDb;
+   options.dbPassword   = master;
+   options.verifyHashes = true;
+   options.policy       = US_DataPub::PolicyRename;
+
+   US_DataPubImporter first;
+   ASSERT_TRUE( first.inspect( bundle, error ) ) << error.toStdString();
+   ASSERT_TRUE( first.runImport( options, error ) )
+      << error.toStdString() << "\n" << first.log().join( "\n" ).toStdString();
+
+   QString newRun;
+
+   for ( const US_DataPubImporter::Result& result : first.results() )
+      if ( result.type == US_DataPub::Experiment )  newRun = result.targetName;
+
+   ASSERT_FALSE( newRun.isEmpty() );
+   EXPECT_EQ( DataPubNoiseRules::latestModelInDb( db, invID, editGUID ),
+              scenario.latest() );
+
+   // ---- exported from the database ----------------------------------------
+   US_DataPubExporter            fromDb;
+   US_DataPubExporter::Selection dbSel;
+   dbSel.fromDb     = true;
+   dbSel.dbPassword = master;
+   dbSel.scope      = US_DataPub::ScopeNoise;
+   dbSel.runIDs << newRun;
+   QString dbBundle = root + "/fromdb.tar.gz";
+   ASSERT_TRUE( fromDb.exportBundle( dbSel, dbBundle, error ) )
+      << error.toStdString() << "\n" << fromDb.log().join( "\n" ).toStdString();
+
+   EXPECT_EQ( DataPubBorrowScenario::text(
+                 DataPubBorrowScenario::borrowers( fromDb.manifest() ) ),
+              DataPubBorrowScenario::text( scenario.expected() ) );
+
+   for ( const US_DataPubEntity& model :
+         fromDb.manifest().section( US_DataPub::Model ) )
+   {
+      EXPECT_EQ( model.attrs.value( "sourceIndex" ), model.id );
+      EXPECT_TRUE( model.attrs.value( "sourceLastUpdated" ).endsWith( "Z" ) );
+   }
+
+   // ---- into a disk store ---------------------------------------------------
+   {
+      QString                     store = root + "/fromdb_disk";
+      US_DataPubImporter          toDisk;
+      US_DataPubImporter::Options diskOpts;
+      diskOpts.target       = US_DataPub::TargetDisk;
+      diskOpts.outputDir    = store;
+      diskOpts.verifyHashes = true;
+      ASSERT_TRUE( toDisk.inspect( dbBundle, error ) ) << error.toStdString();
+      ASSERT_TRUE( toDisk.runImport( diskOpts, error ) ) << error.toStdString();
+
+      EXPECT_EQ( DataPubNoiseRules::latestModelOnDisk( store + "/data",
+                                                       editGUID ),
+                 scenario.latest() );
+
+      // The run goes by the name the database gave it (renamed where the
+      // scratch database already held its ID)
+      US_DataPubExporter::Selection onDisk = selection;
+      onDisk.runIDs = QStringList() << newRun;
+
+      QString saved = US_Settings::workBaseDir();
+      US_Settings::set_workBaseDir( store );
+      US_DataPubExporter again;
+      bool ok = again.exportBundle( onDisk, store + "/again.tar.gz", error );
+      US_Settings::set_workBaseDir( saved );
+      ASSERT_TRUE( ok ) << error.toStdString();
+      EXPECT_EQ( DataPubBorrowScenario::text(
+                    DataPubBorrowScenario::borrowers( again.manifest() ) ),
+                 DataPubBorrowScenario::text( scenario.expected() ) );
+   }
+
+   // ---- into another database -----------------------------------------------
+   QString second = qEnvironmentVariable( "US3_TEST_DB_IMPORT2_NAME" );
+
+   if ( second.isEmpty() )
+      GTEST_SKIP() << "no second scratch database (US3_TEST_DB_IMPORT2_NAME)";
+
+   QStringList source = US_Settings::defaultDB();
+   QStringList other  = source;
+   other.replace( 2, second );
+   US_Settings::set_defaultDB( other );
+
+   US_DataPubImporter toDb;
+   bool imported = toDb.inspect( dbBundle, error )  &&
+                   toDb.runImport( options, error );
+   QString latest;
+   QString againRun;
+   US_DataPubExporter again;
+
+   if ( imported )
+   {
+      US_DB2  tdb;
+      QString cerror;
+
+      if ( tdb.connect( master, cerror ) )
+         latest = DataPubNoiseRules::latestModelInDb( &tdb, invID, editGUID );
+
+      for ( const US_DataPubImporter::Result& result : toDb.results() )
+         if ( result.type == US_DataPub::Experiment )
+            againRun = result.targetName;
+
+      US_DataPubExporter::Selection again2 = dbSel;
+      again2.runIDs = QStringList() << againRun;
+      again.exportBundle( again2, root + "/again2.tar.gz", error );
+   }
+
+   US_Settings::set_defaultDB( source );
+
+   ASSERT_TRUE( imported ) << error.toStdString() << "\n"
+                           << toDb.log().join( "\n" ).toStdString();
+   EXPECT_EQ( latest, scenario.latest() );
+   EXPECT_EQ( DataPubBorrowScenario::text(
+                 DataPubBorrowScenario::borrowers( again.manifest() ) ),
+              DataPubBorrowScenario::text( scenario.expected() ) );
+}
+
+/* A calibration's instant through a database whose session is east of UTC
+   (+05:00): the bundle carries the source's dateUpdated in UTC, and the
+   stored row holds that instant, whatever the session's zone; the zone is
+   put back.  A target older than us3_catalog_version() 2 keeps the day of
+   the import, and says so. */
+TEST_F( DataPubDbRules, ACalibrationKeepsItsInstantEastOfUtc )
+{
+   QString rotor = targetRotorGUID();
+   ASSERT_FALSE( rotor.isEmpty() ) << "the target database has no rotor";
+
+   if ( ! loginAs( qEnvironmentVariable( "US3_TEST_DB_ADMIN_GUID" ),
+                   qEnvironmentVariable( "US3_TEST_DB_ADMIN_PW" ),
+                   qEnvironmentVariable( "US3_TEST_DB_PERSON_ID" ).toInt() ) )
+      GTEST_SKIP() << "no administrator login configured";
+
+   rebuildKeepingChemistry();
+   calibrateTargetRotor( rotor );
+
+   const QString instant = "2024-01-01T21:30:05Z";
+   QString bundle = recraft( exportStore( "instant" ),
+                             [ & ]( US_DataPubManifest& m, const QString& )
+   {
+      QList< US_DataPubEntity > cals = m.section( US_DataPub::RotorCalibration );
+      ASSERT_EQ( cals.size(), 1 );
+      cals[ 0 ].attrs.insert( "dateUpdated", instant );
+      m.setSection( US_DataPub::RotorCalibration, cals );
+   } );
+
+   US_DB2  east;
+   QString error;
+   ASSERT_TRUE( east.connect( master, error ) ) << error.toStdString();
+   east.rawQuery( "SET time_zone = '+05:00'" );
+   east.rawQuery( "SELECT us3_catalog_version()" );
+   int version = east.next() ? east.value( 0 ).toInt() : 0;
+
+   US_DataPubImporter importer;
+   importer.setDatabase( &east );
+   ASSERT_TRUE( importer.inspect( bundle, error ) ) << error.toStdString();
+   ASSERT_TRUE( importer.runImport( options(), error ) )
+      << error.toStdString() << "\n" << importer.log().join( "\n" ).toStdString();
+
+   const US_DataPubImporter::Result* cal =
+         resultOf( importer.results(), US_DataPub::RotorCalibration );
+   ASSERT_NE( cal, nullptr );
+   ASSERT_GT( cal->targetID.toInt(), 0 );
+
+   east.rawQuery( "SELECT @@session.time_zone" );
+   EXPECT_EQ( east.next() ? east.value( 0 ).toString() : QString(),
+              QString( "+05:00" ) );
+
+   east.rawQuery( "SELECT UNIX_TIMESTAMP( dateUpdated ) FROM rotorCalibration"
+                  " WHERE rotorCalibrationID = " + cal->targetID );
+   ASSERT_TRUE( east.next() );
+   qint64 stored = east.value( 0 ).toLongLong();
+   qint64 wanted = 0;
+   ASSERT_TRUE( US_DataPub::utcStampSeconds( instant, wanted ) );
+
+   if ( version >= 2 )
+   {
+      EXPECT_EQ( stored, wanted );
+      return;
+   }
+
+   EXPECT_NE( stored, wanted );
+   EXPECT_TRUE( importer.warnings().join( "\n" ).contains( instant ) )
+      << importer.warnings().join( "\n" ).toStdString();
 }
