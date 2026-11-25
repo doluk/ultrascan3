@@ -1950,6 +1950,66 @@ TEST_F( TestUSDataDb, AStrayCopyOfARunDirectoryIsIgnoredAndTheRunIsNot )
    EXPECT_FALSE( QDir( copyDir ).exists( runA + ".2401031200.RA.1.A.280.xml" ) );
 }
 
+// A database record whose parent is only on local disk -- a model whose
+// edit was never uploaded -- is shown under that parent.  A copy of the run
+// holds the same edit, but nothing can be done for a copy: the model is
+// shown under the run's own edit, where it can be acted on, never under
+// the copy's
+TEST_F( TestUSDataDb, ACopyOfARunTakesNoDatabaseOrphans )
+{
+   QString edit2  = US_Util::new_guid();
+   QString model2 = US_Util::new_guid();
+   QString ename  = runA + ".2401051200.RA.1.A.280.xml";
+   writeEdit( runDir( runA ) + "/" + ename, edit2, rawG );
+
+   QString copyDir = US_Settings::resultDir() + "/Backup_" + runA;
+   QDir().mkpath( copyDir );
+   ASSERT_TRUE( QFile::copy( aucPath,  copyDir + "/" + QFileInfo( aucPath ).fileName() ) );
+   ASSERT_TRUE( QFile::copy( editPath, copyDir + "/" + QFileInfo( editPath ).fileName() ) );
+   ASSERT_TRUE( QFile::copy( runDir( runA ) + "/" + ename, copyDir + "/" + ename ) );
+
+   server.models << FModel{ "36", model2, runA + ".1A280.e2401051200_a1_2DSA_i01.model",
+                            edit2, "", "<model/>" };
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+
+   // the copy is opened first, so it is read first
+   QList< int > order;
+   QObject::connect( &model, &US_DataModel::runsListed, [ & ]()
+   {
+      for ( int ii = 0; ii < model.runCount(); ii++ )
+         if ( ! model.run_entry( ii ).copyOf.isEmpty() )
+            model.request_run( ii );
+   } );
+   QObject::connect( &model, &US_DataModel::runMerged,
+                     [ & ]( int index ) { order << index; } );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   int realIx = model.index_of_run( runA );
+   ASSERT_GE( realIx, 0 );
+   ASSERT_TRUE( model.run_entry( realIx ).copyOf.isEmpty() );
+   ASSERT_FALSE( order.isEmpty() );
+   ASSERT_FALSE( model.run_entry( order.first() ).copyOf.isEmpty() );
+
+   QList< int > rows;
+   for ( int row = 0; row < model.recCount(); row++ )
+      if ( model.row_datadesc( row ).dataGUID == model2  &&  model.run_of_row( row ) >= 0 )
+         rows << row;
+
+   ASSERT_EQ( rows.size(), 1 );
+   int mrow = rows.first();
+   EXPECT_EQ( model.run_of_row( mrow ), realIx )
+      << model.run_entry( model.run_of_row( mrow ) ).copyOf.toStdString();
+   EXPECT_EQ( model.row_datadesc( model.parent_row( mrow ) ).dataGUID, edit2 );
+
+   // and it can be acted on there
+   EXPECT_EQ( win.proc.record_remove_db( mrow ), 0 ) << win.proc.lastError().toStdString();
+   EXPECT_EQ( server.modelById( "36" ), nullptr );
+}
+
 // A model is not downloaded where its edit is not
 TEST_F( TestUSDataDb, AChildIsNotDownloadedWithoutItsParent )
 {
