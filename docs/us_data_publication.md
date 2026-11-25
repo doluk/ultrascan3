@@ -398,6 +398,14 @@ again" — instead of reporting a payload that does not match its entry. Format
 borrower in `borrowedByModelGUIDs`. A reader accepts every format up to the
 one it writes (`US_DataPubManifest::currentVersion`) and refuses a later one.
 
+Models and noise records also carry `sourceLastUpdated` (their time stamp in
+the source, UTC, `2024-05-01T10:05:00Z`) and `sourceIndex` (their database ID,
+or the number of their file), and a calibration from a database `dateUpdated`
+(the row's instant, UTC); see the import's notes on the order of models and
+noise and on the calibration's date. They are optional, and the format stays
+`2`: an import that does not know them ignores them and imports as it did, and
+one that does treats a bundle without them as described there.
+
 Every entry carries a `payload` and a `sha256`. **The digest is the digest of
 the payload file**, not of the record's properties, so a bundle can be verified
 the way any downloaded file is verified. An import checks every digest before
@@ -942,6 +950,11 @@ transaction can promise: the tables written are InnoDB, and no stored procedure
 commits by itself. A statement that does commit ends the transaction on the
 server; the commit (or rollback) that follows then fails, and the import says
 that some records may have been kept rather than that nothing was imported.
+A lost connection is told by what `US_DB2` says of it, as us_manage_data reads
+it: lost before the commit went out, the server rolled the import back and
+nothing was imported; lost during the commit, whether the import was kept is
+not known, and the import says to look in the target before importing again;
+a deadlock, which the server rolls back as a whole, kept nothing.
 
 Every lookup that can be made in advance is made before the transaction
 opens, so that it is held open for the writes and little else: every record of
@@ -1044,31 +1057,88 @@ disk store keeps them in the model's XML only, so a disk import writes the
 manifest's into it (all digits) when the XML holds another value or none — a
 zero, which `US_Model` leaves out, stays out.
 
-A model with no noise of its own borrows the noise of its edit by time stamp:
-of each noise type (`ti`, `ri`), the newest record not newer than the model,
-where a record dated the same second as the model counts as older. Two
-records of a type dated the same second are told apart by a fixed rule, never
-by the order a listing returns them in: in a database the higher ID (the one
-written last) wins, otherwise the higher GUID
-(`US_DataPubCatalog::noiseBefore()`). The target stores no borrowing relation,
-only these time stamps, which the import writes anew. So the bundle names the
-borrowing models in the noise record (`borrowedByModelGUIDs`; an older bundle's
-`borrowedByModelGUID`), and the import writes the models without noise of
-their own and the noise records of their edit in an order that reproduces
-it (`US_DataPubImporter::fitSequence()`): a model is written when the noise
-records last written of each type are those it borrows (none yet, where it
-borrows none), and a noise record only when no model still to come needs the
-one before it. Where a noise record has to be newer than a model written
-before it, or a borrowed record newer than the one of its type before it, the
-import waits until the target's clock has moved on to the next second — the
-server's (`SELECT UNIX_TIMESTAMP( NOW() )`, the clock the procedures date the
-rows with) in a database, the local one (which dates the files) on disk. That
-costs at most a second per such step and is needed only in an edit with a
-model without noise of its own and more than one noise record, or more than
-one of a type. Exported from the target again, every noise record names the
-models it named in the source, and a model made before any noise borrows none.
-A bundle whose borrowing cannot be met (one model named for two records of a
-type) is imported with a note, the rest of its records in the bundle's order.
+Two rules of the analysis programs and the catalog depend on the order in
+which the models and noise records of an edit were made, and the target keeps
+that order only in its IDs, its file names and its time stamps:
+
+- **Which noise the analysis programs load.** 2DSA, GA, PCSA, fematch and the
+  other programs that load an edit without a model offer, and by default
+  load, the noise of the *latest model with noise* of the edit
+  (`US_LoadableNoise::count_noise()`, gui/us_loadable_noise.cpp): in a
+  database the model with noise of the highest ID (`get_model_desc_by_editID`
+  lists them highest first), on disk the last `M*.xml` file, in name order,
+  of a model with noise. A Monte Carlo request counts as one model.
+- **Which noise a model without noise of its own was run with.** A catalog
+  tells it by time stamp (`US_DataPubCatalog::noiseBefore()`): of each noise
+  type (`ti`, `ri`), the newest record of the model's edit not newer than the
+  model, where a record dated the same second as the model counts as older.
+  Two records of a type dated the same second are told apart by a fixed rule,
+  never by the order a listing returns them in: in a database the higher ID
+  (the one written last) wins, otherwise the higher GUID. The time stamps are
+  UTC (the procedures convert the rows' with `timestamp2UTC`, a file's time is
+  read in UTC) and are read as UTC, so a stamp of the hour a local
+  spring-forward skips is no different from any other. Only noise of the
+  model's own edit is lent; a bundle that names a borrower of another edit
+  (which no export writes) is imported with a warning that the borrowing
+  cannot be kept.
+
+The target stores no borrowing relation, so the import writes **all** models
+and noise records of an edit in the source's order
+(`US_DataPubImporter::writeOrder()`):
+
+- The models keep the source's order among themselves, and so do the noise
+  records. An export says it: each model and noise record carries
+  `sourceIndex` (its database ID, or the number of its file: `M0000012.xml` is
+  12) and `sourceLastUpdated` (its time stamp, UTC, ISO 8601, e.g.
+  `2024-05-01T10:05:00Z`). A bundle of an older export has no such attributes;
+  its records go by the manifest's `modelID` / `noiseID` when it came from a
+  database (`source: "db"`), by the number in its `filename` when it came from
+  disk, and failing those by the manifest's order — which a database export
+  lists newest first, so it is taken backwards there.
+- A noise record comes after the model it was fitted to. A model that
+  borrows (`borrowedByModelGUIDs`, or an older bundle's `borrowedByModelGUID`)
+  comes after the record of each type it borrows and before the next record
+  of that type; a model without noise of its own that no record names comes
+  before every noise record of its edit.
+- Within that, the source's time stamps decide (a noise record first on a
+  tie); without them each noise record goes as early as it can.
+
+Any order that honours these keeps both rules, and as they only join two
+chains (the models, the noise records) there always is one unless the
+bundle's borrowing contradicts its own order. That, a model named for two
+records of a type, and a borrower of another edit or not in the bundle are
+each said in a warning before anything is written — in the dry run as in the
+import — and the borrowing concerned is left out of the order; the order of
+the models and noise records stays the source's.
+
+A disk import gives each model and noise file the number after the highest
+in the directory, never one of a gap: a file in a gap would count as older
+than the edit's files after it. A database gives new rows the next ID anyway.
+
+The time stamps have to tell the records apart where the rules look at
+them, and a catalog dates them to the second. So the import waits for the
+target's clock to pass the second of the record before, where:
+
+- a noise record follows a model of its edit without noise of its own (in a
+  database or on disk): the model must not count it as borrowed;
+- on disk, a noise record follows another of its type, in an edit with a
+  model without noise of its own: a tie is broken by the higher GUID there,
+  not by the order the records were written in (in a database the higher ID
+  is the record written later, which is the source's order).
+
+The clock is the server's in a database (`SELECT UNIX_TIMESTAMP()`, the
+instant the procedures date the rows by — not `NOW()`, whose wall time steps
+back at a fall-back), and on disk the time the file system gives a new file
+in the target directory (a probe file, removed at once): that is the clock
+the record files are dated by, also on a FAT file system (two-second steps)
+or a network share (the server's clock). The second of a written record is
+its file's time on disk, and the server's clock after the write in a
+database. Each wait lasts at most until the next second (two on FAT) and
+gives up after five. The edits are written in turn, one record each, so the
+seconds one edit waits for pass for the others too: an import waits about as
+long as its edit with the most such steps, not as long as all of them.
+Exported from the target again, every noise record names the models it named
+in the source, and the latest model with noise of every edit is the source's.
 
 A run's experiment XML names its rotor calibration by ID and, in a bundle, by
 GUID (`<calibration guid="…">`); a disk import points both at the target's
@@ -1111,7 +1181,28 @@ transaction right after the record is written, when `SELECT
 us3_catalog_version()` answers 2 or more. A target with older procedures keeps
 `''` and the day of the import; the import — and its dry run — then gives one
 warning that names every run and calibration concerned and says to load the
-updated procedures. A disk store keeps the calibration's date in its file, and
+updated procedures. A version marker can be newer than the procedures (the
+marker's file loaded without the others): from version 2 on the import also
+looks for `clear_experiment_fields` and `set_rotor_calibration_date` in
+`information_schema.ROUTINES`, in the preflight, and where the listing shows
+the procedures but not these two it takes the target as version 1, in the dry
+run as in the import, with the same warning. The marker is asked once per run
+of the import (the import window keeps one importer for every run).
+
+The calibration's date is an instant: the bundle carries the source row's
+`dateUpdated` as a UTC time stamp (`dateUpdated` of the calibration's manifest
+entry, `2024-01-01T21:30:05Z`), which an export from a database writes. A
+bundle without it (an export from disk, whose calibration files keep only the
+day, or an older export) gives the payload's day, which the import stores at
+12:00 UTC — that day in every time zone within twelve hours of UTC, also
+1970-01-01. `set_rotor_calibration_date` takes a `DATETIME`, which the
+`TIMESTAMP` column reads in the session's time zone; the import sets the
+session to UTC (`SET time_zone = '+00:00'`) for that call and back to the
+zone it had right after, so the stored instant is the source's whatever the
+session's zone is. An instant the column cannot hold (before
+1970-01-01 00:00:01 or after 2038-01-19 03:14:07 UTC) is not passed on: the
+calibration keeps the day of the import, and the dry run and the import say
+so in a warning. A disk store keeps the calibration's date in its file, and
 has no NULL to keep: the run's XML holds the bundle's (empty) protocol and the
 RI profile file is there or not.
 
@@ -1132,7 +1223,7 @@ opens, the rules the server would otherwise enforce only on the writes:
 
 | Rule of the server | What the import does |
 |---|---|
-| `add_rotor_calibration` takes an administrator (user level 3) | A calibration the person logged in may not add is left out with a warning (`--strict-hardware` refuses it); an administrator's import records "no calibration experiment" as `-1`. The procedure dates the row itself (`NOW()`); the import then sets the source's date (the calibration payload's `lastUpdated`, at midnight) with `set_rotor_calibration_date` (see below) |
+| `add_rotor_calibration` takes an administrator (user level 3) | A calibration the person logged in may not add is left out with a warning (`--strict-hardware` refuses it); an administrator's import records "no calibration experiment" as `-1`. The procedure dates the row itself (`NOW()`); the import then sets the source's date (the bundle's `dateUpdated`, else the payload's day at 12:00 UTC) with `set_rotor_calibration_date` (see below) |
 | `create_buffer_component` takes user level 2 | A buffer component the target lacks is refused below that level |
 | `new_solutionAnalyte` takes the investigator's own analyte (`analytePerson`), or an administrator | Another investigator's analyte of the bundle's GUID is not reused: the import makes a copy under a GUID of its own. One the bundle does not carry is refused |
 | (none: no procedure checks it) | Another investigator's *private* buffer is not linked either: the import makes a copy. A public one, or the investigator's own, is reused |
@@ -1406,7 +1497,7 @@ us_data_publication --mode import --bundle <file.tar.gz> [options]
 | `--project-guid <guid>` | Attach the imported runs to this project of the target; it has to be there already |
 | `--on-conflict <policy>` | `reuse`, `rename` or `fail` (default: `reuse`) |
 | `--on-conflict-<type> <policy>` | The policy for one record type |
-| `--rename-suffix <text>` | Suffix for auto-renamed records (default: `imported`) |
+| `--rename-suffix <text>` | Suffix for auto-renamed records (default: `imported`); a record is renamed `name (suffix)`, and a suffix given in brackets is not bracketed again. Into a database, a renamed name the target's text cannot store (a character outside `latin1`, for instance) fails the dry run as the import, before anything is written |
 | `--no-verify` | Skip the payload digest check; the only way to import a bundle without digests |
 | `--strict-hardware` | Fail rather than stand another rotor, calibration, centerpiece, instrument or operator in for a missing one |
 | `--list` | Print the manifest and stop. A bundle the import refuses whose manifest can still be read (a format `1` bundle with `fittedToModelGUID`, say) has its manifest printed, then the refusal, with exit code `1` |

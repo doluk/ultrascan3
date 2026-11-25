@@ -754,3 +754,27 @@ both servers.
   them back at its end.  The export by run ID has to be refused naming both
   experiment IDs, and an export by either experiment ID has to carry that
   experiment and its raw data.
+
+## Data import cases added in fix round 8 (order of models and noise, clock, dates)
+
+- `DataPubDbImport.TheLatestModelWithNoiseSurvivesADatabaseRoundTrip`
+  imports a disk store's edit with three models with noise and three that
+  borrow into `US3_TEST_DB_IMPORT_NAME`, exports it from there (a database
+  export lists the models newest first) and imports that bundle into a disk
+  store and into `US3_TEST_DB_IMPORT2_NAME` (that part skips without it).  In
+  each it checks the model whose noise the analysis programs load
+  (`US_LoadableNoise::count_noise()`, replicated in
+  `datapub_noise_rules.h`) and what every model borrows.  It waits for the
+  server's clock a few times (a few seconds).
+- `DataPubDbRules.ACalibrationKeepsItsInstantEastOfUtc` needs the
+  administrator login.  It imports on a connection whose session time zone
+  is `+05:00` and checks the stored instant with `UNIX_TIMESTAMP()`
+  (procedures of `us3_catalog_version()` 2), or the warning (older ones).
+- `test_us_loadable_noise_gui` (test/gui) holds `datapub_noise_rules.h` to
+  the real `US_LoadableNoise::count_noise()` on disk; it needs no database.
+- The `DataPubMockOrder` cases run on the fake database
+  (`datapub_fake_db.h`), which now answers `SELECT UNIX_TIMESTAMP()` from a
+  clock of its own that moves on as it is read, dates the models and noise
+  records it stores by it, keeps a session time zone (`@@session.time_zone`,
+  `SET time_zone`), and lists the version-2 procedures in
+  `information_schema.ROUTINES` unless `staleMarker` is set.

@@ -73,6 +73,7 @@ US_DataPubImporter::US_DataPubImporter( QObject* parent ) : QObject( parent )
    step_count  = 0;
    user_level  = -1;
    catalog_version = -1;
+   catalog_stale.clear();
    clock_local     = false;
    unkept.clear();
 }
@@ -815,6 +816,9 @@ bool US_DataPubImporter::preflight( QString& error )
    // What the server lets the person logged in do decides some of what
    // follows: which analytes they may use, which hardware they may add
    if ( ! readUserLevel( error ) )  return false;
+
+   // Which procedures the target has, which decides what it can keep
+   if ( opts.target == US_DataPub::TargetDb )  catalogVersion();
 
    // The character sets the target's text goes into, which the payloads'
    // text is checked against
@@ -1664,7 +1668,20 @@ bool US_DataPubImporter::checkServerRules( QString& error )
    nothing.  Asked once per import.
 */
 /* The target's us3_catalog_version(): 0 for a server without it (which
-   refuses the statement: no row), asked once per import.
+   refuses the statement: no row), asked once per import (runImport()
+   forgets it, so a rerun after the procedures were updated, or against
+   another database, asks again).
+
+   The marker is a function of its own, and a database can carry a newer
+   one than its procedures -- us3_catalog_procs.sql loaded without
+   us3_hardware_procs.sql and us3_expdata_procs.sql, or the procedures
+   dropped since.  So from version 2 on, the procedures it stands for are
+   looked for in information_schema.ROUTINES as well; where the listing
+   shows the procedures (new_model among them) but not those, the target
+   counts as version 1 -- in the dry run as in the import, which would
+   otherwise fail with "PROCEDURE does not exist" (1305).  A listing that
+   shows nothing at all (no privilege to see them) cannot tell, and the
+   marker stands.
 */
 int US_DataPubImporter::catalogVersion( void )
 {
@@ -1677,6 +1694,43 @@ int US_DataPubImporter::catalogVersion( void )
 
       catalog_version = dbase->next() ? qMax( 0, dbase->value( 0 ).toInt() )
                                       : 0;
+      catalog_stale.clear();
+
+      if ( catalog_version >= 2 )
+      {
+         QStringList wanted;
+         wanted << "clear_experiment_fields" << "set_rotor_calibration_date";
+
+         dbase->rawQuery(
+            "SELECT ROUTINE_DEFINITION, ROUTINE_NAME"
+            " FROM information_schema.ROUTINES"
+            " WHERE ROUTINE_SCHEMA = DATABASE()"
+            " AND ROUTINE_NAME IN ( 'new_model', '" + wanted.join( "', '" )
+            + "' )" );
+
+         QStringList seen;
+
+         while ( dbase->next() )
+            seen << dbase->value( 1 ).toString();
+
+         QStringList missing;
+
+         for ( const QString& name : wanted )
+            if ( ! seen.contains( name, Qt::CaseInsensitive ) )
+               missing << name;
+
+         if ( seen.contains( "new_model", Qt::CaseInsensitive )  &&
+              ! missing.isEmpty() )
+         {
+            catalog_stale = tr( "%1, but it has no %2" )
+                            .arg( catalog_version )
+                            .arg( missing.join( tr( " and no " ) ) );
+            note( tr( "The target's us3_catalog_version() answers %1:"
+                      " the import takes it as version 1" )
+                  .arg( catalog_stale ) );
+            catalog_version = 1;
+         }
+      }
    }
 
    return catalog_version;
@@ -1702,7 +1756,8 @@ void US_DataPubImporter::unkeptWarning( void )
                       " set_rotor_calibration_date, so the import %2 not keep:"
                       " %3.  Load the updated procedures (us3_sql) into the"
                       " target to keep them" )
-                  .arg( catalogVersion() )
+                  .arg( catalog_stale.isEmpty()
+                        ? QString::number( catalogVersion() ) : catalog_stale )
                   .arg( opts.dryRun ? tr( "would" ) : tr( "did" ) )
                   .arg( unkept.join( "; " ) );
 
@@ -1739,11 +1794,157 @@ QString US_DataPubImporter::unkeptFields( const QString& run, bool protocol,
 
 QString US_DataPubImporter::unkeptDate( const QString& name,
                                         const QString& guid,
-                                        const QDate& date ) const
+                                        const QString& date ) const
 {
    return tr( "the date %1 of rotor calibration %2 (dated the day of the"
-              " import)" ).arg( date.toString( "yyyy-MM-dd" ) )
+              " import)" ).arg( date )
           .arg( calibration_text( name, guid ) );
+}
+
+/* When a calibration of the bundle was last updated, in seconds since the
+   epoch: the instant the bundle carries ("dateUpdated", UTC, which an
+   export from a database writes), else the day of the payload -- all a
+   disk store or an older bundle has -- at 12:00 UTC, which is that day in
+   every time zone within twelve hours of UTC.  \a shown is what a message
+   names it by.
+*/
+bool US_DataPubImporter::calibrationInstant(
+      const US_DataPubEntity& entity,
+      const US_Rotor::RotorCalibration& calibration, qint64& seconds,
+      QString& shown ) const
+{
+   QString stamp = entity.attrs.value( "dateUpdated" ).trimmed();
+
+   if ( ! stamp.isEmpty()  &&  US_DataPub::utcStampSeconds( stamp, seconds ) )
+   {
+      shown = US_DataPub::isoUtcStamp( stamp );
+      return true;
+   }
+
+   if ( ! calibration.lastUpdated.isValid() )  return false;
+
+   seconds = QDateTime( calibration.lastUpdated, QTime( 12, 0 ), Qt::UTC )
+             .toSecsSinceEpoch();
+   shown   = calibration.lastUpdated.toString( "yyyy-MM-dd" );
+
+   return true;
+}
+
+/* Whether the instant of a calibration's date fits the TIMESTAMP column
+   rotorCalibration.dateUpdated: 1970-01-01 00:00:01 to 2038-01-19 03:14:07
+   UTC.  One that does not is said in the dry run as in the import, and the
+   calibration is written dated the day of the import, as by a target
+   without set_rotor_calibration_date.
+*/
+bool US_DataPubImporter::calibrationDateFits( const QString& name,
+                                              const QString& guid,
+                                              qint64 seconds,
+                                              const QString& shown )
+{
+   if ( seconds >= 1  &&  seconds <= 2147483647LL )  return true;
+
+   QString text = tr( "The date %1 of rotor calibration %2 is outside what"
+                      " the target database can store (1970-01-01 to"
+                      " 2038-01-19 UTC); the calibration %3 dated the day"
+                      " of the import" )
+                  .arg( shown ).arg( calibration_text( name, guid ) )
+                  .arg( opts.dryRun ? tr( "would be" ) : tr( "is" ) );
+   warnlist << text;
+   note( tr( "Warning: " ) + text );
+
+   return false;
+}
+
+/* Set a calibration's dateUpdated to an instant (set_rotor_calibration_date,
+   version 2).  The procedure takes a DATETIME, which the TIMESTAMP column
+   reads in the session's time zone; the session is put on UTC for the
+   call, so that the stored instant is the source's whatever zone the
+   connection has (and with no hour of a fall-back read twice), and put
+   back afterwards.  A zone that cannot be read or named back is left as
+   it is, and the instant is given as the server's wall time for it
+   (FROM_UNIXTIME()).
+*/
+bool US_DataPubImporter::storeCalibrationDate( int calID, qint64 seconds,
+                                               QString& error )
+{
+   static const QRegularExpression safe( "^[A-Za-z0-9_/+:.-]{1,64}$" );
+
+   dbase->rawQuery( "SELECT @@session.time_zone" );
+
+   QString zone  = dbase->next() ? dbase->value( 0 ).toString().trimmed()
+                                 : QString();
+   bool    named = safe.match( zone ).hasMatch();
+   bool    onUtc = ( zone == "+00:00" );
+   QString wall  = QLocale::c().toString(
+                      QDateTime::fromSecsSinceEpoch( seconds, Qt::UTC ),
+                      "yyyy-MM-dd hh:mm:ss" );
+
+   auto zoneNow = [ & ]( void ) -> QString
+   {
+      dbase->rawQuery( "SELECT @@session.time_zone" );
+      return dbase->next() ? dbase->value( 0 ).toString().trimmed()
+                           : QString();
+   };
+
+   if ( named  &&  ! onUtc )
+   {
+      dbase->rawQuery( "SET time_zone = '+00:00'" );
+      onUtc = ( zoneNow() == "+00:00" );
+
+      if ( ! onUtc )
+      {
+         error = tr( "the session time zone of the target database could"
+                     " not be set to UTC" );
+         return false;
+      }
+   }
+
+   else if ( ! onUtc )
+   {
+      dbase->rawQuery( "SELECT FROM_UNIXTIME( "
+                       + QString::number( seconds ) + " )" );
+      static const QRegularExpression shape(
+            "^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}" );
+      QString local = dbase->next() ? dbase->value( 0 ).toString().trimmed()
+                                    : QString();
+
+      if ( ! shape.match( local ).hasMatch() )
+      {
+         error = tr( "the target database could not say the date in its"
+                     " session time zone" );
+         return false;
+      }
+
+      wall = local.left( 19 );
+   }
+
+   QStringList when;
+   when << "set_rotor_calibration_date" << QString::number( calID ) << wall;
+
+   int     dstat = dbase->statusQuery( when );
+   QString derr  = dbase->lastError();
+
+   // The session's own zone again, before anything else is written
+   if ( named  &&  zone != "+00:00" )
+   {
+      dbase->rawQuery( "SET time_zone = '" + zone + "'" );
+
+      if ( zoneNow() != zone )
+      {
+         error = tr( "the session time zone of the target database could"
+                     " not be set back to %1" ).arg( zone );
+         return false;
+      }
+   }
+
+   if ( dstat != IUS_DB2::OK )
+   {
+      error = tr( "set_rotor_calibration_date answered %1: %2" )
+              .arg( dstat ).arg( derr );
+      return false;
+   }
+
+   return true;
 }
 
 bool US_DataPubImporter::componentIdsMayBeCounted( void )
@@ -3893,6 +4094,13 @@ bool US_DataPubImporter::commitWrite( QString& error )
    return true;
 }
 
+// The start of US_DB2's message for a commit whose outcome is unknown
+QString US_DataPubImporter::commitUnknownPrefix( void )
+{
+   QString unknown = QObject::tr( US_DB2::commitUnknownMessage );
+   return unknown.left( unknown.indexOf( "%1" ) );
+}
+
 void US_DataPubImporter::abortWrite( const QString& reason )
 {
    if ( in_txn  &&  dbase != nullptr )
@@ -3903,6 +4111,40 @@ void US_DataPubImporter::abortWrite( const QString& reason )
       if ( dbase->rollbackTransaction( detail ) )
          outcome_text = tr( "Nothing was imported: the database transaction"
                             " was rolled back after %1" ).arg( reason );
+
+      // How it ended when the rollback is refused, in US_DB2's words (as
+      // us_manage_data reads them, US_DataProcess::transaction_end()): a
+      // connection lost before the commit went out was rolled back by the
+      // server; one lost during the commit leaves open whether it took
+      // effect; a deadlock was rolled back by the server; an implicit
+      // commit kept what was written before it
+      else if ( detail ==
+                QObject::tr( US_DB2::connectionLostRollbackMessage ) )
+         outcome_text = tr( "Nothing was imported: the import failed (%1),"
+                            " and the connection to the database was lost"
+                            " before anything was committed, so the server"
+                            " rolled the import back" ).arg( reason );
+
+      else if ( detail.startsWith( commitUnknownPrefix() ) )
+         outcome_text = tr( "The import failed (%1): the connection to the"
+                            " database was lost while the import was being"
+                            " committed, so whether its records were kept is"
+                            " not known; look in the target before importing"
+                            " again" ).arg( reason );
+
+      else if ( detail == QObject::tr( US_DB2::serverRollbackMessage ) )
+         outcome_text = tr( "Nothing was imported: the import failed (%1),"
+                            " and the server had already rolled the"
+                            " transaction back after a deadlock" )
+                        .arg( reason );
+
+      else if ( detail == QObject::tr( US_DB2::transactionEndedMessage ) )
+         outcome_text = tr( "The import failed (%1) after the database"
+                            " transaction had already ended (an implicit"
+                            " commit or a rollback by the server), so some"
+                            " records may have been kept; look in the target"
+                            " before importing again" ).arg( reason );
+
       else
          outcome_text = tr( "The import failed (%1) and its rollback failed"
                             " too (%2); some records may have been kept" )
@@ -4094,6 +4336,7 @@ bool US_DataPubImporter::runImport( const Options& options, QString& error )
    tcomp_ids.clear();
    user_level = -1;
    catalog_version = -1;
+   catalog_stale.clear();
    clock_local     = false;
    unkept.clear();
    fresh_guids.clear();
@@ -4159,6 +4402,22 @@ bool US_DataPubImporter::runImport( const Options& options, QString& error )
       return false;
    }
 
+   // The order of the models and noise records, and what of the bundle's
+   // borrowing it cannot keep -- said before anything is written
+   QStringList                 orderProblems;
+   QList< QList< OrderStep > > fitOrder = writeOrder( mani, orderProblems );
+
+   for ( int ii = 0; ii < orderProblems.size(); ii++ )
+   {
+      if ( warn( tr( "Which noise a model borrows may not survive the"
+                     " import: %1" ).arg( orderProblems[ ii ] ), error ) )
+         continue;
+
+      outcome_text = tr( "Nothing was written" );
+      closeTarget();
+      return false;
+   }
+
    if ( ! beginWrite( error ) )
    {
       outcome_text = tr( "Nothing was written" );
@@ -4168,21 +4427,6 @@ bool US_DataPubImporter::runImport( const Options& options, QString& error )
 
    emit steps( mani.total() );
 
-   // Which noise a model with none of its own was run with is told by time
-   // stamps only (US_DataPubCatalog::noiseBefore()): the newest noise of
-   // each type of its edit that is not newer than the model.  So the
-   // models without noise of their own and the noise records of the same
-   // edit are written in an order that gives every such model the noise
-   // the bundle says it borrows, and none where it borrows none.
-   QString          seqProblem;
-   QList< FitStep > sequence = fitSequence( seqProblem );
-   QSet< QString >  sequenced;
-
-   if ( ! seqProblem.isEmpty() )  note( seqProblem );
-
-   for ( int jj = 0; jj < sequence.size(); jj++ )
-      if ( ! sequence[ jj ].isNoise )  sequenced << sequence[ jj ].entity.guid;
-
    auto writeOne = [ & ]( const US_DataPubEntity& entity ) -> bool
    {
       if ( importEntity( entity, error )  &&  lookup_error.isEmpty() )
@@ -4191,89 +4435,43 @@ bool US_DataPubImporter::runImport( const Options& options, QString& error )
       if ( error.isEmpty() )  error = lookup_error;
 
       error = tr( "%1: %2" ).arg( entity.label() ).arg( error );
+      return false;
+   };
+
+   auto failed = [ & ]( void ) -> bool
+   {
       abortWrite( error );
       closeTarget();
       return false;
    };
 
-   auto writeAll = [ & ]( const QList< US_DataPubEntity >& entities ) -> bool
-   {
-      for ( int jj = 0; jj < entities.size(); jj++ )
-         if ( ! writeOne( entities[ jj ] ) )  return false;
-
-      return true;
-   };
-
-   // The sequence, with the target's clock moved on wherever two records
-   // have to differ in their time stamps
-   auto writeSequence = [ & ]( void ) -> bool
-   {
-      QHash< QString, qint64 > modelAt;     // edit -> last model's second
-      QHash< QString, qint64 > noiseAt;     // edit/type -> last noise's
-      bool                     timed = ! opts.dryRun;
-
-      for ( int jj = 0; jj < sequence.size(); jj++ )
-      {
-         const FitStep& step = sequence[ jj ];
-         QString        key  = step.editGUID + "/" + step.noiseType;
-
-         if ( timed  &&  step.isNoise )
-         {
-            qint64 after = modelAt.value( step.editGUID, -1 );
-
-            if ( step.borrowed )
-               after = qMax( after, noiseAt.value( key, -1 ) );
-
-            if ( after >= 0  &&  ! waitForClock( after, error ) )
-            {
-               abortWrite( error );
-               closeTarget();
-               return false;
-            }
-         }
-
-         if ( ! writeOne( step.entity ) )  return false;
-
-         if ( ! timed  ||  ! step.timed )  continue;
-
-         qint64 now = targetSecond();
-
-         if ( step.isNoise )
-            noiseAt.insert( key, now );
-         else
-            modelAt.insert( step.editGUID, now );
-      }
-
-      return true;
-   };
-
-   bool sequenceDone = false;
+   bool fitsDone = false;
 
    // The manifest lists the records in the declared section order; they are
    // replayed in the order that satisfies the target's own dependencies.
+   // The models and noise records go in together, in the source's order
+   // (writeModelsAndNoise()), where the first of the two types comes.
    for ( int ii = 0; ii < types.size(); ii++ )
    {
-      if ( types[ ii ] == US_DataPub::Noise )
-      {  // Every noise record is in the sequence
-         if ( ! writeSequence() )  return false;
+      if ( types[ ii ] == US_DataPub::Model  ||
+           types[ ii ] == US_DataPub::Noise )
+      {
+         if ( ! fitsDone  &&
+              ! writeModelsAndNoise( fitOrder, writeOne, error ) )
+            return failed();
 
-         sequenceDone = true;
+         fitsDone = true;
          continue;
       }
 
       QList< US_DataPubEntity > entities = mani.section( types[ ii ] );
 
-      if ( types[ ii ] == US_DataPub::Model )
-      {
-         for ( int jj = entities.size() - 1; jj >= 0; jj-- )
-            if ( sequenced.contains( entities[ jj ].guid ) )
-               entities.removeAt( jj );
-      }
-
-      if ( ! writeAll( entities ) )  return false;
+      for ( int jj = 0; jj < entities.size(); jj++ )
+         if ( ! writeOne( entities[ jj ] ) )  return failed();
    }
 
-   if ( ! sequenceDone  &&  ! writeSequence() )  return false;
+   if ( ! fitsDone  &&  ! writeModelsAndNoise( fitOrder, writeOne, error ) )
+      return failed();
 
    unkeptWarning();
 
@@ -4306,40 +4504,32 @@ bool US_DataPubImporter::runImport( const Options& options, QString& error )
    return true;
 }
 
-/* The order the models without noise of their own and the noise records of
-   their edits are written in.
+/* The order the models and noise records of a bundle are written in; see
+   the header.
 
-   A catalog tells which noise such a model was run with by time stamps
-   alone (US_DataPubCatalog::noiseBefore()): of each noise type, the newest
-   record of the model's edit that is not newer than the model.  The bundle
-   says which record that was (borrowedByModelGUIDs, or an older bundle's
-   borrowedByModelGUID); a model no record names borrowed none.  So, edit by
-   edit, a model is written when the noise last written of each type is the
-   one it borrows of that type (none yet, where it borrows none), and a
-   noise record is written only when no model still to come needs the
-   record it follows.  Where a model has to be older than a noise record
-   written after it, or a borrowed record newer than the one of its type
-   before it, the caller moves the target's clock on in between.
-
-   Every noise record of the bundle is in the sequence; models are only
-   those of an edit with noise in the bundle that no noise record of the
-   bundle was fitted to.  A bundle whose borrowing cannot be met (two
-   records of one type borrowed by one model, or orders that exclude each
-   other) gets the rest written as it comes, noise first, and \a problem
-   says so.
+   Per edit, the models form one chain and the noise records another, each
+   in the source's order.  The edges between them are the noise record
+   after the model it was fitted to and the borrowing the bundle names.
+   Any order that honours the edges keeps both what the analysis programs
+   load (the order of the models) and what every model borrows; of those,
+   the one closest to the source's time stamps is taken.  As the edges
+   only run along two chains and between them, the choice at each step is
+   between the two chains' next records, and a bundle whose edges form no
+   circle always has one.
 */
-QList< US_DataPubImporter::FitStep > US_DataPubImporter::fitSequence(
-      QString& problem ) const
+QList< QList< US_DataPubImporter::OrderStep > >
+US_DataPubImporter::writeOrder( const US_DataPubManifest& manifest,
+                                QStringList& problems )
 {
-   QList< FitStep >          steps;
-   QList< US_DataPubEntity > noises = mani.section( US_DataPub::Noise );
-   QList< US_DataPubEntity > models = mani.section( US_DataPub::Model );
-   QHash< QString, QString > editOf;                 // model GUID -> edit
-   QSet< QString >           fitted;
-   QStringList               edits;                  // in bundle order
-   QStringList               trouble;
+   QList< QList< OrderStep > > order;
+   QList< US_DataPubEntity >   models = manifest.section( US_DataPub::Model );
+   QList< US_DataPubEntity >   noises = manifest.section( US_DataPub::Noise );
+   bool                        fromDb = ( manifest.source == "db" );
+   QHash< QString, QString >   editOf;               // model GUID -> edit
+   QSet< QString >             fitted;               // models with noise
+   QStringList                 edits;                // in bundle order
 
-   problem.clear();
+   problems.clear();
 
    for ( int ii = 0; ii < models.size(); ii++ )
       editOf.insert( models[ ii ].guid,
@@ -4354,202 +4544,308 @@ QList< US_DataPubImporter::FitStep > US_DataPubImporter::fitSequence(
       return edit.isEmpty() ? noise.depend( US_DataPub::EditedData ) : edit;
    };
 
-   for ( int ii = 0; ii < noises.size(); ii++ )
+   auto noiseType = []( const US_DataPubEntity& noise ) -> QString
    {
-      QString edit = noiseEdit( noises[ ii ] );
+      QString type = noise.attrs.value( "noiseType" ).trimmed().toLower()
+                     .left( 2 );
+      return type.isEmpty() ? QString( "ti" ) : type;
+   };
 
-      if ( ! edits.contains( edit ) )  edits << edit;
-   }
+   for ( int ii = 0; ii < models.size(); ii++ )
+      if ( ! edits.contains( editOf.value( models[ ii ].guid ) ) )
+         edits << editOf.value( models[ ii ].guid );
+
+   for ( int ii = 0; ii < noises.size(); ii++ )
+      if ( ! edits.contains( noiseEdit( noises[ ii ] ) ) )
+         edits << noiseEdit( noises[ ii ] );
+
+   // The records of one chain in the source's order: by one kind of key
+   // all of them have -- sourceIndex, a database export's ID, a disk
+   // export's file number -- else by the manifest's order, which a
+   // database export lists newest first
+   auto chain = [ & ]( QList< US_DataPubEntity > list,
+                       const QList< int >& positions )
+   {
+      static const QRegularExpression numbered(
+            "^[MN]([0-9]{7})\\.xml$" );
+      QList< qint64 > keys[ 3 ];
+      bool            all [ 3 ] = { true, true, true };
+
+      for ( int ii = 0; ii < list.size(); ii++ )
+      {
+         const US_DataPubEntity& entity = list[ ii ];
+         bool    ok    = false;
+         qint64  index = entity.attrs.value( "sourceIndex" ).toLongLong( &ok );
+
+         if ( ! ok  ||  index < 0 )  all[ 0 ] = false;
+         keys[ 0 ] << index;
+
+         qint64 id = entity.id.toLongLong( &ok );
+
+         if ( ! fromDb  ||  ! ok  ||  id < 1 )  all[ 1 ] = false;
+         keys[ 1 ] << id;
+
+         QRegularExpressionMatch match = numbered.match( entity.filename );
+
+         if ( fromDb  ||  ! match.hasMatch() )  all[ 2 ] = false;
+         keys[ 2 ] << match.captured( 1 ).toLongLong();
+      }
+
+      QList< qint64 > key;
+
+      for ( int kk = 0; kk < 3  &&  key.isEmpty(); kk++ )
+         if ( all[ kk ] )  key = keys[ kk ];
+
+      if ( key.isEmpty() )
+         for ( int ii = 0; ii < list.size(); ii++ )
+            key << ( fromDb ? -qint64( positions[ ii ] )
+                            :  qint64( positions[ ii ] ) );
+
+      QList< int > idx;
+
+      for ( int ii = 0; ii < list.size(); ii++ )  idx << ii;
+
+      std::stable_sort( idx.begin(), idx.end(), [ & ]( int aa, int bb )
+      {
+         if ( key[ aa ] != key[ bb ] )  return key[ aa ] < key[ bb ];
+         return list[ aa ].guid < list[ bb ].guid;
+      } );
+
+      QList< US_DataPubEntity > sorted;
+
+      for ( int ii = 0; ii < idx.size(); ii++ )  sorted << list[ idx[ ii ] ];
+
+      return sorted;
+   };
 
    for ( int ee = 0; ee < edits.size(); ee++ )
    {
-      const QString&                     edit = edits[ ee ];
-      QList< US_DataPubEntity >          pendNoise;
-      QList< US_DataPubEntity >          pendModel;
-      QHash< QString, QString >          typeOf;     // noise GUID -> type
-      QHash< QString, QHash< QString, QString > > wants;  // model -> type -> noise
-      QSet< QString >                    borrowed;   // noise GUIDs
-      QSet< QString >                    types;
-      QHash< QString, int >              perType;
-      QHash< QString, QString >          cur;        // type -> last written
-
-      for ( int ii = 0; ii < noises.size(); ii++ )
-      {
-         if ( noiseEdit( noises[ ii ] ) != edit )  continue;
-
-         QString type = noises[ ii ].attrs.value( "noiseType" ).trimmed()
-                        .toLower().left( 2 );
-
-         if ( type.isEmpty() )  type = "ti";
-
-         pendNoise << noises[ ii ];
-         typeOf.insert( noises[ ii ].guid, type );
-         types << type;
-         perType[ type ]++;
-      }
+      const QString&            edit = edits[ ee ];
+      QList< US_DataPubEntity > mlist;
+      QList< US_DataPubEntity > nlist;
+      QList< int >              mpos;
+      QList< int >              npos;
 
       for ( int ii = 0; ii < models.size(); ii++ )
-         if ( editOf.value( models[ ii ].guid ) == edit  &&
-              ! fitted.contains( models[ ii ].guid ) )
-            pendModel << models[ ii ];
+         if ( editOf.value( models[ ii ].guid ) == edit )
+         {
+            mlist << models[ ii ];
+            mpos  << ii;
+         }
 
-      for ( int ii = 0; ii < pendNoise.size(); ii++ )
+      for ( int ii = 0; ii < noises.size(); ii++ )
+         if ( noiseEdit( noises[ ii ] ) == edit )
+         {
+            nlist << noises[ ii ];
+            npos  << ii;
+         }
+
+      mlist = chain( mlist, mpos );
+      nlist = chain( nlist, npos );
+
+      // The nodes: the models, then the noise records, each chain in order
+      int                       nm = mlist.size();
+      int                       nn = nlist.size();
+      QVector< OrderStep >      node( nm + nn );
+      QVector< qint64 >         when( nm + nn, 0 );
+      bool                      dated = true;
+      QHash< QString, int >     modelAt;
+      QStringList               types;               // in chain order
+      QHash< QString, QList< int > > ofType;         // type -> noise nodes
+
+      for ( int ii = 0; ii < nm + nn; ii++ )
       {
-         const US_DataPubEntity& noise = pendNoise[ ii ];
-         QString                 type  = typeOf.value( noise.guid );
+         bool                    isNoise = ( ii >= nm );
+         const US_DataPubEntity& entity  = isNoise ? nlist[ ii - nm ]
+                                                   : mlist[ ii ];
+         node[ ii ].entity    = entity;
+         node[ ii ].editGUID  = edit;
+         node[ ii ].isNoise   = isNoise;
+         node[ ii ].noiseType = isNoise ? noiseType( entity ) : QString();
+         node[ ii ].borrows   = ! isNoise  &&  ! fitted.contains( entity.guid );
+
+         if ( ! US_DataPub::utcStampSeconds(
+                    entity.attrs.value( "sourceLastUpdated" ), when[ ii ] ) )
+            dated = false;
+
+         if ( isNoise )
+         {
+            QString type = node[ ii ].noiseType;
+
+            if ( ! types.contains( type ) )  types << type;
+
+            ofType[ type ] << ii;
+         }
+
+         else
+            modelAt.insert( entity.guid, ii );
+      }
+
+      // ---- the edges ------------------------------------------------------
+      QVector< QList< int > > chainNext( nm + nn );   // chains and fits
+      QVector< QList< int > > borrowNext( nm + nn );  // borrowing
+
+      for ( int ii = 0; ii + 1 < nm; ii++ )  chainNext[ ii ] << ii + 1;
+
+      for ( int ii = nm; ii + 1 < nm + nn; ii++ )  chainNext[ ii ] << ii + 1;
+
+      for ( int ii = nm; ii < nm + nn; ii++ )
+      {
+         int model = modelAt.value( node[ ii ].entity.depend(
+                                       US_DataPub::Model ), -1 );
+
+         if ( model >= 0 )  chainNext[ model ] << ii;
+      }
+
+      // What each model that borrows was run with, as the bundle names it
+      QHash< int, QHash< QString, int > > wants;     // model -> type -> noise
+
+      for ( int ii = nm; ii < nm + nn; ii++ )
+      {
+         const US_DataPubEntity& noise = node[ ii ].entity;
+         QString                 type  = node[ ii ].noiseType;
          QStringList             named =
             ( noise.attrs.value( "borrowedByModelGUIDs" ) + " "
               + noise.attrs.value( "borrowedByModelGUID" ) )
             .split( ' ', Qt::SkipEmptyParts );
 
+         named.removeDuplicates();
+
          for ( const QString& guid : named )
          {
-            if ( fitted.contains( guid )  ||  editOf.value( guid ) != edit  ||
-                 ! editOf.contains( guid ) )
-               continue;
-
-            QString had = wants[ guid ].value( type );
-
-            if ( ! had.isEmpty()  &&  had != noise.guid )
+            if ( ! editOf.contains( guid ) )
             {
-               trouble << tr( "model %1 is named as the borrower of two %2"
-                              " noise records" ).arg( guid ).arg( type );
+               problems << tr( "the noise record %1 names the model %2 as a"
+                               " borrower, which is not in the bundle" )
+                           .arg( noise.guid ).arg( guid );
                continue;
             }
 
-            wants[ guid ].insert( type, noise.guid );
-            borrowed << noise.guid;
+            if ( editOf.value( guid ) != edit )
+            {
+               // A catalog lends a model only the noise of its own edit
+               // (and so does US_LoadableNoise): no target can say this
+               problems << tr( "the noise record %1 of edit %2 names the"
+                               " model %3 of another edit (%4) as a"
+                               " borrower; a model can only borrow noise"
+                               " of its own edit" )
+                           .arg( noise.guid ).arg( edit ).arg( guid )
+                           .arg( editOf.value( guid ) );
+               continue;
+            }
+
+            int model = modelAt.value( guid, -1 );
+
+            if ( fitted.contains( guid ) )
+            {
+               problems << tr( "the noise record %1 names the model %2 as a"
+                               " borrower, which has noise of its own" )
+                           .arg( noise.guid ).arg( guid );
+               continue;
+            }
+
+            if ( wants[ model ].contains( type )  &&
+                 wants[ model ][ type ] != ii )
+            {
+               problems << tr( "the model %1 is named as the borrower of two"
+                               " %2 noise records" ).arg( guid ).arg( type );
+               continue;
+            }
+
+            wants[ model ].insert( type, ii );
          }
       }
 
-      // Only an edit with a model of its own noise to tell, or with more
-      // than one record of a type, needs the clock
-      bool timed = ! pendModel.isEmpty();
-
-      for ( auto it = perType.constBegin(); it != perType.constEnd(); ++it )
-         if ( it.value() > 1  &&  ! borrowed.isEmpty() )  timed = true;
-
-      auto want = [ & ]( const QString& model, const QString& type )
+      for ( int mm = 0; mm < nm; mm++ )
       {
-         return wants.value( model ).value( type );
-      };
+         if ( ! node[ mm ].borrows )  continue;
 
-      auto ready = [ & ]( const QString& model )
-      {
          for ( const QString& type : types )
-            if ( want( model, type ) != cur.value( type ) )  return false;
+         {
+            const QList< int >& list = ofType.value( type );
+            int                 want = wants.value( mm ).value( type, -1 );
+            int                 at   = list.indexOf( want );
+
+            if ( want >= 0 )  borrowNext[ want ] << mm;
+
+            // Before the next record of the type: the first, for none
+            if ( at + 1 < list.size() )  borrowNext[ mm ] << list[ at + 1 ];
+         }
+      }
+
+      // ---- the order: the next record of either chain whose edges allow it
+      auto place = [ & ]( bool borrowing, QList< OrderStep >& steps )
+      {
+         QVector< int > needs( nm + nn, 0 );
+
+         for ( int ii = 0; ii < nm + nn; ii++ )
+         {
+            for ( int next : chainNext[ ii ] )  needs[ next ]++;
+
+            if ( borrowing )
+               for ( int next : borrowNext[ ii ] )  needs[ next ]++;
+         }
+
+         int mnext = 0;                 // the next model of the chain
+         int nnext = nm;                // the next noise record
+
+         steps.clear();
+
+         while ( mnext < nm  ||  nnext < nm + nn )
+         {
+            bool mok = ( mnext < nm       &&  needs[ mnext ] == 0 );
+            bool nok = ( nnext < nm + nn  &&  needs[ nnext ] == 0 );
+
+            if ( ! mok  &&  ! nok )  return false;
+
+            // A model only where it is the earlier of the two
+            bool model = mok  &&
+                         ( ! nok  ||
+                           ( dated  &&  when[ mnext ] < when[ nnext ] ) );
+            int  pick  = model ? mnext++ : nnext++;
+
+            steps << node[ pick ];
+
+            for ( int next : chainNext[ pick ] )  needs[ next ]--;
+
+            if ( borrowing )
+               for ( int next : borrowNext[ pick ] )  needs[ next ]--;
+         }
 
          return true;
       };
 
-      auto addStep = [ & ]( const US_DataPubEntity& entity, bool isNoise )
+      QList< OrderStep > steps;
+
+      if ( ! place( true, steps ) )
       {
-         FitStep step;
-         step.entity    = entity;
-         step.editGUID  = edit;
-         step.isNoise   = isNoise;
-         step.noiseType = isNoise ? typeOf.value( entity.guid ) : QString();
-         step.borrowed  = isNoise  &&  borrowed.contains( entity.guid );
-         step.timed     = timed;
-         steps << step;
-      };
-
-      while ( ! pendNoise.isEmpty()  ||  ! pendModel.isEmpty() )
-      {
-         // Every model whose noise is the last written
-         for ( int ii = 0; ii < pendModel.size(); )
-         {
-            if ( ready( pendModel[ ii ].guid ) )
-            {
-               addStep( pendModel[ ii ], false );
-               pendModel.removeAt( ii );
-            }
-
-            else
-               ii++;
-         }
-
-         if ( pendNoise.isEmpty() )  break;
-
-         // A noise record no model still to come needs to be the last of
-         // its type; preferably one that completes a model, else one that
-         // is borrowed at all
-         int pick     = -1;
-         int rank     = -1;
-
-         for ( int ii = 0; ii < pendNoise.size(); ii++ )
-         {
-            QString guid = pendNoise[ ii ].guid;
-            QString type = typeOf.value( guid );
-            bool    free = true;
-            int     have = 0;
-
-            for ( int jj = 0; jj < pendModel.size()  &&  free; jj++ )
-            {
-               QString model = pendModel[ jj ].guid;
-
-               if ( want( model, type ) == cur.value( type ) )
-                  free = false;
-
-               if ( want( model, type ) != guid )  continue;
-
-               bool completes = true;
-
-               for ( const QString& other : types )
-                  if ( other != type  &&
-                       want( model, other ) != cur.value( other ) )
-                     completes = false;
-
-               have = qMax( have, completes ? 2 : 1 );
-            }
-
-            if ( free  &&  have > rank )
-            {
-               pick = ii;
-               rank = have;
-            }
-         }
-
-         if ( pick < 0 )  break;
-
-         cur.insert( typeOf.value( pendNoise[ pick ].guid ),
-                     pendNoise[ pick ].guid );
-         addStep( pendNoise[ pick ], true );
-         pendNoise.removeAt( pick );
+         problems << tr( "what the models of edit %1 borrow contradicts the"
+                         " order the source made its models and noise"
+                         " records in, so it is not kept" ).arg( edit );
+         place( false, steps );
       }
 
-      if ( ! pendNoise.isEmpty()  ||  ! pendModel.isEmpty() )
-      {
-         trouble << tr( "the noise records of edit %1 and the models that"
-                        " borrow them cannot all be written in an order that"
-                        " keeps what each model borrows" ).arg( edit );
-
-         for ( int ii = 0; ii < pendNoise.size(); ii++ )
-            addStep( pendNoise[ ii ], true );
-
-         for ( int ii = 0; ii < pendModel.size(); ii++ )
-            addStep( pendModel[ ii ], false );
-      }
+      order << steps;
    }
 
-   if ( ! trouble.isEmpty() )
-      problem = tr( "Which noise a model borrows may not survive the import:"
-                    " %1" ).arg( trouble.join( "; " ) );
-
-   return steps;
+   return order;
 }
 
-/* The target's clock, to the second: the server's (SELECT NOW(), the clock
-   the procedures date their rows with) for a database, the local one --
-   which dates the files -- for a disk store.  A server that does not answer
-   is read as the local clock from then on.
+/* The target's clock, to the second: the server's for a database
+   (UNIX_TIMESTAMP(), the instant the procedures date their rows by; the
+   wall clock NOW() would step back an hour at the fall-back), and for a
+   disk store the time the file system gives a new file in the directory --
+   a FAT file system dates by two seconds, and a network share by the
+   server's clock, which a local clock need not agree with.  A server that
+   does not answer, or a directory nothing can be written in, is read as
+   the local clock from then on.
 */
-qint64 US_DataPubImporter::targetSecond( void )
+qint64 US_DataPubImporter::targetSecond( const QString& dir )
 {
    if ( opts.target == US_DataPub::TargetDb  &&  dbase != nullptr  &&
         ! clock_local )
    {
-      dbase->rawQuery( "SELECT UNIX_TIMESTAMP( NOW() )" );
+      dbase->rawQuery( "SELECT UNIX_TIMESTAMP()" );
 
       // rawQuery() does not set lastErrno(): a failed query has no row
       if ( dbase->next() )
@@ -4563,24 +4859,46 @@ qint64 US_DataPubImporter::targetSecond( void )
       clock_local = true;
    }
 
+   if ( opts.target == US_DataPub::TargetDisk  &&  ! dir.isEmpty()  &&
+        ! clock_local )
+   {
+      QString probe = dir + "/.us_datapub_clock";
+      QFile   file( probe );
+
+      if ( file.open( QIODevice::WriteOnly | QIODevice::Truncate ) )
+      {
+         file.write( "clock\n" );
+         file.close();
+
+         QDateTime when = QFileInfo( probe ).lastModified();
+         QFile::remove( probe );
+
+         if ( when.isValid() )  return when.toSecsSinceEpoch();
+      }
+
+      clock_local = true;
+   }
+
    return QDateTime::currentMSecsSinceEpoch() / 1000;
 }
 
 /* Wait until the target's clock is past the given second, so that what is
-   written next is dated later than what was written in that second.  A
-   file is dated by the kernel's coarse clock, which can trail the one read
-   here by a few milliseconds: on disk the wait goes 50 ms beyond.
+   written next is dated later than what was written in that second.  On
+   the local clock, a file is dated by the kernel's coarse clock, which can
+   trail the one read here by a few milliseconds: the wait goes 50 ms
+   beyond.
 */
-bool US_DataPubImporter::waitForClock( qint64 second, QString& error )
+bool US_DataPubImporter::waitForClock( qint64 second, const QString& dir,
+                                       QString& error )
 {
    QElapsedTimer timer;
    timer.start();
 
    while ( timer.elapsed() < 5000 )
    {
-      if ( opts.target == US_DataPub::TargetDb  &&  ! clock_local )
+      if ( ! clock_local )
       {
-         if ( targetSecond() > second )  return true;
+         if ( targetSecond( dir ) > second )  return true;
       }
 
       else if ( QDateTime::currentMSecsSinceEpoch() >= ( second + 1 ) * 1000
@@ -4594,6 +4912,107 @@ bool US_DataPubImporter::waitForClock( qint64 second, QString& error )
                " records could not be written in an order that keeps which"
                " noise each model borrows" );
    return false;
+}
+
+/* When the record just written is dated: its file's time on disk (as a
+   catalog reads it), or the server's clock after the write, which is not
+   earlier than the row's.  Nothing for a record the import did not write.
+*/
+qint64 US_DataPubImporter::writtenSecond( const OrderStep& step )
+{
+   if ( reslist.isEmpty()  ||  reslist.last().guid != step.entity.guid  ||
+        ( reslist.last().resolution != US_DataPub::ResolvedCreated  &&
+          reslist.last().resolution != US_DataPub::ResolvedRenamed ) )
+      return -1;
+
+   if ( opts.target == US_DataPub::TargetDisk )
+   {
+      if ( disk_written.isEmpty() )  return -1;
+
+      QDateTime when = QFileInfo( disk_written.last() ).lastModified();
+
+      return when.isValid() ? when.toSecsSinceEpoch() : -1;
+   }
+
+   return targetSecond();
+}
+
+/* The models and noise records, edit by edit in writeOrder()'s order.  A
+   catalog dates them to the second, so where two records have to be told
+   apart by their time stamps the target's clock is moved on in between:
+   - a noise record written after a model without noise of its own has to
+     be newer than it, or the model would borrow it;
+   - on disk, a noise record written after another of its type, in an edit
+     with such a model, has to be newer too: a catalog breaks a tie of two
+     dated records by the higher database ID (the later written) but on
+     disk by the higher GUID.
+   The edits are taken in turn, one record each, so that the time one edit
+   waits for passes for the others too: the waits add up to those of the
+   edit that needs the most, not to those of all edits.
+*/
+bool US_DataPubImporter::writeModelsAndNoise(
+      const QList< QList< OrderStep > >& order,
+      std::function< bool( const US_DataPubEntity& ) > writeOne,
+      QString& error )
+{
+   bool                      timed = ! opts.dryRun;
+   QVector< int >            next( order.size(), 0 );
+   QVector< qint64 >         lastBorrower( order.size(), -1 );
+   QVector< QHash< QString, qint64 > > lastOfType( order.size() );
+   QVector< bool >           borrowing( order.size(), false );
+   bool                      left = true;
+
+   for ( int ee = 0; ee < order.size(); ee++ )
+      for ( int ii = 0; ii < order[ ee ].size(); ii++ )
+         if ( order[ ee ][ ii ].borrows )  borrowing[ ee ] = true;
+
+   while ( left )
+   {
+      left = false;
+
+      for ( int ee = 0; ee < order.size(); ee++ )
+      {
+         if ( next[ ee ] >= order[ ee ].size() )  continue;
+
+         const OrderStep& step = order[ ee ][ next[ ee ]++ ];
+         bool             dated = timed  &&  borrowing[ ee ];
+         QString          dir;
+
+         // The directory the record goes to, where the file system's clock
+         // is read (made now: a probe needs it before the first file)
+         if ( dated  &&  opts.target == US_DataPub::TargetDisk )
+            dir = diskDir( step.entity.type, true );
+
+         left = true;
+
+         if ( dated  &&  step.isNoise )
+         {
+            qint64 after = lastBorrower[ ee ];
+
+            if ( opts.target == US_DataPub::TargetDisk )
+               after = qMax( after, lastOfType[ ee ].value( step.noiseType,
+                                                            -1 ) );
+
+            if ( after >= 0  &&  ! waitForClock( after, dir, error ) )
+               return false;
+         }
+
+         if ( ! writeOne( step.entity ) )  return false;
+
+         if ( ! dated )  continue;
+
+         qint64 second = writtenSecond( step );
+
+         if ( second < 0 )  continue;
+
+         if ( step.isNoise )
+            lastOfType[ ee ].insert( step.noiseType, second );
+         else if ( step.borrows )
+            lastBorrower[ ee ] = second;
+      }
+   }
+
+   return true;
 }
 
 /* Look up the project the import was told to attach the runs to.
@@ -4820,8 +5239,21 @@ bool US_DataPubImporter::importEntity( const US_DataPubEntity& entity,
    if ( ! fresh_guids.contains( entity.guid )  &&
         findByGuid( type, entity.guid, existingID, existingName ) )
    {
-      record( entity, US_DataPub::ResolvedReused, entity.guid,
-              existingName.isEmpty() ? targetName( entity ) : existingName,
+      QString held = existingName.isEmpty() ? targetName( entity )
+                                            : existingName;
+
+      // Its name is the bundle's record's now, as a name this import wrote
+      // is: another record of the bundle of that name -- the source held
+      // both under it -- is no conflict
+      reusedName( type, held, entity.guid, existingID );
+
+      if ( ! lookup_error.isEmpty() )
+      {
+         error = lookup_error;
+         return false;
+      }
+
+      record( entity, US_DataPub::ResolvedReused, entity.guid, held,
               existingID, tr( "the target already holds this record" ) );
       return true;
    }
@@ -4919,6 +5351,7 @@ bool US_DataPubImporter::importEntity( const US_DataPubEntity& entity,
    // lookup could not see it
    if ( conflict  &&  ! otherGUID.isEmpty()  &&  otherGUID == entity.guid )
    {
+      reusedName( type, name, entity.guid, otherID );
       record( entity, US_DataPub::ResolvedReused, entity.guid, name, otherID,
               tr( "the target already holds this record" ) );
       return true;
@@ -5017,6 +5450,28 @@ bool US_DataPubImporter::importEntity( const US_DataPubEntity& entity,
          error = tr( "No free name was found for %1 \"%2\"" )
                  .arg( US_DataPub::typeText( type ) ).arg( origName );
          return false;
+      }
+
+      // The new name (the rename suffix, or a name the resolver gave) has
+      // to fit the target's text as the bundle's own text does; the dry
+      // run says so as the import would
+      if ( db )
+      {
+         QString charset = type_charsets.value( int( type ) );
+         QString bad     = unstorableCharacter( charset, name );
+
+         if ( ! bad.isEmpty() )
+         {
+            error = tr( "%1 \"%2\" would be renamed to \"%3\", but the"
+                        " target database stores its text as %4, which"
+                        " cannot hold \"%5\" (U+%6); choose a rename suffix"
+                        " of characters it can hold" )
+                    .arg( US_DataPub::typeText( type ) ).arg( origName )
+                    .arg( name ).arg( charset ).arg( bad )
+                    .arg( QString::number( bad.toUcs4().value( 0 ), 16 )
+                          .toUpper().rightJustified( 4, '0' ) );
+            return false;
+         }
       }
 
       if ( opts.dryRun )
@@ -5925,6 +6380,40 @@ void US_DataPubImporter::nameTaken( US_DataPub::EntityType type,
    held_names[ key ].insert( name, entry );
 }
 
+/* A record of the bundle that the target already holds under its GUID
+   takes the name it goes under there as a name of this import's: the
+   source may hold another record of that name, which is then no conflict,
+   as with a name this import wrote.  The index is read first where it was
+   not yet, so the record is not read back from the target as someone
+   else's; an entry of the name that is another record of the target
+   stays.
+*/
+void US_DataPubImporter::reusedName( US_DataPub::EntityType type,
+                                     const QString& name, const QString& guid,
+                                     const QString& id )
+{
+   if ( name.isEmpty()  ||  ! indexedByName( type ) )  return;
+
+   QHash< QString, Named >&          held = namesHeld( type );
+   QHash< QString, Named >::iterator it   = held.find( name );
+
+   if ( it != held.end() )
+   {
+      bool same = it->resolved ? ( it->guid.toLower() == guid.toLower() )
+                               : ( it->id == id  &&  ! id.isEmpty() );
+
+      if ( ! same )  return;
+   }
+
+   Named entry;
+   entry.id       = id;
+   entry.guid     = guid;
+   entry.resolved = true;
+   entry.ours     = true;
+
+   held.insert( name, entry );
+}
+
 // Read every record the target holds of one type, by the name it goes under.
 // The first record of a given name is the one a lookup finds, which is the
 // order the listings themselves come back in.
@@ -6360,6 +6849,12 @@ QString US_DataPubImporter::uniqueName( US_DataPub::EntityType type,
                                         const QString& name )
 {
    QString suffix = opts.renameSuffix.trimmed();
+
+   // The suffix goes in brackets of its own: "(copy)" is "copy", not
+   // "((copy))"
+   while ( suffix.size() >= 2  &&  suffix.startsWith( '(' )  &&
+           suffix.endsWith( ')' ) )
+      suffix = suffix.mid( 1, suffix.size() - 2 ).trimmed();
 
    if ( suffix.isEmpty() )  suffix = tr( "imported" );
 
@@ -6946,6 +7441,24 @@ bool US_DataPubImporter::createDisk( const US_DataPubEntity& entity,
    QString path    = US_DataFiles::get_filename( dir, QString(), prefix,
                                                  QString(), QString(),
                                                  newFile );
+
+   // A model or noise file goes after every file there, not into a gap:
+   // the analysis programs take the last M*.xml file of an edit as its
+   // latest model (US_LoadableNoise::count_noise()), so the files of an
+   // edit keep the order they are written in, which is the source's
+   if ( type == US_DataPub::Model  ||  type == US_DataPub::Noise )
+   {
+      QStringList names = QDir( dir ).entryList(
+                             QStringList( prefix + "???????.xml" ),
+                             QDir::Files, QDir::Name );
+      int         last  = 0;
+
+      for ( int ii = 0; ii < names.size(); ii++ )
+         last = qMax( last, names[ ii ].mid( 1, 7 ).toInt() );
+
+      path = dir + "/" + prefix
+             + QString::number( last + 1 ).rightJustified( 7, '0' ) + ".xml";
+   }
 
    if ( QFile::exists( path ) )
    {
@@ -8120,11 +8633,19 @@ bool US_DataPubImporter::checkDryDb( const US_DataPubEntity& entity,
                omitted = true;
             }
 
-            // Written, it would be dated the day of the import
-            else if ( calibration.lastUpdated.isValid()  &&
-                      catalogVersion() < 2 )
-               cannotKeep( unkeptDate( name, entity.guid,
-                                       calibration.lastUpdated ) );
+            // Written, it would be dated the day of the import where the
+            // target cannot be given the date, as the import says
+            else
+            {
+               qint64  seconds = 0;
+               QString shown;
+
+               if ( calibrationInstant( entity, calibration, seconds,
+                                        shown )  &&
+                    calibrationDateFits( name, entity.guid, seconds, shown )
+                    &&  catalogVersion() < 2 )
+                  cannotKeep( unkeptDate( name, entity.guid, shown ) );
+            }
 
             return true;
          }
@@ -8415,32 +8936,31 @@ bool US_DataPubImporter::createDb( const US_DataPubEntity& entity,
             return false;
          }
 
-         // add_rotor_calibration dates the row with the time of the call
-         if ( calibration.lastUpdated.isValid() )
+         // add_rotor_calibration dates the row with the time of the call;
+         // the source's instant replaces it where the target can take it
+         qint64  seconds = 0;
+         QString shown;
+
+         if ( calibrationInstant( entity, calibration, seconds, shown )  &&
+              calibrationDateFits( name, entity.guid, seconds, shown ) )
          {
             if ( catalogVersion() >= 2 )
             {
-               QStringList when;
-               when << "set_rotor_calibration_date"
-                    << QString::number( calibration.ID )
-                    << calibration.lastUpdated.toString( "yyyy-MM-dd" )
-                       + " 00:00:00";
+               QString derror;
 
-               int dstat = dbase->statusQuery( when );
-
-               if ( dstat != IUS_DB2::OK )
+               if ( ! storeCalibrationDate( calibration.ID, seconds,
+                                            derror ) )
                {
-                  error = tr( "The date of rotor calibration %1 could not be"
-                              " kept (status %2): %3" )
+                  error = tr( "The date %1 of rotor calibration %2 could not"
+                              " be kept: %3" ).arg( shown )
                           .arg( calibration_text( name, entity.guid ) )
-                          .arg( dstat ).arg( dbase->lastError() );
+                          .arg( derror );
                   return false;
                }
             }
 
             else
-               cannotKeep( unkeptDate( name, entity.guid,
-                                       calibration.lastUpdated ) );
+               cannotKeep( unkeptDate( name, entity.guid, shown ) );
          }
 
          newID = QString::number( calibration.ID );

@@ -73,6 +73,10 @@ class DataPubBorrowScenario
                 runID + ".1A280.e1_a5_GA_local.model", t0.addSecs( 50 ) );
       }
 
+      //! The latest model with noise of the edit, whose noise the analysis
+      //! programs load (US_LoadableNoise::count_noise()): d, the last file
+      QString latest( void ) const { return d; }
+
       //! What each noise record of the edit is borrowed by, as the source
       //! has it
       QMap< QString, QString > expected( void ) const
@@ -113,7 +117,7 @@ class DataPubBorrowScenario
          return lines.join( "\n" ).toStdString();
       }
 
-   private:
+   protected:
       static void stamp( const QString& path, const QDateTime& when )
       {
          QFile file( path );
@@ -155,6 +159,71 @@ class DataPubBorrowScenario
          noise.count = noise.values.size();
          noise.write( path );
          stamp( path, when );
+      }
+};
+
+/* Another edit's models and noise, which an import that picked noise
+   records greedily (the order of a database export's manifest, newest
+   first) could not write in any order: dated ten seconds apart,
+
+     a   the fixture's model, with its ti noise n0
+     x0  a model with no noise: borrows n0
+     b   a model with the ti noise n1
+     x1  a model with no noise: borrows n1
+     c   a model with the ri noise n2
+     x2  a model with no noise: borrows n1 and n2
+*/
+class DataPubDeadEndScenario : public DataPubBorrowScenario
+{
+   public:
+      QString x0, x1, x2, bb, cc;  // model GUIDs
+      QString n0, n1, n2;          // noise GUIDs
+
+      void write( const QString& models, const QString& noises,
+                  const QString& runID, const QString& editGUID,
+                  const QString& n0A )
+      {
+         n0 = n0A;
+         x0 = US_Util::new_guid();
+         x1 = US_Util::new_guid();
+         x2 = US_Util::new_guid();
+         bb = US_Util::new_guid();
+         cc = US_Util::new_guid();
+         n1 = US_Util::new_guid();
+         n2 = US_Util::new_guid();
+
+         QDateTime t0 = QDateTime::currentDateTimeUtc().addSecs( -3600 );
+
+         stamp( models + "/M0000001.xml", t0 );
+         stamp( noises + "/N0000001.xml", t0 );
+         model( models + "/M0000010.xml", x0, editGUID,
+                runID + ".1A280.e1_x0_GA_local.model", t0.addSecs( 10 ) );
+         model( models + "/M0000011.xml", bb, editGUID,
+                runID + ".1A280.e1_b_2DSA_local_ti.model", t0.addSecs( 20 ) );
+         noise( noises + "/N0000011.xml", n1, bb, US_Noise::TI,
+                runID + ".1A280.e1_b_2DSA_local_ti.ti_noise", t0.addSecs( 20 ) );
+         model( models + "/M0000012.xml", x1, editGUID,
+                runID + ".1A280.e1_x1_GA_local.model", t0.addSecs( 30 ) );
+         model( models + "/M0000013.xml", cc, editGUID,
+                runID + ".1A280.e1_c_2DSA_local_ri.model", t0.addSecs( 40 ) );
+         noise( noises + "/N0000012.xml", n2, cc, US_Noise::RI,
+                runID + ".1A280.e1_c_2DSA_local_ri.ri_noise", t0.addSecs( 40 ) );
+         model( models + "/M0000014.xml", x2, editGUID,
+                runID + ".1A280.e1_x2_GA_local.model", t0.addSecs( 50 ) );
+      }
+
+      QString latest( void ) const { return cc; }
+
+      QMap< QString, QString > expected( void ) const
+      {
+         QStringList both = QStringList() << x1 << x2;
+         std::sort( both.begin(), both.end() );
+
+         QMap< QString, QString > map;
+         map.insert( n0, x0 );
+         map.insert( n1, both.join( " " ) );
+         map.insert( n2, x2 );
+         return map;
       }
 };
 

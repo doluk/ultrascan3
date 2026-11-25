@@ -22,6 +22,46 @@
 
 namespace
 {
+   /* When the source made a model or noise record, and where it stands in
+      the source's own order: the database ID, or the number of the local
+      file (M0000012.xml: 12).  The analysis programs take the latest
+      model with noise of an edit as the one whose noise is loaded
+      (US_LoadableNoise::count_noise: the highest model ID, the last
+      M*.xml file), and a model with none of its own borrows by time
+      stamps (US_DataPubCatalog::noiseBefore()); an import writes the
+      models and noise of an edit in this order so that a target keeps
+      both.  Neither is set where the source does not say. */
+   void source_order( US_DataPubEntity& entity, bool fromDb,
+                      const QString& lastUpdated, const QString& id,
+                      const QString& file )
+   {
+      QString stamp = US_DataPub::isoUtcStamp( lastUpdated );
+
+      if ( ! stamp.isEmpty() )
+         entity.attrs.insert( "sourceLastUpdated", stamp );
+
+      QString index;
+
+      if ( fromDb )
+      {
+         if ( id.toInt() > 0 )  index = QString::number( id.toInt() );
+      }
+
+      else
+      {
+         static const QRegularExpression numbered(
+               "^[MN]([0-9]{7})\\.xml$" );
+         QRegularExpressionMatch match =
+               numbered.match( QFileInfo( file ).fileName() );
+
+         if ( match.hasMatch() )
+            index = QString::number( match.captured( 1 ).toInt() );
+      }
+
+      if ( ! index.isEmpty() )
+         entity.attrs.insert( "sourceIndex", index );
+   }
+
    // "cell/channel" of a raw-data triple, the key the experiment XML of a
    // run assigns solutions and centerpieces by
    QString channel_key( const US_DataPubCatalog::Raw& raw )
@@ -2570,6 +2610,13 @@ bool US_DataPubExporter::addCalibration(
    entity.attrs.insert( "coeff2",
                         QString::number( calibration.coeff2, 'g', 17 ) );
 
+   // The payload dates the calibration by the day; the database row has
+   // the instant, which an import into a database keeps
+   QString dated = catalog.isDb() ? calibrationInstant( calID ) : QString();
+
+   if ( ! dated.isEmpty() )
+      entity.attrs.insert( "dateUpdated", dated );
+
    QString staged = bundle.stagedPath( entity.payload );
 
    if ( staged.isEmpty()  ||
@@ -2587,6 +2634,46 @@ bool US_DataPubExporter::addCalibration(
          .arg( entity.name.isEmpty() ? entity.guid : entity.name ) );
 
    return true;
+}
+
+/* The instant a database calibration was last updated, in UTC as a bundle
+   carries it ("2024-03-01T13:45:10Z"), or nothing where the row has none.
+   get_rotor_calibration_info gives dateUpdated in the session's time zone
+   (a TIMESTAMP column), which the server turns back into the instant.
+*/
+QString US_DataPubExporter::calibrationInstant( int calID )
+{
+   IUS_DB2* dbase = catalog.db();
+
+   if ( dbase == nullptr  ||  calID < 1 )  return QString();
+
+   QStringList query;
+   query << "get_rotor_calibration_info" << QString::number( calID );
+   dbase->query( query );
+
+   if ( dbase->lastErrno() != IUS_DB2::OK  ||  ! dbase->next() )
+      return QString();
+
+   // "yyyy-MM-dd hh:mm:ss", or nothing for NULL; only digits, dashes,
+   // colons and a space go into the statement
+   QString text = dbase->value( 7 ).toString().trimmed().left( 19 );
+   text.replace( 'T', ' ' );
+
+   static const QRegularExpression shape(
+         "^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}$" );
+
+   if ( ! shape.match( text ).hasMatch() )  return QString();
+
+   dbase->rawQuery( "SELECT UNIX_TIMESTAMP( '" + text + "' )" );
+
+   bool   ok      = false;
+   qint64 seconds = dbase->next() ? dbase->value( 0 ).toLongLong( &ok ) : 0;
+
+   if ( ! ok  ||  seconds < 1 )  return QString();
+
+   return QLocale::c().toString(
+             QDateTime::fromSecsSinceEpoch( seconds, Qt::UTC ),
+             "yyyy-MM-dd'T'hh:mm:ss'Z'" );
 }
 
 bool US_DataPubExporter::findDiskCalibration( const QString& guid,
@@ -3327,6 +3414,8 @@ bool US_DataPubExporter::addModels(
       entity.payload = US_DataPub::payloadDir( US_DataPub::Model ) + "/"
                        + model.guid + ".xml";
       entity.setDepend( US_DataPub::EditedData, model.editGUID );
+      source_order( entity, catalog.isDb(), model.lastUpdated, model.id,
+                    model.filename.isEmpty() ? model.path : model.filename );
 
       if ( ! model.filename.isEmpty() )
          entity.filename = model.filename;
@@ -3692,6 +3781,8 @@ bool US_DataPubExporter::addNoises(
                        + noise.guid + ".xml";
       entity.attrs.insert( "noiseType", noise.noiseType );
       entity.setDepend( US_DataPub::Model, fitted );
+      source_order( entity, catalog.isDb(), noise.lastUpdated, noise.id,
+                    noise.filename.isEmpty() ? noise.path : noise.filename );
 
       // Noise of the edit, carried for the models of the bundle that have
       // none of their own -- every one of them, also those listed after

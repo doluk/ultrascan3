@@ -352,5 +352,28 @@ namespace US_DataPub
                 the stored database password (or there is none to unlock)
    */
    QString masterPasswordProblem( const QString& masterPW );
+
+   /*! \brief A time stamp as a bundle carries it: UTC, ISO 8601, to the
+              second ("2024-03-31T01:30:00Z")
+
+       \param catalogStamp A time stamp as the catalog gives it -- UTC, as
+                           "yyyy-MM-dd hh:mm:ss UTC", with a 'T' or a 'Z'
+                           now and then, or without the suffix
+       \returns The stamp, or an empty string for one that cannot be read
+   */
+   QString isoUtcStamp    ( const QString& catalogStamp );
+
+   /*! \brief The seconds since the epoch of a UTC time stamp, as
+              isoUtcStamp() writes it or as the catalog gives it
+
+       The date and time are taken as UTC whatever the local time zone is:
+       none of them is read as a local time, so a time in the local
+       spring-forward gap or the repeated hour of the fall-back reads as
+       the instant it names.  An explicit offset ("+02:00") is honoured.
+       \param stamp   The time stamp
+       \param seconds Filled in with the seconds since the epoch
+       \returns False for a stamp that cannot be read
+   */
+   bool utcStampSeconds   ( const QString& stamp, qint64& seconds );
 }
 #endif

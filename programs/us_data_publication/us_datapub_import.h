@@ -4,6 +4,7 @@
 
 #include <QtCore>
 #include <QLockFile>
+#include <functional>
 
 #include "us_datapub_defs.h"
 #include "us_datapub_manifest.h"
@@ -379,6 +380,61 @@ class US_DataPubImporter : public QObject
             const US_DataPubManifest& manifest, US_DataPub::Target target,
             QString& error );
 
+      //! \brief A model or noise record of an edit, in the order an
+      //!        import writes them (writeOrder())
+      class OrderStep
+      {
+         public:
+            US_DataPubEntity entity;     //!< The model or noise record
+            QString          editGUID;   //!< The edit it belongs to
+            QString          noiseType;  //!< "ti" or "ri" for noise
+            bool             isNoise;    //!< A noise record, not a model
+            //! A model without noise of its own in the bundle: a catalog
+            //! tells which noise of its edit it was run with by time
+            //! stamps alone (US_DataPubCatalog::noiseBefore())
+            bool             borrows;
+
+            OrderStep() { isNoise = false;  borrows = false; }
+      };
+
+      /*! \brief The order the models and noise records of a bundle are
+                 written in, edit by edit
+
+          The source's: the analysis programs load the noise of the
+          latest model with noise of an edit (US_LoadableNoise::
+          count_noise(): the highest model ID in a database, the last
+          M*.xml file on disk), and a catalog tells which noise a model
+          without its own borrows by time stamps
+          (US_DataPubCatalog::noiseBefore()); written in the source's order
+          -- with the target's clock moved on where two records have to be
+          dated apart -- a target keeps both.
+
+          - The models of an edit keep the source's order among themselves,
+            and so do its noise records: the source's ID or file number
+            (sourceIndex; else the manifest's modelID/noiseID of a database
+            export or the number of a disk export's file name), else the
+            manifest's order -- which a database export lists newest first.
+          - A noise record comes after the model it was fitted to; a model
+            that borrows (borrowedByModelGUIDs, or an older bundle's
+            borrowedByModelGUID) comes after the record it borrows of each
+            type and before the next record of that type, and one no record
+            names comes before every noise record of its edit.
+          - Within that, the source's time stamps (sourceLastUpdated) decide,
+            a noise record going first on a tie; a bundle without them puts
+            each noise record as early as it can.
+
+          \param manifest The manifest of the bundle
+          \param problems Filled in with what the bundle's borrowing cannot
+                          keep: a borrower named in another edit, a model
+                          named for two records of a type, or borrowing
+                          that contradicts the source's order (then left
+                          out of the order of that edit)
+          \returns The steps of each edit, in the order of the edits'
+                   first appearance in the bundle
+      */
+      static QList< QList< OrderStep > > writeOrder(
+            const US_DataPubManifest& manifest, QStringList& problems );
+
       /*! \brief True when a text is a GUID: 36 characters, hexadecimal
           digits in groups of 8-4-4-4-12 and nothing else, not even a
           trailing newline
@@ -596,44 +652,30 @@ class US_DataPubImporter : public QObject
       */
       bool    componentIdsMayBeCounted( void );
 
-      //! \brief One record of the sequence fitSequence() puts the models
-      //!        without noise of their own and the noise records in
-      class FitStep
-      {
-         public:
-            US_DataPubEntity entity;     //!< The model or noise record
-            QString          editGUID;   //!< The edit it belongs to
-            QString          noiseType;  //!< "ti" or "ri" for noise
-            bool             isNoise;    //!< A noise record, not a model
-            //! A noise record some model of the sequence borrows
-            bool             borrowed;
-            //! Its edit needs the target's clock to tell the records apart
-            bool             timed;
-
-            FitStep() { isNoise = false;  borrowed = false;  timed = false; }
-      };
-
-      /*! \brief The order the models without noise of their own and the
-                 noise records of their edits are written in
-
-          A catalog tells which noise such a model was run with by time
-          stamps alone (US_DataPubCatalog::noiseBefore()); the order makes
-          every model borrow what the bundle says it borrows
-          (borrowedByModelGUIDs), and nothing where it borrows nothing.
-          \param problem Filled in when the bundle's borrowing cannot all
-                         be met, empty otherwise
-          \returns Every noise record of the bundle and those models
-      */
-      QList< FitStep > fitSequence( QString& problem ) const;
-
       //! \brief The target's clock in seconds since the epoch: the
-      //!        server's for a database, the local one for a disk store
-      qint64  targetSecond( void );
+      //!        server's (UNIX_TIMESTAMP()) for a database; for a disk
+      //!        store the time the file system gives a file written in
+      //!        \a dir (the local clock where none can be written)
+      qint64  targetSecond( const QString& dir = QString() );
 
       //! \brief Wait until the target's clock is past \a second (at most
-      //!        five seconds)
+      //!        five seconds), the clock of the file system of \a dir for
+      //!        a disk store
       //! \returns False, with \a error filled in, when it does not get there
-      bool    waitForClock( qint64 second, QString& error );
+      bool    waitForClock( qint64 second, const QString& dir,
+                            QString& error );
+
+      //! \brief The second the record the import last wrote is dated in:
+      //!        its file's for a disk store, the server's clock after the
+      //!        write for a database; -1 when nothing was written
+      qint64  writtenSecond( const OrderStep& step );
+
+      //! \brief Write the models and noise records of the bundle in
+      //!        writeOrder()'s order, the edits taken in turn
+      bool    writeModelsAndNoise( const QList< QList< OrderStep > >& order,
+                                   std::function< bool(
+                                      const US_DataPubEntity& ) > writeOne,
+                                   QString& error );
 
       //! The server did not tell its time: the local clock stands in
       bool                       clock_local;
@@ -660,7 +702,24 @@ class US_DataPubImporter : public QObject
 
       //! \brief What cannotKeep() is told of a calibration's date
       QString unkeptDate( const QString& name, const QString& guid,
-                          const QDate& date ) const;
+                          const QString& date ) const;
+
+      //! \brief When a calibration of the bundle was last updated, in
+      //!        seconds since the epoch, and as a message names it
+      //! \returns False when neither the bundle nor the payload says
+      bool    calibrationInstant( const US_DataPubEntity& entity,
+                                  const US_Rotor::RotorCalibration& cal,
+                                  qint64& seconds, QString& shown ) const;
+
+      //! \brief Whether that instant fits the target's TIMESTAMP column;
+      //!        a warning says so where it does not
+      bool    calibrationDateFits( const QString& name, const QString& guid,
+                                   qint64 seconds, const QString& shown );
+
+      //! \brief Give a calibration of the target the instant, in UTC
+      //!        whatever the session's time zone (version 2 procedures)
+      bool    storeCalibrationDate( int calID, qint64 seconds,
+                                    QString& error );
 
       //! What a target older than version 2 cannot keep, for unkeptWarning()
       QStringList                unkept;
@@ -668,6 +727,10 @@ class US_DataPubImporter : public QObject
       //! The target's us3_catalog_version(): 0 for a server without it,
       //! -1 before it was asked
       int                        catalog_version;
+
+      //! What the marker answers and lacks, when catalogVersion() took a
+      //! version 2 marker without its procedures as version 1
+      QString                    catalog_stale;
 
       /*! \brief The value of a manifest field every raw data record of a run
                  carries, the same in all of them
@@ -831,6 +894,7 @@ class US_DataPubImporter : public QObject
       bool    beginWrite ( QString& error );
       bool    commitWrite( QString& error );
       void    abortWrite ( const QString& error );
+      static QString commitUnknownPrefix( void );
 
       //! \brief Look up the project the import was told to use
       //! \param error Filled in when the target does not have it
@@ -932,6 +996,11 @@ class US_DataPubImporter : public QObject
 
       //! \brief Note that a name is now taken in the target
       void    nameTaken ( US_DataPub::EntityType, const QString& name,
+                          const QString& guid, const QString& id );
+
+      //! \brief Note that the name a record the import reuses by its GUID
+      //!        goes under is the bundle's record's (see nameTaken())
+      void    reusedName( US_DataPub::EntityType, const QString& name,
                           const QString& guid, const QString& id );
 
       QString targetFingerprint( US_DataPub::EntityType, const QString& guid,

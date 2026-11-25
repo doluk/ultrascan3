@@ -3,6 +3,8 @@
 
 #include "datapub_test_env.h"
 #include "datapub_borrow_scenario.h"
+#include "datapub_craft.h"
+#include "datapub_noise_rules.h"
 
 #include "us_datapub_export.h"
 #include "us_datapub_import.h"
@@ -2829,4 +2831,514 @@ TEST_F( DataPubImport, AReusedCalibrationIsNamedByItsTargetGuid )
                  + runType + ".xml";
    EXPECT_EQ( first_attribute( xml, "calibration", "id" ),   QString( "5" ) );
    EXPECT_EQ( first_attribute( xml, "calibration", "guid" ), theirs );
+}
+
+// ------------------------------------------- the order of models and noise
+
+/* The models and noise records of an edit go into a target in the source's
+   order.  The analysis programs load the noise of the latest model with
+   noise of an edit (US_LoadableNoise::count_noise(): the last M*.xml file
+   on disk, the highest model ID in a database; see datapub_noise_rules.h),
+   and a catalog tells which noise a model without its own was run with by
+   time stamps (US_DataPubCatalog::noiseBefore()).  A database export lists
+   the models newest first, and an import that wrote them in the bundle's
+   order made the oldest model with noise the latest. */
+class DataPubOrder : public DataPubImport
+{
+   protected:
+      US_DataPubExporter::Selection selection()
+      {
+         US_DataPubExporter::Selection chosen;
+         chosen.fromDb = false;
+         chosen.scope  = US_DataPub::ScopeNoise;
+         chosen.runIDs << runID;
+         return chosen;
+      }
+
+      // The fixture's store, with a scenario's models and noise, exported
+      QString exportStore( const QString& name )
+      {
+         QString            bundle = root + "/" + name + ".tar.gz";
+         QString            error;
+         US_DataPubExporter exporter;
+         EXPECT_TRUE( exporter.exportBundle( selection(), bundle, error ) )
+            << error.toStdString();
+         return bundle;
+      }
+
+      // Imported into a fresh disk store under root
+      bool importInto( const QString& bundle, const QString& store,
+                       US_DataPubImporter& importer, QString& error )
+      {
+         US_DataPubImporter::Options options = diskOptions();
+         options.outputDir = store;
+
+         return importer.inspect( bundle, error )  &&
+                importer.runImport( options, error );
+      }
+
+      // noise GUID -> borrowers, as an export of a disk store says
+      QMap< QString, QString > borrowersIn( const QString& store )
+      {
+         QString saved = US_Settings::workBaseDir();
+         US_Settings::set_workBaseDir( store );
+
+         US_DataPubExporter again;
+         QString            error;
+         bool               ok = again.exportBundle( selection(),
+                                                     store + "/again.tar.gz",
+                                                     error );
+         US_Settings::set_workBaseDir( saved );
+         EXPECT_TRUE( ok ) << error.toStdString();
+
+         return DataPubBorrowScenario::borrowers( again.manifest() );
+      }
+
+      static QStringList orderProblems( const US_DataPubImporter& importer )
+      {
+         QStringList found;
+
+         for ( const QString& text : importer.warnings() )
+            if ( text.contains( "may not survive" ) )  found << text;
+
+         return found;
+      }
+};
+
+/* A bundle laid out as a database export -- models and noise newest first
+   -- carrying the source's time stamps and file numbers: the target's last
+   model file with noise is the source's, and every model borrows what it
+   did. */
+TEST_F( DataPubOrder, TheLatestModelWithNoiseSurvivesADatabaseOrderedBundle )
+{
+   DataPubBorrowScenario scenario;
+   scenario.write( US_Settings::dataDir() + "/models",
+                   US_Settings::dataDir() + "/noises", runID, editGUID,
+                   noiseGUID );
+   ASSERT_EQ( DataPubNoiseRules::latestModelOnDisk( US_Settings::dataDir(),
+                                                    editGUID ),
+              scenario.latest() );
+
+   QString error;
+   QString plain  = exportStore( "plain" );
+   QString bundle = datapubRecraft( plain, root + "/dbordered.tar.gz",
+                    []( US_DataPubManifest& m, const QString& )
+                    { datapubAsDatabaseExport( m, true, false ); }, error );
+   ASSERT_FALSE( bundle.isEmpty() ) << error.toStdString();
+
+   // The export says when and in which order the source made each record
+   US_DataPubImporter probe;
+   ASSERT_TRUE( probe.inspect( plain, error ) ) << error.toStdString();
+
+   for ( US_DataPub::EntityType type : { US_DataPub::Model,
+                                         US_DataPub::Noise } )
+      for ( const US_DataPubEntity& entity : probe.manifest().section( type ) )
+      {
+         EXPECT_TRUE( entity.attrs.value( "sourceLastUpdated" ).endsWith( "Z" ) )
+            << entity.guid.toStdString();
+         EXPECT_EQ( entity.attrs.value( "sourceIndex" ),
+                    QString::number( entity.filename.mid( 1, 7 ).toInt() ) );
+      }
+
+   QString            store = root + "/ordered";
+   US_DataPubImporter importer;
+   ASSERT_TRUE( importInto( bundle, store, importer, error ) )
+      << error.toStdString();
+   EXPECT_TRUE( orderProblems( importer ).isEmpty() )
+      << orderProblems( importer ).join( "\n" ).toStdString();
+
+   EXPECT_EQ( DataPubNoiseRules::latestModelOnDisk( store + "/data", editGUID ),
+              scenario.latest() );
+   EXPECT_EQ( DataPubBorrowScenario::text( borrowersIn( store ) ),
+              DataPubBorrowScenario::text( scenario.expected() ) );
+}
+
+/* A bundle of an export before the time stamps and file numbers were
+   written: a database export's records by their database IDs (the
+   manifest's modelID and noiseID), and failing those in the manifest's
+   order, which a database export lists newest first. */
+TEST_F( DataPubOrder, AnOlderBundleIsWrittenInItsSourcesOrder )
+{
+   DataPubBorrowScenario scenario;
+   scenario.write( US_Settings::dataDir() + "/models",
+                   US_Settings::dataDir() + "/noises", runID, editGUID,
+                   noiseGUID );
+
+   QString plain = exportStore( "plain" );
+
+   for ( bool ids : { true, false } )
+   {
+      SCOPED_TRACE( ids ? "by the database IDs" : "by the manifest's order" );
+      QString error;
+      QString bundle = datapubRecraft( plain, root + "/old.tar.gz",
+                       [ ids ]( US_DataPubManifest& m, const QString& )
+                       { datapubAsDatabaseExport( m, false, ids ); }, error );
+      ASSERT_FALSE( bundle.isEmpty() ) << error.toStdString();
+
+      QString            store = root + ( ids ? "/byid" : "/bylist" );
+      US_DataPubImporter importer;
+      ASSERT_TRUE( importInto( bundle, store, importer, error ) )
+         << error.toStdString();
+
+      EXPECT_EQ( DataPubNoiseRules::latestModelOnDisk( store + "/data",
+                                                       editGUID ),
+                 scenario.latest() );
+      EXPECT_EQ( DataPubBorrowScenario::text( borrowersIn( store ) ),
+                 DataPubBorrowScenario::text( scenario.expected() ) );
+   }
+}
+
+/* The borrowing of the review's case: noise records listed newest first
+   (as a database export lists them), which the greedy sequence the import
+   used to write them in ran into a dead end with, after which two models
+   borrowed the wrong noise and the import only noted it.  Written in the
+   source's order, every model borrows what it did. */
+TEST_F( DataPubOrder, TheGreedySequencesDeadEndIsWrittenInTheSourcesOrder )
+{
+   DataPubDeadEndScenario scenario;
+   scenario.write( US_Settings::dataDir() + "/models",
+                   US_Settings::dataDir() + "/noises", runID, editGUID,
+                   noiseGUID );
+
+   QString            error;
+   QString            plain = exportStore( "deadend" );
+   US_DataPubImporter probe;
+   ASSERT_TRUE( probe.inspect( plain, error ) ) << error.toStdString();
+   ASSERT_EQ( DataPubBorrowScenario::text(
+                 DataPubBorrowScenario::borrowers( probe.manifest() ) ),
+              DataPubBorrowScenario::text( scenario.expected() ) );
+
+   QString bundle = datapubRecraft( plain, root + "/reversed.tar.gz",
+                    []( US_DataPubManifest& m, const QString& )
+                    { datapubAsDatabaseExport( m, true, false ); }, error );
+   ASSERT_FALSE( bundle.isEmpty() ) << error.toStdString();
+
+   QString            store = root + "/deadend";
+   US_DataPubImporter importer;
+   ASSERT_TRUE( importInto( bundle, store, importer, error ) )
+      << error.toStdString();
+   EXPECT_TRUE( orderProblems( importer ).isEmpty() )
+      << orderProblems( importer ).join( "\n" ).toStdString();
+
+   EXPECT_EQ( DataPubBorrowScenario::text( borrowersIn( store ) ),
+              DataPubBorrowScenario::text( scenario.expected() ) );
+   EXPECT_EQ( DataPubNoiseRules::latestModelOnDisk( store + "/data", editGUID ),
+              scenario.latest() );
+}
+
+/* A store that already holds a model of the edit (here the fixture's model,
+   which the import reuses) in a file after a gap in the numbers: the
+   models the import writes go after it, not into the gap, so the latest
+   of them is still the latest model with noise. */
+TEST_F( DataPubOrder, ImportedModelsFollowTheFilesAlreadyThere )
+{
+   DataPubBorrowScenario scenario;
+   scenario.write( US_Settings::dataDir() + "/models",
+                   US_Settings::dataDir() + "/noises", runID, editGUID,
+                   noiseGUID );
+
+   QString store = root + "/gaps";
+   QDir().mkpath( store + "/data/models" );
+   QDir().mkpath( store + "/data/noises" );
+
+   // Another edit's model in M0000001, the fixture's model and noise of
+   // this edit at 20
+   US_Model other;
+   other.modelGUID   = US_Util::new_guid();
+   other.editGUID    = US_Util::new_guid();
+   other.description = "other.1A280.e9_a9_2DSA.model";
+   ASSERT_EQ( other.write( store + "/data/models/M0000001.xml" ), IUS_DB2::OK );
+   ASSERT_TRUE( QFile::copy( US_Settings::dataDir() + "/models/M0000001.xml",
+                             store + "/data/models/M0000020.xml" ) );
+   ASSERT_TRUE( QFile::copy( US_Settings::dataDir() + "/noises/N0000001.xml",
+                             store + "/data/noises/N0000020.xml" ) );
+
+   QString            error;
+   QString            bundle = exportStore( "gaps" );
+   US_DataPubImporter importer;
+   ASSERT_TRUE( importInto( bundle, store, importer, error ) )
+      << error.toStdString();
+
+   EXPECT_EQ( DataPubNoiseRules::latestModelOnDisk( store + "/data", editGUID ),
+              scenario.latest() );
+}
+
+namespace
+{
+   US_DataPubEntity order_model( const QString& guid, const QString& edit,
+                                 int index, const QString& stamp )
+   {
+      US_DataPubEntity model( US_DataPub::Model );
+      model.guid = guid;
+      model.setDepend( US_DataPub::EditedData, edit );
+
+      if ( index > 0 )
+         model.attrs.insert( "sourceIndex", QString::number( index ) );
+      if ( ! stamp.isEmpty() )
+         model.attrs.insert( "sourceLastUpdated", stamp );
+
+      return model;
+   }
+
+   US_DataPubEntity order_noise( const QString& guid, const QString& model,
+                                 const QString& type, int index,
+                                 const QString& stamp,
+                                 const QString& borrowers = QString() )
+   {
+      US_DataPubEntity noise( US_DataPub::Noise );
+      noise.guid = guid;
+      noise.setDepend( US_DataPub::Model, model );
+      noise.attrs.insert( "noiseType", type );
+
+      if ( index > 0 )
+         noise.attrs.insert( "sourceIndex", QString::number( index ) );
+      if ( ! stamp.isEmpty() )
+         noise.attrs.insert( "sourceLastUpdated", stamp );
+      if ( ! borrowers.isEmpty() )
+         noise.attrs.insert( "borrowedByModelGUIDs", borrowers );
+
+      return noise;
+   }
+
+   QStringList order_guids( const QList< US_DataPubImporter::OrderStep >& steps )
+   {
+      QStringList guids;
+
+      for ( const US_DataPubImporter::OrderStep& step : steps )
+         guids << step.entity.guid;
+
+      return guids;
+   }
+}
+
+/* The order itself, on manifests made by hand: the models by their source
+   IDs (the highest last), each noise record after its model, in the
+   source's time where the stamps say; a database export's manifest order
+   reversed where nothing else says. */
+TEST( DataPubWriteOrder, ModelsKeepTheSourcesIdOrder )
+{
+   // 2DSA (300, noise 400) and 2DSA-IT (301, noise 402), listed newest
+   // first as a database export lists them
+   US_DataPubManifest mani;
+   mani.source = "db";
+   mani.add( order_model( "m301", "e1", 301, "2024-05-01T10:05:00Z" ) );
+   mani.add( order_model( "m300", "e1", 300, "2024-05-01T10:00:00Z" ) );
+   mani.add( order_noise( "n402", "m301", "ti", 402, "2024-05-01T10:05:00Z" ) );
+   mani.add( order_noise( "n400", "m300", "ti", 400, "2024-05-01T10:00:00Z" ) );
+
+   QStringList problems;
+   QList< QList< US_DataPubImporter::OrderStep > > order =
+         US_DataPubImporter::writeOrder( mani, problems );
+
+   ASSERT_EQ( order.size(), 1 );
+   EXPECT_TRUE( problems.isEmpty() ) << problems.join( "\n" ).toStdString();
+   EXPECT_EQ( order_guids( order[ 0 ] ).join( " " ),
+              QString( "m300 n400 m301 n402" ) );
+
+   // Without stamps and indices, the manifest's order reversed, each noise
+   // record as early as it can go
+   US_DataPubManifest old;
+   old.source = "db";
+   old.add( order_model( "m301", "e1", 0, QString() ) );
+   old.add( order_model( "m300", "e1", 0, QString() ) );
+   old.add( order_noise( "n402", "m301", "ti", 0, QString() ) );
+   old.add( order_noise( "n400", "m300", "ti", 0, QString() ) );
+
+   order = US_DataPubImporter::writeOrder( old, problems );
+   ASSERT_EQ( order.size(), 1 );
+   EXPECT_EQ( order_guids( order[ 0 ] ).join( " " ),
+              QString( "m300 n400 m301 n402" ) );
+
+   // A disk export lists them as the files go
+   old.source = "disk";
+   order = US_DataPubImporter::writeOrder( old, problems );
+   EXPECT_EQ( order_guids( order[ 0 ] ).join( " " ),
+              QString( "m301 n402 m300 n400" ) );
+}
+
+/* What a bundle's borrowing cannot keep is said, never dropped: a borrower
+   of another edit (a catalog lends a model only the noise of its own
+   edit), one that is not in the bundle, one named for two records of a
+   type, and borrowing that contradicts the source's order -- which is then
+   left out, and the source's order kept. */
+TEST( DataPubWriteOrder, BorrowingThatCannotBeKeptIsSaid )
+{
+   US_DataPubManifest mani;
+   mani.source = "disk";
+   mani.add( order_model( "a",  "e1", 1, QString() ) );
+   mani.add( order_model( "x",  "e1", 2, QString() ) );
+   mani.add( order_model( "o",  "e2", 3, QString() ) );
+   mani.add( order_noise( "na", "a", "ti", 1, QString(), "o ghost" ) );
+
+   QStringList problems;
+   QList< QList< US_DataPubImporter::OrderStep > > order =
+         US_DataPubImporter::writeOrder( mani, problems );
+   QString said = problems.join( "\n" );
+
+   EXPECT_TRUE( said.contains( "another edit (e2)" ) ) << said.toStdString();
+   EXPECT_TRUE( said.contains( "ghost" ) ) << said.toStdString();
+   ASSERT_EQ( order.size(), 2 );
+
+   // x, made after a and its noise, is named as borrowing none -- but na
+   // comes after a, which comes before x
+   US_DataPubManifest twice;
+   twice.source = "disk";
+   twice.add( order_model( "a",  "e1", 1, QString() ) );
+   twice.add( order_model( "b",  "e1", 2, QString() ) );
+   twice.add( order_model( "x",  "e1", 3, QString() ) );
+   twice.add( order_noise( "na", "a", "ti", 1, QString(), "x" ) );
+   twice.add( order_noise( "nb", "b", "ti", 2, QString(), "x" ) );
+
+   order = US_DataPubImporter::writeOrder( twice, problems );
+   said  = problems.join( "\n" );
+   EXPECT_TRUE( said.contains( "two ti noise records" ) ) << said.toStdString();
+
+   // y borrows n2 but was made (index 2) before n2's model (index 3): no
+   // order keeps both, and the models keep theirs
+   US_DataPubManifest clash;
+   clash.source = "disk";
+   clash.add( order_model( "a",  "e1", 1, QString() ) );
+   clash.add( order_model( "y",  "e1", 2, QString() ) );
+   clash.add( order_model( "c",  "e1", 3, QString() ) );
+   clash.add( order_noise( "n1", "a", "ti", 1, QString() ) );
+   clash.add( order_noise( "n2", "c", "ti", 2, QString(), "y" ) );
+
+   order = US_DataPubImporter::writeOrder( clash, problems );
+   said  = problems.join( "\n" );
+   EXPECT_TRUE( said.contains( "contradicts" ) ) << said.toStdString();
+   ASSERT_EQ( order.size(), 1 );
+   EXPECT_EQ( order_guids( order[ 0 ] ).join( " " ),
+              QString( "a n1 y c n2" ) );
+}
+
+/* The catalog's time stamps are UTC, and are read as UTC: in a time zone
+   with a spring-forward gap (Europe/Berlin, 2024-03-31 02:00-03:00 local)
+   a stamp of that hour, read as a local time, came out an hour late or
+   invalid, and a model borrowed a noise record made after it. */
+TEST( DataPubNoiseBefore, TheSpringForwardGapIsNoGap )
+{
+   QByteArray saved = qgetenv( "TZ" );
+   qputenv( "TZ", "Europe/Berlin" );
+   tzset();
+
+   US_DataCatalog::Noise later;
+   later.guid        = "aaaaaaaa-0000-4000-8000-000000000001";
+   later.id          = "-1";
+   later.noiseType   = "ti";
+   later.lastUpdated = "2024-03-31 03:10:00 UTC";
+
+   US_DataCatalog::Noise earlier = later;
+   earlier.guid        = "bbbbbbbb-0000-4000-8000-000000000001";
+   earlier.lastUpdated = "2024-03-31 01:00:00 UTC";
+
+   QList< US_DataCatalog::Noise > both;
+   both << later << earlier;
+
+   // Made at 02:30 UTC: the noise of 03:10 UTC is newer
+   QList< US_DataCatalog::Noise > picked =
+         US_DataPubCatalog::noiseBefore( both, "2024-03-31 02:30:00 UTC" );
+   QList< US_DataCatalog::Noise > db =
+         US_DataPubCatalog::noiseBefore( both, "2024-03-31 02:30:00" );
+
+   if ( saved.isNull() )  qunsetenv( "TZ" );
+   else                   qputenv( "TZ", saved );
+   tzset();
+
+   ASSERT_EQ( picked.size(), 1 );
+   EXPECT_EQ( picked[ 0 ].guid, earlier.guid );
+   ASSERT_EQ( db.size(), 1 );
+   EXPECT_EQ( db[ 0 ].guid, earlier.guid );
+
+   qint64 seconds = 0;
+   ASSERT_TRUE( US_DataPub::utcStampSeconds( "2024-03-31T02:30:00Z", seconds ) );
+   EXPECT_EQ( seconds, QDateTime( QDate( 2024, 3, 31 ), QTime( 2, 30 ),
+                                  Qt::UTC ).toSecsSinceEpoch() );
+   ASSERT_TRUE( US_DataPub::utcStampSeconds( "2024-03-31 04:30:00+02:00",
+                                             seconds ) );
+   EXPECT_EQ( US_DataPub::isoUtcStamp( "2024-03-31 04:30:00+02:00" ),
+              QString( "2024-03-31T02:30:00Z" ) );
+}
+
+/* A record the store already holds under its GUID is reused, and its name
+   counts as the bundle's: another record of the bundle of the same name --
+   the source holds both under it -- is no conflict and keeps the name, as
+   it does when the import writes both. */
+TEST_F( DataPubImport, AReusedRecordsNameIsNoConflictForItsTwin )
+{
+   QString  twinGUID = US_Util::new_guid();
+   US_Model twin;
+   twin.modelGUID   = twinGUID;
+   twin.editGUID    = editGUID;
+   twin.description = "demo_run.1A280.2dsa.model";      // the fixture's
+   twin.write( US_Settings::dataDir() + "/models/M0000002.xml" );
+
+   US_DataPubExporter            exporter;
+   US_DataPubExporter::Selection selection;
+   selection.fromDb = false;
+   selection.scope  = US_DataPub::ScopeNoise;
+   selection.runIDs << runID;
+
+   QString error;
+   QString bundle = root + "/twins.tar.gz";
+   ASSERT_TRUE( exporter.exportBundle( selection, bundle, error ) )
+      << error.toStdString();
+
+   // The store holds the fixture's model already, under its GUID
+   QDir().mkpath( targetDir + "/data/models" );
+   ASSERT_TRUE( QFile::copy( US_Settings::dataDir() + "/models/M0000001.xml",
+                             targetDir + "/data/models/M0000001.xml" ) );
+
+   for ( int dry = 1; dry >= 0; dry-- )
+   {
+      US_DataPubImporter          importer;
+      US_DataPubImporter::Options options = diskOptions();
+      options.dryRun = ( dry == 1 );
+      options.policy = US_DataPub::PolicyRename;
+      ASSERT_TRUE( importer.inspect  ( bundle, error ) ) << error.toStdString();
+      ASSERT_TRUE( importer.runImport( options, error ) ) << error.toStdString();
+
+      for ( const US_DataPubImporter::Result& result : importer.results() )
+      {
+         if ( result.type != US_DataPub::Model )  continue;
+
+         EXPECT_EQ( result.targetName, QString( "demo_run.1A280.2dsa.model" ) )
+            << ( dry ? "dry run" : "import" );
+         EXPECT_EQ( result.resolution, result.guid == twinGUID
+                                       ? US_DataPub::ResolvedCreated
+                                       : US_DataPub::ResolvedReused );
+      }
+   }
+}
+
+/* A rename suffix given in brackets is not bracketed again. */
+TEST_F( DataPubImport, ARenameSuffixInBracketsIsBracketedOnce )
+{
+   // The store holds another model of the fixture model's name
+   QDir().mkpath( targetDir + "/data/models" );
+   US_Model held;
+   held.modelGUID   = US_Util::new_guid();
+   held.editGUID    = US_Util::new_guid();
+   held.description = "demo_run.1A280.2dsa.model";
+   ASSERT_EQ( held.write( targetDir + "/data/models/M0000001.xml" ),
+              IUS_DB2::OK );
+
+   US_DataPubImporter          importer;
+   US_DataPubImporter::Options options = diskOptions();
+   options.policy       = US_DataPub::PolicyRename;
+   options.renameSuffix = "(copy)";
+   QString error;
+   ASSERT_TRUE( importer.inspect  ( bundlePath, error ) ) << error.toStdString();
+   ASSERT_TRUE( importer.runImport( options, error ) ) << error.toStdString();
+
+   bool renamed = false;
+
+   for ( const US_DataPubImporter::Result& result : importer.results() )
+      if ( result.type == US_DataPub::Model )
+      {
+         renamed = true;
+         EXPECT_EQ( result.targetName,
+                    QString( "demo_run.1A280.2dsa.model (copy)" ) );
+      }
+
+   EXPECT_TRUE( renamed );
 }
