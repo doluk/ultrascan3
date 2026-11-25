@@ -860,12 +860,6 @@ void US_DataModel::scan_runs( )
    for ( int ii = 0; ii < entries.size(); ii++ )
       byRun.insert( runKey( entries[ ii ].runID ), ii );
 
-   // How many local directories hold each run
-   QHash< QString, int > lodirs;
-
-   for ( int ii = 0; cat_lo != NULL  &&  ii < cat_lo->runCount(); ii++ )
-      lodirs[ cat_lo->run( ii ).runID ]++;
-
    if ( use_lo  &&  cat_lo != NULL )
    {
       // Each local run takes the database experiment of its name its
@@ -925,6 +919,10 @@ void US_DataModel::scan_runs( )
 
             if ( lmatch.contains( ii ) )   continue;
 
+            // A copy of a run beside the run's own directory is not the
+            // run: it never takes the database's experiment
+            if ( ! cat_lo->run( ii ).copyOf.isEmpty() )   continue;
+
             QList< int > same = byRun.values( runKey( cat_lo->run( ii ).runID ) );
             std::sort( same.begin(), same.end() );
 
@@ -959,28 +957,34 @@ void US_DataModel::scan_runs( )
          entries[ match ].loIndex = ii;
          entries[ match ].loCount = run_record_count( run );
 
-         // A directory not named after its run, or one of two holding the
-         // same run: what an upload or a download writes would not go
-         // where the run is.  Names compare as the catalog compares them,
-         // so this agrees with what it says is wrong with the run.
+         // A directory not named after its run -- a copy of a run beside
+         // the run's own directory is one -- is not where the run is: what
+         // an upload or a download writes would go somewhere else.  The
+         // directory named after the run is the run, copies or not.  Names
+         // compare as the catalog compares them, so this agrees with what
+         // it says is wrong with the run.
          QString dname  = QDir( run.dirPath ).dirName();
          bool    misdir = ( dname.compare( run.runID,
                                            cat_lo->fileNameCase() ) != 0 );
-         bool    twodir = ( lodirs.value( run.runID ) > 1 );
+         bool    copy   = ! run.copyOf.isEmpty();
 
-         if ( misdir  ||  twodir )
+         if ( misdir  ||  copy )
             entries[ match ].unsafe = true;
+
+         if ( copy )
+            entries[ match ].copyOf = run.copyOf;
 
          QString lprob = run.usable ? QString() : run.problem;
 
          // A run that is refused always says why, whatever the catalog said
+         if ( lprob.isEmpty()  &&  copy )
+            lprob = tr( "The directory %1 holds a copy of run %2, whose"
+                        " directory is %3: the copy is ignored" )
+                    .arg( dname, run.runID, QDir( run.copyOf ).dirName() );
+
          if ( lprob.isEmpty()  &&  misdir )
             lprob = tr( "The directory %1 holds the files of run %2" )
                     .arg( dname, run.runID );
-
-         if ( lprob.isEmpty()  &&  twodir )
-            lprob = tr( "Run %1 is in more than one directory" )
-                    .arg( run.runID );
 
          if ( ! lprob.isEmpty() )
          {
@@ -3429,6 +3433,10 @@ QList< US_DataModel::Duplicate > US_DataModel::find_duplicates( void ) const
 
       if ( desc.recType < RAW  ||  desc.recState == NOSTAT )   continue;
       if ( row_run.at( row ) < 0 )   continue;   // left behind by a re-merge
+
+      // A copy of a run beside the run's directory holds the run's GUIDs
+      // by nature; it is reported as a problem of its own, and ignored
+      if ( ! runents.at( row_run.at( row ) ).copyOf.isEmpty() )   continue;
 
       QString key = QString::number( desc.recType ) + ":" + desc.dataGUID;
 

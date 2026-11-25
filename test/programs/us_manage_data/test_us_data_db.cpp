@@ -1704,6 +1704,98 @@ TEST_F( TestUSDataDb, NothingIsWrittenForARunInTheWrongDirectory )
               (int)US_DataProcess::UNSAFE_RUN );
 }
 
+// A copy of a run directory beside the run's own ("Backup_RunA" sorts
+// before "RunA") is not the run: the run's directory pairs with the
+// database's experiment and is acted on as usual, and the copy is listed
+// as a run of its own, marked, and nothing at all is done for it -- its
+// edit carries the run's GUID, so its model and noise are the run's own
+// files.  Both directories used to be refused, and before that the copy
+// took the database's experiment.
+TEST_F( TestUSDataDb, AStrayCopyOfARunDirectoryIsIgnoredAndTheRunIsNot )
+{
+   QString copyDir = US_Settings::resultDir() + "/Backup_" + runA;
+   QDir().mkpath( copyDir );
+   QString copyAuc  = copyDir + "/" + QFileInfo( aucPath ).fileName();
+   QString copyEdit = copyDir + "/" + QFileInfo( editPath ).fileName();
+   ASSERT_TRUE( QFile::copy( aucPath,  copyAuc  ) );
+   ASSERT_TRUE( QFile::copy( editPath, copyEdit ) );
+
+   QString edit3 = US_Util::new_guid();
+   server.edits << FEdit{ "23", edit3, "11", runA + ".2401031200.RA.1.A.280.xml" };
+   server.blobs[ 23 ] = "x";
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   ASSERT_EQ( model.runCount(), 2 );
+   int realIx = -1;
+   int copyIx = -1;
+
+   for ( int ii = 0; ii < model.runCount(); ii++ )
+   {
+      if ( model.run_entry( ii ).copyOf.isEmpty() )  realIx = ii;
+      else                                          copyIx = ii;
+   }
+
+   ASSERT_GE( realIx, 0 );
+   ASSERT_GE( copyIx, 0 );
+
+   US_DataModel::RunEntry real = model.run_entry( realIx );
+   US_DataModel::RunEntry copy = model.run_entry( copyIx );
+   EXPECT_TRUE ( real.inBoth() );
+   EXPECT_FALSE( real.unsafe );
+   EXPECT_TRUE ( real.problem.isEmpty() ) << real.problem.toStdString();
+   EXPECT_EQ   ( model.index_of_run( runA ), realIx );
+
+   EXPECT_EQ   ( copy.dbIndex, -1 );
+   EXPECT_TRUE ( copy.unsafe );
+   EXPECT_EQ   ( copy.copyOf, runDir( runA ) );
+   EXPECT_TRUE ( copy.problem.contains( "Backup_" + runA ) )
+      << copy.problem.toStdString();
+   EXPECT_TRUE ( copy.problem.contains( "whose directory is " + runA ) )
+      << copy.problem.toStdString();
+
+   // the copy holds the run's GUIDs by nature: no duplicate records
+   EXPECT_TRUE( model.find_duplicates().isEmpty() );
+
+   // nothing at all is done for the copy, removing included
+   int copyModel = rowOf( model, modelG, copyIx );
+   ASSERT_GE( copyModel, 0 );
+   win.select( itemOfRow( win.tw, copy.row ) );
+   EXPECT_EQ( win.tree.act_on_selection( "Local disk only", "Local-only remove" ),
+              US_DataTree::ACT_REFUSED );
+   ASSERT_FALSE( win.prompts.isEmpty() );
+   EXPECT_TRUE( win.prompts.last().contains( "copy of a run" ) )
+      << win.prompts.last().toStdString();
+   EXPECT_TRUE( QFile::exists( modelPath ) );
+   EXPECT_TRUE( QFile::exists( noisePath ) );
+   EXPECT_TRUE( QFile::exists( copyAuc ) );
+
+   win.select( itemOfRow( win.tw, copy.row ) );
+   EXPECT_EQ( win.tree.act_on_selection( "Local disk only", "DB create" ),
+              US_DataTree::ACT_REFUSED );
+   EXPECT_TRUE( server.changes.isEmpty() );
+
+   // and the processor refuses on its own too
+   EXPECT_EQ( win.proc.record_remove_local( copyModel ),
+              (int)US_DataProcess::UNSAFE_RUN );
+   EXPECT_TRUE( QFile::exists( modelPath ) );
+
+   // the run itself is acted on as usual: its new edit is downloaded into
+   // its own directory
+   int row3 = rowOf( model, edit3 );
+   ASSERT_GE( row3, 0 );
+   EXPECT_EQ( model.run_of_row( row3 ), realIx );
+   win.select( itemOfRow( win.tw, row3 ) );
+   EXPECT_EQ( win.tree.act_on_selection( "Database only", "Local file create" ), 0 )
+      << win.proc.lastError().toStdString();
+   EXPECT_TRUE( QDir( runDir( runA ) ).exists( runA + ".2401031200.RA.1.A.280.xml" ) );
+   EXPECT_FALSE( QDir( copyDir ).exists( runA + ".2401031200.RA.1.A.280.xml" ) );
+}
+
 // A model is not downloaded where its edit is not
 TEST_F( TestUSDataDb, AChildIsNotDownloadedWithoutItsParent )
 {
@@ -3117,14 +3209,19 @@ TEST_F( TestUSDataDb, ARunFilterComparesRunIdsAsThePairingDoes )
 // ------------------------------------------------------------ pairing
 
 // The best matches are made first: a local run that matches by order alone
-// does not take the experiment another local run records
+// does not take the experiment another local run records.  Neither
+// directory is named after the run -- beside the run's own directory the
+// other would be a copy of it, which pairs with nothing (see
+// AStrayCopyOfARunDirectoryIsIgnoredAndTheRunIsNot)
 TEST_F( TestUSDataDb, ALocalRunRecordingAnExperimentGetsItFirst )
 {
    QString exp2 = US_Util::new_guid();
    QString raw3 = US_Util::new_guid();
    server.exps << FExp{ "2", exp2, runA };
+   ASSERT_TRUE( QDir().rename( runDir( runA ),
+                               US_Settings::resultDir() + "/ACopy" ) );
 
-   // a second directory of RunA, after "RunA" in order, recording the
+   // a second directory of RunA, after "ACopy" in order, recording the
    // first experiment
    QString copy = US_Settings::resultDir() + "/ZCopy";
    QDir().mkpath( copy );

@@ -870,9 +870,13 @@ void US_DataTree::dtree_help()
       tr( "  and In Sync otherwise.  A run marked \"(!)\" has a problem;\n" ) +
       tr( "  hold the mouse over it to see which.  Run IDs with dots are\n" ) +
       tr( "  legacy: still shown, no longer accepted for new runs.  When\n" ) +
-      tr( "  its local directory is not named after it, or is not the only\n" ) +
-      tr( "  one holding it, nothing is uploaded or downloaded for it; its\n" ) +
-      tr( "  records can still be removed.\n\n" ) +
+      tr( "  its local directory is not named after it, nothing is\n" ) +
+      tr( "  uploaded or downloaded for it; its records can still be\n" ) +
+      tr( "  removed.  Where another directory beside the run's own holds\n" ) +
+      tr( "  the same run (\"Copy of MyRun\", \"Backup_MyRun\"), the\n" ) +
+      tr( "  directory named after the run is the run; the copy is shown\n" ) +
+      tr( "  as a run marked \"(!)\" of its own, and nothing at all is\n" ) +
+      tr( "  done for it.\n\n" ) +
       tr( "Scan Progress --\n\n" ) +
       tr( "  The upper bar counts the steps of the phase that is running\n" ) +
       tr( "  (listing, reading, comparing); the lower bar the work inside\n" ) +
@@ -1536,6 +1540,39 @@ DbgLv(1) << "ITEM do_actions" << narows << item_exs << item_act;
    if ( investigator_refused() )
       return ACT_REFUSED;
 
+   // Nothing at all is done for a copy of a run beside the run's own
+   // directory: it is not the run, and its models and noise are the run's
+   if ( upLoad || dnLoad || remove )
+   {
+      QStringList copies;
+
+      for ( int jj = 0; jj < narows; jj++ )
+      {
+         US_DataModel::RunEntry entry =
+            da_model->run_entry( da_model->run_of_row( actrows[ jj ] ) );
+
+         if ( ! entry.copyOf.isEmpty() )
+         {
+            QString line = entry.runID + ":  " + entry.problem;
+
+            if ( ! copies.contains( line ) )
+               copies << line;
+         }
+      }
+
+      if ( ! copies.isEmpty() )
+      {
+         ask_user( PROMPT_INFORM, tr( "Copy of a Run" ),
+            tr( "Nothing is uploaded, downloaded or removed for a copy of a"
+                " run.  The directory named after the run is the run; a"
+                " copy beside it is ignored, and its models and noise are"
+                " the run's own files:\n\n  %1\n\n"
+                "Move or delete the copy by hand." )
+            .arg( copies.join( "\n  " ) ) );
+         return ACT_REFUSED;
+      }
+   }
+
    // Nothing is written for a run whose directory is not where it should
    // be: an upload or a download would put its records somewhere else
    if ( upLoad || dnLoad )
@@ -1555,8 +1592,8 @@ DbgLv(1) << "ITEM do_actions" << narows << item_exs << item_act;
       {
          ask_user( PROMPT_INFORM, tr( "Run Marked \"(!)\"" ),
             tr( "Nothing is uploaded or downloaded for these runs, since"
-                " their local directories are not named after them or are"
-                " not the only ones holding them:\n\n  %1\n\n"
+                " their local directories are not named after them:"
+                "\n\n  %1\n\n"
                 "Hold the mouse over a run marked \"(!)\" to see why.  Its"
                 " records can still be removed." )
             .arg( unsafe.join( "\n  " ) ) );

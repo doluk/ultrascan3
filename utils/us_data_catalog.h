@@ -297,11 +297,20 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
             //! run ID is not one UltraScan accepts any more (letters,
             //! digits, '_' and '-', at most 80 characters -- dotted IDs
             //! exist in old data and are still listed), or, on disk, its
-            //! directory is not named after it, or another directory holds
-            //! the same run ID.
+            //! directory is not named after it.  Of the directories that
+            //! hold one run ID, the one named after it is the run and stays
+            //! usable; the others are copies of it (\ref copyOf) and are
+            //! not.  When none is named after the run ID, none is usable.
             bool    usable;
             //! What is wrong with the run, when \ref usable is false
             QString problem;
+            //! On disk, for a directory that holds a copy of a run whose own
+            //! directory (named after the run ID) is there too: the path of
+            //! that directory.  Such a copy is never the run: it is not
+            //! \ref usable, \ref indexOfRun does not return it in place of
+            //! the run, and the listing emits a \ref message about it.
+            //! Empty otherwise.
+            QString copyOf;
 
             //! How many records hang off this experiment.  A count of -1
             //! means the source could not say without reading the chain,
@@ -491,8 +500,9 @@ class US_UTIL_EXTERN US_DataCatalog : public QObject
       //! runID column does not tell "RunA" from "runA", and on disk as
       //! \ref fileNameCase says.
       //! \param runID The run identifier to look for
-      //! \returns -1 when there is no such experiment; the first one when a
-      //!          local store holds the run ID in more than one directory
+      //! \returns -1 when there is no such experiment.  When a local store
+      //!          holds the run ID in more than one directory: the one named
+      //!          after it (not a \ref Run::copyOf), else the first one
       int  indexOfRun( const QString& runID ) const;
 
       /*! \brief Read the whole chain of every experiment at once

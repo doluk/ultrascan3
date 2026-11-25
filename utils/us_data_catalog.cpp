@@ -189,7 +189,9 @@ namespace
     answered from this index rather than from the file system again.
 
     Run directories are kept by path, not by run ID: two directories whose
-    files carry the same run ID are two runs, and both are listed.
+    files carry the same run ID are both listed.  The one named after the
+    run ID is the run; the others are copies of it (Run::copyOf), not
+    usable, and ignored.
 */
 class US_DataCatalog::DiskIndex
 {
@@ -1052,8 +1054,17 @@ const US_DataCatalog::Run& US_DataCatalog::run( int index ) const
 
 int US_DataCatalog::indexOfRun( const QString& runID ) const
 {
+   // The run's own directory before a copy of it, wherever that sorts
+   int copy = -1;
+
    for ( int ii = 0; ii < run_list.size(); ii++ )
-      if ( run_list[ ii ].runID == runID )  return ii;
+   {
+      if ( run_list[ ii ].runID != runID )  continue;
+      if ( run_list[ ii ].copyOf.isEmpty() )  return ii;
+      if ( copy < 0 )  copy = ii;
+   }
+
+   if ( copy >= 0 )  return copy;
 
    // The source's own idea of one name: the database's runID column does
    // not tell case apart, and a local store does where its file system does
@@ -1062,9 +1073,13 @@ int US_DataCatalog::indexOfRun( const QString& runID ) const
    if ( cs == Qt::CaseSensitive )  return -1;
 
    for ( int ii = 0; ii < run_list.size(); ii++ )
-      if ( run_list[ ii ].runID.compare( runID, cs ) == 0 )  return ii;
+   {
+      if ( run_list[ ii ].runID.compare( runID, cs ) != 0 )  continue;
+      if ( run_list[ ii ].copyOf.isEmpty() )  return ii;
+      if ( copy < 0 )  copy = ii;
+   }
 
-   return -1;
+   return copy;
 }
 
 bool US_DataCatalog::isRunLoaded( int index ) const
@@ -1660,9 +1675,14 @@ bool US_DataCatalog::loadRunsDisk( QList< Run >& runs, QString& error )
 
    if ( ! diskIndexReady( error ) )  return false;
 
-   // The run IDs the store holds, and where each one is
+   // The run IDs the store holds, and where each one is.  The directory
+   // named after a run ID is that run; any other directory holding the run
+   // ID is a copy of it -- "Copy of MyRun", "Backup_MyRun", "MyRun_old" --
+   // and is ignored.  Without such a directory which one is the run cannot
+   // be told, and all of them are refused.
    QSet< QString >                runIDs;
    QMultiHash< QString, QString > dirsOfRun;
+   QHash< QString, QString >      runDirOf;    // runID -> its own dirPath
 
    for ( const DiskIndex::RunFiles& rf : disk_index->runs )
    {
@@ -1670,6 +1690,10 @@ bool US_DataCatalog::loadRunsDisk( QList< Run >& runs, QString& error )
 
       runIDs   .insert( rf.runID );
       dirsOfRun.insert( rf.runID, rf.dirName );
+
+      if ( rf.runID.compare( rf.dirName, file_case ) == 0  &&
+           ! runDirOf.contains( rf.runID ) )
+         runDirOf.insert( rf.runID, rf.dirPath );
    }
 
    // Which models and noise records belong to a run can only be said for
@@ -1731,7 +1755,21 @@ bool US_DataCatalog::loadRunsDisk( QList< Run >& runs, QString& error )
          problems << tr( "The run ID %1 is not one UltraScan accepts" )
                      .arg( rf.runID );
 
-      if ( rf.runID.compare( rf.dirName, file_case ) != 0 )
+      QString runDir = runDirOf.value( rf.runID );
+
+      if ( ! runDir.isEmpty()  &&  runDir != rf.dirPath )
+      {  // A copy of a run whose own directory is there: never the run
+         run.copyOf = runDir;
+         problems << tr( "The directory %1 holds a copy of run %2, whose"
+                         " directory is %3: the copy is ignored" )
+                     .arg( rf.dirName, rf.runID, QDir( runDir ).dirName() );
+         emit message( tr( "Warning: %1 holds a copy of run %2 and is"
+                           " ignored; the run is %3" )
+                       .arg( QDir::toNativeSeparators( rf.dirPath ),
+                             rf.runID,
+                             QDir::toNativeSeparators( runDir ) ) );
+      }
+      else if ( rf.runID.compare( rf.dirName, file_case ) != 0 )
          problems << tr( "The directory %1 holds the files of run %2" )
                      .arg( rf.dirName, rf.runID );
 
@@ -1739,12 +1777,15 @@ bool US_DataCatalog::loadRunsDisk( QList< Run >& runs, QString& error )
          problems << tr( "The directory %1 holds the files of more than one"
                          " run" ).arg( rf.dirName );
 
+      // No directory is named after the run: which one is the run cannot
+      // be told, and every one of them is refused
       QStringList others = dirsOfRun.values( rf.runID );
       others.removeAll( rf.dirName );
       others.sort();
 
-      if ( ! others.isEmpty() )
-         problems << tr( "Run %1 is also in %2" )
+      if ( ! others.isEmpty()  &&  runDir.isEmpty() )
+         problems << tr( "Run %1 is also in %2, and no directory is named"
+                         " after it" )
                      .arg( rf.runID, others.join( ", " ) );
 
       if ( ! problems.isEmpty() )

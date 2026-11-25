@@ -702,17 +702,23 @@ TEST_F( TestUSDataCatalog, TheSelectedInvestigatorIsPickedUp )
 
 // ------------------------------------------------------- run directories
 
-// Two directories whose files carry the same run ID are two runs.  Keyed
+// Two directories whose files carry the same run ID are listed apart.  Keyed
 // by run ID they used to collapse into one, and the triples of one were
-// shown as the other's.
+// shown as the other's.  The one named after the run ID is the run and
+// stays usable; the other is a copy of it, flagged, and ignored.  (Until
+// round 7 both were refused, so a stray copy blocked the real run.)
 TEST_F( TestUSDataCatalog, TwoDirectoriesWithTheSameRunIdAreTwoRuns )
 {
    QString copyGUID = US_Util::new_guid();
-   QString dir      = runDir( "Copy_of_" + runOne );
+   QString dir      = runDir( "Backup_" + runOne );
    writeAuc( dir + "/" + runOne + ".RA.1.A.280.auc", copyGUID, "the copy" );
 
    US_DataCatalog catalog;
    QString        error;
+   QStringList    messages;
+   QObject::connect( &catalog, &US_DataCatalog::message,
+                     [ &messages ]( const QString& text )
+                     { messages << text; } );
 
    ASSERT_TRUE( catalog.open( US_DataCatalog::Disk, QString(), error ) );
    ASSERT_TRUE( catalog.loadRuns( error ) );
@@ -726,14 +732,28 @@ TEST_F( TestUSDataCatalog, TwoDirectoriesWithTheSameRunIdAreTwoRuns )
    ASSERT_EQ( same.size(), 2 );
 
    QStringList rawGUIDs;
+   int         realIx = -1;
 
    for ( int ii : same )
    {
       const US_DataCatalog::Run& run = catalog.run( ii );
 
-      // both are flagged: neither can be acted on as the run it claims to be
-      EXPECT_FALSE( run.usable );
-      EXPECT_TRUE ( run.problem.contains( "also in" ) ) << run.problem.toStdString();
+      if ( run.dirPath.endsWith( "/Backup_" + runOne ) )
+      {  // the copy: flagged, naming the directory that is the run
+         EXPECT_FALSE( run.usable );
+         EXPECT_EQ   ( run.copyOf, runDir( runOne ) );
+         EXPECT_TRUE ( run.problem.contains( "Backup_" + runOne ) )
+            << run.problem.toStdString();
+         EXPECT_TRUE ( run.problem.contains( "whose directory is " + runOne ) )
+            << run.problem.toStdString();
+      }
+      else
+      {  // the run itself
+         realIx = ii;
+         EXPECT_TRUE ( run.usable ) << run.problem.toStdString();
+         EXPECT_TRUE ( run.problem.isEmpty() ) << run.problem.toStdString();
+         EXPECT_TRUE ( run.copyOf.isEmpty() );
+      }
 
       ASSERT_TRUE( catalog.loadRunDetail( ii, error ) ) << error.toStdString();
 
@@ -746,15 +766,50 @@ TEST_F( TestUSDataCatalog, TwoDirectoriesWithTheSameRunIdAreTwoRuns )
    EXPECT_TRUE( rawGUIDs.contains( copyGUID ) );
    EXPECT_TRUE( rawGUIDs.contains( rawOneGUID ) );
 
-   // and the directory whose name is not the run ID says that too
-   for ( int ii : same )
+   // the run ID finds the run, though the copy sorts before it
+   ASSERT_GE( realIx, 0 );
+   EXPECT_LT( same.first(), realIx );
+   EXPECT_EQ( catalog.indexOfRun( runOne ), realIx );
+
+   // and the listing warns about the copy
+   QString warned = messages.filter( "copy of run " + runOne ).join( "\n" );
+   EXPECT_TRUE( warned.contains( QDir::toNativeSeparators( dir ) ) )
+      << messages.join( "\n" ).toStdString();
+}
+
+// When no directory is named after the run ID, which one is the run cannot
+// be told: every one of them is refused, and none is called a copy
+TEST_F( TestUSDataCatalog, ARunIdInDirectoriesNoneNamedAfterItIsRefusedInAll )
+{
+   QString dirA = runDir( "Backup_Lone_run" );
+   QString dirB = runDir( "Lone_run_old" );
+   writeAuc( dirA + "/Lone_run.RA.1.A.280.auc", US_Util::new_guid(), "a" );
+   writeAuc( dirB + "/Lone_run.RA.1.A.280.auc", US_Util::new_guid(), "b" );
+
+   US_DataCatalog catalog;
+   QString        error;
+
+   ASSERT_TRUE( catalog.open( US_DataCatalog::Disk, QString(), error ) );
+   ASSERT_TRUE( catalog.loadRuns( error ) );
+
+   int count = 0;
+
+   for ( int ii = 0; ii < catalog.runCount(); ii++ )
    {
-      if ( catalog.run( ii ).dirPath.endsWith( "Copy_of_" + runOne ) )
-      {
-         EXPECT_TRUE( catalog.run( ii ).problem.contains( "Copy_of_" + runOne ) )
-            << catalog.run( ii ).problem.toStdString();
-      }
+      const US_DataCatalog::Run& run = catalog.run( ii );
+
+      if ( run.runID != "Lone_run" )  continue;
+
+      count++;
+      EXPECT_FALSE( run.usable );
+      EXPECT_TRUE ( run.copyOf.isEmpty() );
+      EXPECT_TRUE ( run.problem.contains( "also in" ) )
+         << run.problem.toStdString();
+      EXPECT_TRUE ( run.problem.contains( "no directory is named after it" ) )
+         << run.problem.toStdString();
    }
+
+   EXPECT_EQ( count, 2 );
 }
 
 // A run ID that is a prefix of another followed by a dot does not count

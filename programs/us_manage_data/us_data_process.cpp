@@ -436,6 +436,9 @@ int US_DataProcess::record_remove_db( int row )
    QString dataID   = QString::number( irecID );
    unknown_out      = false;
 
+   if ( copy_run( row ) )
+      return UNSAFE_RUN;
+
    if      ( cdesc.recType == 1 )
    { // remove a Raw record
       query.clear();
@@ -1137,6 +1140,9 @@ int US_DataProcess::record_remove_local( int row )
    int stat = 0;
    cdesc            = da_model->row_datadesc( row );
 
+   if ( copy_run( row ) )
+      return UNSAFE_RUN;
+
    QString filepath = cdesc.filename;
    QString filename = filepath.section( "/", -1, -1 );
    QFile   file( filepath );
@@ -1278,9 +1284,28 @@ bool US_DataProcess::parent_in( int row, int place )
    return ( ( da_model->row_datadesc( prow ).recState & place ) != 0 );
 }
 
+// True, with the message set, when the record belongs to a copy of a run
+// beside the run's own directory: nothing at all is done for it
+bool US_DataProcess::copy_run( int row )
+{
+   US_DataModel::RunEntry entry =
+      da_model->run_entry( da_model->run_of_row( row ) );
+
+   if ( entry.copyOf.isEmpty() )   return false;
+
+   errMsg = tr( "Run %1 is marked \"(!)\": %2\n"
+                "Nothing is uploaded, downloaded or removed for a copy of a"
+                " run: its models and noise are the run's own.  Move or"
+                " delete the directory by hand." )
+            .arg( entry.runID ).arg( entry.problem );
+   return true;
+}
+
 // True, with the message set, when the record's run must not be written to
 bool US_DataProcess::unsafe_run( int row )
 {
+   if ( copy_run( row ) )   return true;
+
    US_DataModel::RunEntry entry =
       da_model->run_entry( da_model->run_of_row( row ) );
 
@@ -1288,8 +1313,8 @@ bool US_DataProcess::unsafe_run( int row )
 
    errMsg = tr( "Run %1 is marked \"(!)\": %2\n"
                 "Nothing is uploaded or downloaded for it until its local"
-                " directory is named after it and is the only one holding"
-                " it." ).arg( entry.runID ).arg( entry.problem );
+                " directory is named after it." )
+            .arg( entry.runID ).arg( entry.problem );
    return true;
 }
 

@@ -119,11 +119,14 @@ concentrations, an analyte's vbar20 or molecular weight, a solution's common
 vbar20, storage temperature or amounts. A missing project file on disk is
 reported with the hint to leave the project out.
 
-A run picked by name that the local results directory holds in more than one
-directory -- a ``Copy of ...`` or ``Backup_...`` directory made by hand holds
-the same files under the same names -- is refused, with a message naming every
-directory: which of them is the run cannot be told, so keep only the directory
-named after the run in the results directory. A run whose experiment XML
+A run that the local results directory holds in more than one directory -- a
+``Copy of ...``, ``Backup_...`` or ``..._old`` directory made by hand holds the
+same files under the same names -- is read from the directory named after the
+run; the other directories are copies, are ignored, and are named in a
+warning. When no directory is named after the run, which of them is the run
+cannot be told, and a run picked by name is refused with a message naming
+every directory: keep the directory of the run, named after the run, in the
+results directory. A run whose experiment XML
 names a rotor calibration by an ID that, in the local rotor directory, belongs
 to a calibration with another GUID is refused too, unless the calibration it
 names by GUID is there: the other calibration's coefficients are not passed
@@ -133,7 +136,7 @@ When the runs come with a project rather than by name, a run whose own records
 do not hold together -- one of those problems, a channel without a solution,
 a rotor calibration or centerpiece it names that is not there, a time state
 without its definitions, an experiment XML that is missing or is not XML, a
-run ID held in more than one directory, or an experiment, raw data or edit another run already brought into the
+run ID held in more than one directory none of which is named after it, or an experiment, raw data or edit another run already brought into the
 bundle (a run directory copied under another name, GUIDs and all) -- is left
 out with a warning instead, and the rest of the project is exported. Its
 models and their noise go with it, unless their edit is in the bundle after

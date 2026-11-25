@@ -521,9 +521,11 @@ int US_DataPubCatalog::indexOfListedRun( const Run& run ) const
 }
 
 bool US_DataPubCatalog::runByID( const QString& runID, Run& found,
-                                 QString& error, bool* unusable )
+                                 QString& error, bool* unusable,
+                                 QStringList* copies )
 {
    if ( unusable != nullptr )  *unusable = false;
+   if ( copies   != nullptr )  copies->clear();
 
    if ( ! ensureListed( listed ? listed_project : QString(), error ) )
       return false;
@@ -546,21 +548,51 @@ bool US_DataPubCatalog::runByID( const QString& runID, Run& found,
    }
 
    // The one usable run of the run ID, whichever position it has: a stray
-   // copy listed before it is not taken for it
+   // copy of its directory, listed before it or not, is not taken for it.
+   // The catalog marks a copy as such only when the run's own directory --
+   // the one named after it -- is there.
    QList< int > usable;
+   int          own = -1;          // the run's own directory, beside copies
+   QStringList  copyDirs;
 
    for ( int ii = 0; ii < indexes.size(); ii++ )
-      if ( cat->run( indexes[ ii ] ).usable )
+   {
+      const Run& run = cat->run( indexes[ ii ] );
+
+      if ( run.usable )
          usable << indexes[ ii ];
+
+      if ( ! run.copyOf.isEmpty() )
+         copyDirs << QDir::toNativeSeparators( run.dirPath );
+      else if ( own < 0 )
+         own = indexes[ ii ];
+   }
+
+   copyDirs.sort();
 
    if ( usable.size() == 1 )
    {
       found = cat->run( usable[ 0 ] );
+
+      if ( copies != nullptr )  *copies = copyDirs;
+
       error.clear();
       return true;
    }
 
    if ( unusable != nullptr )  *unusable = true;
+
+   if ( own >= 0  &&  ! copyDirs.isEmpty() )
+   {  // The run's own directory is there, and is what is wrong
+      const Run& run = cat->run( own );
+
+      error = QObject::tr( "Run %1 cannot be used as it stands: %2" )
+              .arg( runID )
+              .arg( run.problem.isEmpty() ? QObject::tr( "the catalog marks"
+                                                         " it as not usable" )
+                                          : run.problem );
+      return false;
+   }
 
    if ( indexes.size() > 1 )
    {
@@ -572,9 +604,10 @@ bool US_DataPubCatalog::runByID( const QString& runID, Run& found,
       dirs.sort();
 
       error = QObject::tr( "Run %1 is in %2 directories: %3.  Which of them"
-                           " is the run cannot be told; keep only the"
-                           " directory named after the run in the results"
-                           " directory, and move the copies elsewhere" )
+                           " is the run cannot be told, since none is named"
+                           " after it; keep only the directory of the run in"
+                           " the results directory, named after the run, and"
+                           " move the copies elsewhere" )
               .arg( runID ).arg( dirs.size() ).arg( dirs.join( ", " ) );
       return false;
    }

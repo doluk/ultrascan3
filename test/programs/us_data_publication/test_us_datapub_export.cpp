@@ -3739,61 +3739,130 @@ namespace
 
       return ok;
    }
+
+   // Every .auc file of a directory replaced by bytes no reader takes:
+   // whatever reads them fails
+   bool spoil_auc_files( const QString& dir )
+   {
+      QStringList names = QDir( dir ).entryList( QStringList( "*.auc" ),
+                                                 QDir::Files );
+
+      for ( int ii = 0; ii < names.size(); ii++ )
+      {
+         QFile file( dir + "/" + names[ ii ] );
+
+         if ( ! file.open( QIODevice::WriteOnly | QIODevice::Truncate ) )
+            return false;
+
+         file.write( "not an auc file" );
+         file.close();
+      }
+
+      return ! names.isEmpty();
+   }
 }
 
-/* A "Copy of ..." or "Backup_..." directory holding the run's files under
-   their own names is never read in place of the run, wherever it sorts:
-   the catalog cannot tell which of the two is the run, so a named run is
-   refused with a message that names both directories.  The export used to
-   read whichever directory the catalog listed first.
+/* A "Copy of ...", "Backup_..." or "..._old" directory holding the run's
+   files under their own names is never read in place of the run, wherever
+   it sorts: the directory named after the run is the run, and the copy is
+   ignored with a warning that names it.  Round 7 refused the run as long as
+   a copy was there; before that the export read whichever directory the
+   catalog listed first.  The copies here hold .auc files no reader takes,
+   so an export that read one would fail.
 */
 TEST_F( DataPubExport, AStrayCopyOfTheRunDirectoryIsNotReadForTheRun )
 {
    const QStringList copies = { "Copy of demo_run", "Backup_demo_run",
-                                "zz_demo_run" };
+                                "demo_run_old" };
 
    for ( const QString& name : copies )
    {
       SCOPED_TRACE( name.toStdString() );
       QString copy = US_Settings::resultDir() + "/" + name;
       ASSERT_TRUE( copy_dir_as_is( runDir(), copy ) );
+      ASSERT_TRUE( spoil_auc_files( copy ) );
 
       US_DataPubCatalog      catalog;
       US_DataPubCatalog::Run run;
       QString                error;
-      bool                   unusable = false;
+      bool                   unusable = true;
+      QStringList            ignored;
       ASSERT_TRUE( catalog.open( false, QString(), error ) );
-      EXPECT_FALSE( catalog.runByID( runID, run, error, &unusable ) );
-      EXPECT_TRUE( unusable );
+      ASSERT_TRUE( catalog.runByID( runID, run, error, &unusable, &ignored ) )
+         << error.toStdString();
+      EXPECT_FALSE( unusable );
+      EXPECT_EQ( QDir::toNativeSeparators( run.dirPath ),
+                 QDir::toNativeSeparators( runDir() ) );
+      EXPECT_EQ( ignored, QStringList( QDir::toNativeSeparators( copy ) ) );
 
       US_DataPubExporter exporter;
       QString            bundle = root + "/stray.tar.gz";
-      EXPECT_FALSE( exporter.exportBundle( baseSelection(
-                    US_DataPub::ScopeNoise ), bundle, error ) );
-      EXPECT_FALSE( QFile::exists( bundle ) );
-      EXPECT_TRUE( error.contains( QDir::toNativeSeparators( copy ) ) )
+      ASSERT_TRUE( exporter.exportBundle( baseSelection(
+                   US_DataPub::ScopeNoise ), bundle, error ) )
          << error.toStdString();
-      EXPECT_TRUE( error.contains( QDir::toNativeSeparators( runDir() ) ) )
-         << error.toStdString();
+      EXPECT_TRUE( QFile::exists( bundle ) );
+      EXPECT_TRUE( exporter.manifest().contains( US_DataPub::Model,
+                                                 modelGUID ) );
 
+      QString warned = exporter.warnings().join( "\n" );
+      EXPECT_TRUE( warned.contains( QDir::toNativeSeparators( copy ) ) )
+         << warned.toStdString();
+      EXPECT_TRUE( warned.contains( "is ignored" ) ) << warned.toStdString();
+
+      ASSERT_TRUE( QFile::remove( bundle ) );
       ASSERT_TRUE( QDir( copy ).removeRecursively() );
    }
+}
 
-   // Without the copies the run is exported as ever
+/* When no directory is named after the run, which of them is the run
+   cannot be told: a named run is refused with a message naming every
+   directory, and nothing is written.
+*/
+TEST_F( DataPubExport, ARunInDirectoriesNoneNamedAfterItIsRefused )
+{
+   QString own   = runDir();
+   QString moved = US_Settings::resultDir() + "/demo_run_moved";
+   QString copy  = US_Settings::resultDir() + "/Backup_demo_run";
+   ASSERT_TRUE( copy_dir_as_is( own, copy ) );
+   ASSERT_TRUE( QDir().rename( own, moved ) );
+
+   US_DataPubCatalog      catalog;
+   US_DataPubCatalog::Run run;
+   QString                error;
+   bool                   unusable = false;
+   ASSERT_TRUE( catalog.open( false, QString(), error ) );
+   EXPECT_FALSE( catalog.runByID( runID, run, error, &unusable ) );
+   EXPECT_TRUE( unusable );
+
    US_DataPubExporter exporter;
-   QString            error;
-   EXPECT_TRUE( exporter.previewManifest( baseSelection(
+   QString            bundle = root + "/ambiguous.tar.gz";
+   EXPECT_FALSE( exporter.exportBundle( baseSelection(
+                 US_DataPub::ScopeNoise ), bundle, error ) );
+   EXPECT_FALSE( QFile::exists( bundle ) );
+   EXPECT_TRUE( error.contains( QDir::toNativeSeparators( copy ) ) )
+      << error.toStdString();
+   EXPECT_TRUE( error.contains( QDir::toNativeSeparators( moved ) ) )
+      << error.toStdString();
+   EXPECT_TRUE( error.contains( "none is named after it" ) )
+      << error.toStdString();
+
+   // Named after the run again, it is exported, and the copy ignored
+   ASSERT_TRUE( QDir().rename( moved, own ) );
+   US_DataPubExporter again;
+   EXPECT_TRUE( again.previewManifest( baseSelection(
                 US_DataPub::ScopeNoise ), error ) ) << error.toStdString();
 }
 
-/* In a project export such a run is left out with a warning that names
-   the directories, and the rest of the project is exported.
+/* In a project export the run is exported from its own directory, and the
+   copy beside it is ignored with a warning that names it.  Round 7 left
+   the whole run out.
 */
-TEST_F( DataPubExportTwoRuns, AProjectExportLeavesOutARunHeldInTwoDirectories )
+TEST_F( DataPubExportTwoRuns, AProjectExportReadsTheRunNotItsCopy )
 {
    addRun( "demo_run2" );
    QString copy = US_Settings::resultDir() + "/Backup_demo_run";
    ASSERT_TRUE( copy_dir_as_is( runDir(), copy ) );
+   ASSERT_TRUE( spoil_auc_files( copy ) );
 
    US_DataPubExporter            exporter;
    US_DataPubExporter::Selection selection;
@@ -3808,15 +3877,16 @@ TEST_F( DataPubExportTwoRuns, AProjectExportLeavesOutARunHeldInTwoDirectories )
       << exporter.log().join( "\n" ).toStdString();
 
    const US_DataPubManifest& mani = exporter.manifest();
-   EXPECT_EQ( mani.count( US_DataPub::Experiment ), 1 );
+   EXPECT_EQ( mani.count( US_DataPub::Experiment ), 2 );
+   EXPECT_TRUE( mani.contains( US_DataPub::Experiment, expGUID1 ) );
    EXPECT_TRUE( mani.contains( US_DataPub::Experiment, expGUID2 ) );
-   EXPECT_FALSE( mani.contains( US_DataPub::Model, modelGUID ) );
-   EXPECT_EQ( exporter.leftOutRuns(), QStringList() << runID1 );
+   EXPECT_TRUE( mani.contains( US_DataPub::Model, modelGUID ) );
+   EXPECT_TRUE( exporter.leftOutRuns().isEmpty() );
 
    QString warned = exporter.warnings().join( "\n" );
    EXPECT_TRUE( warned.contains( QDir::toNativeSeparators( copy ) ) )
       << warned.toStdString();
-   EXPECT_EQ( warned.count( "run(s) of the project are left out" ), 1 )
+   EXPECT_EQ( warned.count( "run(s) of the project are left out" ), 0 )
       << warned.toStdString();
 }
 

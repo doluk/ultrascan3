@@ -396,12 +396,19 @@ void US_DataPubExportPane::select_runs( void )
    for ( int ii = 0; ii < runIDs.size(); ii++ )
    {
       US_DataPubCatalog::Run run;
+      QStringList            copies;
 
-      if ( ! catalog.runByID( runIDs[ ii ], run, error ) )
+      if ( ! catalog.runByID( runIDs[ ii ], run, error, nullptr, &copies ) )
       {
          te_status->append( error );
          continue;
       }
+
+      for ( int jj = 0; jj < copies.size(); jj++ )
+         te_status->append( tr( "Warning: %1 holds a copy of run %2 and is"
+                                " ignored; the run is %3" )
+                            .arg( copies[ jj ] ).arg( run.runID )
+                            .arg( QDir::toNativeSeparators( run.dirPath ) ) );
 
       if ( ! catalog.loadRunDetails( run, error ) )
       {

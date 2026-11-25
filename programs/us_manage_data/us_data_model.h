@@ -130,8 +130,11 @@ class US_DataModel : public QObject
 
                 //! True when an upload or a download for this run would
                 //! write somewhere else than where the run already is: its
-                //! local directory is not named after it, or is not the only
-                //! directory holding it.  Names are compared as the local
+                //! local directory is not named after it (a copy of a run,
+                //! \ref copyOf, is one such).  Another directory holding the
+                //! same run ID beside it does not make the run unsafe: the
+                //! directory named after the run is the run, and the other
+                //! is a copy.  Names are compared as the local
                 //! catalog compares them (US_DataCatalog::fileNameCase).  A
                 //! directory that also holds files of another run is safe
                 //! for the run it is named after -- what is written for that
@@ -139,6 +142,18 @@ class US_DataModel : public QObject
                 //! does not have.  Both actions are refused for such a run,
                 //! and \ref problem then always says why.
                 bool      unsafe;
+
+                //! For a local directory that holds a copy of a run whose
+                //! own directory -- the one named after the run -- is there
+                //! too (US_DataCatalog::Run::copyOf): the path of that
+                //! directory.  Such a copy is never the run: it is listed as
+                //! an experiment of its own, never paired with the
+                //! database's experiment, marked \ref unsafe, and \ref
+                //! problem names the run's directory.  Nothing is uploaded,
+                //! downloaded or removed for it: its edits share their GUIDs
+                //! with the run's, so its models and noise are the run's
+                //! own files.  Empty for every other experiment.
+                QString   copyOf;
 
                 //! What is wrong with the run, when either source says it
                 //! should not be acted on as it is (US_DataCatalog::Run::
@@ -622,7 +637,9 @@ class US_DataModel : public QObject
         //! Detected once, after the scan, across every experiment.  Rows
         //! are duplicates when one source holds the GUID more than once; a
         //! database row and a local row with the same GUID are two copies
-        //! of one record, not two records.
+        //! of one record, not two records.  The rows of a copy of a run
+        //! (RunEntry::copyOf) are left out: they hold the run's GUIDs by
+        //! nature, and the copy is reported as a problem of its own.
         QList< Duplicate > find_duplicates( void ) const;
 
         //! \brief The sync state of a record

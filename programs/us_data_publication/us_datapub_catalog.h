@@ -185,25 +185,31 @@ class US_DataPubCatalog
       /*! \brief Look up one run by its run identifier
 
           A local store can hold a run ID in more than one directory: a
-          "Copy of ..." or "Backup_..." directory made by hand holds the
-          same files under the same names.  Which of them is the run cannot
-          be told, so the catalog marks every one of them as not usable
-          (Run::usable), and so does a run whose directory is not named
-          after it.  The one run that is usable among those of the run ID
-          is the one found; when there is none, or more than one, the run
-          is refused with a message naming every directory, and
-          \a unusable says that it is the run that is at fault, not the
-          source.
+          "Copy of ...", "Backup_..." or "..._old" directory made by hand
+          holds the same files under the same names.  The directory named
+          after the run ID is the run; the catalog marks the others as
+          copies of it (Run::copyOf) and as not usable, and they are never
+          taken for the run: the run is found, and \a copies names them so
+          that the caller can warn about them.  When no directory is named
+          after the run ID, which one is the run cannot be told: every one
+          is not usable, and the run is refused with a message naming every
+          directory.  A run whose directory is not named after it, or whose
+          own directory is not usable, is refused too, and \a unusable then
+          says that it is the run that is at fault, not the source.
           \param runID    The run identifier to look for
           \param found    Filled in with the run header when it was found
           \param error    Filled in with a message when the scan fails or
                           the run cannot be used
           \param unusable When given, set to true when the run is there but
                           is not one to act on
+          \param copies   When given, filled in with the directories (native
+                          separators, sorted) that hold copies of the run
+                          found and were ignored
           \returns True when exactly one usable run has the run ID
       */
       bool runByID( const QString& runID, Run& found, QString& error,
-                    bool* unusable = nullptr );
+                    bool* unusable = nullptr,
+                    QStringList* copies = nullptr );
 
       //! \brief Fill in the raw-data triples and edits of a run
       //!

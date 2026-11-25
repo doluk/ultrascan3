@@ -19,7 +19,8 @@ class US_DataProcess : public QObject
         {
             NO_PARENT  = 3062,  //!< The parent is not where the record goes
             UNSAFE_RUN = 3065,  //!< The run is marked "(!)"; see
-                                //!< US_DataModel::RunEntry::unsafe
+                                //!< US_DataModel::RunEntry::unsafe and
+                                //!< US_DataModel::RunEntry::copyOf
             IN_SYNC    = 3070   //!< Not an error: a DB replace found the
                                 //!< database already holds the file
         };
@@ -73,7 +74,8 @@ class US_DataProcess : public QObject
 
         /*! \brief Remove a record from the database
 
-            The database removes what hangs off the record with it.
+            The database removes what hangs off the record with it.  Refused
+            (\ref UNSAFE_RUN) for a record of a copy of a run.
 
             An edit is removed in a transaction.  A patched
             delete_editedData removes with it all noise recorded against it,
@@ -129,6 +131,10 @@ class US_DataProcess : public QObject
         bool connection_lost( void ) const { return conn_lost; }
 
         //! \brief Remove a record from local storage
+        //!
+        //! Refused (\ref UNSAFE_RUN) for a record of a copy of a run
+        //! (US_DataModel::RunEntry::copyOf): its models and noise are the
+        //! run's own files.
         //! \param recordID ID of the record to be removed
         //! \return Status code of the operation
         int record_remove_local( int recordID );
@@ -163,6 +169,11 @@ class US_DataProcess : public QObject
         //! \brief True, with the error message set, when the run of a
         //!        record is one nothing may be written for
         bool unsafe_run( int row );
+
+        //! \brief True, with the error message set, when a record belongs
+        //!        to a copy of a run (US_DataModel::RunEntry::copyOf):
+        //!        nothing is uploaded, downloaded or removed for it
+        bool copy_run  ( int row );
 
         //! \brief Whether the two copies of a record hold the same thing
         //!

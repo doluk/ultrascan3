@@ -1222,10 +1222,13 @@ bool US_DataPubExporter::gatherRuns( const Selection& selection,
 
       US_DataPubCatalog::Run run;
       bool                   unusable = false;
+      QStringList            copies;
 
-      // A run the catalog says not to act on -- a run directory copied by
-      // hand holds the same run ID -- is never read in place of the run
-      if ( ! catalog.runByID( runIDs[ ii ], run, error, &unusable ) )
+      // A run the catalog says not to act on is never exported, and a run
+      // directory copied by hand is never read in place of the run: the
+      // directory named after the run is the run, and a copy beside it is
+      // ignored with a warning
+      if ( ! catalog.runByID( runIDs[ ii ], run, error, &unusable, &copies ) )
       {
          if ( ! unusable  ||  ! fromProject )  return false;
 
@@ -1236,6 +1239,13 @@ bool US_DataPubExporter::gatherRuns( const Selection& selection,
          skipped++;
          continue;
       }
+
+      for ( int jj = 0; jj < copies.size(); jj++ )
+         warn( tr( "run \"%1\" is read from %2; %3 holds a copy of it and"
+                   " is ignored" )
+               .arg( run.runID )
+               .arg( QDir::toNativeSeparators( run.dirPath ) )
+               .arg( copies[ jj ] ) );
 
       if ( ! catalog.loadRunDetails( run, error ) )         return false;
 

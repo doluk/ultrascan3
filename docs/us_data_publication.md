@@ -492,14 +492,17 @@ command line exits with `1`, when
 
 * there would be nothing in the bundle;
 * a run named on its own is one the catalog marks as not to be acted on
-  (`US_DataCatalog::Run::usable`): above all, a run ID the local results
-  directory holds in more than one directory — a `Copy of …` or `Backup_…`
-  directory made by hand holds the same files under the same names. Which of
-  them is the run cannot be told, so the export does not pick one: it fails
-  with a message naming every directory, and says to keep only the one named
-  after the run. (It used to read whichever directory the catalog listed
-  first.) When exactly one of the directories of a run ID is usable, that one
-  is the run, wherever it sorts;
+  (`US_DataCatalog::Run::usable`): a run ID UltraScan no longer accepts, a
+  directory not named after its run, or a run ID the local results directory
+  holds in more than one directory none of which is named after it. A
+  `Copy of …`, `Backup_…` or `…_old` directory made by hand holds the same
+  files under the same names: when the directory named after the run is
+  there, it is the run, wherever it sorts, and the others are copies of it
+  (`US_DataCatalog::Run::copyOf`), never read, and named in a warning. When
+  none is named after the run, which of them is the run cannot be told, so
+  the export does not pick one: it fails with a message naming every
+  directory. (The export once read whichever directory the catalog listed
+  first; round 7 refused the run as long as any copy was there);
 * a run, raw data, edit, model or noise GUID it was asked for by name matches
   nothing (`--model-guid`, `--noise-guid`, or the selection of the window);
 * a run belongs to a project other than the one `--project-id` /
@@ -556,8 +559,10 @@ centerpiece the run names that the source does not have, a time state
 without its field definitions, a payload that does not carry
 the GUID the catalog lists it under, an experiment XML that names another run
 ID or GUID than the run (a run directory renamed by hand), an experiment XML
-that is missing or is not XML, a run ID held in more than one directory (the
-warning names them), a spectrum or
+that is missing or is not XML, a run ID held in more than one directory none
+of which is named after it (the warning names them; with a directory named
+after the run that one is exported, and the copies are named in a warning), a
+spectrum or
 other value that is not a finite number, or an experiment, raw data or edit
 that another run of the export already brought into the bundle (a run
 directory copied under another name, GUIDs and all: the run that comes
