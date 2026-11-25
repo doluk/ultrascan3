@@ -3063,6 +3063,55 @@ TEST_F( DataPubOrder, ImportedModelsFollowTheFilesAlreadyThere )
               scenario.latest() );
 }
 
+/* A disk store whose file numbers have gaps filled after removals
+   (DataPubGapScenario), through a bundle into another store: the target's
+   last model file with noise is the source's, and every model borrows what
+   it did, with no warning.  The import used to chain the models by their
+   file numbers, read the filled gaps as a contradiction and drop all the
+   borrowing of the edit. */
+TEST_F( DataPubOrder, AStoreWithFilledGapsKeepsItsLatestModelAndBorrowing )
+{
+   DataPubGapScenario scenario;
+   scenario.write( US_Settings::dataDir() + "/models",
+                   US_Settings::dataDir() + "/noises", runID, editGUID,
+                   noiseGUID );
+
+   QString            error;
+   QString            bundle = exportStore( "gaps" );
+   US_DataPubImporter probe;
+   ASSERT_TRUE( probe.inspect( bundle, error ) ) << error.toStdString();
+   ASSERT_EQ( DataPubBorrowScenario::text(
+                 DataPubBorrowScenario::borrowers( probe.manifest() ) ),
+              DataPubBorrowScenario::text( scenario.expected() ) );
+
+   for ( bool reversed : { false, true } )
+   {
+      SCOPED_TRACE( reversed ? "listed as a database lists them" : "as is" );
+      QString from = bundle;
+
+      if ( reversed )
+      {
+         from = datapubRecraft( bundle, root + "/gaps_reversed.tar.gz",
+                []( US_DataPubManifest& m, const QString& )
+                { datapubAsDatabaseExport( m, true, false ); }, error );
+         ASSERT_FALSE( from.isEmpty() ) << error.toStdString();
+      }
+
+      QString            store = root + ( reversed ? "/gaps_r" : "/gaps_t" );
+      US_DataPubImporter importer;
+      ASSERT_TRUE( importInto( from, store, importer, error ) )
+         << error.toStdString();
+      EXPECT_TRUE( orderProblems( importer ).isEmpty() )
+         << orderProblems( importer ).join( "\n" ).toStdString();
+
+      EXPECT_EQ( DataPubNoiseRules::latestModelOnDisk( store + "/data",
+                                                       editGUID ),
+                 scenario.latest() );
+      EXPECT_EQ( DataPubBorrowScenario::text( borrowersIn( store ) ),
+                 DataPubBorrowScenario::text( scenario.expected() ) );
+   }
+}
+
 namespace
 {
    US_DataPubEntity order_model( const QString& guid, const QString& edit,
@@ -3159,8 +3208,10 @@ TEST( DataPubWriteOrder, ModelsKeepTheSourcesIdOrder )
 /* What a bundle's borrowing cannot keep is said, never dropped: a borrower
    of another edit (a catalog lends a model only the noise of its own
    edit), one that is not in the bundle, one named for two records of a
-   type, and borrowing that contradicts the source's order -- which is then
-   left out, and the source's order kept. */
+   type, and borrowing that contradicts the rest -- of which only the
+   borrowing of the model that closes the circle is left out.  A model that
+   borrows is placed by what it borrows, not by its ID or file number: one
+   made before the model of the record it borrows is no contradiction. */
 TEST( DataPubWriteOrder, BorrowingThatCannotBeKeptIsSaid )
 {
    US_DataPubManifest mani;
@@ -3193,22 +3244,459 @@ TEST( DataPubWriteOrder, BorrowingThatCannotBeKeptIsSaid )
    said  = problems.join( "\n" );
    EXPECT_TRUE( said.contains( "two ti noise records" ) ) << said.toStdString();
 
-   // y borrows n2 but was made (index 2) before n2's model (index 3): no
-   // order keeps both, and the models keep theirs
+   // y borrows n2 but was made (index 2) before n2's model (index 3): a
+   // model that borrows is placed by what it borrows, not by its index --
+   // there is no contradiction, and no warning
+   US_DataPubManifest late;
+   late.source = "disk";
+   late.add( order_model( "a",  "e1", 1, QString() ) );
+   late.add( order_model( "y",  "e1", 2, QString() ) );
+   late.add( order_model( "c",  "e1", 3, QString() ) );
+   late.add( order_noise( "n1", "a", "ti", 1, QString() ) );
+   late.add( order_noise( "n2", "c", "ti", 2, QString(), "y" ) );
+
+   order = US_DataPubImporter::writeOrder( late, problems );
+   EXPECT_TRUE( problems.isEmpty() ) << problems.join( "\n" ).toStdString();
+   ASSERT_EQ( order.size(), 1 );
+   EXPECT_EQ( order_guids( order[ 0 ] ).join( " " ),
+              QString( "a n1 c n2 y" ) );
+
+   // A real contradiction: x borrows t1 and r2, y borrows t2 and r1 -- x
+   // has to come before t2 and after r2, y after t2 and before r2.  Only
+   // y, the later of the two, is left out; z, which borrows t1 and r1,
+   // keeps its place, and so does x.
    US_DataPubManifest clash;
    clash.source = "disk";
-   clash.add( order_model( "a",  "e1", 1, QString() ) );
-   clash.add( order_model( "y",  "e1", 2, QString() ) );
-   clash.add( order_model( "c",  "e1", 3, QString() ) );
-   clash.add( order_noise( "n1", "a", "ti", 1, QString() ) );
-   clash.add( order_noise( "n2", "c", "ti", 2, QString(), "y" ) );
+   clash.add( order_model( "ma", "e1", 1, QString() ) );
+   clash.add( order_model( "mb", "e1", 2, QString() ) );
+   clash.add( order_model( "mc", "e1", 3, QString() ) );
+   clash.add( order_model( "md", "e1", 4, QString() ) );
+   clash.add( order_model( "x",  "e1", 5, QString() ) );
+   clash.add( order_model( "y",  "e1", 6, QString() ) );
+   clash.add( order_model( "z",  "e1", 7, QString() ) );
+   clash.add( order_noise( "t1", "ma", "ti", 1, QString(), "x z" ) );
+   clash.add( order_noise( "t2", "mb", "ti", 2, QString(), "y" ) );
+   clash.add( order_noise( "r1", "mc", "ri", 3, QString(), "y z" ) );
+   clash.add( order_noise( "r2", "md", "ri", 4, QString(), "x" ) );
 
    order = US_DataPubImporter::writeOrder( clash, problems );
    said  = problems.join( "\n" );
-   EXPECT_TRUE( said.contains( "contradicts" ) ) << said.toStdString();
+   ASSERT_EQ( problems.size(), 1 ) << said.toStdString();
+   EXPECT_TRUE( said.contains( "contradicts" )  &&
+                said.contains( "model y " ) ) << said.toStdString();
    ASSERT_EQ( order.size(), 1 );
-   EXPECT_EQ( order_guids( order[ 0 ] ).join( " " ),
-              QString( "a n1 y c n2" ) );
+
+   QStringList at = order_guids( order[ 0 ] );
+   ASSERT_EQ( at.size(), 11 );
+   EXPECT_LT( at.indexOf( "t1" ), at.indexOf( "x" ) );
+   EXPECT_LT( at.indexOf( "r2" ), at.indexOf( "x" ) );
+   EXPECT_LT( at.indexOf( "x"  ), at.indexOf( "t2" ) );
+   EXPECT_LT( at.indexOf( "t1" ), at.indexOf( "z" ) );
+   EXPECT_LT( at.indexOf( "r1" ), at.indexOf( "z" ) );
+   EXPECT_LT( at.indexOf( "z"  ), at.indexOf( "t2" ) );
+   EXPECT_LT( at.indexOf( "z"  ), at.indexOf( "r2" ) );
+}
+
+namespace
+{
+   /* A source's history as rows: what an export of it carries, and what a
+      target written in writeOrder()'s order makes of it, through the
+      catalog's rule (noiseBefore()) and count_noise()'s. */
+   class OrderHistory
+   {
+      public:
+         class Row
+         {
+            public:
+               QString guid;
+               QString edit;
+               QString model;           // a noise record's
+               QString type;            // a noise record's
+               QString desc;            // a model's
+               QString request;         // a Monte Carlo model's
+               qint64  index = 0;       // ID or file number
+               qint64  when  = 0;       // seconds
+         };
+
+         QString      source = "db";
+         QList< Row > models;
+         QList< Row > noises;
+
+         static QString guid( int id )
+         {
+            return QString( "aaaaaaaa-0000-4000-8000-%1" )
+                   .arg( id, 12, 10, QChar( '0' ) );
+         }
+
+         static QString stamp( qint64 when )
+         {
+            return QDateTime::fromSecsSinceEpoch( when, Qt::UTC )
+                   .toString( "yyyy-MM-dd hh:mm:ss" ) + " UTC";
+         }
+
+         bool fitted( const QString& model ) const
+         {
+            for ( const Row& noise : noises )
+               if ( noise.model == model )  return true;
+
+            return false;
+         }
+
+         // noise GUID -> its borrowers, sorted, by the catalog's rule over
+         // noise rows of the given IDs (-1: none, as on disk) and times
+         QMap< QString, QString > borrowing(
+               const QHash< QString, qint64 >& ids,
+               const QHash< QString, qint64 >& times ) const
+         {
+            QMap< QString, QStringList > by;
+
+            for ( const Row& model : models )
+            {
+               if ( fitted( model.guid ) )  continue;
+
+               QList< US_DataCatalog::Noise > rows;
+
+               for ( const Row& noise : noises )
+               {
+                  if ( noise.edit != model.edit )  continue;
+
+                  US_DataCatalog::Noise row;
+                  row.guid        = noise.guid;
+                  row.id          = QString::number( ids.value( noise.guid,
+                                                                -1 ) );
+                  row.noiseType   = noise.type;
+                  row.lastUpdated = stamp( times.value( noise.guid ) );
+                  rows << row;
+               }
+
+               for ( const US_DataCatalog::Noise& noise :
+                     US_DataPubCatalog::noiseBefore(
+                        rows, stamp( times.value( model.guid ) ) ) )
+                  by[ noise.guid ] << model.guid;
+            }
+
+            QMap< QString, QString > map;
+
+            for ( const Row& noise : noises )
+            {
+               QStringList names = by.value( noise.guid );
+               std::sort( names.begin(), names.end() );
+               map.insert( noise.guid, names.join( " " ) );
+            }
+
+            return map;
+         }
+
+         // The source's own borrowing
+         QMap< QString, QString > sourceBorrowing( void ) const
+         {
+            QHash< QString, qint64 > ids;
+            QHash< QString, qint64 > times;
+
+            for ( const Row& row : models + noises )
+            {
+               ids  .insert( row.guid, source == "db" ? row.index : -1 );
+               times.insert( row.guid, row.when );
+            }
+
+            return borrowing( ids, times );
+         }
+
+         // count_noise()'s model of an edit, the models with noise given in
+         // the order of their IDs or files: a Monte Carlo request counts
+         // once (the lowest ID in a database, the first file on disk); the
+         // last one there is
+         QString latest( const QString& edit, const QStringList& inOrder ) const
+         {
+            QStringList requests;
+            QString     last;
+
+            for ( const QString& guid : inOrder )
+            {
+               const Row* model = nullptr;
+
+               for ( const Row& row : models )
+                  if ( row.guid == guid )  model = &row;
+
+               if ( model == nullptr  ||  model->edit != edit  ||
+                    ! fitted( guid ) )
+                  continue;
+
+               if ( ! model->request.isEmpty() )
+               {
+                  if ( requests.contains( model->request ) )  continue;
+                  requests << model->request;
+               }
+
+               last = guid;
+            }
+
+            return last;
+         }
+
+         QStringList edits( void ) const
+         {
+            QStringList list;
+
+            for ( const Row& row : models )
+               if ( ! list.contains( row.edit ) )  list << row.edit;
+
+            return list;
+         }
+
+         QString sourceLatest( const QString& edit ) const
+         {
+            QList< Row > sorted = models;
+            std::sort( sorted.begin(), sorted.end(),
+                       []( const Row& aa, const Row& bb )
+                       { return aa.index < bb.index; } );
+            QStringList guids;
+
+            for ( const Row& row : sorted )  guids << row.guid;
+
+            return latest( edit, guids );
+         }
+
+         // The manifest an export of the source writes: newest first from a
+         // database, by file from a disk; with the borrowing it names
+         US_DataPubManifest manifest( void ) const
+         {
+            US_DataPubManifest       mani;
+            QMap< QString, QString > lent = sourceBorrowing();
+            mani.source = source;
+
+            QList< Row > ms = models;
+            QList< Row > ns = noises;
+            auto byIndex = [ & ]( const Row& aa, const Row& bb )
+            {
+               return source == "db" ? aa.index > bb.index
+                                     : aa.index < bb.index;
+            };
+            std::sort( ms.begin(), ms.end(), byIndex );
+            std::sort( ns.begin(), ns.end(), byIndex );
+
+            for ( const Row& row : ms )
+            {
+               US_DataPubEntity model( US_DataPub::Model );
+               model.guid = row.guid;
+               model.name = row.desc;
+               model.setDepend( US_DataPub::EditedData, row.edit );
+               model.attrs.insert( "sourceIndex",
+                                   QString::number( row.index ) );
+               model.attrs.insert( "sourceLastUpdated", QDateTime::
+                                   fromSecsSinceEpoch( row.when, Qt::UTC )
+                                   .toString( Qt::ISODate ) );
+               mani.add( model );
+            }
+
+            for ( const Row& row : ns )
+            {
+               US_DataPubEntity noise( US_DataPub::Noise );
+               noise.guid = row.guid;
+               noise.setDepend( US_DataPub::Model, row.model );
+               noise.attrs.insert( "noiseType", row.type + "_noise" );
+               noise.attrs.insert( "sourceIndex",
+                                   QString::number( row.index ) );
+               noise.attrs.insert( "sourceLastUpdated", QDateTime::
+                                   fromSecsSinceEpoch( row.when, Qt::UTC )
+                                   .toString( Qt::ISODate ) );
+
+               if ( ! lent.value( row.guid ).isEmpty() )
+                  noise.attrs.insert( "borrowedByModelGUIDs",
+                                      lent.value( row.guid ) );
+
+               mani.add( noise );
+            }
+
+            return mani;
+         }
+
+         /* A target written in the order: each record a second after the
+            one before, a database's IDs (and a disk's file numbers) in
+            the order written.  Compared with the source per edit, as text
+            a failed comparison shows. */
+         std::string compare( const QList< QList<
+                                 US_DataPubImporter::OrderStep > >& order ) const
+         {
+            QHash< QString, qint64 > ids;
+            QHash< QString, qint64 > times;
+            QHash< QString, QStringList > written;    // edit -> models
+            qint64                   tick = 1000000;
+
+            for ( const QList< US_DataPubImporter::OrderStep >& steps : order )
+               for ( const US_DataPubImporter::OrderStep& step : steps )
+               {
+                  ids  .insert( step.entity.guid,
+                                source == "db" ? tick : -1 );
+                  times.insert( step.entity.guid, tick++ );
+
+                  if ( ! step.isNoise )
+                     written[ step.editGUID ] << step.entity.guid;
+               }
+
+            QStringList lines;
+
+            for ( const QString& edit : edits() )
+            {
+               QString want = sourceLatest( edit );
+               QString got  = latest( edit, written.value( edit ) );
+
+               if ( want != got )
+                  lines << "edit " + edit + ": latest " + got + ", source "
+                           + want;
+            }
+
+            QMap< QString, QString > want = sourceBorrowing();
+            QMap< QString, QString > got  = borrowing( ids, times );
+
+            for ( auto it = want.constBegin(); it != want.constEnd(); ++it )
+               if ( got.value( it.key() ) != it.value() )
+                  lines << "noise " + it.key() + ": [" + got.value( it.key() )
+                           + "], source [" + it.value() + "]";
+
+            return lines.join( "\n" ).toStdString();
+         }
+   };
+
+   /* The review's crafted history: two edits, models with ti and ri noise,
+      a Monte Carlo request, three models that borrow, ties to the second;
+      "updated": model 301 renamed later, so dated after 306. */
+   OrderHistory crafted_history( bool updated )
+   {
+      OrderHistory history;
+      QDateTime    day( QDate( 2026, 1, 1 ), QTime( 0, 0 ), Qt::UTC );
+      auto at = [ & ]( const QString& hms )
+      {
+         return day.addSecs( QTime( 0, 0 ).secsTo(
+                   QTime::fromString( hms, "hh:mm:ss" ) ) ).toSecsSinceEpoch();
+      };
+
+      struct M { int id; int edit; const char* time; const char* desc;
+                 const char* request; };
+      struct N { int id; int model; int edit; const char* type;
+                 const char* time; };
+
+      const M models[] = {
+         { 300, 200, "10:00:00", "MWL_demo_run.1A280.2dsa.model", "" },
+         { 301, 200, updated ? "10:50:00" : "10:05:00",
+                          "MWL_demo_run.1A280.e1-2DSA.model", "" },
+         { 302, 200, "10:10:00", "MWL_demo_run.1A280.e2-2DSA-IT.model", "" },
+         { 303, 200, "10:20:00", "MWL_demo_run.1A280.e3-GA.model", "" },
+         { 304, 200, "10:30:00", "MWL_demo_run.1A280.e4-2DSA-MC_r1_mc0001.model", "r1" },
+         { 305, 200, "10:30:00", "MWL_demo_run.1A280.e4-2DSA-MC_r1_mc0002.model", "r1" },
+         { 306, 200, "10:40:00", "MWL_demo_run.1A280.e5-PCSA.model", "" },
+         { 310, 201, "09:00:00", "MWL_demo_run.1A280.f1-2DSA.model", "" },
+         { 311, 201, "09:30:00", "MWL_demo_run.1A280.f2-GA.model", "" },
+         { 312, 201, "10:15:00", "MWL_demo_run.1A280.f3-2DSA.model", "" } };
+      const N noises[] = {
+         { 400, 300, 200, "ti", "10:00:00" },
+         { 401, 302, 200, "ti", "10:11:00" }, { 402, 302, 200, "ri", "10:11:00" },
+         { 403, 304, 200, "ti", "10:31:00" }, { 405, 305, 200, "ti", "10:31:00" },
+         { 410, 310, 201, "ri", "09:01:00" }, { 411, 312, 201, "ti", "10:15:30" } };
+
+      for ( const M& m : models )
+      {
+         OrderHistory::Row row;
+         row.guid    = OrderHistory::guid( m.id );
+         row.edit    = OrderHistory::guid( m.edit );
+         row.desc    = m.desc;
+         row.request = m.request;
+         row.index   = m.id;
+         row.when    = at( m.time );
+         history.models << row;
+      }
+
+      for ( const N& n : noises )
+      {
+         OrderHistory::Row row;
+         row.guid  = OrderHistory::guid( n.id );
+         row.edit  = OrderHistory::guid( n.edit );
+         row.model = OrderHistory::guid( n.model );
+         row.type  = n.type;
+         row.index = n.id;
+         row.when  = at( n.time );
+         history.noises << row;
+      }
+
+      return history;
+   }
+}
+
+/* The review's crafted history -- also with a model whose time stamp moved
+   on a later update, so that its ID no longer follows its time -- and a
+   disk store whose file numbers have gaps filled after removals: written
+   in writeOrder()'s order, a target keeps count_noise()'s model of every
+   edit and every model's borrowing, with no warning.  The import used to
+   chain every model by its ID or file number, took the moved time stamp or
+   the filled gap for a contradiction, and dropped all the borrowing of the
+   edit. */
+TEST( DataPubWriteOrder, ABorrowerIsPlacedByWhatItBorrowsAlone )
+{
+   for ( bool updated : { false, true } )
+   {
+      SCOPED_TRACE( updated ? "a model updated later" : "the crafted history" );
+      OrderHistory history = crafted_history( updated );
+
+      if ( updated )
+      {  // The update makes 301 borrow other records than before
+         EXPECT_NE( history.sourceBorrowing(),
+                    crafted_history( false ).sourceBorrowing() );
+      }
+
+      QStringList problems;
+      QList< QList< US_DataPubImporter::OrderStep > > order =
+            US_DataPubImporter::writeOrder( history.manifest(), problems );
+
+      EXPECT_TRUE( problems.isEmpty() ) << problems.join( "\n" ).toStdString();
+      EXPECT_EQ( order.size(), 2 );
+      EXPECT_EQ( history.compare( order ), std::string() );
+   }
+
+   // On disk: files numbered as get_filename() numbers them, the first gap
+   // first.  Models 1, 11, 12, 13 have noise; 5 and 2 filled gaps later and
+   // borrow; noise file 3 filled a gap too.
+   OrderHistory gaps;
+   gaps.source = "disk";
+   QDateTime t0( QDate( 2026, 1, 1 ), QTime( 10, 0 ), Qt::UTC );
+   struct G { int file; int seconds; };
+   const G models[] = { { 1, 0 }, { 11, 10 }, { 12, 20 }, { 5, 30 },
+                        { 13, 40 }, { 2, 50 } };
+   const int  fittedTo[] = { 1, 11, 12, 13 };
+   const char* types[]   = { "ti", "ri", "ti", "ti" };
+   const int  noiseFile[] = { 1, 11, 12, 3 };
+
+   for ( const G& g : models )
+   {
+      OrderHistory::Row row;
+      row.guid  = OrderHistory::guid( 1000 + g.file );
+      row.edit  = OrderHistory::guid( 200 );
+      row.desc  = QString( "gap.1A280.m%1.model" ).arg( g.file );
+      row.index = g.file;
+      row.when  = t0.addSecs( g.seconds ).toSecsSinceEpoch();
+      gaps.models << row;
+   }
+
+   for ( int ii = 0; ii < 4; ii++ )
+   {
+      OrderHistory::Row row;
+      row.guid  = OrderHistory::guid( 2000 + noiseFile[ ii ] );
+      row.edit  = OrderHistory::guid( 200 );
+      row.model = OrderHistory::guid( 1000 + fittedTo[ ii ] );
+      row.type  = types[ ii ];
+      row.index = noiseFile[ ii ];
+
+      for ( const OrderHistory::Row& model : gaps.models )
+         if ( model.guid == row.model )  row.when = model.when;
+
+      gaps.noises << row;
+   }
+
+   QStringList problems;
+   QList< QList< US_DataPubImporter::OrderStep > > order =
+         US_DataPubImporter::writeOrder( gaps.manifest(), problems );
+
+   EXPECT_TRUE( problems.isEmpty() ) << problems.join( "\n" ).toStdString();
+   EXPECT_EQ( gaps.compare( order ), std::string() );
 }
 
 /* The catalog's time stamps are UTC, and are read as UTC: in a time zone

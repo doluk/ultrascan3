@@ -1083,33 +1083,43 @@ that order only in its IDs, its file names and its time stamps:
   cannot be kept.
 
 The target stores no borrowing relation, so the import writes **all** models
-and noise records of an edit in the source's order
+and noise records of an edit in an order that keeps both rules
 (`US_DataPubImporter::writeOrder()`):
 
-- The models keep the source's order among themselves, and so do the noise
-  records. An export says it: each model and noise record carries
-  `sourceIndex` (its database ID, or the number of its file: `M0000012.xml` is
-  12) and `sourceLastUpdated` (its time stamp, UTC, ISO 8601, e.g.
-  `2024-05-01T10:05:00Z`). A bundle of an older export has no such attributes;
-  its records go by the manifest's `modelID` / `noiseID` when it came from a
-  database (`source: "db"`), by the number in its `filename` when it came from
-  disk, and failing those by the manifest's order — which a database export
-  lists newest first, so it is taken backwards there.
-- A noise record comes after the model it was fitted to. A model that
-  borrows (`borrowedByModelGUIDs`, or an older bundle's `borrowedByModelGUID`)
-  comes after the record of each type it borrows and before the next record
-  of that type; a model without noise of its own that no record names comes
-  before every noise record of its edit.
+- **The models with noise** keep the source's order among themselves — that
+  order is all `count_noise()` reads. An export says it: each model and noise
+  record carries `sourceIndex` (its database ID, or the number of its file:
+  `M0000012.xml` is 12) and `sourceLastUpdated` (its time stamp, UTC, ISO
+  8601, e.g. `2024-05-01T10:05:00Z`). A bundle of an older export has no such
+  attributes; its records go by the manifest's `modelID` / `noiseID` when it
+  came from a database (`source: "db"`), by the number in its `filename` when
+  it came from disk, and failing those by the manifest's order — which a
+  database export lists newest first, so it is taken backwards there.
+- **The noise records of each type** (`ti`, `ri`) keep the source's time
+  order (`sourceLastUpdated`), a tie to the second broken as the catalog
+  breaks it: the higher ID in a database source, the higher GUID on disk.
+  Without time stamps they keep the source's order like the models.
+- A noise record comes after the model it was fitted to.
+- **A model without noise of its own** is in no chain: neither rule reads its
+  ID or file number. It comes after the record of each type it borrows
+  (`borrowedByModelGUIDs`, or an older bundle's `borrowedByModelGUID`) and
+  before the next record of that type; for a type it borrows none of, before
+  the first.
 - Within that, the source's time stamps decide (a noise record first on a
   tie); without them each noise record goes as early as it can.
 
-Any order that honours these keeps both rules, and as they only join two
-chains (the models, the noise records) there always is one unless the
-bundle's borrowing contradicts its own order. That, a model named for two
-records of a type, and a borrower of another edit or not in the bundle are
-each said in a warning before anything is written — in the dry run as in the
-import — and the borrowing concerned is left out of the order; the order of
-the models and noise records stays the source's.
+A source whose IDs or file numbers do not follow its time stamps is common —
+`US_Model::get_filename()` gives a new file the first gap a removal left, and
+a model updated later keeps its ID but gets a new `lastUpdated` — and it is
+written as it is: only the models with noise keep their ID or file order, and
+a model that borrows goes by its time alone. These constraints can only go
+round in a circle when what the bundle says is borrowed contradicts its own
+time stamps (every circle passes through a model that borrows). Then the
+models that borrow are taken in the source's order and one whose borrowing
+would close a circle is left out — only that model, the rest of the edit's
+borrowing is kept. That, a model named for two records of a type, and a
+borrower of another edit or not in the bundle are each said in a warning
+before anything is written — in the dry run as in the import.
 
 A disk import gives each model and noise file the number after the highest
 in the directory, never one of a gap: a file in a gap would count as older

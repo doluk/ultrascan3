@@ -14,6 +14,8 @@
 #include "us_datapub_export.h"
 
 #include <functional>
+#include <set>
+#include <tuple>
 #include <QElapsedTimer>
 #include <QThread>
 
@@ -4507,15 +4509,25 @@ bool US_DataPubImporter::runImport( const Options& options, QString& error )
 /* The order the models and noise records of a bundle are written in; see
    the header.
 
-   Per edit, the models form one chain and the noise records another, each
-   in the source's order.  The edges between them are the noise record
-   after the model it was fitted to and the borrowing the bundle names.
-   Any order that honours the edges keeps both what the analysis programs
-   load (the order of the models) and what every model borrows; of those,
-   the one closest to the source's time stamps is taken.  As the edges
-   only run along two chains and between them, the choice at each step is
-   between the two chains' next records, and a bundle whose edges form no
-   circle always has one.
+   What a target has to reproduce, per edit, is what two rules read:
+   - US_LoadableNoise::count_noise() takes the latest of the models that
+     have noise (the highest ID in a database, the last file on disk): the
+     models with noise form one chain, in the source's order;
+   - a catalog lends a model without noise of its own, of each noise type,
+     the latest record dated no later than the model
+     (US_DataPubCatalog::noiseBefore()): the records of each type form a
+     chain in the source's time order, and a model that borrows only has
+     to come after the record it borrows and before the next one of that
+     type.
+   A model that borrows is in no chain: its file number or ID decides
+   nothing either rule reads, and chaining it (as the import did) made a
+   source whose file numbers or IDs do not follow its time stamps -- a disk
+   store's gap filled by US_Model::get_filename(), a model updated later --
+   look like a contradiction.  These edges cannot go round in a circle
+   unless what the bundle says is borrowed contradicts its time stamps
+   (every circle passes through a model that borrows); then the models
+   that borrow are taken in the source's order and one whose edges would
+   close a circle is left out -- only it, and said.
 */
 QList< QList< US_DataPubImporter::OrderStep > >
 US_DataPubImporter::writeOrder( const US_DataPubManifest& manifest,
@@ -4559,7 +4571,20 @@ US_DataPubImporter::writeOrder( const US_DataPubManifest& manifest,
       if ( ! edits.contains( noiseEdit( noises[ ii ] ) ) )
          edits << noiseEdit( noises[ ii ] );
 
-   // The records of one chain in the source's order: by one kind of key
+   // A database export's ID of a record: sourceIndex, else the manifest's
+   // modelID or noiseID; -1 for none
+   auto sourceId = [ & ]( const US_DataPubEntity& entity ) -> qint64
+   {
+      bool   ok    = false;
+      qint64 index = entity.attrs.value( "sourceIndex" ).toLongLong( &ok );
+
+      if ( ok  &&  index > 0 )  return index;
+
+      index = entity.id.toLongLong( &ok );
+      return ( ok  &&  index > 0 ) ? index : -1;
+   };
+
+   // The records of one list in the source's order: by one kind of key
    // all of them have -- sourceIndex, a database export's ID, a disk
    // export's file number -- else by the manifest's order, which a
    // database export lists newest first
@@ -4643,14 +4668,16 @@ US_DataPubImporter::writeOrder( const US_DataPubManifest& manifest,
       mlist = chain( mlist, mpos );
       nlist = chain( nlist, npos );
 
-      // The nodes: the models, then the noise records, each chain in order
+      // The nodes: the models, then the noise records, each in the
+      // source's order
       int                       nm = mlist.size();
       int                       nn = nlist.size();
       QVector< OrderStep >      node( nm + nn );
       QVector< qint64 >         when( nm + nn, 0 );
+      QVector< bool >           hasWhen( nm + nn, false );
       bool                      dated = true;
       QHash< QString, int >     modelAt;
-      QStringList               types;               // in chain order
+      QStringList               types;               // in source order
       QHash< QString, QList< int > > ofType;         // type -> noise nodes
 
       for ( int ii = 0; ii < nm + nn; ii++ )
@@ -4664,9 +4691,11 @@ US_DataPubImporter::writeOrder( const US_DataPubManifest& manifest,
          node[ ii ].noiseType = isNoise ? noiseType( entity ) : QString();
          node[ ii ].borrows   = ! isNoise  &&  ! fitted.contains( entity.guid );
 
-         if ( ! US_DataPub::utcStampSeconds(
-                    entity.attrs.value( "sourceLastUpdated" ), when[ ii ] ) )
-            dated = false;
+         hasWhen[ ii ] = US_DataPub::utcStampSeconds(
+                            entity.attrs.value( "sourceLastUpdated" ),
+                            when[ ii ] );
+
+         if ( ! hasWhen[ ii ] )  dated = false;
 
          if ( isNoise )
          {
@@ -4681,13 +4710,52 @@ US_DataPubImporter::writeOrder( const US_DataPubManifest& manifest,
             modelAt.insert( entity.guid, ii );
       }
 
+      // Each type's records in the source's time order, a tie to the
+      // second going as a catalog breaks it (noiseBefore()): the higher
+      // ID of a database is the later, on disk the higher GUID; a type
+      // with a record that carries no time stamp keeps the source's order
+      for ( const QString& type : types )
+      {
+         QList< int >& list  = ofType[ type ];
+         bool          timed = true;
+
+         for ( int ii : list )
+            if ( ! hasWhen[ ii ] )  timed = false;
+
+         if ( ! timed )  continue;
+
+         std::stable_sort( list.begin(), list.end(), [ & ]( int aa, int bb )
+         {
+            if ( when[ aa ] != when[ bb ] )  return when[ aa ] < when[ bb ];
+
+            qint64 ida = fromDb ? sourceId( node[ aa ].entity ) : -1;
+            qint64 idb = fromDb ? sourceId( node[ bb ].entity ) : -1;
+
+            if ( ida > 0  &&  idb > 0  &&  ida != idb )  return ida < idb;
+
+            return node[ aa ].entity.guid < node[ bb ].entity.guid;
+         } );
+      }
+
       // ---- the edges ------------------------------------------------------
       QVector< QList< int > > chainNext( nm + nn );   // chains and fits
-      QVector< QList< int > > borrowNext( nm + nn );  // borrowing
 
-      for ( int ii = 0; ii + 1 < nm; ii++ )  chainNext[ ii ] << ii + 1;
+      for ( int ii = 0, last = -1; ii < nm; ii++ )
+      {
+         if ( node[ ii ].borrows )  continue;
 
-      for ( int ii = nm; ii + 1 < nm + nn; ii++ )  chainNext[ ii ] << ii + 1;
+         if ( last >= 0 )  chainNext[ last ] << ii;
+
+         last = ii;
+      }
+
+      for ( const QString& type : types )
+      {
+         const QList< int >& list = ofType.value( type );
+
+         for ( int ii = 0; ii + 1 < list.size(); ii++ )
+            chainNext[ list[ ii ] ] << list[ ii + 1 ];
+      }
 
       for ( int ii = nm; ii < nm + nn; ii++ )
       {
@@ -4756,9 +4824,17 @@ US_DataPubImporter::writeOrder( const US_DataPubManifest& manifest,
          }
       }
 
+      // A model that borrows comes after the record it borrows of each
+      // type and before the next one of that type -- before the first, for
+      // a type it borrows none of
+      QVector< QList< QPair< int, int > > > borrowEdges( nm );
+      QList< int >                          borrowers;
+
       for ( int mm = 0; mm < nm; mm++ )
       {
          if ( ! node[ mm ].borrows )  continue;
+
+         borrowers << mm;
 
          for ( const QString& type : types )
          {
@@ -4766,63 +4842,79 @@ US_DataPubImporter::writeOrder( const US_DataPubManifest& manifest,
             int                 want = wants.value( mm ).value( type, -1 );
             int                 at   = list.indexOf( want );
 
-            if ( want >= 0 )  borrowNext[ want ] << mm;
+            if ( want >= 0 )  borrowEdges[ mm ] << qMakePair( want, mm );
 
-            // Before the next record of the type: the first, for none
-            if ( at + 1 < list.size() )  borrowNext[ mm ] << list[ at + 1 ];
+            if ( at + 1 < list.size() )
+               borrowEdges[ mm ] << qMakePair( mm, list[ at + 1 ] );
          }
       }
 
-      // ---- the order: the next record of either chain whose edges allow it
-      auto place = [ & ]( bool borrowing, QList< OrderStep >& steps )
+      // ---- the order: of the records whose edges allow it, the source's
+      // earliest; a noise record first on a tie, or for a bundle without
+      // time stamps, then the source's order
+      auto place = [ & ]( const QSet< int >& kept, QList< OrderStep >& steps )
       {
-         QVector< int > needs( nm + nn, 0 );
+         QVector< QList< int > > next  = chainNext;
+         QVector< int >          needs( nm + nn, 0 );
+
+         for ( int mm : kept )
+            for ( const QPair< int, int >& edge : borrowEdges[ mm ] )
+               next[ edge.first ] << edge.second;
 
          for ( int ii = 0; ii < nm + nn; ii++ )
+            for ( int to : next[ ii ] )  needs[ to ]++;
+
+         typedef std::tuple< qint64, int, int > Key;   // time, kind, place
+         std::set< Key > ready;
+
+         auto keyOf = [ & ]( int ii ) -> Key
          {
-            for ( int next : chainNext[ ii ] )  needs[ next ]++;
+            return Key( dated ? when[ ii ] : 0, node[ ii ].isNoise ? 0 : 1,
+                        ii );
+         };
 
-            if ( borrowing )
-               for ( int next : borrowNext[ ii ] )  needs[ next ]++;
-         }
-
-         int mnext = 0;                 // the next model of the chain
-         int nnext = nm;                // the next noise record
+         for ( int ii = 0; ii < nm + nn; ii++ )
+            if ( needs[ ii ] == 0 )  ready.insert( keyOf( ii ) );
 
          steps.clear();
 
-         while ( mnext < nm  ||  nnext < nm + nn )
+         while ( ! ready.empty() )
          {
-            bool mok = ( mnext < nm       &&  needs[ mnext ] == 0 );
-            bool nok = ( nnext < nm + nn  &&  needs[ nnext ] == 0 );
-
-            if ( ! mok  &&  ! nok )  return false;
-
-            // A model only where it is the earlier of the two
-            bool model = mok  &&
-                         ( ! nok  ||
-                           ( dated  &&  when[ mnext ] < when[ nnext ] ) );
-            int  pick  = model ? mnext++ : nnext++;
-
+            int pick = std::get< 2 >( *ready.begin() );
+            ready.erase( ready.begin() );
             steps << node[ pick ];
 
-            for ( int next : chainNext[ pick ] )  needs[ next ]--;
-
-            if ( borrowing )
-               for ( int next : borrowNext[ pick ] )  needs[ next ]--;
+            for ( int to : next[ pick ] )
+               if ( --needs[ to ] == 0 )  ready.insert( keyOf( to ) );
          }
 
-         return true;
+         return steps.size() == nm + nn;
       };
 
       QList< OrderStep > steps;
+      QSet< int >        kept( borrowers.begin(), borrowers.end() );
 
-      if ( ! place( true, steps ) )
+      if ( ! place( kept, steps ) )
       {
-         problems << tr( "what the models of edit %1 borrow contradicts the"
-                         " order the source made its models and noise"
-                         " records in, so it is not kept" ).arg( edit );
-         place( false, steps );
+         // Some borrowing contradicts the rest: the models that borrow are
+         // kept in the source's order, each as long as the order stays
+         kept.clear();
+
+         for ( int mm : borrowers )
+         {
+            kept << mm;
+
+            if ( place( kept, steps ) )  continue;
+
+            kept.remove( mm );
+            problems << tr( "what the model %1 of edit %2 borrows"
+                            " contradicts the order the source made its"
+                            " noise records in and what the other models of"
+                            " the edit borrow, so it is not kept" )
+                        .arg( node[ mm ].entity.guid ).arg( edit );
+         }
+
+         place( kept, steps );
       }
 
       order << steps;

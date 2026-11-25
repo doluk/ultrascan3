@@ -409,26 +409,33 @@ class US_DataPubImporter : public QObject
           -- with the target's clock moved on where two records have to be
           dated apart -- a target keeps both.
 
-          - The models of an edit keep the source's order among themselves,
-            and so do its noise records: the source's ID or file number
-            (sourceIndex; else the manifest's modelID/noiseID of a database
-            export or the number of a disk export's file name), else the
-            manifest's order -- which a database export lists newest first.
-          - A noise record comes after the model it was fitted to; a model
-            that borrows (borrowedByModelGUIDs, or an older bundle's
-            borrowedByModelGUID) comes after the record it borrows of each
-            type and before the next record of that type, and one no record
-            names comes before every noise record of its edit.
-          - Within that, the source's time stamps (sourceLastUpdated) decide,
-            a noise record going first on a tie; a bundle without them puts
-            each noise record as early as it can.
+          - The models of an edit that have noise keep the source's order
+            among themselves -- the source's ID or file number
+            (sourceIndex; else the manifest's modelID of a database export
+            or the number of a disk export's file name), else the
+            manifest's order, which a database export lists newest first.
+            That order is all count_noise() reads.
+          - The noise records of each type keep the source's time order
+            (sourceLastUpdated; a tie to the second goes to the higher
+            database ID, on disk to the higher GUID, as noiseBefore()
+            breaks it), else the source's order like the models.
+          - A noise record comes after the model it was fitted to.
+          - A model without noise of its own is in no chain: it comes after
+            the record it borrows of each type (borrowedByModelGUIDs, or an
+            older bundle's borrowedByModelGUID) and before the next record
+            of that type -- before the first, for a type it borrows none
+            of.
+          - Within that, the source's time stamps decide, a noise record
+            going first on a tie; a bundle without them puts each noise
+            record as early as it can.
 
           \param manifest The manifest of the bundle
           \param problems Filled in with what the bundle's borrowing cannot
                           keep: a borrower named in another edit, a model
-                          named for two records of a type, or borrowing
-                          that contradicts the source's order (then left
-                          out of the order of that edit)
+                          named for two records of a type, or a model
+                          whose borrowing contradicts the source's order
+                          and the rest of the borrowing (only that model's
+                          borrowing is then left out of the order)
           \returns The steps of each edit, in the order of the edits'
                    first appearance in the bundle
       */
