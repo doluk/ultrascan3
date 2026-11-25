@@ -5096,3 +5096,49 @@ TEST_F( DataPubExport, AFailureAfterACancelKeepsItsMessage )
    EXPECT_TRUE( cancelled.wasCancelled() );
    EXPECT_TRUE( error.contains( "cancelled" ) ) << error.toStdString();
 }
+
+namespace
+{
+   // Translates the shared catalog's warning about a copied run directory
+   class CopyWarningTranslator : public QTranslator
+   {
+      public:
+         QString translate( const char* context, const char* source,
+                            const char* = nullptr, int = -1 ) const override
+         {
+            if ( QString( context ) == "US_DataCatalog"  &&
+                 QString( source ).startsWith( "Warning: %1 holds a copy" ) )
+               return QString( "Achtung: %1 ist eine Kopie des Laufs %2;"
+                               " der Lauf ist %3" );
+
+            return QString();
+         }
+
+         bool isEmpty() const override { return false; }
+   };
+}
+
+/* The shared catalog's warnings about copies of run directories are known
+   in a translation as well: they are its own text, in its own context, not
+   the exporter's "Warning: ".  The copies of the runs exported are warned
+   about by the export; the catalog's warning is not noted besides.
+*/
+TEST_F( DataPubExport, TheCatalogsCopyWarningIsKnownInATranslation )
+{
+   QString copy = US_Settings::resultDir() + "/Backup_demo_run";
+   ASSERT_TRUE( copy_dir_as_is( runDir(), copy ) );
+
+   CopyWarningTranslator translator;
+   ASSERT_TRUE( QCoreApplication::installTranslator( &translator ) );
+
+   US_DataPubExporter exporter;
+   QString            error;
+   bool ok = exporter.previewManifest( baseSelection( US_DataPub::ScopeNoise ),
+                                       error );
+   QCoreApplication::removeTranslator( &translator );
+
+   ASSERT_TRUE( ok ) << error.toStdString();
+   QString log = exporter.log().join( "\n" );
+   EXPECT_FALSE( log.contains( "Achtung" ) ) << log.toStdString();
+   EXPECT_TRUE( exporter.warnings().join( "\n" ).contains( "is ignored" ) );
+}

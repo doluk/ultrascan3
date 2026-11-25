@@ -289,9 +289,16 @@ US_DataPubExporter::US_DataPubExporter( QObject* parent ) : QObject( parent )
    // indexing a local store can take a while -- is part of the progress.
    // Its warnings are about copies of run directories anywhere in the
    // store; those of the runs exported are warned about by gatherRuns().
-   catalog.setMessageHandler( [ this ]( const QString& text )
+   // Those are known by the start of the shared catalog's own text, as
+   // it translates it.
+   const QString copyWarning = US_DataCatalog::tr(
+         "Warning: %1 holds a copy of run %2 and is"
+         " ignored; the run is %3" ).section( "%1", 0, 0 );
+
+   catalog.setMessageHandler( [ this, copyWarning ]( const QString& text )
                               {
-                                 if ( ! text.startsWith( tr( "Warning: " ) ) )
+                                 if ( copyWarning.isEmpty()  ||
+                                      ! text.startsWith( copyWarning ) )
                                     note( text );
                               } );
 }

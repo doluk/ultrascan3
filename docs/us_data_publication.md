@@ -681,9 +681,22 @@ respond and a **Cancel** pressed is seen when the step is done.
   reads of one run's records (a few queries), and the listing of the
   database's experiments (one query), are not interrupted;
 * while the records are staged: before each record;
+* while the bundle is packed: once the archive is written, before each file
+  is compared, and before the bundle is put in place — nothing is written
+  to the bundle's path;
 * when it was pressed just before the export started: the export then stops
   before it reads anything. Once an export or preview has ended, a Cancel
   of it no longer counts, and the next one starts afresh.
+
+An export that stops for the Cancel says "The export was cancelled; no
+bundle was written". One that fails for a reason of its own after the
+Cancel was pressed — a run it cannot export, a database error — says that
+reason, and is reported as failed, not cancelled.
+
+The catalog's warnings about copies of run directories anywhere in the
+local store are not repeated in the status log; those about the runs
+exported are warnings of the export. They are known by the catalog's own
+text in the language the program runs in.
 
 A failed preview says "The export would fail: …" with the
 reason and the warnings. The window's completion box (and the preview, and the box of
