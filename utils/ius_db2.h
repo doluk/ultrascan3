@@ -112,14 +112,17 @@ public:
         On false the transaction is still treated as open, so the caller rolls
         it back.  If the connection was lost during the commit, \p error says
         that whether the commit took effect is unknown.  If it was lost
-        before the COMMIT was sent, \p error says that the server rolled the
-        transaction back, as it does with any transaction whose connection
-        ends, so nothing written in it was kept.  If the transaction had
-        already ended otherwise, the commit is refused, since a COMMIT then
-        would succeed without committing anything.  \p error names a
-        deadlock when the client saw one, and otherwise says only that some
-        rows may have been kept: a procedure that caught the deadlock or
-        rolled back itself looks the same as an implicit commit.
+        before the COMMIT was sent while the transaction was still open,
+        \p error says that the server rolled the transaction back, as it
+        does with any transaction whose connection ends, so nothing written
+        in it was kept.  If the transaction had already ended otherwise, the
+        commit is refused, since a COMMIT then would succeed without
+        committing anything.  \p error names a deadlock when the client saw
+        one, and otherwise says only that some rows may have been kept: a
+        procedure that caught the deadlock or rolled back itself looks the
+        same as an implicit commit.  This holds also when the connection was
+        lost afterwards: the end is noted from the server status of each
+        statement that succeeded, and what ran after it autocommitted.
 
         \param error Set to the reason when the commit fails, cleared otherwise.
         \return true if the commit took effect; false if there was no open
@@ -135,11 +138,13 @@ public:
         \return true if everything written since the begin was undone; false if
                  there was no open transaction, the rollback failed, or the
                  transaction had already ended.  \p error then says that
-                 the server rolled the transaction back when the connection
-                 was lost (nothing was kept); that whether the commit took
-                 effect is unknown when it was lost during the commit; names
-                 a deadlock when the client saw one; and otherwise says only
-                 that some rows may have been kept.
+                 whether the commit took effect is unknown when the
+                 connection was lost during the commit; names a deadlock
+                 when the client saw one; says that the server rolled the
+                 transaction back when the connection was lost while it
+                 was still open (nothing was kept); and otherwise -- an
+                 implicit commit, lost connection or not -- says only that
+                 some rows may have been kept.
     */
     virtual bool                 rollbackTransaction( QString& error ) = 0;
 
@@ -183,8 +188,11 @@ public:
         text of lastError() does.  A procedure the server does not have is
         ER_SP_DOES_NOT_EXIST (1305), for example.  It is the statement the
         caller asked for that counts: the follow-up reads of the US3 status
-        a query makes do not change it.  Implementations without a server
-        answer 0.
+        a query makes do not change it.  Every statement a caller sends sets
+        it -- rawQuery(), query(), statusQuery(), functionQuery(),
+        writeBlobToDB(), readBlobFromDB() -- and a new connection clears it,
+        so after a reconnect lastErrorIsConnectionLoss() is false again.
+        Implementations without a server answer 0.
     */
     virtual int lastServerErrno() { return 0; }
 

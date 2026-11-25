@@ -24,7 +24,9 @@
 
 #include "us_db2.h"
 
+#include <QFile>
 #include <QString>
+#include <QTemporaryDir>
 
 #include <chrono>
 #include <memory>
@@ -384,6 +386,131 @@ TEST_F( US_DB2_LiveTransaction, StatusQueryKeepsTheServersReasonForARefusedCall 
    EXPECT_EQ( first->lastErrno(), IUS_DB2::DBERROR );
    EXPECT_TRUE( first->lastError().contains( silentProcedure ) ) << first->lastError().toStdString();
    EXPECT_NE( first->lastError(), earlier );
+}
+
+// A transaction that ended before the connection was lost -- an implicit
+// commit, here ANALYZE TABLE -- kept what it wrote, and what ran after it
+// autocommitted.  The loss must not be reported as "nothing was kept".
+TEST_F( US_DB2_LiveTransaction, ALostConnectionAfterAnImplicitCommitSaysRowsMayHaveBeenKept )
+{
+   enum Notice { AtCommit, AtRollback, AtStatement };
+   for ( Notice notice : { AtCommit, AtRollback, AtStatement } )
+   {
+      SCOPED_TRACE( "noticed " + std::to_string( int( notice ) ) );
+      first->rawQuery( QString( "UPDATE %1 SET v = 0" ).arg( table ) );
+
+      const LiveDb live = liveDb();
+      US_DB2       lost;
+      QString      error;
+      ASSERT_TRUE( lost.connect( live.host, live.name, live.user, live.password, error ) ) << error.toStdString();
+
+      ASSERT_TRUE( lost.beginTransaction( error ) ) << error.toStdString();
+      lost.rawQuery( QString( "UPDATE %1 SET v = 7 WHERE id = 1" ).arg( table ) );
+      lost.rawQuery( QString( "ANALYZE TABLE %1" ).arg( table ) );
+      lost.rawQuery( QString( "UPDATE %1 SET v = 8 WHERE id = 2" ).arg( table ) );
+      ASSERT_FALSE( lost.lastError().startsWith( "MySQL error" ) ) << lost.lastError().toStdString();
+      const QString id = scalar( lost, "SELECT CONNECTION_ID()" );
+
+      second->rawQuery( "KILL " + id );
+      ASSERT_FALSE( second->lastError().startsWith( "MySQL error" ) ) << second->lastError().toStdString();
+
+      if ( notice == AtStatement )
+      {
+         lost.query( "SELECT 41 + 1" );
+         EXPECT_FALSE( lost.isConnected() );
+      }
+
+      if ( notice != AtRollback )
+      {
+         EXPECT_FALSE( lost.commitTransaction( error ) );
+         EXPECT_EQ( error, QObject::tr( US_DB2::transactionEndedMessage ) ) << error.toStdString();
+      }
+
+      EXPECT_FALSE( lost.rollbackTransaction( error ) );
+      EXPECT_EQ( error, QObject::tr( US_DB2::transactionEndedMessage ) ) << error.toStdString();
+      EXPECT_FALSE( lost.transactionActive() );
+
+      // And they were kept: the row before the commit and the one after it
+      EXPECT_EQ( scalar( *second, QString( "SELECT v FROM %1 WHERE id = 1" ).arg( table ) ), "7" );
+      EXPECT_EQ( scalar( *second, QString( "SELECT v FROM %1 WHERE id = 2" ).arg( table ) ), "8" );
+   }
+}
+
+// A deadlock, then a lost connection: the deadlock rolled the transaction
+// back, which the message says, rather than the loss
+TEST_F( US_DB2_LiveTransaction, ALostConnectionAfterADeadlockNamesTheDeadlock )
+{
+   US_DB2*       victim = deadlock();
+   const QString id     = scalar( *victim, "SELECT CONNECTION_ID()" );
+   ASSERT_FALSE( id.isEmpty() );
+
+   const LiveDb live = liveDb();
+   US_DB2       killer;
+   QString      error;
+   ASSERT_TRUE( killer.connect( live.host, live.name, live.user, live.password, error ) ) << error.toStdString();
+   killer.rawQuery( "KILL " + id );
+   ASSERT_FALSE( killer.lastError().startsWith( "MySQL error" ) ) << killer.lastError().toStdString();
+
+   victim->query( "SELECT 41 + 1" );
+   EXPECT_FALSE( victim->isConnected() );
+
+   EXPECT_FALSE( victim->commitTransaction( error ) );
+   EXPECT_EQ( error, QObject::tr( US_DB2::serverRollbackMessage ) ) << error.toStdString();
+   EXPECT_FALSE( victim->rollbackTransaction( error ) );
+   EXPECT_EQ( error, QObject::tr( US_DB2::serverRollbackMessage ) ) << error.toStdString();
+
+   EXPECT_TRUE( survivor( victim )->commitTransaction( error ) ) << error.toStdString();
+}
+
+// The error of the last statement belongs to that connection: a new one
+// starts without it, so lastErrorIsConnectionLoss() no longer says the
+// connection is gone
+TEST_F( US_DB2_LiveTransaction, AReconnectClearsTheLostConnectionError )
+{
+   const LiveDb live = liveDb();
+   US_DB2       db;
+   QString      error;
+   ASSERT_TRUE( db.connect( live.host, live.name, live.user, live.password, error ) ) << error.toStdString();
+   const QString id = scalar( db, "SELECT CONNECTION_ID()" );
+
+   second->rawQuery( "KILL " + id );
+   db.query( "SELECT 41 + 1" );
+   ASSERT_FALSE( db.isConnected() );
+   ASSERT_TRUE( db.lastErrorIsConnectionLoss() ) << db.lastServerErrno();
+
+   ASSERT_TRUE( db.connect( live.host, live.name, live.user, live.password, error ) ) << error.toStdString();
+   EXPECT_EQ( db.lastServerErrno(), 0 );
+   EXPECT_FALSE( db.lastErrorIsConnectionLoss() );
+}
+
+// rawQuery() and writeBlobToDB() say how the server refused a statement, as
+// query() and statusQuery() do, and a statement it accepted clears it
+TEST_F( US_DB2_LiveTransaction, RawQueryAndWriteBlobSetTheServerError )
+{
+   first->rawQuery( "SELECT * FROM us3_test_no_such_table" );
+   EXPECT_EQ( first->lastServerErrno(), 1146 );   // ER_NO_SUCH_TABLE
+   first->rawQuery( "SELECT 1" );
+   EXPECT_EQ( first->lastServerErrno(), 0 );
+
+   QTemporaryDir dir;
+   ASSERT_TRUE( dir.isValid() );
+   const QString path = dir.filePath( "blob.bin" );
+   QFile         file( path );
+   ASSERT_TRUE( file.open( QIODevice::WriteOnly ) );
+   file.write( "some bytes" );
+   file.close();
+
+   EXPECT_EQ( first->writeBlobToDB( path, "us3_test_no_such_procedure", 1 ), IUS_DB2::DBERROR );
+   EXPECT_EQ( first->lastServerErrno(), 1305 );   // ER_SP_DOES_NOT_EXIST
+
+   // A connection lost before the blob went out says so too
+   const LiveDb live = liveDb();
+   US_DB2       db;
+   QString      error;
+   ASSERT_TRUE( db.connect( live.host, live.name, live.user, live.password, error ) ) << error.toStdString();
+   second->rawQuery( "KILL " + scalar( db, "SELECT CONNECTION_ID()" ) );
+   EXPECT_EQ( db.writeBlobToDB( path, "us3_test_no_such_procedure", 1 ), IUS_DB2::DBERROR );
+   EXPECT_TRUE( db.lastErrorIsConnectionLoss() ) << db.lastServerErrno() << " " << db.lastError().toStdString();
 }
 #endif
 } // namespace

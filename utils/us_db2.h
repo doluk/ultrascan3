@@ -593,6 +593,10 @@ public:
     bool       inTransaction        = false;
     //! A deadlock in the open transaction, after which the server rolled it back.
     bool       rolledBackByDeadlock = false;
+    //! A statement of the open transaction succeeded with the server no
+    //! longer in a transaction: something -- a COMMIT in a procedure, DDL, a
+    //! rollback by the server -- ended it, and later statements autocommitted
+    bool       serverEndedTransaction = false;
     //! What commitTransaction() said when the connection was lost during
     //! the COMMIT, so that whether it took effect is unknown; empty otherwise
     QString    lostCommitError;
@@ -639,6 +643,18 @@ public:
     //!        Call while the error is still current.
     void           noteConnectionLoss();
 
+    //! \brief Records \ref serverEndedTransaction when the last statement
+    //!        succeeded and its status shows no transaction while one is
+    //!        open.  The status of a failed statement is not read: an error
+    //!        packet carries none, and a lost connection leaves whatever the
+    //!        library had.
+    void           noteTransactionStatus();
+
+    //! \brief The public rawQuery() without setting lastServerErrno(): for
+    //!        the follow-up reads a query makes after its own statement
+    //! \returns False when the statement was refused before it was sent
+    bool           sendStatement( const QString& sqlQuery );
+
     //! \brief Before a connect: a handle whose connection was lost is
     //!        replaced by a fresh one
     void           resetLostHandle();
@@ -656,9 +672,13 @@ public:
     //! \brief The server's max_allowed_packet, or 0 when it cannot be read
     qint64         maxAllowedPacket();
 
-    //! \brief Why the transaction ended before commit or rollback: a lost
-    //!        connection (the server rolled it back), the deadlock if one was
-    //!        recorded, otherwise that rows may have been kept.
+    //! \brief Why the transaction ended before commit or rollback.  A
+    //!        connection lost during the COMMIT: the outcome is unknown.  A
+    //!        deadlock recorded: the server rolled it back.  Any other end
+    //!        seen on a successful statement (an implicit commit): rows may
+    //!        have been kept, whether or not the connection was lost later.
+    //!        Otherwise a lost connection: the server rolled it back; or,
+    //!        connection still there, that rows may have been kept.
     QString        transactionEndedText() const;
 
     //! \brief "MySQL error: " and the error of the last statement, led by
