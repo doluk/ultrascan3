@@ -1072,3 +1072,31 @@ TEST_F( TestUSDataDbLive, ModelAndNoiseRemovalsAreCommitted )
    inv->query( QString( "RELEASE SAVEPOINT us3_manage_data_check" ) );
    EXPECT_EQ( inv->lastServerErrno(), 1305 ) << inv->lastError().toStdString();
 }
+
+/* The GMP guard fails closed: the connection is lost (the test kills its
+   own connection) before a model is removed, so the guard's question is
+   not answered.  Nothing is removed or tried, and the user is told that it
+   could not be checked, and to open the window again.
+*/
+TEST_F( TestUSDataDbLive, AGmpCheckThatCannotBeAnsweredRemovesNothing )
+{
+   Edit ed;
+   newEdit( ed, false );
+   if ( HasFatalFailure() )   return;
+
+   Win win( inv, runID );
+   ASSERT_GE( rowOf( win.model, ed.modelG ), 0 );
+
+   QString conn = connectionId( inv );
+   ASSERT_FALSE( conn.isEmpty() );
+   ASSERT_EQ( killConnection( conn ).toStdString(), std::string() );
+
+   EXPECT_EQ( win.remove( ed.modelG ), (int)US_DataTree::ACT_REFUSED );
+   ASSERT_FALSE( win.prompts.isEmpty() );
+   EXPECT_TRUE( win.prompts.last().contains( "could not be checked" ) )
+      << win.prompts.last().toStdString();
+   EXPECT_TRUE( win.prompts.last().contains( "close it and open it again" ) )
+      << win.prompts.last().toStdString();
+   EXPECT_EQ( present( "get_model_info", ed.modelID, IUS_DB2::NO_MODEL ), 1 );
+   EXPECT_TRUE( win.inDb( ed.modelG ) );
+}

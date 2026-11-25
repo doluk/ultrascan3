@@ -174,6 +174,8 @@ namespace
          QStringList              autoflowModels;   // model IDs GMP made
          QSet< QString >          commitsInside;    // writes that end the
                                                     // client's transaction
+         std::function< void( const QString& ) > during; // run as each
+                                                    // procedure is called
          QStringList              statements;       // plain statements
          QString                  statementLoss;    // a plain statement
                                                     // starting so loses
@@ -278,8 +280,10 @@ namespace
                .WillByDefault( Invoke( [ this ]( const QStringList& q )
                {
                   calls << q.value( 0 );
-                  if ( lost )  return int( IUS_DB2::DBERROR );
-                  return autoflowRuns.contains( q.value( 1 ) ) ? 1 : autoflow;
+                  if ( during )  during( q.value( 0 ) );
+                  if ( fails( q.value( 0 ) ) )  return int( IUS_DB2::DBERROR );
+                  current.status = autoflowRuns.contains( q.value( 1 ) ) ? 1 : autoflow;
+                  return current.status;
                } ) );
             ON_CALL( db, readBlobFromDB( _, _, _ ) )
                .WillByDefault( Invoke( [ this ]( const QString& path,
@@ -541,6 +545,7 @@ namespace
          {
             const QString name = q.value( 0 );
             calls << name;
+            if ( during )  during( name );
             lastArgs[ name ] = q.mid( 1 );
 
             if ( fails( name ) )   return;
@@ -636,6 +641,8 @@ namespace
          {
             const QString     name = q.value( 0 );
             const QStringList a    = q.mid( 1 );
+
+            if ( during )  during( name );
 
             // delete_model's first statements -- the model's noise, its
             // modelPerson row -- are done before a failure at the model
@@ -4619,4 +4626,273 @@ TEST_F( TestUSDataDb, AListingDroppedForAnotherInvestigatorIsNotShown )
    model.scan_data();
    EXPECT_FALSE( model.listing_dropped() );
    EXPECT_NE( stateOf( model, editG ) & US_DataModel::REC_DB, 0 );
+}
+
+// ------------------------------------------------------------ actions that stop part-way
+
+// Removing from both places: a database removal that fails is reported
+// with what the local removals that failed said -- one message does not
+// replace the other
+TEST_F( TestUSDataDb, LocalRemovalErrorsAreReportedWithFailedDatabaseRemovals )
+{
+   QString model2 = US_Util::new_guid();
+   QString path2  = US_Settings::dataDir() + "/models/M0000002.xml";
+   writeModel( path2, model2, editG, runA + ".1A280.e2401011200_a2_2DSA_i01.model" );
+   server.models << FModel{ "32", model2, runA + ".1A280.e2401011200_a2_2DSA_i01.model",
+                            editG, "21", textOf( path2 ) };
+   server.digest[ model2 ] = US_Util::md5sum_file( path2 );
+   server.transient[ "delete_model" ] = 1;      // the first one waits too long
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   // the local files are gone behind the window's back
+   ASSERT_TRUE( QFile::remove( modelPath ) );
+   ASSERT_TRUE( QFile::remove( path2 ) );
+
+   win.tw.clearSelection();
+   for ( const QString& guid : { modelG, model2 } )
+      itemOfRow( win.tw, rowOf( model, guid ) )->setSelected( true );
+
+   EXPECT_NE( win.tree.act_on_selection( "both DB and Local", "DB+Local remove" ), 0 );
+   EXPECT_EQ( server.models.size(), 1 );         // one of the two removed
+
+   QString error = win.proc.lastError();
+   EXPECT_TRUE( error.contains( "was not removed from the database" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "lock wait timeout" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "attempt to remove non-existent file" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "Removing from local disk failed" ) ) << error.toStdString();
+}
+
+// Another investigator selected while the question before removing all of
+// a stand-in was asked: nothing is done
+TEST_F( TestUSDataDb, AnInvestigatorChangedDuringAQuestionStopsTheAction )
+{
+   server.models << FModel{ "51", US_Util::new_guid(), "G.global.e1_a1_2DSA-GL_i01.model", "", "", "" };
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   int glbs = standIn( model, true );
+   ASSERT_GE( glbs, 0 );
+   win.select( win.tw.topLevelItem( glbs ) );
+
+   win.tree.setPrompter( [ & ]( int, const QString& title, const QString& text )
+   {
+      win.prompts << title + ": " + text;
+      if ( title.startsWith( "Remove All" ) )
+         US_Settings::set_us_inv_ID( kOther );
+      return true;
+   } );
+
+   EXPECT_EQ( win.tree.act_on_selection( "Database only", "DB-only remove" ),
+              (int)US_DataTree::ACT_REFUSED );
+   EXPECT_TRUE( server.changes.isEmpty() ) << server.changes.join( " " ).toStdString();
+   EXPECT_TRUE( win.prompts.join( "\n" ).contains( "Investigator Changed" ) )
+      << win.prompts.join( "\n" ).toStdString();
+   EXPECT_NE( server.modelById( "51" ), nullptr );
+
+   US_Settings::set_us_inv_ID( kInv );
+}
+
+// Another investigator selected while an action runs -- a long upload, say:
+// the records after the one being written are not tried, and the message
+// lists them and says why
+TEST_F( TestUSDataDb, AnInvestigatorChangedWhileAnActionRunsStopsIt )
+{
+   QStringList guids = addModels( server.models, runA, editG, 4 );
+   server.during = [ & ]( const QString& name )
+   {
+      if ( name == "delete_model" )
+         US_Settings::set_us_inv_ID( kOther );
+   };
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   win.tw.clearSelection();
+   for ( const QString& guid : guids )
+      itemOfRow( win.tw, rowOf( model, guid ) )->setSelected( true );
+
+   int stat = win.tree.act_on_selection( "Database only", "DB-only remove" );
+   QString error = win.proc.lastError();
+   US_Settings::set_us_inv_ID( kInv );
+
+   EXPECT_EQ( stat, (int)US_DataTree::ACT_NOT_TRIED ) << error.toStdString();
+   EXPECT_EQ( server.changes.size(), 1 ) << server.changes.join( " " ).toStdString();
+   EXPECT_EQ( server.models.size(), 4 );
+   EXPECT_TRUE( error.contains( "not tried, since the investigator was changed" ) )
+      << error.toStdString();
+   EXPECT_TRUE( error.contains( "previous investigator's records" ) ) << error.toStdString();
+   EXPECT_EQ( error.count( "\n  " + runA ), 4 ) << error.toStdString();   // 3 not tried, 1 removed
+}
+
+// The same for a download: what is written locally stops too
+TEST_F( TestUSDataDb, AnInvestigatorChangedWhileADownloadRunsStopsIt )
+{
+   QStringList guids = addModels( server.models, runA, editG, 3 );
+   server.during = [ & ]( const QString& name )
+   {
+      if ( name == "get_model_info" )
+         US_Settings::set_us_inv_ID( kOther );
+   };
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   win.tw.clearSelection();
+   for ( const QString& guid : guids )
+      itemOfRow( win.tw, rowOf( model, guid ) )->setSelected( true );
+
+   int stat = win.tree.act_on_selection( "Database only", "Local file create" );
+   QString error = win.proc.lastError();
+   US_Settings::set_us_inv_ID( kInv );
+
+   EXPECT_EQ( stat, (int)US_DataTree::ACT_NOT_TRIED ) << error.toStdString();
+   EXPECT_EQ( server.count( "get_model_info" ), 1 );
+   EXPECT_TRUE( error.contains( "not tried, since the investigator was changed" ) )
+      << error.toStdString();
+}
+
+// A download that loses the connection stops: the records after it are not
+// tried -- each would fail the same way -- and the message lists them
+TEST_F( TestUSDataDb, ADownloadStopsWhenTheConnectionIsLost )
+{
+   QStringList guids = addModels( server.models, runA, editG, 4 );
+   server.failing << "get_model_info";
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   win.tw.clearSelection();
+   for ( const QString& guid : guids )
+      itemOfRow( win.tw, rowOf( model, guid ) )->setSelected( true );
+
+   EXPECT_NE( win.tree.act_on_selection( "Database only", "Local file create" ), 0 );
+   EXPECT_EQ( server.count( "get_model_info" ), 1 );
+
+   QString error = win.proc.lastError();
+   EXPECT_TRUE( error.contains( "not tried, since the connection to the database was lost" ) )
+      << error.toStdString();
+   EXPECT_EQ( error.count( "\n  " + runA ), 3 ) << error.toStdString();
+   EXPECT_EQ( error.count( "close it and open it again" ), 1 ) << error.toStdString();
+}
+
+// The same for an upload
+TEST_F( TestUSDataDb, AnUploadStopsWhenTheConnectionIsLost )
+{
+   QStringList guids;
+   for ( int ii = 0; ii < 3; ii++ )
+   {
+      guids << US_Util::new_guid();
+      writeModel( US_Settings::dataDir() + QString( "/models/M000001%1.xml" ).arg( ii ),
+                  guids.last(), editG,
+                  runA + QString( ".1A280.e2401011200_a%1_2DSA_i01.model" ).arg( 20 + ii ) );
+   }
+   server.failing << "new_model";
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   win.tw.clearSelection();
+   for ( const QString& guid : guids )
+      itemOfRow( win.tw, rowOf( model, guid ) )->setSelected( true );
+
+   EXPECT_NE( win.tree.act_on_selection( "Local disk only", "DB create" ), 0 );
+   EXPECT_EQ( server.changes.filter( "new_model" ).size(), 1 );
+
+   QString error = win.proc.lastError();
+   EXPECT_TRUE( error.contains( "not tried, since the connection to the database was lost" ) )
+      << error.toStdString();
+   EXPECT_EQ( error.count( "\n  " + runA ), 2 ) << error.toStdString();
+}
+
+// The GMP guard fails closed: when the database cannot say whether the GMP
+// framework needs a record, nothing is removed, and the user is told why
+TEST_F( TestUSDataDb, AGmpCheckThatFailsRemovesNothing )
+{
+   for ( const QString& proc : { QString( "get_modelIDs_for_autoflow" ),
+                                 QString( "check_filename_for_autoflow" ),
+                                 QString( "get_noise_desc_by_editID" ) } )
+   {
+      SCOPED_TRACE( proc.toStdString() );
+      TearDown();
+      server = FakeServer();
+      SetUp();
+      server.denied << proc;
+
+      US_DataModel model;
+      prepare( model );
+      Window       win( model );
+      model.scan_data();
+      win.tree.build_dtree();
+
+      // a model, or the edit when it is the edit's noise listing that fails
+      QString guid = ( proc == "get_noise_desc_by_editID" ) ? editG : modelG;
+      win.select( itemOfRow( win.tw, rowOf( model, guid ) ) );
+      EXPECT_EQ( win.tree.act_on_selection( "Database only", "DB-only remove" ),
+                 (int)US_DataTree::ACT_REFUSED ) << win.proc.lastError().toStdString();
+      EXPECT_TRUE( server.changes.isEmpty() ) << server.changes.join( " " ).toStdString();
+      ASSERT_FALSE( win.prompts.isEmpty() );
+      EXPECT_TRUE( win.prompts.last().contains( "could not be checked" ) )
+         << win.prompts.last().toStdString();
+      EXPECT_NE( stateOf( model, guid ) & US_DataModel::REC_DB, 0 );
+   }
+}
+
+// After a local removal, a copy of the run shows the removed model and
+// noise files gone too: they are the run's own files
+TEST_F( TestUSDataDb, ACopyOfARunShowsTheRunsFilesRemoved )
+{
+   QString copyDir = US_Settings::resultDir() + "/Backup_" + runA;
+   QDir().mkpath( copyDir );
+   ASSERT_TRUE( QFile::copy( aucPath,  copyDir + "/" + QFileInfo( aucPath ).fileName() ) );
+   ASSERT_TRUE( QFile::copy( editPath, copyDir + "/" + QFileInfo( editPath ).fileName() ) );
+
+   US_DataModel model;
+   prepare( model );
+   Window       win( model );
+   model.scan_data();
+   win.tree.build_dtree();
+
+   int realIx = model.index_of_run( runA );
+   int copyIx = -1;
+   for ( int ii = 0; ii < model.runCount(); ii++ )
+      if ( ! model.run_entry( ii ).copyOf.isEmpty() )  copyIx = ii;
+   ASSERT_GE( copyIx, 0 );
+   ASSERT_GE( rowOf( model, modelG, copyIx ), 0 );
+   ASSERT_NE( model.row_datadesc( rowOf( model, modelG, copyIx ) ).recState
+              & US_DataModel::REC_LO, 0 );
+
+   win.select( itemOfRow( win.tw, rowOf( model, modelG, realIx ) ) );
+   EXPECT_EQ( win.tree.act_on_selection( "Local disk only", "Local-only remove" ), 0 )
+      << win.proc.lastError().toStdString();
+   EXPECT_FALSE( QFile::exists( modelPath ) );
+   EXPECT_FALSE( QFile::exists( noisePath ) );
+
+   for ( const QString& guid : { modelG, noiseG } )
+   {
+      int row = rowOf( model, guid, copyIx );
+      ASSERT_GE( row, 0 );
+      EXPECT_EQ( model.row_datadesc( row ).recState & US_DataModel::REC_LO, 0 )
+         << guid.toStdString();
+   }
 }
