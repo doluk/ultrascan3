@@ -688,3 +688,20 @@ default character set is utf8mb4 rather than latin1.
   whose outcome is not known, is covered by the fake server of
   `test_us_data_db.cpp`, whose commit and rollback now answer with US_DB2's
   own texts and whose `serverVersion()` names MySQL 8 or MariaDB.
+
+## Cases added in fix round 8 (test_us_utils_db)
+
+- `US_DB2_LiveTransaction` (scratch database, `US3_TEST_DB_PASSWORD`):
+  `ALostConnectionAfterAnImplicitCommitSaysRowsMayHaveBeenKept` and
+  `ALostConnectionAfterADeadlockNamesTheDeadlock` kill their own connection
+  (`KILL <id>` from another connection of the same user, as the existing
+  lost-connection case does).  `AReconnectClearsTheLostConnectionError` and
+  `RawQueryAndWriteBlobSetTheServerError` check `lastServerErrno()`.
+- `ConvertIOLive` (test_us_convertio_live.cpp) needs the US3 schema and the
+  investigator login (`US3_TEST_DB_PERSON_GUID`, `_PW`, `_ID`) and an
+  experiment of that investigator with a rotor, whose project, lab,
+  instrument, rotor and operator it reuses for a new experiment, plus any
+  solution.  When the operator has no `permits` row for the instrument, the
+  test adds one and removes it again, so the user needs `INSERT` and `DELETE`
+  on `permits` there.  It writes and removes experiments: run it only against
+  a copy.
