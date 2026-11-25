@@ -928,3 +928,147 @@ TEST_F( TestUSDataDbLive, AConnectionLostBeforeTheCommitRemovesNothing )
    for ( const QString& guid : { ed.editG, ed.modelG, ed.noiseG } )
       EXPECT_TRUE( win.inDb( guid ) ) << guid.toStdString();
 }
+
+/* A model removal another session's lock holds up at the model itself:
+   delete_model removes the model's noise and its modelPerson row first, one
+   statement at a time, and only the DELETE of the model waits -- here for
+   the share lock the test's own second connection holds -- until the server
+   gives up (a lock wait timeout).  Run on its own, that would leave the
+   model without an owner and its noise gone; in its transaction the
+   rollback gives them back.  Nothing was removed, and the message says so.
+*/
+TEST_F( TestUSDataDbLive, AModelRemovalHeldUpByALockRemovesNothing )
+{
+   Edit ed;
+   newEdit( ed, false );
+   if ( HasFatalFailure() )   return;
+
+   Win win( inv, runID );
+   ASSERT_GE( rowOf( win.model, ed.modelG ), 0 );
+
+   QString error;
+   inv->rawQuery( "SET SESSION innodb_lock_wait_timeout = 2" );
+   ASSERT_TRUE( admin->beginTransaction( error ) ) << error.toStdString();
+   admin->rawQuery( "SELECT modelID FROM model WHERE modelID = "
+                    + QString::number( ed.modelID ) + " LOCK IN SHARE MODE" );
+   ASSERT_TRUE( admin->next() );
+
+   int stat = win.remove( ed.modelG );
+   error    = win.proc.lastError();
+   QString rerr;
+   admin->rollbackTransaction( rerr );
+
+   EXPECT_EQ( stat, 2013 ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "lock wait timeout" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "Nothing was removed" ) ) << error.toStdString();
+   EXPECT_FALSE( error.contains( "not known" ) ) << error.toStdString();
+
+   EXPECT_EQ( present( "get_model_info", ed.modelID, IUS_DB2::NO_MODEL ), 1 );
+   EXPECT_EQ( present( "get_noise_info", ed.noiseID, IUS_DB2::NO_NOISE ), 1 );
+   admin->rawQuery( "SELECT COUNT(*) FROM modelPerson WHERE modelID = "
+                    + QString::number( ed.modelID ) );
+   ASSERT_TRUE( admin->next() );
+   EXPECT_EQ( admin->value( 0 ).toInt(), 1 ) << "the model has lost its owner";
+   for ( const QString& guid : { ed.modelG, ed.noiseG } )
+      EXPECT_TRUE( win.inDb( guid ) ) << guid.toStdString();
+
+   // once the lock is gone the removal goes through, in its transaction
+   EXPECT_EQ( win.remove( ed.modelG ), 0 ) << win.proc.lastError().toStdString();
+   EXPECT_EQ( present( "get_model_info", ed.modelID, IUS_DB2::NO_MODEL ), 0 );
+   EXPECT_EQ( present( "get_noise_info", ed.noiseID, IUS_DB2::NO_NOISE ), 0 );
+}
+
+/* A procedure that commits the caller's transaction inside it -- none of
+   today's does; here the test commits right after delete_editedData -- has
+   kept what it removed.  The connection is then lost just before the COMMIT
+   goes out, and US_DB2 says the server rolled the transaction back, as it
+   cannot tell.  The check made after the write (a savepoint that does not
+   outlive its statement outside a transaction) saw the transaction ended:
+   the message does not say that nothing was removed, but that whether it
+   was is not known.  Only the test's own connection is killed.
+*/
+TEST_F( TestUSDataDbLive, AConnectionLostAfterAProcedureCommittedIsNotNothingRemoved )
+{
+   Edit ed;
+   newEdit( ed, false );
+   if ( HasFatalFailure() )   return;
+
+   QString conn = connectionId( inv );
+   ASSERT_FALSE( conn.isEmpty() );
+
+   ::testing::NiceMock< US_DB2_Mock > wrap;
+   passOn( wrap, inv );
+   QString killError;
+   ON_CALL( wrap, statusQuery( ::testing::An< const QStringList& >() ) )
+      .WillByDefault( ::testing::Invoke( [ & ]( const QStringList& q )
+      {
+         int st = inv->statusQuery( q );
+         if ( q.value( 0 ) == "delete_editedData"  &&  st == IUS_DB2::OK )
+            inv->rawQuery( "COMMIT" );          // as a procedure might
+         return st;
+      } ) );
+   ON_CALL( wrap, commitTransaction( ::testing::_ ) )
+      .WillByDefault( ::testing::Invoke( [ & ]( QString& e )
+      {
+         killError = killConnection( conn );
+         return inv->commitTransaction( e );
+      } ) );
+
+   Win win( &wrap, runID );
+   ASSERT_GE( rowOf( win.model, ed.editG ), 0 );
+
+   int stat = win.remove( ed.editG );
+   QString error = win.proc.lastError();
+   ASSERT_EQ( killError.toStdString(), std::string() );
+
+   EXPECT_NE( stat, 0 ) << error.toStdString();
+   EXPECT_FALSE( inv->isConnected() );
+   EXPECT_TRUE( win.proc.outcome_unknown() ) << error.toStdString();
+   EXPECT_FALSE( error.contains( "Nothing was removed" ) ) << error.toStdString();
+   EXPECT_FALSE( error.contains( "None of the selected records" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "not known" ) ) << error.toStdString();
+   EXPECT_TRUE( error.contains( "close it and open it again" ) ) << error.toStdString();
+
+   // the commit inside kept the removal
+   EXPECT_EQ( present( "get_editedData", ed.editID,  IUS_DB2::NO_EDITDATA ), 0 );
+   EXPECT_EQ( present( "get_model_info", ed.modelID, IUS_DB2::NO_MODEL ), 0 );
+}
+
+/* Without a commit inside, the same check finds the transaction open: a
+   removal is committed, and a connection lost just before the COMMIT still
+   means nothing was removed (AConnectionLostBeforeTheCommitRemovesNothing).
+   Here: a model and a noise record removed, each in its own transaction,
+   with the check after each write answered by the server.
+*/
+TEST_F( TestUSDataDbLive, ModelAndNoiseRemovalsAreCommitted )
+{
+   Edit ed;
+   newEdit( ed, false );
+   if ( HasFatalFailure() )   return;
+
+   ::testing::NiceMock< US_DB2_Mock > wrap;
+   passOn( wrap, inv );
+   QStringList released;
+   ON_CALL( wrap, query( ::testing::An< const QString& >() ) )
+      .WillByDefault( ::testing::Invoke( [ & ]( const QString& q )
+      {
+         inv->query( q );
+         if ( q.startsWith( "RELEASE SAVEPOINT" ) )
+            released << QString::number( inv->lastServerErrno() );
+      } ) );
+
+   Win win( &wrap, runID );
+   ASSERT_GE( rowOf( win.model, ed.noiseG ), 0 );
+
+   EXPECT_EQ( win.remove( ed.noiseG ), 0 ) << win.proc.lastError().toStdString();
+   EXPECT_EQ( win.remove( ed.modelG ), 0 ) << win.proc.lastError().toStdString();
+   EXPECT_EQ( released, QStringList() << "0" << "0" );
+   EXPECT_FALSE( inv->transactionActive() );
+   EXPECT_EQ( present( "get_model_info", ed.modelID, IUS_DB2::NO_MODEL ), 0 );
+   EXPECT_EQ( present( "get_noise_info", ed.noiseID, IUS_DB2::NO_NOISE ), 0 );
+
+   // outside a transaction the same check fails: that is what it tells by
+   inv->query( QString( "SAVEPOINT us3_manage_data_check" ) );
+   inv->query( QString( "RELEASE SAVEPOINT us3_manage_data_check" ) );
+   EXPECT_EQ( inv->lastServerErrno(), 1305 ) << inv->lastError().toStdString();
+}

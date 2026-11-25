@@ -469,35 +469,17 @@ DbgLv(1) << "REC_RMV: exp ID" << cdesc.parentID;
    }
 
    else if ( cdesc.recType == 3 )
-   {  // remove a Model record
-      query.clear();
-      query << "delete_model" << dataID;
-
-      if ( ( stat = db->statusQuery( query ) ) != 0 )
-      {
-         errMsg = removal_error( "delete_model", stat );
-DbgLv(1) << "MOD_RMV:   dataID" << dataID << "errMsg:" << errMsg;
-DbgLv(1) << "MOD_RMV:    lastErr" << db->lastError() << db->lastErrno();
-         stat   = 2013;
-      }
-      else
+   {  // remove a Model record, with its noise
+      if ( ( stat = remove_one( row, "delete_model", 2013 ) ) == 0 )
          irecID = -1;
+DbgLv(1) << "MOD_RMV:   dataID" << dataID << "stat" << stat << errMsg;
    }
 
    else if ( cdesc.recType == 4 )
    {  // remove a Noise record
-      query.clear();
-      query << "delete_noise" << dataID;
-
-      if ( ( stat = db->statusQuery( query ) ) != 0 )
-      {
-         errMsg = removal_error( "delete_noise", stat );
-DbgLv(1) << "NOI_RMV:   dataID" << dataID << "errMsg:" << errMsg;
-DbgLv(1) << "NOI_RMV:    lastErr" << db->lastError() << db->lastErrno();
-         stat   = 2014;
-      }
-      else
+      if ( ( stat = remove_one( row, "delete_noise", 2014 ) ) == 0 )
          irecID = -1;
+DbgLv(1) << "NOI_RMV:   dataID" << dataID << "stat" << stat << errMsg;
    }
 
    else
@@ -514,26 +496,114 @@ DbgLv(1) << "NOI_RMV:    lastErr" << db->lastError() << db->lastErrno();
    return note_lost( stat );
 }
 
-// What a model or noise removal that failed says: which record, and whether
-// it is known to be still there.  Each is one statement the server commits
-// on its own, so when the connection is lost during it, whether it was
-// removed is not known.
-QString US_DataProcess::removal_error( const QString& proc, int status )
-{
-   QString derr = db->lastError();
+/* Remove a model or a noise record, in a transaction of its own.
 
-   if ( lost_now() )
+   delete_model removes the model's noise, then its modelPerson row, then the
+   model, one statement at a time: run on its own, each is committed as it
+   runs, and a failure part-way -- a lock wait timeout on the model, say --
+   leaves the model without an owner and its noise gone.  In a transaction
+   the rollback gives them back.  The outcome is classified as an edit
+   removal's is (edit_attempt): what the transaction gave back as a whole
+   removed nothing, anything else is read back.
+*/
+int US_DataProcess::remove_one( int row, const QString& proc, int code )
+{
+   QString     label = cdesc.label;
+   QStringList query;
+   QString     terr;
+   QString     why;
+   bool        clean = true;
+
+   query << proc << QString::number( cdesc.recordID );
+   tx_may_end   = false;
+   edit_status  = IUS_DB2::OK;
+   edit_failure = EDIT_REFUSED;
+   edit_error.clear();
+
+   if ( ! db->beginTransaction( terr ) )
    {
-      conn_lost   = true;
-      unknown_out = true;
-      return tr( "Whether %1 was removed from the database is not known:"
-                 " the connection to the database was lost while it was"
-                 " being removed (%2: %3)." )
-             .arg( cdesc.label ).arg( proc ).arg( derr );
+      conn_lost = conn_lost  ||  lost_now();
+      errMsg    = tr( "%1 was not removed from the database: a database"
+                      " transaction could not be started (%2).\n\nNothing"
+                      " was removed." ).arg( label ).arg( terr );
+      return code;
    }
 
-   return tr( "%1 was not removed from the database (%2 status %3: %4)." )
-          .arg( cdesc.label ).arg( proc ).arg( status ).arg( derr );
+   int     st   = db->statusQuery( query );
+   int     serr = db->lastServerErrno();
+   QString derr = db->lastError();
+
+   if ( st == IUS_DB2::OK )
+   {
+      check_tx_open();
+
+      if ( db->commitTransaction( terr ) )
+         return 0;
+
+      commit_refused( terr, why, clean );
+
+      if ( clean )
+      {
+         errMsg = tr( "%1 was not removed from the database: %2\n\nNothing"
+                      " was removed." ).arg( label ).arg( why );
+         return code;
+      }
+
+      return settle_removal( row, QList< ForeignNoise >(), code, why );
+   }
+
+   edit_status  = st;
+   edit_error   = derr;
+   edit_failure = failure_kind( st, serr, derr );
+
+   if ( edit_failure == EDIT_LOST )
+      why = tr( "the connection to the database was lost while it was being"
+                " removed (%1: %2), so whether it was removed is not known." )
+            .arg( proc ).arg( derr );
+
+   else if ( edit_failure == EDIT_DEADLOCK  ||  edit_failure == EDIT_TIMEOUT )
+      why = tr( "the database gave up on it (%1 status %2: %3)." )
+            .arg( proc ).arg( st ).arg( derr )
+            + failure_text( edit_failure );
+
+   else
+      why = tr( "the database refused it (%1 status %2: %3)." )
+            .arg( proc ).arg( st ).arg( derr );
+
+   roll_back_failed( true, proc, why, clean );
+
+   if ( clean )
+   {
+      errMsg = tr( "%1 was not removed from the database: %2\n\nNothing was"
+                   " removed." ).arg( label ).arg( why );
+      return code;
+   }
+
+   return settle_removal( row, QList< ForeignNoise >(), code, why );
+}
+
+// Whether the server still has the open transaction, after a write in it
+// succeeded.  A procedure that commits inside it ends it, and what it wrote
+// then stays: a connection lost later does not give that back.  Outside a
+// transaction a savepoint is gone with the statement that set it, so
+// releasing it fails (1305); inside one it is there.
+void US_DataProcess::check_tx_open( void )
+{
+   if ( tx_may_end )   return;
+
+   db->query( QString( "SAVEPOINT us3_manage_data_check" ) );
+
+   if ( db->isConnected()  &&  db->lastServerErrno() == 0 )
+   {
+      db->query( QString( "RELEASE SAVEPOINT us3_manage_data_check" ) );
+
+      if ( db->isConnected()  &&  db->lastServerErrno() == 0 )
+         return;
+   }
+
+DbgLv(1) << "TX_CHECK: ended or not known" << db->lastServerErrno() << db->lastError();
+   tx_may_end = true;
+   conn_lost  = conn_lost  ||  lost_now();
 }
 
 // Mark a row as gone from the database: local only now, or gone altogether
@@ -636,7 +706,7 @@ bool US_DataProcess::foreign_noise_of_edit( int editID,
    Only then, and only when that noise is the investigator's own, is it
    removed first in a second transaction, and the edit asked for again.
    Whenever a removal fails, or its outcome is not confirmed, what the
-   database holds is read back (settle_edit).
+   database holds is read back (settle_removal).
 */
 int US_DataProcess::remove_edit( int row )
 {
@@ -694,7 +764,7 @@ int US_DataProcess::remove_edit( int row )
       return stat;
    }
 
-   return settle_edit( row, foreign, stat, why );
+   return settle_removal( row, foreign, stat, why );
 }
 
 // One transaction of an edit removal: the given noise, then the edit
@@ -706,6 +776,7 @@ int US_DataProcess::edit_attempt( int editID,
    QString     terr;
 
    clean        = true;
+   tx_may_end   = false;
    edit_status  = IUS_DB2::OK;
    edit_failure = EDIT_REFUSED;
    edit_error.clear();
@@ -717,7 +788,9 @@ int US_DataProcess::edit_attempt( int editID,
       return 2019;
    }
 
-   int stat = 0;
+   int     stat  = 0;
+   bool    ended = false;         // a write ended the transaction
+   QString proc  = "delete_noise";
 
    for ( int ii = 0; ii < first.size(); ii++ )
    {
@@ -741,10 +814,27 @@ int US_DataProcess::edit_attempt( int editID,
          why += failure_text( edit_failure );
          break;
       }
+
+      // Nothing more is written once the transaction may be over: it would
+      // be committed as it runs, and a failure would keep what it did
+      check_tx_open();
+
+      if ( tx_may_end )
+      {
+         why   = tr( "the database ended the transaction after noise %1 of"
+                     " another edit's model was removed -- a procedure"
+                     " committed it, or the connection was lost -- so the"
+                     " edit was not asked for." )
+                 .arg( fn.description.isEmpty() ? fn.guid : fn.description );
+         stat  = 2019;
+         ended = true;
+         break;
+      }
    }
 
    if ( stat == 0 )
    {
+      proc = "delete_editedData";
       query.clear();
       query << "delete_editedData" << QString::number( editID );
 DbgLv(1) << "EDT_RMV:" << query;
@@ -777,6 +867,9 @@ DbgLv(1) << "EDT_RMV:   stat" << est << derr << serr;
          why += failure_text( edit_failure );
          stat = 2012;
       }
+
+      else
+         check_tx_open();
    }
 
    if ( stat == 0 )
@@ -784,58 +877,88 @@ DbgLv(1) << "EDT_RMV:   stat" << est << derr << serr;
       if ( db->commitTransaction( terr ) )
          return 0;
 
-      // Not confirmed: still open as far as the client knows.  The commit
-      // says how it ended (US_DB2): a connection lost before the COMMIT
-      // went out was rolled back by the server, and nothing was removed; a
-      // connection lost during the COMMIT leaves open whether the server
-      // committed.
-      TxEnd   end  = transaction_end( terr );
-      bool    lost = lost_now()  ||  end == TX_LOST_ROLLED_BACK  ||
-                     end == TX_LOST_UNKNOWN;
-      QString rerr;
-      db->rollbackTransaction( rerr );
-      clean = false;
-
-      if ( lost  &&  end == TX_LOST_ROLLED_BACK )
-      {
-         conn_lost    = true;
-         clean        = true;       // the server gave it all back
-         edit_failure = EDIT_LOST_ROLLED_BACK;
-         why = tr( "the connection to the database was lost before the"
-                   " removal was committed, so the server rolled the removal"
-                   " back." );
-      }
-
-      else if ( lost )
-      {
-         conn_lost    = true;
-         edit_failure = EDIT_LOST;
-         why = tr( "the connection to the database was lost while the"
-                   " removal was being committed (%1), so whether it was"
-                   " removed is not known." ).arg( terr );
-      }
-
-      else
-         why = tr( "the removal could not be committed: %1" ).arg( terr );
-
+      commit_refused( terr, why, clean );
       return 2019;
    }
 
-   // A deadlock ends the transaction on the server, which rolls back all of
-   // it: the rollback here is refused for that, and nothing is left done
+   roll_back_failed( stat == 2012, proc, why, clean );
+
+   if ( ended )
+      clean = false;                // what the database kept is read back
+
+   return stat;
+}
+
+// How a transaction whose COMMIT was refused ended.  The commit says it
+// (US_DB2): a connection lost before the COMMIT went out was rolled back by
+// the server, and nothing was removed -- unless a write had ended the
+// transaction before (check_tx_open), when what it wrote was kept; a
+// connection lost during the COMMIT leaves open whether the server
+// committed.
+void US_DataProcess::commit_refused( const QString& terr, QString& why,
+                                     bool& clean )
+{
+   TxEnd   end  = transaction_end( terr );
+   bool    lost = lost_now()  ||  end == TX_LOST_ROLLED_BACK  ||
+                  end == TX_LOST_UNKNOWN;
+   QString rerr;
+   db->rollbackTransaction( rerr );
+   clean = false;
+
+   if ( lost  &&  end == TX_LOST_ROLLED_BACK  &&  ! tx_may_end )
+   {
+      conn_lost    = true;
+      clean        = true;       // the server gave it all back
+      edit_failure = EDIT_LOST_ROLLED_BACK;
+      why = tr( "the connection to the database was lost before the"
+                " removal was committed, so the server rolled the removal"
+                " back." );
+   }
+
+   else if ( lost  &&  end == TX_LOST_ROLLED_BACK )
+   {
+      conn_lost    = true;
+      edit_failure = EDIT_LOST;
+      why = tr( "the connection to the database was lost before the"
+                " removal was committed, after the database had ended the"
+                " transaction or while that was being checked, so whether"
+                " it was removed is not known." );
+   }
+
+   else if ( lost )
+   {
+      conn_lost    = true;
+      edit_failure = EDIT_LOST;
+      why = tr( "the connection to the database was lost while the"
+                " removal was being committed (%1), so whether it was"
+                " removed is not known." ).arg( terr );
+   }
+
+   else
+      why = tr( "the removal could not be committed: %1" ).arg( terr );
+}
+
+// Roll back a transaction whose write failed, and say how it ended.  A
+// deadlock ends the transaction on the server, which rolls back all of it:
+// the rollback here is refused for that, and nothing is left done.
+void US_DataProcess::roll_back_failed( bool inProc, const QString& proc,
+                                       QString& why, bool& clean )
+{
+   QString terr;
+
    if ( ! db->rollbackTransaction( terr )  &&  edit_failure != EDIT_DEADLOCK )
    {
       clean = false;                // what is left is read back
       TxEnd end = transaction_end( terr );
 
-      if ( end == TX_LOST_ROLLED_BACK )
+      if ( end == TX_LOST_ROLLED_BACK  &&  ! tx_may_end )
       {  // The connection was lost before anything was committed, and the
          // server rolled back the whole transaction when it ended: nothing
          // was removed, whenever it was lost
-         if ( edit_failure == EDIT_LOST  &&  stat == 2012 )
+         if ( edit_failure == EDIT_LOST  &&  inProc )
             why = tr( "the connection to the database was lost while it was"
-                      " being removed (delete_editedData: %1), so the server"
-                      " rolled the removal back." ).arg( edit_error );
+                      " being removed (%1: %2), so the server rolled the"
+                      " removal back." ).arg( proc ).arg( edit_error );
          else if ( edit_failure == EDIT_LOST )
             why += tr( "\nThe connection to the database was lost, so the"
                        " server rolled the whole removal back." );
@@ -847,11 +970,11 @@ DbgLv(1) << "EDT_RMV:   stat" << est << derr << serr;
          conn_lost    = true;
          clean        = true;       // the server gave it all back
          edit_failure = EDIT_LOST_ROLLED_BACK;
-         return stat;
+         return;
       }
 
       if ( edit_failure == EDIT_LOST  ||  lost_now()  ||
-           end == TX_LOST_UNKNOWN )
+           end == TX_LOST_UNKNOWN  ||  end == TX_LOST_ROLLED_BACK )
       {  // Lost, and the rollback cannot say what the server kept; the
          // message already says the connection was lost when it was
          if ( edit_failure != EDIT_LOST )
@@ -877,8 +1000,6 @@ DbgLv(1) << "EDT_RMV:   stat" << est << derr << serr;
 
    if ( edit_failure == EDIT_LOST )
       clean = false;                // what the server did is not known
-
-   return stat;
 }
 
 // How a refused commit or rollback says the transaction ended, by the texts
@@ -1066,8 +1187,8 @@ void US_DataProcess::mark_noise_removed( int noiseID )
    }
 }
 
-/* What the database holds after an edit removal that failed, or whose
-   outcome is not known.
+/* What the database holds after a removal that failed, or whose outcome is
+   not known: of an edit, a model or a noise record.
 
    An older delete_editedData has removed the edit's models and noise
    before it fails, and a transaction that a newer one committed has kept
@@ -1075,16 +1196,21 @@ void US_DataProcess::mark_noise_removed( int noiseID )
    give back is read here, so no row shows a record the database no longer
    holds.
 */
-int US_DataProcess::settle_edit( int row, const QList< ForeignNoise >& foreign,
-                                 int stat, const QString& why )
+int US_DataProcess::settle_removal( int row,
+                                    const QList< ForeignNoise >& foreign,
+                                    int stat, const QString& why )
 {
    US_DataModel::DataDesc edesc = da_model->row_datadesc( row );
    QStringList gone;
    bool        unknown = false;
 
-   int edit = db_has( "get_editedData", edesc.recordID, IUS_DB2::NO_EDITDATA );
+   int edit = ( edesc.recType == US_DataModel::MODEL )
+            ? db_has( "get_model_info", edesc.recordID, IUS_DB2::NO_MODEL )
+            : ( edesc.recType == US_DataModel::NOISE )
+            ? db_has( "get_noise_info", edesc.recordID, IUS_DB2::NO_NOISE )
+            : db_has( "get_editedData", edesc.recordID, IUS_DB2::NO_EDITDATA );
 
-   // The edit's own models and noise, as the tree shows them
+   // The record's own models and noise, as the tree shows them
    QVector< int > drows = da_model->descendant_rows( row );
 
    for ( int ii = 0; ii < drows.size(); ii++ )
