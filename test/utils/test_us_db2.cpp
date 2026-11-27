@@ -6,6 +6,7 @@
 
 #include "qt_test_base.h"
 #include "us_db2.h"
+#include "mock_us_db2.h"
 
 #include <QFile>
 #include <QString>
@@ -111,6 +112,42 @@ TEST( UsDb2Query, ARefusedProcedureNameFailsTheQueryWithItsOwnError )
    EXPECT_FALSE( db.next() );
 }
 
+// Arguments refused before anything is sent never reach a server, so there
+// is no server error to report.
+TEST( UsDb2Query, ARefusedProcedureNameHasNoServerError )
+{
+   US_DB2 db;
+
+   EXPECT_EQ( db.lastServerErrno(), 0 );
+   EXPECT_EQ( db.statusQuery( QStringList() << "p; DROP" ), IUS_DB2::DBERROR );
+   EXPECT_EQ( db.lastServerErrno(), 0 );
+}
+
+#ifndef NO_DB
+// A statement the client cannot send at all -- here because the connection
+// was never made -- is reported with the client's own error number, and
+// with the reason in lastError(), by both kinds of query.  (That the US3
+// status read after a refused statement does not replace the reason needs
+// a server that refuses one statement and answers the next; the database
+// suite checks it with a procedure the server does not have.)
+TEST( UsDb2Query, AStatementThatCannotBeSentReportsTheServerError )
+{
+   US_DB2 db;
+
+   db.query( QString( "CALL no_such_procedure()" ) );
+   EXPECT_EQ( db.lastErrno(), IUS_DB2::DBERROR );
+   EXPECT_NE( db.lastServerErrno(), 0 );
+   EXPECT_TRUE( db.lastError().startsWith( "MySQL error:" ) )
+      << db.lastError().toStdString();
+
+   EXPECT_EQ( db.statusQuery( QString( "CALL no_such_procedure()" ) ),
+              IUS_DB2::DBERROR );
+   EXPECT_NE( db.lastServerErrno(), 0 );
+   EXPECT_TRUE( db.lastError().startsWith( "MySQL error:" ) )
+      << db.lastError().toStdString();
+}
+#endif
+
 // NO_DB compiles blob transfers as no-op stubs; this validates the DB adapter.
 #ifndef NO_DB
 TEST( UsDb2Query, TheBlobTransfersRefuseAnInvalidProcedureName )
@@ -132,6 +169,69 @@ TEST( UsDb2Query, TheBlobTransfersRefuseAnInvalidProcedureName )
 }
 
 #endif
+
+// The errors after which a connection is gone, and some after which it is not
+TEST( UsDb2Connection, TheErrorsOfALostConnectionAreKnown )
+{
+   const QString mysql   = "8.0.46-0ubuntu0.24.04.5";
+   const QString mariadb = "10.11.14-MariaDB-0ubuntu0.24.04.1";
+   for ( const QString& version : { mysql, mariadb, QString() } )
+   {
+      for ( int code : { 2006, 2013, 2026, 2027, 2055, 5013, 5014, 1053, 1153, 1927 } )
+         EXPECT_TRUE( US_DB2::isConnectionLoss( code, version ) ) << code << " " << version.toStdString();
+      for ( int code : { 0, 1062, 1205, 1213, 1305, 1366, 1451, 2000, 2014 } )
+         EXPECT_FALSE( US_DB2::isConnectionLoss( code, version ) ) << code << " " << version.toStdString();
+   }
+   EXPECT_TRUE( US_DB2::isConnectionLoss( 2013 ) );
+   EXPECT_FALSE( US_DB2::isConnectionLoss( 2014 ) );
+}
+
+// 4031 is MySQL's idle timeout, sent as it closes the connection; MariaDB
+// uses the number for a statement error (ER_REFERENCED_TRG_DOES_NOT_EXIST)
+// after which the connection is fine
+TEST( UsDb2Connection, Error4031IsALossOnlyOnMySQL )
+{
+   EXPECT_TRUE ( US_DB2::isConnectionLoss( 4031, "8.0.46-0ubuntu0.24.04.5" ) );
+   EXPECT_TRUE ( US_DB2::isConnectionLoss( 4031, "8.4.3" ) );
+   EXPECT_FALSE( US_DB2::isConnectionLoss( 4031, "10.11.14-MariaDB-0ubuntu0.24.04.1" ) );
+   EXPECT_FALSE( US_DB2::isConnectionLoss( 4031, "5.5.5-10.4.6-MariaDB-log" ) );
+   EXPECT_FALSE( US_DB2::isConnectionLoss( 4031, QString() ) ) << "an unknown server";
+   EXPECT_FALSE( US_DB2::isConnectionLoss( 4031 ) ) << "an unknown server";
+
+   EXPECT_TRUE ( US_DB2::serverIsMariaDB( "10.11.14-MariaDB-0ubuntu0.24.04.1" ) );
+   EXPECT_FALSE( US_DB2::serverIsMariaDB( "8.0.46" ) );
+   EXPECT_FALSE( US_DB2::serverIsMySQL( "" ) );
+
+   // The commit that failed with it: unknown on MySQL, the server's error on MariaDB
+   EXPECT_EQ( US_DB2::commitErrorText( 4031, "boom", "8.0.46" ),
+              QObject::tr( US_DB2::commitUnknownMessage ).arg( "boom" ) );
+   EXPECT_EQ( US_DB2::commitErrorText( 4031, "boom", "10.11.14-MariaDB" ), QString( "boom" ) );
+}
+
+// The interface asks the connection: its last error, on its server
+TEST( UsDb2Connection, TheInterfaceReadsTheLastErrorForItsServer )
+{
+   ::testing::NiceMock< US_DB2_Mock > db;
+   ON_CALL( db, lastServerErrno() ).WillByDefault( ::testing::Return( 4031 ) );
+   ON_CALL( db, serverVersion() ).WillByDefault( ::testing::Return( QString( "10.11.14-MariaDB" ) ) );
+   EXPECT_FALSE( db.lastErrorIsConnectionLoss() );
+   ON_CALL( db, serverVersion() ).WillByDefault( ::testing::Return( QString( "8.0.46" ) ) );
+   EXPECT_TRUE( db.lastErrorIsConnectionLoss() );
+   ON_CALL( db, lastServerErrno() ).WillByDefault( ::testing::Return( 2014 ) );
+   EXPECT_FALSE( db.lastErrorIsConnectionLoss() );
+}
+
+// A COMMIT that fails with the connection may have taken effect: every
+// error of a lost connection says the outcome is unknown, 2055 (MySQL's
+// client library) and 2026 (TLS) as well as 2006 and 2013
+TEST( UsDb2Connection, ACommitLostWithTheConnectionHasAnUnknownOutcome )
+{
+   const QString unknown = QObject::tr( US_DB2::commitUnknownMessage ).arg( "boom" );
+   for ( int code : { 2006, 2013, 2055, 2026 } )
+      EXPECT_EQ( US_DB2::commitErrorText( code, "boom" ), unknown ) << code;
+   for ( int code : { 1213, 1205, 1180 } )
+      EXPECT_EQ( US_DB2::commitErrorText( code, "boom" ), QString( "boom" ) ) << code;
+}
 
 TEST( UsDb2Query, AnEmptyArgumentIsStillPassedAsAnEmptyLiteral )
 {

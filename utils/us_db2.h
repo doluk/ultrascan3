@@ -137,6 +137,11 @@ public:
     static constexpr const char* transactionEndedMessage =
        "the transaction had already ended, by an implicit commit or a rollback by the server, "
        "so some rows written in it may have been kept";
+    //! The connection was lost before a COMMIT was sent: the server rolls
+    //! back a transaction whose connection ends, so this outcome is known
+    static constexpr const char* connectionLostRollbackMessage =
+       "the connection to the database was lost before the transaction was committed, so the server "
+       "rolled it back and nothing written in it was kept";
 
     bool transactionActive() const final
     {
@@ -229,8 +234,35 @@ public:
 
     /*! \brief Returns TRUE if the US3 system is connected to a database,
         or returns FALSE otherwise.
+
+        It goes false when a statement finds the connection gone, as
+        IUS_DB2::isConnectionLoss tells from the error and this server's
+        version (serverVersion()): the server went away or
+        closed the connection.  No further statement can succeed on it
+        then, and an open transaction is lost with it.  connect() may be
+        called again; it opens a new connection.
     */
     bool isConnected() override;
+
+    /*! \brief The server's version as it gave it on connecting; kept
+        after the connection is lost.  See IUS_DB2::serverVersion().
+        isConnectionLoss() reads the errors of this connection by it.
+    */
+    QString serverVersion() override;
+
+    /*! \brief What commitTransaction() reports when the COMMIT fails.
+
+        After an error that means the connection is gone
+        (\ref isConnectionLoss -- 2006, 2013, 2055, 2026, ...) the server
+        may or may not have committed, and the message says the outcome is
+        unknown (\ref commitUnknownMessage); any other error is reported as
+        the server gave it.
+        \param serverErrno   mysql_errno() of the failed COMMIT
+        \param serverMessage mysql_error() of it
+        \param serverVersion the server's version, see serverVersion()
+    */
+    static QString commitErrorText( int serverErrno, const QString& serverMessage,
+                                    const QString& serverVersion = QString() );
 
     /*! \brief Returns the number of rows returned in the current result
         set.
@@ -253,6 +285,14 @@ public:
         for a text string describing the error.
     */
     int lastErrno() override;
+
+    /*! \brief Returns the MySQL error number of the last statement query(),
+        statusQuery() or functionQuery() sent, or 0 when the server accepted
+        it.  The follow-up reads of the US3 status those make do not change
+        it, and arguments refused before anything is sent leave it 0.
+        See IUS_DB2::lastServerErrno().
+    */
+    int lastServerErrno() override;
 
     /*! \brief Returns the ID of the row resulting from the most recent INSERT or
         UPDATE statement.
@@ -402,20 +442,37 @@ public:
  private:
     bool       connected;
     bool       inTransaction        = false;
-    //! A deadlock in the open transaction, after which the server rolled it back.
+    //! A deadlock while the server still had the transaction open, after
+    //! which it rolled the whole transaction back.  Not set after
+    //! \ref serverEndedTransaction: what the transaction wrote before that
+    //! was kept.  A deadlock in a statement that committed part way through
+    //! with no result set in between cannot be told apart and is recorded.
     bool       rolledBackByDeadlock = false;
+    //! A statement of the open transaction succeeded with the server no
+    //! longer in a transaction: something -- a COMMIT in a procedure, DDL, a
+    //! rollback by the server -- ended it, and later statements autocommitted
+    bool       serverEndedTransaction = false;
+    //! What commitTransaction() said when the connection was lost during
+    //! the COMMIT, so that whether it took effect is unknown; empty otherwise
+    QString    lostCommitError;
 #ifndef NO_DB
     MYSQL*     db;
     MYSQL_RES* result;
     MYSQL_ROW  row;
 #endif
+    //! The server dropped the connection; connect() opens a new one
+    bool       connection_lost = false;
+    //! mysql_get_server_info() at the last connect; see serverVersion()
+    QString    server_version;
     QString    email;
     QString    userPW;
     QString    guid;
 
     QString    caFile;
     QString    error;
-    int        db_errno;
+    int        db_errno     = OK;
+    //! mysql_errno() of the statement a query sent; see lastServerErrno()
+    int        server_errno = 0;
 
     //! \brief Consume and discard any result sets still pending on the
     //!        connection.
@@ -435,8 +492,33 @@ public:
     //!        transaction back.  Call while the error is still current.
     void           noteStatementError();
 
-    //! \brief Why the transaction ended before commit or rollback: the
-    //!        deadlock if one was recorded, otherwise that rows may have been kept.
+    //! \brief Marks the connection as gone when the last error says so.
+    //!        Call while the error is still current.
+    void           noteConnectionLoss();
+
+    //! \brief Records \ref serverEndedTransaction when the last statement
+    //!        succeeded and its status shows no transaction while one is
+    //!        open.  The status of a failed statement is not read: an error
+    //!        packet carries none, and a lost connection leaves whatever the
+    //!        library had.
+    void           noteTransactionStatus();
+
+    //! \brief The public rawQuery() without setting lastServerErrno(): for
+    //!        the follow-up reads a query makes after its own statement
+    //! \returns False when the statement was refused before it was sent
+    bool           sendStatement( const QString& sqlQuery );
+
+    //! \brief Before a connect: a handle whose connection was lost is
+    //!        replaced by a fresh one
+    void           resetLostHandle();
+
+    //! \brief Why the transaction ended before commit or rollback.  A
+    //!        connection lost during the COMMIT: the outcome is unknown.  A
+    //!        deadlock recorded: the server rolled it back.  Any other end
+    //!        seen on a successful statement (an implicit commit): rows may
+    //!        have been kept, whether or not the connection was lost later.
+    //!        Otherwise a lost connection: the server rolled it back; or,
+    //!        connection still there, that rows may have been kept.
     QString        transactionEndedText() const;
 
     //! \brief Escapes \p value for use inside a single-quoted SQL literal.
