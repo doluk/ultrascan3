@@ -8,7 +8,16 @@ Manage Data in Database and on Local Disk
 .. contents:: Index
   :local: 
 
-This module is used to display the four main types of data that may exist for the user in the database and/or on local disk. They are: (1) Raw experiment data; (2) Edited experiment data; (3) Model; and (4) Noise. Besides presenting a tree view of the user's data and their relationships, this module provides a simple means of performing processing on data: (1) upload to DB; (2) download to local disk; (3) remove from DB or local. 
+This module is used to display the four main types of data that may exist for the user in the database and/or on local disk. They are: (1) Raw experiment data; (2) Edited experiment data; (3) Model; and (4) Noise. Each of those hangs off an experiment, which is the top level of the tree. Besides presenting a tree view of the user's data and their relationships, this module provides a simple means of performing processing on data: (1) upload to DB; (2) download to local disk; (3) remove from DB or local. 
+
+.. note::
+
+   A row that both the database and local disk hold reads **Unverified**
+   (teal) until the two copies have been compared; it then turns
+   **In Sync** (green) or **Conflict** (red). Comparing hashes the record
+   contents on both sides, so it is done after the tree is complete, only
+   for experiments present in both places, and in the background. Opening
+   an experiment moves it to the front of the queue.
 
 The primary end of any processing of the data is to achieve a synchronizing of data in the database and on local disk. Particularly when preparing for off-network work or when returning to the network after such work, it is desirable to insure that any new data produced has a presence on local disk for off-network work and in the database for normal day-to-day processing. Instances of any data need to be in sync on the two media. This module provides a means to accomplish that.   
 
@@ -17,8 +26,10 @@ Data Management Process:
 
     * **Database Password:** Upon opening, US_ManageData requires you to sign on to the database with your DB password. 
     * **Investigator:** For database work, you must specify your investigator name so you are limited to data that you have permission to access and modify. 
-    * **Scan Data:** Initiate a scan of all your data on the database and local disk. You will then be presented a full tree view of that data. 
-    * **Navigate and Process:** Once you have a tree view of your data, you may navigate it using expand/collapse buttons or the normal **+** and **-** mechanism for specific branch expand and collapse. Context menus at each row allow upload/download/remove/details. 
+    * **Scan Data:** Initiate a scan of all your data on the database and local disk. The scan runs in three phases: the experiments appear first, each with a count of its records; the records are then read -- from the database in a few bulk queries, from disk in a single pass on a thread of its own -- and filled in as they arrive; finally the experiments held in both places are compared. With a run selected in **RunID** only that run is read. Errors and records that share a GUID are reported when the scan is done. Changing the investigator stops a scan and clears the tree.
+    * **Navigate and Process:** Once you have a tree view of your data, you may navigate it using expand/collapse buttons or the normal **+** and **-** mechanism for specific branch expand and collapse. Opening an experiment the scan has not reached yet reads it first. Context menus at each row allow upload/download/remove/details; acting on an experiment acts on everything under it. A removal the database refuses is reported with its message, and the record and everything under it stay. An edit is removed from the database together with its models and noise in one transaction, so a failure removes nothing.
+    * **Orphans:** A record whose parent is missing is shown at the end of the tree under **(records of no experiment)**, global models under **(global models)**, so that they can still be seen and removed. Orphans are shown only after a scan of the whole store.
+    * **Runs with problems:** A run marked **(!)** after its run ID has a problem (a run ID from an older version, a directory not named after its run, or several directories holding the same run); the tooltip says which. Nothing is uploaded or downloaded for a run whose directory is not named after it, and copies of a run directory are ignored.
 
 
 Initially you are presented with a small window to enter your database password. Then you will see the main window with a sample data tree that shows the kinds of states that data may be in (see tree help below).
@@ -81,7 +92,7 @@ Data Management Functions:
   * - **Reset**
     - Reset the tree to the default sample data.
   * - **Scan Data**
-    - Click this button to initiate a full scan of all your data in the database and on local disk. You should re-initiate a scan after any series of processes (upload|download|remove) on the data.
+    - Click this button to initiate a full scan of all your data in the database and on local disk. The experiments appear straight away and their records as they are read. Re-initiate a scan to see changes made outside this window.
   * - **Show All Edits**
     - Expand the tree view to insure all rows at the level of Edited data are revealed. The button will then be relabelled **Collapse All** so you can hide edits and their descendants.
   * - **Show All Models**
@@ -95,6 +106,6 @@ Data Management Functions:
   * - **Help**
     - Display this and other documentation.
   * - **Close**
-    - Close all windows and exit.
+    - Close all windows and exit. Closing the window while a scan runs stops the scan first.
 
 

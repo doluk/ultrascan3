@@ -4,32 +4,58 @@
 #include "us_settings.h"
 #include "us_gui_settings.h"
 #include "us_constants.h"
-#include "us_passwd.h"
 #include "us_editor.h"
 #include "us_noise.h"
 #include "us_util.h"
+
+#include <QScopedPointer>
 
 const QColor colorRed(   240,   0,   0 );
 const QColor colorBlue(    0,   0, 255 );
 const QColor colorBrown( 120,  60,   0 );
 const QColor colorGreen(   0, 150,   0 );
 const QColor colorGray(  110, 110, 110 );
+const QColor colorTeal(    0, 120, 140 );
 const QColor colorWhite( 255, 255, 240 );
+
+namespace
+{
+   // Holds off the model's reads and merges for as long as it lives; see
+   // US_DataModel::begin_hold
+   class ReadHold
+   {
+      public:
+         explicit ReadHold( US_DataModel* model ) : da_model( model )
+         {
+            da_model->begin_hold();
+         }
+
+         ~ReadHold()
+         {
+            da_model->end_hold();
+         }
+
+      private:
+         US_DataModel* da_model;
+   };
+}
 
 // class to manage a tree widget, underlying data, and processing
 US_DataTree::US_DataTree( US_DataModel* dmodel, QTreeWidget* treewidg,
-      QWidget* parent /*=0*/ )
+      QWidget* parent /*=0*/ ) : QObject( parent )
 {
    da_model   = dmodel;
    tw_recs    = treewidg;
    parentw    = (QWidget*)parent;
+   da_process = NULL;
+   tw_item    = NULL;
    dbg_level  = US_Settings::us_debug();
+   gmp_models_read = false;
 
    QStringList theads;
 
    theads << "Type" << "Label" << "SubType" << "Source"
           << "Children\nDB, Local" << "Descendants\nDB, Local";
-   ntrows = 5;
    ntcols = theads.size();
    tw_recs->setHeaderLabels( theads );
    tw_recs->setFont(  QFont( US_Widgets::fixedFont().family(),
@@ -49,241 +75,637 @@ DbgLv(1) << "DT: togl_exp str show" << c1str << show;
       listi.at( ii )->setExpanded( show );
 }
 
-// build the data tree from descriptions read
-void US_DataTree::build_dtree( )
+// The color, type name and source text of one record
+void US_DataTree::row_look( const US_DataModel::DataDesc& desc,
+                            QBrush& fbru, QString& rtyp, QString& rsrc )
 {
-   QString rtyp;
-   QString subt;
-   QString labl;
-   QString dguid;
-   QString rsrc;
-   QString anch;
-   QString ande;
-   int     ityp  = 1;
-   int     nchdb = 0;
-   int     nchlo = 0;
-   int     ndedb = 0;
-   int     ndelo = 0;
-   QBrush  fbru( colorBrown );
-   QBrush  bbru( colorWhite );
-   QTreeWidgetItem* pitems[4];
-   US_Passwd pw;
-   US_DB2    db( pw.getPasswd() );
-   US_DB2*   dbP = &db;
+   static const char* names[] =
+      { "Experiment", "Raw", "Edited", "Model", "Noise" };
 
-   da_process = (US_DataProcess*)da_model->procobj();
+   int  ityp  = desc.recType;
+   rtyp       = ( ityp >= 0  &&  ityp <= 4 ) ? names[ ityp ] : "none";
 
-   ncrecs     = da_model->recCount();
-   ndrecs     = da_model->recCountDB();
-   nlrecs     = da_model->recCountLoc();
-   ntrows     = ncrecs;
-   ncraws     = ncedts = ncmods = ncnois = 0;
-   ndraws     = ndedts = ndmods = ndnois = 0;
-   nlraws     = nledts = nlmods = nlnois = 0;
-   tw_recs->clear();
-   QProgressBar* progress = da_model->progrBar();
-   progress->setMaximum( ncrecs );
-   progress->setValue  ( 0 );
-
-   for ( int ii = 0; ii < ncrecs; ii++ )
+   switch ( US_DataModel::sync_state( desc ) )
    {
-      cdesc      = da_model->row_datadesc( ii );
-      ityp       = cdesc.recType;
-      QStringList cvals;
-      bool isDba = ( ( cdesc.recState & US_DataModel::REC_DB ) != 0 );
-      bool isLoc = ( ( cdesc.recState & US_DataModel::REC_LO ) != 0 );
-
-      if ( cdesc.recordID < 0  &&  isLoc )
-      { // local only
+      case US_DataModel::SYNC_LOCAL:
          fbru    = QBrush( colorBrown );
          rsrc    = "Local";
+         break;
 
-         if      ( ityp == 1 )
-         {
-            nlraws++; ncraws++;
-            rtyp    = "Raw";
-         }
-         else if ( ityp == 2 )
-         {
-            nledts++; ncedts++;
-            rtyp    = "Edited";
-         }
-         else if ( ityp == 3 )
-         {
-            nlmods++; ncmods++;
-            rtyp    = "Model";
-         }
-         else if ( ityp == 4 )
-         {
-            nlnois++; ncnois++;
-            rtyp    = "Noise";
-         }
-         else
-         {
-            rtyp    = "none";
-            ityp    = 0;
-         }
-      }
-
-      else if ( isDba  &&  !isLoc )
-      { // database only
+      case US_DataModel::SYNC_DB:
          fbru    = QBrush( colorBlue );
          rsrc    = "DB";
+         break;
 
-         if      ( ityp == 1 )
-         {
-            ndraws++; ncraws++;
-            rtyp    = "Raw";
-         }
-         else if ( ityp == 2 )
-         {
-            ndedts++; ncedts++;
-            rtyp    = "Edited";
-         }
-         else if ( ityp == 3 )
-         {
-            ndmods++; ncmods++;
-            rtyp    = "Model";
-         }
-         else if ( ityp == 4 )
-         {
-            ndnois++; ncnois++;
-            rtyp    = "Noise";
-         }
-         else
-         {
-            rtyp    = "none";
-            ityp    = 0;
-         }
-      }
+      case US_DataModel::SYNC_UNVERIFIED:
+         fbru    = QBrush( colorTeal );
+         rsrc    = "Unverified";
+         break;
 
-      else
-      { // both local and database
+      case US_DataModel::SYNC_INSYNC:
          fbru    = QBrush( colorGreen );
          rsrc    = "In Sync";
+         break;
 
-         if ( ! cdesc.contents.isEmpty() )
+      case US_DataModel::SYNC_CONFLICT:
+         fbru    = QBrush( colorRed );
+         rsrc    = "Conflict";
+
+         // A model or noise whose bytes differ may differ only in how its
+         // values were written out.  Asked once per record and comparison:
+         // it reads the record from both places.
+         if ( ( ityp == US_DataModel::MODEL  ||  ityp == US_DataModel::NOISE )
+              &&  da_model->dbase() != NULL  &&  desc.recordID >= 0
+              &&  ! da_model->is_demo() )
          {
-            QString cont1 = cdesc.contents.section( " ", 0, 1 ).simplified();
-            QString cont2 = cdesc.contents.section( " ", 2, 4 ).simplified();
-            if ( cont1 != cont2  &&  significant_diffs( cdesc, dbP ) )
+            QString key = desc.dataGUID + "|" + desc.contents;
+
+            if ( ! sigdiffs.contains( key ) )
+               sigdiffs.insert( key,
+                                significant_diffs( desc, da_model->dbase() ) );
+
+            if ( ! sigdiffs.value( key ) )
             {
-               fbru    = QBrush( colorRed );
-               rsrc    = "Conflict";
-DbgLv(1) << "CONFLICT cont1 cont2" << cont1 << cont2;
+               fbru = QBrush( colorGreen );
+               rsrc = "In Sync";
             }
          }
+         break;
 
-         if      ( ityp == 1 )
-         {
-            nlraws++; ndraws++; ncraws++;
-            rtyp    = "Raw";
-         }
-         else if ( ityp == 2 )
-         {
-            nledts++; ndedts++; ncedts++;
-            rtyp    = "Edited";
-         }
-         else if ( ityp == 3 )
-         {
-            nlmods++; ndmods++; ncmods++;
-            rtyp    = "Model";
-         }
-         else if ( ityp == 4 )
-         {
-            nlnois++; ndnois++; ncnois++;
-            rtyp    = "Noise";
-         }
-         else
-         {
-            rtyp    = "none";
-            ityp    = 0;
-            rsrc    = "Conflict";
-         }
-      }
+      case US_DataModel::SYNC_DUMMY:
+      default:
+         fbru    = QBrush( colorGray );
+         rsrc    = "dummy";
+         break;
+   }
+}
 
-      labl       = cdesc.label;
-      dguid      = cdesc.dataGUID;
-      subt       = cdesc.subType;
-      nchdb      = nchlo = ndedb = ndelo = 0;
+// The look of an experiment row
+//
+// An experiment in both places says what its records say, as the tree shows
+// them: in conflict when one of them is, unverified while one of them is
+// not compared yet, and in sync otherwise.  A stand-in experiment is no
+// record of either place, and looks neutral.
+void US_DataTree::run_look( int runIndex, QBrush& fbru, QString& rtyp,
+                            QString& rsrc )
+{
+   US_DataModel::RunEntry entry = da_model->run_entry( runIndex );
+   US_DataModel::DataDesc desc  = da_model->row_datadesc( entry.row );
 
-      if ( cdesc.recState == US_DataModel::NOSTAT )
-      {  // mark artificial record with color and source text
-         fbru       = QBrush( colorGray );
-         rsrc       = "dummy";
-      }
+   row_look( desc, fbru, rtyp, rsrc );
 
-      for ( int jj = ( ii + 1 ); jj < ncrecs; jj++ )
-      {  // count children and descendants from next-row until back-to-level
-         US_DataModel::DataDesc ddesc = da_model->row_datadesc( jj );
+   if ( entry.orphans )
+   {
+      fbru = QBrush( colorGray );
+      rsrc = "--";
+      return;
+   }
 
-         if ( ddesc.recType <= ityp )
-            break;   // once we've reached or passed same level, break
+   US_DataModel::SyncState state = US_DataModel::sync_state( desc );
 
-         // from database?
-         bool isDba = ( ( ddesc.recState & US_DataModel::REC_DB ) != 0 );
-         // from local?
-         bool isLoc = ( ( ddesc.recState & US_DataModel::REC_LO ) != 0 );
-         // direct child?
-         //bool child = ( ddesc.parentGUID == dguid );
-         bool child = ( ( ddesc.recType - ityp ) == 1 );
+   if ( state != US_DataModel::SYNC_UNVERIFIED  &&
+        state != US_DataModel::SYNC_INSYNC      &&
+        state != US_DataModel::SYNC_CONFLICT )
+      return;                          // in one place only
 
-         ndedb   += ( isDba          ) ? 1 : 0;  // bump db descendant count
-         nchdb   += ( isDba && child ) ? 1 : 0;  // bump db child count
-         ndelo   += ( isLoc          ) ? 1 : 0;  // bump local descendant count
-         nchlo   += ( isLoc && child ) ? 1 : 0;  // bump local child count
-      }
+   if ( ! entry.loaded )               // nothing under it to go by yet
+      return;
 
-      anch = ( ityp < 4 ) ?
-         QString( "%1, %2" ).arg( nchdb ).arg( nchlo ) : "";  // children
-      ande = ( ityp < 3 ) ?
-         QString( "%1, %2" ).arg( ndedb ).arg( ndelo ) : "";  // descendants
+   bool unverified = ! entry.verified;
+   bool conflict   = false;
 
-      QTreeWidgetItem* item;
-      int wiutype = (int)QTreeWidgetItem::UserType + ii; // type: encoded index
+   for ( int row = entry.firstRow; row >= 0  &&  row <= entry.lastRow; row++ )
+   {
+      US_DataModel::DataDesc cdsc = da_model->row_datadesc( row );
 
-      cvals << rtyp << labl << subt << rsrc << anch << ande;
+      if ( ( cdsc.recState & US_DataModel::REC_DB ) == 0  ||
+           ( cdsc.recState & US_DataModel::REC_LO ) == 0 )
+         continue;
 
-      if ( ityp == 1 )
-      {  // Raws are children of the root
-         item = new QTreeWidgetItem( tw_recs,            cvals, wiutype );
-      }
+      QBrush  cbru;
+      QString ctyp;
+      QString csrc;
+      row_look( cdsc, cbru, ctyp, csrc );
 
-      else
-      {  // others are children of the next level up
-         item = new QTreeWidgetItem( pitems[ ityp - 2 ], cvals, wiutype );
-      }
+      if ( csrc == "Conflict"   )   conflict   = true;
+      if ( csrc == "Unverified" )   unverified = true;
+   }
 
-      pitems[ ityp - 1 ] = item;  // save next parent of this type
+   if ( conflict )
+   {
+      fbru = QBrush( colorRed );
+      rsrc = "Conflict";
+   }
+
+   else if ( unverified )
+   {
+      fbru = QBrush( colorTeal );
+      rsrc = "Unverified";
+   }
+
+   else
+   {
+      fbru = QBrush( colorGreen );
+      rsrc = "In Sync";
+   }
+}
+
+// The prompter that shows message boxes
+bool US_DataTree::ask_user( int kind, const QString& title,
+                            const QString& text )
+{
+   if ( prompter )
+      return prompter( kind, title, text );
+
+   if ( kind == PROMPT_INFORM )
+   {
+      QMessageBox::information( parentw, title, text );
+      return true;
+   }
+
+   if ( kind == PROMPT_WARN )
+   {
+      QMessageBox::warning( parentw, title, text );
+      return true;
+   }
+
+   return ( QMessageBox::question( parentw, title, text,
+                                   QMessageBox::Yes | QMessageBox::No,
+                                   QMessageBox::No ) == QMessageBox::Yes );
+}
+
+void US_DataTree::setPrompter(
+      std::function< bool( int, const QString&, const QString& ) > func )
+{
+   prompter = func;
+}
+
+// build the first layer of the data tree:  one row per experiment
+//
+// The rows below an experiment are added by fill_run(), when the scan
+// reaches that experiment or when the user opens it.  A store of
+// multi-wavelength runs holds hundreds of triples per experiment, so
+// building all of that before showing anything is what made this window
+// feel slow.
+void US_DataTree::build_dtree( )
+{
+   da_process = (US_DataProcess*)da_model->procobj();
+
+   tw_recs->clear();
+   runitems.clear();
+   sigdiffs.clear();
+
+   int nruns  = da_model->runCount();
+
+   for ( int ii = 0; ii < nruns; ii++ )
+      add_run( ii );
+
+   for ( int jj = 0; jj < ntcols; jj++ )
+      tw_recs->resizeColumnToContents( jj );
+}
+
+// add the row of one experiment, and its records when they are read
+void US_DataTree::add_run( int runIndex )
+{
+   if ( runIndex != runitems.size() )   return;   // in order, once each
+
+   US_DataModel::RunEntry entry = da_model->run_entry( runIndex );
+   US_DataModel::DataDesc desc  = da_model->row_datadesc( entry.row );
+
+   QBrush  fbru( colorBrown );
+   QString rtyp;
+   QString rsrc;
+   run_look( runIndex, fbru, rtyp, rsrc );
+
+   // A source that could not count the chain yet says so with a question
+   // mark rather than a zero that is not true
+   QString counts = ( entry.dbCount < 0 ? QString( "?" )
+                                        : QString::number( entry.dbCount ) )
+                    + ", "
+                    + ( entry.loCount < 0 ? QString( "?" )
+                                          : QString::number( entry.loCount ) );
+
+   QStringList cvals;
+   cvals << rtyp << desc.label << desc.subType << rsrc << "" << counts;
+
+   QTreeWidgetItem* item = new QTreeWidgetItem(
+      tw_recs, cvals, (int)QTreeWidgetItem::UserType + entry.row );
+
+   for ( int jj = 0; jj < ntcols; jj++ )
+   {
+      item->setForeground( jj, fbru );
+      item->setBackground( jj, QBrush( colorWhite ) );
+   }
+
+   if ( ! entry.loaded )
+      item->setChildIndicatorPolicy( QTreeWidgetItem::ShowIndicator );
+
+   // A run that should not be acted on as it is says why
+   if ( ! entry.problem.isEmpty() )
+   {
+      QString tip = tr( "This run has a problem:\n%1\n\n"
+                        "Run IDs with dots in them are from older versions"
+                        " of UltraScan; new runs may use only letters,"
+                        " digits, '_' and '-'." ).arg( entry.problem );
+
+      for ( int jj = 0; jj < ntcols; jj++ )
+         item->setToolTip( jj, tip );
+
+      item->setText( 1, desc.label + " (!)" );
+   }
+
+   else if ( entry.globals )
+   {
+      for ( int jj = 0; jj < ntcols; jj++ )
+         item->setToolTip( jj, tr( "Global models, which belong to no edit"
+                                   " by design, and their noise; the gray"
+                                   " rows stand in for the edit and raw"
+                                   " data they do not have." ) );
+   }
+
+   else if ( entry.orphans )
+   {
+      for ( int jj = 0; jj < ntcols; jj++ )
+         item->setToolTip( jj, tr( "Records whose experiment or parent"
+                                   " record is missing; the gray rows stand"
+                                   " in for the missing parents." ) );
+   }
+
+   runitems << item;
+
+   if ( entry.loaded )
+      fill_run( runIndex );
+}
+
+// add the records of one experiment under its row
+void US_DataTree::fill_run( int runIndex )
+{
+   if ( runIndex < 0  ||  runIndex >= runitems.size() )   return;
+
+   US_DataModel::RunEntry entry = da_model->run_entry( runIndex );
+
+   if ( ! entry.loaded )                                  return;
+
+   QTreeWidgetItem* runitem = runitems[ runIndex ];
+
+   if ( runitem->childCount() > 0 )                       return;
+
+   runitem->setChildIndicatorPolicy(
+            QTreeWidgetItem::DontShowIndicatorWhenChildless );
+
+   QTreeWidgetItem* pitems[ 5 ];
+   pitems[ 0 ] = runitem;
+   pitems[ 1 ] = runitem;
+   pitems[ 2 ] = runitem;
+   pitems[ 3 ] = runitem;
+   pitems[ 4 ] = runitem;
+
+   for ( int row = entry.firstRow; row >= 0  &&  row <= entry.lastRow; row++ )
+   {
+      US_DataModel::DataDesc desc = da_model->row_datadesc( row );
+      int     ityp = desc.recType;
+
+      if ( ityp < 1  ||  ityp > 4 )   continue;
+
+      QBrush  fbru( colorBrown );
+      QString rtyp;
+      QString rsrc;
+      row_look( desc, fbru, rtyp, rsrc );
+
+      // count the children and the descendants of this record
+      QString anch;
+      QString ande;
+      row_counts( row, entry.lastRow, anch, ande );
+
+      QStringList cvals;
+      cvals << rtyp << desc.label << desc.subType << rsrc << anch << ande;
+
+      QTreeWidgetItem* item = new QTreeWidgetItem(
+         pitems[ ityp - 1 ], cvals, (int)QTreeWidgetItem::UserType + row );
+
+      pitems[ ityp ] = item;
 
       for ( int jj = 0; jj < ntcols; jj++ )
       {
          item->setForeground( jj, fbru );
-         item->setBackground( jj, bbru );
+         item->setBackground( jj, QBrush( colorWhite ) );
+      }
+   }
+
+   refresh_run_item( runIndex );
+}
+
+// The "Children" and "Descendants" texts of one record row
+void US_DataTree::row_counts( int row, int lastRow, QString& anch,
+                              QString& ande )
+{
+   int ityp  = da_model->row_datadesc( row ).recType;
+   int kchdb = 0;
+   int kchlo = 0;
+   int kdedb = 0;
+   int kdelo = 0;
+
+   for ( int jj = row + 1; jj <= lastRow; jj++ )
+   {
+      US_DataModel::DataDesc ddesc = da_model->row_datadesc( jj );
+
+      if ( ddesc.recType <= ityp )   break;
+
+      bool isDba = ( ( ddesc.recState & US_DataModel::REC_DB ) != 0 );
+      bool isLoc = ( ( ddesc.recState & US_DataModel::REC_LO ) != 0 );
+      bool child = ( ( ddesc.recType - ityp ) == 1 );
+
+      kdedb   += ( isDba          ) ? 1 : 0;
+      kchdb   += ( isDba && child ) ? 1 : 0;
+      kdelo   += ( isLoc          ) ? 1 : 0;
+      kchlo   += ( isLoc && child ) ? 1 : 0;
+   }
+
+   anch = ( ityp < 4 ) ? QString( "%1, %2" ).arg( kchdb ).arg( kchlo ) : "";
+   ande = ( ityp < 3 ) ? QString( "%1, %2" ).arg( kdedb ).arg( kdelo ) : "";
+}
+
+// Show an experiment's records again, from the rows it was merged into anew
+//
+// The items of its records go, and they may be selected, or be the item a
+// context menu is being opened for: each is replaced there by the new item
+// of the same record.
+void US_DataTree::refill_run( int runIndex )
+{
+   if ( runIndex < 0  ||  runIndex >= runitems.size() )   return;
+
+   QTreeWidgetItem* runitem = runitems[ runIndex ];
+
+   QList< QTreeWidgetItem* > olds;
+   QList< QTreeWidgetItem* > stack;
+
+   for ( int ii = 0; ii < runitem->childCount(); ii++ )
+      stack << runitem->child( ii );
+
+   while ( ! stack.isEmpty() )
+   {
+      QTreeWidgetItem* item = stack.takeFirst();
+      olds << item;
+
+      for ( int ii = 0; ii < item->childCount(); ii++ )
+         stack << item->child( ii );
+   }
+
+   QSet< QString > selkeys;          // selected in the tree
+   QSet< QString > actkeys;          // in the selection an action uses
+   QString         curkey;
+   bool            curgone = false;
+
+   for ( int ii = 0; ii < olds.size(); ii++ )
+   {
+      QTreeWidgetItem* item = olds[ ii ];
+      QString          key  = item_key( item );
+
+      if ( item->isSelected() )         selkeys << key;
+      if ( selitems.contains( item ) )  actkeys << key;
+
+      if ( item == tw_item )
+      {
+         curkey  = key;
+         curgone = true;
       }
 
-      progress->setValue( ii + 1 );
-      qApp->processEvents();
+      selitems.removeAll( item );
    }
 
-   // resize so all of columns are shown
-   tw_recs->expandAll();                      // expand the entire tree
+   if ( curgone )
+      tw_item = NULL;
+
+   qDeleteAll( runitem->takeChildren() );
+
+   if ( da_model->run_entry( runIndex ).loaded )
+      fill_run( runIndex );
+   else
+      refresh_run_item( runIndex );
+
+   // The same records, in their new items
+   for ( int ii = 0; ii < runitem->childCount(); ii++ )
+      stack << runitem->child( ii );
+
+   while ( ! stack.isEmpty() )
+   {
+      QTreeWidgetItem* item = stack.takeFirst();
+      QString          key  = item_key( item );
+
+      for ( int ii = 0; ii < item->childCount(); ii++ )
+         stack << item->child( ii );
+
+      if ( selkeys.contains( key ) )
+         item->setSelected( true );
+
+      if ( actkeys.contains( key )  &&  ! selitems.contains( item ) )
+         selitems << item;
+
+      if ( curgone  &&  tw_item == NULL  &&  key == curkey )
+         tw_item = item;
+   }
+}
+
+// What a record's item is found again by: its type and GUID, or for a
+// filler, which has no GUID, its label
+QString US_DataTree::item_key( QTreeWidgetItem* item )
+{
+   int row = item->type() - (int)QTreeWidgetItem::UserType;
+
+   if ( row < 0  ||  row >= da_model->recCount() )   return QString();
+
+   US_DataModel::DataDesc desc = da_model->row_datadesc( row );
+   QString guid = desc.dataGUID.simplified().toLower();
+
+   return QString::number( desc.recType ) + ":"
+          + ( guid.isEmpty() ? "~" + desc.label : guid );
+}
+
+// Colour an experiment row from what is under it now, and show its counts
+void US_DataTree::refresh_run_item( int runIndex )
+{
+   if ( runIndex < 0  ||  runIndex >= runitems.size() )   return;
+
+   QBrush  fbru( colorBrown );
+   QString rtyp;
+   QString rsrc;
+   run_look( runIndex, fbru, rtyp, rsrc );
+
+   QTreeWidgetItem* item = runitems[ runIndex ];
+   item->setText( 3, rsrc );
 
    for ( int jj = 0; jj < ntcols; jj++ )
+      item->setForeground( jj, fbru );
+
+   US_DataModel::RunEntry entry = da_model->run_entry( runIndex );
+
+   if ( ! entry.loaded )   return;           // the listing's counts stand
+
+   // the counts on the experiment row are what is really under it -- the
+   // model counted the descendants the same way; the raws are its children
+   int nchdb = 0;
+   int nchlo = 0;
+
+   for ( int row = entry.firstRow; row >= 0  &&  row <= entry.lastRow; row++ )
    {
-      tw_recs->resizeColumnToContents( jj );  // resize to fit contents
+      US_DataModel::DataDesc desc = da_model->row_datadesc( row );
+
+      if ( desc.recType != US_DataModel::RAW )   continue;
+
+      nchdb  += ( ( desc.recState & US_DataModel::REC_DB ) != 0 ) ? 1 : 0;
+      nchlo  += ( ( desc.recState & US_DataModel::REC_LO ) != 0 ) ? 1 : 0;
    }
 
-   tw_recs->collapseAll();                    // collapse the entire tree
+   item->setText( 4, QString( "%1, %2" ).arg( nchdb ).arg( nchlo ) );
+   item->setText( 5, QString( "%1, %2" ).arg( entry.dbCount )
+                                        .arg( entry.loCount ) );
+}
+
+/* Colour one experiment's rows again.
+
+   A scan reads the checksums after the tree is built, so a row that read
+   as unverified becomes in sync or in conflict once its records have
+   actually been compared -- and an action changes where a record is.
+*/
+void US_DataTree::refresh_run( int runIndex )
+{
+   if ( runIndex < 0  ||  runIndex >= runitems.size() )   return;
+
+   US_DataModel::RunEntry entry = da_model->run_entry( runIndex );
+
+   if ( ! entry.loaded )                                  return;
+
+   QList< QTreeWidgetItem* > stack;
+
+   for ( int ii = 0; ii < runitems[ runIndex ]->childCount(); ii++ )
+      stack << runitems[ runIndex ]->child( ii );
+
+   while ( ! stack.isEmpty() )
+   {
+      QTreeWidgetItem* item = stack.takeFirst();
+
+      for ( int ii = 0; ii < item->childCount(); ii++ )
+         stack << item->child( ii );
+
+      int row = item->type() - (int)QTreeWidgetItem::UserType;
+
+      if ( row < 0  ||  row >= da_model->recCount() )   continue;
+
+      US_DataModel::DataDesc desc = da_model->row_datadesc( row );
+
+      QBrush  fbru( colorBrown );
+      QString rtyp;
+      QString rsrc;
+      QString anch;
+      QString ande;
+
+      row_look  ( desc, fbru, rtyp, rsrc );
+      row_counts( row, entry.lastRow, anch, ande );
+
+      item->setText( 3, rsrc );
+      item->setText( 4, anch );
+      item->setText( 5, ande );
+
+      for ( int jj = 0; jj < ntcols; jj++ )
+         item->setForeground( jj, fbru );
+   }
+
+   refresh_run_item( runIndex );
+}
+
+
+// make sure an experiment's records are read, outside a scan
+bool US_DataTree::ensure_loaded( int runIndex )
+{
+   if ( da_model->run_entry( runIndex ).loaded )   return true;
+
+   if ( ! da_model->scan_run( runIndex ) )        return false;
+
+   fill_run( runIndex );
+   return true;
+}
+
+// read an experiment the user opened, if the scan has not reached it yet
+void US_DataTree::item_opened( QTreeWidgetItem* item )
+{
+   if ( item == NULL )                            return;
+   if ( item->parent() != NULL )                  return;  // not an experiment
+
+   int runIndex = runitems.indexOf( item );
+
+   if ( runIndex < 0 )                            return;
+
+   if ( da_model->scan_active()  ||  da_model->is_busy() )
+   {  // A scan is running: what the user opened goes to the front of its
+      // queues, and the scan loop gets to it next.  Reading it here would
+      // run one read inside another.
+      da_model->request_run   ( runIndex );
+      da_model->request_verify( runIndex );
+      return;
+   }
+
+   ensure_loaded( runIndex );
+
+   // Comparing is the slow part; it is only queued here, and whoever runs
+   // the queue does it without holding up the expansion
+   da_model->request_verify( runIndex );
+}
+
+// Take the selection a context menu acts on
+bool US_DataTree::context_selection( QTreeWidgetItem* item )
+{
+   if ( item == NULL )                                     return false;
+   if ( da_model->scan_active()  ||  da_model->is_busy() ) return false;
+
+   // An experiment acts on its records, so they have to be read.  Reading
+   // one can merge another experiment again, whose items are then new ones
+   // (refill_run): what the items are is taken first, and the item and the
+   // selection only after the reads.
+   QList< QTreeWidgetItem* > sel = tw_recs->selectedItems();
+   QList< int >              runs;
+
+   if ( ! sel.contains( item ) )
+      sel << item;
+
+   for ( int ii = 0; ii < sel.size(); ii++ )
+   {
+      int runIndex = ( sel[ ii ]->parent() == NULL )
+                   ? runitems.indexOf( sel[ ii ] ) : -1;
+
+      if ( runIndex >= 0  &&  ! runs.contains( runIndex ) )
+         runs << runIndex;
+   }
+
+   tw_item  = item;
+   selitems = sel;
+
+   for ( int ii = 0; ii < runs.size(); ii++ )
+      ensure_loaded( runs[ ii ] );
+
+   if ( tw_item == NULL )            // its record is no longer shown
+      return false;
+
+   selitems = tw_recs->selectedItems();
+
+   if ( ! selitems.contains( tw_item ) )
+      selitems << tw_item;
+
+   return true;
+}
+
+QTreeWidgetItem* US_DataTree::current_item( void ) const
+{
+   return tw_item;
 }
 
 // set up and display a row context menu
 void US_DataTree::row_context_menu( QTreeWidgetItem* item )
 {
-   selitems = tw_recs->selectedItems();
+   if ( ! context_selection( item ) )                      return;
+
+   item     = tw_item;
    int nsel = selitems.size();
 DbgLv(1) << "    context_menu nbr sel rows" << selitems.size();
-   tw_item  = item;
    int irow = item->type() - (int)QTreeWidgetItem::UserType;
 
    if ( nsel > 1 )
@@ -298,9 +720,7 @@ DbgLv(1) << "    context_menu nbr sel rows" << selitems.size();
 
 DbgLv(2) << "    context_menu row" << irow+1;
    da_model->setCurrent( irow );
-DbgLv(2) << "    context_menu RTN setCurrent";
    cdesc    = da_model->current_datadesc();
-DbgLv(2) << "    context_menu RTN current_datadesc";
 
    QString tupload = tr( " upload record to DB" );
    QString tdnload = tr( " download record to local" );
@@ -319,8 +739,8 @@ DbgLv(2) << "    context_menu RTN current_datadesc";
       tshdeta.replace( tr( "record" ), tr( "records"  ) );
    }
 
-   if ( cdesc.recType == 1 )
-   {  // Raw:  "record/branches" to "descendants"
+   if ( cdesc.recType <= US_DataModel::RAW )
+   {  // Experiment or Raw:  "record/branches" to "descendants"
       tupload.replace( tr( "record"   ), tr( "descendants" ) );
       tupload.replace( tr( "branches" ), tr( "descendants" ) );
       tdnload.replace( tr( "record"   ), tr( "descendants" ) );
@@ -333,34 +753,14 @@ DbgLv(2) << "    context_menu RTN current_datadesc";
       tbothrm.replace( tr( "branch"   ), tr( "descendants" ) );
    }
 
-   QMenu*   cmenu   = new QMenu();
-   QAction* aupload = new QAction( tupload, parentw );
-   QAction* adnload = new QAction( tdnload, parentw );
-   QAction* adbasrm = new QAction( tdbasrm, parentw );
-   QAction* aloclrm = new QAction( tloclrm, parentw );
-   QAction* abothrm = new QAction( tbothrm, parentw );
-   QAction* ashdeta = new QAction( tshdeta, parentw );
-
-   cmenu->addAction( aupload );
-   cmenu->addAction( adnload );
-   cmenu->addAction( adbasrm );
-   cmenu->addAction( aloclrm );
-   cmenu->addAction( abothrm );
-   cmenu->addAction( ashdeta );
-DbgLv(2) << "    context_menu RTN addAction";
-
-   connect( aupload, &QAction::triggered,
-            this,    &US_DataTree::item_upload );
-   connect( adnload, &QAction::triggered,
-            this,    &US_DataTree::item_download );
-   connect( adbasrm, &QAction::triggered,
-            this,    &US_DataTree::item_remove_db );
-   connect( aloclrm, &QAction::triggered,
-            this,    &US_DataTree::item_remove_loc );
-   connect( abothrm, &QAction::triggered,
-            this,    &US_DataTree::item_remove_all );
-   connect( ashdeta, &QAction::triggered,
-            this,    &US_DataTree::item_details );
+   // The menu and its actions live only as long as this call
+   QMenu    cmenu;
+   QAction* aupload = cmenu.addAction( tupload );
+   QAction* adnload = cmenu.addAction( tdnload );
+   QAction* adbasrm = cmenu.addAction( tdbasrm );
+   QAction* aloclrm = cmenu.addAction( tloclrm );
+   QAction* abothrm = cmenu.addAction( tbothrm );
+   QAction* ashdeta = cmenu.addAction( tshdeta );
 
    // disable menu items that are not appropriate to the record
 
@@ -378,24 +778,40 @@ DbgLv(2) << "    context_menu RTN addAction";
       abothrm->setEnabled( false );
    }
 
-   // Disable upload if parent not in the DB
-   int jrow = irow;
-   US_DataModel::DataDesc jdesc = da_model->row_datadesc( jrow );
+   // Upload needs the parent in the DB.  An experiment or a raw record is
+   // not uploaded itself -- its descendants are -- so for those it is the
+   // record itself that has to be in the DB for them to have a parent there.
+   int prow = ( cdesc.recType <= US_DataModel::RAW )
+            ? irow : da_model->parent_row( irow );
 
-   while ( --jrow > 0  &&  cdesc.recType > 1 )
-   {
-      jdesc = da_model->row_datadesc( jrow );
-      if ( jdesc.recType < cdesc.recType )
-         break;
-   }
-
-   if ( ( jdesc.recState & US_DataModel::REC_DB ) == 0 )
+   if ( prow < 0  ||
+        ( da_model->row_datadesc( prow ).recState
+          & US_DataModel::REC_DB ) == 0 )
       aupload->setEnabled( false );
 
-   // display the context menu and act on selection
-DbgLv(2) << "    context_menu CALL cmenu exec";
-   cmenu->exec( QCursor::pos() );
+   // The sample tree is no data anywhere: it can only be looked at
+   if ( da_model->is_demo() )
+   {
+      aupload->setEnabled( false );
+      adnload->setEnabled( false );
+      adbasrm->setEnabled( false );
+      aloclrm->setEnabled( false );
+      abothrm->setEnabled( false );
+   }
 
+   // display the context menu and act on selection
+   QAction* chosen = cmenu.exec( QCursor::pos() );
+
+   // While the menu was up the window ran its background reads, which can
+   // show an experiment anew: the item is then the new one, or gone
+   if      ( chosen == NULL )      return;
+   else if ( tw_item == NULL )     return;
+   else if ( chosen == aupload )   item_upload();
+   else if ( chosen == adnload )   item_download();
+   else if ( chosen == adbasrm )   item_remove_db();
+   else if ( chosen == aloclrm )   item_remove_loc();
+   else if ( chosen == abothrm )   item_remove_all();
+   else if ( chosen == ashdeta )   item_details();
 }
 
 // open a dialog and display data tree help
@@ -406,44 +822,112 @@ void US_DataTree::dtree_help()
    QString mtext =
       tr( "Data Tree Columns --\n\n" ) +
       tr( " \"Type\"       :  Type of data set record -\n" ) +
-      tr( "                  \"Raw\", \"Edited\", \"Model\" or \"Noise\".\n") +
+      tr( "                  \"Experiment\", \"Raw\", \"Edited\",\n" ) +
+      tr( "                  \"Model\" or \"Noise\".  The experiments are\n" ) +
+      tr( "                  the top level; everything else hangs off one.\n" ) +
       tr( " \"Label\"      :  Short description of specific record.\n" ) +
       tr( " \"SubType\"    :  Record-specific type (e.g. \"2DSA\", \"TI\").\n")+
       tr( " \"Source\"     :  Location/state (see color legend below)-\n" ) +
-      tr( "                  \"DB\"        (Blue,  database); \n" ) +
-      tr( "                  \"Local\"     (Brown, local disk); \n" ) +
-      tr( "                  \"In Sync\"   (Green, both, consistent); \n" ) +
-      tr( "                  \"Conflict\"  (Red,   both, inconsistent); \n" ) +
-      tr( "                  \"dummy\"     (Gray,  missing parent filler).\n") +
+      tr( "                  \"DB\"         (Blue,  database); \n" ) +
+      tr( "                  \"Local\"      (Brown, local disk); \n" ) +
+      tr( "                  \"Unverified\" (Teal,  both, not compared yet);\n" ) +
+      tr( "                  \"In Sync\"    (Green, both, consistent); \n" ) +
+      tr( "                  \"Conflict\"   (Red,   both, inconsistent); \n" ) +
+      tr( "                  \"dummy\"      (Gray,  missing parent filler).\n") +
       tr( " \"Children    :  Number of Children of this row\n" ) +
       tr( "  DB, Local\"       from Database, Local-disk.\n" ) +
       tr( " \"Descendants :  Number of Descendants of this row\n" ) +
-      tr( "  DB, Local\"       from Database, Local-disk.\n\n" ) +
+      tr( "  DB, Local\"       from Database, Local-disk.  On an experiment\n" ) +
+      tr( "                    not read yet this is what the listing says\n" ) +
+      tr( "                    is under it (\"?\" when it cannot say).\n\n" ) +
       tr( "Tree Row Color Legend --\n\n" ) +
       tr( "  Blue   :  This record exists for database only.\n" ) +
       tr( "  Brown  :  This record exists for local disk only.\n" ) +
+      tr( "  Teal   :  This record exists for both, and its two copies\n" ) +
+      tr( "              have not been compared yet.  A scan compares\n" ) +
+      tr( "              them after the tree is complete.\n" ) +
       tr( "  Green  :  This record exists and is consistent\n" ) +
       tr( "              for both database and local.\n" ) +
-      tr( "  Red    :  This record exists for both, but is inconsistent.\n")+
-      tr( "  Gray   :  This record is a filler for a missing parent.\n\n" ) +
+      tr( "  Red    :  This record exists for both, but is inconsistent,\n")+
+      tr( "              or one copy could not be read to compare it.\n")+
+      tr( "  Gray   :  This record is a filler for a missing parent.\n" ) +
+      tr( "              Records whose parent is missing are shown under\n" ) +
+      tr( "              such fillers, under an experiment row of their\n" ) +
+      tr( "              own, \"(records of no experiment)\", so they can\n" ) +
+      tr( "              still be removed -- all but raw data, which the\n" ) +
+      tr( "              database removes only with its experiment, and\n" ) +
+      tr( "              whose experiment is missing or not yours.  Global\n" ) +
+      tr( "              models, which have no edit by design, are under\n" ) +
+      tr( "              \"(global models)\".\n" ) +
+      tr( "              These two rows are no record themselves, and\n" ) +
+      tr( "              their Source reads \"--\"; removing from one of\n" ) +
+      tr( "              them asks first, saying how many records go.\n" ) +
+      tr( "              A record whose parent is only in the other place\n" ) +
+      tr( "              is shown under that parent, paired with its\n" ) +
+      tr( "              other copy.\n\n" ) +
+      tr( "  An experiment row in both places reads Conflict when any\n" ) +
+      tr( "  record under it does, Unverified while any is not compared,\n" ) +
+      tr( "  and In Sync otherwise.  A run marked \"(!)\" has a problem;\n" ) +
+      tr( "  hold the mouse over it to see which.  Run IDs with dots are\n" ) +
+      tr( "  legacy: still shown, no longer accepted for new runs.  When\n" ) +
+      tr( "  its local directory is not named after it, nothing is\n" ) +
+      tr( "  uploaded or downloaded for it; its records can still be\n" ) +
+      tr( "  removed.  Where another directory beside the run's own holds\n" ) +
+      tr( "  the same run (\"Copy of MyRun\", \"Backup_MyRun\"), the\n" ) +
+      tr( "  directory named after the run is the run; the copy is shown\n" ) +
+      tr( "  as a run marked \"(!)\" of its own, and nothing at all is\n" ) +
+      tr( "  done for it.\n\n" ) +
+      tr( "Scan Progress --\n\n" ) +
+      tr( "  The upper bar counts the steps of the phase that is running\n" ) +
+      tr( "  (listing, reading, comparing); the lower bar the work inside\n" ) +
+      tr( "  the experiment being read.  The window takes input between\n" ) +
+      tr( "  experiments; a database query holds it up while it runs.\n" ) +
+      tr( "  While the whole local store is read it is redrawn but takes\n" ) +
+      tr( "  no input; with a run selected, that run's local files are\n" ) +
+      tr( "  read in the window itself, which is not redrawn until then.\n" ) +
+      tr( "  Opening an experiment while a scan runs moves it to the front\n" ) +
+      tr( "  of the queue.  Closing the window stops the scan.  A read\n" ) +
+      tr( "  that fails is tried once more; after a lost database\n" ) +
+      tr( "  connection it is not, since the window does not connect\n" ) +
+      tr( "  again: close it and open it again.\n\n" ) +
       tr( "Tree Entry Processes --\n\n" ) +
       tr( "  A right-mouse-button click on any cell of a row pops up\n" ) +
       tr( "  a context menu with actions to take for the record.\n" ) +
       tr( "  Menu items will only be enabled if the action is\n" ) +
       tr( "  appropriate for the particular record shown in the row.\n" ) +
+      tr( "  On an experiment or a raw record, an action applies to\n" ) +
+      tr( "  everything under it.  No action is offered while a scan runs,\n" ) +
+      tr( "  nor on the sample tree shown before the first scan.\n" ) +
       tr( "  Possible actions are:\n" ) +
       tr( "    \"upload to DB\"\n" ) +
-      tr( "       -> Upload this local record to the database;\n" ) +
+      tr( "       -> Upload this local record to the database.  A record\n" ) +
+      tr( "          the database holds already is replaced only when the\n" ) +
+      tr( "          two copies differ, and then not by an older copy.\n" ) +
       tr( "    \"download to local\"\n" ) +
-      tr( "       -> Download this DB record to local disk.\n" ) +
+      tr( "       -> Download this DB record to local disk; its parent\n" ) +
+      tr( "          has to be on local disk, or be downloaded with it.\n" ) +
+      tr( "  A record changed by an action is compared again on its own.\n" ) +
+
       tr( "    \"remove from DB\"\n" ) +
-      tr( "       -> Remove this record from the database.\n" ) +
+      tr( "       -> Remove this record from the database.  Removing an\n" ) +
+      tr( "          edit also removes the noise of another edit's\n" ) +
+      tr( "          model that was computed from it (the GMP checks\n" ) +
+      tr( "          apply to it too); an older database keeps the edit\n" ) +
+      tr( "          while that noise refers to it, and your own such\n" ) +
+      tr( "          noise is then removed first.  It is all done in\n" ) +
+      tr( "          transactions.  Such noise of another investigator,\n" ) +
+      tr( "          or of the GMP framework, keeps the edit; then\n" ) +
+      tr( "          nothing is removed, and the message says why.  After a\n" ) +
+      tr( "          failure what the database holds is read back, and\n" ) +
+      tr( "          the rows show it.  When a record is not removed,\n" ) +
+      tr( "          nothing under it is removed either, and the\n" ) +
+      tr( "          message lists what was and was not removed.\n" ) +
       tr( "    \"remove from local\"\n" ) +
-      tr( "       > Remove this record from local disk.\n" ) +
+      tr( "       -> Remove this record from local disk.\n" ) +
       tr( "    \"remove both\"\n" ) +
       tr( "       -> Remove this record from both DB and local.\n" ) +
       tr( "    \"show details\"\n" ) +
-      tr( "       -> Pop up a text dialog with details about the record.\n" ) +
+      tr( "       -> Pop up a text dialog with details about the record.\n\n" ) +
       tr( "Detailed Help --\n\n" ) +
       tr( "  Click on the \"Help\" button for standard documentation,\n" ) +
       tr( "  including sample images and details on all GUI elements.\n" );
@@ -458,192 +942,93 @@ void US_DataTree::dtree_help()
    editd->show();
 }
 
+// Ask whether to go ahead with an action, then do it and report
+//
+// The window's background reads are held off from the question to the end
+// of the action: one could merge an experiment again, and the rows the
+// question was asked about, and the action works on, would be ones left
+// behind.  What was asked for meanwhile is done after.
+int US_DataTree::confirm_and_act( QString item_exs, QString item_act )
+{
+   if ( tw_item == NULL )   return ACT_NOTHING;
+
+   int stat = ACT_CANCELLED;
+
+   {
+      ReadHold hold( da_model );
+
+      int irow = tw_item->type() - (int)QTreeWidgetItem::UserType;
+      da_model->setCurrent( irow );
+      cdesc    = da_model->current_datadesc();
+
+      record_type( cdesc.recType, item_act );
+
+      if ( investigator_refused() )
+         stat = ACT_REFUSED;
+
+      else if ( ask_user( PROMPT_CONFIRM, item_act,
+                          action_text( item_exs, item_act ) ) )
+         stat = do_actions( item_exs, item_act );
+   }
+
+   action_result( stat, item_act );
+   return stat;
+}
+
+// True, after saying so, when the investigator was changed since the
+// database was read: what the tree shows is the previous one's
+bool US_DataTree::investigator_refused( void )
+{
+   if ( ! da_model->investigator_changed() )   return false;
+
+   ask_user( PROMPT_INFORM, tr( "Investigator Changed" ),
+             tr( "The investigator was changed since the database was"
+                 " read: what this window shows is the previous"
+                 " investigator's records, so nothing was done.  Click"
+                 " \"Scan Data\" to see the data of the investigator"
+                 " selected now." ) );
+   return true;
+}
+
 // perform item upload action
 void US_DataTree::item_upload()
 {
-   QMessageBox msgBox( parentw );
-   QString     item_exs = tr( "Local disk only" );
-   QString     item_act = tr( "DB create" );
-DbgLv(2) << "ITEM Upload";
    int irow = tw_item->type() - (int)QTreeWidgetItem::UserType;
-   da_model->setCurrent( irow );
-   cdesc    = da_model->current_datadesc();
+   bool both = ( ( da_model->row_datadesc( irow ).recState
+                   & US_DataModel::REC_DB ) != 0 );
 
-   if ( ( cdesc.recState & US_DataModel::REC_DB ) != 0 )
-   {
-      item_exs = tr( "both DB and Local" );
-      item_act = tr( "DB replace" );
-   }
-
-   record_type( cdesc.recType, item_act );
-
-   msgBox.setWindowTitle( item_act );
-   msgBox.setTextFormat(  Qt::RichText );
-   msgBox.setText( action_text( item_exs, item_act ) );
-   msgBox.addButton( QMessageBox::No );
-   msgBox.addButton( QMessageBox::Yes );
-   msgBox.setDefaultButton( QMessageBox::No );
-
-   if ( msgBox.exec() == QMessageBox::Yes )
-   {
-DbgLv(2) << " ITEM ACTION: YES";
-      int stat1  = do_actions( item_exs, item_act );
-
-      action_result( stat1, item_act );
-   }
-
-   else
-   {
-DbgLv(2) << " ITEM ACTION: NO";
-      action_result( 999, item_act );
-   }
-
+   confirm_and_act( both ? tr( "both DB and Local" ) : tr( "Local disk only" ),
+                    both ? tr( "DB replace" )        : tr( "DB create" ) );
 }
 
 // perform item download action
 void US_DataTree::item_download()
 {
-   QMessageBox msgBox( parentw );
-   QString     item_exs = tr( "Database only" );
-   QString     item_act = tr( "Local file create" );
-DbgLv(2) << "ITEM Download";
    int irow = tw_item->type() - (int)QTreeWidgetItem::UserType;
-   da_model->setCurrent( irow );
-   cdesc    = da_model->current_datadesc();
+   bool both = ( ( da_model->row_datadesc( irow ).recState
+                   & US_DataModel::REC_LO ) != 0 );
 
-   if ( ( cdesc.recState & US_DataModel::REC_LO ) != 0 )
-   {
-      item_exs = tr( "both DB and Local" );
-      item_act = tr( "Local file replace" );
-   }
-
-   record_type( cdesc.recType, item_act );
-
-   msgBox.setWindowTitle( item_act );
-   msgBox.setTextFormat(  Qt::RichText );
-   msgBox.setText( action_text( item_exs, item_act ) );
-   msgBox.addButton( QMessageBox::No );
-   msgBox.addButton( QMessageBox::Yes );
-   msgBox.setDefaultButton( QMessageBox::No );
-
-   if ( msgBox.exec() == QMessageBox::Yes )
-   {
-DbgLv(2) << " ITEM ACTION: YES";
-      int stat1  = do_actions( item_exs, item_act );
-
-      action_result( stat1, item_act );
-   }
-
-   else
-   {
-DbgLv(2) << " ITEM ACTION: NO";
-      action_result( 999, item_act );
-   }
+   confirm_and_act( both ? tr( "both DB and Local" ) : tr( "Database only" ),
+                    both ? tr( "Local file replace" )
+                         : tr( "Local file create" ) );
 }
 
 // perform item remove-from-db action
 void US_DataTree::item_remove_db()
 {
-DbgLv(2) << "ITEM Remove from DB";
-   QString     item_exs = tr( "Database only" );
-   QString     item_act = tr( "DB-only remove" );
-   QMessageBox msgBox( parentw );
-   int irow = tw_item->type() - (int)QTreeWidgetItem::UserType;
-   da_model->setCurrent( irow );
-   cdesc    = da_model->current_datadesc();
-
-   record_type( cdesc.recType, item_act );
-
-   msgBox.setWindowTitle( item_act );
-   msgBox.setTextFormat(  Qt::RichText );
-   msgBox.setText( action_text( item_exs, item_act ) );
-   msgBox.addButton( QMessageBox::No );
-   msgBox.addButton( QMessageBox::Yes );
-   msgBox.setDefaultButton( QMessageBox::No );
-
-   if ( msgBox.exec() == QMessageBox::Yes )
-   {
-DbgLv(2) << " ITEM ACTION: YES";
-      int stat1  = do_actions( item_exs, item_act );
-
-      action_result( stat1, item_act );
-   }
-
-   else
-   {
-DbgLv(2) << " ITEM ACTION: NO";
-      action_result( 999, item_act );
-   }
+   confirm_and_act( tr( "Database only" ), tr( "DB-only remove" ) );
 }
 
 // perform item remove-from-local action
 void US_DataTree::item_remove_loc()
 {
-DbgLv(2) << "ITEM Remove from Local";
-   QString     item_exs = tr( "Local disk only" );
-   QString     item_act = tr( "Local-only remove" );
-   QMessageBox msgBox( parentw );
-   int irow = tw_item->type() - (int)QTreeWidgetItem::UserType;
-   da_model->setCurrent( irow );
-   cdesc    = da_model->current_datadesc();
-
-   record_type( cdesc.recType, item_act );
-
-   msgBox.setWindowTitle( item_act );
-   msgBox.setTextFormat(  Qt::RichText );
-   msgBox.setText( action_text( item_exs, item_act ) );
-   msgBox.addButton( QMessageBox::No );
-   msgBox.addButton( QMessageBox::Yes );
-   msgBox.setDefaultButton( QMessageBox::No );
-
-   if ( msgBox.exec() == QMessageBox::Yes )
-   {
-DbgLv(2) << " ITEM ACTION: YES";
-      int stat1  = do_actions( item_exs, item_act );
-
-      action_result( stat1, item_act );
-   }
-
-   else
-   {
-DbgLv(2) << " ITEM ACTION: NO";
-      action_result( 999, item_act );
-   }
+   confirm_and_act( tr( "Local disk only" ), tr( "Local-only remove" ) );
 }
 
 // perform item remove-from-all action
 void US_DataTree::item_remove_all()
 {
-DbgLv(2) << "ITEM Remove Both DB and Local";
-   QString     item_exs = tr( "both DB and Local" );
-   QString     item_act = tr( "DB+Local remove" );
-   QMessageBox msgBox( parentw );
-   int irow = tw_item->type() - (int)QTreeWidgetItem::UserType;
-   da_model->setCurrent( irow );
-   cdesc    = da_model->current_datadesc();
-
-   record_type( cdesc.recType, item_act );
-
-   msgBox.setWindowTitle( item_act );
-   msgBox.setTextFormat(  Qt::RichText );
-   msgBox.setText( action_text( item_exs, item_act ) );
-   msgBox.addButton( QMessageBox::No );
-   msgBox.addButton( QMessageBox::Yes );
-   msgBox.setDefaultButton( QMessageBox::No );
-
-   if ( msgBox.exec() == QMessageBox::Yes )
-   {
-DbgLv(2) << " ITEM ACTION: YES";
-      int stat1  = do_actions( item_exs, item_act );
-
-      action_result( stat1, item_act );
-   }
-
-   else
-   {
-DbgLv(2) << " ITEM ACTION: NO";
-      action_result( 999, item_act );
-   }
+   confirm_and_act( tr( "both DB and Local" ), tr( "DB+Local remove" ) );
 }
 
 // Perform item details action
@@ -655,7 +1040,8 @@ void US_DataTree::item_details(  )
       return;
    }
 
-   const char* rtyps[]  = { "RawData", "EditedData", "Model", "Noise" };
+   const char* rtyps[]  = { "Experiment", "RawData", "EditedData",
+                            "Model", "Noise" };
    QString     fileexts = tr( "Text,Log files (*.txt *.log)"
                               ";;All files (*)" );
    int         irow     = tw_item->type() - (int)QTreeWidgetItem::UserType;
@@ -667,7 +1053,7 @@ DbgLv(2) << "DT: i_details row" << irow;
    QString mtext =
       tr( "Data Tree Item at Row %1 -- \n\n" ).arg( irow ) +
       tr( "  Type           : %1 (%2)\n" )
-         .arg( cdesc.recType ).arg( rtyps[ cdesc.recType - 1 ] ) +
+         .arg( cdesc.recType ).arg( rtyps[ cdesc.recType ] ) +
       tr( "  SubType        : " ) + cdesc.subType + "\n" +
       tr( "  Label          : " ) + cdesc.label + "\n" +
       tr( "  Description    : " ) + cdesc.description + "\n" +
@@ -695,27 +1081,6 @@ DbgLv(2) << "DT: i_details row" << irow;
       mtext = mtext + 
          tr( "  Content Checks : " ) + cont1 + "\n" +
              "                   "   + cont2 + "\n";
-#if 0
-if (cdesc.recType==3 && cont1!=cont2) {
-US_Passwd pw;
-US_DB2* dbP = new US_DB2( pw.getPasswd() );
-US_Model model1;
-US_Model model2;
-QString tmpdir=US_Settings::tmpDir();
-model1.load( QString::number(cdesc.recordID), dbP );
-model2.load( cdesc.filename );
-QString fname1=tmpdir+"/model1d.xml";
-QString fname2=tmpdir+"/model2f.xml";
-model1.write(fname1);
-model2.write(fname2);
-QString fname3=tmpdir+"/model3d.xml";
-QString fname4=tmpdir+"/model4f.xml";
-model1.update_coefficients();
-model2.update_coefficients();
-model1.write(fname3);
-model2.write(fname4);
-}
-#endif
    }
 
    // display the text dialog
@@ -732,7 +1097,8 @@ model2.write(fname4);
 // Perform multiple-items details action
 void US_DataTree::items_details(  )
 {
-   const char* rtyps[]  = { "RawData", "EditedData", "Model", "Noise" };
+   const char* rtyps[]  = { "Experiment", "RawData", "EditedData",
+                            "Model", "Noise" };
    QString     fileexts = tr( "Text,Log files (*.txt *.log)"
                               ";;All files (*)" );
 
@@ -750,14 +1116,14 @@ DbgLv(2) << "DT: i_details row" << irow;
    QString mtext =
       tr( "Data Tree Items from Rows %1 to %2 -- \n\n" )
          .arg( irow ).arg( krow ) +
-      tr( "  Type   (first) : %1\n" ).arg( rtyps[ cdesc.recType - 1 ] ) +
+      tr( "  Type   (first) : %1\n" ).arg( rtyps[ cdesc.recType ] ) +
       tr( "    Description    : " ) + cdesc.description + "\n" +
       tr( "    DB record ID   : %1\n" ).arg( cdesc.recordID ) +
       tr( "    File Directory : " )
          + cdesc.filename.section( "/",  0, -2 ) + "\n" +
       tr( "    File Name      : " )
          + cdesc.filename.section( "/", -1, -1 ) + "\n" +
-      tr( "  Type    (last) : %1\n" ).arg( rtyps[ kdesc.recType - 1 ] ) +
+      tr( "  Type    (last) : %1\n" ).arg( rtyps[ kdesc.recType ] ) +
       tr( "    Description    : " ) + kdesc.description + "\n" +
       tr( "    DB record ID   : %1\n" ).arg( kdesc.recordID ) +
       tr( "    File Directory : " )
@@ -782,12 +1148,13 @@ DbgLv(2) << "DT: i_details row" << irow;
 // Prepend a record type string to an item action
 void US_DataTree::record_type( int recType, QString& item_act )
 {
-   const char* rtyps[]  = { "RawData", "EditedData", "Model", "Noise" };
+   const char* rtyps[]  = { "Experiment", "RawData", "EditedData",
+                            "Model", "Noise" };
    int sizert = sizeof( rtyps ) / sizeof( rtyps[ 0 ] );
 
-   if ( recType > 0  &&  recType <= sizert )
+   if ( recType >= 0  &&  recType < sizert )
    {
-      item_act = QString( rtyps[ recType - 1 ] ) + " " + item_act;
+      item_act = QString( rtyps[ recType ] ) + " " + item_act;
    }
 }
 
@@ -801,39 +1168,104 @@ QString US_DataTree::action_text( QString exstext, QString acttext )
                  :  tr( "These items exists on %1.<br>"
                         "Are you sure you want to proceed with %2s?<ul>" )
                     .arg( exstext ).arg( acttext );
-   return lines +
-           tr( "<li><b>No </b> to cancel the action;</li>"
-               "<li><b>Yes</b> to proceed with the action.</li></ul>" );
+   lines += tr( "<li><b>No </b> to cancel the action;</li>"
+                "<li><b>Yes</b> to proceed with the action.</li></ul>" );
+
+   // An edit removed from the database takes along more than the rows
+   // under it: that is said before it is done
+   bool frDB = exstext.contains( "Datab" )  ||  exstext.contains( "DB " )
+            || exstext.contains( "both" );
+
+   if ( acttext.contains( "remove" )  &&  frDB )
+   {
+      action_rows();
+      int nedits = 0;
+
+      for ( int jj = 0; jj < actrows.size(); jj++ )
+      {
+         US_DataModel::DataDesc ddesc = da_model->row_datadesc( actrows[ jj ] );
+
+         if ( ddesc.recType == US_DataModel::EDIT  &&
+              ( ddesc.recState & US_DataModel::REC_DB ) != 0 )
+            nedits++;
+      }
+
+      if ( nedits > 0 )
+         lines += tr( "<p>Removing an edit from the database also removes"
+                      " its models and all their noise, also the noise of"
+                      " them computed from another edit, and the noise"
+                      " computed from it for models of other edits (a"
+                      " global fit, say), wherever that noise is shown in"
+                      " the tree.</p>"
+                      "<p>Such noise of another investigator's model,"
+                      " another investigator's models of the edit, and"
+                      " records the GMP framework refers to keep the edit:"
+                      " then nothing of it is removed, and you are told"
+                      " why.  Only that investigator, or an administrator,"
+                      " can remove those records.  (An older database"
+                      " removes another investigator's models of the edit"
+                      " with it, and keeps the edit only for such noise of"
+                      " theirs.)</p>" );
+   }
+
+   return lines;
 }
 
 // report the result of an item action
 void US_DataTree::action_result( int stat, QString item_act )
 {
    QLabel* lb_status = da_model->statlab();
+   QString text;
 
-   if ( stat != 999 )
-   {  // proceed was selected:  test status of action
+   if ( stat == ACT_CANCELLED )
+   {  // cancel was selected:  report it
+      text = tr( "\"%1\" Cancelled!" ).arg( item_act );
+   }
 
-      if ( stat == 0 )
-      {  // action was successful
-         lb_status->setText( tr( "\"%1\" Success!" ).arg( item_act ) );
-      }
+   else if ( stat == ACT_NOTHING )
+   {  // nothing under the selection could take this action
+      text = tr( "\"%1\": nothing to do -- no selected record"
+                 " can take this action" ).arg( item_act );
+      ask_user( PROMPT_INFORM, item_act, text );
+   }
 
-      else
-      {  // action got an error
-         QMessageBox::warning( parentw,
-               item_act + tr( " *ERROR*!" ),
-               tr( "The \"%1\" action had an error: %2" )
-               .arg( item_act ).arg( stat )
-               + "\n\n" + da_process->lastError() );
-         lb_status->setText( tr( "\"%1\" ERROR!" ).arg( item_act ) );
-      }
+   else if ( stat == ACT_REFUSED )
+   {  // refused, and the user has been told why
+      text = tr( "\"%1\" refused" ).arg( item_act );
+   }
+
+   else if ( stat == ACT_IN_SYNC )
+   {  // a DB replace found the database holds what the files hold
+      text = tr( "\"%1\": nothing to upload -- already in sync" )
+             .arg( item_act );
+      ask_user( PROMPT_INFORM, item_act, text );
+   }
+
+   else if ( stat == ACT_NOT_TRIED )
+   {  // stopped part-way, with no other error: what was not tried is said
+      ask_user( PROMPT_WARN, item_act + tr( " Stopped" ),
+            tr( "The \"%1\" action stopped before it was done." )
+            .arg( item_act )
+            + "\n\n" + ( da_process ? da_process->lastError() : QString() ) );
+      text = tr( "\"%1\" stopped" ).arg( item_act );
+   }
+
+   else if ( stat == 0 )
+   {  // action was successful
+      text = tr( "\"%1\" Success!" ).arg( item_act );
    }
 
    else
-   {  // cancel was selected:  report it
-      lb_status->setText( tr( "\"%1\" Cancelled!" ).arg( item_act ) );
+   {  // action got an error
+      ask_user( PROMPT_WARN, item_act + tr( " *ERROR*!" ),
+            tr( "The \"%1\" action had an error: %2" )
+            .arg( item_act ).arg( stat )
+            + "\n\n" + ( da_process ? da_process->lastError() : QString() ) );
+      text = tr( "\"%1\" ERROR!" ).arg( item_act );
    }
+
+   if ( lb_status != NULL )
+      lb_status->setText( text );
 }
 
 // compose string describing record state
@@ -856,7 +1288,7 @@ QString US_DataTree::record_state( int istate )
       flags  = flags + "|PAR_LO";      // parent exists locally
 
    if ( istate & US_DataModel::HV_DET )
-      flags  = flags + "|DETAIL";      // content details are supplied
+      flags  = flags + "|VERIFIED";    // the two copies were compared
 
    if ( istate & US_DataModel::IS_CON )
       flags  = flags + "|CONSIS";      // record is consistent in db+local
@@ -870,114 +1302,363 @@ QString US_DataTree::record_state( int istate )
     return "(" + hexn + ") " + flags;  // return hex flag and text version
 }
 
+/* The model IDs in a list of autoflow model descriptions (the GMP links)
 
-//Check for model
-bool US_DataTree::is_modelIDs_from_autoflow( QString mID )
+   A description that is JSON names the modelID values of its 2DSA_IT,
+   2DSA_MC and PCSA arrays, as UltraScan3 reads them.  One that is not JSON
+   -- a column changed to text, or a MariaDB table made before its JSON
+   columns had a CHECK -- UltraScan3 does not read, but it may still name
+   GMP models, and delete_model and delete_noise do not check the links: it
+   is read as the database reads it before it removes an edit
+   (delete_editedData).  Each "modelID" in its text, under any key, names
+   the run of ASCII digits that starts after at most 8 other characters,
+   written as a model ID is ("09405" names none).  The database counts those
+   8 in bytes, and here they are counted in characters, none of which is
+   less than a byte: every model the database's rule names is named here
+   too (and, next to characters outside ASCII, perhaps one more).
+
+   A description Qt refuses only for being stricter than the database -- a
+   number a double cannot hold (1e400, which MariaDB's JSON accepts), or
+   nesting or a size beyond Qt's limits -- may be JSON to the database,
+   which then reads it by key, in a way the text rule does not follow (a
+   modelID far from its key, an escaped key).  Whether it names a model
+   cannot be told: it is counted in unjudged, and the caller removes no
+   model while such a description is there.  A NULL description names none.
+*/
+QStringList US_DataTree::parse_models_desc_json( const QStringList& modelInfos,
+                                                 int* unjudged )
 {
-  QStringList modelInfos_autoflow;
-  QStringList modelIDs_autoflow;
-  
-  US_Passwd pw;
-  US_DB2    db( pw.getPasswd() );
+   QStringList modelIDs;
+   const QString key_name = "modelID";
 
-  if ( db.lastErrno() != US_DB2::OK )
-    {
-      QMessageBox::warning( parentw, tr( "Connection Problem" ),
-			    tr( "Could not connect to database \n" ) + db.lastError() );
+   if ( unjudged != NULL )
+      *unjudged = 0;
+
+   for ( int ii = 0; ii < modelInfos.size(); ii++ )
+   {
+      const QString& modelDescJson = modelInfos[ ii ];
+
+      if ( modelDescJson.isEmpty() )   continue;
+
+      QJsonParseError perr;
+      QJsonDocument   jdoc = QJsonDocument::fromJson( modelDescJson.toUtf8(),
+                                                      &perr );
+
+      if ( perr.error != QJsonParseError::NoError )
+      {  // Not JSON to Qt
+         if ( perr.error == QJsonParseError::IllegalNumber  ||
+              perr.error == QJsonParseError::DeepNesting    ||
+              perr.error == QJsonParseError::DocumentTooLarge )
+         {  // ... but perhaps to the database
+            if ( unjudged != NULL )
+               ( *unjudged )++;
+         }
+
+         // The digits after each "modelID" in the text
+         const int length = modelDescJson.length();
+         int       pos    = modelDescJson.indexOf( key_name );
+
+         while ( pos >= 0 )
+         {
+            int start = pos + key_name.length();
+            int limit = start + 8;
+
+            while ( start < limit  &&  start < length  &&
+                    ! ( modelDescJson[ start ] >= QChar( '0' )  &&
+                        modelDescJson[ start ] <= QChar( '9' ) ) )
+               start++;
+
+            int end = start;
+
+            while ( end < length  &&  modelDescJson[ end ] >= QChar( '0' )  &&
+                    modelDescJson[ end ] <= QChar( '9' ) )
+               end++;
+
+            if ( end > start )
+               modelIDs << modelDescJson.mid( start, end - start );
+
+            pos = modelDescJson.indexOf( key_name, pos + key_name.length() );
+         }
+
+         continue;
+      }
+
+      QJsonObject json_obj = jdoc.object();
+      QStringList keys     = json_obj.keys();
+
+      for ( int jj = 0; jj < keys.size(); jj++ )
+      {
+         const QString& key = keys[ jj ];
+
+         if ( key != "2DSA_IT"  &&  key != "2DSA_MC"  &&  key != "PCSA" )
+            continue;
+
+         QJsonArray json_array = json_obj.value( key ).toArray();
+
+         for ( int kk = 0; kk < json_array.size(); kk++ )
+         {
+            QJsonValue mid = json_array[ kk ].toObject().value( key_name );
+
+            if ( ! mid.isUndefined() )
+               modelIDs << mid.toVariant().toString();
+         }
+      }
+   }
+
+   return modelIDs;
+}
+
+// Whether a model was produced by an autoflow (GMP) run: 1 yes, 0 no, -1
+// when the list could not be read -- which the caller takes as a refusal
+//
+// The list is read once per action, over the connection the window already
+// has, rather than a connection per record.
+int US_DataTree::is_modelIDs_from_autoflow( const QString& mID )
+{
+   if ( ! gmp_models_read )
+   {
+      IUS_DB2* dbP = da_model->dbase();
+      gmp_models.clear();
+
+      if ( dbP != NULL )
+      {
+         QStringList infos;
+         QStringList q;
+         q << "get_modelIDs_for_autoflow";
+         dbP->query( q );
+
+         int status = dbP->lastErrno();
+
+         if ( ( status != IUS_DB2::OK  &&  status != IUS_DB2::NOROWS )  ||
+              ! dbP->isConnected() )
+         {  // not read: asked again for the next record
+            gmp_error = tr( "get_modelIDs_for_autoflow: %1" )
+                        .arg( dbP->lastError() );
+            return -1;
+         }
+
+         while ( status == IUS_DB2::OK  &&  dbP->next() )
+            infos << dbP->value( 0 ).toString();
+
+         int unjudged = 0;
+         gmp_models   = parse_models_desc_json( infos, &unjudged );
+
+         if ( unjudged > 0 )
+         {  // which models they name cannot be told: none is removed
+            gmp_error = tr( "%n GMP link record(s) (autoflowModelsLink) are"
+                            " not JSON this window can read, but may be"
+                            " JSON to the database; an administrator has to"
+                            " correct them", "", unjudged );
+            return -1;
+         }
+      }
+
+      gmp_models_read = true;
+   }
+
+   return gmp_models.contains( mID ) ? 1 : 0;
+}
+
+// The GMP guard could not ask the database: nothing is removed
+void US_DataTree::gmp_unknown( const QString& what )
+{
+   IUS_DB2* dbP  = da_model->dbase();
+   bool     lost = ( dbP != NULL  &&  ! dbP->isConnected() )  ||
+                   ( da_process != NULL  &&  da_process->connection_lost() );
+
+   QString text = tr( "Whether %1 is needed by the GMP framework could not"
+                      " be checked (%2), so nothing was removed.%3" )
+                  .arg( what ).arg( gmp_error )
+                  .arg( lost ? tr( "\n\nThe connection to the database was"
+                                   " lost, and this window does not connect"
+                                   " again: close it and open it again." )
+                             : QString() );
+
+   if ( da_process != NULL )
+      da_process->setError( text );
+
+   ask_user( PROMPT_INFORM, tr( "GMP Check Failed" ), text );
+}
+
+// The GMP guard for the noise of other edits' models an edit removal takes
+// along.  Noise that cannot be listed, or checked, keeps the edit.
+bool US_DataTree::foreign_noise_gmp_ok( const US_DataModel::DataDesc& ddesc,
+                                        const QString& runID )
+{
+   if ( da_process == NULL )
+      da_process = (US_DataProcess*)da_model->procobj();
+
+   if ( ddesc.recordID < 0  ||  da_process == NULL )   return true;
+
+   QList< US_DataProcess::ForeignNoise > foreign;
+
+   if ( ! da_process->foreign_noise_of_edit( ddesc.recordID, foreign ) )
+   {
+      gmp_error = da_process->lastError();
+      gmp_unknown( tr( "the noise computed from %1 for models of other"
+                       " edits" ).arg( ddesc.label ) );
       return false;
-    }
-  
-  QStringList q;
-  q << "get_modelIDs_for_autoflow";
-  db.query( q );
-  
-  while ( db.next() )
-    modelInfos_autoflow << db. value( 0 ).toString();
+   }
 
-  return parse_models_desc_json ( modelInfos_autoflow, mID ); 
+   for ( int ii = 0; ii < foreign.size(); ii++ )
+   {
+      const US_DataProcess::ForeignNoise& fn = foreign.at( ii );
+      QString name = fn.description.isEmpty() ? fn.guid : fn.description;
+      int     made = is_modelIDs_from_autoflow( QString::number( fn.modelID ) );
+
+      if ( made < 0 )
+      {
+         gmp_unknown( tr( "noise %1, computed from %2," ).arg( name )
+                      .arg( ddesc.label ) );
+         return false;
+      }
+
+      if ( made > 0 )
+      {
+         ask_user( PROMPT_INFORM, tr( "Selected Model GMP produced!" ),
+            tr( "Removing %1 would also remove noise %2, which was computed"
+                " from it for a model generated within the GMP framework."
+                "\n\nIt can NOT be deleted..." )
+            .arg( ddesc.label ).arg( name ) );
+         return false;
+      }
+
+      // The run of that noise: where the tree shows it, else the one its
+      // description names
+      QString nrun;
+
+      for ( int row = 0; row < da_model->recCount()  &&  nrun.isEmpty(); row++ )
+      {
+         US_DataModel::DataDesc ndesc = da_model->row_datadesc( row );
+
+         if ( ndesc.recType == US_DataModel::NOISE  &&
+              ndesc.recordID == fn.noiseID  &&
+              da_model->run_of_row( row ) >= 0 )
+            nrun = da_model->run_id_of_row( row );
+      }
+
+      if ( nrun.isEmpty() )
+         nrun = ( fn.description.count( "." ) >= 3 )
+              ? fn.description.section( ".", 0, -4 )
+              : fn.description.section( ".", 0, 0 );
+
+      int needed = ( nrun != runID ) ? check_filename_for_autoflow( nrun ) : 0;
+
+      if ( needed < 0 )
+      {
+         gmp_unknown( tr( "run \"%1\" of noise %2" ).arg( nrun ).arg( name ) );
+         return false;
+      }
+
+      if ( needed > 0 )
+      {
+         ask_user( PROMPT_INFORM, tr( "Data Cannot be Deleted" ),
+            tr( "Removing %1 would also remove noise %2 of the Run:\n\n"
+                "\"%3\"\n\n"
+                "which can NOT be deleted since it is required by the GMP"
+                " framework!" ).arg( ddesc.label ).arg( name ).arg( nrun ) );
+         return false;
+      }
+   }
+
+   return true;
 }
 
-bool US_DataTree::parse_models_desc_json( QStringList modelInfos_autoflow, QString mID )
+// Whether the run is part of the GMP framework: 1 yes, 0 no, -1 when the
+// database could not say -- which the caller takes as a refusal
+//
+// Asked once per run per action, over the window's own connection.
+int US_DataTree::check_filename_for_autoflow( const QString& runID )
 {
-  qDebug() << "Size of modelInfos_autoflow: " << modelInfos_autoflow.size();
-  qDebug() << "mID: " << mID;
-  for ( int i=0; i<modelInfos_autoflow.size(); ++i )
-    {
-      QString modelDescJson = modelInfos_autoflow[ i ];
-      if ( modelDescJson.isEmpty() )
-	return false;
+   if ( gmp_runs.contains( runID ) )
+      return gmp_runs.value( runID ) ? 1 : 0;
 
-      QJsonDocument jsonDoc = QJsonDocument::fromJson( modelDescJson.toUtf8() );
-      QJsonObject json_obj = jsonDoc.object();
+   bool     isRequired = false;
+   IUS_DB2* dbP        = da_model->dbase();
 
-      foreach(const QString& key, json_obj.keys())
-	{
-	  QJsonValue value = json_obj.value(key);
-	  
-	  if ( key == "2DSA_IT" || key == "2DSA_MC" || key == "PCSA" ) 
-	    {
-	      //qDebug() << "ModelsDesc key, value: " << key << value;
-	      
-	      QJsonArray json_array = value.toArray();
-	      for (int i=0; i < json_array.size(); ++i )
-		{
-		  foreach(const QString& array_key, json_array[i].toObject().keys())
-		    {
-		      //by modelID
-		      if ( array_key == "modelID" )
-			{
-			  QString c_modelID = json_array[i].toObject().value(array_key).toString();
-			  // qDebug() << "modelDescJson Map: -- model, property, value: "
-			  // 	   << key
-			  // 	   << array_key
-			  // 	   << c_modelID;
-			  
-			  if ( c_modelID == mID )
-			    {
-			      qDebug() << "Model to affect [delete:update], ID=" << mID << " IS autoflow produced!!!";
-			      return true;
-			    }
-			}
-		    }
-		}
-	    }
-	}
-    }
+   if ( dbP != NULL  &&  ! runID.isEmpty() )
+   {
+      QStringList q;
+      q  << QString( "check_filename_for_autoflow" ) //for now, both GMP and R&D
+         << runID;
 
-  return false;
+      int count = dbP->functionQuery( q );
+
+      // The function's value, or DBERROR (-1) when it did not run
+      if ( count < 0  ||  dbP->lastServerErrno() != 0  ||
+           ! dbP->isConnected() )
+      {
+         gmp_error = tr( "check_filename_for_autoflow: %1" )
+                     .arg( dbP->lastError() );
+         return -1;
+      }
+
+      isRequired = ( count > 0 );
+   }
+
+DbgLv(1) << "check_filename_for_autoflow: runID isRequired" << runID << isRequired;
+   gmp_runs.insert( runID, isRequired );
+
+   return isRequired ? 1 : 0;
 }
 
-
-//Check if the run [filename] a part of the GMP framework
-bool US_DataTree::check_filename_for_autoflow( QString rFilename )
+// A batch of record changes, ended when it goes out of scope at the latest
+US_DataTree::ChangeBatch::ChangeBatch( US_DataModel* model ) : da_model( model )
 {
-  bool isRequired = false;
-  int  autoflowNumber = 0;
-  
-  US_Passwd pw;
-  US_DB2* db = new US_DB2( pw.getPasswd() );
+   da_model->begin_changes();
+}
 
-  QStringList q;
-  q  << QString( "check_filename_for_autoflow" ) //for now, both GMP and R&D
-     << rFilename;
+US_DataTree::ChangeBatch::~ChangeBatch()
+{
+   end();
+}
 
-  autoflowNumber  = db -> functionQuery( q );
+QList< int > US_DataTree::ChangeBatch::end( void )
+{
+   if ( da_model == NULL )   return QList< int >();
 
-  (autoflowNumber > 0) ? isRequired = true : isRequired = false;
+   QList< int > runs = da_model->end_changes();
+   da_model = NULL;
+   return runs;
+}
 
-  qDebug() << "in check_filename_for_autoflow(): autoflowNumber, isRequired -- "
-	   << autoflowNumber << isRequired;
-  
-  return isRequired;
+// Act on the selection the tree has now
+int US_DataTree::act_on_selection( QString item_exs, QString item_act )
+{
+   selitems = tw_recs->selectedItems();
+
+   if ( selitems.isEmpty() )   return ACT_NOTHING;
+
+   tw_item  = selitems.first();
+
+   return do_actions( item_exs, item_act );
+}
+
+// The rows the tree's selection acts on
+QVector< int > US_DataTree::action_row_list( void )
+{
+   selitems = tw_recs->selectedItems();
+   action_rows();
+
+   return actrows;
 }
 
 // Perform the action(s) chosen in context menu
 int US_DataTree::do_actions( QString item_exs, QString item_act )
 {
+   if ( da_process == NULL )
+      da_process = (US_DataProcess*)da_model->procobj();
+
+   // The questions asked below are modal, and the window does its queued
+   // reads in their event loops: none is done until the action is, so the
+   // action rows stay the rows of the records they were taken for
+   ReadHold hold( da_model );
+
    int narows  = action_rows();
 DbgLv(1) << "ITEM do_actions" << narows << item_exs << item_act;
- qDebug() <<  "ITEM do_actions" << narows << item_exs << item_act; 
    int naerrs  = 0;
+   int nacted  = 0;
+   int nsynced = 0;
    int istat   = 0;
    bool frDB   = item_exs.contains( "Datab" )
               || item_exs.contains( "DB "   );
@@ -992,97 +1673,319 @@ DbgLv(1) << "ITEM do_actions" << narows << item_exs << item_act;
    QProgressBar* progress = da_model->progrBar();
    QLabel*       stlabel  = da_model->statlab();
 
-   if ( remove && frDB )
-   {                                  // REMOVE from DB
-      int  lrtyp  = 9;   // last remove type
-      int  karows = 0;
+   gmp_runs.clear();
+   gmp_models.clear();
+   gmp_models_read = false;
+   gmp_error.clear();
 
+   // The sample tree shown before a scan is no data anywhere
+   if ( da_model->is_demo() )
+   {
+      ask_user( PROMPT_INFORM, tr( "Sample Data" ),
+                tr( "This tree is a sample of the states records can be"
+                    " in, not your data.  Click \"Scan Data\" to see your"
+                    " data and act on it." ) );
+      return ACT_REFUSED;
+   }
+
+   // What the tree shows is the investigator's whose records were read:
+   // once another one is selected -- in another window, say -- nothing is
+   // done to it, and the window clears it
+   if ( investigator_refused() )
+      return ACT_REFUSED;
+
+   // Nothing at all is done for a copy of a run beside the run's own
+   // directory: it is not the run, and its models and noise are the run's
+   if ( upLoad || dnLoad || remove )
+   {
+      QStringList copies;
+
+      for ( int jj = 0; jj < narows; jj++ )
+      {
+         US_DataModel::RunEntry entry =
+            da_model->run_entry( da_model->run_of_row( actrows[ jj ] ) );
+
+         if ( ! entry.copyOf.isEmpty() )
+         {
+            QString line = entry.runID + ":  " + entry.problem;
+
+            if ( ! copies.contains( line ) )
+               copies << line;
+         }
+      }
+
+      if ( ! copies.isEmpty() )
+      {
+         ask_user( PROMPT_INFORM, tr( "Copy of a Run" ),
+            tr( "Nothing is uploaded, downloaded or removed for a copy of a"
+                " run.  The directory named after the run is the run; a"
+                " copy beside it is ignored, and its models and noise are"
+                " the run's own files:\n\n  %1\n\n"
+                "Move or delete the copy by hand." )
+            .arg( copies.join( "\n  " ) ) );
+         return ACT_REFUSED;
+      }
+   }
+
+   // Nothing is written for a run whose directory is not where it should
+   // be: an upload or a download would put its records somewhere else
+   if ( upLoad || dnLoad )
+   {
+      QStringList unsafe;
+
+      for ( int jj = 0; jj < narows; jj++ )
+      {
+         US_DataModel::RunEntry entry =
+            da_model->run_entry( da_model->run_of_row( actrows[ jj ] ) );
+
+         if ( entry.unsafe  &&  ! unsafe.contains( entry.runID ) )
+            unsafe << entry.runID;
+      }
+
+      if ( ! unsafe.isEmpty() )
+      {
+         ask_user( PROMPT_INFORM, tr( "Run Marked \"(!)\"" ),
+            tr( "Nothing is uploaded or downloaded for these runs, since"
+                " their local directories are not named after them:"
+                "\n\n  %1\n\n"
+                "Hold the mouse over a run marked \"(!)\" to see why.  Its"
+                " records can still be removed." )
+            .arg( unsafe.join( "\n  " ) ) );
+         return ACT_REFUSED;
+      }
+   }
+
+   // Removing from a stand-in experiment removes everything under it, and
+   // that is a whole class of records: it is spelled out and asked again
+   if ( remove )
+   {
+      for ( int ii = 0; ii < selitems.size(); ii++ )
+      {
+         if ( selitems[ ii ]->parent() != NULL )   continue;
+
+         int runIndex = runitems.indexOf( selitems[ ii ] );
+         US_DataModel::RunEntry entry = da_model->run_entry( runIndex );
+
+         if ( ! entry.orphans )                    continue;
+
+         int count = 0;
+
+         for ( int jj = 0; jj < narows; jj++ )
+         {
+            int irow = actrows[ jj ];
+
+            if ( da_model->run_of_row( irow ) != runIndex )   continue;
+
+            int state = da_model->row_datadesc( irow ).recState;
+
+            if ( ( frDB  &&  ( state & US_DataModel::REC_DB ) != 0 )  ||
+                 ( frLoc &&  ( state & US_DataModel::REC_LO ) != 0 ) )
+               count++;
+         }
+
+         if ( count == 0 )                         continue;
+
+         QString where = ( frDB && frLoc ) ? tr( "the database and local disk" )
+                       : frDB ? tr( "the database" ) : tr( "local disk" );
+
+         if ( ! ask_user( PROMPT_CONFIRM, tr( "Remove All of %1" )
+                          .arg( entry.runID ),
+                tr( "This removes all %1 record(s) under \"%2\" from %3.\n\n"
+                    "%4\n\nRemove all %1 of them?" )
+                .arg( count ).arg( entry.runID ).arg( where )
+                .arg( entry.globals
+                      ? tr( "Global models are not broken records: they"
+                            " belong to no edit by design." )
+                      : tr( "These are records whose experiment or parent"
+                            " is missing." ) ) ) )
+            return ACT_CANCELLED;
+
+         // The question is modal: another investigator may have been
+         // selected while it was asked
+         if ( investigator_refused() )
+            return ACT_REFUSED;
+      }
+   }
+
+   if ( remove && frDB )
+   {  // Nothing is removed if any of it is required by the GMP framework
       for ( int jj = 0; jj < narows; jj++ )
       {
          int irow   = actrows[ jj ];
          US_DataModel::DataDesc ddesc = da_model->row_datadesc( irow );
-         int ityp   = ddesc.recType;
-	 DbgLv(1) << "RMV_REC: irow ityp lrtyp" << irow << ityp << lrtyp;
 
-	 //Debug && Test ////////////////////////
-	 qDebug() << "DataModel: recType, recordID, parentID, description: "
-		  << ddesc.recType  // recType={1,2,3,4} => {Raw, EditedData, Model, Noise}
-		  << ddesc.recordID // to delete EditedData, Model, OR Noise ( recType==2,3,4)
-		  << ddesc.parentID // to delete Raw Data                    ( recType==1)
-		  << ddesc.description
-	   ;
-	 
-	 //Now, by the recType, determine the ID of the rawData (top-level parentID)
-	 //Obvious for types {1,2}=> {Raw, EditedData}
-	 QString rFilename = ddesc.description.split(".")[0].simplified();
-	 qDebug() << "Filename of the run: " << rFilename;
+         if ( ( ddesc.recState & US_DataModel::REC_DB ) == 0 )   continue;
 
-	 if ( ddesc.recType == 1 || ddesc.recType == 2 || ddesc.recType == 3 || ddesc.recType == 4) // all types
-	   {
-	     bool isRequired = check_filename_for_autoflow( rFilename );
-	     if ( isRequired )
-	       {
-		 QMessageBox::information( parentw, tr( "Data Cannot be Deleted" ),
-					   tr( "The Data for the Run:\n\n"
-					       "\"%1\"\n\n"
-					       "can NOT be deleted since it is required by the GMP framework!" )
-					   .arg( rFilename ) );
-       
-		 return istat;
-	       }
-	   }
+         QString runID  = da_model->run_id_of_row( irow );
+         int     needed = check_filename_for_autoflow( runID );
 
-	 /*****
-	       NOTE: if we do not want to delete *any* model/noise associated but NOT actually required by GMP run,
-	       we can stop here....
-	       Below, is a finer model/noise treatment based on GMP run to require ONLY {2DSA-IT, 2DSA-MC & PSCA} models...
-	  ****/
-	 
-	 if ( ddesc.recType == 3 || ddesc.recType == 4 ) //model OR noise
-	   {
-	     int model_idDB;
-	     if ( ddesc.recType == 3 ) 
-	       model_idDB = ddesc.recordID;
-	     else if ( ddesc.recType == 4 )
-	       model_idDB = ddesc.parentID;
-	     if ( is_modelIDs_from_autoflow( QString::number( model_idDB ) ) )
-	       {
-		 qDebug() << "Select:: Model GMP/autolfow-generated!";
-		 
-		 QMessageBox::information( parentw, tr( "Selected Model GMP produced!" ),
-					   tr( "Selected Model / Noise "
-					       "was generated within GMP framework!\n\n"
-					       "It can NOT be deleted...")
-					   );
-		 return istat;
-	       }
-	   }
-	 
-	 ////////////////////////////////
- 
-
-	 /** TEMP   ***/
-         if ( ityp > lrtyp )
-         {  // Just mark as deleted if descendant of last removed
-            ddesc.recordID = -1;
-            da_model->change_datadesc( ddesc, irow );
-            continue;
-         }
-
-         lrtyp      = ityp;              // save type of last removed
-         karows++;
-         int stat1  = da_process->record_remove_db( irow );
-DbgLv(1) << "RMV_REC:   karows stat1" << karows << stat1;
-
-         if ( stat1 != 0 )
+         if ( needed < 0 )
          {
-            naerrs++;
-            istat      = stat1;
+            gmp_unknown( tr( "run \"%1\"" ).arg( runID ) );
+            return ACT_REFUSED;
          }
-	 /****/
-      }
 
-      narows      = karows;
+         if ( needed > 0 )
+         {
+            ask_user( PROMPT_INFORM, tr( "Data Cannot be Deleted" ),
+               tr( "The Data for the Run:\n\n"
+                   "\"%1\"\n\n"
+                   "can NOT be deleted since it is required by the GMP framework!" )
+               .arg( runID ) );
+            return ACT_REFUSED;
+         }
+
+         // An edit takes along noise of other edits' models computed from
+         // it: that noise is guarded as if it had been selected
+         if ( ddesc.recType == US_DataModel::EDIT  &&
+              ! foreign_noise_gmp_ok( ddesc, runID ) )
+            return ACT_REFUSED;
+
+         if ( ddesc.recType == US_DataModel::MODEL  ||
+              ddesc.recType == US_DataModel::NOISE )
+         {
+            int model_idDB = ( ddesc.recType == US_DataModel::MODEL )
+                           ? ddesc.recordID : ddesc.parentID;
+            int made       = is_modelIDs_from_autoflow(
+                                QString::number( model_idDB ) );
+
+            if ( made < 0 )
+            {
+               gmp_unknown( ddesc.label );
+               return ACT_REFUSED;
+            }
+
+            if ( made > 0 )
+            {
+               ask_user( PROMPT_INFORM,
+                  tr( "Selected Model GMP produced!" ),
+                  tr( "Selected Model / Noise "
+                      "was generated within GMP framework!\n\n"
+                      "It can NOT be deleted..." ) );
+               return ACT_REFUSED;
+            }
+         }
+      }
+   }
+
+   // What the actions change is brought up to date once per experiment,
+   // when they are all done, not once per record
+   ChangeBatch batch( da_model );
+
+   Removal     rmv;               // what a removal from the database did
+   QSet< int > dbKept;            // rows the database kept, or may have
+   QSet< int > dbNotTried;        // rows not tried in the database
+
+   // Before each record: once another investigator is selected -- in
+   // another window, while a question was asked or a long upload ran --
+   // nothing more is done, since the rows are the previous one's; once the
+   // connection is lost, nothing more that needs the database is tried,
+   // since it would fail the same way.  What is left is listed.
+   const QString invWhy  = tr( "the investigator was changed while the"
+                               " action ran" );
+   const QString lostWhy = tr( "the connection to the database was lost" );
+   QString       stopWhy;         // why records were left untried
+   QStringList   untried;         // those, but for removals from the DB
+
+   auto halted = [ & ]( bool needsDb )
+   {
+      if ( stopWhy != invWhy  &&  da_model->investigator_changed() )
+         stopWhy = invWhy;
+
+      else if ( stopWhy.isEmpty()  &&  needsDb  &&
+                da_process->connection_lost() )
+         stopWhy = lostWhy;
+
+      return ( stopWhy == invWhy )  ||  ( needsDb  &&  ! stopWhy.isEmpty() );
+   };
+
+   if ( remove && frDB )
+   {                                  // REMOVE from DB
+      // Parents go before their descendants: the database removes the
+      // descendants of a record with it, so a descendant of a record just
+      // removed is only marked as gone.  A record whose removal failed
+      // keeps its descendants -- they are not removed one by one instead,
+      // which would leave just the partial removal the database refused --
+      // and the message says what was removed and what was not.  Once the
+      // connection is lost nothing more is tried: every removal would fail.
+      QSet< int >  cascaded;
+      QSet< int >  kept;
+      QSet< int >  keptUnknown;
+
+      for ( int ii = US_DataModel::EDIT; ii <= US_DataModel::NOISE; ii++ )
+      {
+         for ( int jj = 0; jj < narows; jj++ )
+         {
+            int irow   = actrows[ jj ];
+            US_DataModel::DataDesc ddesc = da_model->row_datadesc( irow );
+
+            if ( ddesc.recType != ii )                              continue;
+            if ( ( ddesc.recState & US_DataModel::REC_DB ) == 0 )   continue;
+
+            if ( keptUnknown.contains( irow ) )
+            {  // whatever happened to its ancestor happened to it
+               rmv.unknown << ddesc.label;
+               dbKept      << irow;
+               continue;
+            }
+
+            if ( kept.contains( irow ) )
+            {
+               rmv.notRemoved << ddesc.label;
+               dbKept         << irow;
+               continue;
+            }
+
+            if ( cascaded.contains( irow ) )
+            {
+               da_process->mark_removed_from_db( irow );
+               rmv.removed << ddesc.label;
+               continue;
+            }
+
+            if ( halted( true ) )
+            {
+               rmv.notTried << ddesc.label;
+               dbKept       << irow;
+               dbNotTried   << irow;
+               continue;
+            }
+
+            nacted++;
+            int stat1  = da_process->record_remove_db( irow );
+DbgLv(1) << "RMV_REC: irow stat1" << irow << stat1;
+            QVector< int > drows = da_model->descendant_rows( irow );
+
+            if ( stat1 != 0 )
+            {
+               naerrs++;
+               istat      = stat1;
+               rmv.errors << da_process->lastError();
+               dbKept     << irow;
+
+               bool unknown = da_process->outcome_unknown();
+
+               if ( unknown )
+                  rmv.unknown << ddesc.label;
+
+               for ( int kk = 0; kk < drows.size(); kk++ )
+               {
+                  if ( unknown )
+                     keptUnknown << drows[ kk ];
+                  else
+                     kept        << drows[ kk ];
+               }
+            }
+
+            else
+            {
+               rmv.removed << ddesc.label;
+
+               for ( int kk = 0; kk < drows.size(); kk++ )
+                  cascaded << drows[ kk ];
+            }
+         }
+      }
    }
 
    if ( remove && frLoc )
@@ -1093,22 +1996,97 @@ DbgLv(1) << "RMV_REC:   karows stat1" << karows << stat1;
          {
             int irow   = actrows[ jj ];
             US_DataModel::DataDesc ddesc = da_model->row_datadesc( irow );
-            int ityp   = ddesc.recType;
 
-            if ( ityp != ii )  continue;  // skip if not at current level
+            if ( ddesc.recType != ii )  continue;  // not at current level
+            if ( ( ddesc.recState & US_DataModel::REC_LO ) == 0 )  continue;
 
+            // Removing from both places, a record the database kept -- or
+            // may have -- keeps its local copy: removing that would leave
+            // it in the database only, not gone.  So does one not tried
+            // in the database, which is listed as not tried
+            if ( dbNotTried.contains( irow ) )
+            {
+               rmv.localNotTried = true;
+               continue;
+            }
+
+            if ( dbKept.contains( irow ) )
+            {
+               rmv.localKept << ddesc.label;
+               continue;
+            }
+
+            if ( halted( false ) )
+            {
+               untried << ddesc.label;
+               continue;
+            }
+
+            nacted++;
             int stat1  = da_process->record_remove_local( irow );
 
             if ( stat1 != 0 )
             {
                naerrs++;
                istat      = stat1;
+               rmv.localErrors << da_process->lastError();
             }
          }
       }
    }
 
-   if ( upLoad )           
+   // A copy of a run shows the run's own model and noise files: one
+   // removed above is gone from the copy's rows too
+   if ( remove && frLoc )
+   {
+      for ( int index = 0; index < da_model->runCount(); index++ )
+      {
+         US_DataModel::RunEntry entry = da_model->run_entry( index );
+
+         if ( entry.copyOf.isEmpty()  ||  ! entry.loaded  ||
+              entry.firstRow < 0 )
+            continue;
+
+         for ( int row = entry.firstRow; row <= entry.lastRow; row++ )
+         {
+            US_DataModel::DataDesc desc = da_model->row_datadesc( row );
+
+            if ( desc.recType < US_DataModel::MODEL                  ||
+                 ( desc.recState & US_DataModel::REC_LO ) == 0       ||
+                 desc.filename.isEmpty()  ||  QFile::exists( desc.filename ) )
+               continue;
+
+            desc.recState &= ~( US_DataModel::REC_LO | US_DataModel::HV_DET );
+            desc.contents  = QString();
+
+            if ( ( desc.recState & US_DataModel::REC_DB ) == 0 )
+               desc.recState = US_DataModel::NOSTAT;
+
+            da_model->change_datadesc( desc, row );
+            da_model->record_changed ( row );
+         }
+      }
+   }
+
+   rmv.notTriedWhy = stopWhy;
+
+   // A removal from the database that failed somewhere is reported as a
+   // whole, with the local removals that failed too: one message does not
+   // replace the other
+   bool reported = ! rmv.errors.isEmpty()  ||  ! rmv.notTried.isEmpty()  ||
+                   rmv.localErrors.size() > 1;
+
+   if ( ! rmv.errors.isEmpty()  ||  ! rmv.notTried.isEmpty() )
+      da_process->setError( removal_report( rmv ) );
+
+   else if ( rmv.localErrors.size() > 1 )
+      da_process->setError( rmv.localErrors.mid( 0, 5 ).join( "\n\n" )
+         + ( rmv.localErrors.size() > 5
+             ? tr( "\n\n... and %1 more local file(s) could not be"
+                   " removed." ).arg( rmv.localErrors.size() - 5 )
+             : QString() ) );
+
+   if ( upLoad )
    {                                  // UPLOAD to DB
       for ( int ii = 2; ii < 5; ii++ )
       {  // Upload records from top down
@@ -1116,11 +2094,25 @@ DbgLv(1) << "RMV_REC:   karows stat1" << karows << stat1;
          {
             int irow   = actrows[ jj ];
             US_DataModel::DataDesc ddesc = da_model->row_datadesc( irow );
-            int ityp   = ddesc.recType;
 
-            if ( ityp != ii )  continue;  // skip if not at current level
+            if ( ddesc.recType != ii )  continue;  // not at current level
+            if ( ( ddesc.recState & US_DataModel::REC_LO ) == 0 )  continue;
+
+            if ( halted( true ) )
+            {
+               untried << ddesc.label;
+               continue;
+            }
 
             int stat1  = da_process->record_upload( irow );
+
+            if ( stat1 == US_DataProcess::IN_SYNC )
+            {  // nothing to do for this one, and that is no error
+               nsynced++;
+               continue;
+            }
+
+            nacted++;
 
             if ( stat1 != 0 )
             {
@@ -1131,24 +2123,36 @@ DbgLv(1) << "RMV_REC:   karows stat1" << karows << stat1;
       }
    }
 
-   if ( dnLoad )            
+   if ( dnLoad )
    {                                  // DOWNLOAD to LOCAL
-      QElapsedTimer timer;
-      timer.start();
-      stlabel->setText( tr( "Downloading records to local disk..." ) );
-      progress->setMaximum( narows );
-      progress->setValue  ( 0 );
+      if ( stlabel != NULL )
+         stlabel->setText( tr( "Downloading records to local disk..." ) );
+
+      if ( progress != NULL )
+      {
+         progress->setMaximum( qMax( narows, 1 ) );
+         progress->setValue  ( 0 );
+      }
+
       int ndown = 0;
+
       for ( int ii = 2; ii < 5; ii++ )
       {  // Download records from top down
          for ( int jj = 0; jj < narows; jj++ )
          {
             int irow   = actrows[ jj ];
             US_DataModel::DataDesc ddesc = da_model->row_datadesc( irow );
-            int ityp   = ddesc.recType;
 
-            if ( ityp != ii )  continue;  // skip if not at current level
+            if ( ddesc.recType != ii )  continue;  // not at current level
+            if ( ( ddesc.recState & US_DataModel::REC_DB ) == 0 )  continue;
 
+            if ( halted( true ) )
+            {
+               untried << ddesc.label;
+               continue;
+            }
+
+            nacted++;
             int stat1  = da_process->record_download( irow );
 
             if ( stat1 != 0 )
@@ -1156,61 +2160,211 @@ DbgLv(1) << "RMV_REC:   karows stat1" << karows << stat1;
                naerrs++;
                istat      = stat1;
             }
-            progress->setValue( ++ndown );
+
+            if ( progress != NULL )
+               progress->setValue( ++ndown );
          }
-qDebug() << "DT: DwnLd: ii" << ii << "time" << timer.elapsed();
       }
    }
 
-   if ( naerrs > 0  &&  naerrs < narows )
+   // The rows acted on show where their records are now, and so do the
+   // rows of any other experiment an action reached: the noise of another
+   // edit's model an edit removal takes along may be under another one
+   QList< int > runs = batch.end();
+
+   for ( int jj = 0; jj < narows; jj++ )
+   {
+      int runIndex = da_model->run_of_row( actrows[ jj ] );
+
+      if ( runIndex >= 0  &&  ! runs.contains( runIndex ) )
+         runs << runIndex;
+   }
+
+   for ( int jj = 0; jj < runs.size(); jj++ )
+      refresh_run( runs[ jj ] );
+
+   // What was not tried, and why: the rows of the records tried show
+   // where they are now
+   if ( ! stopWhy.isEmpty()  &&  ( ! untried.isEmpty()  ||
+                                   ! rmv.notTried.isEmpty() ) )
+   {
+      if ( istat == 0  &&  ! reported )
+         da_process->setError( QString() );     // an earlier action's
+
+      if ( ! untried.isEmpty() )
+      {
+         QString text = tr( "These selected records were not tried, since"
+                            " %1:" ).arg( stopWhy ) + "\n  "
+                        + untried.mid( 0, 20 ).join( "\n  " );
+
+         if ( untried.size() > 20 )
+            text += tr( "\n  ... and %1 more" ).arg( untried.size() - 20 );
+
+         da_process->appendError( ( da_process->lastError().isEmpty()
+                                    ? QString() : QString( "\n\n" ) ) + text );
+      }
+
+      if ( stopWhy == invWhy )
+         da_process->appendError( tr( "\n\nWhat this window shows is the"
+            " previous investigator's records.  Click \"Scan Data\" to see"
+            " the data of the investigator selected now." ) );
+
+      else if ( ! da_process->lastError().contains(
+                   tr( "close it and open it again" ) ) )
+         da_process->appendError( tr( "\n\nThis window does not connect"
+            " again: close it and open it again, and look at these records"
+            " before acting on them." ) );
+
+      if ( istat == 0 )
+         istat = ACT_NOT_TRIED;
+   }
+
+   if ( nacted == 0 )                  // never "Success" for doing nothing
+      return ( istat == ACT_NOT_TRIED ) ? istat
+           : ( nsynced > 0 )            ? ACT_IN_SYNC : ACT_NOTHING;
+
+
+   if ( naerrs > 0  &&  naerrs < nacted )
    {  // Append to error message, explaining partial success
-      da_process->partialError( naerrs, narows );
+      da_process->partialError( naerrs, nacted );
    }
 
    return istat;
 }
 
-// Create lists of selected rows and implied action rows
+// What a removal from the database that failed somewhere did, and did not
+QString US_DataTree::removal_report( const Removal& rr )
+{
+   const int nshow = 20;
+   const int nerrs = 5;
+
+   auto listed = [ & ]( const QStringList& labels )
+   {
+      QString text = "\n  " + labels.mid( 0, nshow ).join( "\n  " );
+
+      if ( labels.size() > nshow )
+         text += tr( "\n  ... and %1 more" ).arg( labels.size() - nshow );
+
+      return text;
+   };
+
+   QString text = rr.errors.mid( 0, nerrs ).join( "\n\n" );
+
+   if ( rr.errors.size() > nerrs )
+      text += tr( "\n\n... and %1 more record(s) could not be removed." )
+              .arg( rr.errors.size() - nerrs );
+
+   if ( ! rr.unknown.isEmpty() )
+      text += tr( "\n\nWhether these selected records were removed from the"
+                  " database is not known:" ) + listed( rr.unknown );
+
+   if ( ! rr.notRemoved.isEmpty() )
+      text += tr( "\n\nThese selected records belong to a record that was"
+                  " not removed, and were not removed either:" )
+              + listed( rr.notRemoved );
+
+   if ( ! rr.notTried.isEmpty() )
+      text += ( rr.localNotTried
+                ? tr( "\n\nThese selected records were not tried, since %1,"
+                      " and are still in the database; the local copies"
+                      " they have were not removed either:" )
+                : tr( "\n\nThese selected records were not tried, since %1,"
+                      " and are still in the database:" ) )
+              .arg( rr.notTriedWhy.isEmpty()
+                    ? tr( "the connection to the database was lost" )
+                    : rr.notTriedWhy )
+              + listed( rr.notTried );
+
+   if ( ! rr.removed.isEmpty() )
+      text += tr( "\n\nThese selected records were removed from the"
+                  " database:" ) + listed( rr.removed );
+
+   else if ( rr.unknown.isEmpty() )
+      text += tr( "\n\nNone of the selected records was removed from the"
+                  " database." );
+
+   else
+      text += tr( "\n\nNo other selected record was removed from the"
+                  " database." );
+
+   if ( ! rr.localKept.isEmpty() )
+      text += tr( "\n\nThe local copies of the records the database kept,"
+                  " or may have kept, were not removed either:" )
+              + listed( rr.localKept );
+
+   if ( ! rr.localErrors.isEmpty() )
+   {
+      text += tr( "\n\nRemoving from local disk failed:" ) + "\n\n"
+              + rr.localErrors.mid( 0, nerrs ).join( "\n\n" );
+
+      if ( rr.localErrors.size() > nerrs )
+         text += tr( "\n\n... and %1 more local file(s) could not be"
+                     " removed." ).arg( rr.localErrors.size() - nerrs );
+   }
+
+   return text;
+}
+
+/* Create lists of selected rows and implied action rows.
+
+   The rows below a row are not necessarily its descendants: the experiment
+   rows come first and each experiment's records follow all of them, in the
+   order the experiments were read.  So the descendants of a row are asked
+   of the model, which knows each experiment's row range.
+*/
 int US_DataTree::action_rows( )
 {
-   // Build up the list of selected rows; then sort it
    int nsrows = selitems.size();
    selrows.clear();
    actrows.clear();
    rawrows.clear();
 
    for ( int ii = 0; ii < nsrows; ii++ )
-      selrows << selitems[ ii ]->type() - (int)QTreeWidgetItem::UserType;
+   {
+      int row = selitems[ ii ]->type() - (int)QTreeWidgetItem::UserType;
+
+      if ( ! selrows.contains( row ) )
+         selrows << row;
+   }
 
    std::sort( selrows.begin(), selrows.end() );
-DbgLv(1) << "acrow: nsrows" << nsrows;
+   nsrows = selrows.size();
 
-   // Build up the list of action rows; include descendants, exclude Raw
+   QSet< int > acts;
+
    for ( int ii = 0; ii < nsrows; ii++ )
    {
       int irow   = selrows[ ii ];
-      US_DataModel::DataDesc ddesc = da_model->row_datadesc( irow );
-      int ityp   = ddesc.recType;
+
+      if ( irow < 0  ||  irow >= da_model->recCount() )   continue;
+
+      int ityp   = da_model->row_datadesc( irow ).recType;
 DbgLv(1) << "acrow:  irow ityp" << irow << ityp;
-      if ( ityp > 1 )
-         actrows << irow;     // add to action list if not Raw
-      else
+
+      if ( ityp > US_DataModel::RAW )
+         acts << irow;        // add to action list if not Raw
+      else if ( ityp == US_DataModel::RAW  &&  ! rawrows.contains( irow ) )
          rawrows << irow;     // otherwise, add to Raw-selected list
 
-      for ( int jrow = ( irow + 1 ); jrow < ncrecs; jrow++ )
-      {  // add descendants from next-row until back-to-level
-         US_DataModel::DataDesc ddesc = da_model->row_datadesc( jrow );
+      QVector< int > drows = da_model->descendant_rows( irow );
 
-DbgLv(1) << "acrow:    jrow jtyp" << jrow << ddesc.recType;
-         if ( ddesc.recType <= ityp )
-            break;     // once we've reached or passed same level, break
+      for ( int jj = 0; jj < drows.size(); jj++ )
+      {
+         int jrow = drows[ jj ];
 
-         if ( selrows.contains( jrow ) )
-            continue;  // if descendant already in select list, don't add
+         if ( da_model->row_datadesc( jrow ).recType <= US_DataModel::RAW )
+         {  // a Raw under a selected experiment is not acted on itself
+            if ( ! rawrows.contains( jrow ) )
+               rawrows << jrow;
+            continue;
+         }
 
-         actrows << jrow;
+         acts << jrow;
       }
    }
+
+   actrows = QVector< int >( acts.begin(), acts.end() );
+   std::sort( actrows.begin(), actrows.end() );   // tree order
 DbgLv(1) << "acrow:  narows nrrows" << actrows.size() << rawrows.size();
 
    return actrows.size();
@@ -1218,7 +2372,7 @@ DbgLv(1) << "acrow:  narows nrrows" << actrows.size() << rawrows.size();
 
 // Check model or noise for significant differences
 bool US_DataTree::significant_diffs( US_DataModel::DataDesc ddesc,
-      US_DB2* dbP )
+      IUS_DB2* dbP )
 {
    bool differs = true;   // Assume significant differences unless model,noise
    const double dtoler = 5.0e-5;

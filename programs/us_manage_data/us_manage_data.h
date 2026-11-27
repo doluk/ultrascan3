@@ -6,7 +6,6 @@
 #include "us_data_model.h"
 #include "us_data_process.h"
 #include "us_data_tree.h"
-#include "us_sync_exper.h"
 #include "us_widgets.h"
 #include "us_db2.h"
 #include "us_model.h"
@@ -26,44 +25,16 @@ class US_ManageData : public US_Widgets
         //! \brief Constructor for US_ManageData
         US_ManageData();
 
-        //! \enum State
-        //! \brief Enumeration for data record states
-        enum State { NOSTAT=0,  REC_DB=1,  REC_LO=2, PAR_DB=4, PAR_LO=8,
-            HV_DET=16, IS_CON=32, ALL_OK=64 };
-
-        //! \class DataDesc
-        //! \brief Class for describing data records
-        class DataDesc
-        {
-            public:
-                int       recordID;          //!< Record DB Identifier
-                int       recType;           //!< Record type (1-4)=Raw/Edit/Model/Noise
-                int       parentID;          //!< Parent's DB Identifier
-                int       recState;          //!< Record state flag
-                QString   subType;           //!< Sub-type (e.g., TI, RI for noises)
-                QString   dataGUID;          //!< This record data Global Identifier
-                QString   parentGUID;        //!< Parent's GUID
-                QString   filename;          //!< File name if on local disk
-                QString   contents;          //!< md5sum() and length of data
-                QString   label;             //!< Record identifying label
-                QString   description;       //!< Record description string
-                QString   lastmodDate;       //!< Last modification date/time
-        };
-
         US_DB2*       db;               //!< Database connection
 
     private:
         QTreeWidget*        tw_recs;    //!< Tree widget
-        QTreeWidgetItem*    tw_item;    //!< Current tree widget item
-        DataDesc            cdesc;      //!< Current record description
         US_DataModel*       da_model;   //!< Underlying data handler
         US_DataProcess*     da_process; //!< Data processing handler
         US_DataTree*        da_tree;    //!< Data tree display handler
-        US_SyncExperiment*  syncExper;  //!< Experiment synchronizer
-        QProgressBar*       progress;   //!< Progress bar
+        QProgressBar*       progress;   //!< Overall progress of a scan
+        QProgressBar*       pgb_step;   //!< Progress within the current step
         US_Help             showHelp;   //!< Help display
-        US_Buffer           buffer;     //!< Buffer object
-        US_Analyte          analyte;    //!< Analyte object
         QLabel*             lb_status;  //!< Status label
         QTextEdit*          te_status;  //!< Status text edit
         QLineEdit*          le_invtor;  //!< Investigator line edit
@@ -81,7 +52,6 @@ class US_ManageData : public US_Widgets
         QComboBox*          cb_source;  //!< Source combo box
 
         int                 personID;   //!< Person ID
-        int                 ntrows;     //!< Number of tree rows
         int                 ntcols;     //!< Number of tree columns
         int                 ncrecs;     //!< Number of current records
         int                 ncraws;     //!< Number of current raw records
@@ -98,15 +68,54 @@ class US_ManageData : public US_Widgets
         int                 nledts;     //!< Number of local edit records
         int                 nlmods;     //!< Number of local model records
         int                 nlnois;     //!< Number of local noise records
-        int                 kdmy;       //!< Dummy variable
+        int                 nmerged;    //!< Experiments merged this scan
+        bool                verify_pending; //!< A pass of queued work is due
+        bool                closing;    //!< Closed while a scan, or a read
+                                        //!< outside one, was running
+        bool                drop_reset = false; //!< The database listing
+                                        //!< was dropped: the tree is to be
+                                        //!< cleared once the model is free
+        int                 errs_seen;  //!< Scan errors already reported
+        US_DataModel::Counts counts;    //!< Records merged so far, by kind
         int                 dbg_level;  //!< Debug level
-        bool                rbtn_click; //!< Radio button click state
-        QString             run_name;   //!< Run name
-        QString             investig;   //!< Investigator name
-        QStringList         editIDs;    //!< List of edit IDs
         QStringList         triples;    //!< List of triples
         QStringList         runIDs;     //!< List of run IDs
         QList< QStringList > runid_data; //!< List of run ID data
+
+    private:
+        //! \brief Start a phase of the scan
+        //! \param text  What the phase is doing
+        //! \param steps How many steps the phase has
+        void scan_phase( const QString& text, int steps );
+
+        //! \brief Put a message on the status line, cut to fit
+        //! \param text The message
+        void status_text( const QString& text );
+
+        //! \brief Fit the tree columns without widening the window
+        void fit_tree_columns( void );
+
+        //! \brief Turn the controls a scan could be disturbed by on or off
+        //! \param enabled True to turn them on
+        void set_controls_enabled( bool enabled );
+
+        //! \brief Tell the user what went wrong in the last scan
+        void report_scan_errors( void );
+
+        //! \brief Tell the user which runs have a problem, and why
+        void report_run_problems( void );
+
+        //! \brief Tell the user about records that share a GUID
+        void review_duplicates( void );
+
+    protected:
+        /*! \brief A window closed while a scan runs stops the scan first
+
+            The scan runs inside the slot that started it, so the window
+            asks it to stop and closes when it has: nothing it would have
+            reported afterwards is shown for a window that is going away.
+        */
+        void closeEvent( QCloseEvent* event ) override;
 
     private slots:
         //! \brief Toggle the display of edits
@@ -118,14 +127,32 @@ class US_ManageData : public US_Widgets
         //! \brief Toggle the display of noises
         void toggle_noises( void );
 
-        //! \brief Show help information for the data tree
-        void dtree_help( void );
+        //! \brief The experiments are listed: draw the top of the tree
+        void runs_listed( void );
+
+        //! \brief One experiment's records are in: hang them under it
+        //! \param index The position of the experiment
+        void run_merged( int index );
+
+        //! \brief Do the reads and comparisons queued outside a scan, in
+        //!        turn, one per pass of the event loop
+        //! \param delay Milliseconds to wait first
+        void schedule_verifies( int delay = 0 );
+
+        //! \brief Do the next read or comparison queued outside a scan
+        void pump_verifies( void );
+
 
         //! \brief Scan data
         void scan_data( void );
 
         //! \brief Reset the interface
         void reset( void );
+
+        //! \brief Clear the tree once the database listing was dropped
+        //!        (US_DataModel::listingDropped), as soon as no read or
+        //!        scan is running, and say why
+        void listing_dropped( void );
 
         //! \brief Select an investigator
         void sel_investigator( void );
@@ -137,17 +164,6 @@ class US_ManageData : public US_Widgets
         //! \brief Handle item click in the tree
         //! \param item Pointer to the tree widget item
         void clickedItem( QTreeWidgetItem* item );
-
-        //! \brief Get action text
-        //! \param action Action to perform
-        //! \param text Action text
-        //! \return Action text
-        QString action_text( QString action, QString text );
-
-        //! \brief Handle the result of an action
-        //! \param result Result code
-        //! \param text Result text
-        void action_result( int result, QString text );
 
         //! \brief Reset hide/show buttons
         //! \param edit Show edits button state
