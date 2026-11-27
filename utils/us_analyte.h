@@ -24,7 +24,10 @@ class US_UTIL_EXTERN US_Analyte
       double            mw;             //!< Molecular weight
       QString           description;    //!< Description of the analyte
       QString           analyteGUID;    //!< Global identifier of the analyte
-      QString           sequence;       //!< Coded sequnce of analyte
+      //! Coded sequence of the analyte, as entered: a FASTA header, residue
+      //! numbers, spaces and tabs are kept.  Line ends are LF: every read
+      //! and write turns CR LF and a lone CR into LF (\ref normalizedSequence).
+      QString           sequence;
       analyte_t         type;           //!< The type of analyte
       bool              grad_form;      //!< Flag if gradient-forming
 
@@ -65,6 +68,11 @@ class US_UTIL_EXTERN US_Analyte
       //! \returns         - The \ref IUS_DB2 return code for the operation
       int load( bool, const QString&, IUS_DB2* = 0 );
 
+      //! Read an analyte from a specific XML file, regardless of its location
+      //! \param filename - The full path of the analyte XML file
+      //! \returns        - The \ref IUS_DB2 return code for the operation
+      int readFromFile( const QString& filename );
+
       //! Write an analyte to the disk or database
       //! \param db_access - A flag to indicate if the DB (true) or disk (false)
       //!                    should be used to save the analyte
@@ -93,6 +101,18 @@ class US_UTIL_EXTERN US_Analyte
       //! wrapper checks flush, but neither API guarantees atomic/durable writes.
       int                    read_xml( QIODevice&, const QString& guid = QString() );
       int                    write_xml( QIODevice& );
+
+      /*! \brief A sequence with CR LF and lone CR line ends turned into LF
+
+          An XML reader turns CR LF and CR in element text into LF, so a
+          sequence entered with them (as a web form sends it) would read back
+          from a disk file other than it was written, and other than the
+          database copy.  So both copies hold LF only: write_xml() and a
+          database write normalise \ref sequence (the member too) before they
+          store it, and every read normalises what it reads, including a
+          database row written before.  Nothing else in the text changes.
+      */
+      static QString normalizedSequence( const QString& sequence );
 
       //! \param path - A reference where the path to ayalutes on the disk 
       //!               drive is written

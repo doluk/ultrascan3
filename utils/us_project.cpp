@@ -4,6 +4,8 @@
 #include "us_util.h"
 #include "us_project.h"
 
+#include <QSaveFile>
+
 // The constructor clears out the data structure
 US_Project::US_Project()
 {
@@ -22,7 +24,12 @@ int US_Project::readFromDisk( QString& guid )
                << guid;
       return IUS_DB2::NO_PROJECT;
    }
-   
+
+   return readFromFile( filename );
+}
+
+int US_Project::readFromFile( const QString& filename )
+{
    QFile file( filename );
    if ( !file.open( QIODevice::ReadOnly | QIODevice::Text) )
    {
@@ -35,6 +42,7 @@ int US_Project::readFromDisk( QString& guid )
 
    // Leave the destination unchanged if parsing fails.
    US_Project pr;
+   bool       sawProject = false;
 
    while ( ! xml.atEnd() )
    {
@@ -44,6 +52,7 @@ int US_Project::readFromDisk( QString& guid )
       {
          if ( xml.name() == "project" )
          {
+            sawProject = true;
             QXmlStreamAttributes a = xml.attributes();
             pr.projectID   = a.value( "id" ).toString().toInt();
             pr.projectGUID = a.value( "guid" ).toString();
@@ -61,6 +70,14 @@ int US_Project::readFromDisk( QString& guid )
       qDebug() << "Error: xml error: \n"
                << xml.errorString();
       return IUS_DB2::DBERROR;
+   }
+
+   // A well-formed file that is not a project -- or a project with no GUID
+   // to know it by -- is not a project that was read
+   if ( ! sawProject  ||  pr.projectGUID.isEmpty() )
+   {
+      qDebug() << "Error: no project in" << filename;
+      return IUS_DB2::NO_PROJECT;
    }
 
    pr.saveStatus = HD_ONLY;
@@ -207,12 +224,21 @@ void US_Project::saveToDisk( void )
                          path, 
                          newFile );
 
-   QFile file( filename );
+   if ( ! saveToFile( filename ) )  return;
+
+   saveStatus = ( saveStatus == DB_ONLY ) ? BOTH : HD_ONLY;
+}
+
+bool US_Project::saveToFile( const QString& filename ) const
+{
+   // Written aside and put in place only once complete, so a write that
+   // fails -- a full disk, say -- leaves the file that was there as it was
+   QSaveFile file( filename );
    if ( !file.open( QIODevice::WriteOnly | QIODevice::Text) )
    {
       qDebug() << "Error: can't open file for writing"
                << filename;
-      return;
+      return false;
    }
 
    // Generate xml
@@ -244,9 +270,13 @@ void US_Project::saveToDisk( void )
    xml.writeEndElement  ();        // project
    xml.writeEndDocument ();
 
-   file.close();
+   if ( xml.hasError()  ||  ! file.commit() )
+   {
+      qDebug() << "Error: could not write" << filename << file.errorString();
+      return false;
+   }
 
-   saveStatus = ( saveStatus == DB_ONLY ) ? BOTH : HD_ONLY;
+   return true;
 }
 
 // Function to save project information to db

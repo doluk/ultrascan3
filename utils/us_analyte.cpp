@@ -8,6 +8,18 @@
 #include "us_util.h"
 #include <limits>
 
+// A value as the shortest text that reads back as exactly the same double.
+// Disk records are read back with QString::toDouble, which takes this form
+// and every form older files were written in.
+static QString exact_number( double value )
+{
+#if QT_VERSION >= QT_VERSION_CHECK( 5, 7, 0 )
+   return QString::number( value, 'g', QLocale::FloatingPointShortest );
+#else
+   return QString::number( value, 'g', 17 );
+#endif
+}
+
 namespace
 {
 // QXmlStreamReader treats a device read error like end-of-input, which can
@@ -79,7 +91,7 @@ bool US_Analyte::operator== ( const US_Analyte& a ) const
    if ( mw           != a.mw           ) return false;
    if ( description  != a.description  ) return false;
    if ( analyteGUID  != a.analyteGUID  ) return false;
-   if ( sequence     != a.sequence     ) return false;
+   if ( normalizedSequence( sequence ) != normalizedSequence( a.sequence ) ) return false;
    if ( type         != a.type         ) return false;
    if ( extinction   != a.extinction   ) return false;
    if ( refraction   != a.refraction   ) return false;
@@ -192,7 +204,7 @@ DEBUG_QUERY;
    else if ( a_type == "Other" ) type = CARBOHYDRATE;
    else                          type = PROTEIN;
 
-   sequence    = db->value( 2 ).toString();
+   sequence    = normalizedSequence( db->value( 2 ).toString() );
    vbar20      = db->value( 3 ).toString().toDouble();
    description = db->value( 4 ).toString();
    // We don't need spectrum  -- db->value( 5 ).toString();
@@ -340,6 +352,11 @@ int US_Analyte::load_disk( const QString& guid )
    return error;
 }
 
+int US_Analyte::readFromFile( const QString& filename )
+{
+   return read_analyte( filename, QString() );
+}
+
 int US_Analyte::read_analyte( const QString& filename, const QString& guid )
 {
    QFile file( filename );
@@ -450,7 +467,7 @@ int US_Analyte::parse_xml( QIODevice& device, const QString& guid )
          }
          else if ( xml.name() == "sequence" )
          {
-            sequence = xml.readElementText();
+            sequence = normalizedSequence( xml.readElementText() );
 
             // Set mw
             if ( type == PROTEIN )
@@ -658,6 +675,17 @@ bool US_Analyte::analyte_path( QString& path )
    return true;
 }
 
+QString US_Analyte::normalizedSequence( const QString& sequence )
+{
+   if ( !sequence.contains( QChar( '\r' ) ) )
+      return sequence;
+
+   QString lf = sequence;
+   lf.replace( QString( "\r\n" ), QString( "\n" ) );
+   lf.replace( QChar( '\r' ), QChar( '\n' ) );
+   return lf;
+}
+
 int US_Analyte::write( 
       bool           db_access, 
       const QString& filename,
@@ -721,7 +749,7 @@ int US_Analyte::write_xml( QIODevice& device )
          }
 
          xml.writeAttribute( "type",  "PROTEIN" );
-         xml.writeAttribute( "vbar20", QString::number( vbar20 ) );
+         xml.writeAttribute( "vbar20", exact_number( vbar20 ) );
       }
          break;
 
@@ -740,39 +768,38 @@ int US_Analyte::write_xml( QIODevice& device )
          xml.writeAttribute( "FivePrimeHydroxyl",
                                      US_Util::bool_string( _5prime ) );
 
-         xml.writeAttribute( "sodium",    QString::number( sodium    ) );
-         xml.writeAttribute( "potassium", QString::number( potassium ) );
-         xml.writeAttribute( "lithium",   QString::number( lithium   ) );
-         xml.writeAttribute( "magnesium", QString::number( magnesium ) );
-         xml.writeAttribute( "calcium",   QString::number( calcium   ) );
-         xml.writeAttribute( "vbar20",    QString::number( vbar20    ) );
+         xml.writeAttribute( "sodium",    exact_number( sodium    ) );
+         xml.writeAttribute( "potassium", exact_number( potassium ) );
+         xml.writeAttribute( "lithium",   exact_number( lithium   ) );
+         xml.writeAttribute( "magnesium", exact_number( magnesium ) );
+         xml.writeAttribute( "calcium",   exact_number( calcium   ) );
+         xml.writeAttribute( "vbar20",    exact_number( vbar20    ) );
          break;
 
       case US_Analyte::CARBOHYDRATE:
          xml.writeAttribute( "type",      "CARBOHYDRATE" );
-         xml.writeAttribute( "vbar20",    QString::number( vbar20 ) );
+         xml.writeAttribute( "vbar20",    exact_number( vbar20 ) );
          xml.writeAttribute( "gradient_forming",
                                           US_Util::bool_string( grad_form ) );
          break;
    }
 
    if ( mw > 0.0 )
-      xml.writeAttribute( "mw",     QString::number( mw ) );
+      xml.writeAttribute( "mw",     exact_number( mw ) );
 
    xml.writeAttribute( "description", description );
    xml.writeAttribute( "analyteGUID", analyteGUID );
 
-   xml.writeStartElement( "sequence" );
-   xml.writeCharacters( "\n" );
-
-   for ( int i = 0; i < sequence.length() / 80; i++ )
-      xml.writeCharacters( sequence.mid( i * 80, 80 ) + "\n" );
-
-   if ( sequence.length() % 80 > 0 )
-       xml.writeCharacters( sequence.mid( ( sequence.length() / 80 ) * 80 ) );
-
-   xml.writeCharacters( "\n" );
-   xml.writeEndElement(); // sequence
+   // The sequence is written as it is, but for its line ends.  The reader
+   // turns CR LF and CR into LF, so the sequence is given LF line ends first:
+   // what is read back is then what was written, and what the database
+   // copy holds.  The reader keeps the text of the
+   // element whole -- line breaks and numbering are part of a pasted
+   // sequence -- so line breaks the writer added (it used to frame the
+   // sequence with them and wrap it at 80 characters) were read back as part
+   // of it, and the sequence grew with every write and read.
+   sequence = normalizedSequence( sequence );
+   xml.writeTextElement( "sequence", sequence );
 
    // Add extinction values
    QList< double > keys = extinction.keys();
@@ -785,8 +812,8 @@ int US_Analyte::write_xml( QIODevice& device )
       value = extinction[ keys[ i ] ];
 
       xml.writeStartElement( "extinction" );
-      xml.writeAttribute( "frequency", QString::number( freq, 'g', std::numeric_limits<double>::max_digits10 ) );
-      xml.writeAttribute( "value",      QString::number( value ) );
+      xml.writeAttribute( "frequency", exact_number( freq ) );
+      xml.writeAttribute( "value",      exact_number( value ) );
       xml.writeEndElement(); // extinction
    }
 
@@ -799,8 +826,8 @@ int US_Analyte::write_xml( QIODevice& device )
       value = refraction[ keys[ i ] ];
 
       xml.writeStartElement( "refraction" );
-      xml.writeAttribute( "frequency", QString::number( freq, 'g', std::numeric_limits<double>::max_digits10 ) );
-      xml.writeAttribute( "value",      QString::number( value ) );
+      xml.writeAttribute( "frequency", exact_number( freq ) );
+      xml.writeAttribute( "value",      exact_number( value ) );
       xml.writeEndElement(); // refraction
    }
 
@@ -813,8 +840,8 @@ int US_Analyte::write_xml( QIODevice& device )
       value = fluorescence[ keys[ i ] ];
 
       xml.writeStartElement( "fluorescence" );
-      xml.writeAttribute( "frequency", QString::number( freq, 'g', std::numeric_limits<double>::max_digits10 ) );
-      xml.writeAttribute( "value",      QString::number( value ) );
+      xml.writeAttribute( "frequency", exact_number( freq ) );
+      xml.writeAttribute( "value",      exact_number( value ) );
       xml.writeEndElement(); // fluorescence
    }
 
@@ -1026,6 +1053,8 @@ int US_Analyte::write_db( IUS_DB2* db )
       spectrum = QString::number( lambda1 ) + "/" + QString::number( coeff1 );
    }
 
+   // LF line ends, as a disk copy has them (see normalizedSequence)
+   sequence = normalizedSequence( sequence );
    q << sequence;
    q << QString::number( vbar20 );
    q << description;

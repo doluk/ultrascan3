@@ -261,7 +261,7 @@ TEST_P( AnalyteXml, WriterProducesIndependentStructureValuesAndWrapping )
          }
          if ( name == "sequence" )
          {
-            EXPECT_EQ( "\n" + QString( 80, 'A' ) + "\nA\n", xml.readElementText() );
+            EXPECT_EQ( QString( 81, 'A' ), xml.readElementText() );
          }
          if ( name == "extinction" )
          {
@@ -280,6 +280,75 @@ TEST_P( AnalyteXml, WriterProducesIndependentStructureValuesAndWrapping )
       EXPECT_FALSE( xml.hasError() );
       EXPECT_EQ( ( QStringList{ "AnalyteData", "analyte", "sequence", "extinction", "refraction", "fluorescence" } ), elements );
    }
+}
+
+// An XML reader turns CR LF and CR in element text into LF, so a sequence
+// written with them read back other than it was written (and other than the
+// database copy).  The writer gives the sequence LF line ends first; all
+// else -- a FASTA header, residue numbers, tabs, leading and trailing
+// spaces -- is written and read back as it is.
+TEST_P( AnalyteXml, SequenceRoundTripsWithLfLineEnds )
+{
+   const QString entered = "  >sp|P69905|HBA_HUMAN Hemoglobin subunit alpha\r\n"
+                           "    1 MVLSPADKTN\tVKAAWGKVGA \r\n"
+                           "   21 HAGEYGAEAL\rERMFLSFPTT\r\r\n"
+                           "\tKTYFPHF  ";
+   const QString stored  = "  >sp|P69905|HBA_HUMAN Hemoglobin subunit alpha\n"
+                           "    1 MVLSPADKTN\tVKAAWGKVGA \n"
+                           "   21 HAGEYGAEAL\nERMFLSFPTT\n\n"
+                           "\tKTYFPHF  ";
+   ASSERT_EQ( stored, US_Analyte::normalizedSequence( entered ) );
+
+   for ( auto type : { US_Analyte::PROTEIN, US_Analyte::CARBOHYDRATE } )
+   {
+      US_Analyte a;
+      a.type        = type;
+      a.analyteGUID = "fixture";
+      a.vbar20      = 0.72;
+      a.mw          = 15000;
+      a.sequence    = entered;
+      QByteArray bytes;
+      ASSERT_NO_FATAL_FAILURE( write( a, bytes ) );
+      EXPECT_EQ( stored, a.sequence );
+
+      US_Analyte b;
+      ASSERT_NO_FATAL_FAILURE( read( b, bytes ) );
+      EXPECT_EQ( stored, b.sequence );
+
+      // and once more: nothing grows or moves
+      QByteArray again;
+      ASSERT_NO_FATAL_FAILURE( write( b, again ) );
+      US_Analyte c;
+      ASSERT_NO_FATAL_FAILURE( read( c, again ) );
+      EXPECT_EQ( stored, c.sequence );
+   }
+}
+
+// Files written before: raw CR LF, which the reader normalises anyway, and
+// CR kept as a character reference, which it does not
+TEST_P( AnalyteXml, OldFilesWithCrInTheSequenceReadWithLfLineEnds )
+{
+   for ( const QByteArray& text : { QByteArray( "MKV\r\n0011 AAG\r\n" ), QByteArray( "MKV&#13;&#10;0011 AAG&#13;" ) } )
+   {
+      US_Analyte a;
+      ASSERT_NO_FATAL_FAILURE( read( a, "<AnalyteData><analyte analyteGUID='fixture' type='CARBOHYDRATE' vbar20='0.6' "
+                                        "mw='100'><sequence>" + text + "</sequence></analyte></AnalyteData>" ) );
+      EXPECT_FALSE( a.sequence.contains( '\r' ) ) << text.constData();
+      EXPECT_TRUE( a.sequence.startsWith( "MKV\n0011 AAG\n" ) ) << text.constData();
+   }
+}
+
+// Copies that differ only in their line ends are the same analyte
+TEST( AnalyteSequence, EqualityIgnoresCrLineEnds )
+{
+   US_Analyte a;
+   US_Analyte b;
+   a.sequence = "MKV\r\nAAG";
+   b.sequence = "MKV\nAAG";
+   EXPECT_TRUE( a == b );
+   b.sequence = "MKV\n AAG";
+   EXPECT_FALSE( a == b );
+   EXPECT_EQ( QString( "a\nb\nc\n\nd" ), US_Analyte::normalizedSequence( "a\r\nb\rc\r\r\nd" ) );
 }
 
 TEST_P( AnalyteXml, WriterOmitsNonpositiveMass )
@@ -456,19 +525,21 @@ TEST_P( AnalyteXml, LaterAnalyteElementsCannotOverwriteSelectedIdentityOrSpectra
    EXPECT_EQ( ( QMap<double, double>{ { 250, 1 } } ), a.extinction );
 }
 
-TEST_P( AnalyteXml, WriterSequenceLineBoundariesIncludeEmptyFinalLine )
+// The sequence is written as it is: the line breaks an older writer put
+// around it and into it were read back as part of it
+TEST_P( AnalyteXml, WriterStoresTheSequenceAsItIs )
 {
    struct Example
    {
          int     length;
          QString expected;
    };
-   const Example examples[] = { { 0, "\n\n" },
-                                { 1, "\nA\n" },
-                                { 79, "\n" + QString( 79, 'A' ) + "\n" },
-                                { 80, "\n" + QString( 80, 'A' ) + "\n\n" },
-                                { 81, "\n" + QString( 80, 'A' ) + "\nA\n" },
-                                { 160, "\n" + QString( 80, 'A' ) + "\n" + QString( 80, 'A' ) + "\n\n" } };
+   const Example examples[] = { { 0, "" },
+                                { 1, "A" },
+                                { 79, QString( 79, 'A' ) },
+                                { 80, QString( 80, 'A' ) },
+                                { 81, QString( 81, 'A' ) },
+                                { 160, QString( 160, 'A' ) } };
    for ( const auto& example : examples )
    {
       SCOPED_TRACE( example.length );
@@ -554,7 +625,7 @@ TEST_P( AnalyteXml, WriterEscapesUnicodeAndOmitsMemoryOnlyFields )
       if ( xml.name() == "sequence" )
       {
          ++sequences;
-         EXPECT_EQ( QString( "\nA<&B\n" ), xml.readElementText() );
+         EXPECT_EQ( QString( "A<&B" ), xml.readElementText() );
       }
    }
    EXPECT_FALSE( xml.hasError() );
@@ -787,4 +858,100 @@ TEST_F( AnalyteXmlDevice, ReadsAndWritesAtCurrentPosition )
    EXPECT_TRUE( output.isOpen() );
 }
 
+// Every number an analyte file holds reads back as the double written; the
+// values used to keep six significant digits
+TEST_P( AnalyteXml, NumbersAreKeptAtFullPrecision )
+{
+   const double third = 0.1 + 0.2;
+
+   for ( US_Analyte::analyte_t type : { US_Analyte::PROTEIN, US_Analyte::DNA,
+                                        US_Analyte::CARBOHYDRATE } )
+   {
+      SCOPED_TRACE( int( type ) );
+      US_Analyte a;
+      a.type                  = type;
+      a.description           = "awkward";
+      a.analyteGUID           = "fixture";
+      a.vbar20                = third;
+      a.mw                    = 123456.78901234567;
+      a.sodium                = 1e-7;
+      a.potassium             = 5e-6;
+      a.extinction[ 280.04 ]  = 12345.678901234;
+      a.extinction[ 280.06 ]  = third;
+      a.refraction[ 589.3 ]   = 1e-7;
+      a.fluorescence[ 400.1 ] = 5e-6;
+
+      QByteArray bytes;
+      ASSERT_NO_FATAL_FAILURE( write( a, bytes ) );
+
+      US_Analyte b;
+      ASSERT_NO_FATAL_FAILURE( read( b, bytes ) );
+
+      EXPECT_EQ( b.vbar20, a.vbar20 );
+      EXPECT_EQ( b.mw,     a.mw );
+      if ( type == US_Analyte::DNA )
+      {
+         EXPECT_EQ( b.sodium,    a.sodium );
+         EXPECT_EQ( b.potassium, a.potassium );
+      }
+      // (a protein reader adds the 280 nm value of its sequence, so only
+      // the written wavelengths are compared)
+      for ( auto it = a.extinction.constBegin(); it != a.extinction.constEnd(); ++it )
+      {
+         ASSERT_TRUE( b.extinction.contains( it.key() ) ) << it.key();
+         EXPECT_EQ( b.extinction.value( it.key() ), it.value() ) << it.key();
+      }
+      EXPECT_EQ( b.refraction,   a.refraction );
+      EXPECT_EQ( b.fluorescence, a.fluorescence );
+   }
+}
+
+}
+
+// The line breaks the writer puts around and into a sequence are not read
+// back as part of it: a sequence written and read is the sequence, and
+// writing and reading it again gives it once more.  It used to grow by two line breaks
+// with every round trip.
+TEST_P( AnalyteXml, ASequenceSurvivesRepeatedRoundTrips )
+{
+   for ( const QString& sequence : { QString(), QString( "MKV" ), QString( 80, 'A' ), QString( 81, 'C' ),
+                                     QString( 160, 'G' ) + "TTT" } )
+   {
+      SCOPED_TRACE( sequence.size() );
+      US_Analyte a;
+      a.type        = US_Analyte::PROTEIN;
+      a.description = "round trip";
+      a.analyteGUID = "fixture";
+      a.mw          = 1000;
+      a.sequence    = sequence;
+
+      QByteArray first;
+      ASSERT_NO_FATAL_FAILURE( write( a, first ) );
+      US_Analyte once;
+      ASSERT_NO_FATAL_FAILURE( read( once, first ) );
+      EXPECT_EQ( sequence, once.sequence );
+
+      QByteArray second;
+      ASSERT_NO_FATAL_FAILURE( write( once, second ) );
+      US_Analyte twice;
+      ASSERT_NO_FATAL_FAILURE( read( twice, second ) );
+      EXPECT_EQ( sequence, twice.sequence );
+   }
+}
+
+// A file an older writer wrapped reads as it always did, and is then
+// written as read: it does not grow any further
+TEST_P( AnalyteXml, AnOlderWrappedSequenceGrowsNoMore )
+{
+   US_Analyte a;
+   ASSERT_NO_FATAL_FAILURE( read( a, "<analyte analyteGUID='fixture' type='PROTEIN' description='wrapped' mw='1000'>"
+                                     "<sequence>\nMKVL\nAAGG\n</sequence></analyte>" ) );
+   EXPECT_EQ( QString( "\nmkvl\naagg\n" ).toUpper(), a.sequence.toUpper() );
+   const QString read1 = a.sequence;
+
+   QByteArray bytes;
+   ASSERT_NO_FATAL_FAILURE( write( a, bytes ) );
+   US_Analyte b;
+   ASSERT_NO_FATAL_FAILURE( read( b, bytes ) );
+   EXPECT_EQ( read1, b.sequence );
 }

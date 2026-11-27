@@ -104,12 +104,34 @@ class US_UTIL_EXTERN US_Experiment
           A missing optional RI intensity profile leaves RIProfile empty and
           does not prevent speed-step loading or turn success into DBERROR.
 
+          For RI data the profile the database holds is also copied to
+          resultDir/runID/runID.RIProfile.xml when no copy is there, unless
+          \p cacheRIProfile is false; a caller that only reads the record --
+          to export it, say -- passes false so that nothing is written into
+          the user's results directory.
+
+          A person, instrument or rotor lookup that finds no row leaves the
+          fields it fills (invGUID, operatorGUID, instrumentSerial, the
+          rotor's GUID, name and serial) empty, not as an earlier read left
+          them.
+
           \param runID  The run ID of the experiment.
           \param    db For database access, an open database connection
           \param    speedsteps Reference to vector of experiment speed steps
+          \param    invid_p The investigator ID, or empty for the selected one
+          \param    cacheRIProfile False to leave the local results directory
+                    untouched
+          \param    defaultCalibration When the experiment names no rotor
+                    calibration (calibrationID 0): true, the default, takes
+                    the rotor's first calibration, which programs that go
+                    on to analyse, convert or save the run rely on; false
+                    leaves calibrationID 0 and the rotor coefficients 0,
+                    for a caller that records what the run actually used
+                    (an export, say)
           \returns  One of the IUS_DB2 error codes
       */
-      int readFromDB( QString, IUS_DB2*, QVector<SP_SPEEDPROFILE>&, const QString = QString( "" ) );
+      int readFromDB( QString, IUS_DB2*, QVector<SP_SPEEDPROFILE>&, const QString = QString( "" ),
+                      bool cacheRIProfile = true, bool defaultCalibration = true );
 
       /*! \brief    Writes an xml file
 
@@ -204,6 +226,11 @@ class US_UTIL_EXTERN US_Experiment
 
       void clear( void ); //!< Function to reset all class variables to defaults
       void show ( void ); //!< Temporary function to display current exp info
+
+      //! \brief The RI intensity profile as the US_RIProfile XML that
+      //!        saveRIDisk() writes and the database stores, without
+      //!        writing anything.  Empty unless the optical system is RI.
+      QByteArray riProfileXml( void );
 
       RotorInfo         hwInfo;
 

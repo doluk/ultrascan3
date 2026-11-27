@@ -22,6 +22,23 @@ class US_GUI_EXTERN US_SelectRuns : public US_WidgetsDialog
 
       US_SelectRuns( bool, QStringList& );
 
+      //! \brief Constructor for a dialog that offers only certain runs
+      //! \param dbase   Flag: Data source is database
+      //! \param runIDs  A reference for an output list of selected runIDs
+      //! \param allowed The only runIDs the dialog offers; an empty list
+      //!                offers every run, as the main constructor does.
+      //!                The filter belongs to the source and investigator
+      //!                the dialog opens with: when the user switches
+      //!                either, it is dropped and every run is offered.
+
+      US_SelectRuns( bool, QStringList&, const QStringList& allowed );
+
+      //! \brief The run IDs the dialog offers now
+      QStringList offeredRuns( void ) const;
+
+      //! \brief True while the dialog offers only the caller's runs
+      bool isFiltered( void ) const;
+
    signals:
       //! \brief A signal to the parent that disk/db selectin has changed
       //! \param DB  True if DB source is now selected
@@ -31,6 +48,8 @@ class US_GUI_EXTERN US_SelectRuns : public US_WidgetsDialog
       bool           sel_db;      //!< Select-database flag
 
       QStringList&   runIDs;      //!< Selected run IDs
+
+      QStringList    runFilter;   //!< The only runIDs to offer, when not empty
 
       US_Help showHelp;
 
@@ -60,6 +79,9 @@ class US_GUI_EXTERN US_SelectRuns : public US_WidgetsDialog
       US_Disk_DB_Controls* dkdb_cntrls;  //!< Disk/DB controls
 
       QString        dsearch;     //!< Current data search string
+
+      //! \brief Title the dialog by its source and filter
+      void set_title( void );
 
    private slots:
 

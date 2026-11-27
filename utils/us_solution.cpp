@@ -3,6 +3,18 @@
 #include "ius_db2.h"
 #include "us_util.h"
 #include "us_solution.h"
+
+// A value as the shortest text that reads back as exactly the same double.
+// Disk records are read back with QString::toDouble, which takes this form
+// and every form older files were written in.
+static QString exact_number( double value )
+{
+#if QT_VERSION >= QT_VERSION_CHECK( 5, 7, 0 )
+   return QString::number( value, 'g', QLocale::FloatingPointShortest );
+#else
+   return QString::number( value, 'g', 17 );
+#endif
+}
 #include "us_buffer.h"
 #include "us_analyte.h"
 #include "us_datafiles.h"
@@ -45,7 +57,26 @@ int US_Solution::loadFromDisk( QString& guid )
                << guid;
       return IUS_DB2::NO_SOLUTION;
    }
-   
+
+   return readFromFile( filename );
+}
+
+int US_Solution::readFromFile( const QString& filename, bool resolveRefs )
+{
+   // Parse into a fresh solution and publish it only when the file -- and,
+   // when asked for, its buffer and analytes -- all load.  A failed read
+   // leaves this solution as it was.
+   US_Solution loaded;
+   const int   status = loaded.parseFile( filename, resolveRefs );
+
+   if ( status == IUS_DB2::OK )
+      *this = loaded;
+
+   return status;
+}
+
+int US_Solution::parseFile( const QString& filename, bool resolveRefs )
+{
    QFile file( filename );
    if ( !file.open( QIODevice::ReadOnly | QIODevice::Text) )
    {
@@ -84,6 +115,12 @@ int US_Solution::loadFromDisk( QString& guid )
       qDebug() << "Error: xml error: \n"
                << xml.errorString();
       return IUS_DB2::DBERROR;
+   }
+
+   if ( ! resolveRefs )
+   {
+      saveStatus = HD_ONLY;
+      return IUS_DB2::OK;
    }
 
    // Load actual buffer and analyte files if we can find them
@@ -336,6 +373,22 @@ bool US_Solution::saveToDisk( void )
    QString filename = US_DataFiles::get_filename( path, solutionGUID,
                          "S", "solution", "guid", newFile );
 
+   if ( ! saveToFile( filename ) )  return false;
+
+   // Save the buffer and analytes to disk
+   const bool bufferSaved   = saveBufferDisk();
+   const bool analytesSaved = saveAnalytesDisk();
+   if ( !bufferSaved || !analytesSaved )
+   {
+      return false;
+   }
+
+   saveStatus = ( saveStatus == DB_ONLY ) ? BOTH : HD_ONLY;
+   return true;
+}
+
+bool US_Solution::saveToFile( const QString& filename )
+{
    QFile file( filename );
    if ( !file.open( QIODevice::WriteOnly | QIODevice::Text) )
    {
@@ -358,8 +411,8 @@ bool US_Solution::saveToDisk( void )
    xml.writeStartElement( "solution" );
    xml.writeAttribute   ( "id", QString::number( solutionID ) );
    xml.writeAttribute   ( "guid", solutionGUID );
-   xml.writeAttribute   ( "commonVbar20", QString::number( commonVbar20 ) );
-   xml.writeAttribute   ( "storageTemp", QString::number( storageTemp ) );
+   xml.writeAttribute   ( "commonVbar20", exact_number( commonVbar20 ) );
+   xml.writeAttribute   ( "storageTemp", exact_number( storageTemp ) );
    xml.writeTextElement ( "description", solutionDesc );
    xml.writeTextElement ( "notes", notes );
 
@@ -376,9 +429,9 @@ bool US_Solution::saveToDisk( void )
          xml.writeAttribute   ( "id",   ai.analyte.analyteID   );
          xml.writeAttribute   ( "guid", ai.analyte.analyteGUID );
          xml.writeAttribute   ( "desc", ai.analyte.description );
-         xml.writeAttribute   ( "amount", QString::number( ai.amount  ) );
-         xml.writeAttribute   ( "mw", QString::number( ai.analyte.mw  ) );
-         xml.writeAttribute   ( "vbar20", QString::number( ai.analyte.vbar20  ) );
+         xml.writeAttribute   ( "amount", exact_number( ai.amount  ) );
+         xml.writeAttribute   ( "mw", exact_number( ai.analyte.mw  ) );
+         xml.writeAttribute   ( "vbar20", exact_number( ai.analyte.vbar20  ) );
          xml.writeAttribute   ( "type", analyte_typetext( (int)ai.analyte.type ) );
          xml.writeEndElement  ();
       }
@@ -394,15 +447,6 @@ bool US_Solution::saveToDisk( void )
       return false;
    }
 
-   // Save the buffer and analytes to disk
-   const bool bufferSaved   = saveBufferDisk();
-   const bool analytesSaved = saveAnalytesDisk();
-   if ( !bufferSaved || !analytesSaved )
-   {
-      return false;
-   }
-
-   saveStatus = ( saveStatus == DB_ONLY ) ? BOTH : HD_ONLY;
    return true;
 }
 
@@ -853,31 +897,6 @@ bool US_Solution::AnalyteInfo::operator==( const AnalyteInfo& rhs ) const
    if ( amount  != rhs.amount       ) return false;
 
    return true;
-}
-
-US_Solution& US_Solution::operator=( const US_Solution& rhs )
-{
-   if ( this != &rhs )            // guard against self assignment
-   {
-      clear();
-
-      solutionID    = rhs.solutionID;
-      solutionGUID  = rhs.solutionGUID;
-      solutionDesc  = rhs.solutionDesc;
-      buffer        = rhs.buffer;
-      commonVbar20  = rhs.commonVbar20;
-      storageTemp   = rhs.storageTemp;
-      notes         = rhs.notes;
-      saveStatus    = rhs.saveStatus;
-      extinction              = rhs.extinction;
-      replace_spectrum        = rhs.replace_spectrum;
-      new_or_changed_spectrum = rhs.new_or_changed_spectrum;
-
-      for (const auto & i : rhs.analyteInfo)
-         analyteInfo      << i;
-   }
-
-   return *this;
 }
 
 void US_Solution::clear( void )
