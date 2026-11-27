@@ -178,6 +178,27 @@ TEST_F( ReadDiskRunTest, RefusesADirectoryNameThatCannotBeARunId )
    EXPECT_EQ( error, QString( US_ConvertIO::invalidRunIdMessage ).arg( "not a run id" ) );
 }
 
+// A run directory named for a Windows device holds real data here, but is
+// refused before any of it is read: the run could not be carried to Windows
+TEST_F( ReadDiskRunTest, RefusesARunNamedForAWindowsDevice )
+{
+   for ( const char* name : { "COM1", "nul", "Lpt9" } )
+   {
+      SCOPED_TRACE( name );
+      const DiskRun fixture = us3test::writeDiskRun( parentDir(), name, "RA", { DatasetSpec{ 1, 'A', "280" } } );
+      ASSERT_FALSE( fixture.dir.isEmpty() );
+
+      EXPECT_EQ( read( fixture ), US_Convert::BAD_RUNID );
+      EXPECT_EQ( error, QString( US_ConvertIO::invalidRunIdMessage ).arg( name ) );
+      EXPECT_TRUE( run.rawData.isEmpty() );
+   }
+
+   // a name that only starts with one is an ordinary run
+   const DiskRun console = us3test::writeDiskRun( parentDir(), "CONSOLE", "RA", { DatasetSpec{ 1, 'A', "280" } } );
+   ASSERT_FALSE( console.dir.isEmpty() );
+   EXPECT_EQ( read( console ), US_Convert::OK ) << error.toStdString();
+}
+
 TEST_F( ReadDiskRunTest, ReportsADirectoryWithNoData )
 {
    const QString empty = parentDir() + "/empty-run/";
@@ -393,4 +414,31 @@ TEST_F( ReadDiskRunTest, StartsFromAnEmptyRunEachTime )
    EXPECT_EQ( run.triples.size(), 1 );
    EXPECT_EQ( run.runID.toStdString(), "second-run" );
    EXPECT_TRUE( run.speedSteps.isEmpty() );
+}
+
+// The rule readDiskRun applies to a directory name, offered on its own so
+// that a caller can check a run ID before it reads anything
+TEST( US_ConvertIORunId, TheRunIdRuleIsOfferedOnItsOwn )
+{
+   EXPECT_TRUE ( US_ConvertIO::runIdIsUsable( "Run_01-a" ) );
+   EXPECT_TRUE ( US_ConvertIO::runIdIsUsable( QString( 80, QChar( 'x' ) ) ) );
+   EXPECT_FALSE( US_ConvertIO::runIdIsUsable( QString( 81, QChar( 'x' ) ) ) );
+   EXPECT_FALSE( US_ConvertIO::runIdIsUsable( "" ) );
+   EXPECT_FALSE( US_ConvertIO::runIdIsUsable( "dotted.run" ) );
+   EXPECT_FALSE( US_ConvertIO::runIdIsUsable( "a b" ) );
+   EXPECT_FALSE( US_ConvertIO::runIdIsUsable( "../up" ) );
+
+   // the whole name must match: "$" alone lets a final newline through
+   EXPECT_FALSE( US_ConvertIO::runIdIsUsable( "Run\n" ) );
+   EXPECT_FALSE( US_ConvertIO::runIdIsUsable( "\nRun" ) );
+   EXPECT_FALSE( US_ConvertIO::runIdIsUsable( QString( 80, QChar( 'x' ) ) + "\n" ) );
+
+   // names Windows keeps for devices cannot be directory names there
+   for ( const char* name : { "CON", "con", "Prn", "AUX", "nul", "COM1", "com9",
+                              "LPT1", "lpt9" } )
+      EXPECT_FALSE( US_ConvertIO::runIdIsUsable( name ) ) << name;
+
+   // ... but names that merely start with one are fine
+   for ( const char* name : { "CONSOLE", "NUL_1", "COM10", "COM0", "LPT", "AUX-2" } )
+      EXPECT_TRUE( US_ConvertIO::runIdIsUsable( name ) ) << name;
 }

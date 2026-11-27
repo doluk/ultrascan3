@@ -49,14 +49,43 @@ QString US_Util::md5sum_file( const QString& filename )
    if ( ! f.open( QIODevice::ReadOnly ) )
       return "0 0";
 
-   // Otherwise, get the full contents of the file into a QByteArray
-   QByteArray data = f.readAll();
+   // Otherwise, hash the file a block at a time.  Data files run to
+   // hundreds of megabytes, and there is no reason to hold one of them in
+   // memory in one piece just to digest it.
+   //
+   // The file is read until read() says it is done rather than until
+   // atEnd(), which trusts the size the file system reports, and a read
+   // that fails part way gives the same "0 0" as one that cannot start:
+   // the hash of the part that could be read is not the file's hash.
+   QCryptographicHash hash( QCryptographicHash::Md5 );
+   QByteArray         block( 1024 * 256, Qt::Uninitialized );
+   qint64             total = 0;
+
+   forever
+   {
+      const qint64 got = f.read( block.data(), block.size() );
+
+      if ( got < 0 )
+      {
+         f.close();
+         return "0 0";
+      }
+
+      if ( got == 0 )  break;
+
+#if QT_VERSION >= QT_VERSION_CHECK( 6, 0, 0 )
+      hash.addData( QByteArrayView( block.constData(), got ) );
+#else
+      hash.addData( block.constData(), int( got ) );
+#endif
+      total += got;
+   }
+
    f.close();
 
    // Get the md5 hash, convert to hex, get file size;  then format "hash size"
-   QString hashandsize =
-      QString( QCryptographicHash::hash( data, QCryptographicHash::Md5 )
-      .toHex() ) + " " + QString::number( QFileInfo( filename ).size() );
+   QString hashandsize = QString( hash.result().toHex() ) + " "
+                         + QString::number( total );
 
    // Return the "hash size" string
    return hashandsize;

@@ -72,11 +72,26 @@ class US_UTIL_EXTERN US_ConvertIO
       */
       static int                   readDiskRun( const QString& directory, DiskRun& run, QString& error );
 
+      /*! \brief True when a name can be a run ID: letters, digits, '_' and
+                 '-', at least one and at most 80 of them, and the whole
+                 name (a trailing newline is not accepted).  readDiskRun()
+                 refuses a directory whose name is not one; older data may
+                 still hold run IDs with dots in them.
+
+                 A run ID is also the name of the run's directory, so the
+                 names Windows reserves for devices -- CON, PRN, AUX, NUL,
+                 COM1 to COM9 and LPT1 to LPT9, in any case -- are refused
+                 as well: a run with one could not be copied to Windows.
+          \param runID The run ID to check
+      */
+      static bool                  runIdIsUsable( const QString& runID );
+
       //! \brief readDiskRun() error formats, shared with the tests; fill them
       //! with QString::arg().
       //! A directory name that cannot be a run ID: %1 the name.
       static constexpr const char* invalidRunIdMessage  = "\"%1\" cannot be a run ID: a run directory name may hold only letters, "
-                                                          "digits, the underscore and the hyphen, and at most 80 of them";
+                                                          "digits, the underscore and the hyphen, at most 80 of them, and not be a "
+                                                          "name Windows reserves for a device (CON, NUL, COM1, ...)";
       //! No .auc files: %1 the directory.
       static constexpr const char* noAucFilesMessage    = "No .auc files were found in %1";
       //! An .auc file that could not be read: %1 the directory.

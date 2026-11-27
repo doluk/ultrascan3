@@ -141,6 +141,30 @@ TEST_F(US_UtilTest, Md5sumFileEmptyFile) {
    EXPECT_EQ( parts[1].toInt(), 0 );
 }
 
+// A file that opens but cannot be read gives the failure answer, not the
+// hash of the part that could be read.  /proc/self/mem opens for reading
+// and fails the first read at offset 0 with EIO.
+TEST_F(US_UtilTest, Md5sumFileReadErrorGivesTheFailureAnswer) {
+#ifdef Q_OS_LINUX
+   const QString fileName = "/proc/self/mem";
+   QFile         probe( fileName );
+
+   if ( ! probe.open( QIODevice::ReadOnly ) )
+      GTEST_SKIP() << "cannot open " << fileName.toStdString();
+
+   char byte;
+   const bool unreadable = ( probe.read( &byte, 1 ) < 0 );
+   probe.close();
+
+   if ( ! unreadable )
+      GTEST_SKIP() << fileName.toStdString() << " is readable here";
+
+   EXPECT_THAT( US_Util::md5sum_file( fileName ), QStringEq( "0 0" ) );
+#else
+   GTEST_SKIP() << "needs a file that opens but cannot be read";
+#endif
+}
+
 TEST_F(US_UtilTest, Md5sumFileConsistency) {
     QString content = "Consistent content for hash testing";
     const QString fileName = US_Settings::workBaseDir() + "/input.txt";
