@@ -151,6 +151,7 @@ Welcome to UltraScan-III's Documentation and Resource!
    solutions/index
    us_project
    manage_data
+   us_data_publication
    rotors
    rotor_calibration
 

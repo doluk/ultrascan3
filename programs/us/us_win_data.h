@@ -80,6 +80,7 @@ enum ProcessId
    P_MANAGESOLN,
    P_MANAGEPROJ,
    P_MANAGEROTOR,
+   P_DATAPUB,
 
    P_END
 };
