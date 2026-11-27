@@ -11,6 +11,93 @@
 
 #include <QRegularExpression>
 
+#ifndef NO_DB
+namespace
+{
+// Every string goes to the server as UTF-8 and comes back as UTF-8, so the
+// connection must say so.  Left to the client library, the character set
+// is whatever it was built with -- latin1 for some libmariadb builds,
+// utf8mb4 for others -- and a query encoded one way and read the other
+// fails on the first accented letter or stores a '?' in its place.
+const char* const connectionCharset = "utf8mb4";
+
+// Ask for the connection character set before connecting
+bool request_utf8( MYSQL* conn, QString& err )
+{
+   if ( mysql_options( conn, MYSQL_SET_CHARSET_NAME, connectionCharset ) != 0 )
+   {
+      err = QString( "Error setting the connection character set to %1" ).arg( connectionCharset );
+      return false;
+   }
+   return true;
+}
+
+// Put the character set on the session itself, and check that the server
+// uses it.  The handshake only proposes one: a server started with
+// skip-character-set-client-handshake, or one whose init_connect runs SET
+// NAMES, keeps its own without saying so, and mysql_character_set_name()
+// reports the client's setting, not the session's -- every query would then
+// be read as Latin-1 and stored as mojibake.  mysql_set_character_set()
+// sends SET NAMES, and the session variables say what the server will use
+// to read a query, compare it, and send back results.
+bool confirm_utf8( MYSQL* conn, QString& err )
+{
+   if ( mysql_set_character_set( conn, connectionCharset ) != 0 )
+   {
+      err = QString( "The server did not accept the %1 connection character set: %2" )
+            .arg( connectionCharset, QString::fromUtf8( mysql_error( conn ) ) );
+      return false;
+   }
+
+   const QByteArray check( "SELECT @@character_set_client, @@character_set_connection,"
+                           " @@character_set_results" );
+   if ( mysql_real_query( conn, check.constData(), static_cast< unsigned long >( check.size() ) ) != 0 )
+   {
+      err = QString( "The connection character set could not be checked: %1" )
+            .arg( QString::fromUtf8( mysql_error( conn ) ) );
+      return false;
+   }
+
+   QStringList found;
+   MYSQL_RES*  result = mysql_store_result( conn );
+   if ( result != nullptr )
+   {
+      MYSQL_ROW row = mysql_fetch_row( result );
+      if ( row != nullptr  &&  mysql_num_fields( result ) == 3 )
+      {
+         for ( int ii = 0; ii < 3; ii++ )
+            found << ( row[ ii ] != nullptr ? QString::fromUtf8( row[ ii ] ) : QString( "NULL" ) );
+      }
+      mysql_free_result( result );
+   }
+
+   // Nothing else is pending, but leave the connection ready all the same
+   while ( mysql_next_result( conn ) == 0 )
+   {
+      MYSQL_RES* more = mysql_store_result( conn );
+      if ( more != nullptr )
+         mysql_free_result( more );
+   }
+
+   const QString wanted = QString::fromLatin1( connectionCharset );
+   if ( found.size() == 3  &&  found.count( wanted ) == 3 )
+      return true;
+
+   err = QString( "The server does not use the %1 character set on this connection"
+                  " (client, connection, results: %2), so text would be stored wrongly" )
+         .arg( wanted, found.isEmpty() ? QString( "unknown" ) : found.join( ", " ) );
+   return false;
+}
+
+// Run a statement given as text, as the UTF-8 the connection expects
+int run_utf8( MYSQL* conn, const QString& statement )
+{
+   const QByteArray bytes = statement.toUtf8();
+   return mysql_real_query( conn, bytes.constData(), static_cast< unsigned long >( bytes.size() ) );
+}
+}
+#endif
+
 #define CIPHER \
 /* TLS 1.2 (Prioritize Galois/Counter Mode) */ \
 "ECDHE-ECDSA-AES256-GCM-SHA384:" \
@@ -122,19 +209,28 @@ bool US_DB2::test_db_connection(
       return false;
    }
 
+   if ( ! request_utf8( conn, error ) )
+   {
+      mysql_close( conn );
+      return false;
+   }
+
    QString uhost  = host.section( ":", 0, 0 ).simplified();
    int     uport  = host.section( ":", 1, 1 ).simplified().toInt();
 
    bool status = mysql_real_connect(
                  conn,
-                 uhost   .toLatin1().constData(),
-                 user    .toLatin1().constData(),
-                 password.toLatin1().constData(),
-                 dbname  .toLatin1().constData(),
+                 uhost   .toUtf8().constData(),
+                 user    .toUtf8().constData(),
+                 password.toUtf8().constData(),
+                 dbname  .toUtf8().constData(),
                  uport, NULL, CLIENT_MULTI_STATEMENTS );
  
    if ( ! status )
       error = QString( "Test connection open error\n" ) + mysql_error( conn );
+
+   else if ( ! confirm_utf8( conn, error ) )
+      status = false;
 
    mysql_close( conn );
 
@@ -170,15 +266,20 @@ bool US_DB2::test_secure_connection(
       return false;
    }
 
+   if ( ! request_utf8( db, error ) ) {
+      err = error;
+      return false;
+   }
+
    QString uhost  = host.section( ":", 0, 0 ).simplified();
    int     uport  = host.section( ":", 1, 1 ).simplified().toInt();
 
    bool status = mysql_real_connect(
                  db,
-                 uhost   .toLatin1().constData(),
-                 user    .toLatin1().constData(),
-                 password.toLatin1().constData(),
-                 dbname  .toLatin1().constData(),
+                 uhost   .toUtf8().constData(),
+                 user    .toUtf8().constData(),
+                 password.toUtf8().constData(),
+                 dbname  .toUtf8().constData(),
                  uport, NULL, CLIENT_MULTI_STATEMENTS );
  
    if ( ! status )
@@ -186,6 +287,12 @@ bool US_DB2::test_secure_connection(
       error = QString( "Test secure connection open error\n" ) +
               mysql_error( db );
       err   = mysql_error( db );
+      return false;
+   }
+
+   if ( ! confirm_utf8( db, error ) )
+   {
+      err = error;
       return false;
    }
 
@@ -235,7 +342,7 @@ bool US_DB2::connect( const QString& masterPW, QString& err )
    QString iv       = defaultDB.at( 5 );  // Initialization vector
 
    QString password = US_Crypto::decrypt( cipher, masterPW, iv );
-   const bool config_status = configure_ssl( err );
+   const bool config_status = configure_ssl( err ) && request_utf8( db, err );
    if ( ! config_status ) {
       db_errno = NOT_CONNECTED;
       error = QString( "Connect open error:\n" ) + err;
@@ -253,10 +360,10 @@ bool US_DB2::connect( const QString& masterPW, QString& err )
 
       connected = mysql_real_connect(
                   db,
-                  uhost   .toLatin1().constData(),
-                  user    .toLatin1().constData(),
-                  password.toLatin1().constData(),
-                  dbname  .toLatin1().constData(),
+                  uhost   .toUtf8().constData(),
+                  user    .toUtf8().constData(),
+                  password.toUtf8().constData(),
+                  dbname  .toUtf8().constData(),
                   uport, NULL, CLIENT_MULTI_STATEMENTS );
  
    }
@@ -276,13 +383,22 @@ bool US_DB2::connect( const QString& masterPW, QString& err )
    serverEndedTransaction = false;
    server_errno           = 0;
    lostCommitError.clear();
-   server_version       = connected ? QString( mysql_get_server_info( db ) ) : QString();
+   server_version       = connected ? QString::fromUtf8( mysql_get_server_info( db ) ) : QString();
 
    if ( ! connected )
    {
       db_errno = NOT_CONNECTED;
       error = QString( "Connect open error: " ) + mysql_error( db );
       err = error;
+      return false;
+   }
+
+   if ( ! confirm_utf8( db, err ) )
+   {
+      connected = false;
+      db_errno  = NOT_CONNECTED;
+      error     = QString( "Connect open error: " ) + err;
+      err       = error;
       return false;
    }
 
@@ -347,7 +463,7 @@ bool US_DB2::connect(
 
   resetLostHandle();
 
-  const bool config_status = configure_ssl( err );
+  const bool config_status = configure_ssl( err ) && request_utf8( db, err );
   if ( ! config_status ) {
      db_errno = NOT_CONNECTED;
      error = QString( "Connect open error:\n" ) + err;
@@ -364,10 +480,10 @@ bool US_DB2::connect(
 
       connected = mysql_real_connect(
                   db,
-                  uhost   .toLatin1().constData(),
-                  user    .toLatin1().constData(),
-                  password.toLatin1().constData(),
-                  dbname  .toLatin1().constData(),
+                  uhost   .toUtf8().constData(),
+                  user    .toUtf8().constData(),
+                  password.toUtf8().constData(),
+                  dbname  .toUtf8().constData(),
                   uport, NULL, CLIENT_MULTI_STATEMENTS );
    }
 
@@ -386,12 +502,21 @@ bool US_DB2::connect(
    serverEndedTransaction = false;
    server_errno           = 0;
    lostCommitError.clear();
-   server_version       = connected ? QString( mysql_get_server_info( db ) ) : QString();
+   server_version       = connected ? QString::fromUtf8( mysql_get_server_info( db ) ) : QString();
    if ( ! connected )
    {
       db_errno = NOT_CONNECTED;
       error = QString( "Connect open error: " ) + mysql_error( db );
       err = error;
+      return false;
+   }
+
+   if ( ! confirm_utf8( db, err ) )
+   {
+      connected = false;
+      db_errno  = NOT_CONNECTED;
+      error     = QString( "Connect open error: " ) + err;
+      err       = error;
       return false;
    }
 
@@ -539,7 +664,7 @@ bool US_DB2::commitTransaction( QString& transaction_error )
       // The server may have committed before the connection dropped; only a
       // lost connection leaves that open, so only then is the outcome unknown.
       transaction_error =
-         commitErrorText( int( mysql_errno( db ) ), QString( mysql_error( db ) ), server_version );
+         commitErrorText( int( mysql_errno( db ) ), QString::fromUtf8( mysql_error( db ) ), server_version );
       noteConnectionLoss();
 
       // The rollback that follows must not claim that nothing was kept
@@ -672,6 +797,7 @@ void US_DB2::resetLostHandle()
       mysql_free_result( result );
    result      = NULL;
    row         = NULL;
+   row_lengths = nullptr;
    mysql_close( db );
    db              = mysql_init( NULL );
    connection_lost        = false;
@@ -723,6 +849,8 @@ void US_DB2::drainResults()
 #else
 void US_DB2::drainResults()
 {
+   row_lengths = nullptr;
+
    if ( result )
       mysql_free_result( result );
 
@@ -768,9 +896,14 @@ bool US_DB2::sendStatement( const QString& sqlQuery )
    //   result sets
    drainResults();
 
-   if ( mysql_query( db, sqlQuery.toLatin1() ) != 0 )
+   if ( refuseUnsendable( sqlQuery ) )
    {
-      error = QString( "MySQL error: " ) + mysql_error( db );
+      return false;
+   }
+
+   if ( run_utf8( db, sqlQuery ) != 0 )
+   {
+      error = serverErrorText();
       noteStatementError();
    }
 
@@ -782,7 +915,7 @@ bool US_DB2::sendStatement( const QString& sqlQuery )
       // says that reading the result failed.
       if ( result == NULL && mysql_errno( db ) != 0 )
       {
-         error = QString( "MySQL error: " ) + mysql_error( db );
+         error = serverErrorText();
          noteStatementError();
       }
       else
@@ -799,6 +932,11 @@ int US_DB2::statusQuery( const QString& ){ return 0; }
 #else
 int US_DB2::statusQuery( const QString& sqlQuery )
 {
+   if ( refuseUnsendable( sqlQuery ) )
+   {
+      return db_errno;
+   }
+
    db_errno = DBERROR;
 
    sendStatement( sqlQuery );
@@ -830,7 +968,7 @@ int US_DB2::statusQuery( const QString& sqlQuery )
       if ( result )
       {
          row       = mysql_fetch_row( result );
-         error     = row[ 0 ];
+         error     = QString::fromUtf8( row[ 0 ] );
          mysql_free_result( result );
          result = NULL;
       }
@@ -877,6 +1015,11 @@ void US_DB2::query( const QString& ) {}
 #else
 void US_DB2::query( const QString& sqlQuery )
 {
+   if ( refuseUnsendable( sqlQuery ) )
+   {
+      return;
+   }
+
    sendStatement( sqlQuery );
 
    // What the server said about the statement itself; the reads of the US3
@@ -908,7 +1051,7 @@ void US_DB2::query( const QString& sqlQuery )
       // The procedure failed after its status row, while producing its data.
       if ( next > 0 )
       {
-         error        = QString( "MySQL error: " ) + mysql_error( db );
+         error        = serverErrorText();
          db_errno     = DBERROR;
          server_errno = int( mysql_errno( db ) );
          noteStatementError();
@@ -960,7 +1103,7 @@ void US_DB2::query( const QString& sqlQuery )
       if ( result )
       {
          row       = mysql_fetch_row( result );
-         error     = row[ 0 ];
+         error     = QString::fromUtf8( row[ 0 ] );
          mysql_free_result( result );
          result = NULL;
       }
@@ -1045,11 +1188,15 @@ bool US_DB2::next( void ){ return false; }
 #else
 bool US_DB2::next( void )
 { 
-   row = NULL;
+   row         = NULL;
+   row_lengths = nullptr;
    if ( result )
    {
       if ( ( row = mysql_fetch_row( result ) ) != NULL )
+      {
+         row_lengths = mysql_fetch_lengths( result );
          return true;
+      }
    }
 
    return false;
@@ -1062,7 +1209,15 @@ QVariant US_DB2::value( unsigned ){ return QVariant(); }
 QVariant US_DB2::value( unsigned index )
 {
    if ( row && ( index < mysql_field_count( db ) ) )
-      return QVariant( QString( row[ index ] ) );
+   {
+      // A column is not a C string: it may hold NUL, and only its length
+      // says where it ends.  A NULL column is a null string, as it was.
+      if ( row[ index ] == NULL )
+         return QVariant( QString() );
+      if ( row_lengths != nullptr )
+         return QVariant( QString::fromUtf8( row[ index ], int( row_lengths[ index ] ) ) );
+      return QVariant( QString::fromUtf8( row[ index ] ) );
+   }
 
    return QVariant();
 }
@@ -1098,7 +1253,26 @@ int US_DB2::writeBlobToDB( const QString& filename,
    // Until a statement fails, the server has refused nothing of this call
    server_errno = 0;
 
-   // First let's read the file
+   if ( tableID == 0 )
+   {
+      error = QString( "writeBlob: don't know which record data belongs to in " ) + filename;
+      db_errno = DBERROR;
+      return DBERROR;
+   }
+
+   // The text around the data is UTF-8 like every other query; its length
+   // in bytes is not its length in characters once the guid or password
+   // holds anything beyond ASCII.  The escaped data has no NUL left in it,
+   // and _binary keeps the server from reading it as UTF-8 text.
+   const QString queryPart1 = "CALL " + procedure + "('" + escapeLiteral( guid ) + "', '" + escapeLiteral( userPW ) + "', " +
+                              QString::number( tableID ) + ", _binary'";
+   if ( refuseUnsendable( queryPart1 ) )
+   {
+      return db_errno;
+   }
+   const QByteArray stmtHead = queryPart1.toUtf8();
+   const int        stmtTail = 4 + 32 + 2;   // "', '", the MD5 in hex, "')"
+
    QFile fin( filename );
 
    if ( ! fin.open( QIODevice::ReadOnly ) )
@@ -1106,6 +1280,50 @@ int US_DB2::writeBlobToDB( const QString& filename,
       error = QString( "writeBlob: cannot open file " ) + filename;
       db_errno = DBERROR;
       return DBERROR;
+   }
+
+   // The server takes a statement of at most max_allowed_packet bytes, and
+   // answers a larger one by closing the connection.  So a file that cannot
+   // fit is refused here, before it is read, and the statement is checked
+   // again as it is built: escaping makes it longer.  The limit also keeps
+   // every size below in range of an int, since the server's own maximum is
+   // 1 GiB.
+   const qint64 fileSize = fin.size();
+   const qint64 packet   = maxAllowedPacket();
+   if ( packet <= 0 )
+   {
+      // A lost connection, say, as the read of the limit failed
+      server_errno = int( mysql_errno( db ) );
+      fin.close();
+      error    = QString( "writeBlob: the server's max_allowed_packet could not be read, so nothing was sent" ) +
+                 ( error.isEmpty() ? QString() : ": " + error );
+      db_errno = DBERROR;
+      return DBERROR;
+   }
+   const qint64 limit    = qMin( packet, qint64( 0x40000000 ) );
+
+   // What the server measures is the packet: the command byte (COM_QUERY)
+   // and the statement after it.  A packet of max_allowed_packet bytes or
+   // more is refused with 1153 and the connection closed, so the longest
+   // statement that is sent is limit - 2 bytes, on MySQL and MariaDB alike.
+   const int    commandByte = 1;
+   const qint64 longest     = limit - 1 - commandByte;
+   const auto   overLimit   = [ & ]( qint64 statement ) { return statement > longest; };
+   const auto   tooLarge = [ & ]( qint64 statement )
+   {
+      error = QString( "writeBlob: %1 is %2 bytes, and the statement that sends it would be at least %3 bytes; "
+                       "the server accepts statements of at most %4 bytes (max_allowed_packet %5, less 2), so "
+                       "nothing was sent.  The database administrator can raise max_allowed_packet." )
+                 .arg( filename ).arg( fileSize ).arg( statement ).arg( longest ).arg( packet );
+      db_errno     = DBERROR;
+      server_errno = 0;
+      return DBERROR;
+   };
+
+   if ( overLimit( stmtHead.size() + fileSize + stmtTail ) )
+   {
+      fin.close();
+      return tooLarge( stmtHead.size() + fileSize + stmtTail );
    }
 
    QByteArray blobData = fin.readAll();
@@ -1118,56 +1336,48 @@ int US_DB2::writeBlobToDB( const QString& filename,
       return DBERROR;
    }
 
-   if ( tableID == 0 )
-   {
-      error = QString( "writeBlob: don't know which record data belongs to in " ) + filename;
-      db_errno = DBERROR;
-      return DBERROR;
-   }
-
-   // Create an escaped version of the data
-   QByteArray blobData_escaped;
-   ulong escaped_length = mysqlEscapeString( blobData_escaped, blobData, blobData.size() );
-
    // Calculate a checksum
-   QByteArray checksum = 
+   const QByteArray checksum =
         QCryptographicHash::hash( blobData, QCryptographicHash::Md5 ).toHex();
 
-   // Now let's start building the query
-   QString queryPart1 = "CALL " + procedure + "('" + escapeLiteral( guid ) + "', '" + escapeLiteral( userPW ) + "', " +
-                        QString::number( tableID ) + ", '";
-   QByteArray sqlQuery( escaped_length 
-                      + queryPart1.size()
-                      + checksum.size() + 7, '\0' );
-   strcpy( sqlQuery.data(), queryPart1.toLatin1().constData() );
-   char* queryPtr = sqlQuery.data() + queryPart1.size();
-   memcpy( queryPtr, blobData_escaped.data(), escaped_length );
-   queryPtr += escaped_length;
-   strcpy( queryPtr, "', '" );
-   queryPtr += 4;
-   memcpy( queryPtr, checksum.data(), checksum.size() );
-   queryPtr += checksum.size();
-   strcpy( queryPtr, "')\0" );
+   // Escape the data straight into the statement, a piece at a time, so
+   // that only the data and the statement are held at once -- not a second
+   // escaped copy as well, nor room for every byte to be escaped.  The
+   // connection's character set is utf8mb4, in which no byte of a
+   // multi-byte character is one that needs escaping, so where the pieces
+   // are cut does not change what the server reads.
+   const int  piece = 4 * 1024 * 1024;
+   QByteArray sqlQuery;
+   const qint64 expected = qint64( stmtHead.size() ) + blobData.size() + blobData.size() / 16 + stmtTail;
+   sqlQuery.reserve( int( qMin( limit, expected ) + 2 * piece + 1 ) );
+   sqlQuery.append( stmtHead );
 
-   /*
-   QByteArray sqlQuery2( escaped_length 
-                       + queryPart1.size()
-                       + checksum.size() + 7, '\0' );
-   sqlQuery2 = queryPart1.toLatin1()
-             + blobData_escaped + "', '"
-             + checksum + "')\0";
+   for ( int offset = 0; offset < blobData.size(); offset += piece )
+   {
+      const int length = qMin( piece, blobData.size() - offset );
+      const int at     = sqlQuery.size();
+      sqlQuery.resize( at + 2 * length + 1 );
+      const unsigned long written = mysql_real_escape_string( db, sqlQuery.data() + at, blobData.constData() + offset,
+                                                              static_cast< unsigned long >( length ) );
+      sqlQuery.resize( at + int( written ) );
 
-   ulong checkSize = escaped_length + queryPart1.size() + checksum.size() + 7;
-   qDebug() << ( ( sqlQuery == sqlQuery2 ) ? "check equal" : "check not equal" );
-   qDebug() << "check2 " << memcmp( sqlQuery.data(), sqlQuery2.data(), checkSize );
-*/
+      if ( overLimit( qint64( sqlQuery.size() ) + stmtTail ) )
+      {
+         return tooLarge( qint64( sqlQuery.size() ) + stmtTail );
+      }
+   }
+   blobData = QByteArray();
+
+   sqlQuery.append( "', '" );
+   sqlQuery.append( checksum );
+   sqlQuery.append( "')" );
 
    // We can't use rawQuery() since it takes a QString
    drainResults();
 
-   if ( mysql_query( db, sqlQuery.data() ) != 0 )
+   if ( mysql_real_query( db, sqlQuery.constData(), static_cast< unsigned long >( sqlQuery.size() ) ) != 0 )
    {
-     error        = QString( "MySQL error: " ) + mysql_error( db ); // ALEXEY: writing huge blob, MySql server has gone away...
+     error        = serverErrorText();
      server_errno = int( mysql_errno( db ) );
      noteStatementError();
 
@@ -1177,10 +1387,21 @@ int US_DB2::writeBlobToDB( const QString& filename,
 
    result   = mysql_store_result( db );
    noteTransactionStatus();
-   row      = mysql_fetch_row( result );
+   row      = result != NULL ? mysql_fetch_row( result ) : NULL;
+   if ( row == NULL || row[ 0 ] == NULL )
+   {
+      error = QString( "writeBlob: %1 returned no status" ).arg( procedure );
+      if ( mysql_errno( db ) != 0 )
+      {
+         error += ": " + serverErrorText();
+         server_errno = int( mysql_errno( db ) );
+         noteStatementError();
+      }
+      db_errno = DBERROR;
+      return DBERROR;
+   }
    db_errno = atoi( row[ 0 ] );
 
-//qDebug() << "Debug " << lastDebug();
    mysql_free_result( result );
    result = NULL;
 
@@ -1202,6 +1423,26 @@ int US_DB2::writeBlobToDB( const QString& filename,
 }
 #endif
 
+#ifdef NO_DB
+qint64 US_DB2::maxAllowedPacket() { return 0; }
+#else
+qint64 US_DB2::maxAllowedPacket()
+{
+   error.clear();
+   sendStatement( "SELECT @@max_allowed_packet" );
+   qint64 packet = 0;
+   if ( result != NULL )
+   {
+      MYSQL_ROW limit = mysql_fetch_row( result );
+      if ( limit != NULL && limit[ 0 ] != NULL )
+         packet = QByteArray( limit[ 0 ] ).toLongLong();
+      mysql_free_result( result );
+      result = NULL;
+   }
+   return packet;
+}
+#endif
+
 QString US_DB2::commitErrorText( int serverErrno, const QString& serverMessage, const QString& serverVersion )
 {
    // The server may have committed before the connection dropped; only a
@@ -1217,6 +1458,41 @@ QString US_DB2::commitErrorText( int serverErrno, const QString& serverMessage, 
 QString US_DB2::serverVersion()
 {
    return server_version;
+}
+
+QString US_DB2::loneSurrogateProblem( const QString& text )
+{
+   for ( int ii = 0; ii < text.size(); ii++ )
+   {
+      if ( text[ ii ].isHighSurrogate() && ii + 1 < text.size() && text[ ii + 1 ].isLowSurrogate() )
+      {
+         ii++;
+         continue;
+      }
+
+      if ( text[ ii ].isSurrogate() )
+      {
+         return QObject::tr( "The text holds half of a UTF-16 surrogate pair (U+%1) on its own, which is not a "
+                             "character and cannot be sent to the database as UTF-8, so nothing was sent.  The text "
+                             "was probably cut in the middle of a character, or read from a malformed file." )
+            .arg( QString::number( text[ ii ].unicode(), 16 ).toUpper() );
+      }
+   }
+   return QString();
+}
+
+bool US_DB2::refuseUnsendable( const QString& statement )
+{
+   const QString problem = loneSurrogateProblem( statement );
+   if ( problem.isEmpty() )
+      return false;
+
+   // Nothing is sent, so clear what the last query left for next() to read
+   drainResults();
+   db_errno     = DBERROR;
+   server_errno = 0;
+   error        = problem;
+   return true;
 }
 
 int US_DB2::writeBlobFile( const QString& filename, const QByteArray& data, QString& error )
@@ -1243,6 +1519,253 @@ int US_DB2::writeBlobFile( const QString& filename, const QByteArray& data, QStr
    return OK;
 }
 
+// ---------------------------------------------- text a latin1 column holds
+
+namespace
+{
+// The characters the server's latin1 (Windows-1252) has at 0x80-0x9F
+bool cp1252_extra( ushort code )
+{
+   switch ( code )
+   {
+      case 0x20AC: case 0x201A: case 0x0192: case 0x201E: case 0x2026:
+      case 0x2020: case 0x2021: case 0x02C6: case 0x2030: case 0x0160:
+      case 0x2039: case 0x0152: case 0x017D: case 0x2018: case 0x2019:
+      case 0x201C: case 0x201D: case 0x2022: case 0x2013: case 0x2014:
+      case 0x02DC: case 0x2122: case 0x0161: case 0x203A: case 0x0153:
+      case 0x017E: case 0x0178:
+      // Undefined in Windows-1252; the server maps these bytes to themselves
+      case 0x0081: case 0x008D: case 0x008F: case 0x0090: case 0x009D:
+         return true;
+      default:
+         return false;
+   }
+}
+
+bool latin1_char( QChar ch )
+{
+   const ushort code = ch.unicode();
+   if ( code < 0x80 || ( code >= 0xA0 && code <= 0xFF ) )
+      return true;
+   return cp1252_extra( code );
+}
+
+// Each character of the text, as a string: a pair of surrogates is one
+QStringList characters_of( const QString& text )
+{
+   QStringList chars;
+   for ( int ii = 0; ii < text.size(); ii++ )
+   {
+      if ( text[ ii ].isHighSurrogate() && ii + 1 < text.size() && text[ ii + 1 ].isLowSurrogate() )
+      {
+         chars << text.mid( ii, 2 );
+         ii++;
+      }
+      else
+         chars << QString( text[ ii ] );
+   }
+   return chars;
+}
+
+// How a character is shown in a message: itself, and its code point
+QString shown_char( const QString& ch )
+{
+   const QVector< uint > codes = ch.toUcs4();
+   const uint            code  = codes.isEmpty() ? 0 : codes[ 0 ];
+   return QString( "'%1' (U+%2)" ).arg( ch, QString::number( code, 16 ).toUpper().rightJustified( 4, '0' ) );
+}
+
+// What the user can do about it.  Not a conversion of the database: US3
+// databases stay Latin-1, so the text has to change.
+const char* const latin1Advice =
+   "Replace these characters, or spell them out (a Greek letter, for example: alpha).";
+}
+
+bool US_DB2::fitsLatin1( const QString& text )
+{
+   for ( const QChar& ch : text )
+   {
+      if ( !latin1_char( ch ) )
+         return false;
+   }
+   return true;
+}
+
+QString US_DB2::nonLatin1Characters( const QString& text )
+{
+   QString found;
+   for ( const QString& ch : characters_of( text ) )
+   {
+      if ( ( ch.size() > 1 || !latin1_char( ch[ 0 ] ) ) && !found.contains( ch ) )
+         found += ch;
+   }
+   return found;
+}
+
+bool US_DB2::textFitsCharset( const QString& text, const QString& charset )
+{
+   const QString name = charset.trimmed().toLower();
+   if ( name == "latin1" )
+      return fitsLatin1( text );
+   if ( name == "ascii" )
+   {
+      for ( const QChar& ch : text )
+      {
+         if ( ch.unicode() >= 0x80 )
+            return false;
+      }
+      return true;
+   }
+   if ( name == "utf8" || name == "utf8mb3" )
+   {  // Three bytes at most: nothing beyond the Basic Multilingual Plane
+      for ( const QChar& ch : text )
+      {
+         if ( ch.isSurrogate() )
+            return false;
+      }
+      return true;
+   }
+   return true;
+}
+
+QString US_DB2::latin1Problem( const QString& field, const QString& text )
+{
+   const QString bad = nonLatin1Characters( text );
+   if ( bad.isEmpty() )
+      return QString();
+
+   QStringList shown;
+   for ( const QString& ch : characters_of( bad ) )
+      shown << shown_char( ch );
+
+   return QObject::tr( "This database stores text as Latin-1 and cannot hold %1 in \"%2\".  %3" )
+      .arg( shown.join( ", " ), field, QObject::tr( latin1Advice ) );
+}
+
+bool US_DB2::textFitsServer( IUS_DB2* db, const QString& text, const QString& table,
+                             const QString& column, QString* problem )
+{
+   if ( problem != nullptr )
+      problem->clear();
+
+   QStringList charsets;
+   static const QRegularExpression identifier( "^[A-Za-z0-9_]+$" );
+   if ( db != nullptr && db->isConnected() && identifier.match( table ).hasMatch() &&
+        identifier.match( column ).hasMatch() )
+   {
+      db->rawQuery( "SELECT @@character_set_database, ( SELECT CHARACTER_SET_NAME FROM information_schema.COLUMNS"
+                    " WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '" + table +
+                    "' AND COLUMN_NAME = '" + column + "' )" );
+      if ( db->next() )
+      {
+         const QString database = db->value( 0 ).toString();
+         const QString stored   = db->value( 1 ).toString();
+         if ( !database.isEmpty() && !stored.isEmpty() )
+            charsets << database << stored;
+      }
+   }
+
+   // Not known: the narrowest a US3 schema uses
+   if ( charsets.isEmpty() )
+      charsets << "latin1";
+
+   for ( const QString& charset : charsets )
+   {
+      if ( textFitsCharset( text, charset ) )
+         continue;
+
+      if ( problem != nullptr )
+      {
+         if ( charset.toLower() == "latin1" )
+            *problem = latin1Problem( column, text );
+         else
+            *problem = QObject::tr( "This database stores \"%1\" as %2, which cannot hold all of the text given." )
+                          .arg( column, charset );
+      }
+      return false;
+   }
+   return true;
+}
+
+QString US_DB2::charsetErrorText( int serverErrno, const QString& serverMessage )
+{
+   if ( serverErrno == 1366 )
+   {  // ER_TRUNCATED_WRONG_VALUE_FOR_FIELD is given for numbers too
+      static const QRegularExpression wrongString(
+         "Incorrect string value: '((?:\\\\x[0-9A-Fa-f]{2})*)[^']*' for column (.*) at row" );
+      const QRegularExpressionMatch match = wrongString.match( serverMessage );
+      if ( !match.hasMatch() )
+         return QString();
+
+      // The character: the bytes the server quotes, read as UTF-8 up to the
+      // end of the first whole character
+      QByteArray    bytes;
+      const QString escapes = match.captured( 1 );
+      for ( int ii = 0; ii + 4 <= escapes.size(); ii += 4 )
+         bytes.append( char( escapes.mid( ii + 2, 2 ).toUInt( nullptr, 16 ) ) );
+      QString character;
+      for ( int len = 1; len <= bytes.size() && character.isEmpty(); len++ )
+      {
+         const QString decoded = QString::fromUtf8( bytes.left( len ) );
+         if ( !decoded.contains( QChar( QChar::ReplacementCharacter ) ) )
+            character = decoded;
+      }
+
+      // The column: the last name of `db`.`table`.`column` or 'column', and
+      // a procedure parameter without its p_
+      QString                         field = match.captured( 2 ).trimmed();
+      static const QRegularExpression lastName( "[`']([^`']*)[`']$" );
+      const QRegularExpressionMatch   name  = lastName.match( field );
+      if ( name.hasMatch() )
+         field = name.captured( 1 );
+      if ( field.startsWith( "p_" ) )
+         field = field.mid( 2 );
+
+      return QObject::tr( "This database cannot store %1 in \"%2\": it stores that text as Latin-1, or in "
+                          "another character set without it.  %3" )
+         .arg( character.isEmpty() ? QObject::tr( "a character" ) : shown_char( character ),
+               field.isEmpty() ? QObject::tr( "a text field" ) : field, QObject::tr( latin1Advice ) );
+   }
+
+   if ( serverErrno == 1267 || serverErrno == 1271 || serverErrno == 1300 )
+   {
+      // 1300 quotes the bytes ("Invalid latin1 character string: 'CEB1'");
+      // the collation errors quote none
+      QString                         named;
+      static const QRegularExpression quoted( "character string: '([0-9A-Fa-f]+)" );
+      const QRegularExpressionMatch   bytesMatch = quoted.match( serverMessage );
+      if ( bytesMatch.hasMatch() )
+      {
+         const QByteArray bytes = QByteArray::fromHex( bytesMatch.captured( 1 ).toLatin1() );
+         QStringList      shown;
+         for ( const QString& ch : characters_of( QString::fromUtf8( bytes ) ) )
+         {
+            if ( ch != QString( QChar( QChar::ReplacementCharacter ) ) && !latin1_char( ch[ 0 ] ) )
+               shown << shown_char( ch );
+         }
+         shown.removeDuplicates();
+         if ( !shown.isEmpty() )
+            named = QObject::tr( ", %1" ).arg( shown.join( ", " ) );
+      }
+      return QObject::tr( "This database stores text as Latin-1 and cannot store, compare or convert the "
+                          "characters outside Latin-1 in the text given%1.  %2" )
+         .arg( named, QObject::tr( latin1Advice ) );
+   }
+
+   return QString();
+}
+
+#ifndef NO_DB
+QString US_DB2::serverErrorText()
+{
+   const QString message  = QString::fromUtf8( mysql_error( db ) );
+   const QString friendly = charsetErrorText( int( mysql_errno( db ) ), message );
+   if ( friendly.isEmpty() )
+      return QString( "MySQL error: " ) + message;
+   return QString( "MySQL error: " ) + friendly + "\n(" + message + ")";
+}
+#endif
+
 #ifdef NO_DB
 int US_DB2::readBlobFromDB( const QString& , const QString& , const int ) { return 0; }
 #else
@@ -1256,71 +1779,183 @@ int US_DB2::readBlobFromDB( const QString& filename,
       return refuseArguments( QStringList() << procedure );
    }
 
+   // The guid and password are text like any other query's
+   if ( refuseUnsendable( sqlQuery ) )
+   {
+      return db_errno;
+   }
+
    // We can't use standard methods because the
    // binary data doesn't all transfer
 
    // Make sure that we clear out any unused
    //   result sets
    drainResults();
+   error.clear();
+   row = NULL;
 
-   if ( mysql_query( db, sqlQuery.toLatin1() ) != OK )
+   // Fails the read with the server's error for the statement
+   const auto serverFailure = [ & ]( void )
    {
-      error        = QString( "MySQL error: " ) + mysql_error( db );
+      error        = serverErrorText();
       server_errno = int( mysql_errno( db ) );
       noteStatementError();
       db_errno     = DBERROR;
       return DBERROR;
-   }
+   };
 
+   // Fails the read with a reason of its own
+   const auto failure = [ & ]( int status, const QString& reason )
+   {
+      if ( result )
+         mysql_free_result( result );
+      result   = NULL;
+      row      = NULL;
+      error    = QString( "readBlob: %1 for ID %2 %3" ).arg( procedure ).arg( tableID ).arg( reason );
+      db_errno = status;
+      return status;
+   };
+
+   if ( run_utf8( db, sqlQuery ) != 0 )
+   {
+      return serverFailure();
+   }
    server_errno = 0;
 
-   // First result set is status
-   result   = mysql_store_result( db );
+   // First result set is status.  A procedure that returned before it --
+   // an empty GUID, a failed login -- sent none, and recorded its status
+   // in @US3_LAST_ERRNO instead.
+   result = mysql_store_result( db );
    noteTransactionStatus();
-   row      = mysql_fetch_row( result );
-   db_errno = atoi( row[ 0 ] );
+   if ( result == NULL )
+   {
+      if ( mysql_errno( db ) != 0 )
+         return serverFailure();
+
+      int status = DBERROR;
+      sendStatement( "SELECT last_errno()" );
+      if ( result != NULL )
+      {
+         MYSQL_ROW recorded = mysql_fetch_row( result );
+         if ( recorded != NULL && recorded[ 0 ] != NULL )
+            status = atoi( recorded[ 0 ] );
+         mysql_free_result( result );
+         result = NULL;
+      }
+      if ( status == OK )
+         status = DBERROR;   // and yet it sent nothing
+
+      const QString recordedError = recordedErrorText();
+      failure( status, QString( "returned no status" ) );
+      if ( !recordedError.isEmpty() )
+         error = recordedError;
+      return status;
+   }
+
+   row = mysql_fetch_row( result );
+   if ( row == NULL || mysql_num_fields( result ) < 1 || row[ 0 ] == NULL )
+   {
+      return failure( DBERROR, "returned an empty status" );
+   }
+   const int status = atoi( row[ 0 ] );
+   mysql_free_result( result );
+   result = NULL;
+   row    = NULL;
+
+   // A missing record or a refused one: the status set is all there is,
+   // and the procedure recorded why in @US3_LAST_ERROR
+   if ( status != OK )
+   {
+      const QString recordedError = recordedErrorText();
+      failure( status, QString( "returned status %1" ).arg( status ) );
+      if ( !recordedError.isEmpty() )
+         error = recordedError;
+      return status;
+   }
+
+   // Now get the result data.  After the status set comes either the data
+   // set or, from a procedure that sent none, only the CALL's own result.
+   const int next = mysql_next_result( db );
+   if ( next > 0 )
+   {
+      return serverFailure();
+   }
+
+   result = ( next == 0 ) ? mysql_store_result( db ) : NULL;
+   if ( next == 0 )
+      noteTransactionStatus();
+   if ( result == NULL )
+   {
+      if ( next == 0 && mysql_errno( db ) != 0 )
+         return serverFailure();
+      return failure( DBERROR, "returned no data" );
+   }
+
+   // Make sure we get the data and the right number of bytes
+   row = mysql_fetch_row( result );
+   if ( row == NULL )
+   {
+      // The record went between the procedure's check and its read
+      return failure( NOROWS, "returned no data row" );
+   }
+
+   const unsigned long* lengths = mysql_fetch_lengths( result );
+   if ( mysql_num_fields( result ) < 2 || lengths == nullptr )
+   {
+      return failure( DBERROR, "returned no data and checksum" );
+   }
+
+   if ( row[ 0 ] == NULL )
+   {
+      return failure( DBERROR, "holds no data (NULL)" );
+   }
+
+   // Now convert
+   QByteArray aucData( row[ 0 ], int( lengths[ 0 ] ) );
+   QByteArray checksum = row[ 1 ] != NULL ? QByteArray( row[ 1 ], int( lengths[ 1 ] ) ) : QByteArray();
+   QByteArray calculated = 
+        QCryptographicHash::hash( aucData, QCryptographicHash::Md5 ).toHex();
 
    mysql_free_result( result );
    result = NULL;
+   row    = NULL;
 
-   // Now get the result data
-   if ( mysql_next_result( db ) == 0 )
+   // Since we got data, let's write it out
+   if ( checksum != calculated )
    {
-      result = mysql_store_result( db );
+      error = QString( "readBlob: data transmission error (MD5 checksum)" ) ;
 
-      // Make sure we get the data and the right number of bytes
-      row    = mysql_fetch_row( result );
-      ulong* lengths = mysql_fetch_lengths( result );
+      db_errno = BAD_CHECKSUM;
+   }
 
-      // Now convert
-      QByteArray aucData( row[ 0 ], lengths[ 0 ] );
-      QByteArray checksum = row[ 1 ];
-      QByteArray calculated = 
-           QCryptographicHash::hash( aucData, QCryptographicHash::Md5 ).toHex();
-
-      mysql_free_result( result );
-      result = NULL;
-
-      // Since we got data, let's write it out
-      if ( checksum != calculated )
+   else
+   {
+      db_errno = OK;
+      const int written = writeBlobFile( filename, aucData, error );
+      if ( written != OK )
       {
-         error = QString( "readBlob: data transmission error (MD5 checksum)" ) ;
-
-         db_errno = BAD_CHECKSUM;
+         db_errno = written;
       }
-
-      else
-      {
-         const int written = writeBlobFile( filename, aucData, error );
-         if ( written != OK )
-         {
-            db_errno = written;
-         }
-      }
-if(!error.isEmpty()) qDebug() << error;
    }
 
    return db_errno;
+}
+#endif
+
+#ifndef NO_DB
+QString US_DB2::recordedErrorText()
+{
+   QString text;
+   sendStatement( "SELECT last_error()" );
+   if ( result != NULL )
+   {
+      MYSQL_ROW recorded = mysql_fetch_row( result );
+      if ( recorded != NULL && recorded[ 0 ] != NULL )
+         text = QString::fromUtf8( recorded[ 0 ] );
+      mysql_free_result( result );
+      result = NULL;
+   }
+   return text;
 }
 #endif
 
@@ -1357,7 +1992,7 @@ QString US_DB2::lastDebug( void )
    if ( result )
    {
       row       = mysql_fetch_row( result );
-      debug     = row[ 0 ];
+      debug     = QString::fromUtf8( row[ 0 ] );
       mysql_free_result( result );
       result = NULL;
    }
@@ -1466,7 +2101,7 @@ bool US_DB2::configure_ssl( QString& err )
    // handshake when the shared one formerly in etc/mysql was sent.  TLS stays
    // on: libmariadb enables it when a CA file is set, libmysql through
    // MYSQL_OPT_SSL_MODE below.
-   success = mysql_options( db, MYSQL_OPT_SSL_CA, caFile.toLatin1().constData() );
+   success = mysql_options( db, MYSQL_OPT_SSL_CA, QFile::encodeName( caFile ).constData() );
    if ( success != 0 ) {
       error = QString( "Error setting SSL CA file: " ) + caFile;
       err = error;
