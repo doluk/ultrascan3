@@ -308,11 +308,16 @@ void US_MPI_Analysis::unpack_inputs( const QString& tarfile )
 
       // Unpack the input tarfile
       US_Archive archive;
+      // A job archive's links and special entries were always passed over
+      archive.setSkipLinks( true );
       const bool ok = archive.extract( tarfile );
       if ( !ok ) {
          const QString error = archive.getError();
          abort( "Could not unpack\n " + error + "\n" + tarfile );
       }
+
+      foreach ( const QString& note, archive.skippedEntries() )
+         DbgLv( 0 ) << "Skipped in the job archive:" << note;
 
       // Create a dedicated output directory and make sure it's empty
       // During testing, it may not always be empty

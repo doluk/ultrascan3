@@ -69,6 +69,9 @@ US_LegacyConverter::US_LegacyConverter() : US_Widgets()
    this->setLayout(layout);
 
    archive = new US_Archive();
+   // Legacy archives can hold links and other entries the converter never
+   // needed; pass over them, as it always has, rather than refuse the file
+   archive->setSkipLinks(true);
    reset();
 
    connect(pb_load, &QPushButton::clicked, this, &US_LegacyConverter::load);
@@ -239,6 +242,9 @@ void US_LegacyConverter::load() {
          return;
       }
       te_info->clear();
+      foreach (const QString& note, archive->skippedEntries()) {
+         te_info->append(tr("Skipped %1").arg(note));
+      }
       te_info->append("Parsing Data. Please Wait!");
       qApp->processEvents();
       runid = tar_finfo.fileName().chopped(7);
